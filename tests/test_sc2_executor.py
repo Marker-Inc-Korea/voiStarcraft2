@@ -5,10 +5,13 @@ import sys
 import unittest
 
 import starcraft_commander as package_exports
+from starcraft_commander.contracts import SC2ActionReport
 from starcraft_commander.sc2_executor import (
     DEFAULT_SC2_ACTION_PLANNER,
     SC2_ACTION_TYPES,
     SC2_INTENT_ACTION_TYPE_MAP,
+    SC2_SEMANTIC_TARGET_NAMES,
+    SC2_TARGET_ALIASES,
     SC2ActionPlanner,
     SC2ActionPlannerInterface,
     SC2ActionType,
@@ -22,6 +25,7 @@ from starcraft_commander.sc2_executor import (
     SC2RuntimeExecutorInterface,
     build_sc2_execution_plan,
 )
+from toycraft_commander.map import MAP_LOCATION_NAMES
 from toycraft_commander.intents import (
     BuildStructureIntent,
     DefendIntent,
@@ -239,6 +243,38 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual([], result.to_dict()["attempted"])
 
+    def test_plan_rejects_unknown_priority_labels_listing_valid_labels(self) -> None:
+        for unknown_priority in ("blazing", "CRITICAL", "p0"):
+            with self.subTest(priority=unknown_priority):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "SC2 execution plan priority must be one of: "
+                    f"low, normal, high, urgent. Unknown priority: '{unknown_priority}'",
+                ):
+                    SC2ExecutionPlan(
+                        intent_name="TRAIN_WORKER",
+                        ordered_actions=(),
+                        priority=unknown_priority,
+                    )
+
+    def test_plan_accepts_every_known_priority_label(self) -> None:
+        for label, value in (("low", 25), ("normal", 50), ("high", 75), ("urgent", 100)):
+            with self.subTest(priority=label):
+                plan = SC2ExecutionPlan(
+                    intent_name="TRAIN_WORKER",
+                    ordered_actions=(),
+                    priority=label,
+                )
+
+                self.assertEqual(label, plan.priority)
+                self.assertEqual(value, plan.priority_value)
+
+    def test_plan_keeps_integer_priorities_as_custom_label(self) -> None:
+        plan = SC2ExecutionPlan(intent_name="TRAIN_WORKER", ordered_actions=(), priority=60)
+
+        self.assertEqual("custom", plan.priority)
+        self.assertEqual(60, plan.priority_value)
+
 
 class SC2ActionPlannerTest(unittest.TestCase):
     def test_planner_implements_interface(self) -> None:
@@ -359,6 +395,81 @@ class SC2ActionPlannerTest(unittest.TestCase):
         self.assertEqual("train_unit", payload["actions"][0]["action_type"])
         self.assertIn("SC2 executor plans semantic API commands", payload["notes"][0])
 
+    def test_target_aliases_cover_every_toycraft_canonical_map_location(self) -> None:
+        self.assertLessEqual(frozenset(MAP_LOCATION_NAMES), frozenset(SC2_TARGET_ALIASES))
+        self.assertIn("main base fallback", SC2_TARGET_ALIASES)
+        self.assertLessEqual(
+            frozenset(SC2_TARGET_ALIASES.values()),
+            SC2_SEMANTIC_TARGET_NAMES,
+        )
+
+    def test_semantic_target_name_registry_is_stable(self) -> None:
+        self.assertEqual(
+            frozenset(
+                {
+                    "self_main",
+                    "self_ramp",
+                    "self_natural",
+                    "self_mineral_line",
+                    "self_geyser",
+                    "enemy_main",
+                    "enemy_ramp",
+                    "enemy_natural",
+                    "enemy_mineral_line",
+                },
+            ),
+            SC2_SEMANTIC_TARGET_NAMES,
+        )
+
+    def test_location_intents_reject_unknown_targets_with_alternatives(self) -> None:
+        unknown_payloads = (
+            BuildStructureIntent(structure="Supply Depot", location="atlantis"),
+            ExpandIntent(location="atlantis"),
+            ScoutIntent(target="atlantis", unit_group="worker_scout"),
+            DefendIntent(location="atlantis", unit_group="marines"),
+            HarassIntent(target="atlantis", unit_group="marines"),
+        )
+
+        for payload in unknown_payloads:
+            with self.subTest(intent_name=payload.intent):
+                with self.assertRaises(ValueError) as caught:
+                    build_sc2_execution_plan(payload)
+
+                message = str(caught.exception)
+                self.assertIn("unsupported SC2 target location: 'atlantis'", message)
+                self.assertIn("Supported targets:", message)
+                self.assertIn("natural expansion", message)
+                self.assertIn("enemy_main", message)
+
+    def test_every_canonical_map_location_plans_to_semantic_target(self) -> None:
+        for location_name in MAP_LOCATION_NAMES:
+            with self.subTest(location=location_name):
+                plan = build_sc2_execution_plan(
+                    DefendIntent(location=location_name, unit_group="marines"),
+                )
+
+                self.assertIn(plan.actions[0].target, SC2_SEMANTIC_TARGET_NAMES)
+
+    def test_already_semantic_targets_pass_through_unchanged(self) -> None:
+        for semantic_target in sorted(SC2_SEMANTIC_TARGET_NAMES):
+            with self.subTest(target=semantic_target):
+                plan = build_sc2_execution_plan(
+                    ScoutIntent(target=semantic_target, unit_group="worker_scout"),
+                )
+
+                self.assertEqual(semantic_target, plan.actions[0].target)
+
+    def test_repair_target_and_gather_resource_stay_verbatim(self) -> None:
+        repair = build_sc2_execution_plan(
+            RepairIntent(target="front bunker", worker_count=2),
+        )
+        gather = build_sc2_execution_plan(
+            GatherResourceIntent(resource="minerals", worker_count=4, base="main"),
+        )
+
+        self.assertEqual("front bunker", repair.actions[0].target)
+        self.assertEqual("minerals", gather.actions[0].target)
+
 
 class SC2RuntimeExecutorTest(unittest.TestCase):
     def test_runtime_executor_implements_interface(self) -> None:
@@ -474,7 +585,7 @@ class SC2RuntimeExecutorTest(unittest.TestCase):
         )
         self.assertEqual(2, len(result.applied_actions))
 
-    def test_runtime_executor_skips_missing_bot_capabilities(self) -> None:
+    def test_runtime_executor_records_structured_error_for_missing_bot_capability(self) -> None:
         class FakeBot:
             pass
 
@@ -485,3 +596,287 @@ class SC2RuntimeExecutorTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual((), result.applied_actions)
         self.assertEqual(plan.actions, result.skipped_actions)
+        self.assertEqual(1, len(result.errors))
+        error = result.errors[0]
+        self.assertEqual("MissingBotCapability", error.exception_type)
+        self.assertEqual(SC2ActionType.TRAIN_UNIT, error.action_type)
+        self.assertEqual(0, error.action_index)
+        self.assertEqual({"expected_method": "train_unit"}, dict(error.metadata))
+        self.assertIn("execute_commander_action", error.message)
+        json.dumps(result.to_dict())
+
+    def test_partial_capability_skips_only_unhandled_actions_with_errors(self) -> None:
+        class FakeBot:
+            async def train_unit(self, action):
+                return True
+
+        plan = SC2ExecutionPlan(
+            intent="demo",
+            actions=(
+                SC2CommandAction(SC2ActionType.TRAIN_UNIT, subject="MARINE", count=2),
+                SC2CommandAction(
+                    SC2ActionType.ATTACK_MOVE,
+                    subject="marines",
+                    target="enemy_natural",
+                ),
+            ),
+        )
+
+        result = asyncio.run(SC2RuntimeExecutor().execute_plan(FakeBot(), plan))
+
+        self.assertFalse(result.success)
+        self.assertEqual((plan.actions[0],), result.applied_actions)
+        self.assertEqual((plan.actions[1],), result.skipped_actions)
+        self.assertEqual(1, len(result.errors))
+        self.assertEqual("MissingBotCapability", result.errors[0].exception_type)
+        self.assertEqual(1, result.errors[0].action_index)
+        self.assertEqual(
+            {"expected_method": "attack_move"},
+            dict(result.errors[0].metadata),
+        )
+
+    def test_start_clears_lifecycle_errors_from_previous_cycle(self) -> None:
+        class FailingStartBot:
+            async def on_start(self):
+                raise RuntimeError("hook boom")
+
+            async def train_unit(self, action):
+                return True
+
+        class HealthyBot:
+            async def train_unit(self, action):
+                return True
+
+        plan = SC2ExecutionPlan(
+            intent="demo",
+            actions=(SC2CommandAction(SC2ActionType.TRAIN_UNIT, subject="MARINE"),),
+        )
+
+        async def run_two_cycles():
+            executor = SC2RuntimeExecutor()
+            await executor.start(FailingStartBot())
+            poisoned = await executor.execute(plan)
+            await executor.start(HealthyBot())
+            clean = await executor.execute(plan)
+            return poisoned, clean
+
+        poisoned, clean = asyncio.run(run_two_cycles())
+
+        self.assertFalse(poisoned.success)
+        self.assertEqual("RuntimeError", poisoned.errors[0].exception_type)
+        self.assertEqual(
+            {"lifecycle_hook": "on_start"},
+            dict(poisoned.errors[0].metadata),
+        )
+        self.assertTrue(clean.success)
+        self.assertEqual((), clean.errors)
+
+    def test_observe_mapping_return_surfaces_observation_in_audit(self) -> None:
+        snapshot = {"minerals": 350, "vespene": 64, "supply_used": 18}
+
+        class ObservingBot:
+            async def observe(self, action):
+                return dict(snapshot)
+
+        plan = build_sc2_execution_plan(SummarizeStateIntent())
+
+        result = asyncio.run(SC2RuntimeExecutor().execute_plan(ObservingBot(), plan))
+
+        self.assertTrue(result.success)
+        self.assertEqual(plan.actions, result.applied_actions)
+        self.assertEqual({"0": snapshot}, result.audit["observations"])
+        self.assertEqual({"0": snapshot}, result.to_dict()["audit"]["observations"])
+        json.dumps(result.to_dict())
+
+    def test_action_return_value_semantics(self) -> None:
+        cases = (
+            (None, True, None),
+            (True, True, None),
+            (1, True, None),
+            (False, False, None),
+            (0, False, None),
+            ({}, True, {}),
+            ({"supply_used": 18}, True, {"supply_used": 18}),
+        )
+
+        plan = SC2ExecutionPlan(
+            intent="demo",
+            actions=(SC2CommandAction(SC2ActionType.TRAIN_UNIT, subject="MARINE"),),
+        )
+
+        for return_value, expect_applied, expect_observation in cases:
+            with self.subTest(return_value=return_value):
+
+                class FakeBot:
+                    async def train_unit(self, action):
+                        return return_value
+
+                result = asyncio.run(SC2RuntimeExecutor().execute_plan(FakeBot(), plan))
+
+                if expect_applied:
+                    self.assertEqual(plan.actions, result.applied_actions)
+                    self.assertEqual((), result.skipped_actions)
+                else:
+                    self.assertEqual((), result.applied_actions)
+                    self.assertEqual(plan.actions, result.skipped_actions)
+                if expect_observation is None:
+                    self.assertEqual({}, result.audit["observations"])
+                else:
+                    self.assertEqual(
+                        {"0": expect_observation},
+                        result.audit["observations"],
+                    )
+
+    def test_raising_bot_method_is_captured_as_structured_error(self) -> None:
+        class FakeBot:
+            async def train_unit(self, action):
+                raise RuntimeError("supply blocked")
+
+        plan = SC2ExecutionPlan(
+            intent="demo",
+            actions=(SC2CommandAction(SC2ActionType.TRAIN_UNIT, subject="MARINE"),),
+        )
+
+        result = asyncio.run(SC2RuntimeExecutor().execute_plan(FakeBot(), plan))
+
+        self.assertFalse(result.success)
+        self.assertEqual(plan.actions, result.skipped_actions)
+        self.assertEqual("RuntimeError", result.errors[0].exception_type)
+        self.assertEqual("supply blocked", result.errors[0].message)
+        self.assertEqual(0, result.errors[0].action_index)
+
+
+class SC2ActionReportContractTest(unittest.TestCase):
+    def test_report_truthiness_matches_full_application_only(self) -> None:
+        cases = (
+            ("full", SC2ActionReport(True, requested_count=3, issued_count=3), True),
+            ("uncounted", SC2ActionReport(True), True),
+            ("partial", SC2ActionReport(True, requested_count=3, issued_count=1), False),
+            ("refused", SC2ActionReport(False, requested_count=3, issued_count=0), False),
+        )
+        for label, report, expected_truthiness in cases:
+            with self.subTest(case=label):
+                self.assertEqual(expected_truthiness, bool(report))
+
+    def test_is_partial_requires_applied_and_both_counts(self) -> None:
+        cases = (
+            ("partial", SC2ActionReport(True, requested_count=3, issued_count=1), True),
+            ("full", SC2ActionReport(True, requested_count=3, issued_count=3), False),
+            ("no_requested", SC2ActionReport(True, issued_count=1), False),
+            ("refused", SC2ActionReport(False, requested_count=3, issued_count=0), False),
+        )
+        for label, report, expected in cases:
+            with self.subTest(case=label):
+                self.assertEqual(expected, report.is_partial)
+
+    def test_report_validates_counts_and_serializes_json_ready(self) -> None:
+        with self.assertRaises(ValueError):
+            SC2ActionReport(True, requested_count=-1)
+        with self.assertRaises(TypeError):
+            SC2ActionReport(True, issued_count="2")
+        payload = SC2ActionReport(
+            True, requested_count=6, issued_count=2, detail="insufficient_units"
+        ).to_dict()
+        self.assertEqual(payload, json.loads(json.dumps(payload)))
+        self.assertTrue(payload["is_partial"])
+
+
+class SC2RuntimeExecutorReportTest(unittest.TestCase):
+    """Structured adapter reports flow into errors, audit, and success."""
+
+    def make_plan(self):
+        return SC2ExecutionPlan(
+            intent="demo",
+            actions=(
+                SC2CommandAction(SC2ActionType.TRAIN_UNIT, subject="MARINE", count=3),
+            ),
+        )
+
+    def test_partial_report_downgrades_success_with_structured_error(self) -> None:
+        class PartialBot:
+            async def train_unit(self, action):
+                return SC2ActionReport(
+                    True, requested_count=3, issued_count=1, detail="unaffordable"
+                )
+
+        plan = self.make_plan()
+        result = asyncio.run(SC2RuntimeExecutor().execute_plan(PartialBot(), plan))
+
+        self.assertFalse(result.success)
+        self.assertEqual(plan.actions, result.applied_actions)
+        self.assertEqual((), result.skipped_actions)
+        self.assertEqual(1, len(result.errors))
+        error = result.errors[0]
+        self.assertEqual("PartialActionApplication", error.exception_type)
+        self.assertEqual(3, error.metadata["requested_count"])
+        self.assertEqual(1, error.metadata["issued_count"])
+        self.assertEqual(
+            {"applied": True, "requested_count": 3, "issued_count": 1,
+             "is_partial": True, "detail": "unaffordable"},
+            result.audit["action_reports"]["0"],
+        )
+        json.dumps(result.to_dict())
+
+    def test_full_report_is_clean_success_with_audit_entry(self) -> None:
+        class FullBot:
+            async def train_unit(self, action):
+                return SC2ActionReport(True, requested_count=3, issued_count=3)
+
+        plan = self.make_plan()
+        result = asyncio.run(SC2RuntimeExecutor().execute_plan(FullBot(), plan))
+
+        self.assertTrue(result.success)
+        self.assertEqual((), result.errors)
+        self.assertFalse(result.audit["action_reports"]["0"]["is_partial"])
+
+    def test_refused_report_with_detail_surfaces_action_refused_error(self) -> None:
+        class RefusingBot:
+            async def train_unit(self, action):
+                return SC2ActionReport(
+                    False,
+                    requested_count=3,
+                    issued_count=0,
+                    detail="no_ready_idle_producer",
+                )
+
+        plan = self.make_plan()
+        result = asyncio.run(SC2RuntimeExecutor().execute_plan(RefusingBot(), plan))
+
+        self.assertFalse(result.success)
+        self.assertEqual(plan.actions, result.skipped_actions)
+        self.assertEqual("ActionRefused", result.errors[0].exception_type)
+        self.assertEqual(
+            "no_ready_idle_producer",
+            result.errors[0].metadata["detail"],
+        )
+
+    def test_lifecycle_error_is_reported_once_then_drained(self) -> None:
+        # One transient hook failure must not poison every later execution
+        # in the same lifecycle cycle.
+        class FailingStartBot:
+            def __init__(self):
+                self.failed = False
+
+            async def on_start(self):
+                if not self.failed:
+                    self.failed = True
+                    raise RuntimeError("start hook failed once")
+
+            async def train_unit(self, action):
+                return True
+
+        plan = self.make_plan()
+
+        async def run_cycle():
+            executor = SC2RuntimeExecutor()
+            await executor.start(FailingStartBot())
+            first = await executor.execute(plan)
+            second = await executor.execute(plan)
+            return first, second
+
+        first, second = asyncio.run(run_cycle())
+
+        self.assertFalse(first.success)
+        self.assertEqual("RuntimeError", first.errors[0].exception_type)
+        self.assertTrue(second.success)
+        self.assertEqual((), second.errors)

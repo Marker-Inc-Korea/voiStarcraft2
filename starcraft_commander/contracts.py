@@ -167,6 +167,67 @@ SC2CommandPlan = SC2ExecutionPlan
 
 
 @dataclass(frozen=True)
+class SC2ActionReport:
+    """Structured per-action outcome reported by runtime adapters.
+
+    ``requested_count`` is what the commander asked for and ``issued_count``
+    is how many real orders actually went out. Adapters report both so the
+    executor and narrator can surface partial issuance honestly instead of
+    collapsing it into an unqualified boolean success. ``bool(report)`` is
+    ``True`` only for a full, shortfall-free application, so legacy callers
+    that treat the adapter result as a boolean never overclaim.
+    """
+
+    applied: bool
+    requested_count: int | None = None
+    issued_count: int | None = None
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "applied", bool(self.applied))
+        for field_name in ("requested_count", "issued_count"):
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if type(value) is bool or not isinstance(value, int):
+                raise TypeError(
+                    f"SC2 action report {field_name} must be an int or None."
+                )
+            if value < 0:
+                raise ValueError(
+                    f"SC2 action report {field_name} cannot be negative."
+                )
+        object.__setattr__(self, "detail", str(self.detail))
+
+    @property
+    def is_partial(self) -> bool:
+        """Return whether fewer orders were issued than were requested."""
+
+        return (
+            self.applied
+            and self.requested_count is not None
+            and self.issued_count is not None
+            and self.issued_count < self.requested_count
+        )
+
+    def __bool__(self) -> bool:
+        """Truthy only when fully applied without an issuance shortfall."""
+
+        return self.applied and not self.is_partial
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-ready per-action report payload."""
+
+        return {
+            "applied": self.applied,
+            "requested_count": self.requested_count,
+            "issued_count": self.issued_count,
+            "is_partial": self.is_partial,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
 class SC2ExecutionError:
     """Structured runtime or planning error captured without crashing."""
 
@@ -289,7 +350,14 @@ def _coerce_priority(priority: str | int, priority_value: int | None) -> tuple[s
         label = priority
         if not label.strip():
             raise ValueError("SC2 execution plan priority must be non-empty.")
-        value = SC2_PRIORITY_VALUES.get(label, SC2_PRIORITY_VALUES["normal"])
+        try:
+            value = SC2_PRIORITY_VALUES[label]
+        except KeyError as exc:
+            supported = ", ".join(SC2_PRIORITY_VALUES)
+            raise ValueError(
+                f"SC2 execution plan priority must be one of: {supported}. "
+                f"Unknown priority: {label!r}."
+            ) from exc
     if priority_value is not None:
         value = int(priority_value)
     return label, int(value)
