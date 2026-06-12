@@ -64,13 +64,31 @@ voice), the system interprets it and maps it to StarCraft II API actions.
   (schema enforcement, prompt injection via game text), UX.
 - [ ] **W7. Final verification + semantic commits + push**
 
-## Explicitly deferred (not in this phase)
+## Extended scope (user directive: fill EVERY unfilled original-plan item)
 
-- **BWAPI / Brood War executor** — the handoff marks it out of MVP scope;
-  no Brood War environment exists here. Next agent: treat as a separate
-  product track behind the same semantic action contract.
-- **Real-game smoke test** — still requires a machine with StarCraft II
-  installed; see docs/sc2-smoke-test.md.
+- [ ] **W8. Standing orders / tactical policies**
+  (`starcraft_commander/standing_orders.py` + tests) — the original plan's
+  `keep_worker_production` / `prevent_supply_block` semantics as in-game-loop
+  code policies (never LLM-per-frame): continuous SCV production while
+  active, automatic Supply Depot when supply nearly blocked. Wired into the
+  live bot's `on_step` and dry-run; narrator discloses activation honestly
+  (replaces today's "지속 생산은 아직 지원되지 않아" disclosure).
+- [ ] **W9. Original-plan audit** — re-verify the ENTIRE original plan
+  (including the pre-session handoff text via
+  `git show f990509:docs/claude-handoff.md`) against current code; any
+  remaining unfilled item becomes a work item in this phase.
+- [ ] **W10. Brood War / BWAPI executor boundary**
+  (`broodwar_commander/` package + tests) — mirrors the SC2 boundary at the
+  pre-adapter level: Brood War Terran vocabulary (Vulture maps DIRECTLY, no
+  Hellion stand-in), Intent DSL → semantic BW command plans, duck-typed
+  runtime executor with fake-based tests. Honest limitation: a real BWAPI
+  binding adapter (the python_sc2_adapter equivalent) still requires a
+  Brood War + BWAPI environment, which does not exist here.
+
+## Explicitly deferred (cannot be done in this environment)
+
+- **Real-game smoke tests** — require machines with StarCraft II
+  (see docs/sc2-smoke-test.md) / Brood War + BWAPI installed.
 
 ## Resume instructions for the next agent
 
