@@ -245,3 +245,51 @@ the typed Intent DSL, validator gate, execution result shape, narration inputs,
 and no-mutation rejection safety invariant. Phase 0 does not implement SC2 API
 calls, BWAPI, voice input, hidden autonomous build-order control, or live
 opponent modeling.
+
+## SC2 Live Contracts Summary
+
+The live runtime in `starcraft_commander/` implements the boundary above. This
+is a concise index; the module docstrings are the source of truth for field
+semantics and invariants.
+
+| Contract | Module | Summary |
+| --- | --- | --- |
+| `SC2CommanderState` | `state_resolver.py` | Frozen semantic snapshot resolved from BotAI observations: minerals, vespene, supply, own/enemy unit and structure counts (UPPERCASE space-free type names), idle workers, army count, game time. `SC2StateResolver.resolve(bot)` never raises; degraded fields are recorded in `observation_notes`, and `observation_complete` is false whenever any note exists. |
+| `MapTargetResolution` | `map_resolver.py` | Outcome of resolving one semantic map target to a `MapPoint`. Available resolutions carry a position and nothing else; unavailable resolutions carry a reason and the currently available alternatives, never a position. Covers `self_main`, `self_ramp`, `self_natural`, `enemy_main`, `enemy_ramp`, `enemy_natural`, `enemy_mineral_line` plus best-effort `self_mineral_line` and `self_geyser`. |
+| `SC2FeasibilityResult` | `feasibility.py` | Gate verdict for one intent against `SC2CommanderState`. Executable results carry no reasons; rejected results carry at least one reason code, at least one Korean reason, and a non-empty Korean actionable alternative. Unknown state (`None`) or incomplete observation rejects mutating intents; only `SUMMARIZE_STATE` stays executable. |
+| `SC2NarrationResponse` | `narrator.py` | One Korean commander-facing narration with status `executed`, `partially_executed`, `blocked`, or `read_only`, plus structured detail lines. Skipped or partially issued work is never narrated as success; unenforced plan constraints are disclosed. |
+| `SC2CommandOutcome` | `live_pipeline.py` | One outcome per command (or compound part) with status `executed`, `partially_executed`, `blocked`, `read_only`, or `clarification`. Pipeline artifacts (`intent_dsl`, `plan`, `execution_result`, `feasibility`) are present only for stages that actually ran; clarification outcomes carry none. |
+| `SC2ActionReport` | `contracts.py` | Per-action adapter report carrying `requested_count` vs `issued_count`. `is_partial` flags issuance shortfalls; `bool(report)` is true only for a full, shortfall-free application so boolean callers never overclaim. |
+
+### Adapter Method Contract
+
+`SC2RuntimeExecutor.execute(plan)` dispatches every planned `SC2CommandAction`
+by calling the method named after its `action_type` on the bound runtime
+adapter. `PythonSC2BotAdapter` therefore implements exactly the seven semantic
+action type names as methods:
+
+```text
+assign_workers   build_structure   train_unit   move_group
+attack_move      repair            observe
+```
+
+- Counted methods return `SC2ActionReport` (partial issuance is never collapsed
+  into a boolean); `build_structure` returns a plain bool; `observe` returns a
+  JSON-ready mapping.
+- The adapter defines none of the executor lifecycle hook names (`start`,
+  `close`, `stop`, `on_start`, `on_end`) so they cannot collide with python-sc2
+  `BotAI` lifecycle semantics.
+- A runtime missing both the action method and `execute_commander_action`
+  yields a structured `SC2ExecutionError` with
+  `exception_type="MissingBotCapability"`; the action is skipped and the result
+  is not a success.
+- Unknown plan targets and unknown priorities are rejected at construction
+  time with the supported-value listing (strict validation, no silent
+  defaults or pass-through).
+
+### Observation Channel
+
+`observe` results are stored on `SC2PlanExecutionResult.audit["observations"]`
+keyed by action index, alongside `audit["action_reports"]` for per-action
+adapter reports. The narrator reads state summaries from this audit channel;
+no component smuggles observations through narration prose.

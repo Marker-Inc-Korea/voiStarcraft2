@@ -10,10 +10,13 @@ The product is **real StarCraft II natural-language control**, not ToyCraft.
 ToyCraft exists only as an offline deterministic harness for parser, validator,
 rule-engine, and narration tests.
 
-Current code can parse Korean commander commands into typed Intent DSL and can
-translate those intents into semantic StarCraft II command plans. It does **not**
-yet launch StarCraft II or execute commands against a real `python-sc2` BotAI in
-an end-to-end game.
+Handoff Steps 1-6 are now DONE. The full live pipeline exists: Korean text (or
+push-to-talk voice) -> interpreter -> live feasibility validator -> semantic SC2
+planner -> runtime executor -> `PythonSC2BotAdapter` -> python-sc2 `BotAI` ->
+Korean narration. The dry-run demo executes the MVP compound command end to end
+against a scripted fake BotAI. What has **not** happened yet is a real-game
+smoke test against an installed StarCraft II (the procedure is documented in
+`docs/sc2-smoke-test.md` but has not been executed on a machine with SC2).
 
 ## Original Product Positioning
 
@@ -50,12 +53,16 @@ The user-facing message is:
 Latest pushed commits at the time of this handoff:
 
 ```text
+f990509 docs: add Claude Code handoff plan
 6a9d2d9 feat: harden StarCraft II executor contracts
 a6e5d32 feat: add real StarCraft II executor boundary
 279b2dd feat: complete ToyCraft commander pipeline
 107d3c9 feat: add ToyCraft commander MVP
-706995f chore: initialize project
 ```
+
+The working tree additionally contains the (uncommitted) live SC2 integration
+described below: `pyproject.toml`, `docs/sc2-smoke-test.md`, eight new
+`starcraft_commander` modules, and their test files.
 
 Validation status:
 
@@ -66,7 +73,7 @@ python3 -m pytest -q
 Expected current result:
 
 ```text
-359 passed, 850 subtests passed
+636 passed, 1475 subtests passed
 ```
 
 ## Implemented Components
@@ -78,6 +85,7 @@ Location:
 ```text
 toycraft_commander/intents.py
 toycraft_commander/interpreter.py
+toycraft_commander/aliases.py
 ```
 
 Implemented:
@@ -126,7 +134,9 @@ Implemented:
 Important boundary:
 
 ToyCraft is not the product runtime. Do not spend major effort making ToyCraft
-more game-realistic unless it directly supports SC2 integration tests.
+more game-realistic unless it directly supports SC2 integration tests. The one
+legitimate toycraft import inside `starcraft_commander` is the Korean
+interpreter reused by `live_pipeline.py`.
 
 ### Real StarCraft II Boundary
 
@@ -141,10 +151,14 @@ Implemented:
 
 - Stable semantic SC2 action type contract.
 - Intent DSL to SC2 command-plan mapping.
-- JSON-ready plan and result contracts.
+- JSON-ready plan and result contracts, including per-action `SC2ActionReport`
+  (requested vs issued order counts; `bool(report)` is true only for a full,
+  shortfall-free application).
 - Async `SC2RuntimeExecutor` with lifecycle methods.
 - Fake BotAI-style execution tests.
-- Lazy package imports so tests do not require StarCraft II or `python-sc2`.
+- Lazy package imports so tests do not require StarCraft II or `python-sc2`
+  (`starcraft_commander/__init__.py` loads everything except the stdlib-only
+  contracts on first attribute access).
 
 Stable public SC2 action types:
 
@@ -167,167 +181,201 @@ Current contract:
 - Missing runtime capability skips the action and returns `success == false`.
 - Runtime exceptions are captured as structured errors.
 
-## What Is Not Done Yet
+## Completed Handoff Steps
 
-This is the most important section.
+### Step 1. Real SC2 Runtime Dependency Surface — DONE
 
-The project is **not yet a playable StarCraft II commander**.
-
-Missing:
-
-- Real `python-sc2` dependency setup.
-- Real SC2 BotAI adapter that translates semantic actions into actual `python-sc2`
-  calls such as unit selection, train, build, move, attack, repair, and expansion.
-- Real SC2 game-state resolver from BotAI observations into commander semantic
-  state.
-- Real map resolver for main, ramp, natural, enemy main, enemy natural, and enemy
-  mineral line.
-- Real validator against live resources, supply, tech prerequisites, visible
-  units, available producers, and pathable build positions.
-- End-to-end local custom game demo.
-- Text CLI loop that connects user command -> interpreter -> SC2 planner ->
-  live BotAI execution -> narration.
-- Voice input.
-- Brood War / BWAPI executor.
-
-## Next Implementation Plan
-
-### Step 1. Add Real SC2 Runtime Dependency Surface
-
-Goal:
-
-Make the repo able to optionally run with `python-sc2` while keeping CI tests
-working without it.
-
-Suggested files:
+Files:
 
 ```text
-pyproject.toml
-requirements-dev.txt or optional extras
-starcraft_commander/python_sc2_adapter.py
-tests/test_python_sc2_adapter_contract.py
+pyproject.toml                          # optional extras: sc2=[burnysc2>=6.5], voice=[faster-whisper, sounddevice], dev=[pytest]
+starcraft_commander/runtime_deps.py     # require_python_sc2 / require_faster_whisper / require_sounddevice guards
+tests/test_runtime_deps.py
 ```
 
-Acceptance:
+The core package has zero runtime dependencies. Every optional runtime is
+guarded by an `is_*_available()` probe and a `require_*()` call that raises an
+actionable bilingual error (`MissingSC2RuntimeError`,
+`MissingVoiceDependencyError`) pointing at the install command and
+`docs/sc2-smoke-test.md`.
 
-- Importing the package without `python-sc2` still works.
-- A clear error explains how to install and configure SC2 runtime.
-- Tests can use fakes/mocks and do not require real SC2.
+### Step 2. BotAI Adapter Methods — DONE
 
-### Step 2. Implement BotAI Adapter Methods
-
-Goal:
-
-Translate semantic actions into real or mockable BotAI operations.
-
-Implement methods matching the semantic executor contract:
+Files:
 
 ```text
-assign_workers(action)
-build_structure(action)
-train_unit(action)
-move_group(action)
-attack_move(action)
-repair(action)
-observe(action)
+starcraft_commander/python_sc2_adapter.py   # PythonSC2BotAdapter, SC2BotAdapterInterface
+tests/test_python_sc2_adapter_contract.py   # contract tests against pure-Python fakes
 ```
 
-Acceptance:
+`PythonSC2BotAdapter` implements exactly the seven semantic action method names
+the executor dispatches to (`assign_workers`, `build_structure`, `train_unit`,
+`move_group`, `attack_move`, `repair`, `observe`) and translates them into
+duck-typed BotAI operations. It deliberately defines none of the executor
+lifecycle hook names (`start`, `close`, `stop`, `on_start`, `on_end`) so they
+can never collide with python-sc2 `BotAI` lifecycle semantics. Counted methods
+return `SC2ActionReport` so partial issuance is never collapsed into a boolean
+success; `observe` returns a JSON-ready mapping.
 
-- Unit tests verify each method calls the correct BotAI-like fake operations.
-- Missing units/producers/targets return structured skipped results.
-- No mouse or screen automation is introduced.
+### Step 3. SC2 State Resolver — DONE
 
-### Step 3. Implement SC2 State Resolver
-
-Goal:
-
-Convert BotAI raw state into commander semantic state.
-
-Suggested model:
+Files:
 
 ```text
-SC2CommanderState:
-  resources
-  supply
-  own_units
-  own_structures
-  visible_enemy_units
-  visible_enemy_structures
-  known_locations
-  threats
-  production
+starcraft_commander/state_resolver.py   # SC2CommanderState, SC2StateResolver
+tests/test_sc2_state_resolver.py
 ```
 
-Acceptance:
+`SC2StateResolver.resolve(bot)` duck-types a BotAI-like object via `getattr`
+only and never raises: numeric fields degrade to 0, count mappings degrade to
+empty, and every missing/unreadable attribute is recorded in
+`SC2CommanderState.observation_notes` so the validator can stay conservative
+(`observation_complete` is false). Counts are keyed by UPPERCASE space-free
+type names (`SCV`, `MARINE`, `COMMANDCENTER`).
 
-- Tests use fake BotAI observations.
-- Resolver can identify basic Terran state: workers, marines, command centers,
-  barracks, factories, supply depots, minerals, gas, supply.
+### Step 4. Map Resolver — DONE
 
-### Step 4. Implement Map Resolver for One Map
-
-Goal:
-
-Support one fixed SC2 map first.
-
-Minimum semantic targets:
+Files:
 
 ```text
-self_main
-self_ramp
-self_natural
-enemy_main
-enemy_ramp
-enemy_natural
-enemy_mineral_line
+starcraft_commander/map_resolver.py   # SC2MapResolver, MapPoint, MapTargetResolution
+tests/test_sc2_map_resolver.py
 ```
 
-Acceptance:
+Resolves the seven Step 4 semantic targets (`self_main`, `self_ramp`,
+`self_natural`, `enemy_main`, `enemy_ramp`, `enemy_natural`,
+`enemy_mineral_line`) plus two best-effort extras (`self_mineral_line`,
+`self_geyser`) from BotAI map data. Underivable targets become explicit
+unavailable entries with reasons; unknown names are rejected with the list of
+currently available alternatives. `SC2MapResolver.from_bot` never raises.
 
-- Named targets resolve to Point2-like coordinates in tests.
-- Unknown targets are rejected with a clear alternative.
+### Step 5. Live Command Pipeline + Demo — DONE
 
-### Step 5. Wire Live Command Pipeline
+Files:
 
-Goal:
+```text
+starcraft_commander/feasibility.py      # SC2FeasibilityValidator against SC2CommanderState
+starcraft_commander/narrator.py         # SC2KoreanNarrator, SC2NarrationResponse
+starcraft_commander/live_pipeline.py    # SC2CommandSession, SC2CommandOutcome, split_compound_command
+starcraft_commander/voice_input.py      # MicrophoneListener, FasterWhisperTranscriber
+starcraft_commander/demo_sc2.py         # python -m starcraft_commander.demo_sc2
+tests/test_sc2_feasibility.py
+tests/test_sc2_narrator.py
+tests/test_live_pipeline.py
+tests/test_voice_input.py
+tests/test_demo_sc2.py
+```
 
-Create the first actual StarCraft II demo path.
-
-Suggested command:
+The MVP compound command now executes in dry-run mode:
 
 ```bash
-python -m starcraft_commander.demo_sc2
+python3 -m starcraft_commander.demo_sc2 --dry-run --script "마린 6기 입구로 보내고 SCV 계속 찍어"
 ```
 
-Minimum demo command:
+This splits into two parts via `split_compound_command`: the DEFEND part
+attack-moves the Marines to `self_ramp` (`executed`), and the TRAIN_WORKER part
+issues one SCV train order, honestly narrated as `partially_executed` because
+the "keep SCV production continuous" constraint is not runtime-enforced. Live
+mode (the default, no `--dry-run`) lazily imports `sc2` and launches a local
+custom game; `--voice` enables push-to-talk capture with a transcription
+confidence gate (low-confidence Whisper output is re-prompted, never executed).
 
-```text
-마린 6기 입구로 보내고 SCV 계속 찍어
-```
+### Step 6. Local Smoke Test Instructions — DONE
 
-Expected behavior:
+`docs/sc2-smoke-test.md` documents the SC2 install paths (`SC2PATH`), map
+download/placement, `pip install 'voistarcraft[sc2]'` / `[voice]`, the dry-run
+and live commands, the five-step smoke-test acceptance list, and known
+limitations. Note: the document exists, but the live run has not yet been
+performed against a real installed game.
 
-- Interpreter produces DSL.
-- SC2 validator checks live state or fake state.
-- Planner creates semantic SC2 plan.
-- BotAI adapter executes train/move/attack actions.
-- Narrator reports what happened.
+## Hardening Decisions From This Session
 
-### Step 6. Add Real Local Smoke Test Instructions
+Record of contract decisions the next agent must preserve:
 
-Goal:
+- **MissingBotCapability structured errors.** When the bound runtime implements
+  neither the action's method name nor `execute_commander_action`, the executor
+  records an `SC2ExecutionError` with `exception_type="MissingBotCapability"`
+  and `metadata={"expected_method": ...}`, skips the action, and the result is
+  not a success. No silent skipping.
+- **Strict target validation.** The planner rejects unknown location targets
+  with a `ValueError` listing every supported alias and semantic target name
+  (`SC2_TARGET_ALIASES` + `SC2_SEMANTIC_TARGET_NAMES`); unknown targets are
+  never passed through to execution. The live pipeline converts that refusal
+  into a blocked Korean narration.
+- **Strict priority validation.** `SC2ExecutionPlan` rejects unknown priority
+  labels with the supported list instead of silently defaulting to `normal`.
+- **Lifecycle error reset per start cycle.** `SC2RuntimeExecutor.start()`
+  clears errors captured by a previous cycle's hooks; captured lifecycle errors
+  are drained into exactly one (the next) execution result so a transient hook
+  failure cannot poison every later result.
+- **Observation channel.** `observe` results are JSON-ready mappings stored
+  under `result.audit["observations"]` keyed by action index; per-action
+  adapter reports live under `result.audit["action_reports"]`. The narrator
+  reads observations from the audit channel for `SUMMARIZE_STATE`.
+- **Voice boundary.** Voice input is an isolated seam
+  (`starcraft_commander/voice_input.py`) that only produces plain text for the
+  unchanged interpreter pipeline. Optional dependencies are imported lazily
+  inside methods; missing dependencies raise `MissingVoiceDependencyError` with
+  install hints. The demo gates transcriptions below confidence 0.5 so Whisper
+  hallucinations never reach execution.
+- **Honest partial execution.** A plan result with any skipped action or
+  partial `SC2ActionReport` is narrated as `partially_executed` or `blocked`,
+  never `executed`. Unenforced plan constraints (continuous production) are
+  disclosed in the narration.
 
-Document how a developer with StarCraft II installed can run the demo.
+## What Is Not Done Yet
 
-Document:
+The project compiles, tests, and dry-runs the full pipeline, but:
 
-- Required StarCraft II installation.
-- Required maps.
-- Required Python version.
-- `python-sc2` install command.
-- How to run local custom game.
-- Known limitations.
+- **Real-game smoke test.** Nobody has run
+  `python3 -m starcraft_commander.demo_sc2 --map AcropolisLE` against an
+  installed StarCraft II. Executing `docs/sc2-smoke-test.md` end to end on a
+  machine with SC2 is the top next task; expect python-sc2 API mismatches that
+  the duck-typed fakes did not catch.
+- **BWAPI executor.** Brood War support has not started.
+- **Event memory.** No narration history, event log, or "what happened since my
+  last command" memory exists.
+- **LLM interpreter upgrades.** Interpretation is deterministic keyword
+  matching (see `docs/intent-inventory.md`); no LLM is involved anywhere.
+- **Multi-race.** Terran-only MVP: costs, producers, and Korean vocabulary
+  cover SCV/Marine/Hellion and the basic Terran structures.
+
+## Known Limitations (open low-severity review findings)
+
+Found in review this session; none block the dry-run path, but fix or verify
+during real-game work:
+
+- The live demo's stdin reader task is never cancelled; the blocked `input()`
+  thread keeps the process alive after the game ends.
+- Spoken `종료` cannot exit the voice loop — exit words only work when typed.
+- Free-text army selection sweeps every non-SCV own unit from `bot.units`,
+  including MULEs.
+- `BUILD_STRUCTURE` of `Command Center` always reroutes to `expand_now`,
+  ignoring the requested location.
+- `enemy_main` uses `enemy_start_locations[0]` and freezes the registry; wrong
+  on maps with more than one candidate spawn. `enemy_ramp` derivation has no
+  distance bound.
+- Repair matches under-construction structures where the REPAIR order is
+  invalid in-game; the feasibility GATHER/REPAIR branches let unknown gather
+  resources and invalid `worker_count` pass (no negative tests).
+- `SC2CommandSession.process_text` can raise against a hostile bot object —
+  the never-raise state-resolution contract is broken one frame above the
+  resolver.
+- `state_resolver` stores `bot.supply_army` (a supply total) as `army_count`
+  (a unit count).
+- Two distinct `MissingVoiceDependencyError` classes exist (`runtime_deps` vs
+  `voice_input`); package-level except clauses miss errors raised by the
+  `runtime_deps` guards.
+- `MicrophoneListener` sample rate is not tied to Whisper's required 16 kHz;
+  multi-channel flatten interleaves frames. Voice loop lacks recording-state
+  cues (no start/stop/recognizing feedback).
+- Rejection narration can emit double periods and ungrammatical joins
+  ("...필요합니다.. 대안:").
+- Two hand-maintained semantic-target registries (`sc2_executor` and
+  `map_resolver`) have no cross-consistency test.
+- The executor return-value semantics test cements over-permissive behavior;
+  fakes never exercise `None`/falsy unit-order returns the real python-sc2
+  runtime produces.
 
 ## MVP Completion Definition
 
@@ -358,12 +406,14 @@ Marine defend ramp / attack_move
 state summary narration
 ```
 
+All of this works in dry-run today; only the real-game run remains unverified.
+
 ## Known Risks
 
-- `python-sc2` API details may differ from the semantic fake interface.
-- SC2 local install and map paths are environment-sensitive.
-- Map semantic resolution is the hard part after basic command planning.
-- Live validators must be conservative: reject if state is unknown.
+- `python-sc2` API details may differ from the duck-typed fake interface; the
+  real-game smoke test is where this surfaces.
+- SC2 local install and map paths are environment-sensitive (`SC2PATH`).
+- Live validators must stay conservative: reject if state is unknown.
 - LLM should not be called per-frame; keep fast micro in code policies.
 - Do not bind the public DSL to python-sc2 method names.
 
@@ -373,13 +423,21 @@ Start with:
 
 ```bash
 git status --short --branch
-python3 -m pytest -q
-sed -n '1,220p' README.md
-sed -n '1,260p' starcraft_commander/contracts.py
-sed -n '1,320p' starcraft_commander/sc2_executor.py
+python3 -m pytest -q          # expect 636 passed, 1475 subtests passed
+python3 -m starcraft_commander.demo_sc2 --dry-run --script "마린 6기 입구로 보내고 SCV 계속 찍어" "상황 보고해줘"
+sed -n '1,130p' starcraft_commander/__init__.py
+sed -n '1,110p' docs/sc2-smoke-test.md
 ```
 
-Then implement Step 1 and Step 2 above.
+Then, on a machine with StarCraft II installed:
+
+```bash
+pip install 'voistarcraft[sc2]'
+python3 -m starcraft_commander.demo_sc2 --map AcropolisLE --difficulty easy
+```
+
+and work through the smoke-test acceptance list in `docs/sc2-smoke-test.md`,
+fixing the known limitations above as the real runtime exposes them.
 
 ## Do Not Do
 

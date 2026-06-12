@@ -144,3 +144,73 @@ New aliases may map Korean wording to one of these intents, but they must not ad
 an eleventh canonical intent. New simulation details are acceptable only when
 they improve text-command UX validation without crossing into real game-control
 integration.
+
+## Live SC2 Architecture
+
+The real StarCraft II runtime lives in `starcraft_commander/`. It reuses the
+Phase 0 Korean interpreter and the typed Intent DSL unchanged, then replaces
+the ToyCraft validator/executor/narrator stack with live equivalents that gate
+against resolved BotAI observations and issue semantic python-sc2 orders.
+Module docstrings are the source of truth for each seam; see
+[contracts.md](contracts.md) for the contract summary.
+
+### Live Runtime Flow
+
+```text
+Korean text or push-to-talk voice
+  -> CommandInterpreter (reused from toycraft_commander)
+  -> typed Intent DSL payload
+  -> SC2FeasibilityValidator (gates against SC2CommanderState)
+  -> SC2ActionPlanner (semantic SC2ExecutionPlan)
+  -> SC2RuntimeExecutor (lifecycle-aware async boundary)
+  -> PythonSC2BotAdapter (seven semantic action methods)
+  -> python-sc2 BotAI (real game orders inside the game loop)
+  -> SC2KoreanNarrator (Korean commander response)
+```
+
+`SC2CommandSession.process_text` in `live_pipeline.py` composes the whole flow
+into one async call and returns one structured `SC2CommandOutcome` per command
+part. Compound Korean utterances (such as the MVP command
+"마린 6기 입구로 보내고 SCV 계속 찍어") are split heuristically so no command
+part is silently dropped; unsupported parts come back as honest clarification
+outcomes. State resolution happens per command from the executor's bound
+runtime, so validation always gates against the freshest observation.
+
+The package import surface is dependency-free: `starcraft_commander/__init__.py`
+eagerly imports only the stdlib-only contracts and lazily loads every other
+surface, so importing the package never requires ToyCraft, StarCraft II,
+python-sc2, faster-whisper, or sounddevice.
+
+### Live Component Boundaries
+
+| Component | Module | Owns | Does not own |
+| --- | --- | --- | --- |
+| Semantic contracts | `starcraft_commander/contracts.py` | `SC2CommandAction`, `SC2ExecutionPlan`, `SC2PlanExecutionResult`, `SC2ActionReport`, `SC2ExecutionError`; strict priority validation; JSON-ready serialization. Pure stdlib. | Planning, execution, narration, or python-sc2 types. |
+| Action planner + runtime executor | `starcraft_commander/sc2_executor.py` | Intent DSL to semantic plan mapping, strict target alias validation (unknown targets rejected with the supported list), lifecycle-aware async execution, structured `MissingBotCapability` errors, per-action audit (`audit['observations']`, `audit['action_reports']`). | Real python-sc2 calls or Korean narration. |
+| State resolver | `starcraft_commander/state_resolver.py` | Never-raise duck-typed resolution of BotAI observations into `SC2CommanderState`; degraded fields recorded as `observation_notes`. | Feasibility decisions or order issuance. |
+| Map resolver | `starcraft_commander/map_resolver.py` | The seven semantic map targets plus two best-effort extras resolved to `MapPoint` coordinates; explicit unavailable entries with reasons; unknown names rejected with available alternatives. | Pathing, combat targeting heuristics, or build placement legality. |
+| BotAI adapter | `starcraft_commander/python_sc2_adapter.py` | The seven semantic action methods translated into duck-typed BotAI operations; `SC2ActionReport` requested-vs-issued counts; no lifecycle method names. python-sc2 lazy-imported only inside functions. | Lifecycle hooks, plan ordering, or narration. |
+| Live feasibility validator | `starcraft_commander/feasibility.py` | Conservative gating of typed payloads against `SC2CommanderState`: resources, supply, tech prerequisites, producers, workers; unknown or incomplete state rejects mutating commands; only `SUMMARIZE_STATE` survives incomplete observation. | Mutating state or issuing orders. |
+| Korean narrator | `starcraft_commander/narrator.py` | `SC2NarrationResponse` rendering of execution results, rejections, and state summaries; honest `partially_executed`/`blocked` statuses; disclosure of unenforced constraints. | Choosing intents or validating feasibility. |
+| Live pipeline | `starcraft_commander/live_pipeline.py` | `SC2CommandSession` composition, compound-command splitting, `SC2CommandOutcome` per part with stage artifacts only for stages that ran. | Stage-specific logic or game-loop scheduling. |
+| Voice input | `starcraft_commander/voice_input.py` | Microphone capture and Whisper transcription seams producing plain text for the unchanged interpreter; lazy optional dependencies with actionable `MissingVoiceDependencyError`. | Command interpretation or execution. |
+| Dependency guards | `starcraft_commander/runtime_deps.py` | `is_*_available()` probes and `require_*()` guards with bilingual install hints for python-sc2 (burnysc2), faster-whisper, and sounddevice. | Any game or audio logic. |
+| Demo entrypoint | `starcraft_commander/demo_sc2.py` | `python -m starcraft_commander.demo_sc2`: `--dry-run` scripted fake-BotAI mode (testable), live local-custom-game mode, `--voice` push-to-talk with a transcription confidence gate. | New intents or autonomous play. |
+
+### Live Safety Invariants
+
+The Phase 0 safety rules carry over unchanged to the live runtime:
+
+1. Rejected commands never reach execution: interpreter clarifications stop
+   before validation, validator rejections stop before planning, and planner
+   refusals (unknown targets) stop before the executor. Every blocked outcome
+   carries a Korean reason and an actionable alternative.
+2. Partial execution is surfaced honestly: any skipped action, missing runtime
+   capability, partial order issuance, or unenforced constraint produces
+   `partially_executed` or `blocked`, never an unqualified success.
+   `SC2CommandOutcome` refuses to carry pipeline artifacts for stages that
+   never ran, so a blocked outcome cannot masquerade as an executed one.
+3. Unknown game state rejects mutating commands: a missing runtime or
+   incomplete observation (`observation_notes` non-empty) is grounds for
+   conservative rejection rather than optimistic guessing.
+4. No mouse or screen automation anywhere; only semantic python-sc2 API calls.
