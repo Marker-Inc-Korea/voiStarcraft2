@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voistarcraft"
+version = "0.1.0"
+description = "TextCraft Commander: a natural-language and voice StarCraft II commander."
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["starcraft", "sc2", "natural-language", "voice", "commander"]
+# The core commander pipeline is pure stdlib; every runtime integration is optional.
+dependencies = []
+
+[project.optional-dependencies]
+# burnysc2 is the maintained python-sc2 fork; it provides the importable 'sc2' package.
+# StarCraft II itself plus maps must also be installed locally (see docs/sc2-smoke-test.md).
+sc2 = ["burnysc2>=6.5"]
+voice = ["faster-whisper>=1.0", "sounddevice>=0.4.6"]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+# Only ship the product packages; tests/ and docs/ stay out of the distribution.
+include = ["toycraft_commander*", "starcraft_commander*"]
