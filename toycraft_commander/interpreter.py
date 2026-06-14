@@ -1369,6 +1369,8 @@ _REFINERY_COMPOUND_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     (
         "가스배럴",
         "가스시설",
+        "가스생산",
+        "가스생산시설",
         "가스통",
         "베스핀가스",
         "배스핀가스",
@@ -1407,6 +1409,8 @@ _STRUCTURE_NAME_ALIASES: Final[tuple[tuple[StructureName, tuple[str, ...]], ...]
                 "정제소",
                 "가스통",
                 "가스시설",
+                "가스생산",
+                "가스생산시설",
                 "가스배럴",
                 "베스핀가스",
                 "배스핀가스",
@@ -1866,6 +1870,15 @@ def _looks_like_gather_resource(normalized_command: str) -> bool:
         normalized_command,
         _GENERIC_RESOURCE_PATTERNS,
     )
+    is_worker_send_without_target = (
+        has_worker_subject
+        and _detect_resource_name(normalized_command) is None
+        and _contains_any_pattern(normalized_command, _GATHER_ACTION_PATTERNS)
+        and not _contains_any_pattern(normalized_command, _SCOUT_TARGET_CONTEXT_PATTERNS)
+        and not _detect_structure_name(normalized_command)
+    )
+    if is_worker_send_without_target:
+        return True
     return (
         _detect_resource_name(normalized_command) is not None
         and _contains_any_pattern(normalized_command, _GATHER_ACTION_PATTERNS)
@@ -1877,6 +1890,11 @@ def _detect_resource_name(normalized_command: str) -> ResourceName | None:
     if _contains_any_pattern(normalized_command, _GAS_RESOURCE_PATTERNS):
         return "gas"
     if _contains_any_pattern(normalized_command, _MINERAL_RESOURCE_PATTERNS):
+        return "minerals"
+    if (
+        _contains_any_pattern(normalized_command, _WORKER_SUBJECT_PATTERNS)
+        and _contains_any_pattern(normalized_command, _GATHER_ACTION_PATTERNS)
+    ):
         return "minerals"
     return None
 

@@ -72,7 +72,9 @@ __all__ = [
     "HybridCommandInterpreter",
     "LocalLLMControl",
     "LLMCommandInterpreter",
+    "LLMComboPlan",
     "LLM_FAILURE_CLARIFICATION_PROMPT",
+    "LLM_COMBO_TOOL_NAME",
     "LLM_INTENT_TOOL_NAME",
     "LLM_INTERPRETATION_FAILURE_CODE",
     "LLM_PROMPT_INJECTION_GUARD",
@@ -80,6 +82,8 @@ __all__ = [
     "LLM_UNAVAILABLE_FAILURE_CODE",
     "LLM_UNSUPPORTED_INTENT_NAME",
     "build_hybrid_interpreter",
+    "build_combo_tool_definition",
+    "build_combo_tool_input_schema",
     "build_intent_tool_definition",
     "build_intent_tool_input_schema",
     "build_llm_system_prompt",
@@ -144,6 +148,9 @@ DEFAULT_LLM_TIMEOUT_SECONDS: Final[float] = 20.0
 
 LLM_INTENT_TOOL_NAME: Final[str] = "submit_commander_intent"
 """Name of the single forced tool the model must answer with."""
+
+LLM_COMBO_TOOL_NAME: Final[str] = "submit_commander_combo"
+"""Name of the forced tool for multi-step combo command planning."""
 
 LLM_UNSUPPORTED_INTENT_NAME: Final[str] = "UNSUPPORTED"
 """Sentinel intent the model uses when no canonical intent fits."""
@@ -289,6 +296,46 @@ def build_intent_tool_definition() -> dict[str, object]:
     }
 
 
+def build_combo_tool_input_schema() -> dict[str, object]:
+    """Build the forced-tool schema for safe multi-step combo planning."""
+
+    return {
+        "type": "object",
+        "properties": {
+            "steps": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 6,
+                "items": {"type": "string"},
+                "description": (
+                    "Ordered Korean commander sub-commands. Each step must be "
+                    "one concise command that maps to a supported MVP intent. "
+                    "Do not include explanations."
+                ),
+            },
+            "rationale": {
+                "type": "string",
+                "description": "Short Korean rationale for audit/debugging.",
+            },
+        },
+        "required": ["steps"],
+        "additionalProperties": False,
+    }
+
+
+def build_combo_tool_definition() -> dict[str, object]:
+    """Return the single forced tool definition for combo planning."""
+
+    return {
+        "name": LLM_COMBO_TOOL_NAME,
+        "description": (
+            "Split one high-level Korean RTS command into a safe ordered list "
+            "of supported commander sub-commands."
+        ),
+        "input_schema": build_combo_tool_input_schema(),
+    }
+
+
 def _render_field_spec(field: IntentFieldSchema) -> str:
     """Render one schema field with its allowed values for the prompt."""
 
@@ -339,6 +386,56 @@ def build_llm_system_prompt() -> str:
     )
 
 
+def build_combo_system_prompt() -> str:
+    """Render the bilingual system prompt for high-level combo planning."""
+
+    return (
+        "You convert exactly ONE high-level Korean RTS commander utterance into "
+        f"an ordered combo by calling {LLM_COMBO_TOOL_NAME}. "
+        "한국어 거시 명령 한 문장을 안전한 하위 명령 목록으로 분해합니다.\n"
+        "Hard rules / 엄격 규칙:\n"
+        "1. Output 1 to 6 concise Korean sub-commands only in steps. "
+        "각 step은 기존 커맨더가 해석 가능한 짧은 한국어 명령이어야 합니다.\n"
+        "2. Use only supported intent families: 상태 확인, 일꾼 생산, 자원 채취, "
+        "구조물 건설, 병력 생산, 정찰, 방어, 수리, 확장, 견제.\n"
+        "3. Never call APIs, invent coordinates, cancel unknown objects, or move "
+        "camera. Existing validators/executors will decide feasibility.\n"
+        "4. Prefer safe prerequisite order. Examples: "
+        "`초반 운영 시작해` -> [`일꾼 계속 찍어`, `보급고 지어`, `정찰보내`]; "
+        "`정찰보내고 병영올려` -> [`정찰보내`, `병영올려`]; "
+        "`상태 보고하고 지금 할거 알려줘` -> [`상태 보고하`].\n"
+        f"5. {LLM_PROMPT_INJECTION_GUARD}"
+    )
+
+
+@dataclass(frozen=True)
+class LLMComboPlan:
+    """Safe LLM-produced high-level command decomposition."""
+
+    command_text: str
+    steps: tuple[str, ...]
+    rationale: str = ""
+
+    def __post_init__(self) -> None:
+        cleaned_steps = tuple(
+            step.strip()
+            for step in self.steps
+            if isinstance(step, str) and step.strip()
+        )
+        object.__setattr__(self, "steps", cleaned_steps)
+        object.__setattr__(
+            self,
+            "rationale",
+            self.rationale.strip() if isinstance(self.rationale, str) else "",
+        )
+        if not isinstance(self.command_text, str) or not self.command_text.strip():
+            raise ValueError("combo plan command_text must be non-empty.")
+        if not cleaned_steps:
+            raise ValueError("combo plan must include at least one step.")
+        if len(cleaned_steps) > 6:
+            raise ValueError("combo plan must not exceed six steps.")
+
+
 @dataclass(frozen=True)
 class LLMCommandInterpreter:
     """Anthropic-backed interpreter for free-form Korean commander text.
@@ -375,6 +472,8 @@ class LLMCommandInterpreter:
             raise ValueError("client_factory must be callable or None.")
         object.__setattr__(self, "_system_prompt", build_llm_system_prompt())
         object.__setattr__(self, "_tool_definition", build_intent_tool_definition())
+        object.__setattr__(self, "_combo_system_prompt", build_combo_system_prompt())
+        object.__setattr__(self, "_combo_tool_definition", build_combo_tool_definition())
 
     @property
     def system_prompt(self) -> str:
@@ -388,6 +487,18 @@ class LLMCommandInterpreter:
 
         return self._tool_definition
 
+    @property
+    def combo_system_prompt(self) -> str:
+        """Return the combo planning system prompt rendered at construction time."""
+
+        return self._combo_system_prompt
+
+    @property
+    def combo_tool_definition(self) -> dict[str, object]:
+        """Return the forced combo tool definition rendered at construction time."""
+
+        return self._combo_tool_definition
+
     def is_available(self) -> bool:
         """Return whether an interpretation call could actually be made."""
 
@@ -399,6 +510,33 @@ class LLMCommandInterpreter:
         """Return the nearest supported typed Intent DSL payload, if any."""
 
         return self.interpret(command_text).payload
+
+    def plan_combo(self, command_text: str) -> LLMComboPlan | None:
+        """Return a safe ordered combo plan, or ``None`` when unavailable/invalid."""
+
+        if not isinstance(command_text, str) or not command_text.strip():
+            return None
+        if not self.is_available():
+            return None
+        try:
+            response = self._create_combo_message(command_text)
+            tool_input = _extract_tool_input(response)
+        except Exception:  # noqa: BLE001 - combo fallback must be non-fatal
+            return None
+        if tool_input is None:
+            return None
+        raw_steps = tool_input.get("steps")
+        if not isinstance(raw_steps, (list, tuple)):
+            return None
+        rationale = tool_input.get("rationale", "")
+        try:
+            return LLMComboPlan(
+                command_text=command_text,
+                steps=tuple(str(step) for step in raw_steps),
+                rationale=rationale if isinstance(rationale, str) else "",
+            )
+        except ValueError:
+            return None
 
     def interpret(self, command_text: str) -> CommandInterpretationResult:
         """Return a typed payload or a Korean clarification; never raises."""
@@ -504,6 +642,44 @@ class LLMCommandInterpreter:
             messages=[{"role": "user", "content": command_text}],
         )
 
+    def _create_combo_message(self, command_text: str) -> object:
+        """Issue the forced-tool LLM call for high-level combo planning."""
+
+        client = self._build_client()
+        if _uses_openai_compatible_client(self.provider):
+            return client.chat.completions.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=[
+                    {"role": "system", "content": self.combo_system_prompt},
+                    {"role": "user", "content": command_text},
+                ],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": LLM_COMBO_TOOL_NAME,
+                            "description": (
+                                "Submit a safe ordered commander combo plan."
+                            ),
+                            "parameters": build_combo_tool_input_schema(),
+                        },
+                    }
+                ],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": LLM_COMBO_TOOL_NAME},
+                },
+            )
+        return client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=self.combo_system_prompt,
+            tools=[self.combo_tool_definition],
+            tool_choice={"type": "tool", "name": LLM_COMBO_TOOL_NAME},
+            messages=[{"role": "user", "content": command_text}],
+        )
+
     def _build_client(self) -> object:
         """Return the injected fake client or a lazily built real client."""
 
@@ -605,6 +781,10 @@ class LocalLLMControl:
     def interpret_text(self, command_text: str) -> IntentPayload | None:
         return self.interpret(command_text).payload
 
+    def plan_combo(self, command_text: str) -> LLMComboPlan | None:
+        interpreter = self._build_current_interpreter()
+        return interpreter.plan_combo(command_text)
+
     def _build_current_interpreter(self) -> LLMCommandInterpreter:
         with self._lock:
             provider = self._provider
@@ -671,6 +851,18 @@ class HybridCommandInterpreter:
         ):
             return llm_result
         return rule_result
+
+    def plan_combo(self, command_text: str) -> LLMComboPlan | None:
+        """Delegate high-level combo planning to the optional LLM stage."""
+
+        llm = self.llm_interpreter
+        if llm is None or not llm.is_available():
+            return None
+        planner = getattr(llm, "plan_combo", None)
+        if not callable(planner):
+            return None
+        plan = planner(command_text)
+        return plan if isinstance(plan, LLMComboPlan) else None
 
 
 def build_hybrid_interpreter(

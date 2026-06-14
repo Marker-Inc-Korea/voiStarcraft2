@@ -612,6 +612,7 @@ class RenderWebGuiPageTest(unittest.TestCase):
             "compactedContextSummary",
             "briefingAdvice",
             "appendPendingCommand",
+            "removeOldestPendingCommand",
             "setupVoiceInput",
             "voice-wave",
             "provider-option",

@@ -1733,6 +1733,21 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         self.assertEqual("Supply Depot", payload.structure)
         self.assertEqual("natural expansion", payload.location)
 
+    def test_gas_production_facility_resolves_as_refinery(self) -> None:
+        payload = interpret_command_text("가스생산 시설 지어")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Refinery", payload.structure)
+
+    def test_worker_send_without_target_defaults_to_mineral_gathering(self) -> None:
+        payload = interpret_command_text("일꾼 5마리 보내")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("GATHER_RESOURCE", payload.intent)
+        self.assertEqual("minerals", payload.resource)
+        self.assertEqual(5, payload.worker_count)
+
     def test_retreat_army_heuristic_maps_nearby_korean_free_utterance(self) -> None:
         payload = interpret_command_text("압박 실패했으니까 병력 살려서 뒤로 빼")
 

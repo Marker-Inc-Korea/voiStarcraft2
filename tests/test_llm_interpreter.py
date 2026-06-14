@@ -19,6 +19,8 @@ from starcraft_commander.llm_interpreter import (
     DEFAULT_LLM_MAX_TOKENS,
     DEFAULT_LLM_MODEL,
     HybridCommandInterpreter,
+    LLM_COMBO_TOOL_NAME,
+    LLMComboPlan,
     LLM_INTENT_TOOL_NAME,
     LLM_INTERPRETATION_FAILURE_CODE,
     LLM_PROMPT_INJECTION_GUARD,
@@ -26,6 +28,8 @@ from starcraft_commander.llm_interpreter import (
     LLM_UNSUPPORTED_INTENT_NAME,
     LLMCommandInterpreter,
     build_hybrid_interpreter,
+    build_combo_tool_definition,
+    build_combo_tool_input_schema,
     build_intent_tool_definition,
     build_intent_tool_input_schema,
     build_llm_system_prompt,
@@ -218,6 +222,16 @@ class ToolSchemaGenerationTest(unittest.TestCase):
         for field_name, expected_enum in enum_cases:
             with self.subTest(field=field_name):
                 self.assertEqual(properties[field_name]["enum"], expected_enum)
+
+    def test_combo_tool_schema_accepts_bounded_step_list(self) -> None:
+        schema = build_combo_tool_input_schema()
+
+        self.assertEqual(schema["required"], ["steps"])
+        self.assertEqual(schema["properties"]["steps"]["maxItems"], 6)
+        self.assertEqual(
+            build_combo_tool_definition()["name"],
+            LLM_COMBO_TOOL_NAME,
+        )
 
     def test_union_covers_every_intent_specific_field(self) -> None:
         properties = build_intent_tool_input_schema()["properties"]
@@ -582,6 +596,39 @@ class HybridCommandInterpreterTest(unittest.TestCase):
         for label, interpreter in protocol_cases:
             with self.subTest(case=label):
                 self.assertIsInstance(interpreter, CommandInterpreterInterface)
+
+    def test_llm_combo_planner_returns_validated_steps(self) -> None:
+        llm_interpreter, fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "steps": ["정찰보내", "병영올려"],
+                    "rationale": "정찰 후 생산 인프라 확보",
+                }
+            )
+        )
+
+        plan = llm_interpreter.plan_combo("정찰보내고 병영올려")
+
+        self.assertEqual(
+            LLMComboPlan(
+                command_text="정찰보내고 병영올려",
+                steps=("정찰보내", "병영올려"),
+                rationale="정찰 후 생산 인프라 확보",
+            ),
+            plan,
+        )
+        self.assertEqual(fake_client.calls[0]["tool_choice"]["name"], LLM_COMBO_TOOL_NAME)
+
+    def test_hybrid_delegates_combo_planning_to_llm_stage(self) -> None:
+        llm_interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response({"steps": ["상태 보고하", "정찰보내"]})
+        )
+        hybrid = HybridCommandInterpreter(llm_interpreter=llm_interpreter)
+
+        plan = hybrid.plan_combo("현재 상황 보고하고 정찰도 보내")
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(("상태 보고하", "정찰보내"), plan.steps)
 
 
 class PromptInjectionGuardTest(unittest.TestCase):

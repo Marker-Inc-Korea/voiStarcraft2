@@ -157,6 +157,26 @@ _LLM_QUESTION_PATTERNS: Final[tuple[str, ...]] = (
     "연결",
     "모델",
 )
+_NEXT_ACTION_QUESTION_PATTERNS: Final[tuple[str, ...]] = (
+    "다음할일",
+    "다음 할 일",
+    "지금할거",
+    "지금 할거",
+    "지금 할 것",
+    "추천",
+    "뭐해야",
+    "뭘해야",
+)
+_CAMERA_QUESTION_PATTERNS: Final[tuple[str, ...]] = (
+    "카메라",
+    "화면",
+    "시점",
+    "camera",
+)
+_CANCEL_QUESTION_PATTERNS: Final[tuple[str, ...]] = (
+    "취소",
+    "cancel",
+)
 _QUESTION_MARKERS: Final[tuple[str, ...]] = (
     "?",
     "？",
@@ -197,6 +217,51 @@ _LLM_QUESTION_ANSWER: Final[str] = (
     "LLM 설정 영역에 실패 이유가 표시됩니다. 키가 설정됐는데 게임이 움직이지 "
     "않으면, 현재 탭이 dry-run 탭이 아닌 실제 Live GUI URL인지 확인하세요."
 )
+_NEXT_ACTION_QUESTION_ANSWER: Final[str] = (
+    "현재 추천 흐름은 상태 확인 -> 유휴 일꾼 미네랄 배정 -> 보급 여유 확인 -> "
+    "병영/정제소 확보 -> 마린 생산 -> 정찰 유지입니다. 더 정확한 판단이 필요하면 "
+    "`상태 보고하`를 먼저 실행한 뒤 전략 브리핑의 추천 보기를 열어 확인하세요."
+)
+_CAMERA_QUESTION_ANSWER: Final[str] = (
+    "카메라 이동 명령은 아직 실제 SC2 API 실행에 연결되지 않았습니다. "
+    "현재는 semantic target으로 건물 위치를 지정할 수 있고, 카메라 이동은 "
+    "별도 MOVE_CAMERA 액션과 웹 미니맵/좌표 UI가 추가되어야 안전하게 실행됩니다."
+)
+_CANCEL_QUESTION_ANSWER: Final[str] = (
+    "취소 명령은 아직 안전 실행 API로 연결되지 않았습니다. 지금은 어떤 건설/생산을 "
+    "취소할지 식별하는 단계가 없어 게임 액션을 내지 않습니다. 이후 `마지막 건설 취소`, "
+    "`선택한 배럭 취소`처럼 대상 지정이 가능한 CANCEL 액션으로 추가해야 합니다."
+)
+
+_OPENING_MACRO_PATTERNS: Final[tuple[str, ...]] = (
+    "초반 운영",
+    "초반운영",
+    "오프닝",
+    "opening",
+)
+_ECONOMY_MACRO_PATTERNS: Final[tuple[str, ...]] = (
+    "자원 최적화",
+    "자원최적화",
+    "경제 최적화",
+    "경제최적화",
+)
+_DEFENSE_MACRO_PATTERNS: Final[tuple[str, ...]] = (
+    "방어해",
+    "수비해",
+    "막아",
+)
+_STATE_AND_ADVICE_PATTERNS: Final[tuple[str, ...]] = (
+    "상태 보고하고",
+    "상태보고하고",
+    "상태 확인하고",
+    "상태확인하고",
+)
+_CURRENT_STATE_QUESTION_PATTERNS: Final[tuple[str, ...]] = (
+    "지금 어떻게",
+    "어떻게 되어",
+    "어떻게돼",
+    "어떻게 돼",
+)
 
 
 def split_compound_command(text: str) -> tuple[str, ...]:
@@ -235,12 +300,37 @@ def _contains_question_pattern(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in text for pattern in patterns)
 
 
+def _macro_command_parts_for(text: str) -> tuple[str, ...]:
+    """Return deterministic combo-plan parts for supported macro utterances."""
+
+    normalized = _normalize_question_text(text)
+    if not normalized:
+        return ()
+    if _contains_question_pattern(normalized, _CURRENT_STATE_QUESTION_PATTERNS):
+        return ("상태 확인",)
+    if _contains_question_pattern(normalized, _STATE_AND_ADVICE_PATTERNS):
+        return ("상태 보고하", "다음 할 일 알려줘")
+    if _contains_question_pattern(normalized, _OPENING_MACRO_PATTERNS):
+        return ("일꾼 계속 찍어", "보급고 지어", "정찰보내")
+    if _contains_question_pattern(normalized, _ECONOMY_MACRO_PATTERNS):
+        return ("일꾼 계속 찍어", "일꾼 3마리 보내", "보급고 지어")
+    if "입구" in normalized and _contains_question_pattern(normalized, _DEFENSE_MACRO_PATTERNS):
+        return ("본진 입구에 보급고 지어", "본진 입구에 배럭지어")
+    return ()
+
+
 def _question_answer_for(text: str) -> tuple[str, str] | None:
     """Return a read-only answer for known capability questions."""
 
     normalized = _normalize_question_text(text)
     if not normalized:
         return None
+    if _contains_question_pattern(normalized, _NEXT_ACTION_QUESTION_PATTERNS):
+        return "next_action_help", _NEXT_ACTION_QUESTION_ANSWER
+    if _contains_question_pattern(normalized, _CAMERA_QUESTION_PATTERNS):
+        return "camera_help", _CAMERA_QUESTION_ANSWER
+    if normalized in _CANCEL_QUESTION_PATTERNS:
+        return "cancel_help", _CANCEL_QUESTION_ANSWER
     if not _contains_question_pattern(normalized, _QUESTION_MARKERS):
         return None
     if _contains_question_pattern(normalized, _LOCATION_QUESTION_PATTERNS):
@@ -470,6 +560,10 @@ class SC2CommandSession:
         Korean clarification unchanged.
         """
 
+        macro_parts = _macro_command_parts_for(command_text)
+        if macro_parts:
+            return await self._process_command_parts(macro_parts)
+
         question_answer = _question_answer_for(command_text)
         if question_answer is not None:
             topic, answer = question_answer
@@ -484,6 +578,11 @@ class SC2CommandSession:
         full_payload = getattr(interpretation, "payload", None)
         full_resolved = full_payload is not None
 
+        if not full_resolved:
+            combo_parts = self._plan_llm_combo_parts(command_text)
+            if combo_parts:
+                return await self._process_command_parts(combo_parts)
+
         parts = split_compound_command(command_text)
         if len(parts) >= 2:
             part_interpretations = tuple(
@@ -495,6 +594,10 @@ class SC2CommandSession:
                 if (payload := getattr(part_result, "payload", None)) is not None
             )
             resolved_part_count = len(resolved_payloads)
+            if 0 < resolved_part_count < len(parts):
+                combo_parts = self._plan_llm_combo_parts(command_text)
+                if combo_parts:
+                    return await self._process_command_parts(combo_parts)
             # When the whole text resolves to exactly one part's payload, the
             # interpreter ignored the other parts: executing the whole text
             # as one command would silently drop them.
@@ -521,6 +624,50 @@ class SC2CommandSession:
         if full_resolved:
             return (await self._process_interpretation(interpretation),)
         return (self._finalize_clarification(interpretation),)
+
+    def _plan_llm_combo_parts(self, command_text: str) -> tuple[str, ...]:
+        """Return LLM-planned combo parts if the interpreter exposes a planner."""
+
+        planner = getattr(self.interpreter, "plan_combo", None)
+        if not callable(planner):
+            return ()
+        try:
+            plan = planner(command_text)
+        except Exception:  # noqa: BLE001 - LLM combo planning must not crash live play
+            return ()
+        steps = getattr(plan, "steps", ())
+        if not isinstance(steps, tuple) or len(steps) < 2:
+            return ()
+        resolved_steps = []
+        for step in steps:
+            if not isinstance(step, str) or not step.strip():
+                return ()
+            if getattr(self.interpreter.interpret(step), "payload", None) is None:
+                return ()
+            resolved_steps.append(step.strip())
+        return tuple(resolved_steps)
+
+    async def _process_command_parts(
+        self,
+        parts: tuple[str, ...],
+    ) -> tuple[SC2CommandOutcome, ...]:
+        """Process already-split command parts without re-entering combo planning."""
+
+        outcomes = []
+        for part in parts:
+            question_answer = _question_answer_for(part)
+            if question_answer is not None:
+                topic, answer = question_answer
+                outcomes.append(
+                    self._finalize_outcome(_question_outcome(part, topic, answer), None)
+                )
+                continue
+            interpretation = self.interpreter.interpret(part)
+            if getattr(interpretation, "payload", None) is not None:
+                outcomes.append(await self._process_interpretation(interpretation))
+            else:
+                outcomes.append(self._finalize_clarification(interpretation))
+        return tuple(outcomes)
 
     async def _process_interpretation(
         self,

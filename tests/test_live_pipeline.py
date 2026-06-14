@@ -29,6 +29,7 @@ from starcraft_commander.standing_orders import (
     StandingOrderController,
 )
 from toycraft_commander.interpreter import (
+    DEFAULT_COMMAND_INTERPRETER,
     UNSUPPORTED_COMMAND_CLARIFICATION_PROMPT,
     UNSUPPORTED_COMMAND_CLARIFICATION_REASON,
 )
@@ -159,6 +160,32 @@ class StaticInterpreter:
             alternatives=(),
             candidates=(),
         )
+
+
+class ComboPlanningInterpreter:
+    """Rules-backed fake exposing the optional LLM combo planning seam."""
+
+    def __init__(self, steps):
+        self._steps = tuple(steps)
+
+    def interpret_text(self, command_text):
+        return self.interpret(command_text).payload
+
+    def interpret(self, command_text):
+        return DEFAULT_COMMAND_INTERPRETER.interpret(command_text)
+
+    def plan_combo(self, command_text):
+        return SimpleNamespace(command_text=command_text, steps=self._steps)
+
+
+class FailingComboPlanningInterpreter(ComboPlanningInterpreter):
+    """Rules-backed fake whose optional LLM combo planner fails."""
+
+    def __init__(self):
+        super().__init__(())
+
+    def plan_combo(self, command_text):
+        raise RuntimeError("simulated combo planner failure")
 
 
 class SplitCompoundCommandTest(unittest.TestCase):
@@ -337,6 +364,99 @@ class LivePipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("llm_help", outcome.intent_dsl["topic"])
         self.assertIn("LLM 필수 모드", outcome.narration)
         self.assertIn("Live GUI", outcome.narration)
+
+    async def test_next_action_question_gets_read_only_answer(self) -> None:
+        session = make_session(LivePipelineFakeBot())
+
+        outcomes = await session.process_text("지금 할거 알려줘")
+
+        self.assertEqual(1, len(outcomes))
+        outcome = outcomes[0]
+        self.assertEqual("read_only", outcome.status)
+        self.assertEqual("next_action_help", outcome.intent_dsl["topic"])
+        self.assertIn("추천 흐름", outcome.narration)
+
+    async def test_camera_and_cancel_requests_get_read_only_answers(self) -> None:
+        session = make_session(LivePipelineFakeBot())
+
+        for command_text, expected_topic in (
+            ("본집입구에 카메라옮겨", "camera_help"),
+            ("취소", "cancel_help"),
+        ):
+            with self.subTest(command_text=command_text):
+                outcomes = await session.process_text(command_text)
+                self.assertEqual(1, len(outcomes))
+                outcome = outcomes[0]
+                self.assertEqual("read_only", outcome.status)
+                self.assertEqual(expected_topic, outcome.intent_dsl["topic"])
+
+    async def test_opening_macro_expands_to_multiple_safe_commands(self) -> None:
+        session = make_session(LivePipelineFakeBot(minerals=900, supply_left=12))
+
+        outcomes = await session.process_text("초반 운영 시작해")
+
+        self.assertGreaterEqual(len(outcomes), 3)
+        self.assertEqual(
+            ["TRAIN_WORKER", "BUILD_STRUCTURE", "SCOUT"],
+            [outcome.intent_dsl["intent"] for outcome in outcomes],
+        )
+
+    async def test_llm_combo_plan_steps_execute_through_existing_pipeline(self) -> None:
+        session = make_session(
+            LivePipelineFakeBot(minerals=900, supply_left=12),
+            interpreter=ComboPlanningInterpreter(("정찰보내", "보급고 지어")),
+        )
+
+        outcomes = await session.process_text("정찰부터 하고 생산 건물도 올려")
+
+        self.assertEqual(2, len(outcomes))
+        self.assertEqual(
+            ["SCOUT", "BUILD_STRUCTURE"],
+            [o.intent_dsl["intent"] for o in outcomes],
+        )
+        self.assertTrue(
+            all(outcome.status != "clarification" for outcome in outcomes)
+        )
+
+    async def test_invalid_llm_combo_plan_falls_back_to_clarification(self) -> None:
+        session = make_session(
+            LivePipelineFakeBot(),
+            interpreter=ComboPlanningInterpreter(("핵 발사해", "정찰보내")),
+        )
+
+        outcomes = await session.process_text("알아서 세게 이겨")
+
+        self.assertEqual(1, len(outcomes))
+        self.assertEqual("clarification", outcomes[0].status)
+
+    async def test_failing_llm_combo_plan_falls_back_to_clarification(self) -> None:
+        session = make_session(
+            LivePipelineFakeBot(),
+            interpreter=FailingComboPlanningInterpreter(),
+        )
+
+        outcomes = await session.process_text("알아서 세게 이겨")
+
+        self.assertEqual(1, len(outcomes))
+        self.assertEqual("clarification", outcomes[0].status)
+
+    async def test_state_and_advice_macro_splits_into_status_and_advice(self) -> None:
+        session = make_session(LivePipelineFakeBot())
+
+        outcomes = await session.process_text("상태 보고하고 지금 할거 알려줘")
+
+        self.assertEqual(2, len(outcomes))
+        self.assertEqual("SUMMARIZE_STATE", outcomes[0].intent_dsl["intent"])
+        self.assertEqual("next_action_help", outcomes[1].intent_dsl["topic"])
+
+    async def test_current_state_question_maps_to_status_report(self) -> None:
+        session = make_session(LivePipelineFakeBot())
+
+        outcomes = await session.process_text("지금 어떻게 되어있지?")
+
+        self.assertEqual(1, len(outcomes))
+        self.assertEqual("read_only", outcomes[0].status)
+        self.assertEqual("SUMMARIZE_STATE", outcomes[0].intent_dsl["intent"])
 
     async def test_infeasible_command_is_blocked_with_reason_and_alternative(self) -> None:
         bot = LivePipelineFakeBot(minerals=0)

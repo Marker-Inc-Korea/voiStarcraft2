@@ -1314,7 +1314,9 @@ function appendLog(ev) {
   if (ev && typeof ev.seq === "number") {
     recentEvents.push(ev);
     compactRecentEventsIfNeeded();
-    removePendingForCommand(ev.command_text || "");
+    if (!removePendingForCommand(ev.command_text || "")) {
+      removeOldestPendingCommand();
+    }
   }
   var entry = document.createElement("div");
   entry.className = "log-entry";
@@ -1442,10 +1444,17 @@ function removeVoiceRecordingBubble() {
 
 function removePendingForCommand(text) {
   var pendingId = pendingNodes[text];
-  if (!pendingId) { return; }
+  if (!pendingId) { return false; }
   var node = document.getElementById(pendingId);
   if (node) { node.remove(); }
   delete pendingNodes[text];
+  return true;
+}
+
+function removeOldestPendingCommand() {
+  var keys = Object.keys(pendingNodes);
+  if (!keys.length) { return false; }
+  return removePendingForCommand(keys[0]);
 }
 
 function pollHistory() {
