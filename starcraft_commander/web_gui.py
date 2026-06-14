@@ -548,6 +548,32 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     justify-self: start; background: rgba(255, 255, 255, 0.1); border: 1px solid var(--line);
     border-bottom-left-radius: 6px;
   }
+  .message-pending .narration::after {
+    content: ""; display: inline-block; width: 1.5em; text-align: left;
+    animation: pending-dots 1.2s steps(4, end) infinite;
+  }
+  @keyframes pending-dots {
+    0% { content: ""; }
+    25% { content: "."; }
+    50% { content: ".."; }
+    75%, 100% { content: "..."; }
+  }
+  .voice-wave {
+    display: inline-flex; gap: 4px; align-items: end; height: 24px; margin-left: 8px;
+  }
+  .voice-wave span {
+    width: 4px; border-radius: 999px; background: var(--accent);
+    animation: voice-wave 0.72s ease-in-out infinite;
+  }
+  .voice-wave span:nth-child(1) { height: 9px; animation-delay: 0s; }
+  .voice-wave span:nth-child(2) { height: 18px; animation-delay: 0.08s; }
+  .voice-wave span:nth-child(3) { height: 12px; animation-delay: 0.16s; }
+  .voice-wave span:nth-child(4) { height: 22px; animation-delay: 0.24s; }
+  .voice-wave span:nth-child(5) { height: 10px; animation-delay: 0.32s; }
+  @keyframes voice-wave {
+    0%, 100% { transform: scaleY(0.5); opacity: 0.55; }
+    50% { transform: scaleY(1.25); opacity: 1; }
+  }
   .message-meta { display: block; margin-bottom: 5px; color: rgba(255, 255, 255, 0.72); font-size: 0.74rem; font-weight: 800; }
   .message-bot .message-meta { color: var(--muted); }
   .status { display: inline-block; font-weight: 900; margin-right: 7px; white-space: nowrap; }
@@ -569,10 +595,32 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     font-size: 1rem; font-weight: 900; padding: 12px 22px; border: none;
     border-radius: 18px; background: linear-gradient(135deg, var(--accent), var(--violet)); color: #061126; cursor: pointer;
   }
-  #send-button:disabled, #command-input:disabled {
+  #voice-button {
+    flex: 0 0 auto; width: 50px; border: 1px solid rgba(77, 238, 234, 0.35);
+    border-radius: 18px; color: var(--ink); background: rgba(255, 255, 255, 0.08);
+    font-size: 1.08rem; cursor: pointer;
+  }
+  #voice-button.recording {
+    color: #061126; background: linear-gradient(135deg, var(--amber), var(--accent));
+  }
+  #send-button:disabled, #command-input:disabled, #voice-button:disabled {
     opacity: 0.55; cursor: not-allowed;
   }
   #send-button:hover:not(:disabled) { filter: brightness(1.08); }
+  .briefing-block {
+    margin: 0 0 12px; padding: 12px 13px; border: 1px solid var(--line);
+    border-radius: 16px; background: rgba(255, 255, 255, 0.07);
+  }
+  .briefing-label {
+    display: block; margin-bottom: 5px; color: var(--accent); font-size: 0.74rem;
+    font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  #strategy-briefing details {
+    margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px;
+  }
+  #strategy-briefing summary {
+    cursor: pointer; color: var(--amber); font-weight: 900;
+  }
   @media (max-width: 980px) {
     body { padding: 12px; }
     .hero { display: block; }
@@ -621,6 +669,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     <form id="command-form">
       <input id="command-input" type="text" autocomplete="off" autofocus
              placeholder="대화하듯 입력하세요. 예: 보급고 지어 / 음성지원도 되나?">
+      <button type="button" id="voice-button" title="Voice input" aria-label="Voice input">◉</button>
       <button type="submit" id="send-button" data-i18n="send">전송</button>
     </form>
   </section>
@@ -637,7 +686,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     <p id="state-availability"></p>
     <section id="briefing-panel">
       <h2 data-i18n="briefingTitle">전략 브리핑</h2>
-      <p id="strategy-briefing" data-i18n="briefingWaiting">상태 데이터를 기다리는 중입니다.</p>
+      <div id="strategy-briefing" data-i18n="briefingWaiting">상태 데이터를 기다리는 중입니다.</div>
     </section>
     <section id="llm-panel">
       <h2 data-i18n="llmTitle">LLM 설정</h2>
@@ -671,6 +720,12 @@ var currentLang = "ko";
 var llmConfigured = false;
 var MAX_CHAT_EVENTS = 80;
 var trimmedChatEvents = 0;
+var recentEvents = [];
+var pendingCommandSeq = 0;
+var pendingNodes = {};
+var latestState = null;
+var recognition = null;
+var isRecording = false;
 
 var I18N = {
   ko: {
@@ -698,6 +753,20 @@ var I18N = {
     incompleteObservation: "관측이 불완전합니다.",
     briefingTitle: "전략 브리핑",
     briefingWaiting: "상태 데이터를 기다리는 중입니다.",
+    briefingCurrentStrategy: "현재 전략",
+    briefingProgress: "진행 상황",
+    briefingRisk: "리스크",
+    briefingAdvice: "추천 보기",
+    strategyOpening: "아직 명령 기록이 부족합니다. 현재는 전장 상태 파악 단계입니다.",
+    strategyEconomy: "경제와 생산 기반을 안정화하는 전략을 펼치고 있습니다.",
+    strategyProduction: "테란 생산 인프라를 확보하는 전략을 펼치고 있습니다.",
+    strategyScout: "정보 우위를 확보하기 위해 정찰 중심 운영을 펼치고 있습니다.",
+    strategyDefense: "본진 방어와 생존을 우선하는 전략을 펼치고 있습니다.",
+    progressRecent: "최근 명령",
+    riskNoArmy: "방어 병력이 없어 초반 공격에 취약합니다.",
+    riskNoScout: "적 정보가 부족합니다.",
+    riskSupply: "보급 여유가 낮습니다.",
+    riskStable: "즉시 위험 신호는 크지 않습니다.",
     briefingEconomy: "경제",
     briefingSupply: "보급",
     briefingForces: "전력",
@@ -708,6 +777,10 @@ var I18N = {
     briefingSuggestionArmy: "병력이 없습니다. 병영 이후 마린 생산을 준비하세요.",
     briefingSuggestionStable: "즉시 위험 신호는 없습니다. 경제와 생산을 유지하세요.",
     chatTrimmed: "이전 대화 일부 생략",
+    assistantThinking: "응답 하는중",
+    voiceListening: "녹음중",
+    voiceUnsupported: "이 브라우저는 음성 인식을 지원하지 않습니다.",
+    voiceNoResult: "음성이 인식되지 않았습니다.",
     workerUnit: "기",
     idleLabel: "유휴",
     llmTitle: "LLM 설정",
@@ -749,6 +822,20 @@ var I18N = {
     incompleteObservation: "Observation is incomplete.",
     briefingTitle: "Strategy Briefing",
     briefingWaiting: "Waiting for state data.",
+    briefingCurrentStrategy: "Current Strategy",
+    briefingProgress: "Progress",
+    briefingRisk: "Risk",
+    briefingAdvice: "Show Advice",
+    strategyOpening: "Not enough command history yet. Current mode is battlefield assessment.",
+    strategyEconomy: "You are stabilizing economy and production foundations.",
+    strategyProduction: "You are building Terran production infrastructure.",
+    strategyScout: "You are playing for information advantage through scouting.",
+    strategyDefense: "You are prioritizing main-base defense and survival.",
+    progressRecent: "Recent commands",
+    riskNoArmy: "No army is available, making early pressure dangerous.",
+    riskNoScout: "Enemy information is limited.",
+    riskSupply: "Supply buffer is low.",
+    riskStable: "No major immediate risk signal.",
     briefingEconomy: "Economy",
     briefingSupply: "Supply",
     briefingForces: "Forces",
@@ -759,6 +846,10 @@ var I18N = {
     briefingSuggestionArmy: "You have no army. Prepare Marine production after Barracks.",
     briefingSuggestionStable: "No immediate risk signal. Keep economy and production running.",
     chatTrimmed: "Older chat omitted",
+    assistantThinking: "Thinking",
+    voiceListening: "Recording",
+    voiceUnsupported: "This browser does not support speech recognition.",
+    voiceNoResult: "No speech was recognized.",
     workerUnit: "",
     idleLabel: "idle",
     llmTitle: "LLM Settings",
@@ -800,6 +891,20 @@ var I18N = {
     incompleteObservation: "侦测信息不完整。",
     briefingTitle: "战略简报",
     briefingWaiting: "正在等待状态数据。",
+    briefingCurrentStrategy: "当前战略",
+    briefingProgress: "进度",
+    briefingRisk: "风险",
+    briefingAdvice: "查看建议",
+    strategyOpening: "命令记录还不足。目前处于战场评估阶段。",
+    strategyEconomy: "你正在稳定经济和生产基础。",
+    strategyProduction: "你正在建立 Terran 生产体系。",
+    strategyScout: "你正在通过侦察获取情报优势。",
+    strategyDefense: "你正在优先保护主基地并确保生存。",
+    progressRecent: "最近命令",
+    riskNoArmy: "当前没有部队，容易受到早期压制。",
+    riskNoScout: "敌方情报不足。",
+    riskSupply: "补给余量偏低。",
+    riskStable: "暂无明显即时风险。",
     briefingEconomy: "经济",
     briefingSupply: "补给",
     briefingForces: "战力",
@@ -810,6 +915,10 @@ var I18N = {
     briefingSuggestionArmy: "当前没有部队。建造兵营后准备生产陆战队员。",
     briefingSuggestionStable: "暂无明显危险信号。继续维持经济和生产。",
     chatTrimmed: "已省略较早对话",
+    assistantThinking: "正在回答",
+    voiceListening: "录音中",
+    voiceUnsupported: "此浏览器不支持语音识别。",
+    voiceNoResult: "未识别到语音。",
     workerUnit: "",
     idleLabel: "空闲",
     llmTitle: "LLM 设置",
@@ -835,8 +944,10 @@ function t(key) {
 function setCommandEnabled(enabled) {
   var input = document.getElementById("command-input");
   var button = document.getElementById("send-button");
+  var voiceButton = document.getElementById("voice-button");
   input.disabled = !enabled;
   button.disabled = !enabled;
+  voiceButton.disabled = !enabled;
   input.placeholder = enabled ? t("commandPlaceholderReady") : t("commandPlaceholderLocked");
 }
 
@@ -850,6 +961,7 @@ function applyLanguage(lang) {
     button.classList.toggle("active", button.getAttribute("data-lang-button") === currentLang);
   });
   setCommandEnabled(llmConfigured);
+  if (latestState) { renderStrategyBriefing(latestState); }
 }
 
 function trimChatLog() {
@@ -874,6 +986,13 @@ function trimChatLog() {
 }
 
 function appendLog(ev) {
+  if (ev && typeof ev.seq === "number") {
+    recentEvents.push(ev);
+    if (recentEvents.length > MAX_CHAT_EVENTS) {
+      recentEvents = recentEvents.slice(recentEvents.length - MAX_CHAT_EVENTS);
+    }
+    removePendingForCommand(ev.command_text || "");
+  }
   var entry = document.createElement("div");
   entry.className = "log-entry";
   if (ev.command_text) {
@@ -904,6 +1023,78 @@ function appendLog(ev) {
   logBox.appendChild(entry);
   trimChatLog();
   logBox.scrollTop = logBox.scrollHeight;
+  if (latestState) { renderStrategyBriefing(latestState); }
+}
+
+function appendPendingCommand(text) {
+  pendingCommandSeq += 1;
+  var pendingId = "pending-" + pendingCommandSeq;
+  var entry = document.createElement("div");
+  entry.className = "log-entry pending-entry";
+  entry.id = pendingId;
+
+  var userMessage = document.createElement("div");
+  userMessage.className = "message message-user";
+  var userMeta = document.createElement("span");
+  userMeta.className = "message-meta";
+  userMeta.textContent = t("userLabel");
+  userMessage.appendChild(userMeta);
+  userMessage.appendChild(document.createTextNode(text));
+  entry.appendChild(userMessage);
+
+  var botMessage = document.createElement("div");
+  botMessage.className = "message message-bot message-pending";
+  var botMeta = document.createElement("span");
+  botMeta.className = "message-meta";
+  botMeta.textContent = t("commanderLabel");
+  botMessage.appendChild(botMeta);
+  var narration = document.createElement("span");
+  narration.className = "narration";
+  narration.textContent = t("assistantThinking");
+  botMessage.appendChild(narration);
+  entry.appendChild(botMessage);
+
+  pendingNodes[text] = pendingId;
+  logBox.appendChild(entry);
+  trimChatLog();
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function appendVoiceRecordingBubble() {
+  removeVoiceRecordingBubble();
+  var entry = document.createElement("div");
+  entry.className = "log-entry";
+  entry.id = "voice-recording-entry";
+  var userMessage = document.createElement("div");
+  userMessage.className = "message message-user";
+  var meta = document.createElement("span");
+  meta.className = "message-meta";
+  meta.textContent = t("userLabel");
+  userMessage.appendChild(meta);
+  userMessage.appendChild(document.createTextNode(t("voiceListening")));
+  var wave = document.createElement("span");
+  wave.className = "voice-wave";
+  for (var i = 0; i < 5; i += 1) {
+    wave.appendChild(document.createElement("span"));
+  }
+  userMessage.appendChild(wave);
+  entry.appendChild(userMessage);
+  logBox.appendChild(entry);
+  trimChatLog();
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function removeVoiceRecordingBubble() {
+  var existing = document.getElementById("voice-recording-entry");
+  if (existing) { existing.remove(); }
+}
+
+function removePendingForCommand(text) {
+  var pendingId = pendingNodes[text];
+  if (!pendingId) { return; }
+  var node = document.getElementById(pendingId);
+  if (node) { node.remove(); }
+  delete pendingNodes[text];
 }
 
 function pollHistory() {
@@ -924,11 +1115,13 @@ function setText(id, value) {
 
 function renderState(data) {
   if (!data || data.available === false) {
+    latestState = null;
     setText("state-availability", t("noState"));
     setText("connection-status", t("connectionWaiting"));
     setText("strategy-briefing", t("briefingWaiting"));
     return;
   }
+  latestState = data;
   setText("state-minerals", String(data.minerals));
   setText("state-vespene", String(data.vespene));
   setText("state-supply", data.supply_used + " / " + data.supply_cap);
@@ -960,22 +1153,83 @@ function renderStrategyBriefing(data) {
   var workers = (data.own_units && data.own_units.SCV) || 0;
   var enemyUnits = sumValues(data.visible_enemy_units);
   var enemyStructures = sumValues(data.visible_enemy_structures);
+  var structures = data.own_structures || {};
+  var recentTexts = recentEvents.slice(-5).map(function (ev) {
+    return ev.command_text || "";
+  }).filter(Boolean);
+  var successful = recentEvents.filter(function (ev) {
+    return ["executed", "partially_executed", "read_only"].indexOf(ev.status) >= 0;
+  }).length;
+  var failed = recentEvents.filter(function (ev) {
+    return ["blocked", "clarification"].indexOf(ev.status) >= 0;
+  }).length;
   var suggestions = [];
   if ((data.supply_left || 0) <= 2) { suggestions.push(t("briefingSuggestionSupply")); }
   if (enemyUnits + enemyStructures === 0) { suggestions.push(t("briefingSuggestionScout")); }
   if ((data.army_count || 0) === 0) { suggestions.push(t("briefingSuggestionArmy")); }
   if (!suggestions.length) { suggestions.push(t("briefingSuggestionStable")); }
+  var risks = [];
+  if ((data.army_count || 0) === 0) { risks.push(t("riskNoArmy")); }
+  if (enemyUnits + enemyStructures === 0) { risks.push(t("riskNoScout")); }
+  if ((data.supply_left || 0) <= 2) { risks.push(t("riskSupply")); }
+  if (!risks.length) { risks.push(t("riskStable")); }
+  var strategy = inferStrategy(recentTexts, structures);
   var enemyLine = enemyUnits + enemyStructures > 0
     ? enemyUnits + " / " + enemyStructures
     : t("briefingEnemyNone");
-  setText(
-    "strategy-briefing",
+  var briefing = document.getElementById("strategy-briefing");
+  briefing.innerHTML = "";
+  briefing.appendChild(briefingBlock(t("briefingCurrentStrategy"), strategy));
+  briefing.appendChild(briefingBlock(
+    t("briefingProgress"),
     t("briefingEconomy") + ": " + data.minerals + "M / " + data.vespene + "G, " + workers + t("workerUnit") + "\n" +
     t("briefingSupply") + ": " + data.supply_used + "/" + data.supply_cap + " (" + (data.supply_left || 0) + ")\n" +
     t("briefingForces") + ": " + (data.army_count || 0) + t("workerUnit") + "\n" +
     t("briefingEnemy") + ": " + enemyLine + "\n" +
-    suggestions.join("\n")
-  );
+    t("progressRecent") + ": " + (recentTexts.length ? recentTexts.join(" / ") : "-") + "\n" +
+    "OK/Needs attention: " + successful + " / " + failed
+  ));
+  briefing.appendChild(briefingBlock(t("briefingRisk"), risks.join("\n")));
+  var details = document.createElement("details");
+  var summary = document.createElement("summary");
+  summary.textContent = t("briefingAdvice");
+  details.appendChild(summary);
+  var advice = document.createElement("div");
+  advice.className = "briefing-block";
+  advice.textContent = suggestions.join("\n");
+  details.appendChild(advice);
+  briefing.appendChild(details);
+}
+
+function inferStrategy(recentTexts, structures) {
+  var text = recentTexts.join(" ").toLowerCase();
+  if (!recentTexts.length) { return t("strategyOpening"); }
+  if (text.indexOf("정찰") >= 0 || text.indexOf("scout") >= 0) {
+    return t("strategyScout");
+  }
+  if (text.indexOf("방어") >= 0 || text.indexOf("입구") >= 0 || text.indexOf("벙커") >= 0) {
+    return t("strategyDefense");
+  }
+  if (text.indexOf("병영") >= 0 || text.indexOf("배럭") >= 0 || text.indexOf("마린") >= 0 || structures.BARRACKS) {
+    return t("strategyProduction");
+  }
+  if (text.indexOf("scv") >= 0 || text.indexOf("자원") >= 0 || text.indexOf("미네랄") >= 0 || text.indexOf("보급") >= 0) {
+    return t("strategyEconomy");
+  }
+  return t("strategyOpening");
+}
+
+function briefingBlock(label, text) {
+  var block = document.createElement("div");
+  block.className = "briefing-block";
+  var labelNode = document.createElement("span");
+  labelNode.className = "briefing-label";
+  labelNode.textContent = label;
+  var body = document.createElement("span");
+  body.textContent = text;
+  block.appendChild(labelNode);
+  block.appendChild(body);
+  return block;
 }
 
 function pollState() {
@@ -1017,11 +1271,12 @@ document.getElementById("command-form").addEventListener("submit", function (eve
     setText("llm-status", t("commandRejected"));
     return;
   }
+  appendPendingCommand(text);
   fetch("/api/command" + authQuery, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text: text })
-  }).then(function () { pollHistory(); }).catch(function () {});
+  }).then(function () { pollHistory(); }).catch(function () { removePendingForCommand(text); });
   input.value = "";
   input.focus();
 });
@@ -1070,9 +1325,57 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-lang-button]"), fu
   });
 });
 
+function setupVoiceInput() {
+  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var voiceButton = document.getElementById("voice-button");
+  if (!SpeechRecognition) {
+    voiceButton.addEventListener("click", function () {
+      setText("llm-status", t("voiceUnsupported"));
+    });
+    return;
+  }
+  recognition = new SpeechRecognition();
+  recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  recognition.onstart = function () {
+    isRecording = true;
+    voiceButton.classList.add("recording");
+    appendVoiceRecordingBubble();
+  };
+  recognition.onend = function () {
+    isRecording = false;
+    voiceButton.classList.remove("recording");
+    removeVoiceRecordingBubble();
+  };
+  recognition.onerror = function () {
+    setText("llm-status", t("voiceNoResult"));
+  };
+  recognition.onresult = function (event) {
+    var transcript = "";
+    for (var i = event.resultIndex; i < event.results.length; i += 1) {
+      transcript += event.results[i][0].transcript;
+    }
+    document.getElementById("command-input").value = transcript.trim();
+    if (event.results[event.results.length - 1].isFinal) {
+      removeVoiceRecordingBubble();
+      document.getElementById("command-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    }
+  };
+  voiceButton.addEventListener("click", function () {
+    if (isRecording) {
+      recognition.stop();
+      return;
+    }
+    recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+    recognition.start();
+  });
+}
+
 setInterval(pollHistory, POLL_INTERVAL_MS);
 setInterval(pollState, POLL_INTERVAL_MS);
 applyLanguage("ko");
+setupVoiceInput();
 pollHistory();
 pollState();
 pollLlmSettings();

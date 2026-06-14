@@ -144,6 +144,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "전장 대시보드",
             "전략 브리핑",
             "이전 대화 일부 생략",
+            "녹음중",
+            "응답 하는중",
+            "voice-wave",
+            "SpeechRecognition",
             "English",
             "中文",
             "LLM 필수",
@@ -575,6 +579,10 @@ class RenderWebGuiPageTest(unittest.TestCase):
             "Strategy Briefing",
             "战略简报",
             "MAX_CHAT_EVENTS",
+            "briefingAdvice",
+            "appendPendingCommand",
+            "setupVoiceInput",
+            "voice-wave",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, page)

@@ -129,6 +129,13 @@ The LLM can plan a combo, but it cannot bypass the deterministic gates.
 - Add a space-themed dashboard.
 - Add a client-side strategy briefing from `/api/state`.
 - Trim old chat DOM entries so the page does not grow indefinitely.
+- Upgrade the briefing layout so current strategy is primary and tactical
+  advice is optional behind a disclosure toggle.
+- Add browser voice-input UX for the web dashboard: recording waveform bubble,
+  recognized speech routed through the normal command submit path, and
+  assistant "thinking" pending bubbles while command outcomes are pending.
+- Track advanced building placement and coordinate selection separately in
+  GitHub issue #3.
 
 ### Phase 2: Combo planning dry-run
 
