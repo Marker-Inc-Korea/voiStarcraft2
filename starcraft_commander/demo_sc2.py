@@ -23,14 +23,14 @@ Two modes exist:
 ``MicrophoneListener`` + ``FasterWhisperTranscriber``; missing voice
 dependencies raise the voice guard's actionable error.
 
-``--llm`` swaps the deterministic rule interpreter for the rules-first
-hybrid interpreter (LLM fallback per user utterance, never per game frame).
-A missing ``anthropic`` SDK or API key fails fast with the actionable
-bilingual hint BEFORE any command loop starts. ``--gui [PORT]`` additionally
-serves the local web GUI: in dry-run mode the GUI bridge owns the session
-(scripted commands run through the same bridge), and in live mode the GUI
-submits into the same ``on_step`` command queue the terminal reader feeds
-while history reads the shared :class:`CommanderEventMemory`.
+Live mode always uses the rules-first hybrid interpreter with a REQUIRED LLM
+stage (LLM fallback per user utterance, never per game frame). A missing
+``anthropic`` SDK or API key fails fast with the actionable bilingual hint
+BEFORE any command loop starts. ``--gui [PORT]`` additionally serves the local
+web GUI: in dry-run mode the GUI bridge owns the session (scripted commands
+run through the same bridge), and in live mode the GUI submits into the same
+``on_step`` command queue the terminal reader feeds while history reads the
+shared :class:`CommanderEventMemory`.
 
 Both dry-run and live sessions wire a :class:`CommanderEventMemory` (every
 outcome recorded with game time) and a :class:`StandingOrderController`
@@ -51,12 +51,12 @@ from typing import Final
 from starcraft_commander.event_memory import CommanderEventMemory
 from starcraft_commander.live_pipeline import SC2CommandOutcome, SC2CommandSession
 from starcraft_commander.llm_interpreter import (
+    ANTHROPIC_API_KEY_ENV_VAR,
     HybridCommandInterpreter,
     build_hybrid_interpreter,
 )
 from starcraft_commander.python_sc2_adapter import PythonSC2BotAdapter
 from starcraft_commander.runtime_deps import (
-    ANTHROPIC_INSTALL_HINT,
     MissingLLMDependencyError,
     require_anthropic,
     require_faster_whisper,
@@ -298,15 +298,22 @@ def build_llm_interpreter() -> HybridCommandInterpreter:
 
     The demo's ``--llm`` flag must fail fast before any command loop instead
     of degrading silently mid-session: a missing ``anthropic`` SDK raises the
-    bilingual :class:`MissingLLMDependencyError` from ``require_anthropic``,
-    and an importable SDK without a resolvable API key raises the same error
-    with the same actionable hint (it covers ``ANTHROPIC_API_KEY`` too).
+    bilingual :class:`MissingLLMDependencyError` from ``require_anthropic``.
+    An importable SDK without a resolvable API key raises the same error type
+    with a key-specific actionable hint.
     """
 
     require_anthropic()
     hybrid = build_hybrid_interpreter()
     if hybrid.llm_interpreter is None:
-        raise MissingLLMDependencyError(ANTHROPIC_INSTALL_HINT)
+        raise MissingLLMDependencyError(
+            "Anthropic LLM interpreter is installed, but ANTHROPIC_API_KEY is "
+            "not set. Export a valid key before live StarCraft II control: "
+            f"export {ANTHROPIC_API_KEY_ENV_VAR}=... "
+            "Anthropic 패키지는 설치되어 있지만 ANTHROPIC_API_KEY 환경 변수가 "
+            "설정되어 있지 않습니다. 실제 StarCraft II 제어 전 유효한 키를 "
+            f"설정하세요: export {ANTHROPIC_API_KEY_ENV_VAR}=..."
+        )
     return hybrid
 
 
@@ -520,12 +527,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--llm",
+        dest="llm",
         action="store_true",
+        default=True,
         help=(
-            "rules-first hybrid interpretation with an Anthropic LLM fallback "
-            "per utterance (requires the anthropic package + ANTHROPIC_API_KEY; "
-            "fails fast when unavailable)"
+            "enable the required Anthropic LLM fallback stage (default; "
+            "live mode always requires it)"
         ),
+    )
+    parser.add_argument(
+        "--no-llm",
+        dest="llm",
+        action="store_false",
+        help="dry-run/testing only: use deterministic rules without the LLM stage",
     )
     parser.add_argument(
         "--gui",
@@ -535,7 +549,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PORT",
         help=(
-            "serve the local web GUI on 127.0.0.1 "
+            "serve the local browser GUI on 127.0.0.1 "
             f"(default port: {DEFAULT_WEB_GUI_PORT}; 0 for an ephemeral port)"
         ),
     )
@@ -746,15 +760,14 @@ def run_live(args: argparse.Namespace) -> None:
     Raises:
         MissingSC2RuntimeError: When the optional python-sc2 runtime is not
             installed (actionable bilingual install guidance included).
-        MissingLLMDependencyError: When ``--llm`` is requested without the
-            anthropic SDK or a resolvable API key (fail fast, before the
-            game starts).
+        MissingLLMDependencyError: When the anthropic SDK or a resolvable API
+            key is unavailable (fail fast, before the game starts).
     """
 
     require_python_sc2()
     # Fail fast with the actionable bilingual hints instead of letting a
     # missing optional dependency surface mid-game inside the loop.
-    interpreter = build_llm_interpreter() if args.llm else None
+    interpreter = build_llm_interpreter()
     if args.voice:
         require_faster_whisper()
         require_sounddevice()

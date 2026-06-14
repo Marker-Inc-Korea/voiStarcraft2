@@ -12,10 +12,10 @@ planned as semantic actions, and executed through game API boundaries.
 | Area | Status |
 | --- | --- |
 | Dry-run SC2 pipeline | Implemented and tested. Runs without StarCraft II. |
-| Live SC2 mode | Implemented, but not yet smoke-tested against a real local SC2 install. |
+| Live SC2 mode | Implemented and locally connected through python-sc2. |
 | Voice input | Implemented behind optional `[voice]` dependencies. |
-| LLM fallback | Implemented behind optional `[llm]` dependencies and Anthropic API key. |
-| Web GUI | Implemented as a localhost-only stdlib server. |
+| LLM command interpreter | Required for live SC2 mode; uses `[llm]` dependencies and Anthropic API key. |
+| Web GUI | Implemented as a localhost-first stdlib server with token-protected network mode. |
 | Event memory | Implemented and used by state reports and GUI history. |
 | Standing orders | Implemented for continuous SCV production and supply-block prevention. |
 | Brood War / BWAPI | Semantic executor boundary implemented; real BWAPI adapter still requires a BWAPI machine. |
@@ -24,7 +24,7 @@ Current offline verification:
 
 ```bash
 python3 -m pytest -q
-# 811 passed, 1757 subtests passed
+# 812 passed, 1759 subtests passed
 ```
 
 The suite does not require StarCraft II, `burnysc2`, BWAPI, Anthropic
@@ -35,7 +35,7 @@ credentials, or audio hardware.
 Run the full commander pipeline against a scripted fake BotAI:
 
 ```bash
-python3 -m starcraft_commander.demo_sc2 --dry-run --script "마린 6기 입구로 보내고 SCV 계속 찍어" "상황 보고해줘"
+python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm --script "마린 6기 입구로 보내고 SCV 계속 찍어" "상황 보고해줘"
 ```
 
 Expected output:
@@ -89,7 +89,7 @@ Intent DSL:
 Interactive dry-run:
 
 ```bash
-python3 -m starcraft_commander.demo_sc2 --dry-run
+python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm
 ```
 
 ## Installation
@@ -103,7 +103,7 @@ source .venv/bin/activate
 pip install -e .              # core: dry-run, interpreter, validators, planners
 pip install -e '.[sc2]'       # live SC2 mode via burnysc2
 pip install -e '.[voice]'     # Korean push-to-talk via faster-whisper + sounddevice
-pip install -e '.[llm]'       # Anthropic LLM fallback interpreter
+pip install -e '.[llm]'       # required Anthropic LLM interpreter for live play
 pip install -e '.[dev]'       # pytest
 ```
 
@@ -114,17 +114,20 @@ Live SC2 also requires a local StarCraft II installation and maps. See
 
 ### Dry-Run
 
-No StarCraft II required:
+No StarCraft II required. Default dry-run uses the LLM path when
+`ANTHROPIC_API_KEY` is available; use `--no-llm` for offline deterministic
+development:
 
 ```bash
-python3 -m starcraft_commander.demo_sc2 --dry-run
-python3 -m starcraft_commander.demo_sc2 --dry-run --script "SCV 계속 찍어" "상황 보고"
+python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm
+python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm --script "SCV 계속 찍어" "상황 보고"
 ```
 
 ### Web GUI
 
-Starts a browser UI with command input, state, and history. The default is
-localhost-only:
+Starts a browser UI with command input, state, and history. For local computer
+control, keep the default localhost binding and run StarCraft II in windowed or
+borderless-window mode so the browser GUI can stay visible beside the game:
 
 ```bash
 python3 -m starcraft_commander.demo_sc2 --dry-run --gui
@@ -133,10 +136,26 @@ python3 -m starcraft_commander.demo_sc2 --dry-run --gui 0
 
 `--gui 0` asks the OS for an available port.
 
-For actual play, StarCraft II usually owns the desktop focus. The recommended
-control surface is a phone/tablet companion GUI on the same Wi-Fi:
+For actual local play:
 
 ```bash
+export ANTHROPIC_API_KEY=...
+SC2PATH="/Users/jinminseong/Desktop/StarCraft2/StarCraft II" \
+python3 -m starcraft_commander.demo_sc2 \
+  --map AcropolisLE --difficulty easy \
+  --gui
+```
+
+Open the printed `http://127.0.0.1:PORT` URL on the same Mac. If StarCraft II
+is exclusive fullscreen, local GUI typing requires switching focus away from
+the game; use windowed/borderless mode or a second monitor for stable local
+GUI control.
+
+For phone/tablet companion control on the same Wi-Fi:
+
+```bash
+export ANTHROPIC_API_KEY=...
+SC2PATH="/Users/jinminseong/Desktop/StarCraft2/StarCraft II" \
 python3 -m starcraft_commander.demo_sc2 \
   --map AcropolisLE --difficulty easy \
   --gui --gui-host 0.0.0.0 --gui-token "change-me-long-random-token"
@@ -146,20 +165,26 @@ Open the printed `http://0.0.0.0:PORT/?token=...` URL by replacing
 `0.0.0.0` with the Mac's LAN IP address. Non-localhost GUI binding requires
 `--gui-token`; without it, the server refuses to start.
 
-### LLM Fallback
+### LLM Interpreter
 
-Rules run first. The Anthropic fallback is used only for unsupported or
-ambiguous user utterances, and only once per user command. It is never called
-per game frame.
+Live SC2 mode requires the Anthropic-backed hybrid interpreter. Rules still
+run first, and the LLM is used only for unsupported or ambiguous user
+utterances, once per user command. It is never called per game frame.
 
 ```bash
 export ANTHROPIC_API_KEY=...
-python3 -m starcraft_commander.demo_sc2 --dry-run --llm
-python3 -m starcraft_commander.demo_sc2 --dry-run --llm --gui
+python3 -m starcraft_commander.demo_sc2 --dry-run
+python3 -m starcraft_commander.demo_sc2 --dry-run --gui
 ```
 
 LLM output is schema-gated to the 10 canonical intents and revalidated before
 execution.
+
+For offline tests or deterministic dry-run development without an API key:
+
+```bash
+python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm
+```
 
 ### Voice
 
@@ -235,14 +260,14 @@ Key packages:
 
 Important modules:
 
-- `starcraft_commander/demo_sc2.py` — CLI for dry-run, live, voice, LLM, GUI.
+- `starcraft_commander/demo_sc2.py` — CLI for dry-run, live, voice, required live LLM, GUI.
 - `starcraft_commander/live_pipeline.py` — session orchestration and compound commands.
 - `starcraft_commander/sc2_executor.py` — Intent DSL to semantic SC2 plans.
 - `starcraft_commander/python_sc2_adapter.py` — semantic actions to BotAI calls.
 - `starcraft_commander/event_memory.py` — bounded thread-safe command history.
 - `starcraft_commander/standing_orders.py` — per-frame code policies, never LLM.
-- `starcraft_commander/web_gui.py` — localhost-only stdlib web UI.
-- `starcraft_commander/llm_interpreter.py` — schema-gated Anthropic fallback.
+- `starcraft_commander/web_gui.py` — localhost-first stdlib web UI.
+- `starcraft_commander/llm_interpreter.py` — schema-gated Anthropic interpreter.
 - `broodwar_commander/bw_executor.py` — BWAPI-style semantic plans and executor.
 
 Detailed design docs:

@@ -11,6 +11,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -145,7 +146,7 @@ class ParseArgsTest(unittest.TestCase):
             "map": demo_sc2.DEFAULT_SC2_DEMO_MAP,
             "race": "terran",
             "difficulty": "easy",
-            "llm": False,
+            "llm": True,
             "gui": None,
             "gui_host": "127.0.0.1",
             "gui_token": "",
@@ -188,6 +189,7 @@ class ParseArgsTest(unittest.TestCase):
 
     def test_llm_flag_parses(self) -> None:
         self.assertTrue(demo_sc2.parse_args(["--dry-run", "--llm"]).llm)
+        self.assertFalse(demo_sc2.parse_args(["--dry-run", "--no-llm"]).llm)
 
 
 class DemoFakeBotTest(unittest.TestCase):
@@ -224,7 +226,7 @@ class DryRunScriptTest(unittest.TestCase):
         # tests/test_sc2_narrator.py, so only stable semantic fragments are
         # asserted here.
         exit_code, output = run_main_capturing_stdout(
-            ["--dry-run", "--script", "SCV 계속 찍어", "상태 알려줘"]
+            ["--dry-run", "--no-llm", "--script", "SCV 계속 찍어", "상태 알려줘"]
         )
         self.assertEqual(0, exit_code)
         expected_snippets = (
@@ -250,7 +252,7 @@ class DryRunScriptTest(unittest.TestCase):
 
     def test_dry_run_mvp_compound_command_prints_both_outcomes(self) -> None:
         exit_code, output = run_main_capturing_stdout(
-            ["--dry-run", "--script", demo_sc2.MVP_DEMO_COMMAND]
+            ["--dry-run", "--no-llm", "--script", demo_sc2.MVP_DEMO_COMMAND]
         )
         self.assertEqual(0, exit_code)
         # Two outcomes: the marine-move part attack-moves the six scripted
@@ -277,7 +279,7 @@ class DryRunScriptTest(unittest.TestCase):
 
     def test_dry_run_blocked_command_is_never_reported_as_success(self) -> None:
         exit_code, output = run_main_capturing_stdout(
-            ["--dry-run", "--script", "배럭 지어"]
+            ["--dry-run", "--no-llm", "--script", "배럭 지어"]
         )
         self.assertEqual(0, exit_code)
         self.assertIn("[blocked]", output)
@@ -302,6 +304,16 @@ class RenderOutcomeLinesTest(unittest.TestCase):
 
 
 class LiveModeGuardTest(unittest.TestCase):
+    @unittest.skipUnless(ANTHROPIC_INSTALLED, "anthropic is not installed")
+    def test_required_llm_reports_missing_api_key_separately(self) -> None:
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+            with self.assertRaises(MissingLLMDependencyError) as context:
+                demo_sc2.build_llm_interpreter()
+        message = str(context.exception)
+        self.assertIn("ANTHROPIC_API_KEY", message)
+        self.assertIn("설정", message)
+        self.assertNotIn("is not installed", message)
+
     @unittest.skipIf(PYTHON_SC2_INSTALLED, "python-sc2 is installed in this environment")
     def test_run_live_raises_actionable_missing_runtime_error(self) -> None:
         with self.assertRaises(MissingSC2RuntimeError) as context:
@@ -329,11 +341,16 @@ class RunLiveWiringTest(unittest.TestCase):
 
         modules = build_fake_sc2_modules(fake_run_game)
         buffer = io.StringIO()
+        llm_builder = mock.Mock(return_value=None)
         with mock.patch.dict(sys.modules, modules):
-            with contextlib.redirect_stdout(buffer):
-                demo_sc2.run_live(
-                    demo_sc2.parse_args(["--map", "TestMapLE", "--difficulty", "hard"])
-                )
+            with mock.patch.object(demo_sc2, "build_llm_interpreter", llm_builder):
+                with contextlib.redirect_stdout(buffer):
+                    demo_sc2.run_live(
+                        demo_sc2.parse_args(
+                            ["--map", "TestMapLE", "--difficulty", "hard"]
+                        )
+                    )
+        llm_builder.assert_called_once_with()
         self.assertEqual(("MAP", "TestMapLE"), captured["map"])
         self.assertTrue(captured["realtime"])
         bot_player, computer_player = captured["players"]
@@ -351,8 +368,13 @@ class RunLiveWiringTest(unittest.TestCase):
         modules = build_fake_sc2_modules(fake_run_game)
         buffer = io.StringIO()
         with mock.patch.dict(sys.modules, modules):
-            with contextlib.redirect_stdout(buffer):
-                demo_sc2.run_live(demo_sc2.parse_args([]))
+            with mock.patch.object(
+                demo_sc2,
+                "build_llm_interpreter",
+                mock.Mock(return_value=None),
+            ):
+                with contextlib.redirect_stdout(buffer):
+                    demo_sc2.run_live(demo_sc2.parse_args([]))
         bot = captured["bot"]
         commands = iter(["상태 알려줘", None])
 
@@ -381,8 +403,13 @@ class RunLiveWiringTest(unittest.TestCase):
 
         modules = build_fake_sc2_modules(fail_run_game)
         with mock.patch.dict(sys.modules, modules):
-            with self.assertRaises(RuntimeMissingVoiceDependencyError) as context:
-                demo_sc2.run_live(demo_sc2.parse_args(["--voice"]))
+            with mock.patch.object(
+                demo_sc2,
+                "build_llm_interpreter",
+                mock.Mock(return_value=None),
+            ):
+                with self.assertRaises(RuntimeMissingVoiceDependencyError) as context:
+                    demo_sc2.run_live(demo_sc2.parse_args(["--voice"]))
         self.assertIn("pip install", str(context.exception))
 
 
