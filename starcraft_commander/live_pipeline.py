@@ -146,6 +146,17 @@ _CAPABILITY_QUESTION_PATTERNS: Final[tuple[str, ...]] = (
     "help",
     "commands",
 )
+_LLM_QUESTION_PATTERNS: Final[tuple[str, ...]] = (
+    "llm",
+    "gpt",
+    "openai",
+    "api 키",
+    "api키",
+    "키",
+    "대화",
+    "연결",
+    "모델",
+)
 _QUESTION_MARKERS: Final[tuple[str, ...]] = (
     "?",
     "？",
@@ -178,6 +189,13 @@ _CAPABILITY_QUESTION_ANSWER: Final[str] = (
     "병력 생산, 정찰, 방어, 수리, 확장, 견제입니다. 예: `상태확인`, "
     "`SCV 여러개 뽑아`, `자원채취`, `보급고 지어`, `정찰보내`, "
     "`마린 생산해`, `본진 입구 막아`."
+)
+_LLM_QUESTION_ANSWER: Final[str] = (
+    "네, 이 웹 GUI는 LLM 필수 모드입니다. 다만 모든 입력을 자유 대화로 "
+    "보내는 구조가 아니라, 간단한 명령은 로컬 규칙 해석기가 즉시 처리하고 "
+    "규칙으로 애매한 명령만 LLM intent 해석기로 보냅니다. API 키가 잘못되면 "
+    "LLM 설정 영역에 실패 이유가 표시됩니다. 키가 설정됐는데 게임이 움직이지 "
+    "않으면, 현재 탭이 dry-run 탭이 아닌 실제 Live GUI URL인지 확인하세요."
 )
 
 
@@ -229,6 +247,8 @@ def _question_answer_for(text: str) -> tuple[str, str] | None:
         return "building_location_help", _LOCATION_QUESTION_ANSWER
     if _contains_question_pattern(normalized, _VOICE_QUESTION_PATTERNS):
         return "voice_help", _VOICE_QUESTION_ANSWER
+    if _contains_question_pattern(normalized, _LLM_QUESTION_PATTERNS):
+        return "llm_help", _LLM_QUESTION_ANSWER
     if _contains_question_pattern(normalized, _CAPABILITY_QUESTION_PATTERNS):
         return "capability_help", _CAPABILITY_QUESTION_ANSWER
     return None

@@ -1307,7 +1307,18 @@ _PRODUCTION_CONTINUITY_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("계속", "유지", "쉬지말고", "끊기지않게", "keep", "continuous", "constantly"),
 )
 _WORKER_TRAINING_VERB_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
-    ("찍어", "뽑아", "생산", "만들", "눌러", "train", "produce", "queue", "make"),
+    (
+        "찍어",
+        "뽑아",
+        "생산",
+        "생성",
+        "만들",
+        "눌러",
+        "train",
+        "produce",
+        "queue",
+        "make",
+    ),
 )
 _GATHER_ACTION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     (
@@ -1325,7 +1336,7 @@ _GATHER_ACTION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ),
 )
 _GAS_RESOURCE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
-    ("가스", "vespene", "gas"),
+    ("가스", "베스핀", "배스핀", "배프빈", "vespene", "gas"),
 )
 _MINERAL_RESOURCE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("미네랄", "광물", "자원", "resource", "resources", "mineral", "minerals"),
@@ -1337,7 +1348,32 @@ _NATURAL_BASE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("앞마당", "내추럴", "natural", "expansion"),
 )
 _SUPPLY_SUBJECT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
-    ("서플", "서플라이", "디포", "보급고", "인구", "supply", "supply depot", "depot"),
+    (
+        "서플",
+        "서플라이",
+        "디포",
+        "보급",
+        "보급고",
+        "보급로",
+        "뵤급",
+        "뵤급로",
+        "뵤ㅗ급",
+        "뵤ㅗ급로",
+        "인구",
+        "supply",
+        "supply depot",
+        "depot",
+    ),
+)
+_REFINERY_COMPOUND_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "가스배럴",
+        "가스시설",
+        "가스통",
+        "베스핀가스",
+        "배스핀가스",
+        "배프빈가스",
+    ),
 )
 _SUPPLY_PRESSURE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("막히", "안막히", "트이", "부족", "늘려", "뚫", "미리", "block", "blocked", "cap", "room"),
@@ -1346,11 +1382,39 @@ _STRUCTURE_NAME_ALIASES: Final[tuple[tuple[StructureName, tuple[str, ...]], ...]
     (
         "Supply Depot",
         _normalize_patterns(
-            ("서플라이디포", "서플라이", "서플", "보급고", "supplydepot", "depot"),
+            (
+                "서플라이디포",
+                "서플라이",
+                "서플",
+                "보급",
+                "보급고",
+                "보급로",
+                "뵤급",
+                "뵤급로",
+                "뵤ㅗ급",
+                "뵤ㅗ급로",
+                "supplydepot",
+                "depot",
+            ),
         ),
     ),
-    ("Barracks", _normalize_patterns(("배럭스", "배럭", "병영", "barracks", "rax"))),
-    ("Refinery", _normalize_patterns(("리파이너리", "정제소", "가스통", "refinery"))),
+    ("Barracks", _normalize_patterns(("배럭스", "배럭", "배럴", "병영", "barracks", "rax"))),
+    (
+        "Refinery",
+        _normalize_patterns(
+            (
+                "리파이너리",
+                "정제소",
+                "가스통",
+                "가스시설",
+                "가스배럴",
+                "베스핀가스",
+                "배스핀가스",
+                "배프빈가스",
+                "refinery",
+            ),
+        ),
+    ),
     ("Bunker", _normalize_patterns(("벙커", "bunker"))),
     (
         "Command Center",
@@ -1367,6 +1431,7 @@ _BUILD_STRUCTURE_VERB_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
         "올려",
         "건설",
         "설치",
+        "생산",
         "만들",
         "build",
         "construct",
@@ -1388,6 +1453,9 @@ _GEYSER_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
 )
 _EXPANSION_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("앞마당", "멀티", "확장", "natural", "expansion"),
+)
+_FAR_FROM_MAIN_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    ("본진과떨어", "본진에서떨어", "먼곳", "먼 곳", "멀리"),
 )
 _MAIN_BASE_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("본진", "main base", "base"),
@@ -1841,6 +1909,8 @@ def _build_structure_target_from_command(
 
 
 def _detect_structure_name(normalized_command: str) -> StructureName | None:
+    if _contains_any_pattern(normalized_command, _REFINERY_COMPOUND_PATTERNS):
+        return "Refinery"
     for structure, aliases in _STRUCTURE_NAME_ALIASES:
         if _contains_any_pattern(normalized_command, aliases):
             return structure
@@ -1864,6 +1934,8 @@ def _detect_structure_location(
     if _contains_any_pattern(normalized_command, _GEYSER_LOCATION_PATTERNS):
         return "main geyser"
     if _contains_any_pattern(normalized_command, _EXPANSION_LOCATION_PATTERNS):
+        return "natural expansion"
+    if _contains_any_pattern(normalized_command, _FAR_FROM_MAIN_LOCATION_PATTERNS):
         return "natural expansion"
     if _contains_any_pattern(normalized_command, _MAIN_BASE_LOCATION_PATTERNS):
         return "main base"

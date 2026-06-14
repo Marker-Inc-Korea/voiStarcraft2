@@ -1686,6 +1686,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         # constraint that nothing enforces.
         cases = {
             "일꾼 뽑아": 1,
+            "일꾼 생성해": 1,
             "SCV 하나 뽑아": 1,
             "SCV 두 기 찍어": 2,
             "일꾼 3기 생산해": 3,
@@ -1708,6 +1709,29 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         self.assertIsNotNone(payload)
         self.assertEqual("BUILD_STRUCTURE", payload.intent)
         self.assertEqual("Bunker", payload.structure)
+
+    def test_common_korean_voice_typos_resolve_structure_builds(self) -> None:
+        cases = {
+            "뵤ㅗ급로 지어": "Supply Depot",
+            "보급로 지어": "Supply Depot",
+            "배프빈가스 지어": "Refinery",
+            "가스 배럴지어": "Refinery",
+            "배럴 지어": "Barracks",
+        }
+        for command_text, expected_structure in cases.items():
+            with self.subTest(command_text=command_text):
+                payload = interpret_command_text(command_text)
+                self.assertIsNotNone(payload)
+                self.assertEqual("BUILD_STRUCTURE", payload.intent)
+                self.assertEqual(expected_structure, payload.structure)
+
+    def test_worker_phrased_supply_production_resolves_as_build_structure(self) -> None:
+        payload = interpret_command_text("일꾼 보급고 생산해. 본진과 떨어진곳으로")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Supply Depot", payload.structure)
+        self.assertEqual("natural expansion", payload.location)
 
     def test_retreat_army_heuristic_maps_nearby_korean_free_utterance(self) -> None:
         payload = interpret_command_text("압박 실패했으니까 병력 살려서 뒤로 빼")

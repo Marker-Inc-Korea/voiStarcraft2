@@ -326,6 +326,18 @@ class LivePipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("상태 확인", outcome.narration)
         self.assertIn("정찰", outcome.narration)
 
+    async def test_llm_status_question_gets_read_only_answer(self) -> None:
+        session = make_session(LivePipelineFakeBot())
+
+        outcomes = await session.process_text("지금 llm이랑 대화가능?")
+
+        self.assertEqual(1, len(outcomes))
+        outcome = outcomes[0]
+        self.assertEqual("read_only", outcome.status)
+        self.assertEqual("llm_help", outcome.intent_dsl["topic"])
+        self.assertIn("LLM 필수 모드", outcome.narration)
+        self.assertIn("Live GUI", outcome.narration)
+
     async def test_infeasible_command_is_blocked_with_reason_and_alternative(self) -> None:
         bot = LivePipelineFakeBot(minerals=0)
         session = make_session(bot)
