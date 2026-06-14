@@ -80,6 +80,7 @@ from starcraft_commander.voice_input import (
 )
 from starcraft_commander.web_gui import (
     DEFAULT_WEB_GUI_PORT,
+    WEB_GUI_HOST,
     SessionLoopBridge,
     WebGuiServer,
 )
@@ -539,6 +540,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--gui-host",
+        default=WEB_GUI_HOST,
+        help=(
+            "web GUI bind host (default: 127.0.0.1). Use 0.0.0.0 for "
+            "phone/tablet companion control, together with --gui-token."
+        ),
+    )
+    parser.add_argument(
+        "--gui-token",
+        default="",
+        help="auth token required when exposing the web GUI beyond localhost",
+    )
+    parser.add_argument(
         "--record-seconds",
         type=float,
         default=DEFAULT_VOICE_RECORD_SECONDS,
@@ -675,7 +689,12 @@ def _run_dry_run_gui(session: SC2CommandSession, args: argparse.Namespace) -> in
         else None
     )
     bridge = SessionLoopBridge(session=session, history=history)
-    server = WebGuiServer(bridge=bridge, port=args.gui)
+    server = WebGuiServer(
+        bridge=bridge,
+        port=args.gui,
+        host=args.gui_host,
+        auth_token=args.gui_token,
+    )
     bridge.start()
     try:
         try:
@@ -794,7 +813,12 @@ def run_live(args: argparse.Namespace) -> None:
                 command_queue=self.command_queue,
                 event_memory=self.event_memory,
             )
-            server = WebGuiServer(bridge=bridge, port=gui_port)
+            server = WebGuiServer(
+                bridge=bridge,
+                port=gui_port,
+                host=args.gui_host,
+                auth_token=args.gui_token,
+            )
             try:
                 server.start()
             except OSError as error:

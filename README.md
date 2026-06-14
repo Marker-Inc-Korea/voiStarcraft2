@@ -97,6 +97,9 @@ python3 -m starcraft_commander.demo_sc2 --dry-run
 Python 3.10+.
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+
 pip install -e .              # core: dry-run, interpreter, validators, planners
 pip install -e '.[sc2]'       # live SC2 mode via burnysc2
 pip install -e '.[voice]'     # Korean push-to-talk via faster-whisper + sounddevice
@@ -120,7 +123,8 @@ python3 -m starcraft_commander.demo_sc2 --dry-run --script "SCV 계속 찍어" "
 
 ### Web GUI
 
-Starts a localhost-only browser UI with command input, state, and history:
+Starts a browser UI with command input, state, and history. The default is
+localhost-only:
 
 ```bash
 python3 -m starcraft_commander.demo_sc2 --dry-run --gui
@@ -128,6 +132,19 @@ python3 -m starcraft_commander.demo_sc2 --dry-run --gui 0
 ```
 
 `--gui 0` asks the OS for an available port.
+
+For actual play, StarCraft II usually owns the desktop focus. The recommended
+control surface is a phone/tablet companion GUI on the same Wi-Fi:
+
+```bash
+python3 -m starcraft_commander.demo_sc2 \
+  --map AcropolisLE --difficulty easy \
+  --gui --gui-host 0.0.0.0 --gui-token "change-me-long-random-token"
+```
+
+Open the printed `http://0.0.0.0:PORT/?token=...` URL by replacing
+`0.0.0.0` with the Mac's LAN IP address. Non-localhost GUI binding requires
+`--gui-token`; without it, the server refuses to start.
 
 ### LLM Fallback
 
@@ -244,21 +261,21 @@ Detailed design docs:
 - Rejections include Korean reason and alternative.
 - The LLM can only produce schema-validated canonical intents.
 - The LLM is called per user utterance, never per game frame.
-- Web GUI binds to `127.0.0.1` only.
+- Web GUI binds to `127.0.0.1` by default; network companion mode requires a token.
 
 ## Development
 
 Run tests:
 
 ```bash
-python3 -m pytest -q
+.venv/bin/python -m pytest -q
 ```
 
 Check import hygiene:
 
 ```bash
-python3 -c "import starcraft_commander, toycraft_commander, broodwar_commander; print('imports-ok')"
-python3 -c "import json, sys; import starcraft_commander, broodwar_commander; print(json.dumps([m for m in ['sc2','anthropic','faster_whisper','sounddevice'] if m in sys.modules]))"
+.venv/bin/python -c "import starcraft_commander, toycraft_commander, broodwar_commander; print('imports-ok')"
+.venv/bin/python -c "import json, sys; import starcraft_commander, broodwar_commander; print(json.dumps([m for m in ['sc2','anthropic','faster_whisper','sounddevice'] if m in sys.modules]))"
 ```
 
 Expected output for the second command is `[]`.

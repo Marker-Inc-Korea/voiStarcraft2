@@ -40,6 +40,27 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def point_xy(point):
+    if hasattr(point, "x") and hasattr(point, "y"):
+        return (float(point.x), float(point.y))
+    return (float(point[0]), float(point[1]))
+
+
+def assert_build_calls_equal(testcase, expected, actual):
+    testcase.assertEqual(len(expected), len(actual))
+    for expected_call, actual_call in zip(expected, actual):
+        testcase.assertEqual(expected_call[0], actual_call[0])
+        testcase.assertEqual(point_xy(expected_call[1]), point_xy(actual_call[1]))
+
+
+def assert_order_points_equal(testcase, expected, actual):
+    testcase.assertEqual(len(expected), len(actual))
+    for expected_order, actual_order in zip(expected, actual):
+        testcase.assertEqual(expected_order[0], actual_order[0])
+        testcase.assertIs(expected_order[1], actual_order[1])
+        testcase.assertEqual(point_xy(expected_order[2]), point_xy(actual_order[2]))
+
+
 class FakePoint:
     def __init__(self, x, y):
         self.x = float(x)
@@ -475,7 +496,8 @@ class BuildStructureTest(unittest.TestCase):
             )
         )
         self.assertTrue(result)
-        self.assertEqual(
+        assert_build_calls_equal(
+            self,
             [("TYPE:SUPPLYDEPOT", MapPoint(20.0, 12.0))],
             bot.build_calls,
         )
@@ -495,7 +517,8 @@ class BuildStructureTest(unittest.TestCase):
             )
         )
         self.assertTrue(result)
-        self.assertEqual(
+        assert_build_calls_equal(
+            self,
             [("TYPE:SUPPLYDEPOT", MapPoint(20.0, 12.0))],
             bot.build_calls,
         )
@@ -582,7 +605,8 @@ class BuildStructureTest(unittest.TestCase):
             )
         )
         self.assertTrue(result)
-        self.assertEqual(
+        assert_build_calls_equal(
+            self,
             [(("BOT-TYPE", "SUPPLYDEPOT"), MapPoint(20.0, 12.0))],
             bot.build_calls,
         )
@@ -882,7 +906,8 @@ class MoveAndAttackGroupTest(unittest.TestCase):
             )
         )
         self.assertTrue(result)
-        self.assertEqual(
+        assert_order_points_equal(
+            self,
             [("move", marine, MapPoint(20.0, 12.0)) for marine in marines],
             bot.issued,
         )
@@ -902,7 +927,8 @@ class MoveAndAttackGroupTest(unittest.TestCase):
             )
         )
         self.assertTrue(result)
-        self.assertEqual(
+        assert_order_points_equal(
+            self,
             [("attack", marine, MapPoint(88.0, 95.0)) for marine in marines],
             bot.issued,
         )
@@ -916,7 +942,8 @@ class MoveAndAttackGroupTest(unittest.TestCase):
             )
         )
         self.assertTrue(result)
-        self.assertEqual(
+        assert_order_points_equal(
+            self,
             [("move", marine, MapPoint(90.0, 90.0)) for marine in marines[:2]],
             bot.issued,
         )
@@ -939,7 +966,8 @@ class MoveAndAttackGroupTest(unittest.TestCase):
         self.assertTrue(result.is_partial)
         self.assertEqual(6, result.requested_count)
         self.assertEqual(2, result.issued_count)
-        self.assertEqual(
+        assert_order_points_equal(
+            self,
             [("move", marine, MapPoint(90.0, 90.0)) for marine in marines],
             bot.issued,
         )
@@ -1005,7 +1033,11 @@ class MoveAndAttackGroupTest(unittest.TestCase):
             )
         )
         self.assertTrue(result)
-        self.assertEqual([("move", workers[0], MapPoint(90.0, 90.0))], bot.issued)
+        assert_order_points_equal(
+            self,
+            [("move", workers[0], MapPoint(90.0, 90.0))],
+            bot.issued,
+        )
 
     def test_refusals_issue_nothing(self) -> None:
         bot, _, _ = self.make_army_bot()
@@ -1269,7 +1301,8 @@ class PipelineSmokeTest(unittest.TestCase):
         )
         self.assertTrue(result)
         self.assertIsInstance(adapter.map_resolver, SC2MapResolver)
-        self.assertEqual(
+        assert_order_points_equal(
+            self,
             [("attack", marine, MapPoint(90.0, 90.0))],
             bot.issued,
         )

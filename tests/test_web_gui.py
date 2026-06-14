@@ -21,6 +21,7 @@ from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.web_gui import (
     DEFAULT_WEB_GUI_PORT,
+    WEB_GUI_TOKEN_HEADER,
     SessionLoopBridge,
     WEB_GUI_HOST,
     WEB_GUI_PAGE_TITLE,
@@ -230,13 +231,59 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 document = json.loads(payload.decode("utf-8"))
                 self.assertTrue(contains_hangul(document["error"]))
 
-    def test_server_binds_localhost_only(self):
+    def test_server_defaults_to_localhost_without_token(self):
         self.assertEqual(self.server.host, "127.0.0.1")
         self.assertEqual(WEB_GUI_HOST, "127.0.0.1")
         self.assertTrue(self.server.url.startswith("http://127.0.0.1:"))
-        # The bind host is hard-coded: the constructor takes no host argument.
         parameters = inspect.signature(WebGuiServer.__init__).parameters
-        self.assertEqual(list(parameters), ["self", "bridge", "port"])
+        self.assertEqual(
+            list(parameters), ["self", "bridge", "port", "host", "auth_token"]
+        )
+
+    def test_token_protects_network_exposed_server(self):
+        server = WebGuiServer(
+            bridge=self.bridge,
+            port=0,
+            host="0.0.0.0",
+            auth_token="secret-token",
+        )
+        server.start()
+        self.addCleanup(server.stop)
+        self.assertEqual(server.host, "0.0.0.0")
+        self.assertIn("?token=secret-token", server.url)
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            connection.request("GET", "/api/state")
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 403)
+        finally:
+            connection.close()
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            connection.request("GET", "/api/state?token=secret-token")
+            response = connection.getresponse()
+            payload = response.read()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(json.loads(payload.decode("utf-8"))["available"])
+        finally:
+            connection.close()
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            connection.request(
+                "GET",
+                "/api/state",
+                headers={WEB_GUI_TOKEN_HEADER: "secret-token"},
+            )
+            response = connection.getresponse()
+            payload = response.read()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(json.loads(payload.decode("utf-8"))["available"])
+        finally:
+            connection.close()
 
     def test_server_stop_is_idempotent_and_joins_thread(self):
         self.assertTrue(self.server.is_running)
@@ -452,6 +499,16 @@ class WebGuiServerConstructionTest(unittest.TestCase):
                 with self.assertRaises(error_type):
                     WebGuiServer(bridge=self.bridge, port=bad_port)
 
+    def test_rejects_network_bind_without_token(self):
+        with self.assertRaises(ValueError):
+            WebGuiServer(bridge=self.bridge, host="0.0.0.0")
+        server = WebGuiServer(
+            bridge=self.bridge,
+            host="0.0.0.0",
+            auth_token="secret-token",
+        )
+        self.assertEqual(server.host, "0.0.0.0")
+
 
 class WebGuiMainTest(unittest.TestCase):
     """Entrypoint behavior: dry-run wiring and the non-dry-run Korean pointer."""
@@ -477,6 +534,29 @@ class WebGuiMainTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("http://127.0.0.1:", output)
         self.assertTrue(contains_hangul(output))
+        self.assertEqual(bridge_threads_alive(), [])
+
+    def test_main_accepts_companion_host_with_token(self):
+        stdout = io.StringIO()
+        with mock.patch.object(
+            web_gui, "_wait_for_interrupt", side_effect=KeyboardInterrupt
+        ):
+            with contextlib.redirect_stdout(stdout):
+                exit_code = web_gui.main(
+                    [
+                        "--dry-run",
+                        "--port",
+                        "0",
+                        "--host",
+                        "0.0.0.0",
+                        "--token",
+                        "secret-token",
+                    ]
+                )
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("http://0.0.0.0:", output)
+        self.assertIn("?token=secret-token", output)
         self.assertEqual(bridge_threads_alive(), [])
 
 

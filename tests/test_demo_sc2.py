@@ -147,6 +147,8 @@ class ParseArgsTest(unittest.TestCase):
             "difficulty": "easy",
             "llm": False,
             "gui": None,
+            "gui_host": "127.0.0.1",
+            "gui_token": "",
         }
         for name, value in expected.items():
             with self.subTest(argument=name):
@@ -169,6 +171,20 @@ class ParseArgsTest(unittest.TestCase):
             with self.subTest(case=label):
                 self.assertEqual(expected_port, demo_sc2.parse_args(argv).gui)
         self.assertEqual(8350, DEFAULT_WEB_GUI_PORT)
+
+    def test_gui_host_and_token_parse_for_companion_control(self) -> None:
+        args = demo_sc2.parse_args(
+            [
+                "--dry-run",
+                "--gui",
+                "--gui-host",
+                "0.0.0.0",
+                "--gui-token",
+                "dev-token",
+            ]
+        )
+        self.assertEqual("0.0.0.0", args.gui_host)
+        self.assertEqual("dev-token", args.gui_token)
 
     def test_llm_flag_parses(self) -> None:
         self.assertTrue(demo_sc2.parse_args(["--dry-run", "--llm"]).llm)

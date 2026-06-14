@@ -47,7 +47,13 @@ from starcraft_commander.state_resolver import (
 
 
 WEB_GUI_HOST: Final[str] = "127.0.0.1"
-"""Hard-coded localhost binding: the web GUI is never exposed on the network."""
+"""Default localhost binding for the web GUI."""
+
+WEB_GUI_TOKEN_QUERY_PARAM: Final[str] = "token"
+"""Query parameter accepted as the web GUI auth token."""
+
+WEB_GUI_TOKEN_HEADER: Final[str] = "X-VoiStarCraft-Token"
+"""HTTP header accepted as the web GUI auth token."""
 
 DEFAULT_WEB_GUI_PORT: Final[int] = 8350
 """Default web GUI port; ``0`` requests an ephemeral port (used by tests)."""
@@ -442,6 +448,9 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
 <script>
 "use strict";
 var POLL_INTERVAL_MS = __POLL_MS__;
+var token = new URLSearchParams(window.location.search).get("token") || "";
+var authQuery = token ? "?token=" + encodeURIComponent(token) : "";
+var authJoin = token ? "&token=" + encodeURIComponent(token) : "";
 var lastSeq = 0;
 var logBox = document.getElementById("log");
 
@@ -467,7 +476,7 @@ function appendLog(ev) {
 }
 
 function pollHistory() {
-  fetch("/api/history?after=" + lastSeq)
+  fetch("/api/history?after=" + lastSeq + authJoin)
     .then(function (response) { return response.json(); })
     .then(function (data) {
       (data.events || []).forEach(appendLog);
@@ -505,7 +514,7 @@ function renderState(data) {
 }
 
 function pollState() {
-  fetch("/api/state")
+  fetch("/api/state" + authQuery)
     .then(function (response) { return response.json(); })
     .then(renderState)
     .catch(function () { /* 다음 폴링에서 다시 시도합니다. */ });
@@ -516,7 +525,7 @@ document.getElementById("command-form").addEventListener("submit", function (eve
   var input = document.getElementById("command-input");
   var text = input.value.trim();
   if (!text) { return; }
-  fetch("/api/command", {
+  fetch("/api/command" + authQuery, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text: text })
@@ -561,8 +570,10 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         handler_class: type[BaseHTTPRequestHandler],
         bridge: WebGuiBridgeInterface,
+        auth_token: str = "",
     ) -> None:
         self.bridge = bridge
+        self.auth_token = auth_token
         super().__init__(server_address, handler_class)
 
 
@@ -582,6 +593,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         return None
 
     def do_GET(self) -> None:  # noqa: N802 - http.server contract.
+        if not self._authorized():
+            self._send_unauthorized()
+            return
         path = urlsplit(self.path).path
         if path in ("/", "/index.html"):
             self._send_html(HTTPStatus.OK, render_web_gui_page())
@@ -595,6 +609,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         self._send_not_found()
 
     def do_POST(self) -> None:  # noqa: N802 - http.server contract.
+        if not self._authorized():
+            self._read_request_body()
+            self._send_unauthorized()
+            return
         path = urlsplit(self.path).path
         if path == "/api/command":
             self._handle_command()
@@ -742,6 +760,27 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _authorized(self) -> bool:
+        expected = getattr(self.server, "auth_token", "")  # type: ignore[attr-defined]
+        if not expected:
+            return True
+        supplied = self.headers.get(WEB_GUI_TOKEN_HEADER, "")
+        if supplied == expected:
+            return True
+        params = parse_qs(urlsplit(self.path).query)
+        return (params.get(WEB_GUI_TOKEN_QUERY_PARAM, [""])[0] or "") == expected
+
+    def _send_unauthorized(self) -> None:
+        self._send_json(
+            HTTPStatus.FORBIDDEN,
+            {
+                "error": (
+                    "웹 GUI 인증 토큰이 필요합니다. 실행 시 출력된 ?token=... URL로 "
+                    "접속하거나 X-VoiStarCraft-Token 헤더를 전달해 주세요."
+                )
+            },
+        )
+
     def _send_json(self, status: HTTPStatus, payload: Mapping[str, object]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         self._send_body(status, "application/json; charset=utf-8", body)
@@ -758,18 +797,21 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
 
 
 class WebGuiServer:
-    """Threaded localhost-only HTTP server for the commander web GUI.
+    """Threaded HTTP server for the commander web GUI.
 
-    The bind host is hard-coded to ``127.0.0.1`` on purpose: the GUI issues
-    real game commands, so it must never be reachable from the network. Pass
-    ``port=0`` to bind an ephemeral port (tests); :attr:`port` reports the
-    actually bound port once started.
+    The default bind host is ``127.0.0.1``. To use a phone/tablet as a
+    companion controller while StarCraft II owns desktop focus, pass a
+    non-localhost host such as ``0.0.0.0`` together with a non-empty auth
+    token. Pass ``port=0`` to bind an ephemeral port (tests); :attr:`port`
+    reports the actually bound port once started.
     """
 
     def __init__(
         self,
         bridge: WebGuiBridgeInterface,
         port: int = DEFAULT_WEB_GUI_PORT,
+        host: str = WEB_GUI_HOST,
+        auth_token: str = "",
     ) -> None:
         if not isinstance(bridge, WebGuiBridgeInterface):
             raise TypeError(
@@ -780,17 +822,29 @@ class WebGuiServer:
             raise TypeError("Web GUI server port must be an int.")
         if not 0 <= port <= 65535:
             raise ValueError("Web GUI server port must be between 0 and 65535.")
+        if type(host) is not str or not host.strip():
+            raise TypeError("Web GUI server host must be a non-empty string.")
+        cleaned_host = host.strip()
+        if type(auth_token) is not str:
+            raise TypeError("Web GUI server auth_token must be a string.")
+        cleaned_token = auth_token.strip()
+        if not _is_localhost_bind(cleaned_host) and not cleaned_token:
+            raise ValueError(
+                "Non-localhost web GUI binding requires an auth token."
+            )
         self._bridge = bridge
         self._requested_port = port
+        self._host = cleaned_host
+        self._auth_token = cleaned_token
         self._lifecycle_lock = threading.Lock()
         self._http: _BridgedThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     @property
     def host(self) -> str:
-        """Return the hard-coded localhost bind host."""
+        """Return the configured bind host."""
 
-        return WEB_GUI_HOST
+        return self._host
 
     @property
     def port(self) -> int:
@@ -803,9 +857,14 @@ class WebGuiServer:
 
     @property
     def url(self) -> str:
-        """Return the browsable localhost URL."""
+        """Return the browsable URL for the configured bind host."""
 
-        return f"http://{WEB_GUI_HOST}:{self.port}"
+        suffix = (
+            f"/?{WEB_GUI_TOKEN_QUERY_PARAM}={self._auth_token}"
+            if self._auth_token
+            else ""
+        )
+        return f"http://{self.host}:{self.port}{suffix}"
 
     @property
     def is_running(self) -> bool:
@@ -815,15 +874,16 @@ class WebGuiServer:
         return thread is not None and thread.is_alive()
 
     def start(self) -> None:
-        """Bind 127.0.0.1 and serve in a daemon thread; idempotent."""
+        """Bind the configured host and serve in a daemon thread; idempotent."""
 
         with self._lifecycle_lock:
             if self._http is not None:
                 return
             self._http = _BridgedThreadingHTTPServer(
-                (WEB_GUI_HOST, self._requested_port),
+                (self._host, self._requested_port),
                 _WebGuiRequestHandler,
                 self._bridge,
+                self._auth_token,
             )
             self._thread = threading.Thread(
                 target=self._http.serve_forever,
@@ -848,6 +908,12 @@ class WebGuiServer:
             thread.join(timeout=timeout)
 
 
+def _is_localhost_bind(host: str) -> bool:
+    """Return whether ``host`` is loopback-only for no-token GUI binding."""
+
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     """Build the web GUI argument parser."""
 
@@ -869,6 +935,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_WEB_GUI_PORT,
         help=f"local web GUI port (default: {DEFAULT_WEB_GUI_PORT}; 0 for ephemeral)",
+    )
+    parser.add_argument(
+        "--host",
+        default=WEB_GUI_HOST,
+        help=(
+            "web GUI bind host (default: 127.0.0.1). Use 0.0.0.0 for "
+            "phone/tablet companion control, together with --token."
+        ),
+    )
+    parser.add_argument(
+        "--token",
+        default="",
+        help="auth token required when exposing the web GUI beyond localhost",
     )
     return parser
 
@@ -903,7 +982,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     session, _bot = build_dry_run_session()
     bridge = SessionLoopBridge(session=session)
-    server = WebGuiServer(bridge=bridge, port=args.port)
+    server = WebGuiServer(
+        bridge=bridge,
+        port=args.port,
+        host=args.host,
+        auth_token=args.token,
+    )
     bridge.start()
     try:
         try:
