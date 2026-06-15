@@ -1,10 +1,10 @@
-"""LLM fallback interpretation for free-form Korean commander utterances.
+"""LLM-first interpretation for free-form Korean commander utterances.
 
-The rule-based ToyCraft interpreter resolves the supported Korean command
-families deterministically. This module adds the original plan's LLM
-interpreter stage for everything the rules cannot handle: one provider SDK
-call per *user utterance* (never per game frame) with a single forced tool
-whose input schema is generated from ``INTENT_SCHEMAS``.
+Live commander mode sends user language through an LLM before any action can
+execute. The deterministic ToyCraft interpreter remains as a safety and
+normalization layer for validated LLM output and offline ``--no-llm`` runs:
+one provider SDK call per *user utterance* (never per game frame) with a
+single forced tool whose input schema is generated from ``INTENT_SCHEMAS``.
 Every LLM answer passes the exact same typed ``validate_intent_payload``
 gate as rule output, so the LLM can never inject an out-of-vocabulary
 command. Any LLM problem (missing dependency, missing key, API error,
@@ -1030,13 +1030,13 @@ class LocalLLMControl:
 
 @dataclass(frozen=True)
 class HybridCommandInterpreter:
-    """Rules-first interpreter with an optional LLM fallback stage.
+    """LLM-first interpreter with a deterministic safety fallback.
 
-    Implements :class:`CommandInterpreterInterface`. The deterministic rule
-    interpreter always runs first; the LLM is consulted only when the rules
-    produce no payload, so rule-supported commands never trigger an API
-    call. When both stages fail, the original rule clarification (with its
-    better Korean wording) is preserved.
+    Implements :class:`CommandInterpreterInterface`. When an LLM stage is
+    configured and available, every user utterance is interpreted by that LLM
+    before a payload can execute. The rule interpreter is kept for explicit
+    non-LLM offline paths and as a strict local safety fallback when the LLM
+    returns a typed unsupported answer.
     """
 
     rule_interpreter: CommandInterpreterInterface = DEFAULT_COMMAND_INTERPRETER
@@ -1062,15 +1062,18 @@ class HybridCommandInterpreter:
         return self.interpret(command_text).payload
 
     def interpret(self, command_text: str) -> CommandInterpretationResult:
-        """Resolve via rules first, then the LLM, preserving rule wording."""
-
-        rule_result = self.rule_interpreter.interpret(command_text)
-        if rule_result.payload is not None:
-            return rule_result
+        """Resolve through the LLM first; rules never bypass LLM availability."""
 
         llm = self.llm_interpreter
-        if llm is None or not llm.is_available():
-            return rule_result
+        if llm is None:
+            return self.rule_interpreter.interpret(command_text)
+        if not llm.is_available():
+            return _build_clarification_result(
+                command_text=command_text,
+                code=LLM_UNAVAILABLE_FAILURE_CODE,
+                reason=LLM_UNAVAILABLE_REASON,
+                prompt=LLM_UNAVAILABLE_CLARIFICATION_PROMPT,
+            )
 
         llm_result = llm.interpret(command_text)
         if llm_result.payload is not None:
@@ -1081,7 +1084,9 @@ class HybridCommandInterpreter:
             and failure.primary_reason.code == LLM_INTERPRETATION_FAILURE_CODE
         ):
             return llm_result
-        return rule_result
+
+        rule_result = self.rule_interpreter.interpret(command_text)
+        return rule_result if rule_result.payload is not None else llm_result
 
     def plan_combo(self, command_text: str) -> LLMComboPlan | None:
         """Delegate high-level combo planning to the optional LLM stage."""

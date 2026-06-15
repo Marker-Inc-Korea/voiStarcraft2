@@ -1,4 +1,4 @@
-"""Tests for the LLM fallback interpreter and the hybrid rules-first stage.
+"""Tests for the LLM-first interpreter and hybrid safety stage.
 
 No network, no API keys, no anthropic package: the Anthropic client is
 replaced by a fake whose ``messages.create`` returns scripted objects shaped
@@ -66,6 +66,13 @@ DEFEND_TOOL_INPUT = {
     "location": "main ramp",
     "unit_group": "available combat units",
     "hallucinated_field": "must be dropped before validation",
+}
+
+TRAIN_WORKER_TOOL_INPUT = {
+    "intent": "TRAIN_WORKER",
+    "priority": "normal",
+    "constraints": ["train requested SCV count"],
+    "count": 1,
 }
 
 
@@ -909,9 +916,9 @@ class LLMAvailabilityTest(unittest.TestCase):
 
 
 class HybridCommandInterpreterTest(unittest.TestCase):
-    def test_rule_supported_text_never_calls_the_llm(self) -> None:
+    def test_rule_supported_text_still_calls_the_llm_first(self) -> None:
         llm_interpreter, fake_client = _make_llm_interpreter(
-            _tool_response(DEFEND_TOOL_INPUT)
+            _tool_response(TRAIN_WORKER_TOOL_INPUT)
         )
         hybrid = HybridCommandInterpreter(llm_interpreter=llm_interpreter)
 
@@ -921,9 +928,9 @@ class HybridCommandInterpreterTest(unittest.TestCase):
         self.assertIsNotNone(rule_result.payload)
 
         result = hybrid.interpret(RULE_SUPPORTED_UTTERANCE)
-        self.assertEqual(result, rule_result)
         self.assertEqual(result.payload.intent, "TRAIN_WORKER")
-        self.assertEqual(fake_client.calls, [])
+        self.assertEqual(len(fake_client.calls), 1)
+        self.assertNotEqual(fake_client.calls, [])
 
     def test_rule_unsupported_text_uses_llm_payload(self) -> None:
         llm_interpreter, fake_client = _make_llm_interpreter(
@@ -938,7 +945,7 @@ class HybridCommandInterpreterTest(unittest.TestCase):
         self.assertIsInstance(result.payload, DefendIntent)
         self.assertEqual(len(fake_client.calls), 1)
 
-    def test_both_stages_failing_preserves_rule_clarification(self) -> None:
+    def test_llm_unsupported_can_fall_back_to_strict_rule_payload(self) -> None:
         distinctive_llm_reason = "LLM 전용 사유 문구"
         llm_interpreter, fake_client = _make_llm_interpreter(
             _tool_response(
@@ -950,12 +957,8 @@ class HybridCommandInterpreterTest(unittest.TestCase):
         )
         hybrid = HybridCommandInterpreter(llm_interpreter=llm_interpreter)
 
-        result = hybrid.interpret(FREE_FORM_DEFEND_UTTERANCE)
-        self.assertEqual(
-            result, DEFAULT_COMMAND_INTERPRETER.interpret(FREE_FORM_DEFEND_UTTERANCE)
-        )
-        self.assertEqual(result.reason, UNSUPPORTED_COMMAND_CLARIFICATION_REASON)
-        self.assertNotIn(distinctive_llm_reason, result.reason)
+        result = hybrid.interpret(RULE_SUPPORTED_UTTERANCE)
+        self.assertEqual(result.payload.intent, "TRAIN_WORKER")
         self.assertEqual(len(fake_client.calls), 1)
 
     def test_api_failure_is_surfaced_for_live_debuggability(self) -> None:
@@ -974,23 +977,23 @@ class HybridCommandInterpreterTest(unittest.TestCase):
             LLM_INTERPRETATION_FAILURE_CODE,
         )
 
-    def test_missing_or_unavailable_llm_returns_rule_result(self) -> None:
+    def test_missing_llm_uses_rules_but_unavailable_llm_blocks_execution(self) -> None:
         unavailable_llm = LLMCommandInterpreter()
-        hybrid_cases = (
-            ("no llm stage", HybridCommandInterpreter()),
-            (
-                "unavailable llm stage",
-                HybridCommandInterpreter(llm_interpreter=unavailable_llm),
-            ),
-        )
         rule_result = DEFAULT_COMMAND_INTERPRETER.interpret(
             FREE_FORM_DEFEND_UTTERANCE
         )
-        for label, hybrid in hybrid_cases:
-            with self.subTest(case=label):
-                with _block_anthropic(), _without_api_key():
-                    result = hybrid.interpret(FREE_FORM_DEFEND_UTTERANCE)
-                self.assertEqual(result, rule_result)
+        with self.subTest(case="no llm stage"):
+            result = HybridCommandInterpreter().interpret(FREE_FORM_DEFEND_UTTERANCE)
+            self.assertEqual(result, rule_result)
+        with self.subTest(case="unavailable configured llm stage"):
+            hybrid = HybridCommandInterpreter(llm_interpreter=unavailable_llm)
+            with _block_anthropic(), _without_api_key():
+                result = hybrid.interpret(FREE_FORM_DEFEND_UTTERANCE)
+            self.assertIsNone(result.payload)
+            self.assertTrue(result.clarification_required)
+            self.assertEqual(
+                result.failure.primary_reason.code, LLM_UNAVAILABLE_FAILURE_CODE
+            )
 
     def test_build_hybrid_interpreter_drops_unavailable_llm(self) -> None:
         with _block_anthropic(), _without_api_key():

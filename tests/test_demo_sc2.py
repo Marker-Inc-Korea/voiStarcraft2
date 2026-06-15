@@ -42,6 +42,7 @@ from starcraft_commander.voice_input import (
     VoiceTranscription,
 )
 from starcraft_commander.web_gui import DEFAULT_WEB_GUI_PORT, WebGuiBridgeInterface
+from toycraft_commander.interpreter import DEFAULT_COMMAND_INTERPRETER
 
 
 PYTHON_SC2_INSTALLED = importlib.util.find_spec("sc2") is not None
@@ -383,6 +384,8 @@ class RunLiveWiringTest(unittest.TestCase):
         modules = build_fake_sc2_modules(fake_run_game)
         buffer = io.StringIO()
         llm_control = mock.Mock()
+        llm_control.is_available.return_value = True
+        llm_control.interpret.side_effect = DEFAULT_COMMAND_INTERPRETER.interpret
         with mock.patch.dict(sys.modules, modules):
             with mock.patch.object(
                 demo_sc2,
