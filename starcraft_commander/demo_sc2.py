@@ -225,9 +225,13 @@ class DemoFakeBotAI:
         self.expansion_locations_list = [
             DemoPoint(30.0, 30.0),
             DemoPoint(45.0, 52.0),
+            DemoPoint(65.0, 80.0),
+            DemoPoint(95.0, 96.0),
             DemoPoint(115.0, 108.0),
             DemoPoint(130.0, 130.0),
         ]
+        self.scout_location = DemoPoint(95.0, 96.0)
+        self.last_seen_enemy_area = DemoPoint(120.0, 124.0)
         self.mineral_field = DemoUnitGroup(
             (
                 DemoUnit("MineralField", 22.0, 28.0),

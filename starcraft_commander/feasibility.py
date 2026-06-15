@@ -385,6 +385,16 @@ def _check_harass(
     return _combat_unit_issues(state, checked)
 
 
+def _check_move_camera(
+    payload: object | Mapping[str, object],
+    state: SC2CommanderState,
+    checked: list[str],
+) -> tuple[SC2FeasibilityIssue, ...]:
+    checked.append("camera_target")
+    checked.append("camera_capability_deferred_to_runtime")
+    return ()
+
+
 SC2_INTENT_FEASIBILITY_RULES: Final[dict[str, SC2IntentFeasibilityRule]] = {
     "GATHER_RESOURCE": _check_gather_resource,
     "BUILD_STRUCTURE": _check_build_structure,
@@ -396,11 +406,12 @@ SC2_INTENT_FEASIBILITY_RULES: Final[dict[str, SC2IntentFeasibilityRule]] = {
     "REPAIR": _check_repair,
     "EXPAND": _check_expand,
     "HARASS": _check_harass,
+    "MOVE_CAMERA": _check_move_camera,
 }
 """One feasibility rule per canonical commander intent."""
 
 SC2_CANONICAL_INTENT_NAMES: Final[tuple[str, ...]] = tuple(SC2_INTENT_FEASIBILITY_RULES)
-"""The 10 canonical commander intent names gated by this module."""
+"""The canonical commander intent names gated by this module."""
 
 
 @dataclass(frozen=True)

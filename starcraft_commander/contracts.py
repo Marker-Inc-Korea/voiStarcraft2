@@ -23,6 +23,7 @@ class SC2ActionType(str, Enum):
     ATTACK_MOVE = "attack_move"
     REPAIR = "repair"
     OBSERVE = "observe"
+    MOVE_CAMERA = "move_camera"
 
 
 SC2_PRIORITY_VALUES: Final[dict[str, int]] = {
@@ -182,6 +183,7 @@ class SC2ActionReport:
     requested_count: int | None = None
     issued_count: int | None = None
     detail: str = ""
+    audit: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "applied", bool(self.applied))
@@ -198,6 +200,7 @@ class SC2ActionReport:
                     f"SC2 action report {field_name} cannot be negative."
                 )
         object.__setattr__(self, "detail", str(self.detail))
+        object.__setattr__(self, "audit", dict(self.audit))
 
     @property
     def is_partial(self) -> bool:
@@ -224,6 +227,7 @@ class SC2ActionReport:
             "issued_count": self.issued_count,
             "is_partial": self.is_partial,
             "detail": self.detail,
+            "audit": dict(self.audit),
         }
 
 

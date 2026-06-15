@@ -41,6 +41,7 @@ SC2_KOREAN_TARGET_NAMES: Final[dict[str, str]] = {
     "self_geyser": "본진 가스 간헐천",
     "enemy_main": "적 본진",
     "enemy_ramp": "적 입구",
+    "enemy_front": "적 입구",
     "enemy_natural": "적 앞마당",
     "enemy_mineral_line": "적 일꾼 라인",
 }
@@ -79,6 +80,7 @@ SC2_ACTION_TYPE_KOREAN_LABELS: Final[dict[SC2ActionType, str]] = {
     SC2ActionType.ATTACK_MOVE: "공격 이동",
     SC2ActionType.REPAIR: "수리",
     SC2ActionType.OBSERVE: "정찰",
+    SC2ActionType.MOVE_CAMERA: "카메라 이동",
 }
 """Korean labels for semantic action types, used in error narration."""
 
@@ -118,6 +120,11 @@ SC2_ACTION_REFUSAL_KOREAN_REASONS: Final[dict[str, str]] = {
     "non_positive_count": "요청 수량이 1 미만입니다",
     "missing_producer_metadata": "생산 건물 정보가 계획에 없습니다",
     "producers_stalled": "생산 건물이 훈련 명령을 받지 못했습니다",
+    "missing_camera_capability": "현재 SC2 런타임 어댑터가 카메라 이동 API를 제공하지 않습니다",
+    "camera_refused": "SC2 런타임이 카메라 이동 요청을 거부했습니다",
+    "ambiguous_camera_target": "카메라 대상 위치가 여러 후보와 맞아 하나로 확정할 수 없습니다",
+    "unknown_camera_target": "지정한 카메라 대상이 지원되는 semantic target이 아닙니다",
+    "unscouted_camera_target": "지정한 카메라 대상은 아직 정찰/관측되지 않아 안전하게 이동할 수 없습니다",
 }
 """Machine-readable adapter refusal details translated into Korean reasons."""
 
@@ -578,6 +585,14 @@ def _observe_line(
     return "전장 상태 확인"
 
 
+def _move_camera_line(
+    action: SC2CommandAction,
+    issue: _ActionIssue | None = None,
+) -> str:
+    target = _translate_target(action.target) or "지정 위치"
+    return f"카메라를 {target}{_ro_particle(target)} 이동"
+
+
 _SC2_ACTION_LINE_RENDERERS: Final[
     dict[SC2ActionType, Callable[[SC2CommandAction, _ActionIssue | None], str]]
 ] = {
@@ -588,6 +603,7 @@ _SC2_ACTION_LINE_RENDERERS: Final[
     SC2ActionType.ATTACK_MOVE: _attack_move_line,
     SC2ActionType.REPAIR: _repair_line,
     SC2ActionType.OBSERVE: _observe_line,
+    SC2ActionType.MOVE_CAMERA: _move_camera_line,
 }
 """One Korean line renderer per stable semantic SC2 action type."""
 

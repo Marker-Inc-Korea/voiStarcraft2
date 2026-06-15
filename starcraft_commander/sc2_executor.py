@@ -55,31 +55,60 @@ SC2_SEMANTIC_TARGET_NAMES: Final[frozenset[str]] = frozenset(
     {
         "self_main",
         "self_ramp",
+        "self_choke",
         "self_natural",
+        "self_third",
         "self_mineral_line",
         "self_geyser",
         "enemy_main",
         "enemy_ramp",
+        "enemy_choke",
+        "enemy_front",
         "enemy_natural",
+        "enemy_third",
         "enemy_mineral_line",
+        "scout_location",
+        "last_seen_enemy_area",
     }
 )
 """Canonical semantic SC2 target names accepted for location-typed intents."""
 
 SC2_TARGET_ALIASES: Final[dict[str, str]] = {
+    # Canonical semantic runtime target identifiers.
+    "self_main": "self_main",
+    "self_ramp": "self_ramp",
+    "self_choke": "self_choke",
+    "self_natural": "self_natural",
+    "self_third": "self_third",
+    "self_mineral_line": "self_mineral_line",
+    "self_geyser": "self_geyser",
+    "enemy_main": "enemy_main",
+    "enemy_ramp": "enemy_ramp",
+    "enemy_choke": "enemy_choke",
+    "enemy_front": "enemy_front",
+    "enemy_natural": "enemy_natural",
+    "enemy_third": "enemy_third",
+    "enemy_mineral_line": "enemy_mineral_line",
+    "scout_location": "scout_location",
+    "last_seen_enemy_area": "last_seen_enemy_area",
     # Player-side ToyCraft canonical map locations.
     "main": "self_main",
+    "base": "self_main",
     "main base": "self_main",
     "main base fallback": "self_main",
     "our main": "self_main",
     "our base": "self_main",
+    "본진": "self_main",
     "우리 본진": "self_main",
     "우리본진": "self_main",
     "아군 본진": "self_main",
     "아군본진": "self_main",
     "내 본진": "self_main",
     "내본진": "self_main",
+    "main_ramp": "self_ramp",
     "main ramp": "self_ramp",
+    "본진 입구": "self_ramp",
+    "본진입구": "self_ramp",
     "our ramp": "self_ramp",
     "our front": "self_ramp",
     "우리 입구": "self_ramp",
@@ -90,26 +119,126 @@ SC2_TARGET_ALIASES: Final[dict[str, str]] = {
     "아군입구": "self_ramp",
     "내 입구": "self_ramp",
     "내입구": "self_ramp",
+    "mineral line": "self_mineral_line",
+    "main mineral line": "self_mineral_line",
+    "main_mineral_line": "self_mineral_line",
+    "our mineral line": "self_mineral_line",
+    "본진 미네랄": "self_mineral_line",
+    "본진미네랄": "self_mineral_line",
+    "본진 미네랄 라인": "self_mineral_line",
+    "본진미네랄라인": "self_mineral_line",
+    "미네랄 라인": "self_mineral_line",
+    "미네랄라인": "self_mineral_line",
+    "main_geyser": "self_geyser",
     "main geyser": "self_geyser",
+    "geyser": "self_geyser",
+    "gas": "self_geyser",
+    "main gas": "self_geyser",
     "our gas": "self_geyser",
+    "본진 가스": "self_geyser",
+    "본진가스": "self_geyser",
     "우리 가스": "self_geyser",
     "우리가스": "self_geyser",
+    "natural": "self_natural",
+    "앞마당": "self_natural",
     "natural approach": "self_natural",
-    "natural choke": "self_ramp",
+    "natural choke": "self_choke",
+    "choke": "self_choke",
+    "our choke": "self_choke",
+    "앞마당 입구": "self_choke",
+    "앞마당입구": "self_choke",
+    "앞마당 초크": "self_choke",
+    "앞마당초크": "self_choke",
+    "초크": "self_choke",
     "natural expansion": "self_natural",
     "our natural": "self_natural",
     "우리 앞마당": "self_natural",
     "우리앞마당": "self_natural",
+    "third": "self_third",
+    "third base": "self_third",
+    "third command center": "self_third",
+    "3rd base": "self_third",
+    "삼룡이": "self_third",
+    "3멀티": "self_third",
+    "세번째 멀티": "self_third",
+    "셋째 멀티": "self_third",
     "front bunker": "self_ramp",
     # Enemy-side ToyCraft canonical map locations.
     "enemy main": "enemy_main",
-    "enemy front": "enemy_ramp",
+    "enemy base": "enemy_main",
+    "enemy_base": "enemy_main",
+    "적 본진": "enemy_main",
+    "적본진": "enemy_main",
+    "적 기지": "enemy_main",
+    "적기지": "enemy_main",
+    "상대 본진": "enemy_main",
+    "상대본진": "enemy_main",
+    "상대 기지": "enemy_main",
+    "상대기지": "enemy_main",
+    "enemy ramp": "enemy_ramp",
+    "적 램프": "enemy_ramp",
+    "적램프": "enemy_ramp",
+    "상대 램프": "enemy_ramp",
+    "상대램프": "enemy_ramp",
+    "enemy choke": "enemy_choke",
+    "enemy natural choke": "enemy_choke",
+    "적 초크": "enemy_choke",
+    "적초크": "enemy_choke",
+    "적 앞마당 입구": "enemy_choke",
+    "적앞마당입구": "enemy_choke",
+    "상대 초크": "enemy_choke",
+    "상대초크": "enemy_choke",
+    "enemy front": "enemy_front",
+    "enemy_front": "enemy_front",
+    "적 입구": "enemy_front",
+    "적입구": "enemy_front",
+    "상대 입구": "enemy_front",
+    "상대입구": "enemy_front",
     "enemy natural": "enemy_natural",
+    "적 앞마당": "enemy_natural",
+    "적앞마당": "enemy_natural",
+    "상대 앞마당": "enemy_natural",
+    "상대앞마당": "enemy_natural",
+    "enemy third": "enemy_third",
+    "enemy third base": "enemy_third",
+    "적 세번째 멀티": "enemy_third",
+    "적 세 번째 멀티": "enemy_third",
+    "적 삼룡이": "enemy_third",
+    "상대 세번째 멀티": "enemy_third",
+    "상대 삼룡이": "enemy_third",
     "enemy mineral line": "enemy_mineral_line",
+    "적 미네랄 라인": "enemy_mineral_line",
+    "적미네랄라인": "enemy_mineral_line",
+    "상대 미네랄": "enemy_mineral_line",
+    "상대미네랄": "enemy_mineral_line",
+    "상대 일꾼 라인": "enemy_mineral_line",
+    "상대일꾼라인": "enemy_mineral_line",
+    "scout location": "scout_location",
+    "scouted location": "scout_location",
+    "last scout location": "scout_location",
+    "정찰 위치": "scout_location",
+    "정찰위치": "scout_location",
+    "정찰 지점": "scout_location",
+    "정찰지점": "scout_location",
+    "정찰한 곳": "scout_location",
+    "last seen enemy area": "last_seen_enemy_area",
+    "last enemy position": "last_seen_enemy_area",
+    "enemy last seen": "last_seen_enemy_area",
+    "마지막 적 위치": "last_seen_enemy_area",
+    "마지막적위치": "last_seen_enemy_area",
+    "마지막으로 본 적": "last_seen_enemy_area",
+    "최근 본 적 위치": "last_seen_enemy_area",
+    "최근적위치": "last_seen_enemy_area",
 }
 """Every ToyCraft canonical map location name (plus the interpreter retreat
 fallback ``main base fallback``) mapped to a semantic SC2 target name. Unknown
 location targets are rejected by the planner instead of being passed through."""
+
+_NORMALIZED_SC2_TARGET_ALIASES: Final[dict[str, str]] = {
+    "".join(alias.casefold().split()): canonical
+    for alias, canonical in SC2_TARGET_ALIASES.items()
+}
+"""Whitespace-insensitive alias index shared by planner and catalog lookups."""
 
 SC2_INTENT_ACTION_TYPE_MAP: Final[dict[str, tuple[str, ...]]] = {
     "GATHER_RESOURCE": ("assign_workers",),
@@ -122,6 +251,7 @@ SC2_INTENT_ACTION_TYPE_MAP: Final[dict[str, tuple[str, ...]]] = {
     "REPAIR": ("repair",),
     "EXPAND": ("build_structure",),
     "HARASS": ("attack_move",),
+    "MOVE_CAMERA": ("move_camera",),
 }
 """Stable public semantic action type names emitted for each Intent DSL value."""
 
@@ -144,12 +274,16 @@ def _build_structure_actions(
     payload: object | Mapping[str, object],
 ) -> tuple[SC2CommandAction, ...]:
     structure = str(_required_field(payload, "structure"))
+    metadata: dict[str, Any] = {"source_structure": structure}
+    placement_policy = _optional_mapping_field(payload, "placement_policy")
+    if placement_policy is not None:
+        metadata["placement_policy"] = placement_policy
     return (
         SC2CommandAction(
             action_type=_action_type_for_intent("BUILD_STRUCTURE"),
             subject=_structure_type_id(structure),
             target=_target_alias(str(_required_field(payload, "location"))),
-            metadata={"source_structure": structure},
+            metadata=metadata,
         ),
     )
 
@@ -264,6 +398,24 @@ def _summarize_state_actions(
     )
 
 
+def _move_camera_actions(
+    payload: object | Mapping[str, object],
+) -> tuple[SC2CommandAction, ...]:
+    metadata: dict[str, Any] = {}
+    target_slot = _optional_text_field(payload, "target_slot")
+    if target_slot:
+        metadata["target_slot"] = target_slot
+    return (
+        SC2CommandAction(
+            action_type=_action_type_for_intent("MOVE_CAMERA"),
+            subject="camera",
+            target=_target_alias(str(_required_field(payload, "target"))),
+            count=0,
+            metadata=metadata,
+        ),
+    )
+
+
 _SC2_INTENT_ACTION_BUILDERS: Final[
     dict[str, Callable[[object | Mapping[str, object]], tuple[SC2CommandAction, ...]]]
 ] = {
@@ -277,6 +429,7 @@ _SC2_INTENT_ACTION_BUILDERS: Final[
     "REPAIR": _repair_actions,
     "EXPAND": _expand_actions,
     "HARASS": _harass_actions,
+    "MOVE_CAMERA": _move_camera_actions,
 }
 """One action-builder function per supported Intent DSL value."""
 
@@ -318,6 +471,46 @@ def build_sc2_execution_plan(
     """Build the default StarCraft II plan for a commander Intent DSL payload."""
 
     return DEFAULT_SC2_ACTION_PLANNER.build_plan(payload)
+
+
+def normalize_sc2_target_key(target: object) -> str:
+    """Return the stable lookup key for Korean and English target aliases."""
+
+    return "".join(str(target).casefold().split())
+
+
+def resolve_sc2_target_name(
+    target: object,
+    catalog_entries: object = (),
+) -> str | None:
+    """Resolve raw natural-language target text to a semantic SC2 target name.
+
+    ``catalog_entries`` may be the runtime semantic target catalog. When
+    provided, its canonical target names and aliases participate in the same
+    whitespace-insensitive lookup as the static planner aliases.
+    """
+
+    if type(target) is not str:
+        return None
+    requested = target.strip()
+    if not requested:
+        return None
+    if requested in SC2_SEMANTIC_TARGET_NAMES:
+        return requested
+
+    exact_alias = SC2_TARGET_ALIASES.get(requested)
+    if exact_alias is not None:
+        return exact_alias
+
+    normalized = normalize_sc2_target_key(requested)
+    catalog_match = _resolve_catalog_target_alias(normalized, catalog_entries)
+    if catalog_match is not None:
+        return catalog_match
+
+    normalized_alias = _NORMALIZED_SC2_TARGET_ALIASES.get(normalized)
+    if normalized_alias is not None:
+        return normalized_alias
+    return None
 
 @runtime_checkable
 class SC2RuntimeExecutorInterface(Protocol):
@@ -589,16 +782,69 @@ def _producer_type_id(unit_name: str) -> str:
 def _target_alias(target: str) -> str:
     """Resolve a map-location target strictly to a semantic SC2 target name."""
 
-    alias = SC2_TARGET_ALIASES.get(target)
+    alias = resolve_sc2_target_name(target)
     if alias is not None:
         return alias
-    if target in SC2_SEMANTIC_TARGET_NAMES:
-        return target
     supported = ", ".join(sorted({*SC2_TARGET_ALIASES, *SC2_SEMANTIC_TARGET_NAMES}))
     raise ValueError(
         f"unsupported SC2 target location: {target!r}. "
         f"Supported targets: {supported}."
     )
+
+
+def _optional_mapping_field(
+    payload: object | Mapping[str, object],
+    field_name: str,
+) -> dict[str, object] | None:
+    if isinstance(payload, Mapping):
+        value = payload.get(field_name)
+    else:
+        value = getattr(payload, field_name, None)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a mapping when provided.")
+    return {str(key): item for key, item in value.items()}
+
+
+def _optional_text_field(
+    payload: object | Mapping[str, object],
+    field_name: str,
+) -> str:
+    value = _field(payload, field_name, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string when provided.")
+    return value.strip()
+
+
+def _resolve_catalog_target_alias(
+    normalized_target: str,
+    catalog_entries: object,
+) -> str | None:
+    try:
+        entries = tuple(catalog_entries)
+    except Exception:
+        return None
+    for entry in entries:
+        target = getattr(entry, "target", "")
+        if (
+            type(target) is str
+            and target in SC2_SEMANTIC_TARGET_NAMES
+            and normalize_sc2_target_key(target) == normalized_target
+        ):
+            return target
+        aliases = getattr(entry, "aliases", ())
+        try:
+            alias_values = tuple(aliases)
+        except Exception:
+            alias_values = ()
+        for alias in alias_values:
+            if normalize_sc2_target_key(alias) == normalized_target:
+                if type(target) is str and target in SC2_SEMANTIC_TARGET_NAMES:
+                    return target
+    return None
 
 
 def _action_type_for_intent(intent: str) -> SC2ActionType:
@@ -648,6 +894,9 @@ def _refused_action_error(
 ) -> SC2ExecutionError:
     """Build the structured error explaining why an adapter refused an action."""
 
+    metadata: dict[str, object] = {"detail": report.detail}
+    if report.audit:
+        metadata["audit"] = dict(report.audit)
     return SC2ExecutionError(
         message=(
             f"action '{action.action_type.value}' was refused without issuing "
@@ -656,7 +905,7 @@ def _refused_action_error(
         action_type=action.action_type,
         action_index=action_index,
         exception_type="ActionRefused",
-        metadata={"detail": report.detail},
+        metadata=metadata,
     )
 
 
@@ -744,4 +993,5 @@ def _method_name_for_action(action_type: SC2ActionType) -> str:
         SC2ActionType.ATTACK_MOVE: "attack_move",
         SC2ActionType.REPAIR: "repair",
         SC2ActionType.OBSERVE: "observe",
+        SC2ActionType.MOVE_CAMERA: "move_camera",
     }[action_type]

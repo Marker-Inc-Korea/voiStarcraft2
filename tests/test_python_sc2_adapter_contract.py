@@ -19,7 +19,11 @@ from starcraft_commander.contracts import (
     SC2ActionType,
     SC2CommandAction,
 )
-from starcraft_commander.map_resolver import MapPoint, SC2MapResolver
+from starcraft_commander.map_resolver import (
+    MapPoint,
+    SC2MapResolver,
+    SC2RuntimeMapResolver,
+)
 from starcraft_commander.python_sc2_adapter import (
     MissingPythonSC2Error,
     PYTHON_SC2_UNIT_TYPE_HINT,
@@ -28,7 +32,11 @@ from starcraft_commander.python_sc2_adapter import (
     SC2_EXECUTOR_LIFECYCLE_METHOD_NAMES,
     SC2BotAdapterInterface,
 )
-from starcraft_commander.sc2_executor import SC2ActionPlanner, SC2RuntimeExecutor
+from starcraft_commander.sc2_executor import (
+    SC2ActionPlanner,
+    SC2RuntimeExecutor,
+    SC2_STRUCTURE_TYPE_IDS,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -135,6 +143,12 @@ class FakeBotAI:
         mineral_fields=None,
         geysers=None,
         affordable=True,
+        safe_points=None,
+        visible_points=None,
+        pathable_points=None,
+        buildable_points=None,
+        can_place_points=None,
+        expansion_locations=None,
     ):
         self.workers = FakeUnitGroup(workers or [])
         self.units = FakeUnitGroup(
@@ -145,6 +159,11 @@ class FakeBotAI:
         self.vespene_geyser = FakeUnitGroup(geysers or [])
         self.start_location = FakePoint(10.0, 10.0)
         self.enemy_start_locations = [FakePoint(90.0, 90.0)]
+        self.expansion_locations_list = FakeUnitGroup(
+            expansion_locations
+            if expansion_locations is not None
+            else [FakePoint(10.0, 10.0), FakePoint(30.0, 30.0)]
+        )
         self.minerals = 400
         self.vespene = 100
         self.supply_used = 20
@@ -156,9 +175,19 @@ class FakeBotAI:
         self.enemy_units = FakeUnitGroup([])
         self.enemy_structures = FakeUnitGroup([])
         self.affordable = affordable
+        self.safe_points = dict(safe_points or {})
+        self.visible_points = dict(visible_points or {})
+        self.pathable_points = dict(pathable_points or {})
+        self.buildable_points = dict(buildable_points or {})
+        self.can_place_points = dict(can_place_points or {})
         self.issued = []
         self.build_calls = []
         self.can_afford_calls = []
+        self.safety_checks = []
+        self.visibility_checks = []
+        self.pathing_checks = []
+        self.placement_grid_checks = []
+        self.can_place_calls = []
 
     def can_afford(self, item):
         self.can_afford_calls.append(item)
@@ -174,6 +203,26 @@ class FakeBotAI:
         self.build_calls.append((type_id, near))
         return None
 
+    def is_position_safe(self, point):
+        self.safety_checks.append(point)
+        return self.safe_points.get(point_xy(point), True)
+
+    def is_visible(self, point):
+        self.visibility_checks.append(point)
+        return self.visible_points.get(point_xy(point), True)
+
+    def in_pathing_grid(self, point):
+        self.pathing_checks.append(point)
+        return self.pathable_points.get(point_xy(point), True)
+
+    def in_placement_grid(self, point):
+        self.placement_grid_checks.append(point)
+        return self.buildable_points.get(point_xy(point), True)
+
+    async def can_place(self, type_id, point):
+        self.can_place_calls.append((type_id, point))
+        return self.can_place_points.get(point_xy(point), True)
+
 
 FAKE_UNIT_TYPE_IDS = {
     "SCV": "TYPE:SCV",
@@ -181,7 +230,9 @@ FAKE_UNIT_TYPE_IDS = {
     "HELLION": "TYPE:HELLION",
     "SUPPLYDEPOT": "TYPE:SUPPLYDEPOT",
     "BARRACKS": "TYPE:BARRACKS",
+    "BUNKER": "TYPE:BUNKER",
     "COMMANDCENTER": "TYPE:COMMANDCENTER",
+    "FACTORY": "TYPE:FACTORY",
     "REFINERY": "TYPE:REFINERY",
 }
 
@@ -196,6 +247,7 @@ def make_map_resolver():
             "self_main": MapPoint(10.0, 10.0),
             "self_ramp": MapPoint(20.0, 12.0),
             "self_natural": MapPoint(30.0, 30.0),
+            "self_mineral_line": MapPoint(12.0, 11.0),
             "enemy_main": MapPoint(90.0, 90.0),
             "enemy_mineral_line": MapPoint(88.0, 95.0),
         }
@@ -244,6 +296,7 @@ class AdapterContractTest(unittest.TestCase):
                 "attack_move",
                 "repair",
                 "observe",
+                "move_camera",
             ),
             SC2_ADAPTER_ACTION_METHOD_NAMES,
         )
@@ -287,6 +340,40 @@ class AdapterContractTest(unittest.TestCase):
             list(SC2_ADAPTER_ACTION_METHOD_NAMES),
             payload["action_methods"],
         )
+
+
+class MoveCameraTest(unittest.TestCase):
+    def test_move_camera_invokes_runtime_camera_capability(self) -> None:
+        class RuntimeCameraBot(FakeBotAI):
+            def __init__(self):
+                super().__init__()
+                self.camera_moves = []
+
+            def move_camera(self, point):
+                self.camera_moves.append(point)
+                return True
+
+        bot = RuntimeCameraBot()
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.move_camera(
+                action(
+                    SC2ActionType.MOVE_CAMERA,
+                    "camera",
+                    target="self_ramp",
+                    count=0,
+                )
+            )
+        )
+
+        self.assertIsInstance(result, SC2ActionReport)
+        self.assertTrue(result.applied)
+        self.assertEqual(1, result.requested_count)
+        self.assertEqual(1, result.issued_count)
+        self.assertEqual(1, len(bot.camera_moves))
+        self.assertEqual((20.0, 12.0), point_xy(bot.camera_moves[0]))
+        self.assertEqual([], bot.issued)
 
 
 class AssignWorkersTest(unittest.TestCase):
@@ -482,6 +569,204 @@ class AssignWorkersTest(unittest.TestCase):
 
 
 class BuildStructureTest(unittest.TestCase):
+    def _supported_building_cases(self):
+        ramp = MapPoint(20.0, 12.0)
+        natural = MapPoint(30.0, 30.0)
+        return {
+            "Barracks": {
+                "subject": "BARRACKS",
+                "target": "self_ramp",
+                "center": ramp,
+                "fallback": MapPoint(20.0, 11.0),
+            },
+            "Bunker": {
+                "subject": "BUNKER",
+                "target": "self_ramp",
+                "center": ramp,
+                "fallback": MapPoint(20.0, 11.0),
+            },
+            "Command Center": {
+                "subject": "COMMANDCENTER",
+                "target": "self_natural",
+                "center": natural,
+                "fallback": MapPoint(30.0, 29.0),
+            },
+            "Factory": {
+                "subject": "FACTORY",
+                "target": "self_ramp",
+                "center": ramp,
+                "fallback": MapPoint(20.0, 11.0),
+            },
+            "Refinery": {
+                "subject": "REFINERY",
+                "target": "main geyser",
+            },
+            "Supply Depot": {
+                "subject": "SUPPLYDEPOT",
+                "target": "self_ramp",
+                "center": ramp,
+                "fallback": MapPoint(20.0, 11.0),
+            },
+        }
+
+    def _bounded_point_policy(self, center: MapPoint) -> dict[str, object]:
+        return {
+            "position": center.to_dict(),
+            "search_radius": 1,
+        }
+
+    def _blocked_radius_one_candidates(
+        self,
+        center: MapPoint,
+    ) -> dict[tuple[float, float], bool]:
+        return {
+            center.to_tuple(): False,
+            (center.x, center.y - 1.0): False,
+            (center.x + 1.0, center.y): False,
+            (center.x, center.y + 1.0): False,
+            (center.x - 1.0, center.y): False,
+        }
+
+    def test_each_supported_building_type_has_successful_placement(self) -> None:
+        cases = self._supported_building_cases()
+        self.assertEqual(set(SC2_STRUCTURE_TYPE_IDS), set(cases))
+
+        for structure, case in cases.items():
+            with self.subTest(structure=structure):
+                if structure == "Refinery":
+                    geyser = FakeUnit("VespeneGeyser", 12.0, 10.0)
+                    bot = FakeBotAI(
+                        workers=[FakeUnit("SCV", 10, 10)],
+                        geysers=[geyser],
+                    )
+                else:
+                    bot = FakeBotAI(workers=[FakeUnit("SCV")])
+                adapter = make_adapter(bot)
+
+                result = run(
+                    adapter.build_structure(
+                        action(
+                            SC2ActionType.BUILD_STRUCTURE,
+                            case["subject"],
+                            target=case["target"],
+                            metadata={"source_structure": structure},
+                        )
+                    )
+                )
+
+                self.assertTrue(result)
+                self.assertEqual(1, len(bot.build_calls))
+                type_id, near = bot.build_calls[0]
+                self.assertEqual(f"TYPE:{case['subject']}", type_id)
+                if structure == "Refinery":
+                    self.assertIs(near, geyser)
+                else:
+                    self.assertEqual(case["center"].to_tuple(), point_xy(near))
+
+    def test_each_supported_building_type_falls_back_to_next_valid_candidate(
+        self,
+    ) -> None:
+        cases = self._supported_building_cases()
+        self.assertEqual(set(SC2_STRUCTURE_TYPE_IDS), set(cases))
+
+        for structure, case in cases.items():
+            with self.subTest(structure=structure):
+                if structure == "Refinery":
+                    taken_geyser = FakeUnit("VespeneGeyser", 12.0, 10.0)
+                    free_geyser = FakeUnit("VespeneGeyser", 15.0, 10.0)
+                    existing_refinery = FakeUnit("Refinery", 12.0, 10.0)
+                    bot = FakeBotAI(
+                        workers=[FakeUnit("SCV", 10, 10)],
+                        geysers=[taken_geyser, free_geyser],
+                        structures=[existing_refinery],
+                    )
+                    metadata = {
+                        "source_structure": structure,
+                        "placement_policy": self._bounded_point_policy(
+                            MapPoint(12.0, 10.0)
+                        ),
+                    }
+                else:
+                    center = case["center"]
+                    bot = FakeBotAI(
+                        workers=[FakeUnit("SCV")],
+                        buildable_points={center.to_tuple(): False},
+                    )
+                    metadata = {
+                        "source_structure": structure,
+                        "placement_policy": self._bounded_point_policy(center),
+                    }
+                adapter = make_adapter(bot)
+
+                result = run(
+                    adapter.build_structure(
+                        action(
+                            SC2ActionType.BUILD_STRUCTURE,
+                            case["subject"],
+                            target=case["target"],
+                            metadata=metadata,
+                        )
+                    )
+                )
+
+                self.assertTrue(result)
+                self.assertEqual(1, len(bot.build_calls))
+                type_id, near = bot.build_calls[0]
+                self.assertEqual(f"TYPE:{case['subject']}", type_id)
+                if structure == "Refinery":
+                    self.assertIs(near, free_geyser)
+                else:
+                    self.assertEqual(case["fallback"].to_tuple(), point_xy(near))
+
+    def test_each_supported_building_type_reports_no_valid_placement(self) -> None:
+        cases = self._supported_building_cases()
+        self.assertEqual(set(SC2_STRUCTURE_TYPE_IDS), set(cases))
+
+        for structure, case in cases.items():
+            with self.subTest(structure=structure):
+                if structure == "Refinery":
+                    taken_geyser = FakeUnit("VespeneGeyser", 12.0, 10.0)
+                    existing_refinery = FakeUnit("Refinery", 12.0, 10.0)
+                    bot = FakeBotAI(
+                        workers=[FakeUnit("SCV", 10, 10)],
+                        geysers=[taken_geyser],
+                        structures=[existing_refinery],
+                    )
+                    metadata = {"source_structure": structure}
+                else:
+                    center = case["center"]
+                    blocked = self._blocked_radius_one_candidates(center)
+                    bot = FakeBotAI(
+                        workers=[FakeUnit("SCV")],
+                        buildable_points=blocked,
+                    )
+                    metadata = {
+                        "source_structure": structure,
+                        "placement_policy": self._bounded_point_policy(center),
+                    }
+                adapter = make_adapter(bot)
+
+                result = run(
+                    adapter.build_structure(
+                        action(
+                            SC2ActionType.BUILD_STRUCTURE,
+                            case["subject"],
+                            target=case["target"],
+                            metadata=metadata,
+                        )
+                    )
+                )
+
+                self.assertIsInstance(result, SC2ActionReport)
+                self.assertFalse(result)
+                if structure == "Refinery":
+                    self.assertIn("invalid_refinery_target", result.detail)
+                    self.assertIn("no_free_geyser", result.detail)
+                else:
+                    self.assertIn("no_safe_placement", result.detail)
+                    self.assertIn("not_buildable", result.detail)
+                self.assertEqual([], bot.build_calls)
+
     def test_builds_structure_near_resolved_target(self) -> None:
         bot = FakeBotAI(workers=[FakeUnit("SCV")])
         adapter = make_adapter(bot)
@@ -522,6 +807,311 @@ class BuildStructureTest(unittest.TestCase):
             [("TYPE:SUPPLYDEPOT", MapPoint(20.0, 12.0))],
             bot.build_calls,
         )
+
+    def test_build_placement_policy_anchor_selects_resolved_target_point(self) -> None:
+        bot = FakeBotAI(workers=[FakeUnit("SCV")])
+        adapter = make_adapter(bot)
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "SUPPLYDEPOT",
+                    target="self_ramp",
+                    metadata={
+                        "source_structure": "Supply Depot",
+                        "placement_policy": {
+                            "anchor": "mineral line",
+                            "anchor_target": "self_mineral_line",
+                            "spatial_relation": "away_from",
+                        },
+                    },
+                )
+            )
+        )
+        self.assertTrue(result)
+        self.assertIsInstance(result, SC2ActionReport)
+        assert isinstance(result, SC2ActionReport)
+        self.assertEqual("", result.detail)
+        self.assertEqual("", result.audit["failure_reason"])
+        self.assertEqual("", result.audit["failure_reason_code"])
+        self.assertEqual(
+            {
+                "anchor": "mineral line",
+                "anchor_target": "self_mineral_line",
+                "spatial_relation": "away_from",
+            },
+            result.audit["placement_policy"],
+        )
+        self.assertEqual(
+            "placement_policy.anchor_target",
+            result.audit["anchor_source"]["source"],
+        )
+        self.assertEqual(
+            "python-sc2 observations",
+            result.audit["resolved_placement_policy"]["anchor_source"],
+        )
+        self.assertEqual(
+            "self_mineral_line",
+            result.audit["resolved_target_policy"]["anchor_target"],
+        )
+        self.assertAlmostEqual(
+            9.316718427000252,
+            result.audit["resolved_target_policy"]["resolved_point"]["x"],
+        )
+        self.assertAlmostEqual(
+            9.658359213500127,
+            result.audit["resolved_target_policy"]["resolved_point"]["y"],
+        )
+        search_result = result.audit["search_result"]
+        self.assertEqual("selected", search_result["status"])
+        self.assertEqual("", search_result["reason_code"])
+        self.assertIsNotNone(search_result["selected_tile"])
+        self.assertEqual(
+            search_result["selected_tile"],
+            search_result["selected_result"]["tile"],
+        )
+        self.assertEqual("", search_result["selected_result"]["reason_code"])
+        self.assertEqual(
+            "python-sc2 build placement search",
+            search_result["selected_result"]["source"],
+        )
+        self.assertIsNone(search_result["no_match"])
+        self.assertEqual(1, len(bot.build_calls))
+        type_id, near = bot.build_calls[0]
+        self.assertEqual("TYPE:SUPPLYDEPOT", type_id)
+        self.assertAlmostEqual(9.316718427000252, point_xy(near)[0])
+        self.assertAlmostEqual(9.658359213500127, point_xy(near)[1])
+
+    def test_build_near_placement_policy_selects_bounded_near_point(self) -> None:
+        bot = FakeBotAI(workers=[FakeUnit("SCV")])
+        adapter = make_adapter(bot)
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "SUPPLYDEPOT",
+                    target="self_natural",
+                    metadata={
+                        "source_structure": "Supply Depot",
+                        "placement_policy": {
+                            "anchor": "natural expansion",
+                            "anchor_target": "self_natural",
+                            "spatial_relation": "near",
+                        },
+                    },
+                )
+            )
+        )
+        self.assertTrue(result)
+        assert_build_calls_equal(
+            self,
+            [("TYPE:SUPPLYDEPOT", MapPoint(30.0, 27.0))],
+            bot.build_calls,
+        )
+
+    def test_build_toward_placement_policy_selects_directional_point(self) -> None:
+        bot = FakeBotAI(workers=[FakeUnit("SCV")])
+        adapter = make_adapter(bot)
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "SUPPLYDEPOT",
+                    target="self_ramp",
+                    metadata={
+                        "source_structure": "Supply Depot",
+                        "placement_policy": {
+                            "anchor": "main ramp",
+                            "anchor_target": "self_ramp",
+                            "spatial_relation": "toward",
+                        },
+                    },
+                )
+            )
+        )
+        self.assertTrue(result)
+        self.assertEqual(1, len(bot.build_calls))
+        type_id, near = bot.build_calls[0]
+        self.assertEqual("TYPE:SUPPLYDEPOT", type_id)
+        self.assertAlmostEqual(15.88348405414552, point_xy(near)[0])
+        self.assertAlmostEqual(11.176696810829104, point_xy(near)[1])
+
+    def test_build_search_filters_safety_visibility_pathing_and_buildability(self) -> None:
+        bot = FakeBotAI(
+            workers=[FakeUnit("SCV")],
+            safe_points={(30.0, 27.0): False},
+            visible_points={(30.0, 26.0): False},
+            pathable_points={(31.0, 27.0): False},
+            buildable_points={(30.0, 28.0): False},
+            can_place_points={(29.0, 27.0): False},
+        )
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "SUPPLYDEPOT",
+                    target="self_natural",
+                    metadata={
+                        "source_structure": "Supply Depot",
+                        "placement_policy": {
+                            "anchor": "natural expansion",
+                            "anchor_target": "self_natural",
+                            "spatial_relation": "near",
+                        },
+                    },
+                )
+            )
+        )
+
+        self.assertTrue(result)
+        assert_build_calls_equal(
+            self,
+            [("TYPE:SUPPLYDEPOT", MapPoint(31.0, 26.0))],
+            bot.build_calls,
+        )
+        self.assertGreaterEqual(len(bot.safety_checks), 6)
+        self.assertGreaterEqual(len(bot.visibility_checks), 5)
+        self.assertGreaterEqual(len(bot.pathing_checks), 4)
+        self.assertGreaterEqual(len(bot.placement_grid_checks), 3)
+        self.assertGreaterEqual(len(bot.can_place_calls), 2)
+
+    def test_build_search_refuses_when_no_safe_buildable_tile_exists(self) -> None:
+        blocked = {
+            (30.0, 29.0): False,
+            (30.0, 28.0): False,
+            (31.0, 29.0): False,
+            (30.0, 30.0): False,
+            (29.0, 29.0): False,
+            (31.0, 28.0): False,
+            (31.0, 30.0): False,
+            (29.0, 30.0): False,
+            (29.0, 28.0): False,
+        }
+        bot = FakeBotAI(workers=[FakeUnit("SCV")], buildable_points=blocked)
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "SUPPLYDEPOT",
+                    target="self_natural",
+                    metadata={
+                        "source_structure": "Supply Depot",
+                        "placement_policy": {
+                            "anchor": "natural expansion",
+                            "anchor_target": "self_natural",
+                            "spatial_relation": "near",
+                            "search_radius": 1,
+                        },
+                    },
+                )
+            )
+        )
+
+        self.assertIsInstance(result, SC2ActionReport)
+        self.assertFalse(result.applied)
+        self.assertFalse(result)
+        self.assertIn("no_safe_placement", result.detail)
+        self.assertIn("not_buildable", result.detail)
+        self.assertEqual(result.detail, result.audit["failure_reason"])
+        self.assertEqual("no_safe_placement", result.audit["failure_reason_code"])
+        self.assertEqual(
+            {
+                "anchor": "natural expansion",
+                "anchor_target": "self_natural",
+                "spatial_relation": "near",
+                "search_radius": 1,
+            },
+            result.audit["placement_policy"],
+        )
+        self.assertEqual(
+            "placement_policy.anchor_target",
+            result.audit["anchor_source"]["source"],
+        )
+        self.assertEqual(
+            "self_natural",
+            result.audit["resolved_target_policy"]["anchor_target"],
+        )
+        search_result = result.audit["search_result"]
+        self.assertEqual("no_match", search_result["status"])
+        self.assertEqual("no_safe_placement", search_result["reason_code"])
+        self.assertIsNone(search_result["selected_tile"])
+        self.assertIsNone(search_result["selected_result"])
+        self.assertIn("no_safe_placement", search_result["no_match"]["reason"])
+        self.assertEqual(
+            "no_safe_placement",
+            search_result["no_match"]["reason_code"],
+        )
+        self.assertEqual(1.0, search_result["search_radius"])
+        self.assertEqual(1.0, search_result["no_match"]["search_radius"])
+        self.assertGreater(search_result["rejected_count"], 0)
+        self.assertEqual(
+            search_result["rejected_count"],
+            search_result["no_match"]["rejected_count"],
+        )
+        self.assertEqual([], bot.build_calls)
+
+    def test_supply_depot_prefers_safe_nearby_space_away_from_townhall(self) -> None:
+        command_center = FakeUnit("Command Center", 20.0, 10.2)
+        bot = FakeBotAI(workers=[FakeUnit("SCV")], structures=[command_center])
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "SUPPLYDEPOT",
+                    target="self_ramp",
+                    metadata={"source_structure": "Supply Depot"},
+                )
+            )
+        )
+
+        self.assertTrue(result)
+        assert_build_calls_equal(
+            self,
+            [("TYPE:SUPPLYDEPOT", MapPoint(21.0, 12.0))],
+            bot.build_calls,
+        )
+
+    def test_build_placement_policy_refuses_unresolved_korean_anchor(self) -> None:
+        bot = FakeBotAI(workers=[FakeUnit("SCV")])
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "SUPPLYDEPOT",
+                    target="self_ramp",
+                    metadata={
+                        "source_structure": "Supply Depot",
+                        "placement_policy": {
+                            "anchor": "섬 멀티",
+                            "spatial_relation": "near",
+                        },
+                    },
+                )
+            )
+        )
+
+        self.assertIsInstance(result, SC2ActionReport)
+        self.assertFalse(result.applied)
+        self.assertFalse(result)
+        self.assertEqual(1, result.requested_count)
+        self.assertEqual(0, result.issued_count)
+        self.assertIn("unresolved_anchor", result.detail)
+        self.assertIn("Unsupported map anchor", result.detail)
+        self.assertIn("섬 멀티", result.detail)
+        self.assertEqual("unsupported_map_anchor", result.audit["failure_reason_code"])
+        self.assertEqual(
+            "unsupported_map_anchor",
+            result.audit["anchor_source"]["resolver_reason_code"],
+        )
+        self.assertEqual([], bot.build_calls)
 
     def test_refuses_unaffordable_build(self) -> None:
         bot = FakeBotAI(affordable=False)
@@ -589,6 +1179,53 @@ class BuildStructureTest(unittest.TestCase):
         )
         self.assertTrue(result)
         self.assertEqual([True], expand_now_calls)
+        self.assertEqual([], bot.build_calls)
+
+    def test_command_center_refuses_non_expansion_location_before_expand_now(self) -> None:
+        bot = FakeBotAI()
+        expand_now_calls = []
+
+        async def expand_now():
+            expand_now_calls.append(True)
+            return None
+
+        bot.expand_now = expand_now
+        adapter = make_adapter(bot)
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "COMMANDCENTER",
+                    target="self_ramp",
+                    metadata={"source_structure": "Command Center"},
+                )
+            )
+        )
+
+        self.assertIsInstance(result, SC2ActionReport)
+        self.assertFalse(result)
+        self.assertIn("invalid_command_center_location", result.detail)
+        self.assertIn("not_expansion_location", result.detail)
+        self.assertEqual([], expand_now_calls)
+        self.assertEqual([], bot.build_calls)
+
+    def test_command_center_refuses_occupied_expansion(self) -> None:
+        bot = FakeBotAI(structures=[FakeUnit("Command Center", 30.0, 30.0)])
+        adapter = make_adapter(bot)
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "COMMANDCENTER",
+                    target="self_natural",
+                    metadata={"source_structure": "Command Center"},
+                )
+            )
+        )
+
+        self.assertIsInstance(result, SC2ActionReport)
+        self.assertFalse(result)
+        self.assertIn("expansion_occupied_by_own_townhall", result.detail)
         self.assertEqual([], bot.build_calls)
 
     def test_uses_bot_unit_type_id_resolver_fallback(self) -> None:
@@ -683,6 +1320,27 @@ class BuildStructureTest(unittest.TestCase):
                 )
                 self.assertFalse(result)
                 self.assertEqual([], bot.build_calls)
+
+    def test_refinery_refuses_non_geyser_anchor_instead_of_nearest_geyser(self) -> None:
+        geyser = FakeUnit("VespeneGeyser", 12.0, 10.0)
+        bot = FakeBotAI(workers=[FakeUnit("SCV", 10, 10)], geysers=[geyser])
+        adapter = make_adapter(bot)
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "REFINERY",
+                    target="self_ramp",
+                    metadata={"source_structure": "Refinery"},
+                )
+            )
+        )
+
+        self.assertIsInstance(result, SC2ActionReport)
+        self.assertFalse(result)
+        self.assertIn("invalid_refinery_target", result.detail)
+        self.assertIn("no_free_geyser_near_anchor", result.detail)
+        self.assertEqual([], bot.build_calls)
 
     @unittest.skipIf(PYTHON_SC2_INSTALLED, "python-sc2 is installed")
     def test_missing_python_sc2_raises_actionable_error(self) -> None:
@@ -1289,7 +1947,7 @@ class PipelineSmokeTest(unittest.TestCase):
         self.assertEqual(1, len(result.skipped_actions))
         self.assertEqual(0, len(result.applied_actions))
 
-    def test_lazy_map_resolver_is_built_from_bot_on_first_use(self) -> None:
+    def test_lazy_map_resolver_uses_runtime_catalog_lookup(self) -> None:
         marine = FakeUnit("Marine", 12, 12)
         bot = FakeBotAI(workers=[FakeUnit("SCV")], units=[marine])
         adapter = make_adapter(bot, map_resolver=None)
@@ -1300,10 +1958,38 @@ class PipelineSmokeTest(unittest.TestCase):
             )
         )
         self.assertTrue(result)
-        self.assertIsInstance(adapter.map_resolver, SC2MapResolver)
+        self.assertIsInstance(adapter.map_resolver, SC2RuntimeMapResolver)
         assert_order_points_equal(
             self,
             [("attack", marine, MapPoint(90.0, 90.0))],
+            bot.issued,
+        )
+
+    def test_lazy_runtime_map_resolver_does_not_reuse_stale_coordinates(self) -> None:
+        marine = FakeUnit("Marine", 12, 12)
+        bot = FakeBotAI(workers=[FakeUnit("SCV")], units=[marine])
+        adapter = make_adapter(bot, map_resolver=None)
+
+        first = run(
+            adapter.attack_move(
+                action(SC2ActionType.ATTACK_MOVE, "MARINE", target="enemy_main")
+            )
+        )
+        bot.enemy_start_locations = [FakePoint(70.0, 75.0)]
+        second = run(
+            adapter.attack_move(
+                action(SC2ActionType.ATTACK_MOVE, "MARINE", target="enemy_main")
+            )
+        )
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        assert_order_points_equal(
+            self,
+            [
+                ("attack", marine, MapPoint(90.0, 90.0)),
+                ("attack", marine, MapPoint(70.0, 75.0)),
+            ],
             bot.issued,
         )
 
