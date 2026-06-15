@@ -31,11 +31,11 @@ fields:
 
 | Field | Type | Required | Contract |
 | --- | --- | --- | --- |
-| `intent` | `IntentName` | yes | One of exactly 10 canonical Phase 0 intent names. |
+| `intent` | `IntentName` | yes | One of exactly 11 canonical Phase 0 intent names. |
 | `priority` | `Priority` | yes | `low`, `normal`, `high`, or `urgent`; defaults to `normal`. |
 | `constraints` | `tuple[str, ...]` | yes | Natural-language or normalized conditions that must hold before execution. Empty is valid. |
 
-The 10 canonical typed payload schemas are:
+The 11 canonical typed payload schemas are:
 
 | Intent | Payload class | Required intent-specific fields |
 | --- | --- | --- |
@@ -49,6 +49,7 @@ The 10 canonical typed payload schemas are:
 | `REPAIR` | `RepairIntent` | `target`, `worker_count` |
 | `EXPAND` | `ExpandIntent` | `location` |
 | `HARASS` | `HarassIntent` | `target`, `unit_group` |
+| `MOVE_CAMERA` | `MoveCameraIntent` | `target` |
 
 The stable parsed-command display envelope is:
 
@@ -218,7 +219,7 @@ must not execute, must include a reason plus alternative, and must preserve
 ## SC2 Command Plan Contract
 
 The real StarCraft II execution boundary lives in `starcraft_commander`. It
-reuses the same 10 canonical Intent DSL payloads, but it emits semantic SC2
+reuses the same 11 canonical Intent DSL payloads, but it emits semantic SC2
 command plans rather than ToyCraft state transitions or python-sc2 method names.
 The stable public SC2 action type name set is:
 
@@ -231,6 +232,7 @@ The stable public SC2 action type name set is:
 | `attack_move` | Issue combat movement toward a defensive or offensive target. |
 | `repair` | Assign repair workers to a damaged unit or structure target. |
 | `observe` | Read or summarize visible runtime state without issuing a mutating order. |
+| `move_camera` | Move the player's camera to a resolved semantic map target without issuing unit orders. |
 
 These names are the public API vocabulary for command plans, logs, UI adapters,
 and fake BotAI-style tests. They must remain semantic action categories; callers
@@ -255,27 +257,30 @@ semantics and invariants.
 | Contract | Module | Summary |
 | --- | --- | --- |
 | `SC2CommanderState` | `state_resolver.py` | Frozen semantic snapshot resolved from BotAI observations: minerals, vespene, supply, own/enemy unit and structure counts (UPPERCASE space-free type names), idle workers, army count, game time. `SC2StateResolver.resolve(bot)` never raises; degraded fields are recorded in `observation_notes`, and `observation_complete` is false whenever any note exists. |
-| `MapTargetResolution` | `map_resolver.py` | Outcome of resolving one semantic map target to a `MapPoint`. Available resolutions carry a position and nothing else; unavailable resolutions carry a reason and the currently available alternatives, never a position. Covers `self_main`, `self_ramp`, `self_natural`, `enemy_main`, `enemy_ramp`, `enemy_natural`, `enemy_mineral_line` plus best-effort `self_mineral_line` and `self_geyser`. |
+| `MapTargetResolution` | `map_resolver.py` | Outcome of resolving one semantic map target to a `MapPoint`. Available resolutions carry a position and nothing else; unavailable resolutions carry a reason and the currently available alternatives, never a position. Covers `self_main`, `self_ramp`, `self_natural`, `enemy_main`, `enemy_ramp`, `enemy_front`, `enemy_natural`, `enemy_mineral_line` plus best-effort `self_mineral_line` and `self_geyser`. |
+| `MapGeometryInference` | `map_resolver.py` | Auditable map-geometry snapshot built from start locations, expansion/base anchors, ramps, mineral patches, and geysers. Every observation or base cluster carries deterministic `confidence`, `visibility`, and `source` metadata for dashboard/debug display. |
 | `SC2FeasibilityResult` | `feasibility.py` | Gate verdict for one intent against `SC2CommanderState`. Executable results carry no reasons; rejected results carry at least one reason code, at least one Korean reason, and a non-empty Korean actionable alternative. Unknown state (`None`) or incomplete observation rejects mutating intents; only `SUMMARIZE_STATE` stays executable. |
 | `SC2NarrationResponse` | `narrator.py` | One Korean commander-facing narration with status `executed`, `partially_executed`, `blocked`, or `read_only`, plus structured detail lines. Skipped or partially issued work is never narrated as success; unenforced plan constraints are disclosed. |
 | `SC2CommandOutcome` | `live_pipeline.py` | One outcome per command (or compound part) with status `executed`, `partially_executed`, `blocked`, `read_only`, or `clarification`. Pipeline artifacts (`intent_dsl`, `plan`, `execution_result`, `feasibility`) are present only for stages that actually ran; clarification outcomes carry none. |
-| `SC2ActionReport` | `contracts.py` | Per-action adapter report carrying `requested_count` vs `issued_count`. `is_partial` flags issuance shortfalls; `bool(report)` is true only for a full, shortfall-free application so boolean callers never overclaim. |
+| `SC2ActionReport` | `contracts.py` | Per-action adapter report carrying `requested_count` vs `issued_count`, `detail`, and JSON-ready `audit`. `is_partial` flags issuance shortfalls; `bool(report)` is true only for a full, shortfall-free application so boolean callers never overclaim. Placement-aware build reports audit `resolved_target_policy`, `placement_policy`, `anchor_source`, `search_result`, and exact `failure_reason`. |
 
 ### Adapter Method Contract
 
 `SC2RuntimeExecutor.execute(plan)` dispatches every planned `SC2CommandAction`
 by calling the method named after its `action_type` on the bound runtime
-adapter. `PythonSC2BotAdapter` therefore implements exactly the seven semantic
+adapter. `PythonSC2BotAdapter` therefore implements exactly the eight semantic
 action type names as methods:
 
 ```text
 assign_workers   build_structure   train_unit   move_group
-attack_move      repair            observe
+attack_move      repair            observe       move_camera
 ```
 
 - Counted methods return `SC2ActionReport` (partial issuance is never collapsed
-  into a boolean); `build_structure` returns a plain bool; `observe` returns a
-  JSON-ready mapping.
+  into a boolean); placement-aware `build_structure` paths return
+  `SC2ActionReport` with target/placement audit fields while simple legacy
+  build paths may still return a plain bool; `observe` returns a JSON-ready
+  mapping.
 - The adapter defines none of the executor lifecycle hook names (`start`,
   `close`, `stop`, `on_start`, `on_end`) so they cannot collide with python-sc2
   `BotAI` lifecycle semantics.
