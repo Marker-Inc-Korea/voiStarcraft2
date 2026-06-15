@@ -406,6 +406,8 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertIsInstance(result.payload, DefendIntent)
         call = fake_client.calls[0]
         self.assertEqual(call["model"], "gpt-test")
+        self.assertEqual(call["max_completion_tokens"], DEFAULT_LLM_MAX_TOKENS)
+        self.assertNotIn("max_tokens", call)
         self.assertEqual(call["tool_choice"]["type"], "function")
         self.assertEqual(call["tools"][0]["type"], "function")
         self.assertEqual(call["messages"][0]["role"], "system")
@@ -976,6 +978,8 @@ class HybridCommandInterpreterTest(unittest.TestCase):
         self.assertIsNone(result.payload)
         self.assertTrue(result.clarification_required)
         self.assertIn("LLM 해석에 실패", result.clarification_prompt)
+        self.assertIn("세부 원인", result.clarification_prompt)
+        self.assertIn("model not found", result.clarification_prompt)
         self.assertEqual(
             result.failure.primary_reason.code,
             LLM_INTERPRETATION_FAILURE_CODE,

@@ -1340,9 +1340,9 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         </div>
         <label for="llm-model-select" data-i18n="llmModelLabel">모델 선택</label>
         <select id="llm-model-select">
+          <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
           <option value="gpt-5.5">GPT-5.5</option>
           <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
-          <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
         </select>
         <label for="llm-api-key">API Key</label>
         <input id="llm-api-key" type="password" autocomplete="off" placeholder="sk-...">
@@ -1400,6 +1400,7 @@ var isRecording = false;
 var liveGuiUrl = "";
 var LLM_MODELS = {
   openai: [
+    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
     { value: "gpt-5.5", label: "GPT-5.5" },
     { value: "gpt-5.5-chat-latest", label: "GPT-5.5 Chat Latest" },
     { value: "gpt-5.4", label: "GPT-5.4" },
@@ -1408,7 +1409,6 @@ var LLM_MODELS = {
     { value: "gpt-5.1", label: "GPT-5.1" },
     { value: "gpt-5.1-mini", label: "GPT-5.1 Mini" },
     { value: "gpt-4.1", label: "GPT-4.1" },
-    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
     { value: "gpt-4.1-nano", label: "GPT-4.1 Nano" },
     { value: "gpt-4o", label: "GPT-4o" },
     { value: "gpt-4o-mini", label: "GPT-4o Mini" }
@@ -2848,10 +2848,8 @@ function pollState() {
 
 function renderLlmSettings(data) {
   if (!data) { return; }
-  if (data.configured) {
-    setSelectedLlmProvider(data.provider || "openai");
-    renderModelSelect(data.provider || "openai", data.model || "");
-  }
+  setSelectedLlmProvider(data.provider || "openai");
+  renderModelSelect(data.provider || "openai", data.model || "");
   llmConfigured = !!data.configured;
   setCommandEnabled(llmConfigured);
   if (data.configured) {

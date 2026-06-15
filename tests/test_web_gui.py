@@ -2177,6 +2177,10 @@ assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "setting"
 assert.strictEqual(nodes["llm-status-label"].textContent, "설정 중");
 assert.strictEqual(nodes["llm-status-message"].textContent, "LLM 키 설정 중...");
 
+renderLlmSettings({ configured: false, provider: "openai", model: "gpt-4.1-mini" });
+assert.strictEqual(nodes["llm-model-select"].value, "gpt-4.1-mini");
+assert.strictEqual(nodes["send-button"].disabled, true);
+
 renderLlmSettings({ configured: true, provider: "openai", model: "gpt-test" });
 assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "success");
 assert.strictEqual(nodes["llm-status-label"].textContent, "설정 완료");

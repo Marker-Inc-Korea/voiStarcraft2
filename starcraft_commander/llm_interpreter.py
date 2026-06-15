@@ -126,7 +126,7 @@ DEFAULT_GEMINI_MODEL: Final[str] = "gemini-3.5-flash"
 DEFAULT_GROK_MODEL: Final[str] = "grok-4.3"
 """Default xAI/Grok OpenAI-compatible model used for command interpretation."""
 
-DEFAULT_OPENAI_MODEL: Final[str] = "gpt-5.4-mini"
+DEFAULT_OPENAI_MODEL: Final[str] = "gpt-4.1-mini"
 """Default OpenAI GPT model used for one-shot utterance interpretation."""
 
 DEFAULT_LLM_MODEL: Final[str] = DEFAULT_ANTHROPIC_MODEL
@@ -843,7 +843,7 @@ class LLMCommandInterpreter:
         if _uses_openai_compatible_client(self.provider):
             return client.chat.completions.create(
                 model=self.model,
-                max_tokens=self.max_tokens,
+                **_openai_compatible_token_args(self.provider, self.max_tokens),
                 messages=[
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": command_text},
@@ -881,7 +881,7 @@ class LLMCommandInterpreter:
         if _uses_openai_compatible_client(self.provider):
             return client.chat.completions.create(
                 model=self.model,
-                max_tokens=self.max_tokens,
+                **_openai_compatible_token_args(self.provider, self.max_tokens),
                 messages=[
                     {"role": "system", "content": self.combo_system_prompt},
                     {"role": "user", "content": command_text},
@@ -1243,6 +1243,14 @@ def _default_model_for_provider(provider: str) -> str:
     return DEFAULT_ANTHROPIC_MODEL
 
 
+def _openai_compatible_token_args(provider: str, max_tokens: int) -> dict[str, int]:
+    """Return provider-specific token argument names for chat completions."""
+
+    if provider == LLM_PROVIDER_OPENAI:
+        return {"max_completion_tokens": int(max_tokens)}
+    return {"max_tokens": int(max_tokens)}
+
+
 def _is_provider_available(provider: str) -> bool:
     return (
         is_openai_available()
@@ -1360,8 +1368,19 @@ def _build_llm_failure_result(
         command_text=command_text,
         code=LLM_INTERPRETATION_FAILURE_CODE,
         reason=reason,
-        prompt=LLM_FAILURE_CLARIFICATION_PROMPT,
+        prompt=_llm_failure_prompt(reason),
     )
+
+
+def _llm_failure_prompt(reason: str) -> str:
+    """Append a bounded technical reason so users can fix model/API issues."""
+
+    detail = " ".join(str(reason or "").split())
+    if not detail:
+        return LLM_FAILURE_CLARIFICATION_PROMPT
+    if len(detail) > 260:
+        detail = f"{detail[:257]}..."
+    return f"{LLM_FAILURE_CLARIFICATION_PROMPT}\n세부 원인: {detail}"
 
 
 def _build_clarification_result(
