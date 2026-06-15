@@ -17,6 +17,7 @@ from toycraft_commander.intents import (
     IntentName,
     IntentPayload,
     IntentValidationResult,
+    MoveCameraIntent,
     RepairIntent,
     ScoutIntent,
     SummarizeStateIntent,
@@ -30,6 +31,10 @@ from toycraft_commander.map import (
     get_resolved_map_location,
     resolve_location_name,
     resolve_targetable_position,
+)
+from toycraft_commander.placement import (
+    BUILD_PLACEMENT_CONSTRAINTS_BY_STRUCTURE,
+    get_build_placement_constraint,
 )
 from toycraft_commander.resources import (
     ResourceState,
@@ -88,11 +93,17 @@ KNOWN_CONFLICTING_CONSTRAINTS: Final[tuple[tuple[str, str], ...]] = (
     ("spend minerals", "save minerals"),
 )
 BUILD_LOCATION_NAMES_BY_STRUCTURE: Final[dict[str, tuple[str, ...]]] = {
-    "Supply Depot": ("main", "main base", "main ramp"),
+    "Supply Depot": BUILD_PLACEMENT_CONSTRAINTS_BY_STRUCTURE[
+        "Supply Depot"
+    ].allowed_location_names,
     "Barracks": ("main", "main base"),
-    "Refinery": ("main geyser",),
+    "Refinery": BUILD_PLACEMENT_CONSTRAINTS_BY_STRUCTURE[
+        "Refinery"
+    ].allowed_location_names,
     "Bunker": ("main ramp", "natural choke"),
-    "Command Center": ("natural expansion",),
+    "Command Center": BUILD_PLACEMENT_CONSTRAINTS_BY_STRUCTURE[
+        "Command Center"
+    ].allowed_location_names,
 }
 COMBAT_STRENGTH_BY_UNIT: Final[dict[str, int]] = {
     "Marine": 1,
@@ -662,6 +673,25 @@ def _validate_harass(
     return tuple(issues)
 
 
+def _validate_move_camera(
+    payload: IntentPayload,
+    state: ToyCraftState,
+) -> tuple[FeasibilityIssue, ...]:
+    intent = _expect_payload_type(payload, MoveCameraIntent)
+    if resolve_location_name(intent.target) is not None:
+        return ()
+    if resolve_targetable_position(intent.target) is not None:
+        return ()
+    return (
+        _issue(
+            FeasibilityErrorReason.INVALID_TARGET,
+            f"{intent.target} is not a known camera target.",
+            "Move the camera to a known location such as main base, main ramp, or natural expansion.",
+            ("target",),
+        ),
+    )
+
+
 INTENT_FEASIBILITY_RULES: Final[dict[IntentName, IntentFeasibilityRule]] = {
     "GATHER_RESOURCE": _validate_gather_resource,
     "BUILD_STRUCTURE": _validate_build_structure,
@@ -673,6 +703,7 @@ INTENT_FEASIBILITY_RULES: Final[dict[IntentName, IntentFeasibilityRule]] = {
     "REPAIR": _validate_repair,
     "EXPAND": _validate_expand,
     "HARASS": _validate_harass,
+    "MOVE_CAMERA": _validate_move_camera,
 }
 
 DEFAULT_FEASIBILITY_VALIDATOR: Final[IntentFeasibilityValidator] = (
@@ -696,6 +727,7 @@ def _coerce_intent_payload(
             RepairIntent,
             ExpandIntent,
             HarassIntent,
+            MoveCameraIntent,
         ),
     ):
         return IntentValidationResult(executable=True, payload=payload)
@@ -971,9 +1003,24 @@ def _multiply_unit_cost(cost: UnitCost, count: int) -> dict[str, int]:
 
 
 def _is_valid_build_location(structure_name: str, location_name: str) -> bool:
-    if location_name not in BUILD_LOCATION_NAMES_BY_STRUCTURE.get(structure_name, ()):
+    allowed_locations = BUILD_LOCATION_NAMES_BY_STRUCTURE.get(structure_name, ())
+    if location_name not in allowed_locations:
         return False
     location = get_resolved_map_location(location_name)
+    constraint = get_build_placement_constraint(structure_name)
+    if constraint is not None:
+        if location.kind not in constraint.allowed_location_kinds:
+            return False
+        if (
+            constraint.resource_adjacency == "requires_free_geyser"
+            and location.kind != "resource"
+        ):
+            return False
+        if (
+            constraint.resource_adjacency == "requires_base_resource_cluster"
+            and location.kind != "base"
+        ):
+            return False
     return location.kind != "enemy_position"
 
 

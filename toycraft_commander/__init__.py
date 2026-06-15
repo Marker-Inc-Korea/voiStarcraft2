@@ -30,6 +30,7 @@ from toycraft_commander.intents import (
     IntentPayload,
     IntentSchema,
     IntentValidationResult,
+    MoveCameraIntent,
     RepairIntent,
     ScoutIntent,
     SummarizeStateIntent,
@@ -58,6 +59,17 @@ from toycraft_commander.feasibility import (
     ToyCraftFeasibilityValidator,
     get_intent_feasibility_rule,
     validate_intent_feasibility,
+)
+from toycraft_commander.placement import (
+    BUILD_PLACEMENT_CONSTRAINTS,
+    BUILD_PLACEMENT_CONSTRAINTS_BY_STRUCTURE,
+    COMMAND_CENTER_PLACEMENT_CONSTRAINT,
+    REFINERY_PLACEMENT_CONSTRAINT,
+    SUPPLY_DEPOT_PLACEMENT_CONSTRAINT,
+    BuildingFootprint,
+    BuildingPlacementConstraint,
+    PlacementClearanceRules,
+    get_build_placement_constraint,
 )
 from toycraft_commander.state_resolver import (
     COMBAT_UNIT_GROUP_NAMES,
@@ -236,8 +248,18 @@ from toycraft_commander.interpreter import (
     CommandPatternLexicon,
     DEFAULT_COMMAND_INTERPRETER,
     InterpreterMapping,
+    KoreanBaseSelectionIntent,
+    KoreanRelativeLocationPhrase,
+    ParsedAnchorLabel,
+    SUPPORTED_PARSED_ANCHOR_DISPLAY_LABELS,
+    SUPPORTED_PARSED_ANCHOR_LABEL_KEYS,
+    SUPPORTED_PARSED_ANCHOR_LABELS,
     interpret_command,
     interpret_command_text,
+    normalize_parsed_anchor_label,
+    parsed_anchor_label_for_key,
+    parse_korean_base_selection,
+    parse_korean_relative_location_phrase,
 )
 from toycraft_commander.map import (
     MAP_LOCATION_ALIASES,

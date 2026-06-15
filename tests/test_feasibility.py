@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import toycraft_commander as package_exports
 from toycraft_commander.feasibility import (
+    BUILD_LOCATION_NAMES_BY_STRUCTURE,
     ConstructionOrder,
     DEFAULT_FEASIBILITY_VALIDATOR,
     INTENT_FEASIBILITY_RULES,
@@ -24,6 +25,7 @@ from toycraft_commander.intents import (
     FeasibilityErrorReason,
     GatherResourceIntent,
     HarassIntent,
+    MoveCameraIntent,
     RepairIntent,
     ScoutIntent,
     SummarizeStateIntent,
@@ -32,6 +34,10 @@ from toycraft_commander.intents import (
     ValidationStatus,
 )
 from toycraft_commander.resources import ResourceState, SupplyState
+from toycraft_commander.placement import (
+    BUILD_PLACEMENT_CONSTRAINTS_BY_STRUCTURE,
+    get_build_placement_constraint,
+)
 
 
 def ready_state() -> ToyCraftState:
@@ -71,6 +77,7 @@ def executable_intent_feasibility_cases():
         ("REPAIR", RepairIntent(target="front bunker", worker_count=1), ready_state()),
         ("EXPAND", ExpandIntent(location="natural expansion"), ready_state()),
         ("HARASS", HarassIntent(target="enemy mineral line", unit_group="2 Marines"), ready_state()),
+        ("MOVE_CAMERA", MoveCameraIntent(target="main base"), ready_state()),
     )
 
 
@@ -186,9 +193,9 @@ class ToyCraftFeasibilityStateTest(unittest.TestCase):
 
 
 class IntentFeasibilityDispatchTest(unittest.TestCase):
-    def test_dispatch_table_covers_exactly_the_ten_canonical_intents(self) -> None:
+    def test_dispatch_table_covers_exactly_the_canonical_intents(self) -> None:
         self.assertEqual(set(CANONICAL_INTENT_NAMES), set(INTENT_FEASIBILITY_RULES))
-        self.assertEqual(10, len(INTENT_FEASIBILITY_RULES))
+        self.assertEqual(11, len(INTENT_FEASIBILITY_RULES))
 
         for intent in CANONICAL_INTENT_NAMES:
             with self.subTest(intent=intent):
@@ -586,6 +593,59 @@ class EconomyProductionFeasibilityTest(unittest.TestCase):
         )
         self.assertIn("already under construction", duplicate_in_progress_depot.reason)
 
+    def test_core_terran_building_placement_constraints_are_explicit(self) -> None:
+        constraints = BUILD_PLACEMENT_CONSTRAINTS_BY_STRUCTURE
+
+        depot = constraints["Supply Depot"]
+        self.assertEqual((2, 2), (depot.footprint.width, depot.footprint.height))
+        self.assertEqual("buildable_ground", depot.required_anchor_type)
+        self.assertEqual(("base", "ramp"), depot.allowed_location_kinds)
+        self.assertEqual("requires_buildable_terrain", depot.buildability_rule)
+        self.assertEqual("avoid_resource_line", depot.resource_adjacency)
+        self.assertTrue(depot.clearance.require_unoccupied_footprint)
+        self.assertTrue(depot.clearance.avoid_mineral_line_overlap)
+        self.assertTrue(depot.clearance.avoid_geyser_overlap)
+        self.assertTrue(depot.clearance.allow_wall_anchor)
+        self.assertGreaterEqual(depot.clearance.min_tiles_from_townhall, 2.0)
+
+        command_center = constraints["Command Center"]
+        self.assertEqual(
+            (5, 5),
+            (command_center.footprint.width, command_center.footprint.height),
+        )
+        self.assertEqual("expansion_base", command_center.required_anchor_type)
+        self.assertEqual(("base",), command_center.allowed_location_kinds)
+        self.assertEqual("requires_townhall_placement", command_center.buildability_rule)
+        self.assertEqual(
+            "requires_base_resource_cluster",
+            command_center.resource_adjacency,
+        )
+        self.assertTrue(command_center.clearance.require_unclaimed_base)
+        self.assertTrue(command_center.clearance.avoid_mineral_line_overlap)
+        self.assertTrue(command_center.clearance.avoid_geyser_overlap)
+        self.assertGreaterEqual(command_center.clearance.min_tiles_from_resources, 4.0)
+
+        refinery = constraints["Refinery"]
+        self.assertEqual((3, 3), (refinery.footprint.width, refinery.footprint.height))
+        self.assertEqual("vespene_geyser", refinery.required_anchor_type)
+        self.assertEqual(("resource",), refinery.allowed_location_kinds)
+        self.assertEqual("requires_geyser_resource", refinery.buildability_rule)
+        self.assertEqual("requires_free_geyser", refinery.resource_adjacency)
+        self.assertTrue(refinery.clearance.require_free_resource_node)
+        self.assertEqual(("main geyser",), refinery.allowed_location_names)
+
+        for structure_name in ("Supply Depot", "Command Center", "Refinery"):
+            with self.subTest(structure_name=structure_name):
+                constraint = get_build_placement_constraint(structure_name)
+                self.assertIs(constraint, constraints[structure_name])
+                self.assertEqual(
+                    constraint.allowed_location_names,
+                    BUILD_LOCATION_NAMES_BY_STRUCTURE[structure_name],
+                )
+                serialized = constraint.to_dict()
+                self.assertIn("footprint", serialized)
+                self.assertIn("clearance", serialized)
+
     def test_construction_requires_builder_and_completed_base_precondition(self) -> None:
         result = validate_intent_feasibility(
             BuildStructureIntent(structure="Supply Depot", location="main ramp"),
@@ -877,6 +937,12 @@ class FocusedIntentFeasibilityMatrixTest(unittest.TestCase):
             (
                 "HARASS",
                 HarassIntent(target="main ramp", unit_group="2 Marines"),
+                ready_state(),
+                FeasibilityErrorReason.INVALID_TARGET,
+            ),
+            (
+                "MOVE_CAMERA",
+                MoveCameraIntent(target="unknown third base"),
                 ready_state(),
                 FeasibilityErrorReason.INVALID_TARGET,
             ),

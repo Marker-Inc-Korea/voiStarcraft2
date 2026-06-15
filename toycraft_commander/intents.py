@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Final, Literal
 
 from toycraft_commander.compat import StrEnum
@@ -24,6 +24,7 @@ class CanonicalIntentName(StrEnum):
     REPAIR = "REPAIR"
     EXPAND = "EXPAND"
     HARASS = "HARASS"
+    MOVE_CAMERA = "MOVE_CAMERA"
 
 
 class PriorityLevel(StrEnum):
@@ -117,6 +118,7 @@ IntentName = Literal[
     "REPAIR",
     "EXPAND",
     "HARASS",
+    "MOVE_CAMERA",
 ]
 FieldType = Literal[
     "intent",
@@ -181,6 +183,7 @@ UnitControlCombatIntentName = Literal[
     "DEFEND",
     "REPAIR",
     "HARASS",
+    "MOVE_CAMERA",
 ]
 
 
@@ -404,12 +407,27 @@ class BuildStructureIntent(BaseIntentPayload):
     intent: Literal["BUILD_STRUCTURE"] = "BUILD_STRUCTURE"
     structure: StructureName
     location: str
+    placement_policy: Mapping[str, object] | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         super().__post_init__()
         _validate_exact_intent(self.intent, "BUILD_STRUCTURE")
         _validate_allowed_value("structure", self.structure, ALLOWED_STRUCTURE_NAMES)
         _validate_non_empty_text("location", self.location)
+        if self.placement_policy is None:
+            return
+        if not isinstance(self.placement_policy, Mapping):
+            raise ValueError("placement_policy must be a mapping when provided.")
+        placement_policy = {
+            str(key): value for key, value in self.placement_policy.items()
+        }
+        if any(not key.strip() for key in placement_policy):
+            raise ValueError("placement_policy keys must be non-empty strings.")
+        object.__setattr__(self, "placement_policy", placement_policy)
 
 
 BuildingIntentPayload = BuildStructureIntent
@@ -538,8 +556,30 @@ class HarassIntent(BaseIntentPayload):
         _validate_non_empty_text("unit_group", self.unit_group)
 
 
+@dataclass(frozen=True, kw_only=True)
+class MoveCameraIntent(BaseIntentPayload):
+    """Typed UI intent for moving the live StarCraft camera."""
+
+    intent: Literal["MOVE_CAMERA"] = "MOVE_CAMERA"
+    target: str
+    target_slot: str = field(default="", compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _validate_exact_intent(self.intent, "MOVE_CAMERA")
+        _validate_non_empty_text("target", self.target)
+        if not isinstance(self.target_slot, str):
+            raise ValueError("target_slot must be a string when provided.")
+        object.__setattr__(self, "target_slot", self.target_slot.strip())
+
+
 UnitControlCombatIntentPayload = (
-    ScoutIntent | SummarizeStateIntent | DefendIntent | RepairIntent | HarassIntent
+    ScoutIntent
+    | SummarizeStateIntent
+    | DefendIntent
+    | RepairIntent
+    | HarassIntent
+    | MoveCameraIntent
 )
 IntentPayload = (
     GatherResourceIntent
@@ -552,6 +592,7 @@ IntentPayload = (
     | RepairIntent
     | ExpandIntent
     | HarassIntent
+    | MoveCameraIntent
 )
 
 INTENT_PAYLOAD_TYPES: Final[dict[IntentName, type[IntentPayload]]] = {
@@ -565,6 +606,7 @@ INTENT_PAYLOAD_TYPES: Final[dict[IntentName, type[IntentPayload]]] = {
     "REPAIR": RepairIntent,
     "EXPAND": ExpandIntent,
     "HARASS": HarassIntent,
+    "MOVE_CAMERA": MoveCameraIntent,
 }
 
 
@@ -737,6 +779,7 @@ UNIT_CONTROL_COMBAT_PAYLOAD_TYPES: Final[
     "DEFEND": DefendIntent,
     "REPAIR": RepairIntent,
     "HARASS": HarassIntent,
+    "MOVE_CAMERA": MoveCameraIntent,
 }
 
 ECONOMY_PRODUCTION_PAYLOAD_TYPES: Final[
@@ -792,6 +835,10 @@ CANONICAL_INTENTS: Final[tuple[CanonicalIntent, ...]] = (
     CanonicalIntent(
         "HARASS",
         "Send a small force to disrupt enemy workers or economy while avoiding a full committed fight.",
+    ),
+    CanonicalIntent(
+        "MOVE_CAMERA",
+        "Move the live StarCraft camera to a semantic map target without issuing unit orders.",
     ),
 )
 
@@ -1003,6 +1050,18 @@ INTENT_SCHEMAS: Final[dict[IntentName, IntentSchema]] = {
                 type_name="unit_group",
                 required=True,
                 description="Small force assigned to harassment without full commitment.",
+            ),
+        ),
+    ),
+    "MOVE_CAMERA": IntentSchema(
+        intent="MOVE_CAMERA",
+        common_fields=COMMON_INTENT_FIELDS,
+        intent_fields=(
+            IntentFieldSchema(
+                name="target",
+                type_name="target",
+                required=True,
+                description="Semantic map target to center the live camera on.",
             ),
         ),
     ),

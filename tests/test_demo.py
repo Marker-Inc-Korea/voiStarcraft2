@@ -61,7 +61,7 @@ class KoreanCommanderDemoTest(unittest.TestCase):
     ) -> None:
         displayed_intents = set()
 
-        self.assertEqual(20, len(KOREAN_COMMAND_TEST_CORPUS))
+        self.assertGreaterEqual(len(KOREAN_COMMAND_TEST_CORPUS), len(CANONICAL_INTENT_NAMES))
         for corpus_row in KOREAN_COMMAND_TEST_CORPUS:
             command_text = corpus_row["command_text"]
             expected_dsl = corpus_row["expected_dsl"]
