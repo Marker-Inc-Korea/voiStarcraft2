@@ -1,4 +1,9 @@
-"""Korean command interpreter mappings for Phase 0 ToyCraft Commander."""
+"""Deprecated deterministic command mappings for Phase 0 ToyCraft Commander.
+
+Production/live SC2 command understanding is LLM-mandatory. This module is
+kept for explicit offline ``--no-llm`` compatibility, deterministic tests, and
+typed Intent DSL fixture generation.
+"""
 
 from __future__ import annotations
 
@@ -34,9 +39,13 @@ from toycraft_commander.intents import (
 from toycraft_commander.resources import ResourceName
 
 
+RULE_BASED_INTERPRETER_DEPRECATED: Final[bool] = True
+"""Deterministic keyword matching is not a production/live control path."""
+
+
 @dataclass(frozen=True)
 class InterpreterMapping:
-    """Maps Korean free utterances to the nearest supported typed Intent DSL."""
+    """Deprecated offline mapping from utterance to typed Intent DSL."""
 
     alias: str
     utterance: str

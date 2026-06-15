@@ -37,6 +37,7 @@ from starcraft_commander.llm_interpreter import (
     build_llm_system_prompt,
 )
 from starcraft_commander.runtime_deps import ANTHROPIC_MODULE_NAME
+from toycraft_commander.failure import build_parsing_failure_report
 from toycraft_commander.intents import (
     CANONICAL_INTENT_NAMES,
     INTENT_PAYLOAD_TYPES,
@@ -52,6 +53,7 @@ from toycraft_commander.interpreter import (
     UNSUPPORTED_COMMAND_CLARIFICATION_PROMPT,
     UNSUPPORTED_COMMAND_CLARIFICATION_REASON,
     UNSUPPORTED_COMMAND_FAILURE_CODE,
+    CommandInterpretationResult,
     CommandInterpreterInterface,
 )
 
@@ -945,7 +947,7 @@ class HybridCommandInterpreterTest(unittest.TestCase):
         self.assertIsInstance(result.payload, DefendIntent)
         self.assertEqual(len(fake_client.calls), 1)
 
-    def test_llm_unsupported_can_fall_back_to_strict_rule_payload(self) -> None:
+    def test_llm_unsupported_never_falls_back_to_rule_payload(self) -> None:
         distinctive_llm_reason = "LLM 전용 사유 문구"
         llm_interpreter, fake_client = _make_llm_interpreter(
             _tool_response(
@@ -958,7 +960,9 @@ class HybridCommandInterpreterTest(unittest.TestCase):
         hybrid = HybridCommandInterpreter(llm_interpreter=llm_interpreter)
 
         result = hybrid.interpret(RULE_SUPPORTED_UTTERANCE)
-        self.assertEqual(result.payload.intent, "TRAIN_WORKER")
+        self.assertIsNone(result.payload)
+        self.assertTrue(result.clarification_required)
+        self.assertIn(distinctive_llm_reason, result.reason)
         self.assertEqual(len(fake_client.calls), 1)
 
     def test_api_failure_is_surfaced_for_live_debuggability(self) -> None:
@@ -977,7 +981,7 @@ class HybridCommandInterpreterTest(unittest.TestCase):
             LLM_INTERPRETATION_FAILURE_CODE,
         )
 
-    def test_missing_llm_uses_rules_but_unavailable_llm_blocks_execution(self) -> None:
+    def test_missing_llm_uses_rules_but_configured_llm_never_falls_back(self) -> None:
         unavailable_llm = LLMCommandInterpreter()
         rule_result = DEFAULT_COMMAND_INTERPRETER.interpret(
             FREE_FORM_DEFEND_UTTERANCE
@@ -994,6 +998,32 @@ class HybridCommandInterpreterTest(unittest.TestCase):
             self.assertEqual(
                 result.failure.primary_reason.code, LLM_UNAVAILABLE_FAILURE_CODE
             )
+
+        class UnsupportedLLM:
+            def is_available(self) -> bool:
+                return True
+
+            def interpret(self, command_text: str) -> CommandInterpretationResult:
+                return CommandInterpretationResult(
+                    command_text=command_text,
+                    payload=None,
+                    clarification_required=True,
+                    clarification_prompt="LLM 해석에 실패했습니다.",
+                    reason="LLM could not map the command.",
+                    failure=build_parsing_failure_report(
+                        command_text=command_text,
+                        code=LLM_INTERPRETATION_FAILURE_CODE,
+                        message="LLM could not map the command.",
+                        alternatives=(),
+                    ),
+                )
+
+        with self.subTest(case="available configured llm failure"):
+            hybrid = HybridCommandInterpreter(llm_interpreter=UnsupportedLLM())
+            result = hybrid.interpret(FREE_FORM_DEFEND_UTTERANCE)
+            self.assertIsNone(result.payload)
+            self.assertNotEqual(result, rule_result)
+            self.assertEqual(result.reason, "LLM could not map the command.")
 
     def test_build_hybrid_interpreter_drops_unavailable_llm(self) -> None:
         with _block_anthropic(), _without_api_key():

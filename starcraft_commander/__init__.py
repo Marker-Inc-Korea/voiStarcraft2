@@ -87,8 +87,8 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "VoiceTranscriberInterface": "starcraft_commander.voice_input",
     "VoiceTranscription": "starcraft_commander.voice_input",
     "transcribe_command_audio": "starcraft_commander.voice_input",
-    # LLM interpretation (rules-first hybrid; anthropic imported lazily
-    # inside the module only when a real client must be built).
+    # LLM interpretation (live command understanding is LLM-mandatory;
+    # provider SDKs are imported lazily only when a real client is built).
     "HybridCommandInterpreter": "starcraft_commander.llm_interpreter",
     "LLMComboPlan": "starcraft_commander.llm_interpreter",
     "LLMComboPlanStep": "starcraft_commander.llm_interpreter",

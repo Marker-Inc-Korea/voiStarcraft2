@@ -299,9 +299,11 @@ docs/roadmap-llm-gui.md
 
 Implemented:
 
-- Rules-first LLM fallback via the optional `[llm]` extra, schema-gated to the
-  10 canonical intents and called only once per user utterance. OpenAI/GPT is
-  the default local GUI provider; Anthropic remains supported.
+- LLM-mandatory command interpretation via the optional `[llm]` extra,
+  schema-gated to the 10 canonical intents and called only once per user
+  utterance. Deprecated deterministic rule/keyword matching is retained only
+  for explicit offline `--no-llm` compatibility. OpenAI/GPT is the default
+  local GUI provider; Anthropic remains supported.
 - Thread-safe bounded event memory for GUI history and state-report
   enrichment.
 - Stdlib localhost-first web GUI for dry-run and live sessions, including

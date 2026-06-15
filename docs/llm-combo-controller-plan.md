@@ -24,8 +24,8 @@ integration design.
 ```text
 Browser / terminal command
   -> HybridCommandInterpreter
-     -> rules first
-     -> LLM fallback, one Intent DSL
+     -> LLM first and mandatory for configured sessions
+     -> deprecated offline rules only for explicit --no-llm tests
   -> SC2FeasibilityValidator
   -> SC2ActionPlanner
   -> SC2RuntimeExecutor
@@ -44,8 +44,10 @@ POST /api/command {"text": "..."}
   -> one or more outcomes
 ```
 
-`session.process_text` already splits some Korean compound utterances, but the
-splitter is heuristic. It does not perform strategic decomposition such as
+`session.process_text` can execute multiple validated Intent DSL steps from an
+LLM combo plan. Deprecated deterministic splitting is kept only for offline
+compatibility and must not be treated as the production command-understanding
+path. It does not perform strategic decomposition such as
 "prepare for marine pressure" -> gather idle workers, build depot, build
 barracks, train marines, scout, rally defense.
 

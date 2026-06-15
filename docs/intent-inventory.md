@@ -237,11 +237,13 @@ such as `상태 알려줘`, `현재 상황 요약해`, `지금 뭐 하고 있어
 `constraints`. It is read-only and exists so a text demo can ask ToyCraft for a
 state narration without issuing a state-changing order.
 
-## Korean and English Command Pattern Lexicons
+## Deprecated Korean and English Command Pattern Lexicons
 
-The interpreter exposes four phrase-family lexicons for supported Korean and
-English MVP command wording. These are pattern vocabularies for nearest-intent
-matching, not additional canonical intents:
+The legacy offline interpreter exposes four phrase-family lexicons for
+supported Korean and English MVP command wording. These keyword/pattern
+vocabularies are deprecated for production/live command understanding. They
+remain only for explicit `--no-llm` compatibility, deterministic tests, and
+Intent DSL fixture coverage:
 
 | Lexicon category | Korean examples | English examples | Nearest typed DSL outcomes |
 | --- | --- | --- | --- |
@@ -250,19 +252,19 @@ matching, not additional canonical intents:
 | `production` | `생산`, `찍어`, `뽑아`, `건설`, `배럭`, `벙커` | `train`, `produce`, `queue`, `build`, `barracks`, `bunker` | Maps worker, Marine, and Terran building requests to production DSL payloads. |
 | `attack` | `공격`, `압박`, `견제`, `흔들`, `적 미네랄` | `attack`, `pressure`, `harass`, `deny`, `enemy mineral line` | Maps pressure and harassment language to the Phase 0 `HARASS` DSL. |
 
-The concrete registry lives in `toycraft_commander.interpreter` as
+The concrete deprecated registry lives in `toycraft_commander.interpreter` as
 `COMMAND_PATTERN_LEXICONS`. Pattern matching remains deliberately lightweight:
 text is case-folded and whitespace-insensitive, then routed to one of the 10
-canonical intent schemas before validation and execution.
+canonical intent schemas before validation and execution in offline
+compatibility mode only.
 
 The module-level interpreter interface is `CommandInterpreter`. It exposes
 `interpret_text(command_text) -> IntentPayload | None` for raw DSL selection and
 `interpret(command_text) -> CommandInterpretationResult` for caller-safe parsing
-with clarification data. `DEFAULT_COMMAND_INTERPRETER` is the production Phase 0
-instance, and the compatibility helpers `interpret_command_text` and
-`interpret_command` delegate to it. This keeps Korean text interpretation
-separate from validation, rule-engine execution, and narration while preserving
-the exact 10-intent MVP scope.
+with clarification data. `DEFAULT_COMMAND_INTERPRETER` is a deprecated offline
+compatibility instance, and the compatibility helpers `interpret_command_text`
+and `interpret_command` delegate to it. Production/live SC2 sessions must route
+human language through the LLM interpreter before typed DSL validation.
 
 ## Economy and Production Payload Types
 

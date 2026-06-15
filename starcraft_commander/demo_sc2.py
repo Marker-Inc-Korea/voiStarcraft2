@@ -23,10 +23,11 @@ Two modes exist:
 ``MicrophoneListener`` + ``FasterWhisperTranscriber``; missing voice
 dependencies raise the voice guard's actionable error.
 
-Live mode always uses the rules-first hybrid interpreter with a REQUIRED LLM
-stage (LLM fallback per user utterance, never per game frame). A missing
-``anthropic`` SDK or API key fails fast with the actionable bilingual hint
-BEFORE any command loop starts. ``--gui [PORT]`` additionally serves the local
+Live mode always uses an LLM-mandatory interpreter. Deprecated deterministic
+rule/keyword matching is kept only for explicit offline ``--no-llm`` tests and
+never rescues a configured LLM failure. A missing provider SDK or API key fails
+fast with the actionable bilingual hint BEFORE any command loop starts.
+``--gui [PORT]`` additionally serves the local
 web GUI: in dry-run mode the GUI bridge owns the session (scripted commands
 run through the same bridge), and in live mode the GUI submits into the same
 ``on_step`` command queue the terminal reader feeds while history reads the
@@ -306,7 +307,7 @@ class DemoFakeBotAI:
 
 
 def build_llm_interpreter() -> HybridCommandInterpreter:
-    """Build the rules-first hybrid interpreter with a REQUIRED LLM stage.
+    """Build the LLM-mandatory interpreter for real command sessions.
 
     The demo's ``--llm`` flag must fail fast before any command loop instead
     of degrading silently mid-session: a missing ``anthropic`` SDK raises the
@@ -599,16 +600,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
         dest="llm",
         action="store_true",
         default=True,
-        help=(
-            "enable the required Anthropic LLM fallback stage (default; "
-            "live mode always requires it)"
-        ),
+        help="enable the required LLM-first interpreter (default; live mode requires it)",
     )
     parser.add_argument(
         "--no-llm",
         dest="llm",
         action="store_false",
-        help="dry-run/testing only: use deterministic rules without the LLM stage",
+        help=(
+            "DEPRECATED: dry-run/testing compatibility only; deterministic "
+            "rule/keyword matching is not used for live command understanding"
+        ),
     )
     parser.add_argument(
         "--llm-provider",

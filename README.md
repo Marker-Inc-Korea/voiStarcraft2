@@ -35,7 +35,8 @@ or audio hardware.
 Run the full commander pipeline against a scripted fake BotAI:
 
 ```bash
-python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm --script "마린 6기 입구로 보내고 SCV 계속 찍어" "상황 보고해줘"
+export OPENAI_API_KEY=...
+python3 -m starcraft_commander.demo_sc2 --dry-run --script "마린 6기 입구로 보내고 SCV 계속 찍어" "상황 보고해줘"
 ```
 
 Expected output:
@@ -89,7 +90,8 @@ Intent DSL:
 Interactive dry-run:
 
 ```bash
-python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm
+export OPENAI_API_KEY=...
+python3 -m starcraft_commander.demo_sc2 --dry-run
 ```
 
 ## Installation
@@ -114,8 +116,10 @@ Live SC2 also requires a local StarCraft II installation and maps. See
 
 ### Dry-Run
 
-No StarCraft II required. Default dry-run uses the LLM path when a provider
-API key is available; use `--no-llm` for offline deterministic development:
+No StarCraft II required. Default dry-run uses the same LLM-mandatory
+interpretation path as live play when a provider API key is available.
+`--no-llm` is deprecated and should be used only for offline regression tests
+that intentionally exercise the legacy deterministic compatibility layer:
 
 ```bash
 python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm
@@ -169,9 +173,11 @@ Open the printed `http://0.0.0.0:PORT/?token=...` URL by replacing
 
 ### LLM Interpreter
 
-Live SC2 mode requires the hybrid interpreter. Rules still run first, and the
-LLM is used only for unsupported or ambiguous user utterances, once per user
-command. It is never called per game frame.
+Live SC2 mode requires the LLM interpreter. Every user utterance goes through
+the selected provider before any mutating action can execute. Deprecated
+rule/keyword matching is not used as a live fallback and never rescues a
+configured LLM failure. The LLM is called once per user command, never per game
+frame.
 
 ```bash
 export OPENAI_API_KEY=...
@@ -187,7 +193,7 @@ Anthropic remains available with `--llm-provider anthropic` and
 LLM output is schema-gated to the 10 canonical intents and revalidated before
 execution.
 
-For offline tests or deterministic dry-run development without an API key:
+For legacy offline tests without an API key:
 
 ```bash
 python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm
@@ -249,7 +255,8 @@ The executable inventory lives in [docs/intent-inventory.md](docs/intent-invento
 
 ```text
 Korean text / voice
-  -> rules-first interpreter, optional LLM fallback
+  -> LLM-mandatory interpreter
+  -> deprecated offline rules only when explicitly using --no-llm
   -> typed Intent DSL
   -> game-state resolver
   -> feasibility validator
