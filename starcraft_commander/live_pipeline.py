@@ -3520,9 +3520,11 @@ class SC2CommandSession:
         try:
             plan = self.planner.build_plan(payload)
         except ValueError as error:
-            # The strict planner message already lists every supported target;
-            # the narrator appends the standard Korean actionable alternative.
-            rejection = self.narrator.narrate_rejection(str(error))
+            # Planner internals may include raw alias registries; never expose
+            # those to the commander. Surface a location clarification instead.
+            rejection = self.narrator.narrate_rejection(
+                _planner_value_error_user_message(error)
+            )
             return _PreparedCommandOutcome(
                 SC2CommandOutcome(
                     command_text=command_text,
@@ -3878,4 +3880,18 @@ def _clarification_outcome(interpretation: object) -> SC2CommandOutcome:
         command_text=command_text,
         status="clarification",
         narration=prompt or reason,
+    )
+
+
+def _planner_value_error_user_message(error: ValueError) -> str:
+    """Convert strict planner errors into commander-safe Korean guidance."""
+
+    message = str(error)
+    if "unsupported SC2 target location" not in message:
+        return message
+    return (
+        "위치를 특정하지 못했습니다. "
+        "LLM이 추론한 위치가 현재 지도 의미 좌표로 연결되지 않았습니다. "
+        "다시 말해 주세요: 본진에 지어 / 본진 입구에 지어 / "
+        "앞마당에 지어 / 본진 가스에 정제소 지어."
     )

@@ -789,6 +789,9 @@ def _target_alias(target: str) -> str:
     compact = normalized.replace(" ", "")
     if _looks_like_self_geyser_target(normalized, compact):
         return "self_geyser"
+    inferred = _infer_semantic_target_from_freeform(normalized, compact)
+    if inferred is not None:
+        return inferred
     supported = ", ".join(sorted({*SC2_TARGET_ALIASES, *SC2_SEMANTIC_TARGET_NAMES}))
     raise ValueError(
         f"unsupported SC2 target location: {target!r}. "
@@ -810,21 +813,73 @@ def _looks_like_self_geyser_target(normalized: str, compact: str) -> bool:
         "배스핀",
         "배프빈",
     )
-    self_markers = (
-        "main",
-        "base",
-        "self",
-        "our",
-        "nearest available",
-        "본진",
-        "우리",
-        "아군",
-        "내",
+    has_gas_marker = any(
+        marker in normalized or marker in compact for marker in gas_markers
     )
-    return any(marker in normalized or marker in compact for marker in gas_markers) and (
-        any(marker in normalized or marker in compact for marker in self_markers)
-        or normalized in {"gas", "geyser", "가스", "정제소"}
+    has_enemy_marker = any(
+        marker in normalized or marker in compact
+        for marker in ("enemy", "적", "상대")
     )
+    if not has_gas_marker or has_enemy_marker:
+        return False
+    return True
+
+
+def _infer_semantic_target_from_freeform(
+    normalized: str,
+    compact: str,
+) -> str | None:
+    """Infer a conservative semantic target from LLM free-form location text."""
+
+    has_enemy_marker = any(
+        marker in normalized or marker in compact
+        for marker in ("enemy", "적", "상대")
+    )
+    if has_enemy_marker:
+        return None
+
+    has_self_marker = any(
+        marker in normalized or marker in compact
+        for marker in (
+            "main",
+            "self",
+            "our",
+            "friendly",
+            "home",
+            "본진",
+            "우리",
+            "아군",
+            "내",
+        )
+    )
+    has_natural_marker = any(
+        marker in normalized or marker in compact
+        for marker in ("natural", "앞마당", "앞마당쪽", "아군앞마당")
+    )
+    has_ramp_marker = any(
+        marker in normalized or marker in compact
+        for marker in (
+            "ramp",
+            "choke",
+            "front",
+            "entrance",
+            "near ramp",
+            "입구",
+            "초크",
+        )
+    )
+    if has_natural_marker:
+        return "self_choke" if has_ramp_marker else "self_natural"
+    if has_ramp_marker and has_self_marker:
+        return "self_ramp"
+    if has_self_marker:
+        return "self_main"
+    if any(
+        marker in normalized or marker in compact
+        for marker in ("buildable", "construction", "건설가능", "건설 가능한")
+    ):
+        return "self_main"
+    return None
 
 
 def _optional_mapping_field(

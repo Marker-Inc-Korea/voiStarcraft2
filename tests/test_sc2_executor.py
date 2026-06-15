@@ -337,9 +337,11 @@ class SC2ActionPlannerTest(unittest.TestCase):
     def test_build_refinery_accepts_llm_natural_gas_locations(self) -> None:
         cases = (
             "본진 베스핀 가스",
+            "베스핀 가스 geyser",
             "본진 가스 geyser",
             "nearest available geyser at main base",
             "본진 가스 간헐천",
+            "가스 간헐천",
             "가스",
         )
         for location in cases:
@@ -349,6 +351,22 @@ class SC2ActionPlannerTest(unittest.TestCase):
                 )
                 self.assertEqual("REFINERY", plan.actions[0].subject)
                 self.assertEqual("self_geyser", plan.actions[0].target)
+
+    def test_build_structure_accepts_llm_freeform_self_locations(self) -> None:
+        cases = (
+            ("main base near ramp", "self_ramp"),
+            ("본진 근방", "self_main"),
+            ("본진 건설 가능한 위치", "self_main"),
+            ("본진 아래", "self_main"),
+            ("아군 앞마당", "self_natural"),
+        )
+        for location, expected_target in cases:
+            with self.subTest(location=location):
+                plan = build_sc2_execution_plan(
+                    BuildStructureIntent(structure="Barracks", location=location),
+                )
+                self.assertEqual("BARRACKS", plan.actions[0].subject)
+                self.assertEqual(expected_target, plan.actions[0].target)
 
     def test_build_structure_preserves_relative_location_policy_metadata(self) -> None:
         plan = build_sc2_execution_plan(

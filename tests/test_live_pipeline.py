@@ -3235,7 +3235,9 @@ class LivePipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(outcomes))
         self.assertEqual("blocked", outcomes[0].status)
         self.assertEqual("SCOUT", outcomes[0].intent_dsl["intent"])
-        self.assertIn("secret moon base", outcomes[0].narration)
+        self.assertIn("위치를 특정하지 못했습니다", outcomes[0].narration)
+        self.assertNotIn("unsupported SC2 target location", outcomes[0].narration)
+        self.assertNotIn("Supported targets:", outcomes[0].narration)
         self.assertEqual([], bot.issued_commands)
 
     async def test_unsupported_compact_compound_invokes_combo_plan(self) -> None:
@@ -4771,8 +4773,9 @@ class LivePipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(outcomes))
         outcome = outcomes[0]
         self.assertEqual("blocked", outcome.status)
-        self.assertIn("unsupported SC2 target location", outcome.narration)
-        self.assertIn("Supported targets:", outcome.narration)
+        self.assertIn("위치를 특정하지 못했습니다", outcome.narration)
+        self.assertNotIn("unsupported SC2 target location", outcome.narration)
+        self.assertNotIn("Supported targets:", outcome.narration)
         self.assertIn("대안:", outcome.narration)
         self.assertTrue(outcome.feasibility.executable)
         self.assertIsNone(outcome.plan)
