@@ -61,7 +61,6 @@ from starcraft_commander.llm_interpreter import (
     HybridCommandInterpreter,
     LocalLLMControl,
     OPENAI_API_KEY_ENV_VAR,
-    build_hybrid_interpreter,
 )
 from starcraft_commander.python_sc2_adapter import PythonSC2BotAdapter
 from starcraft_commander.runtime_deps import (
@@ -306,28 +305,20 @@ class DemoFakeBotAI:
         return None
 
 
-def build_llm_interpreter() -> HybridCommandInterpreter:
+def build_llm_interpreter(
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_OPENAI_MODEL,
+) -> HybridCommandInterpreter:
     """Build the LLM-mandatory interpreter for real command sessions.
 
     The demo's ``--llm`` flag must fail fast before any command loop instead
-    of degrading silently mid-session: a missing ``anthropic`` SDK raises the
-    bilingual :class:`MissingLLMDependencyError` from ``require_anthropic``.
-    An importable SDK without a resolvable API key raises the same error type
-    with a key-specific actionable hint.
+    of degrading silently mid-session. The selected provider SDK and key are
+    validated by :func:`build_local_llm_control`.
     """
 
-    require_anthropic()
-    hybrid = build_hybrid_interpreter()
-    if hybrid.llm_interpreter is None:
-        raise MissingLLMDependencyError(
-            "Anthropic LLM interpreter is installed, but ANTHROPIC_API_KEY is "
-            "not set. Export a valid key before live StarCraft II control: "
-            f"export {ANTHROPIC_API_KEY_ENV_VAR}=... "
-            "Anthropic 패키지는 설치되어 있지만 ANTHROPIC_API_KEY 환경 변수가 "
-            "설정되어 있지 않습니다. 실제 StarCraft II 제어 전 유효한 키를 "
-            f"설정하세요: export {ANTHROPIC_API_KEY_ENV_VAR}=..."
-        )
-    return hybrid
+    return HybridCommandInterpreter(
+        llm_interpreter=build_local_llm_control(provider, model)
+    )
 
 
 def build_local_llm_control(provider: str, model: str) -> LocalLLMControl:
@@ -767,7 +758,12 @@ def _serve_until_interrupt() -> None:
         time.sleep(0.5)
 
 
-def _run_dry_run_gui(session: SC2CommandSession, args: argparse.Namespace) -> int:
+def _run_dry_run_gui(
+    session: SC2CommandSession,
+    args: argparse.Namespace,
+    *,
+    llm_control: LocalLLMControl | None = None,
+) -> int:
     """Serve the dry-run session through the web GUI until interrupted.
 
     The GUI bridge owns the session: scripted ``--script`` commands are
@@ -783,7 +779,11 @@ def _run_dry_run_gui(session: SC2CommandSession, args: argparse.Namespace) -> in
         if isinstance(memory, CommanderEventMemory)
         else None
     )
-    bridge = SessionLoopBridge(session=session, history=history)
+    bridge = SessionLoopBridge(
+        session=session,
+        history=history,
+        llm_control=llm_control,
+    )
     server = WebGuiServer(
         bridge=bridge,
         port=args.gui,
@@ -822,12 +822,28 @@ def _run_dry_run_gui(session: SC2CommandSession, args: argparse.Namespace) -> in
 def run_dry_run(args: argparse.Namespace) -> int:
     """Run the full pipeline against the built-in scripted fake bot."""
 
-    interpreter = build_llm_interpreter() if args.llm else None
+    llm_control: LocalLLMControl | None = None
+    if args.gui is not None:
+        llm_control = LocalLLMControl(
+            provider=args.llm_provider,
+            model=args.llm_model,
+        )
+        interpreter = (
+            HybridCommandInterpreter(llm_interpreter=llm_control)
+            if args.llm
+            else None
+        )
+    else:
+        interpreter = (
+            build_llm_interpreter(args.llm_provider, args.llm_model)
+            if args.llm
+            else None
+        )
     session, _bot = build_dry_run_session(interpreter=interpreter)
     for line in _DRY_RUN_BANNER_LINES:
         print(line)
     if args.gui is not None:
-        return _run_dry_run_gui(session, args)
+        return _run_dry_run_gui(session, args, llm_control=llm_control)
     if args.script:
         asyncio.run(_run_script(session, tuple(args.script)))
     else:

@@ -24,6 +24,10 @@ from unittest import mock
 from starcraft_commander import demo_sc2
 from starcraft_commander.event_memory import CommanderEventMemory
 from starcraft_commander.live_pipeline import SC2CommandSession
+from starcraft_commander.llm_interpreter import (
+    HybridCommandInterpreter,
+    LocalLLMControl,
+)
 from starcraft_commander.map_resolver import (
     SC2_SUPPORTED_SEMANTIC_TARGETS,
     SC2MapResolver,
@@ -309,11 +313,39 @@ class LiveModeGuardTest(unittest.TestCase):
     def test_required_llm_reports_missing_api_key_separately(self) -> None:
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
             with self.assertRaises(MissingLLMDependencyError) as context:
-                demo_sc2.build_llm_interpreter()
+                demo_sc2.build_llm_interpreter("anthropic", "claude-sonnet-4-5")
         message = str(context.exception)
         self.assertIn("ANTHROPIC_API_KEY", message)
         self.assertIn("설정", message)
         self.assertNotIn("is not installed", message)
+
+    def test_dry_run_gui_starts_before_web_key_configuration(self) -> None:
+        captured = {}
+
+        def fake_gui(session, args, *, llm_control=None):
+            captured["session"] = session
+            captured["llm_control"] = llm_control
+            return 0
+
+        with mock.patch.object(demo_sc2, "_run_dry_run_gui", fake_gui):
+            result = demo_sc2.run_dry_run(
+                demo_sc2.parse_args(
+                    [
+                        "--dry-run",
+                        "--gui",
+                        "0",
+                        "--llm-provider",
+                        "openai",
+                        "--llm-model",
+                        "gpt-5.5",
+                    ]
+                )
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIsInstance(captured["llm_control"], LocalLLMControl)
+        self.assertFalse(captured["llm_control"].is_available())
+        self.assertIsInstance(captured["session"].interpreter, HybridCommandInterpreter)
 
     def test_live_local_llm_control_requires_provider_key_before_start(self) -> None:
         with mock.patch.object(demo_sc2, "require_openai", mock.Mock()):
