@@ -1185,7 +1185,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   .message-meta { display: block; margin-bottom: 5px; color: rgba(255, 255, 255, 0.72); font-size: 0.74rem; font-weight: 800; }
   .message-bot .message-meta { color: var(--muted); }
-  .status { display: inline-block; font-weight: 900; margin-right: 7px; white-space: nowrap; }
+  .status { display: none; font-weight: 900; margin-right: 7px; white-space: nowrap; }
   .status-executed { color: __COLOR_EXECUTED__; }
   .status-partially_executed { color: __COLOR_PARTIAL__; }
   .status-blocked { color: __COLOR_BLOCKED__; }
@@ -1786,6 +1786,24 @@ function appendCompactText(parent, text, className) {
   parent.appendChild(details);
 }
 
+function readableCommanderNarration(text) {
+  var normalized = text === undefined || text === null ? "" : String(text);
+  normalized = normalized.replace(/^\[(executed|partially_executed|blocked|clarification|read_only)\]\s*/i, "");
+  if (normalized.indexOf("no_safe_placement") >= 0) {
+    return "건설 위치를 찾지 못했습니다.\\n보이는 지형 안에서 지을 수 있는 칸을 찾지 못했어요.\\n다시 말해 주세요: 본진에 보급고 지어 / 본진 앞에 보급고 지어 / 본진 입구에 보급고 지어";
+  }
+  if (normalized.indexOf("invalid_refinery_target") >= 0) {
+    if (normalized.indexOf("no_free_geyser") >= 0) {
+      return "사용 가능한 가스 간헐천을 찾지 못했습니다.\\n이미 가까운 가스에 정제소가 있거나, 아직 다른 간헐천을 관측하지 못한 상태입니다.\\n다시 말해 주세요: 본진 가스 확인해 / 앞마당 정찰해 / 앞마당 가스에 정제소 지어";
+    }
+    return "정제소는 가스 간헐천 위에만 지을 수 있습니다.\\n위치를 더 구체적으로 말해 주세요: 본진 가스 / 앞마당 가스";
+  }
+  return normalized
+    .replace(/명령을 실행하지 못했습니다\. 이유:\s*/g, "")
+    .replace(/실행하지 않았습니다\. 이유:\s*/g, "")
+    .replace(/\. 대안:\s*/g, ".\\n다음 행동: ");
+}
+
 function expandedMessageLabel(length) {
   return t("messageExpand") + " · " + length + " chars";
 }
@@ -1934,7 +1952,8 @@ function appendLog(ev) {
   }
   var botMessage = document.createElement("div");
   botMessage.className = "message message-bot";
-  botMessage.setAttribute("data-full-text", String(ev.narration || ""));
+  var readableNarration = readableCommanderNarration(ev.narration || "");
+  botMessage.setAttribute("data-full-text", readableNarration);
   botMessage.setAttribute("data-status", String(ev.status || "clarification"));
   var botMeta = document.createElement("span");
   botMeta.className = "message-meta";
@@ -1942,15 +1961,16 @@ function appendLog(ev) {
   botMessage.appendChild(botMeta);
   var status = document.createElement("span");
   status.className = "status status-" + (ev.status || "clarification");
-  status.textContent = "[" + (ev.status || "?") + "]";
+  status.setAttribute("aria-hidden", "true");
+  status.textContent = "";
   botMessage.appendChild(status);
   var narration = document.createElement("span");
   narration.className = "narration message-text";
-  if (String(ev.narration || "").length <= MAX_MESSAGE_PREVIEW_CHARS) {
-    narration.textContent = ev.narration || "";
+  if (readableNarration.length <= MAX_MESSAGE_PREVIEW_CHARS) {
+    narration.textContent = readableNarration;
     botMessage.appendChild(narration);
   } else {
-    appendCompactText(botMessage, ev.narration || "", "narration");
+    appendCompactText(botMessage, readableNarration, "narration");
   }
   entry.appendChild(botMessage);
   logBox.appendChild(entry);
