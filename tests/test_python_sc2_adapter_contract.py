@@ -1339,8 +1339,33 @@ class BuildStructureTest(unittest.TestCase):
         self.assertIsInstance(result, SC2ActionReport)
         self.assertFalse(result)
         self.assertIn("invalid_refinery_target", result.detail)
-        self.assertIn("no_free_geyser_near_anchor", result.detail)
+        self.assertIn("target_is_not_geyser", result.detail)
         self.assertEqual([], bot.build_calls)
+
+    def test_refinery_allows_second_main_gas_farther_than_tight_snap_radius(self) -> None:
+        taken_geyser = FakeUnit("VespeneGeyser", 12.0, 10.0)
+        free_geyser = FakeUnit("VespeneGeyser", 18.0, 13.0)
+        existing_refinery = FakeUnit("Refinery", 12.0, 10.0)
+        bot = FakeBotAI(
+            workers=[FakeUnit("SCV", 10, 10)],
+            geysers=[taken_geyser, free_geyser],
+            structures=[existing_refinery],
+        )
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "REFINERY",
+                    target="main geyser",
+                    metadata={"source_structure": "Refinery"},
+                )
+            )
+        )
+
+        self.assertTrue(result)
+        self.assertEqual([("TYPE:REFINERY", free_geyser)], bot.build_calls)
 
     @unittest.skipIf(PYTHON_SC2_INSTALLED, "python-sc2 is installed")
     def test_missing_python_sc2_raises_actionable_error(self) -> None:

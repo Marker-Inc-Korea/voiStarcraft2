@@ -413,7 +413,7 @@ KEEP_WORKER_PRODUCTION_CONSTRAINT: Final[str] = "keep SCV production continuous"
 TRAIN_WORKER_ONESHOT_CONSTRAINT: Final[str] = "train requested SCV count"
 PREVENT_SUPPLY_BLOCK_ALIAS: Final[str] = "prevent_supply_block"
 PREVENT_SUPPLY_BLOCK_CONSTRAINT: Final[str] = "prevent supply block"
-PREVENT_SUPPLY_BLOCK_LOCATION: Final[str] = "main ramp"
+PREVENT_SUPPLY_BLOCK_LOCATION: Final[str] = "main base"
 BUILD_STRUCTURE_ALIAS: Final[str] = "build_structure"
 BUILD_STRUCTURE_CONSTRAINT: Final[str] = "construct requested Terran structure"
 MAIN_ENTRANCE_PLACEMENT_POLICY: Final[dict[str, object]] = {
@@ -624,7 +624,7 @@ COMMAND_PATTERN_LEXICONS: Final[tuple[CommandPatternLexicon, ...]] = (
 """All supported command pattern lexicons for Phase 0 text interpretation."""
 
 BUILD_STRUCTURE_DEFAULT_LOCATIONS: Final[dict[StructureName, str]] = {
-    "Supply Depot": "main ramp",
+    "Supply Depot": "main base",
     "Barracks": "main base",
     "Refinery": "main geyser",
     "Bunker": "natural choke",
@@ -828,7 +828,7 @@ BUILD_STRUCTURE_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
             priority="normal",
             constraints=(BUILD_STRUCTURE_CONSTRAINT,),
             structure="Supply Depot",
-            location="main ramp",
+            location="main base",
         ),
     ),
     InterpreterMapping(
@@ -2504,6 +2504,7 @@ _WORKER_TRAINING_VERB_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
         "생산",
         "생성",
         "만들",
+        "지어",
         "눌러",
         "train",
         "produce",

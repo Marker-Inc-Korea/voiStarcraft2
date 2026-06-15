@@ -2945,7 +2945,7 @@ class LivePipelineTest(unittest.IsolatedAsyncioTestCase):
                 "intents": ("TRAIN_WORKER", "BUILD_STRUCTURE", "SCOUT"),
                 "events": (
                     ("do", ("train", "CommandCenter", "SCV")),
-                    ("build", "SUPPLYDEPOT", (38.0, 36.0)),
+                    ("build", "SUPPLYDEPOT", (30.0, 28.0)),
                     ("do", ("move", "SCV", (122.0, 124.0))),
                 ),
                 "standing_orders": True,

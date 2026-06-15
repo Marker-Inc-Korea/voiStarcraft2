@@ -129,7 +129,7 @@ SC2_BUILD_PLACEMENT_ENEMY_CLEARANCE: Final[float] = 4.0
 SC2_COMMAND_CENTER_MAX_EXPANSION_DISTANCE: Final[float] = 3.0
 """Maximum snap distance from a requested townhall point to an expansion."""
 
-SC2_REFINERY_MAX_GEYSER_SNAP_DISTANCE: Final[float] = 4.0
+SC2_REFINERY_MAX_GEYSER_SNAP_DISTANCE: Final[float] = 12.0
 """Maximum snap distance from a requested refinery anchor to a free geyser."""
 
 SC2_TOWNHALL_TYPE_NAMES: Final[frozenset[str]] = frozenset(
@@ -408,6 +408,11 @@ class PythonSC2BotAdapter:
         """
 
         anchor = self._resolve_build_target_point(action)
+        if not _is_gas_semantic_target(action):
+            return _refusal_report(
+                1,
+                "invalid_refinery_target: target_is_not_geyser",
+            )
         if anchor is None:
             anchor = _entity_point(getattr(self.bot, "start_location", None))
         geyser = self._free_geyser(anchor)
@@ -1309,6 +1314,24 @@ def _action_structure_name(action: SC2CommandAction) -> str:
     if normalized == "REFINERY":
         return "Refinery"
     return action.subject.strip()
+
+
+def _is_gas_semantic_target(action: SC2CommandAction) -> bool:
+    """Return whether a refinery action intentionally targets a geyser."""
+
+    target = _normalized_name(action.target) or ""
+    if target in {"MAINGEYSER", "SELFGEYSER", "GEYSER"}:
+        return True
+    policy = action.metadata.get("placement_policy")
+    if not isinstance(policy, Mapping):
+        return False
+    anchor = _normalized_name(policy.get("anchor")) or ""
+    anchor_target = _normalized_name(policy.get("anchor_target")) or ""
+    return anchor in {"MAINGEYSER", "SELFGEYSER", "GEYSER"} or anchor_target in {
+        "MAINGEYSER",
+        "SELFGEYSER",
+        "GEYSER",
+    }
 
 
 def _expansion_location_points(bot: object) -> tuple[MapPoint, ...]:

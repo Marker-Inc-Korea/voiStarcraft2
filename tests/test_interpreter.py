@@ -1516,7 +1516,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
                         priority="normal",
                         constraints=(BUILD_STRUCTURE_CONSTRAINT,),
                         structure="Supply Depot",
-                        location="main ramp",
+                        location="main base",
                     ),
                     result.payload,
                 )
@@ -1557,7 +1557,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
                 "priority": "normal",
                 "constraints": [BUILD_STRUCTURE_CONSTRAINT],
                 "structure": "Supply Depot",
-                "location": "main ramp",
+                "location": "main base",
             },
             "정찰보내": {
                 "intent": "SCOUT",
@@ -2199,7 +2199,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         self.assertIsNotNone(payload)
         self.assertEqual("BUILD_STRUCTURE", payload.intent)
         self.assertEqual("Supply Depot", payload.structure)
-        self.assertEqual("main ramp", payload.location)
+        self.assertEqual("main base", payload.location)
         self.assertEqual(
             {
                 "anchor": "mineral line",
