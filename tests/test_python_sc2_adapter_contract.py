@@ -788,6 +788,31 @@ class BuildStructureTest(unittest.TestCase):
         )
         self.assertEqual(["TYPE:SUPPLYDEPOT"], bot.can_afford_calls)
 
+    def test_ramp_build_falls_back_to_main_base_when_ramp_not_visible(self) -> None:
+        bot = FakeBotAI(
+            workers=[FakeUnit("SCV")],
+        )
+        bot.is_visible = lambda point: point_xy(point)[0] < 13.0
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.build_structure(
+                action(
+                    SC2ActionType.BUILD_STRUCTURE,
+                    "SUPPLYDEPOT",
+                    target="self_ramp",
+                    metadata={"source_structure": "Supply Depot"},
+                )
+            )
+        )
+
+        self.assertTrue(result)
+        assert_build_calls_equal(
+            self,
+            [("TYPE:SUPPLYDEPOT", MapPoint(10.0, 10.0))],
+            bot.build_calls,
+        )
+
     def test_accepts_alias_target_names(self) -> None:
         bot = FakeBotAI()
         adapter = make_adapter(bot)

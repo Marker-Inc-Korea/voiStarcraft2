@@ -785,10 +785,45 @@ def _target_alias(target: str) -> str:
     alias = resolve_sc2_target_name(target)
     if alias is not None:
         return alias
+    normalized = " ".join(str(target or "").casefold().split())
+    compact = normalized.replace(" ", "")
+    if _looks_like_self_geyser_target(normalized, compact):
+        return "self_geyser"
     supported = ", ".join(sorted({*SC2_TARGET_ALIASES, *SC2_SEMANTIC_TARGET_NAMES}))
     raise ValueError(
         f"unsupported SC2 target location: {target!r}. "
         f"Supported targets: {supported}."
+    )
+
+
+def _looks_like_self_geyser_target(normalized: str, compact: str) -> bool:
+    """Accept LLM natural-language gas/geyser phrases as the main geyser."""
+
+    gas_markers = (
+        "gas",
+        "geyser",
+        "vespene",
+        "refinery target",
+        "가스",
+        "간헐천",
+        "베스핀",
+        "배스핀",
+        "배프빈",
+    )
+    self_markers = (
+        "main",
+        "base",
+        "self",
+        "our",
+        "nearest available",
+        "본진",
+        "우리",
+        "아군",
+        "내",
+    )
+    return any(marker in normalized or marker in compact for marker in gas_markers) and (
+        any(marker in normalized or marker in compact for marker in self_markers)
+        or normalized in {"gas", "geyser", "가스", "정제소"}
     )
 
 

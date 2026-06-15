@@ -1340,8 +1340,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         </div>
         <label for="llm-model-select" data-i18n="llmModelLabel">모델 선택</label>
         <select id="llm-model-select">
-          <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
           <option value="gpt-5.5">GPT-5.5</option>
+          <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
           <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
         </select>
         <label for="llm-api-key">API Key</label>
@@ -1400,8 +1400,8 @@ var isRecording = false;
 var liveGuiUrl = "";
 var LLM_MODELS = {
   openai: [
-    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
     { value: "gpt-5.5", label: "GPT-5.5" },
+    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
     { value: "gpt-5.5-chat-latest", label: "GPT-5.5 Chat Latest" },
     { value: "gpt-5.4", label: "GPT-5.4" },
     { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },

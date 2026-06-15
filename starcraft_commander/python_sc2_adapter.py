@@ -367,6 +367,22 @@ class PythonSC2BotAdapter:
             structure_name=structure_name,
             placement_policy=audit_policy,
         )
+        if placement.position is None and _should_retry_main_base_placement(
+            action,
+            structure_name,
+            placement.detail,
+            has_explicit_policy=audit_policy is not None,
+        ):
+            fallback_position = self._resolve_target_point("self_main")
+            if fallback_position is not None:
+                fallback_placement = await self._select_build_placement(
+                    type_id,
+                    fallback_position,
+                    structure_name=structure_name,
+                    placement_policy=audit_policy,
+                )
+                if fallback_placement.position is not None:
+                    placement = fallback_placement
         if placement.position is None:
             return _refusal_report(
                 1,
@@ -1298,6 +1314,29 @@ def _get_build_placement_constraint(structure_name: str) -> object | None:
     from toycraft_commander.placement import get_build_placement_constraint
 
     return get_build_placement_constraint(structure_name)
+
+
+def _should_retry_main_base_placement(
+    action: SC2CommandAction,
+    structure_name: str,
+    failure_detail: str,
+    *,
+    has_explicit_policy: bool,
+) -> bool:
+    """Use main-base fallback when ramp placement is unseen or unbuildable."""
+
+    if has_explicit_policy:
+        return False
+    if _normalized_name(structure_name) in SC2_GAS_STRUCTURE_TYPE_NAMES:
+        return False
+    if action.target != "self_ramp":
+        return False
+    detail = str(failure_detail or "")
+    return "no_safe_placement" in detail and (
+        "not_visible" in detail
+        or "not_buildable" in detail
+        or "can_place_rejected" in detail
+    )
 
 
 def _action_structure_name(action: SC2CommandAction) -> str:

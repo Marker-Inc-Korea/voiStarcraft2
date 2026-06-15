@@ -334,6 +334,22 @@ class SC2ActionPlannerTest(unittest.TestCase):
         self.assertEqual("SUPPLYDEPOT", plan.actions[0].subject)
         self.assertEqual("self_ramp", plan.actions[0].target)
 
+    def test_build_refinery_accepts_llm_natural_gas_locations(self) -> None:
+        cases = (
+            "본진 베스핀 가스",
+            "본진 가스 geyser",
+            "nearest available geyser at main base",
+            "본진 가스 간헐천",
+            "가스",
+        )
+        for location in cases:
+            with self.subTest(location=location):
+                plan = build_sc2_execution_plan(
+                    BuildStructureIntent(structure="Refinery", location=location),
+                )
+                self.assertEqual("REFINERY", plan.actions[0].subject)
+                self.assertEqual("self_geyser", plan.actions[0].target)
+
     def test_build_structure_preserves_relative_location_policy_metadata(self) -> None:
         plan = build_sc2_execution_plan(
             BuildStructureIntent(

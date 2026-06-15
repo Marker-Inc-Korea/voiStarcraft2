@@ -126,7 +126,7 @@ DEFAULT_GEMINI_MODEL: Final[str] = "gemini-3.5-flash"
 DEFAULT_GROK_MODEL: Final[str] = "grok-4.3"
 """Default xAI/Grok OpenAI-compatible model used for command interpretation."""
 
-DEFAULT_OPENAI_MODEL: Final[str] = "gpt-4.1-mini"
+DEFAULT_OPENAI_MODEL: Final[str] = "gpt-5.5"
 """Default OpenAI GPT model used for one-shot utterance interpretation."""
 
 DEFAULT_LLM_MODEL: Final[str] = DEFAULT_ANTHROPIC_MODEL

@@ -186,7 +186,7 @@ python3 -m starcraft_commander.demo_sc2 --dry-run --gui
 ```
 
 Live mode requires the selected key before startup. Defaults are
-`--llm-provider openai`, `OPENAI_API_KEY`, and `--llm-model gpt-4.1-mini`;
+`--llm-provider openai`, `OPENAI_API_KEY`, and `--llm-model gpt-5.5`;
 Anthropic remains available with `--llm-provider anthropic` and
 `ANTHROPIC_API_KEY`.
 
