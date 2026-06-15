@@ -21,6 +21,7 @@ from starcraft_commander.llm_interpreter import (
     HybridCommandInterpreter,
     LLM_COMBO_TOOL_NAME,
     LLMComboPlan,
+    LLMComboPlanStep,
     LLM_INTENT_TOOL_NAME,
     LLM_INTERPRETATION_FAILURE_CODE,
     LLM_PROMPT_INJECTION_GUARD,
@@ -28,6 +29,7 @@ from starcraft_commander.llm_interpreter import (
     LLM_UNSUPPORTED_INTENT_NAME,
     LLMCommandInterpreter,
     build_hybrid_interpreter,
+    build_combo_system_prompt,
     build_combo_tool_definition,
     build_combo_tool_input_schema,
     build_intent_tool_definition,
@@ -144,6 +146,27 @@ def _tool_response(input_payload):
     return FakeMessage([FakeTextBlock("ok"), FakeToolUseBlock(input_payload)])
 
 
+def _combo_step(
+    order,
+    command_text,
+    korean_intent,
+    expected_intent,
+    *,
+    priority="normal",
+    constraints=None,
+):
+    return {
+        "order": order,
+        "command_text": command_text,
+        "korean_intent": korean_intent,
+        "execution_metadata": {
+            "expected_intent": expected_intent,
+            "priority": priority,
+            "constraints": list(constraints or []),
+        },
+    }
+
+
 def _openai_tool_response(input_payload):
     return {
         "choices": [
@@ -168,6 +191,26 @@ def _make_llm_interpreter(*outcomes):
     fake_client = FakeAnthropicClient(*outcomes)
     interpreter = LLMCommandInterpreter(client_factory=lambda: fake_client)
     return interpreter, fake_client
+
+
+def _assert_actionable_korean_reverse_question(
+    test_case: unittest.TestCase,
+    prompt: str,
+) -> None:
+    """Assert a clarification is a concrete Korean follow-up question."""
+
+    test_case.assertTrue(prompt.strip())
+    test_case.assertTrue(any("가" <= char <= "힣" for char in prompt))
+    test_case.assertIn("실행하지 않았습니다", prompt)
+    test_case.assertIn("필요한 정보", prompt)
+    test_case.assertIn("예:", prompt)
+    test_case.assertIn("?", prompt)
+    test_case.assertTrue(
+        any(marker in prompt for marker in ("어디", "어느", "어떤")),
+        msg=prompt,
+    )
+    test_case.assertNotIn("10개 MVP", prompt)
+    test_case.assertNotIn("LLM 해석에 실패", prompt)
 
 
 def _without_api_key():
@@ -196,10 +239,10 @@ def _fake_anthropic_module():
 
 
 class ToolSchemaGenerationTest(unittest.TestCase):
-    def test_intent_enum_has_exactly_eleven_values(self) -> None:
+    def test_intent_enum_has_exactly_twelve_values(self) -> None:
         schema = build_intent_tool_input_schema()
         intent_enum = schema["properties"]["intent"]["enum"]
-        self.assertEqual(len(intent_enum), 11)
+        self.assertEqual(len(intent_enum), 12)
         self.assertEqual(
             set(intent_enum),
             {*CANONICAL_INTENT_NAMES, LLM_UNSUPPORTED_INTENT_NAME},
@@ -225,9 +268,27 @@ class ToolSchemaGenerationTest(unittest.TestCase):
 
     def test_combo_tool_schema_accepts_bounded_step_list(self) -> None:
         schema = build_combo_tool_input_schema()
+        step_schema = schema["properties"]["steps"]["items"]
+        metadata_schema = step_schema["properties"]["execution_metadata"]
 
         self.assertEqual(schema["required"], ["steps"])
         self.assertEqual(schema["properties"]["steps"]["maxItems"], 6)
+        self.assertEqual(
+            step_schema["required"],
+            ["order", "command_text", "korean_intent", "execution_metadata"],
+        )
+        self.assertEqual(
+            metadata_schema["required"],
+            ["expected_intent", "priority", "constraints"],
+        )
+        self.assertEqual(
+            metadata_schema["properties"]["expected_intent"]["enum"],
+            list(CANONICAL_INTENT_NAMES),
+        )
+        self.assertEqual(
+            schema["properties"]["failure_policy"]["enum"],
+            ["stop_on_step_failure"],
+        )
         self.assertEqual(
             build_combo_tool_definition()["name"],
             LLM_COMBO_TOOL_NAME,
@@ -272,6 +333,14 @@ class ToolSchemaGenerationTest(unittest.TestCase):
         self.assertIn("minerals", prompt)
         self.assertIn(LLM_UNSUPPORTED_INTENT_NAME, prompt)
         self.assertIn(LLM_PROMPT_INJECTION_GUARD, prompt)
+
+    def test_combo_prompt_keeps_status_plus_next_action_as_two_steps(self) -> None:
+        prompt = build_combo_system_prompt()
+
+        self.assertIn("`상태 보고하`, `다음 할 일 알려줘`", prompt)
+        self.assertIn("command_text", prompt)
+        self.assertIn("korean_intent", prompt)
+        self.assertIn("execution_metadata", prompt)
 
 
 class LLMCommandInterpreterResolveTest(unittest.TestCase):
@@ -422,6 +491,352 @@ class LLMCommandInterpreterClarificationTest(unittest.TestCase):
                     result.failure.primary_reason.code,
                     LLM_INTERPRETATION_FAILURE_CODE,
                 )
+
+    def test_distance_only_build_placement_rejects_llm_guessed_anchor(self) -> None:
+        interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": [],
+                    "structure": "Supply Depot",
+                    "location": "main ramp",
+                }
+            )
+        )
+
+        result = interpreter.interpret("보급고 더 멀게 지어")
+
+        self.assertIsNone(result.payload)
+        self.assertTrue(result.clarification_required)
+        self.assertIn("기준점", result.clarification_prompt)
+        self.assertIn("보급고를 더 멀게 짓는", result.clarification_prompt)
+        self.assertIn(
+            "어디를 기준으로, 어느 방향으로 더 멀게 지을까요",
+            result.clarification_prompt,
+        )
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(
+            "missing_build_anchor",
+            result.failure.primary_reason.code,
+        )
+        self.assertEqual(
+            ["location"],
+            result.failure.primary_reason.metadata["missing_fields"],
+        )
+
+    def test_bare_distance_modifier_rejects_llm_unsupported_fallback(self) -> None:
+        interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "intent": LLM_UNSUPPORTED_INTENT_NAME,
+                    "reason": "bare relative-distance modifier",
+                }
+            )
+        )
+
+        result = interpreter.interpret("더 멀게")
+
+        self.assertIsNone(result.payload)
+        self.assertTrue(result.clarification_required)
+        self.assertIn("기준점", result.clarification_prompt)
+        self.assertIn("건물을 더 멀게 짓는", result.clarification_prompt)
+        self.assertIn(
+            "어디를 기준으로, 어느 방향으로 더 멀게 지을까요",
+            result.clarification_prompt,
+        )
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(
+            "missing_build_anchor",
+            result.failure.primary_reason.code,
+        )
+        self.assertEqual("BUILD_STRUCTURE", result.failure.intent)
+
+    def test_bare_distance_modifier_rejects_llm_guessed_anchor(self) -> None:
+        interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": [],
+                    "structure": "Supply Depot",
+                    "location": "main ramp",
+                }
+            )
+        )
+
+        result = interpreter.interpret("더 멀게")
+
+        self.assertIsNone(result.payload)
+        self.assertTrue(result.clarification_required)
+        self.assertIn("건물을 더 멀게 짓는", result.clarification_prompt)
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(
+            "missing_build_anchor",
+            result.failure.primary_reason.code,
+        )
+
+    def test_unanchored_relative_modifier_rejects_llm_guessed_anchor(self) -> None:
+        interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": [],
+                    "structure": "Barracks",
+                    "location": "main ramp",
+                }
+            )
+        )
+
+        result = interpreter.interpret("근처에 배럭 지어")
+
+        self.assertIsNone(result.payload)
+        self.assertTrue(result.clarification_required)
+        self.assertIn("기준점이나 방향", result.clarification_prompt)
+        self.assertIn("어느 기준 위치나 방향으로 지을까요", result.clarification_prompt)
+        self.assertNotIn("10개 MVP", result.clarification_prompt)
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(
+            "missing_build_relative_anchor",
+            result.failure.primary_reason.code,
+        )
+        self.assertEqual(
+            ["location"],
+            result.failure.primary_reason.metadata["missing_fields"],
+        )
+
+    def test_unanchored_relative_camera_modifier_rejects_llm_guessed_target(
+        self,
+    ) -> None:
+        interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "intent": "MOVE_CAMERA",
+                    "priority": "normal",
+                    "constraints": [],
+                    "target": "main base",
+                }
+            )
+        )
+
+        result = interpreter.interpret("근처로 카메라 옮겨")
+
+        self.assertIsNone(result.payload)
+        self.assertTrue(result.clarification_required)
+        self.assertIn("카메라 이동", result.clarification_prompt)
+        self.assertIn("필요한 정보(target)", result.clarification_prompt)
+        self.assertIn(
+            "어느 기준 위치나 대상으로 실행할까요",
+            result.clarification_prompt,
+        )
+        self.assertNotIn("10개 MVP", result.clarification_prompt)
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(
+            "missing_relative_action_anchor",
+            result.failure.primary_reason.code,
+        )
+        self.assertEqual("MOVE_CAMERA", result.failure.intent)
+        self.assertEqual(
+            ["target"],
+            result.failure.primary_reason.metadata["missing_fields"],
+        )
+
+    def test_anchored_comparative_build_placement_rejects_llm_guessed_direction(
+        self,
+    ) -> None:
+        interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": [],
+                    "structure": "Supply Depot",
+                    "location": "natural expansion",
+                }
+            )
+        )
+
+        result = interpreter.interpret("본진에서 더 멀게 보급고 지어")
+
+        self.assertIsNone(result.payload)
+        self.assertTrue(result.clarification_required)
+        self.assertIn("방향", result.clarification_prompt)
+        self.assertIn("본진 기준으로", result.clarification_prompt)
+        self.assertIn("보급고를 더 멀게 짓는", result.clarification_prompt)
+        self.assertIn(
+            "어느 방향으로 더 멀게 지을까요",
+            result.clarification_prompt,
+        )
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(
+            "missing_build_direction",
+            result.failure.primary_reason.code,
+        )
+        self.assertEqual(
+            ["direction"],
+            result.failure.primary_reason.metadata["missing_fields"],
+        )
+        self.assertIs(
+            True,
+            result.failure.primary_reason.metadata["anchor_known"],
+        )
+
+    def test_deictic_build_placement_asks_for_supported_semantic_target(
+        self,
+    ) -> None:
+        for command_text in ("저기 지어", "저기에 지어", "거기 지어"):
+            with self.subTest(command_text=command_text):
+                interpreter, _fake_client = _make_llm_interpreter(
+                    _tool_response(
+                        {
+                            "intent": LLM_UNSUPPORTED_INTENT_NAME,
+                            "unsupported_reason": "지시 대상 위치가 모호합니다.",
+                        }
+                    )
+                )
+                result = interpreter.interpret(command_text)
+
+                self.assertIsNone(result.payload)
+                self.assertTrue(result.clarification_required)
+                self.assertIn("semantic target", result.clarification_prompt)
+                self.assertIn("지원되는", result.clarification_prompt)
+                self.assertIn("어디에 지을까요", result.clarification_prompt)
+                self.assertIn("본진 입구", result.clarification_prompt)
+                self.assertNotIn("10개 MVP", result.clarification_prompt)
+                self.assertIsNotNone(result.failure)
+                self.assertEqual(
+                    "missing_build_semantic_target",
+                    result.failure.primary_reason.code,
+                )
+
+    def test_deictic_build_placement_rejects_llm_guessed_anchor(self) -> None:
+        for command_text in ("여기에 보급고 지어", "거기에 보급고 지어"):
+            with self.subTest(command_text=command_text):
+                interpreter, _fake_client = _make_llm_interpreter(
+                    _tool_response(
+                        {
+                            "intent": "BUILD_STRUCTURE",
+                            "priority": "normal",
+                            "constraints": [],
+                            "structure": "Supply Depot",
+                            "location": "main ramp",
+                        }
+                    )
+                )
+                result = interpreter.interpret(command_text)
+
+                self.assertIsNone(result.payload)
+                self.assertTrue(result.clarification_required)
+                self.assertIn("semantic target", result.clarification_prompt)
+                self.assertIn(
+                    "보급고를 짓는 요청은 유지하겠습니다",
+                    result.clarification_prompt,
+                )
+                self.assertIn(
+                    "지원되는 semantic target 중 어디에 지을까요",
+                    result.clarification_prompt,
+                )
+                self.assertNotIn("10개 MVP", result.clarification_prompt)
+                self.assertIsNotNone(result.failure)
+                self.assertEqual(
+                    "missing_build_semantic_target",
+                    result.failure.primary_reason.code,
+                )
+                self.assertEqual(
+                    ["location"],
+                    result.failure.primary_reason.metadata["missing_fields"],
+                )
+
+    def test_ambiguous_llm_clarifications_are_actionable_korean_reverse_questions(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "distance-only placement",
+                "보급고 더 멀게 지어",
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": [],
+                    "structure": "Supply Depot",
+                    "location": "main ramp",
+                },
+                "missing_build_anchor",
+                ("기준점", "어디를 기준으로", "어느 방향"),
+            ),
+            (
+                "anchored comparative placement",
+                "본진에서 더 멀게 보급고 지어",
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": [],
+                    "structure": "Supply Depot",
+                    "location": "natural expansion",
+                },
+                "missing_build_direction",
+                ("방향", "어느 방향"),
+            ),
+            (
+                "unanchored relative placement",
+                "근처에 배럭 지어",
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": [],
+                    "structure": "Barracks",
+                    "location": "main ramp",
+                },
+                "missing_build_relative_anchor",
+                ("기준점이나 방향", "어느 기준 위치나 방향으로 지을까요"),
+            ),
+            (
+                "deictic placement unsupported by llm",
+                "저기에 지어",
+                {
+                    "intent": LLM_UNSUPPORTED_INTENT_NAME,
+                    "unsupported_reason": "지시 대상 위치가 모호합니다.",
+                },
+                "missing_build_semantic_target",
+                ("지원되는 semantic target", "어디에 지을까요", "가능한 위치"),
+            ),
+            (
+                "deictic placement with guessed anchor",
+                "여기에 보급고 지어",
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": [],
+                    "structure": "Supply Depot",
+                    "location": "main ramp",
+                },
+                "missing_build_semantic_target",
+                ("지원되는 semantic target", "어디에 지을까요", "가능한 위치"),
+            ),
+        )
+
+        for label, command_text, tool_input, expected_code, fragments in cases:
+            with self.subTest(case=label):
+                interpreter, _fake_client = _make_llm_interpreter(
+                    _tool_response(tool_input)
+                )
+
+                result = interpreter.interpret(command_text)
+
+                self.assertIsNone(result.payload)
+                self.assertTrue(result.clarification_required)
+                self.assertIsNotNone(result.failure)
+                self.assertEqual(
+                    expected_code,
+                    result.failure.primary_reason.code,
+                )
+                _assert_actionable_korean_reverse_question(
+                    self,
+                    result.clarification_prompt,
+                )
+                for fragment in fragments:
+                    self.assertIn(fragment, result.clarification_prompt)
 
     def test_api_errors_and_missing_tool_blocks_never_raise(self) -> None:
         degraded_outcomes = (
@@ -601,7 +1016,21 @@ class HybridCommandInterpreterTest(unittest.TestCase):
         llm_interpreter, fake_client = _make_llm_interpreter(
             _tool_response(
                 {
-                    "steps": ["정찰보내", "병영올려"],
+                    "steps": [
+                        _combo_step(
+                            1,
+                            "정찰보내",
+                            "정찰을 먼저 보낸다",
+                            "SCOUT",
+                            constraints=["초반 정보 확인"],
+                        ),
+                        _combo_step(
+                            2,
+                            "병영올려",
+                            "병영을 건설한다",
+                            "BUILD_STRUCTURE",
+                        ),
+                    ],
                     "rationale": "정찰 후 생산 인프라 확보",
                 }
             )
@@ -614,14 +1043,70 @@ class HybridCommandInterpreterTest(unittest.TestCase):
                 command_text="정찰보내고 병영올려",
                 steps=("정찰보내", "병영올려"),
                 rationale="정찰 후 생산 인프라 확보",
+                ordered_steps=(
+                    LLMComboPlanStep(
+                        order=1,
+                        command_text="정찰보내",
+                        korean_intent="정찰을 먼저 보낸다",
+                        expected_intent="SCOUT",
+                        constraints=("초반 정보 확인",),
+                    ),
+                    LLMComboPlanStep(
+                        order=2,
+                        command_text="병영올려",
+                        korean_intent="병영을 건설한다",
+                        expected_intent="BUILD_STRUCTURE",
+                    ),
+                ),
             ),
             plan,
         )
+        self.assertEqual(("정찰보내", "병영올려"), plan.steps)
+        self.assertEqual("stop_on_step_failure", plan.failure_policy)
+        self.assertEqual("stop_on_step_failure", plan.to_dict()["failure_policy"])
+        self.assertEqual("SCOUT", plan.ordered_steps[0].expected_intent)
+        self.assertEqual(
+            "정찰을 먼저 보낸다",
+            plan.to_dict()["steps"][0]["korean_intent"],
+        )
         self.assertEqual(fake_client.calls[0]["tool_choice"]["name"], LLM_COMBO_TOOL_NAME)
+
+    def test_llm_combo_planner_rejects_string_steps_without_metadata(self) -> None:
+        llm_interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response({"steps": ["정찰보내", "병영올려"]})
+        )
+
+        self.assertIsNone(llm_interpreter.plan_combo("정찰보내고 병영올려"))
+
+    def test_llm_combo_planner_rejects_out_of_order_metadata(self) -> None:
+        llm_interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "steps": [
+                        _combo_step(2, "정찰보내", "정찰을 보낸다", "SCOUT"),
+                        _combo_step(1, "병영올려", "병영을 건설한다", "BUILD_STRUCTURE"),
+                    ]
+                }
+            )
+        )
+
+        self.assertIsNone(llm_interpreter.plan_combo("정찰보내고 병영올려"))
 
     def test_hybrid_delegates_combo_planning_to_llm_stage(self) -> None:
         llm_interpreter, _fake_client = _make_llm_interpreter(
-            _tool_response({"steps": ["상태 보고하", "정찰보내"]})
+            _tool_response(
+                {
+                    "steps": [
+                        _combo_step(
+                            1,
+                            "상태 보고하",
+                            "현재 상태를 먼저 확인한다",
+                            "SUMMARIZE_STATE",
+                        ),
+                        _combo_step(2, "정찰보내", "정찰을 보낸다", "SCOUT"),
+                    ]
+                }
+            )
         )
         hybrid = HybridCommandInterpreter(llm_interpreter=llm_interpreter)
 

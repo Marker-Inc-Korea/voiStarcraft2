@@ -54,6 +54,16 @@ from toycraft_commander.interpreter import (
     UNSUPPORTED_COMMAND_FAILURE_CODE,
     CommandInterpretationResult,
     CommandInterpreterInterface,
+    build_missing_build_semantic_target_result,
+    build_missing_build_anchor_result,
+    build_missing_build_direction_result,
+    build_missing_build_relative_anchor_result,
+    build_missing_relative_action_anchor_result,
+    is_deictic_build_placement_missing_semantic_target,
+    is_distance_only_build_placement,
+    is_farther_build_placement_missing_direction,
+    is_unanchored_relative_build_placement,
+    is_unanchored_relative_action_target,
 )
 
 __all__ = [
@@ -73,6 +83,7 @@ __all__ = [
     "LocalLLMControl",
     "LLMCommandInterpreter",
     "LLMComboPlan",
+    "LLMComboPlanStep",
     "LLM_FAILURE_CLARIFICATION_PROMPT",
     "LLM_COMBO_TOOL_NAME",
     "LLM_INTENT_TOOL_NAME",
@@ -151,6 +162,14 @@ LLM_INTENT_TOOL_NAME: Final[str] = "submit_commander_intent"
 
 LLM_COMBO_TOOL_NAME: Final[str] = "submit_commander_combo"
 """Name of the forced tool for multi-step combo command planning."""
+
+DEFAULT_COMBO_FAILURE_POLICY: Final[str] = "stop_on_step_failure"
+"""Conservative ComboPlan policy used when a planner omits one."""
+
+COMBO_FAILURE_POLICIES: Final[frozenset[str]] = frozenset(
+    {DEFAULT_COMBO_FAILURE_POLICY}
+)
+"""Supported plan-level policies for failed ComboPlan steps."""
 
 LLM_UNSUPPORTED_INTENT_NAME: Final[str] = "UNSUPPORTED"
 """Sentinel intent the model uses when no canonical intent fits."""
@@ -306,16 +325,94 @@ def build_combo_tool_input_schema() -> dict[str, object]:
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 6,
-                "items": {"type": "string"},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "order": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": (
+                                "1-based execution order. Must match the step "
+                                "position in the returned array."
+                            ),
+                        },
+                        "command_text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": (
+                                "Concise Korean commander sub-command that can "
+                                "be interpreted and executed independently."
+                            ),
+                        },
+                        "korean_intent": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": (
+                                "Korean phrase preserving the user's intended "
+                                "meaning for this step, without translating it "
+                                "away or replacing it with planner jargon."
+                            ),
+                        },
+                        "execution_metadata": {
+                            "type": "object",
+                            "properties": {
+                                "expected_intent": {
+                                    "type": "string",
+                                    "enum": list(CANONICAL_INTENT_NAMES),
+                                    "description": (
+                                        "Canonical intent family expected after "
+                                        "normal command interpretation."
+                                    ),
+                                },
+                                "priority": {
+                                    "type": "string",
+                                    "enum": list(PRIORITY_LEVELS),
+                                    "description": "Commander priority for audit.",
+                                },
+                                "constraints": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Korean constraints to preserve for the "
+                                        "normal interpreter and audit trail."
+                                    ),
+                                },
+                            },
+                            "required": [
+                                "expected_intent",
+                                "priority",
+                                "constraints",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": [
+                        "order",
+                        "command_text",
+                        "korean_intent",
+                        "execution_metadata",
+                    ],
+                    "additionalProperties": False,
+                },
                 "description": (
-                    "Ordered Korean commander sub-commands. Each step must be "
-                    "one concise command that maps to a supported MVP intent. "
-                    "Do not include explanations."
+                    "Ordered executable Korean commander sub-command objects. "
+                    "Each step must preserve Korean intent and include the "
+                    "execution metadata needed for audit before the runtime "
+                    "re-runs interpretation, validation, planning, and execution."
                 ),
             },
             "rationale": {
                 "type": "string",
                 "description": "Short Korean rationale for audit/debugging.",
+            },
+            "failure_policy": {
+                "type": "string",
+                "enum": list(COMBO_FAILURE_POLICIES),
+                "description": (
+                    "Plan-level failure policy. stop_on_step_failure means the "
+                    "runtime stops at the failed step and safely skips later "
+                    "steps instead of guessing recovery."
+                ),
             },
         },
         "required": ["steps"],
@@ -394,8 +491,10 @@ def build_combo_system_prompt() -> str:
         f"an ordered combo by calling {LLM_COMBO_TOOL_NAME}. "
         "한국어 거시 명령 한 문장을 안전한 하위 명령 목록으로 분해합니다.\n"
         "Hard rules / 엄격 규칙:\n"
-        "1. Output 1 to 6 concise Korean sub-commands only in steps. "
-        "각 step은 기존 커맨더가 해석 가능한 짧은 한국어 명령이어야 합니다.\n"
+        "1. Output 1 to 6 step objects. Each step must include order, "
+        "command_text, korean_intent, and execution_metadata. "
+        "각 step은 순서, 실행 가능한 한국어 명령, 보존된 한국어 의도, "
+        "실행 메타데이터를 포함해야 합니다.\n"
         "2. Use only supported intent families: 상태 확인, 일꾼 생산, 자원 채취, "
         "구조물 건설, 병력 생산, 정찰, 방어, 수리, 확장, 견제.\n"
         "3. Never call APIs, invent coordinates, cancel unknown objects, or move "
@@ -403,9 +502,70 @@ def build_combo_system_prompt() -> str:
         "4. Prefer safe prerequisite order. Examples: "
         "`초반 운영 시작해` -> [`일꾼 계속 찍어`, `보급고 지어`, `정찰보내`]; "
         "`정찰보내고 병영올려` -> [`정찰보내`, `병영올려`]; "
-        "`상태 보고하고 지금 할거 알려줘` -> [`상태 보고하`].\n"
+        "`상태 보고하고 지금 할거 알려줘` -> [`상태 보고하`, `다음 할 일 알려줘`].\n"
         f"5. {LLM_PROMPT_INJECTION_GUARD}"
     )
+
+
+@dataclass(frozen=True)
+class LLMComboPlanStep:
+    """One auditable LLM-produced combo step.
+
+    The runtime treats this metadata as an audit contract only. Mutation still
+    flows through the normal interpreter, intent validation, feasibility,
+    planner, and executor layers using ``command_text``.
+    """
+
+    order: int
+    command_text: str
+    korean_intent: str
+    expected_intent: str
+    priority: str = "normal"
+    constraints: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.order) is not int or self.order < 1:
+            raise ValueError("combo step order must be a positive integer.")
+        cleaned_command = (
+            self.command_text.strip() if isinstance(self.command_text, str) else ""
+        )
+        if not cleaned_command:
+            raise ValueError("combo step command_text must be non-empty.")
+        object.__setattr__(self, "command_text", cleaned_command)
+        cleaned_korean_intent = (
+            self.korean_intent.strip() if isinstance(self.korean_intent, str) else ""
+        )
+        if not cleaned_korean_intent:
+            raise ValueError("combo step korean_intent must be non-empty.")
+        object.__setattr__(self, "korean_intent", cleaned_korean_intent)
+        if self.expected_intent not in CANONICAL_INTENT_NAMES:
+            raise ValueError("combo step expected_intent must be canonical.")
+        cleaned_priority = (
+            self.priority.strip().lower() if isinstance(self.priority, str) else ""
+        )
+        if cleaned_priority not in PRIORITY_LEVELS:
+            raise ValueError("combo step priority must be canonical.")
+        object.__setattr__(self, "priority", cleaned_priority)
+        cleaned_constraints = tuple(
+            constraint.strip()
+            for constraint in self.constraints
+            if isinstance(constraint, str) and constraint.strip()
+        )
+        object.__setattr__(self, "constraints", cleaned_constraints)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-ready response-contract representation."""
+
+        return {
+            "order": self.order,
+            "command_text": self.command_text,
+            "korean_intent": self.korean_intent,
+            "execution_metadata": {
+                "expected_intent": self.expected_intent,
+                "priority": self.priority,
+                "constraints": list(self.constraints),
+            },
+        }
 
 
 @dataclass(frozen=True)
@@ -413,27 +573,64 @@ class LLMComboPlan:
     """Safe LLM-produced high-level command decomposition."""
 
     command_text: str
-    steps: tuple[str, ...]
+    steps: tuple[str, ...] = ()
     rationale: str = ""
+    ordered_steps: tuple[LLMComboPlanStep, ...] = ()
+    failure_policy: str = DEFAULT_COMBO_FAILURE_POLICY
 
     def __post_init__(self) -> None:
-        cleaned_steps = tuple(
-            step.strip()
-            for step in self.steps
-            if isinstance(step, str) and step.strip()
+        cleaned_ordered_steps = tuple(
+            step for step in self.ordered_steps if isinstance(step, LLMComboPlanStep)
         )
+        if cleaned_ordered_steps:
+            expected_orders = tuple(range(1, len(cleaned_ordered_steps) + 1))
+            actual_orders = tuple(step.order for step in cleaned_ordered_steps)
+            if actual_orders != expected_orders:
+                raise ValueError("combo step orders must be contiguous and 1-based.")
+            cleaned_steps = tuple(step.command_text for step in cleaned_ordered_steps)
+        else:
+            cleaned_steps = tuple(
+                step.strip()
+                for step in self.steps
+                if isinstance(step, str) and step.strip()
+            )
+        object.__setattr__(self, "ordered_steps", cleaned_ordered_steps)
         object.__setattr__(self, "steps", cleaned_steps)
         object.__setattr__(
             self,
             "rationale",
             self.rationale.strip() if isinstance(self.rationale, str) else "",
         )
+        failure_policy = (
+            self.failure_policy.strip()
+            if isinstance(self.failure_policy, str)
+            else ""
+        )
+        if not failure_policy:
+            failure_policy = DEFAULT_COMBO_FAILURE_POLICY
+        if failure_policy not in COMBO_FAILURE_POLICIES:
+            raise ValueError("combo plan failure_policy must be supported.")
+        object.__setattr__(self, "failure_policy", failure_policy)
         if not isinstance(self.command_text, str) or not self.command_text.strip():
             raise ValueError("combo plan command_text must be non-empty.")
         if not cleaned_steps:
             raise ValueError("combo plan must include at least one step.")
         if len(cleaned_steps) > 6:
             raise ValueError("combo plan must not exceed six steps.")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-ready ComboPlan response contract."""
+
+        return {
+            "command_text": self.command_text,
+            "steps": (
+                [step.to_dict() for step in self.ordered_steps]
+                if self.ordered_steps
+                else list(self.steps)
+            ),
+            "rationale": self.rationale,
+            "failure_policy": self.failure_policy,
+        }
 
 
 @dataclass(frozen=True)
@@ -528,12 +725,22 @@ class LLMCommandInterpreter:
         raw_steps = tool_input.get("steps")
         if not isinstance(raw_steps, (list, tuple)):
             return None
+        ordered_steps = _parse_combo_plan_steps(raw_steps)
+        if ordered_steps is None:
+            return None
         rationale = tool_input.get("rationale", "")
+        failure_policy = tool_input.get(
+            "failure_policy",
+            DEFAULT_COMBO_FAILURE_POLICY,
+        )
         try:
             return LLMComboPlan(
                 command_text=command_text,
-                steps=tuple(str(step) for step in raw_steps),
                 rationale=rationale if isinstance(rationale, str) else "",
+                ordered_steps=ordered_steps,
+                failure_policy=(
+                    failure_policy if isinstance(failure_policy, str) else ""
+                ),
             )
         except ValueError:
             return None
@@ -573,6 +780,15 @@ class LLMCommandInterpreter:
             )
 
         intent_name = tool_input.get("intent")
+        if is_deictic_build_placement_missing_semantic_target(command_text):
+            return build_missing_build_semantic_target_result(command_text)
+
+        if is_distance_only_build_placement(command_text):
+            return build_missing_build_anchor_result(command_text)
+
+        if is_unanchored_relative_build_placement(command_text):
+            return build_missing_build_relative_anchor_result(command_text)
+
         if intent_name == LLM_UNSUPPORTED_INTENT_NAME:
             return _build_unsupported_result(command_text, tool_input)
 
@@ -597,6 +813,21 @@ class LLMCommandInterpreter:
                     "not match the canonical INTENT_PAYLOAD_TYPES registry."
                 ),
             )
+
+        if is_distance_only_build_placement(command_text, payload):
+            return build_missing_build_anchor_result(command_text)
+
+        if is_farther_build_placement_missing_direction(command_text, payload):
+            return build_missing_build_direction_result(command_text)
+
+        if is_unanchored_relative_build_placement(command_text, payload):
+            return build_missing_build_relative_anchor_result(command_text)
+
+        if is_unanchored_relative_action_target(command_text, payload):
+            return build_missing_relative_action_anchor_result(command_text, payload)
+
+        if is_deictic_build_placement_missing_semantic_target(command_text, payload):
+            return build_missing_build_semantic_target_result(command_text)
 
         return CommandInterpretationResult(
             command_text=command_text,
@@ -914,6 +1145,40 @@ def _extract_tool_input(response: object) -> Mapping[str, object] | None:
             return block_input
         return None
     return None
+
+
+def _parse_combo_plan_steps(
+    raw_steps: list[object] | tuple[object, ...],
+) -> tuple[LLMComboPlanStep, ...] | None:
+    """Parse the forced-tool ComboPlan response, rejecting partial contracts."""
+
+    parsed_steps: list[LLMComboPlanStep] = []
+    for expected_order, raw_step in enumerate(raw_steps, start=1):
+        if not isinstance(raw_step, Mapping):
+            return None
+        metadata = raw_step.get("execution_metadata")
+        if not isinstance(metadata, Mapping):
+            return None
+        constraints = metadata.get("constraints")
+        if not isinstance(constraints, (list, tuple)):
+            return None
+        try:
+            step = LLMComboPlanStep(
+                order=raw_step.get("order"),
+                command_text=raw_step.get("command_text"),
+                korean_intent=raw_step.get("korean_intent"),
+                expected_intent=metadata.get("expected_intent"),
+                priority=metadata.get("priority"),
+                constraints=tuple(constraints),
+            )
+        except ValueError:
+            return None
+        if step.order != expected_order:
+            return None
+        parsed_steps.append(step)
+    if not parsed_steps:
+        return None
+    return tuple(parsed_steps)
 
 
 def _extract_openai_tool_input(response: object) -> Mapping[str, object] | None:
