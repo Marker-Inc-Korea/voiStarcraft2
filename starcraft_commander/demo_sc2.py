@@ -789,6 +789,7 @@ def _run_dry_run_gui(
         port=args.gui,
         host=args.gui_host,
         auth_token=args.gui_token,
+        auto_launch_live=bool(args.llm),
     )
     bridge.start()
     try:

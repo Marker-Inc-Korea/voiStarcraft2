@@ -347,6 +347,55 @@ class LiveModeGuardTest(unittest.TestCase):
         self.assertFalse(captured["llm_control"].is_available())
         self.assertIsInstance(captured["session"].interpreter, HybridCommandInterpreter)
 
+    def test_dry_run_gui_enables_live_auto_launch_after_key_setup(self) -> None:
+        captured = {}
+
+        class FakeBridge:
+            def __init__(self, **kwargs):
+                captured["bridge_kwargs"] = kwargs
+
+            def start(self):
+                captured["bridge_started"] = True
+
+            def stop(self):
+                captured["bridge_stopped"] = True
+
+        class FakeServer:
+            url = "http://127.0.0.1:0"
+
+            def __init__(self, **kwargs):
+                captured["server_kwargs"] = kwargs
+
+            def start(self):
+                captured["server_started"] = True
+
+            def stop(self):
+                captured["server_stopped"] = True
+
+        session, _bot = demo_sc2.build_dry_run_session()
+        args = demo_sc2.parse_args(["--dry-run", "--gui", "0"])
+        with mock.patch.object(demo_sc2, "SessionLoopBridge", FakeBridge):
+            with mock.patch.object(demo_sc2, "WebGuiServer", FakeServer):
+                with mock.patch.object(
+                    demo_sc2,
+                    "_serve_until_interrupt",
+                    side_effect=KeyboardInterrupt,
+                ):
+                    result = demo_sc2._run_dry_run_gui(
+                        session,
+                        args,
+                        llm_control=LocalLLMControl(),
+                    )
+
+        self.assertEqual(result, 0)
+        self.assertTrue(captured["server_kwargs"]["auto_launch_live"])
+        self.assertIsInstance(
+            captured["bridge_kwargs"]["llm_control"],
+            LocalLLMControl,
+        )
+        self.assertTrue(captured["server_started"])
+        self.assertTrue(captured["server_stopped"])
+
     def test_live_local_llm_control_requires_provider_key_before_start(self) -> None:
         with mock.patch.object(demo_sc2, "require_openai", mock.Mock()):
             with mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
