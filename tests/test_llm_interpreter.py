@@ -43,6 +43,7 @@ from toycraft_commander.intents import (
     INTENT_PAYLOAD_TYPES,
     INTENT_SCHEMAS,
     PRIORITY_LEVELS,
+    BuildStructureIntent,
     DefendIntent,
     SummarizeStateIntent,
 )
@@ -192,6 +193,10 @@ def _openai_tool_response(input_payload):
             }
         ]
     }
+
+
+def _openai_text_response(text):
+    return {"choices": [{"message": {"content": text}}]}
 
 
 def _make_llm_interpreter(*outcomes):
@@ -412,6 +417,97 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual(call["tools"][0]["type"], "function")
         self.assertEqual(call["messages"][0]["role"], "system")
         self.assertEqual(call["messages"][1]["content"], FREE_FORM_DEFEND_UTTERANCE)
+
+    def test_runtime_context_is_attached_to_intent_and_combo_calls(self) -> None:
+        context = {
+            "state": {"minerals": 500, "supply_left": 8},
+            "semantic_target_catalog": [
+                {"target": "self_geyser", "available": True},
+                {"target": "self_ramp", "available": True},
+            ],
+            "recent_events": [{"command_text": "정제소 설치해", "status": "executed"}],
+        }
+        llm_interpreter, fake_client = _make_llm_interpreter(
+            _tool_response(TRAIN_WORKER_TOOL_INPUT),
+            _tool_response(
+                {
+                    "steps": [
+                        _combo_step(1, "정찰보내", "정찰을 보낸다", "SCOUT"),
+                        _combo_step(
+                            2,
+                            "보급고 지어",
+                            "보급고를 건설한다",
+                            "BUILD_STRUCTURE",
+                        ),
+                    ]
+                }
+            ),
+        )
+        object.__setattr__(llm_interpreter, "context_provider", lambda: context)
+
+        llm_interpreter.interpret("일꾼 생산해")
+        llm_interpreter.plan_combo("정찰하고 보급도 준비해")
+
+        intent_user = fake_client.calls[0]["messages"][0]["content"]
+        combo_user = fake_client.calls[1]["messages"][0]["content"]
+        for user_content in (intent_user, combo_user):
+            self.assertIn("Runtime context JSON follows", user_content)
+            self.assertIn("semantic_target_catalog", user_content)
+            self.assertIn("self_geyser", user_content)
+            self.assertIn("User utterance:", user_content)
+
+    def test_openai_briefing_summary_uses_runtime_context(self) -> None:
+        fake_client = FakeOpenAIClient(
+            _openai_text_response("현재는 1가스 이후 병영 기반을 준비하는 운영입니다.")
+        )
+        interpreter = LLMCommandInterpreter(
+            provider="openai",
+            model="gpt-test",
+            api_key="test-key",
+            client_factory=lambda: fake_client,
+            context_provider=lambda: {
+                "state": {"minerals": 700, "vespene": 120},
+                "recent_events": [{"command_text": "본진입구에 배럭지어"}],
+            },
+        )
+
+        summary = interpreter.briefing_summary()
+
+        self.assertEqual(
+            {
+                "summary": "현재는 1가스 이후 병영 기반을 준비하는 운영입니다.",
+                "source": "llm_runtime_context",
+            },
+            summary,
+        )
+        call = fake_client.calls[0]
+        self.assertIn("live StarCraft commander strategist", call["messages"][0]["content"])
+        self.assertIn("recent_events", call["messages"][1]["content"])
+
+    def test_build_structure_preserves_llm_placement_policy(self) -> None:
+        policy = {
+            "anchor_target": "self_ramp",
+            "spatial_relation": "near",
+            "avoid_choke": True,
+        }
+        interpreter, _fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "intent": "BUILD_STRUCTURE",
+                    "priority": "normal",
+                    "constraints": ["avoid blocking worker pathing"],
+                    "structure": "Supply Depot",
+                    "location": "self_ramp",
+                    "placement_policy": policy,
+                }
+            )
+        )
+
+        result = interpreter.interpret("본진 입구 길 안 막히게 보급고 지어")
+
+        self.assertIsInstance(result.payload, BuildStructureIntent)
+        self.assertEqual(result.payload.location, "self_ramp")
+        self.assertEqual(result.payload.placement_policy, policy)
 
     def test_missing_priority_and_constraints_default_safely(self) -> None:
         interpreter, _fake_client = _make_llm_interpreter(

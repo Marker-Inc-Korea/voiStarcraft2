@@ -665,6 +665,23 @@ class InvalidTargetComboPlanningInterpreter(ComboPlanningInterpreter):
         return super().interpret(command_text)
 
 
+class QuestionAnsweringInterpreter(ComboPlanningInterpreter):
+    """Fake LLM seam for read-only question answers."""
+
+    def __init__(self):
+        super().__init__(())
+        self.questions = []
+
+    def answer_question(self, question_text, context=None):
+        self.questions.append((question_text, context))
+        return {
+            "answer": (
+                "현재 전략은 초반 경제 복구입니다. 최근 명령상 SCV와 보급을 "
+                "먼저 안정화한 뒤 병영을 올리는 흐름입니다."
+            )
+        }
+
+
 class SplitCompoundCommandTest(unittest.TestCase):
     def test_splits_compound_commands_on_korean_connectives(self) -> None:
         cases = {
@@ -1392,6 +1409,23 @@ class LivePipelineTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("sk-", outcome.narration)
                 self.assertIn("Live GUI", outcome.narration)
                 self.assertEqual([], session._game_bot_for_question().issued_commands)
+
+    async def test_llm_question_answer_reinterprets_read_only_context(self) -> None:
+        bot = LivePipelineFakeBot()
+        interpreter = QuestionAnsweringInterpreter()
+        session = make_session(bot, interpreter=interpreter)
+
+        outcomes = await session.process_text("지금 할거 알려줘")
+
+        self.assertEqual(1, len(outcomes))
+        outcome = outcomes[0]
+        self.assertEqual("read_only", outcome.status)
+        self.assertEqual("ANSWER_QUESTION", outcome.intent_dsl["intent"])
+        self.assertIn("현재 전략은 초반 경제 복구", outcome.narration)
+        self.assertNotIn("추천 흐름", outcome.narration)
+        self.assertEqual([], bot.issued_commands)
+        self.assertEqual("지금 할거 알려줘", interpreter.questions[0][0])
+        self.assertIn("semantic_target_catalog", interpreter.questions[0][1])
 
     async def test_next_action_question_gets_read_only_answer(self) -> None:
         advisory_questions = (

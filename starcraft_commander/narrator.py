@@ -644,6 +644,8 @@ def _error_line(error: SC2ExecutionError) -> str:
         detail = str(error.metadata.get("detail", ""))
         reason = SC2_ACTION_REFUSAL_KOREAN_REASONS.get(detail)
         if reason is None:
+            reason = _sanitized_action_refusal_reason(detail or error.message)
+        if reason is None:
             reason = f"실행기가 동작을 거부했습니다 (세부: {detail or error.message})"
         return f"{label} 거부: {reason}."
     if error.exception_type == "MissingRuntimeAdapter":
@@ -663,6 +665,37 @@ def _error_line(error: SC2ExecutionError) -> str:
         if label is not None:
             return f"{label} 동작 실패: {error.message}"
     return f"실행 실패: {error.message}"
+
+
+def _sanitized_action_refusal_reason(detail: str) -> str | None:
+    """Convert adapter debug details into commander-safe Korean guidance."""
+
+    normalized = str(detail or "")
+    if "unsupported SC2 target location" in normalized:
+        return (
+            "위치 표현을 현재 지도 의미 좌표로 연결하지 못했습니다. "
+            "LLM은 본진, 본진 입구, 앞마당, 본진 가스처럼 관측 가능한 "
+            "semantic target 중 하나로 다시 좁혀야 합니다."
+        )
+    if "no_safe_placement" in normalized:
+        return (
+            "보이는 지형 안에서 안전한 건설 칸을 찾지 못했습니다. "
+            "길목/미네랄 라인을 피해서 본진 안쪽, 본진 앞, 본진 입구처럼 "
+            "다른 위치를 지정해 주세요."
+        )
+    if "invalid_refinery_target" in normalized:
+        if "no_free_geyser" in normalized:
+            return (
+                "사용 가능한 가스 간헐천을 찾지 못했습니다. 이미 가까운 "
+                "간헐천에 정제소가 있거나 아직 다른 간헐천을 관측하지 못했습니다."
+            )
+        if "target_is_not_geyser" in normalized:
+            return "정제소는 일반 지형이 아니라 가스 간헐천 위에만 지을 수 있습니다."
+        return (
+            "정제소 위치를 확정하지 못했습니다. 본진 가스 또는 앞마당 가스처럼 "
+            "관측 가능한 간헐천 기준으로 다시 지정해 주세요."
+        )
+    return None
 
 
 def _army_line(state: SC2CommanderState) -> str:

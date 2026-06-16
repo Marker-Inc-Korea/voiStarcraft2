@@ -2823,6 +2823,8 @@ class SC2CommandSession:
         Korean clarification unchanged.
         """
 
+        self._refresh_llm_runtime_context()
+
         pending_camera_answer = self._pending_camera_base_interpretation_for(command_text)
         if pending_camera_answer is not None:
             self._clear_pending_camera_base_clarification()
@@ -3277,7 +3279,44 @@ class SC2CommandSession:
             )
         if topic == "townhall_state_help":
             answer = _townhall_state_answer_from_context(command_text, state, game_bot)
+        llm_answer = self._llm_question_answer(command_text, topic, answer)
+        if llm_answer:
+            answer = llm_answer
         return topic, answer, state
+
+    def _llm_question_answer(
+        self,
+        command_text: str,
+        topic: str,
+        fallback_answer: str,
+    ) -> str:
+        """Ask the configured LLM to reinterpret read-only question context."""
+
+        self._refresh_llm_runtime_context()
+        context = self._llm_runtime_context()
+        context["question"] = {
+            "text": command_text,
+            "topic": topic,
+            "fallback_answer": fallback_answer,
+            "read_only": True,
+        }
+        for candidate in (
+            self.interpreter,
+            getattr(self.interpreter, "llm_interpreter", None),
+        ):
+            method = getattr(candidate, "answer_question", None)
+            if not callable(method):
+                continue
+            try:
+                value = method(command_text, context)
+            except Exception:  # noqa: BLE001 - questions must stay read-only
+                continue
+            if not isinstance(value, Mapping):
+                continue
+            answer = str(value.get("answer", "") or value.get("summary", "")).strip()
+            if answer:
+                return answer
+        return ""
 
     def _townhall_state_ambiguity_for(
         self,
@@ -3670,7 +3709,73 @@ class SC2CommandSession:
             summary_text = str(summary_renderer()).strip()
             if summary_text:
                 sections.append(summary_text)
+        llm_summary = self.briefing_llm_summary()
+        if isinstance(llm_summary, Mapping):
+            summary_text = str(llm_summary.get("summary", "")).strip()
+            if summary_text:
+                sections.append(f"LLM 전략 브리핑: {summary_text}")
         return "\n".join(sections)
+
+    def _refresh_llm_runtime_context(self) -> None:
+        """Attach live state/map/history context to LLM-capable interpreters."""
+
+        setter = getattr(self.interpreter, "set_context_provider", None)
+        if callable(setter):
+            try:
+                setter(self._llm_runtime_context)
+            except Exception:  # noqa: BLE001 - context is advisory only
+                return
+            return
+        llm = getattr(self.interpreter, "llm_interpreter", None)
+        setter = getattr(llm, "set_context_provider", None)
+        if callable(setter):
+            try:
+                setter(self._llm_runtime_context)
+            except Exception:  # noqa: BLE001 - context is advisory only
+                return
+
+    def briefing_llm_summary(self) -> dict[str, object] | None:
+        """Return an optional LLM strategic briefing for dashboard snapshots."""
+
+        self._refresh_llm_runtime_context()
+        context = self._llm_runtime_context()
+        for candidate in (
+            self.interpreter,
+            getattr(self.interpreter, "llm_interpreter", None),
+        ):
+            summary = getattr(candidate, "briefing_llm_summary", None)
+            if not callable(summary):
+                summary = getattr(candidate, "briefing_summary", None)
+            if not callable(summary):
+                continue
+            try:
+                value = summary(context)
+            except Exception:  # noqa: BLE001 - dashboard must stay available
+                continue
+            if isinstance(value, dict):
+                return value
+        return None
+
+    def _llm_runtime_context(self) -> dict[str, object]:
+        """Build the safe context the LLM uses for target/strategy reasoning."""
+
+        runtime = self._runtime_for_question()
+        game_bot = self._game_bot_for_question(runtime)
+        state = self._resolve_state()
+        resolver = self._map_resolver_for_question(runtime, game_bot)
+        return {
+            "state": _state_context_document(state),
+            "semantic_target_catalog": _semantic_catalog_context_document(resolver),
+            "recent_events": _recent_event_context_document(self.event_memory),
+            "standing_orders": _standing_order_context_document(self.standing_orders),
+            "instructions": (
+                "Choose semantic targets from semantic_target_catalog. "
+                "For building placement, output intent location plus placement "
+                "policy such as near/far_from/away_from/avoid_choke when useful. "
+                "If the catalog is insufficient or multiple bases match, ask a "
+                "Korean clarification question instead of inventing coordinates."
+            ),
+        }
 
     def _resolve_state(self) -> SC2CommanderState | None:
         """Resolve live commander state from the executor's bound runtime.
@@ -3895,3 +4000,152 @@ def _planner_value_error_user_message(error: ValueError) -> str:
         "다시 말해 주세요: 본진에 지어 / 본진 입구에 지어 / "
         "앞마당에 지어 / 본진 가스에 정제소 지어."
     )
+
+
+def _state_context_document(state: SC2CommanderState | None) -> dict[str, object]:
+    if state is None:
+        return {"available": False}
+    to_dict = getattr(state, "to_dict", None)
+    if callable(to_dict):
+        try:
+            payload = to_dict()
+        except Exception:  # noqa: BLE001 - context should stay best-effort
+            payload = None
+        if isinstance(payload, Mapping):
+            return _bounded_context_mapping(payload)
+    return {
+        "available": True,
+        "minerals": getattr(state, "minerals", None),
+        "vespene": getattr(state, "vespene", None),
+        "supply_used": getattr(state, "supply_used", None),
+        "supply_cap": getattr(state, "supply_cap", None),
+        "supply_left": getattr(state, "supply_left", None),
+        "own_units": dict(getattr(state, "own_units", {}) or {}),
+        "own_structures": dict(getattr(state, "own_structures", {}) or {}),
+        "structures_in_progress": dict(getattr(state, "structures_in_progress", {}) or {}),
+        "idle_worker_count": getattr(state, "idle_worker_count", None),
+        "army_count": getattr(state, "army_count", None),
+    }
+
+
+def _semantic_catalog_context_document(resolver: object | None) -> list[dict[str, object]]:
+    if resolver is None:
+        return []
+    catalog = getattr(resolver, "semantic_target_catalog", None)
+    if catalog is None:
+        return []
+    try:
+        entries = tuple(catalog)
+    except Exception:  # noqa: BLE001 - context should stay best-effort
+        return []
+    documents: list[dict[str, object]] = []
+    for entry in entries:
+        to_dict = getattr(entry, "to_dict", None)
+        if callable(to_dict):
+            try:
+                payload = to_dict()
+            except Exception:  # noqa: BLE001 - skip bad catalog entries
+                continue
+            if isinstance(payload, Mapping):
+                documents.append(_bounded_context_mapping(payload))
+                continue
+        documents.append(
+            {
+                "target": str(getattr(entry, "target", "")),
+                "aliases": list(getattr(entry, "aliases", ()) or ())[:8],
+                "available": bool(getattr(entry, "available", False)),
+                "position": _point_context(getattr(entry, "position", None)),
+                "failure_reason": str(getattr(entry, "failure_reason", "") or "")[:180],
+                "source": str(getattr(entry, "source", "") or "")[:120],
+            }
+        )
+    return documents
+
+
+def _recent_event_context_document(event_memory: object | None) -> list[dict[str, object]]:
+    if event_memory is None:
+        return []
+    recent = getattr(event_memory, "recent", None)
+    if not callable(recent):
+        return []
+    try:
+        events = tuple(recent(8))
+    except Exception:  # noqa: BLE001 - context should stay best-effort
+        return []
+    documents = []
+    for event in events:
+        to_dict = getattr(event, "to_dict", None)
+        if callable(to_dict):
+            try:
+                payload = to_dict()
+            except Exception:  # noqa: BLE001
+                payload = None
+            if isinstance(payload, Mapping):
+                documents.append(_bounded_context_mapping(payload, text_limit=500))
+                continue
+        documents.append(
+            {
+                "seq": getattr(event, "seq", None),
+                "command_text": str(getattr(event, "command_text", "") or "")[:160],
+                "status": str(getattr(event, "status", "") or ""),
+                "intent_name": str(getattr(event, "intent_name", "") or ""),
+                "narration": str(getattr(event, "narration", "") or "")[:260],
+            }
+        )
+    return documents
+
+
+def _standing_order_context_document(source: object | None) -> dict[str, object]:
+    if source is None:
+        return {}
+    document: dict[str, object] = {}
+    for name in ("korean_status", "active_kinds"):
+        method = getattr(source, name, None)
+        if not callable(method):
+            continue
+        try:
+            value = method()
+        except Exception:  # noqa: BLE001 - context should stay best-effort
+            continue
+        if isinstance(value, tuple):
+            value = list(value)
+        document[name] = value
+    return _bounded_context_mapping(document)
+
+
+def _bounded_context_mapping(
+    payload: Mapping[object, object],
+    *,
+    text_limit: int = 700,
+) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in payload.items():
+        key_text = str(key)
+        normalized = re.sub(r"[^a-z0-9]", "", key_text.casefold())
+        if "apikey" in normalized or normalized == "key" or "secret" in normalized:
+            continue
+        document[key_text] = _bounded_context_value(value, text_limit=text_limit)
+    return document
+
+
+def _bounded_context_value(value: object, *, text_limit: int) -> object:
+    if isinstance(value, Mapping):
+        return _bounded_context_mapping(value, text_limit=text_limit)
+    if isinstance(value, (list, tuple)):
+        return [
+            _bounded_context_value(item, text_limit=text_limit)
+            for item in tuple(value)[:16]
+        ]
+    if isinstance(value, str):
+        return value[:text_limit]
+    return value
+
+
+def _point_context(point: object) -> dict[str, float] | None:
+    if point is None:
+        return None
+    x = getattr(point, "x", None)
+    y = getattr(point, "y", None)
+    if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+        return {"x": float(x), "y": float(y)}
+    return None
