@@ -129,8 +129,14 @@ SC2_BUILD_PLACEMENT_ENEMY_CLEARANCE: Final[float] = 4.0
 SC2_COMMAND_CENTER_MAX_EXPANSION_DISTANCE: Final[float] = 3.0
 """Maximum snap distance from a requested townhall point to an expansion."""
 
-SC2_REFINERY_MAX_GEYSER_SNAP_DISTANCE: Final[float] = 12.0
-"""Maximum snap distance from a requested refinery anchor to a free geyser."""
+SC2_REFINERY_MAX_GEYSER_SNAP_DISTANCE: Final[float] = 18.0
+"""Maximum snap distance from a requested refinery anchor to a free geyser.
+
+Main-base geysers can sit far enough apart that using the first geyser as the
+semantic anchor incorrectly rejects the second geyser after the first Refinery
+starts. Keep the radius bounded so visible enemy/remote geysers are not chosen,
+but wide enough for a two-geyser main.
+"""
 
 SC2_TOWNHALL_TYPE_NAMES: Final[frozenset[str]] = frozenset(
     {

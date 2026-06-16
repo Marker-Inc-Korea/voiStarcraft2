@@ -876,7 +876,22 @@ def _infer_semantic_target_from_freeform(
         return "self_main"
     if any(
         marker in normalized or marker in compact
-        for marker in ("buildable", "construction", "건설가능", "건설 가능한")
+        for marker in (
+            "buildable",
+            "construction",
+            "safe location",
+            "safe build",
+            "default build",
+            "good location",
+            "near command center",
+            "건설가능",
+            "건설 가능한",
+            "안전한 위치",
+            "좋은 위치",
+            "적당한 위치",
+            "사령부 근처",
+            "커맨드센터 근처",
+        )
     ):
         return "self_main"
     return None

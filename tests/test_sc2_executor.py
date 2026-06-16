@@ -359,6 +359,10 @@ class SC2ActionPlannerTest(unittest.TestCase):
             ("본진 건설 가능한 위치", "self_main"),
             ("본진 아래", "self_main"),
             ("아군 앞마당", "self_natural"),
+            ("default build location", "self_main"),
+            ("safe build location near command center", "self_main"),
+            ("안전한 위치", "self_main"),
+            ("사령부 근처", "self_main"),
         )
         for location, expected_target in cases:
             with self.subTest(location=location):

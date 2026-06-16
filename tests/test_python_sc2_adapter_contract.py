@@ -1369,7 +1369,7 @@ class BuildStructureTest(unittest.TestCase):
 
     def test_refinery_allows_second_main_gas_farther_than_tight_snap_radius(self) -> None:
         taken_geyser = FakeUnit("VespeneGeyser", 12.0, 10.0)
-        free_geyser = FakeUnit("VespeneGeyser", 18.0, 13.0)
+        free_geyser = FakeUnit("VespeneGeyser", 28.0, 10.0)
         existing_refinery = FakeUnit("Refinery", 12.0, 10.0)
         bot = FakeBotAI(
             workers=[FakeUnit("SCV", 10, 10)],
