@@ -23,10 +23,11 @@ Two modes exist:
 ``MicrophoneListener`` + ``FasterWhisperTranscriber``; missing voice
 dependencies raise the voice guard's actionable error.
 
-Live mode always uses the rules-first hybrid interpreter with a REQUIRED LLM
-stage (LLM fallback per user utterance, never per game frame). A missing
-``anthropic`` SDK or API key fails fast with the actionable bilingual hint
-BEFORE any command loop starts. ``--gui [PORT]`` additionally serves the local
+Live mode always uses an LLM-mandatory interpreter. Deprecated deterministic
+rule/keyword matching is kept only for explicit offline ``--no-llm`` tests and
+never rescues a configured LLM failure. A missing provider SDK or API key fails
+fast with the actionable bilingual hint BEFORE any command loop starts.
+``--gui [PORT]`` additionally serves the local
 web GUI: in dry-run mode the GUI bridge owns the session (scripted commands
 run through the same bridge), and in live mode the GUI submits into the same
 ``on_step`` command queue the terminal reader feeds while history reads the
@@ -43,6 +44,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 from collections.abc import Mapping, Sequence
 from types import SimpleNamespace
@@ -54,9 +56,11 @@ from starcraft_commander.llm_interpreter import (
     ANTHROPIC_API_KEY_ENV_VAR,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_OPENAI_MODEL,
+    GEMINI_API_KEY_ENV_VAR,
+    GROK_API_KEY_ENV_VAR,
     HybridCommandInterpreter,
     LocalLLMControl,
-    build_hybrid_interpreter,
+    OPENAI_API_KEY_ENV_VAR,
 )
 from starcraft_commander.python_sc2_adapter import PythonSC2BotAdapter
 from starcraft_commander.runtime_deps import (
@@ -221,9 +225,13 @@ class DemoFakeBotAI:
         self.expansion_locations_list = [
             DemoPoint(30.0, 30.0),
             DemoPoint(45.0, 52.0),
+            DemoPoint(65.0, 80.0),
+            DemoPoint(95.0, 96.0),
             DemoPoint(115.0, 108.0),
             DemoPoint(130.0, 130.0),
         ]
+        self.scout_location = DemoPoint(95.0, 96.0)
+        self.last_seen_enemy_area = DemoPoint(120.0, 124.0)
         self.mineral_field = DemoUnitGroup(
             (
                 DemoUnit("MineralField", 22.0, 28.0),
@@ -297,41 +305,58 @@ class DemoFakeBotAI:
         return None
 
 
-def build_llm_interpreter() -> HybridCommandInterpreter:
-    """Build the rules-first hybrid interpreter with a REQUIRED LLM stage.
+def build_llm_interpreter(
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model: str = DEFAULT_OPENAI_MODEL,
+) -> HybridCommandInterpreter:
+    """Build the LLM-mandatory interpreter for real command sessions.
 
     The demo's ``--llm`` flag must fail fast before any command loop instead
-    of degrading silently mid-session: a missing ``anthropic`` SDK raises the
-    bilingual :class:`MissingLLMDependencyError` from ``require_anthropic``.
-    An importable SDK without a resolvable API key raises the same error type
-    with a key-specific actionable hint.
+    of degrading silently mid-session. The selected provider SDK and key are
+    validated by :func:`build_local_llm_control`.
     """
 
-    require_anthropic()
-    hybrid = build_hybrid_interpreter()
-    if hybrid.llm_interpreter is None:
-        raise MissingLLMDependencyError(
-            "Anthropic LLM interpreter is installed, but ANTHROPIC_API_KEY is "
-            "not set. Export a valid key before live StarCraft II control: "
-            f"export {ANTHROPIC_API_KEY_ENV_VAR}=... "
-            "Anthropic 패키지는 설치되어 있지만 ANTHROPIC_API_KEY 환경 변수가 "
-            "설정되어 있지 않습니다. 실제 StarCraft II 제어 전 유효한 키를 "
-            f"설정하세요: export {ANTHROPIC_API_KEY_ENV_VAR}=..."
-        )
-    return hybrid
+    return HybridCommandInterpreter(
+        llm_interpreter=build_local_llm_control(provider, model)
+    )
 
 
 def build_local_llm_control(provider: str, model: str) -> LocalLLMControl:
-    """Build process-local LLM control for web-supplied API keys."""
+    """Build required process-local LLM control from environment credentials."""
 
     normalized = provider.strip().lower()
     if normalized in {"openai", "gpt", "chatgpt"}:
         require_openai()
+        env_var = OPENAI_API_KEY_ENV_VAR
+        normalized = "openai"
     elif normalized == "anthropic":
         require_anthropic()
+        env_var = ANTHROPIC_API_KEY_ENV_VAR
+    elif normalized in {"gemini", "google", "google-gemini"}:
+        require_openai()
+        env_var = GEMINI_API_KEY_ENV_VAR
+        normalized = "gemini"
+    elif normalized in {"grok", "xai", "x-ai", "x.ai"}:
+        require_openai()
+        env_var = GROK_API_KEY_ENV_VAR
+        normalized = "grok"
     else:
-        raise MissingLLMDependencyError("LLM provider must be 'openai' or 'anthropic'.")
-    return LocalLLMControl(provider=normalized, model=model)
+        raise MissingLLMDependencyError(
+            "LLM provider must be openai, anthropic, gemini, or grok."
+        )
+    api_key = os.environ.get(env_var, "").strip()
+    if not api_key:
+        raise MissingLLMDependencyError(
+            f"{env_var} is not set. Live StarCraft II control now requires "
+            "a configured LLM before the game starts. Export a valid key first: "
+            f"export {env_var}=... "
+            f"{env_var} 환경 변수가 설정되어 있지 않습니다. 이제 실제 StarCraft II "
+            "제어는 LLM 연결이 먼저 필요합니다. 실행 전에 유효한 키를 설정하세요: "
+            f"export {env_var}=..."
+        )
+    control = LocalLLMControl(provider=normalized, model=model)
+    control.configure(normalized, api_key, model)
+    return control
 
 
 def build_dry_run_session(
@@ -566,16 +591,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
         dest="llm",
         action="store_true",
         default=True,
-        help=(
-            "enable the required Anthropic LLM fallback stage (default; "
-            "live mode always requires it)"
-        ),
+        help="enable the required LLM-first interpreter (default; live mode requires it)",
     )
     parser.add_argument(
         "--no-llm",
         dest="llm",
         action="store_false",
-        help="dry-run/testing only: use deterministic rules without the LLM stage",
+        help=(
+            "DEPRECATED: dry-run/testing compatibility only; deterministic "
+            "rule/keyword matching is not used for live command understanding"
+        ),
     )
     parser.add_argument(
         "--llm-provider",
@@ -733,7 +758,12 @@ def _serve_until_interrupt() -> None:
         time.sleep(0.5)
 
 
-def _run_dry_run_gui(session: SC2CommandSession, args: argparse.Namespace) -> int:
+def _run_dry_run_gui(
+    session: SC2CommandSession,
+    args: argparse.Namespace,
+    *,
+    llm_control: LocalLLMControl | None = None,
+) -> int:
     """Serve the dry-run session through the web GUI until interrupted.
 
     The GUI bridge owns the session: scripted ``--script`` commands are
@@ -749,12 +779,17 @@ def _run_dry_run_gui(session: SC2CommandSession, args: argparse.Namespace) -> in
         if isinstance(memory, CommanderEventMemory)
         else None
     )
-    bridge = SessionLoopBridge(session=session, history=history)
+    bridge = SessionLoopBridge(
+        session=session,
+        history=history,
+        llm_control=llm_control,
+    )
     server = WebGuiServer(
         bridge=bridge,
         port=args.gui,
         host=args.gui_host,
         auth_token=args.gui_token,
+        auto_launch_live=bool(args.llm),
     )
     bridge.start()
     try:
@@ -766,7 +801,7 @@ def _run_dry_run_gui(session: SC2CommandSession, args: argparse.Namespace) -> in
                 "--gui에 다른 포트를 지정하거나 --gui 0으로 임시 포트를 사용해 주세요."
             )
             return 1
-        print(f"VoiStarCraft 커맨더 웹 GUI 시작: {server.url}")
+        print(f"voiStarcraft2 커맨더 웹 GUI 시작: {server.url}")
         if args.script:
             for command_text in args.script:
                 print(f"{COMMAND_PROMPT}{command_text}")
@@ -788,12 +823,28 @@ def _run_dry_run_gui(session: SC2CommandSession, args: argparse.Namespace) -> in
 def run_dry_run(args: argparse.Namespace) -> int:
     """Run the full pipeline against the built-in scripted fake bot."""
 
-    interpreter = build_llm_interpreter() if args.llm else None
+    llm_control: LocalLLMControl | None = None
+    if args.gui is not None:
+        llm_control = LocalLLMControl(
+            provider=args.llm_provider,
+            model=args.llm_model,
+        )
+        interpreter = (
+            HybridCommandInterpreter(llm_interpreter=llm_control)
+            if args.llm
+            else None
+        )
+    else:
+        interpreter = (
+            build_llm_interpreter(args.llm_provider, args.llm_model)
+            if args.llm
+            else None
+        )
     session, _bot = build_dry_run_session(interpreter=interpreter)
     for line in _DRY_RUN_BANNER_LINES:
         print(line)
     if args.gui is not None:
-        return _run_dry_run_gui(session, args)
+        return _run_dry_run_gui(session, args, llm_control=llm_control)
     if args.script:
         asyncio.run(_run_script(session, tuple(args.script)))
     else:
@@ -812,8 +863,8 @@ def run_live(args: argparse.Namespace) -> None:
     """
 
     require_python_sc2()
-    # Provider SDK must exist before the match starts; the key itself can be
-    # supplied later through the localhost web GUI and stays process-local.
+    # Provider SDK and key must both exist before the match starts. The GUI can
+    # rotate the process-local key later, but cannot bypass startup preflight.
     llm_control = build_local_llm_control(args.llm_provider, args.llm_model)
     interpreter = HybridCommandInterpreter(llm_interpreter=llm_control)
     if args.voice:
@@ -891,7 +942,7 @@ def run_live(args: argparse.Namespace) -> None:
                 )
                 return
             self.gui_server = server
-            print(f"VoiStarCraft 커맨더 웹 GUI 시작: {server.url}")
+            print(f"voiStarcraft2 커맨더 웹 GUI 시작: {server.url}")
 
         async def _feed_commands(self, loop: asyncio.AbstractEventLoop) -> None:
             # The whole loop is guarded: an unexpected reader exception must

@@ -11,6 +11,9 @@ import http.client
 import inspect
 import io
 import json
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -36,7 +39,7 @@ from starcraft_commander.web_gui import (
 POLL_DEADLINE_SECONDS = 10.0
 POLL_INTERVAL_SECONDS = 0.05
 EXECUTED_FAMILY_STATUSES = frozenset({"executed", "partially_executed"})
-BRIDGE_THREAD_NAME = "voistarcraft-web-gui-session-loop"
+BRIDGE_THREAD_NAME = "voiStarcraft2-web-gui-session-loop"
 
 
 def contains_hangul(text):
@@ -55,12 +58,82 @@ def bridge_threads_alive():
     ]
 
 
+class FakeConfiguredLLMControl:
+    """Configured LLM control test double that avoids provider SDK calls."""
+
+    def snapshot(self):
+        return {
+            "provider": "openai",
+            "model": "gpt-test",
+            "configured": True,
+            "key_present": True,
+        }
+
+    def configure(self, provider, api_key, model=""):
+        return self.snapshot()
+
+
+class FakeFailingLLMControl:
+    """LLM control test double that raises one setup failure."""
+
+    def __init__(self, error):
+        self.error = error
+
+    def snapshot(self):
+        return {
+            "provider": "openai",
+            "model": "gpt-test",
+            "configured": False,
+            "key_present": False,
+        }
+
+    def configure(self, provider, api_key, model=""):
+        raise self.error
+
+
+class ProviderRejectedSetupError(RuntimeError):
+    """Provider-shaped setup failure without importing provider SDKs."""
+
+
+class ExplodingStateBridge:
+    """Bridge test double that leaks a sentinel key through a backend error."""
+
+    def __init__(self, secret):
+        self.secret = secret
+
+    def submit_command(self, text):
+        raise AssertionError("commands are not used by this bridge")
+
+    def state_snapshot(self):
+        raise RuntimeError(f"state resolver leaked {self.secret}")
+
+    def history_since(self, seq):
+        return ()
+
+    def latest_seq(self):
+        return 0
+
+    def llm_settings_snapshot(self):
+        return {
+            "provider": "openai",
+            "model": "gpt-test",
+            "configured": True,
+            "key_present": True,
+        }
+
+    def configure_llm(self, provider, api_key, model=""):
+        return self.llm_settings_snapshot()
+
+
 class WebGuiServerHTTPTest(unittest.TestCase):
     """End-to-end HTTP tests against a dry-run session on an ephemeral port."""
 
     def setUp(self):
-        session, self.bot = build_dry_run_session()
-        self.bridge = SessionLoopBridge(session=session)
+        self.session, self.bot = build_dry_run_session()
+        self.bridge = SessionLoopBridge(
+            session=self.session,
+            llm_control=FakeConfiguredLLMControl(),
+        )
         self.bridge.start()
         self.addCleanup(self.bridge.stop)
         self.server = WebGuiServer(bridge=self.bridge, port=0)
@@ -95,6 +168,36 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             headers={"Content-Type": "application/json"},
         )
 
+    def post_llm_config_with_control(self, llm_control, api_key="unit-test-sensitive"):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session, llm_control=llm_control)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            body = json.dumps(
+                {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "api_key": api_key,
+                }
+            )
+            connection.request(
+                "POST",
+                "/api/llm",
+                body=body.encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+        return response.status, payload
+
     def poll_history_until(self, predicate, description):
         deadline = time.monotonic() + POLL_DEADLINE_SECONDS
         events = []
@@ -124,6 +227,45 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "전송",
             "커맨더 채팅",
             "전장 대시보드",
+            "전략 브리핑",
+            "이전 대화 일부 생략",
+            "녹음중",
+            "응답 하는중",
+            "압축 메모리",
+            "COMPACT_AFTER_EVENTS",
+            "compactRecentEventsIfNeeded",
+            "voice-wave",
+            "SpeechRecognition",
+            "English",
+            "中文",
+            "LLM 필수",
+            "LLM 키 상태 확인 실패",
+            "StarCraft II 자동 연결 대기 중입니다.",
+            "🚀 시작 메뉴얼",
+            "startup-guide-entry",
+            "renderStartupGuide",
+            "collapsible-panel",
+            "<details id=\"briefing-panel\" class=\"collapsible-panel\">",
+            "MAX_CHAT_EVENTS = 36",
+            "MAX_MESSAGE_PREVIEW_CHARS",
+            "archivedChatEvents",
+            "appendCompactText",
+            "renderArchivedChatDetails",
+            "messageExpand",
+            "window.location.assign(status.url)",
+            "live-open-button",
+            "live-refresh-button",
+            "llm-provider-choice",
+            "llm-model-select",
+            "handleProviderChoiceChange",
+            "onchange=\"handleProviderChoiceChange",
+            "type=\"radio\"",
+            "gpt-5.5",
+            "gpt-5.4-mini",
+            "gemini-3.5-flash",
+            "grok-4.3",
+            "/api/live/status",
+            "parseJsonResponse",
             "setInterval(pollHistory",
             "setInterval(pollState",
         ):
@@ -180,10 +322,68 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(document["supply_cap"], 21)
         self.assertEqual(document["own_units"].get("SCV"), 12)
 
+    def test_state_endpoint_exposes_active_standing_orders_for_briefing(self):
+        self.session.standing_orders.register("keep_worker_production")
+        self.session.standing_orders.register("prevent_supply_block")
+
+        document = self.get_json("/api/state")
+
+        standing_orders = document["standing_orders"]
+        self.assertEqual(
+            standing_orders["active_kinds"],
+            ["keep_worker_production", "prevent_supply_block"],
+        )
+        self.assertIn("상비 명령", standing_orders["korean_status"])
+        self.assertIn("지속 SCV 생산", standing_orders["korean_status"])
+        self.assertIn("보급 차단 방지", standing_orders["korean_status"])
+
     def test_llm_status_endpoint_never_exposes_key(self):
-        document = self.get_json("/api/llm")
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            connection.request("GET", "/api/llm")
+            response = connection.getresponse()
+            payload = response.read()
+        finally:
+            connection.close()
+        self.assertEqual(response.status, 200)
+        document = json.loads(payload.decode("utf-8"))
         self.assertFalse(document["configured"])
         self.assertNotIn("api_key", document)
+
+    def test_command_is_rejected_until_llm_is_configured(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            body = json.dumps({"text": "상태확인"}).encode("utf-8")
+            connection.request(
+                "POST",
+                "/api/command",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+        self.assertEqual(response.status, 409)
+        self.assertEqual(payload["accepted"], False)
+        self.assertIn("LLM", payload["error"])
+        self.assertTrue(contains_hangul(payload["error"]))
 
     def test_llm_config_endpoint_sets_process_local_key(self):
         session, _bot = build_dry_run_session()
@@ -203,7 +403,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 {
                     "provider": "openai",
                     "model": "gpt-test",
-                    "api_key": "sk-local-only-test",
+                    "api_key": "unit-test-input-value",
                 }
             )
             connection.request(
@@ -221,7 +421,80 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertTrue(payload["key_present"])
         self.assertEqual(payload["provider"], "openai")
         self.assertEqual(payload["model"], "gpt-test")
-        self.assertNotIn("sk-local-only-test", json.dumps(payload))
+        self.assertNotIn("unit-test-input-value", json.dumps(payload))
+
+    def test_llm_config_validation_failure_reports_specific_reason(self):
+        status, payload = self.post_llm_config_with_control(
+            FakeFailingLLMControl(ValueError("provider must be openai or anthropic")),
+        )
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["configured"])
+        self.assertEqual(payload["failure_category"], "validation")
+        self.assertEqual(payload["reason_code"], "llm_setup_validation_failed")
+        self.assertIn("검증 실패", payload["error"])
+        self.assertIn("provider must be openai or anthropic", payload["error"])
+
+    def test_llm_config_network_failure_reports_specific_reason_without_key(self):
+        submitted_key = "unit-test-sensitive-network"
+        status, payload = self.post_llm_config_with_control(
+            FakeFailingLLMControl(
+                TimeoutError(
+                    f"connection timed out while checking {submitted_key}"
+                )
+            ),
+            api_key=submitted_key,
+        )
+
+        self.assertEqual(status, 503)
+        self.assertFalse(payload["configured"])
+        self.assertEqual(payload["failure_category"], "network")
+        self.assertEqual(payload["reason_code"], "llm_setup_network_failed")
+        self.assertEqual(payload["model"], "gpt-test")
+        self.assertIn("연결 실패", payload["error"])
+        self.assertIn("[redacted]", payload["error"])
+        self.assertNotIn(submitted_key, json.dumps(payload, ensure_ascii=False))
+
+    def test_llm_config_provider_failure_reports_specific_reason_without_key(self):
+        submitted_key = "unit-test-sensitive-provider"
+        status, payload = self.post_llm_config_with_control(
+            FakeFailingLLMControl(
+                ProviderRejectedSetupError(
+                    f"authentication failed: invalid api key {submitted_key}"
+                )
+            ),
+            api_key=submitted_key,
+        )
+
+        self.assertEqual(status, 502)
+        self.assertFalse(payload["configured"])
+        self.assertEqual(payload["failure_category"], "provider")
+        self.assertEqual(payload["reason_code"], "llm_setup_provider_rejected")
+        self.assertEqual(payload["model"], "gpt-test")
+        self.assertIn("제공자 거부", payload["error"])
+        self.assertIn("[redacted]", payload["error"])
+        self.assertNotIn(submitted_key, json.dumps(payload, ensure_ascii=False))
+
+    def test_internal_error_response_redacts_api_key_shaped_values(self):
+        submitted_key = "sk-" + "test-internal-error-secret-123456789"
+        server = WebGuiServer(
+            bridge=ExplodingStateBridge(submitted_key),
+            port=0,
+        )
+        server.start()
+        self.addCleanup(server.stop)
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            connection.request("GET", "/api/state")
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+        self.assertEqual(response.status, 500)
+        self.assertIn("[redacted]", payload["error"])
+        self.assertNotIn(submitted_key, json.dumps(payload, ensure_ascii=False))
 
     def test_history_after_param_filters_already_seen_events(self):
         self.post_command("상황 보고해줘")
@@ -283,7 +556,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertTrue(self.server.url.startswith("http://127.0.0.1:"))
         parameters = inspect.signature(WebGuiServer.__init__).parameters
         self.assertEqual(
-            list(parameters), ["self", "bridge", "port", "host", "auth_token"]
+            list(parameters),
+            ["self", "bridge", "port", "host", "auth_token", "auto_launch_live"],
         )
 
     def test_token_protects_network_exposed_server(self):
@@ -399,9 +673,11 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertEqual(bridge.history_since(bridge.latest_seq()), ())
 
     def test_session_exception_recorded_as_blocked_outcome(self):
+        submitted_key = "sk-" + "test-session-secret-123456789"
+
         class ExplodingSession:
             async def process_text(self, text):
-                raise RuntimeError("scripted session failure")
+                raise RuntimeError(f"scripted session failure {submitted_key}")
 
         bridge = SessionLoopBridge(session=ExplodingSession())
         bridge.start()
@@ -416,6 +692,8 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertEqual(events[0]["status"], "blocked")
         self.assertEqual(events[0]["command_text"], "마린 뽑아")
         self.assertTrue(contains_hangul(events[0]["narration"]))
+        self.assertIn("[redacted]", events[0]["narration"])
+        self.assertNotIn(submitted_key, json.dumps(events, ensure_ascii=False))
 
     def test_state_snapshot_reads_fake_bot_through_adapter(self):
         session, _bot = build_dry_run_session()
@@ -425,6 +703,54 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertEqual(snapshot["minerals"], 400)
         self.assertEqual(snapshot["supply_used"], 20)
         self.assertEqual(snapshot["supply_cap"], 21)
+
+    def test_state_snapshot_attaches_safe_briefing_memory_and_llm_summary(self):
+        submitted_key = "sk-" + "test-briefing-secret-123456789"
+
+        async def process_text(text):
+            return ()
+
+        class Memory:
+            def korean_summary(self):
+                return "최근 명령 2건:\n- #1 [executed] 생산 성공"
+
+        class Resolver:
+            def resolve(self, bot):
+                return {
+                    "minerals": 400,
+                    "vespene": 0,
+                    "supply_used": 12,
+                    "supply_cap": 15,
+                }
+
+        session = SimpleNamespace(
+            process_text=process_text,
+            executor=SimpleNamespace(bot=object()),
+            event_memory=Memory(),
+            llm_summary=lambda: {
+                "summary": f"경제 안정화 중심입니다. {submitted_key}",
+                "raw_prompt": "system prompt must not reach state JSON",
+                "api_key": submitted_key,
+            },
+        )
+        bridge = SessionLoopBridge(session=session, state_resolver=Resolver())
+
+        snapshot = bridge.state_snapshot()
+
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(
+            snapshot["compacted_memory"]["korean_summary"],
+            "최근 명령 2건:\n- #1 [executed] 생산 성공",
+        )
+        self.assertEqual(
+            snapshot["llm_summary"]["summary"],
+            "경제 안정화 중심입니다. [redacted]",
+        )
+        serialized = json.dumps(snapshot, ensure_ascii=False)
+        self.assertNotIn(submitted_key, serialized)
+        self.assertNotIn("raw_prompt", serialized)
+        self.assertNotIn("system prompt", serialized)
+        self.assertNotIn("api_key", serialized)
 
     def test_state_snapshot_is_none_safe_without_bound_runtime(self):
         async def process_text(text):
@@ -491,6 +817,123 @@ class SessionLoopBridgeTest(unittest.TestCase):
 class RenderWebGuiPageTest(unittest.TestCase):
     """Static checks on the embedded single-page Korean UI."""
 
+    def run_briefing_advice_scenario(self, scenario):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("<script>") + len("<script>")
+        script_end = page.index("</script>", script_start)
+        app_script = page[script_start:script_end]
+        app_script = app_script[: app_script.index('document.getElementById("command-form")')]
+        harness = r"""
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.className = "";
+    this.id = "";
+    this.open = false;
+    this.attributes = {};
+    this.listeners = {};
+    this._textContent = "";
+  }
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  removeChild(child) {
+    var index = this.children.indexOf(child);
+    if (index >= 0) {
+      this.children.splice(index, 1);
+      child.parentNode = null;
+    }
+    return child;
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  getAttribute(name) {
+    return this.attributes[name] || null;
+  }
+
+  addEventListener(name, callback) {
+    this.listeners[name] = this.listeners[name] || [];
+    this.listeners[name].push(callback);
+  }
+
+  dispatchEvent(name) {
+    (this.listeners[name] || []).forEach(function (callback) { callback(); });
+  }
+
+  set textContent(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+
+  get textContent() {
+    return this._textContent + this.children.map(function (child) {
+      return child.textContent || "";
+    }).join("");
+  }
+
+  set innerHTML(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+}
+
+var briefing = new FakeElement("div");
+briefing.id = "strategy-briefing";
+var document = {
+  documentElement: new FakeElement("html"),
+  _roots: [briefing],
+  createElement: function (tagName) { return new FakeElement(tagName); },
+  getElementById: function (id) {
+    return this._roots.find(function (node) { return node.id === id; }) || null;
+  },
+  querySelectorAll: function () { return []; }
+};
+var window = { location: { search: "" } };
+var URLSearchParams = global.URLSearchParams;
+
+function renderAdviceBriefing(events) {
+  recentEvents = events;
+  renderStrategyBriefing({
+    minerals: 314,
+    vespene: 82,
+    supply_used: 19,
+    supply_cap: 27,
+    supply_left: 8,
+    own_units: { SCV: 14 },
+    army_count: 5,
+    own_structures: { COMMANDCENTER: 1, BARRACKS: 1 },
+    visible_enemy_units: { ZERGLING: 3 },
+    visible_enemy_structures: { HATCHERY: 1 },
+    observation_complete: true
+  });
+  return briefing.children[5];
+}
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(app_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_page_contains_korean_chrome_and_state_panel_labels(self):
         page = render_web_gui_page()
         for fragment in (
@@ -505,6 +948,34 @@ class RenderWebGuiPageTest(unittest.TestCase):
             "일꾼",
             "병력",
             "건물",
+            "전략 브리핑",
+            "Strategy Briefing",
+            "战略简报",
+            "MAX_CHAT_EVENTS",
+            "MAX_MESSAGE_PREVIEW_CHARS",
+            "COMPACT_KEEP_EVENTS",
+            "compactedContextSummary",
+            "archivedChatEvents",
+            "appendCompactText",
+            "renderArchivedChatDetails",
+            "briefingEvidence",
+            "briefingAdvice",
+            "appendPendingCommand",
+            "removeOldestPendingCommand",
+            "setupVoiceInput",
+            "voice-wave",
+            "assistant-pending-status",
+            "typing-indicator",
+            "assistantWaiting",
+            "provider-option",
+            "claude-fable-4-5-20251001",
+            "claude-haiku-4-5-20251001",
+            "grok-build-0.1",
+            "selectedLlmChoice",
+            "selectedProviderValue",
+            "handleLiveStart",
+            "if (data.configured)",
+            "setLiveStatusText",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, page)
@@ -516,6 +987,552 @@ class RenderWebGuiPageTest(unittest.TestCase):
                 self.assertIn(f".status-{status}", page)
                 self.assertIn(color, page)
 
+    def test_space_background_uses_nebula_depth_without_flat_dot_grid(self):
+        page = render_web_gui_page()
+        self.assertIn('<div class="space-background" aria-hidden="true"></div>', page)
+        self.assertIn(".space-background {", page)
+        self.assertIn("position: fixed; inset: 0; z-index: 0; pointer-events: none", page)
+        self.assertIn("radial-gradient(ellipse at 18% 24%", page)
+        self.assertIn("conic-gradient(from 220deg", page)
+        self.assertIn("linear-gradient(145deg, #02030b", page)
+        self.assertIn(".space-background::before", page)
+        self.assertIn(".space-background::after", page)
+        self.assertIn('<div class="star-depth star-depth-far" aria-hidden="true"></div>', page)
+        self.assertIn('<div class="star-depth star-depth-near" aria-hidden="true"></div>', page)
+        self.assertIn(".star-depth {", page)
+        self.assertIn("mix-blend-mode: screen", page)
+        self.assertIn("animation: star-parallax-far 64s linear infinite", page)
+        self.assertIn("animation: star-parallax-near 42s linear infinite", page)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", page)
+        self.assertIn(
+            ".star-depth { animation: none; transform: none; will-change: auto; }",
+            page,
+        )
+        self.assertIn("transform: translate3d", page)
+        self.assertIn("contain: paint", page)
+        self.assertNotIn("body::before", page)
+        self.assertNotIn("background-size: 230px 210px", page)
+        self.assertNotIn("radial-gradient(circle at 12% 18%", page)
+
+    def test_space_background_has_responsive_and_accessibility_fallbacks(self):
+        page = render_web_gui_page()
+        for fragment in (
+            "@media (max-width: 980px)",
+            ".space-background::after { inset: 20% -20% -18% 24%; width: 105vw; height: 105vw; opacity: 0.48; }",
+            ".star-depth { inset: -14vmax; }",
+            "@media (max-width: 620px)",
+            "radial-gradient(ellipse at 22% 12%, rgba(64, 224, 255, 0.22)",
+            ".space-background::before { inset: -24% -30%; opacity: 0.35; filter: blur(16px); }",
+            ".star-depth-far { opacity: 0.24; }",
+            ".star-depth-near { opacity: 0.28; }",
+            "@media (prefers-contrast: more)",
+            "--panel: rgba(1, 5, 18, 0.94);",
+            ".star-depth { opacity: 0.18; mix-blend-mode: normal; }",
+            "#command-panel, #state-panel { backdrop-filter: none; }",
+            "@media (forced-colors: active)",
+            "body { background: Canvas; color: CanvasText; }",
+            ".space-background, .space-background::before, .space-background::after, .star-depth { display: none; }",
+            "forced-color-adjust: auto; background: Canvas; color: CanvasText;",
+            "background: ButtonFace; color: ButtonText; border: 1px solid ButtonText;",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, page)
+
+    def test_assistant_pending_typing_state_renders_until_response_arrives(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("<script>") + len("<script>")
+        script_end = page.index("</script>", script_start)
+        app_script = page[script_start:script_end]
+        app_script = app_script[: app_script.index('document.getElementById("command-form")')]
+        harness = r"""
+class FakeText {
+  constructor(text) {
+    this.textContent = text;
+    this.parentNode = null;
+  }
+}
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.attributes = {};
+    this.className = "";
+    this.id = "";
+    this._textContent = "";
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+  }
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  insertBefore(child, reference) {
+    child.parentNode = this;
+    var index = this.children.indexOf(reference);
+    if (index < 0) {
+      this.children.push(child);
+    } else {
+      this.children.splice(index, 0, child);
+    }
+    return child;
+  }
+
+  removeChild(child) {
+    var index = this.children.indexOf(child);
+    if (index >= 0) {
+      this.children.splice(index, 1);
+      child.parentNode = null;
+    }
+    return child;
+  }
+
+  remove() {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
+  }
+
+  addEventListener() {}
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+    if (name === "id") {
+      this.id = String(value);
+    }
+    if (name === "class") {
+      this.className = String(value);
+    }
+  }
+
+  getAttribute(name) {
+    if (name === "id") {
+      return this.id;
+    }
+    if (name === "class") {
+      return this.className;
+    }
+    return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+  }
+
+  get firstChild() {
+    return this.children[0] || null;
+  }
+
+  get firstElementChild() {
+    return this.children.find(function (child) { return child instanceof FakeElement; }) || null;
+  }
+
+  get textContent() {
+    return this._textContent + this.children.map(function (child) { return child.textContent || ""; }).join("");
+  }
+
+  set textContent(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  querySelectorAll(selector) {
+    var matches = [];
+    function hasClass(node, className) {
+      return (" " + (node.className || "") + " ").indexOf(" " + className + " ") >= 0;
+    }
+    function isMatch(node) {
+      if (!(node instanceof FakeElement)) {
+        return false;
+      }
+      if (selector.charAt(0) === ".") {
+        return hasClass(node, selector.slice(1));
+      }
+      if (selector.charAt(0) === "#") {
+        return node.id === selector.slice(1);
+      }
+      return node.tagName.toLowerCase() === selector.toLowerCase();
+    }
+    function visit(node) {
+      node.children.forEach(function (child) {
+        if (isMatch(child)) {
+          matches.push(child);
+        }
+        if (child instanceof FakeElement) {
+          visit(child);
+        }
+      });
+    }
+    visit(this);
+    return matches;
+  }
+}
+
+var logBox = new FakeElement("div");
+logBox.id = "log";
+var pendingStatus = new FakeElement("p");
+pendingStatus.id = "assistant-pending-status";
+var document = {
+  documentElement: new FakeElement("html"),
+  _roots: [logBox, pendingStatus],
+  createElement: function (tagName) { return new FakeElement(tagName); },
+  createTextNode: function (text) { return new FakeText(text); },
+  getElementById: function (id) {
+    var found = null;
+    function visit(node) {
+      if (found || !(node instanceof FakeElement)) { return; }
+      if (node.id === id) {
+        found = node;
+        return;
+      }
+      node.children.forEach(visit);
+    }
+    this._roots.forEach(visit);
+    return found;
+  },
+  querySelectorAll: function (selector) {
+    return this._roots.reduce(function (matches, root) {
+      return matches.concat(root.querySelectorAll(selector));
+    }, []);
+  },
+  querySelector: function (selector) { return this.querySelectorAll(selector)[0] || null; }
+};
+var window = {
+  location: { search: "" },
+  setTimeout: function () {},
+  SpeechRecognition: null,
+  webkitSpeechRecognition: null
+};
+var fetch = function () { return Promise.resolve({ json: function () { return {}; } }); };
+var setInterval = function () {};
+var URLSearchParams = global.URLSearchParams;
+"""
+        scenario = r"""
+const assert = require("assert");
+for (let index = 0; index < MAX_CHAT_EVENTS - 1; index += 1) {
+  appendLog({
+    seq: index + 1,
+    command_text: "이전 명령 " + index,
+    status: "read_only",
+    narration: "이전 응답 " + index
+  });
+}
+appendVoiceRecordingBubble();
+assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
+appendPendingCommand("상황 보고해줘");
+assert.strictEqual(pendingCommandCount(), 1);
+assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+assert(pendingStatus.textContent.includes("LLM 응답을 기다리는 중"));
+assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
+assert.strictEqual(logBox.querySelectorAll(".typing-indicator").length, 1);
+assert.strictEqual(logBox.querySelector(".message-pending").getAttribute("role"), "status");
+assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
+assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(logBox.querySelector(".voice-wave").querySelectorAll("span").length, 5);
+appendPendingCommand("상황 보고해줘");
+assert.strictEqual(pendingCommandCount(), 2);
+assert(pendingStatus.textContent.includes("대기 중인 응답 2개"));
+assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 2);
+assert(document.getElementById("voice-recording-entry"));
+appendLog({
+  seq: MAX_CHAT_EVENTS + 1,
+  command_text: "상황 보고해줘",
+  status: "read_only",
+  narration: "현재 상태를 요약했습니다."
+});
+assert.strictEqual(pendingCommandCount(), 1);
+assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+assert(pendingStatus.textContent.includes("LLM 응답을 기다리는 중"));
+assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
+assert(document.getElementById("voice-recording-entry"));
+appendLog({
+  seq: MAX_CHAT_EVENTS + 2,
+  command_text: "상황 보고해줘",
+  status: "read_only",
+  narration: "두 번째 응답입니다."
+});
+assert.strictEqual(pendingCommandCount(), 0);
+assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+assert.strictEqual(pendingStatus.textContent, "");
+assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
+assert(document.getElementById("voice-recording-entry"));
+removeVoiceRecordingBubble();
+assert.strictEqual(document.getElementById("voice-recording-entry"), null);
+assert(logBox.textContent.includes("현재 상태를 요약했습니다."));
+assert(logBox.textContent.includes("두 번째 응답입니다."));
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(app_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_chat_panel_is_bounded_and_log_scrolls_internally(self):
+        page = render_web_gui_page()
+        for fragment in (
+            "main {\n    display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(330px, 0.75fr);\n    gap: 18px; align-items: stretch; min-height: 0;",
+            "#command-panel {\n    min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;",
+            "height: clamp(420px, calc(100vh - 150px), 780px); max-height: calc(100vh - 150px);",
+            "#state-panel {\n    min-width: 0; min-height: 0; max-height: calc(100vh - 150px); overflow-y: auto;",
+            "#log {\n    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;",
+            "#command-panel { height: 68vh; min-height: 0; max-height: 68vh; }",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, page)
+
+    def test_long_and_trimmed_messages_keep_full_content_access(self):
+        page = render_web_gui_page()
+        for fragment in (
+            "var MAX_MESSAGE_PREVIEW_CHARS = 280;",
+            "normalized.slice(0, MAX_MESSAGE_PREVIEW_CHARS)",
+            "summary.setAttribute(\"data-message-length\"",
+            "full.textContent = normalized;",
+            "archiveTrimmedEntry(oldestEntry);",
+            "archivedChatEvents.push(item);",
+            "existingNote = document.createElement(\"details\");",
+            "if (existingNote.open) { renderArchivedChatDetails(existingNote); }",
+            "appendCompactText(item, t(\"userLabel\") + \": \" + ev.command_text",
+            "appendCompactText(item, t(\"commanderLabel\") + \": \" + ev.narration",
+            ".archived-chat {",
+            ".message-full {",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, page)
+
+    def test_high_volume_natural_language_question_responses_stay_bounded(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("<script>") + len("<script>")
+        script_end = page.index("</script>", script_start)
+        app_script = page[script_start:script_end]
+        # Avoid browser event wiring/startup polling; this test drives appendLog() directly.
+        app_script = app_script[: app_script.index('document.getElementById("command-form")')]
+        harness = r"""
+class FakeText {
+  constructor(text) {
+    this.textContent = text;
+    this.parentNode = null;
+  }
+}
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.attributes = {};
+    this.className = "";
+    this.id = "";
+    this._textContent = "";
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+  }
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  insertBefore(child, reference) {
+    child.parentNode = this;
+    var index = this.children.indexOf(reference);
+    if (index < 0) {
+      this.children.push(child);
+    } else {
+      this.children.splice(index, 0, child);
+    }
+    return child;
+  }
+
+  removeChild(child) {
+    var index = this.children.indexOf(child);
+    if (index >= 0) {
+      this.children.splice(index, 1);
+      child.parentNode = null;
+    }
+    return child;
+  }
+
+  remove() {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
+  }
+
+  addEventListener() {}
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+    if (name === "id") {
+      this.id = String(value);
+    }
+    if (name === "class") {
+      this.className = String(value);
+    }
+  }
+
+  getAttribute(name) {
+    if (name === "id") {
+      return this.id;
+    }
+    if (name === "class") {
+      return this.className;
+    }
+    return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+  }
+
+  get firstChild() {
+    return this.children[0] || null;
+  }
+
+  get firstElementChild() {
+    return this.children.find(function (child) { return child instanceof FakeElement; }) || null;
+  }
+
+  get textContent() {
+    return this._textContent + this.children.map(function (child) { return child.textContent || ""; }).join("");
+  }
+
+  set textContent(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  querySelectorAll(selector) {
+    var matches = [];
+    function hasClass(node, className) {
+      return (" " + (node.className || "") + " ").indexOf(" " + className + " ") >= 0;
+    }
+    function isMatch(node) {
+      if (!(node instanceof FakeElement)) {
+        return false;
+      }
+      if (selector.charAt(0) === ".") {
+        return hasClass(node, selector.slice(1));
+      }
+      if (selector.charAt(0) === "#") {
+        return node.id === selector.slice(1);
+      }
+      return node.tagName.toLowerCase() === selector.toLowerCase();
+    }
+    function visit(node) {
+      node.children.forEach(function (child) {
+        if (isMatch(child)) {
+          matches.push(child);
+        }
+        if (child instanceof FakeElement) {
+          visit(child);
+        }
+      });
+    }
+    visit(this);
+    return matches;
+  }
+}
+
+var logBox = new FakeElement("div");
+logBox.id = "log";
+var document = {
+  _roots: [logBox],
+  createElement: function (tagName) { return new FakeElement(tagName); },
+  createTextNode: function (text) { return new FakeText(text); },
+  getElementById: function (id) {
+    if (id === "log") { return logBox; }
+    var found = null;
+    function visit(node) {
+      if (found || !(node instanceof FakeElement)) { return; }
+      if (node.id === id) {
+        found = node;
+        return;
+      }
+      node.children.forEach(visit);
+    }
+    this._roots.forEach(visit);
+    return found;
+  },
+  querySelectorAll: function (selector) { return logBox.querySelectorAll(selector); },
+  querySelector: function (selector) { return logBox.querySelector(selector); }
+};
+var window = {
+  location: { search: "" },
+  setTimeout: function () {},
+  SpeechRecognition: null,
+  webkitSpeechRecognition: null
+};
+var fetch = function () { return Promise.resolve({ json: function () { return {}; } }); };
+var setInterval = function () {};
+var URLSearchParams = global.URLSearchParams;
+"""
+        scenario = r"""
+const assert = require("assert");
+const questionTexts = [
+  "지금 뭐 해야 해?",
+  "다음 할 일 알려줘",
+  "왜 안돼?",
+  "어떤 명령을 할 수 있어?"
+];
+const longAdvice = "추천 흐름: 현재 관측을 기준으로 SCV 생산을 유지하고 보급 여유를 확인한 뒤 정찰 정보를 갱신하세요. 이 답변은 읽기 전용이며 게임 명령을 실행하지 않습니다. ";
+const longCapability = "지원 질문 예시: 지금 뭐 해야 해, 왜 안돼, 어떤 명령을 할 수 있어. 지원 명령 예시는 안전 계층을 통과해야 실행되며 질문 답변은 채팅에만 표시됩니다. ";
+for (let index = 1; index <= 64; index += 1) {
+  appendLog({
+    seq: index,
+    command_text: questionTexts[index % questionTexts.length] + " #" + index,
+    status: "read_only",
+    narration: (index % 2 ? longAdvice : longCapability).repeat(4) + "응답-" + index
+  });
+}
+assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
+assert.strictEqual(trimmedChatEvents, 64 - MAX_CHAT_EVENTS);
+assert.strictEqual(archivedChatEvents.length, trimmedChatEvents);
+assert(document.getElementById("chat-trim-note"), "trim note should be visible after bounding");
+assert(archivedChatEvents.every(function (event) {
+  return event.status === "read_only";
+}), "archived natural-language question responses preserve read-only status");
+assert(archivedChatEvents[0].command_text.includes("다음 할 일 알려줘"), "archived question text remains available");
+assert(archivedChatEvents[1].narration.includes("지원 질문 예시"), "archived answer text remains available");
+assert.strictEqual(logBox.querySelectorAll(".status-read_only").length, MAX_CHAT_EVENTS);
+assert(logBox.querySelectorAll(".message-expander").length > 0, "long question answers use expandable previews");
+assert(logBox.querySelectorAll(".message-preview").every(function (node) {
+  return node.textContent.length <= MAX_MESSAGE_PREVIEW_CHARS + 1;
+}), "visible previews stay bounded");
+assert(logBox.querySelectorAll(".message-full").some(function (node) {
+  return node.textContent.includes("지원 질문 예시") && node.textContent.includes("응답-64");
+}), "full long question answer remains mounted for expansion");
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(app_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_page_polls_without_external_cdn(self):
         page = render_web_gui_page()
         self.assertIn("/api/history?after=", page)
@@ -524,6 +1541,897 @@ class RenderWebGuiPageTest(unittest.TestCase):
         for forbidden in ("https://cdn.", "http://cdn.", "unpkg.com", "jsdelivr"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, page)
+
+    def test_llm_setup_panel_starts_collapsed_with_toggle_inside_box(self):
+        page = render_web_gui_page()
+        start = page.index('<details id="llm-panel" class="collapsible-panel">')
+        end = page.index("</details>", start)
+        llm_panel = page[start:end]
+        opening_tag = llm_panel.split(">", 1)[0]
+
+        self.assertNotIn(" open", opening_tag)
+        self.assertIn(
+            '<summary><span data-i18n="llmTitle">LLM 설정</span></summary>',
+            llm_panel,
+        )
+        self.assertLess(
+            llm_panel.index("<summary>"),
+            llm_panel.index('<form id="llm-form">'),
+        )
+
+    def test_llm_api_key_status_renders_distinct_state_labels(self):
+        page = render_web_gui_page()
+        self.assertIn('id="llm-status"', page)
+        self.assertIn('data-llm-state="checking"', page)
+        for fragment in (
+            "llm-status-setting",
+            "llm-status-success",
+            "llm-status-failed",
+            'llmSettingLabel: "설정 중"',
+            'llmSuccessLabel: "설정 완료"',
+            'llmFailedLabel: "설정 실패"',
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, page)
+
+    def test_briefing_panel_starts_collapsed_with_toggle_inside_box(self):
+        page = render_web_gui_page()
+        start = page.index('<details id="briefing-panel" class="collapsible-panel">')
+        end = page.index("</details>", start)
+        briefing_panel = page[start:end]
+        opening_tag = briefing_panel.split(">", 1)[0]
+
+        self.assertNotIn(" open", opening_tag)
+        self.assertIn(
+            '<summary><span data-i18n="briefingTitle">전략 브리핑</span></summary>',
+            briefing_panel,
+        )
+        self.assertLess(
+            briefing_panel.index("<summary>"),
+            briefing_panel.index('<div id="strategy-briefing"'),
+        )
+
+    def test_briefing_advice_is_hidden_by_default(self):
+        scenario = r"""
+const assert = require("assert");
+briefingAdviceToggleEnabled = false;
+var adviceDisclosure = renderAdviceBriefing([
+  { command_text: "상태 알려줘", status: "read_only", narration: "현재 상태를 요약합니다." }
+]);
+
+assert.strictEqual(adviceDisclosure.tagName, "DETAILS");
+assert.strictEqual(adviceDisclosure.open, false);
+assert.strictEqual(adviceDisclosure.children.length, 1);
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-requested"), "false");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "false");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "suppressed");
+assert.strictEqual(adviceDisclosure.getAttribute("aria-expanded"), "false");
+assert(!briefing.textContent.includes("경제와 생산을 유지하세요"));
+"""
+        self.run_briefing_advice_scenario(scenario)
+
+    def test_briefing_advice_opens_for_explicit_advice_request(self):
+        scenario = r"""
+const assert = require("assert");
+briefingAdviceToggleEnabled = false;
+var adviceDisclosure = renderAdviceBriefing([
+  { command_text: "지금 뭐 해야 해?", status: "read_only", narration: "추천 흐름을 답합니다." }
+]);
+
+assert.strictEqual(adviceDisclosure.tagName, "DETAILS");
+assert.strictEqual(adviceDisclosure.open, true);
+assert.strictEqual(adviceDisclosure.children.length, 2);
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-requested"), "true");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "false");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "visible");
+assert.strictEqual(adviceDisclosure.getAttribute("aria-expanded"), "true");
+assert(adviceDisclosure.textContent.includes("경제와 생산을 유지하세요"));
+"""
+        self.run_briefing_advice_scenario(scenario)
+
+    def test_briefing_advice_toggle_persists_across_state_refreshes(self):
+        scenario = r"""
+const assert = require("assert");
+briefingAdviceToggleEnabled = false;
+var events = [
+  { command_text: "상태 알려줘", status: "read_only", narration: "현재 상태를 요약합니다." }
+];
+var adviceDisclosure = renderAdviceBriefing(events);
+
+adviceDisclosure.open = true;
+adviceDisclosure.dispatchEvent("toggle");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "true");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "visible");
+assert(adviceDisclosure.textContent.includes("경제와 생산을 유지하세요"));
+
+adviceDisclosure = renderAdviceBriefing(events);
+assert.strictEqual(adviceDisclosure.open, true);
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-requested"), "false");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "true");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "visible");
+assert.strictEqual(adviceDisclosure.getAttribute("aria-expanded"), "true");
+assert(adviceDisclosure.textContent.includes("경제와 생산을 유지하세요"));
+
+adviceDisclosure.open = false;
+adviceDisclosure.dispatchEvent("toggle");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "false");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "suppressed");
+assert.strictEqual(adviceDisclosure.getAttribute("aria-expanded"), "false");
+assert(!briefing.textContent.includes("경제와 생산을 유지하세요"));
+"""
+        self.run_briefing_advice_scenario(scenario)
+
+    def test_briefing_evidence_section_uses_korean_current_state_summary(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("<script>") + len("<script>")
+        script_end = page.index("</script>", script_start)
+        app_script = page[script_start:script_end]
+        app_script = app_script[: app_script.index('document.getElementById("command-form")')]
+        harness = r"""
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.className = "";
+    this.id = "";
+    this.open = false;
+    this.attributes = {};
+    this.listeners = {};
+    this._textContent = "";
+  }
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  removeChild(child) {
+    var index = this.children.indexOf(child);
+    if (index >= 0) {
+      this.children.splice(index, 1);
+      child.parentNode = null;
+    }
+    return child;
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  getAttribute(name) {
+    return this.attributes[name] || null;
+  }
+
+  addEventListener(name, callback) {
+    this.listeners[name] = this.listeners[name] || [];
+    this.listeners[name].push(callback);
+  }
+
+  dispatchEvent(name) {
+    (this.listeners[name] || []).forEach(function (callback) { callback(); });
+  }
+
+  set textContent(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+
+  get textContent() {
+    return this._textContent + this.children.map(function (child) {
+      return child.textContent || "";
+    }).join("");
+  }
+
+  set innerHTML(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+}
+
+var logBox = new FakeElement("div");
+logBox.id = "log";
+var briefing = new FakeElement("div");
+briefing.id = "strategy-briefing";
+var document = {
+  documentElement: new FakeElement("html"),
+  _roots: [logBox, briefing],
+  createElement: function (tagName) { return new FakeElement(tagName); },
+  getElementById: function (id) {
+    return this._roots.find(function (node) { return node.id === id; }) || null;
+  },
+  querySelectorAll: function () { return []; }
+};
+var window = { location: { search: "" } };
+var URLSearchParams = global.URLSearchParams;
+"""
+        scenario = r"""
+const assert = require("assert");
+recentEvents = [
+  { command_text: "SCV 계속 찍어", status: "executed", narration: "SCV 생산을 시작했습니다." },
+  { command_text: "보급고 지어", status: "blocked", narration: "미네랄 부족으로 건설이 차단되었습니다." },
+  { command_text: "상태 알려줘", status: "read_only", narration: "현재 상태를 요약합니다." }
+];
+renderStrategyBriefing({
+  minerals: 314,
+  vespene: 82,
+  supply_used: 19,
+  supply_cap: 27,
+  supply_left: 8,
+  own_units: { SCV: 14 },
+  army_count: 5,
+  own_structures: { COMMANDCENTER: 1, BARRACKS: 1 },
+  visible_enemy_units: { ZERGLING: 3 },
+  visible_enemy_structures: { HATCHERY: 1 },
+  observation_complete: false,
+  compacted_memory: {
+    total: 7,
+    successful: 5,
+    failed: 2,
+    commands: ["SCV 계속 찍어", "정찰 보내", "보급고 지어"]
+  },
+  llm_summary: {
+    summary: "경제 안정화 뒤 정찰을 이어가는 운영입니다. sk-test-briefing-secret-123456789",
+    raw_prompt: "system prompt must not render",
+    api_key: "sk-test-briefing-secret-123456789"
+  },
+  standing_orders: {
+    active_kinds: ["keep_worker_production", "prevent_supply_block"],
+    korean_status: "상비 명령: 지속 SCV 생산 활성, 보급 차단 방지 활성"
+  }
+});
+assert.strictEqual(briefing.children[1].children[0].textContent, "판단 근거");
+var evidenceText = briefing.children[1].children[1].textContent;
+assert(evidenceText.includes("현재 관측 요약"));
+assert(evidenceText.includes("미네랄 314"));
+assert(evidenceText.includes("가스 82"));
+assert(evidenceText.includes("보급 19/27(여유 8)"));
+assert(evidenceText.includes("SCV 14기"));
+assert(evidenceText.includes("병력 5기"));
+assert(evidenceText.includes("적 3기/건물 1개 관측"));
+assert(evidenceText.includes("관측 불완전"));
+assert(evidenceText.includes("최근 명령 흐름"));
+assert(evidenceText.includes("생산/건설 중심"));
+assert(evidenceText.includes("성공/정보 2건"));
+assert(evidenceText.includes("확인 필요 1건"));
+assert(evidenceText.includes("성과/차단 요약"));
+assert(evidenceText.includes("성공/정보 2건, 그중 정보 확인 1건"));
+assert(evidenceText.includes("차단/확인 필요 1건"));
+assert(evidenceText.includes("성공 흐름이 우세"));
+assert(evidenceText.includes("성공은 생산/상황 확인 중심"));
+assert(evidenceText.includes("차단은 건설 중심"));
+assert(evidenceText.includes("주요 차단 사유는 자원/조건 확인"));
+assert(evidenceText.includes("상비 명령 요약"));
+assert(evidenceText.includes("지속 SCV 생산/보급 차단 방지 정책이 활성"));
+assert(evidenceText.includes("경제 생산 유지와 보급 차단 예방"));
+assert(evidenceText.includes("압축 메모리 입력"));
+assert(evidenceText.includes("누적 7건"));
+assert(evidenceText.includes("성공/정보 5건"));
+assert(evidenceText.includes("차단/확인 필요 2건"));
+assert(evidenceText.includes("LLM 요약 입력"));
+assert(evidenceText.includes("경제 안정화 뒤 정찰을 이어가는 운영"));
+assert(evidenceText.includes("[redacted]"));
+assert(!evidenceText.includes("SCV 계속 찍어"));
+assert(!evidenceText.includes("미네랄 부족"));
+assert(!evidenceText.includes("sk-test-briefing-secret"));
+assert(!evidenceText.includes("system prompt"));
+assert(!evidenceText.includes("api_key"));
+var adviceDisclosure = briefing.children[5];
+assert.strictEqual(adviceDisclosure.tagName, "DETAILS");
+assert.strictEqual(adviceDisclosure.children.length, 1);
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "suppressed");
+assert(!briefing.textContent.includes("경제와 생산을 유지하세요"));
+adviceDisclosure.open = true;
+adviceDisclosure.dispatchEvent("toggle");
+assert.strictEqual(adviceDisclosure.children.length, 2);
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "visible");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "true");
+assert.strictEqual(adviceDisclosure.getAttribute("aria-expanded"), "true");
+assert(adviceDisclosure.textContent.includes("경제와 생산을 유지하세요"));
+renderStrategyBriefing({
+  minerals: 314,
+  vespene: 82,
+  supply_used: 19,
+  supply_cap: 27,
+  supply_left: 8,
+  own_units: { SCV: 14 },
+  army_count: 5,
+  own_structures: { COMMANDCENTER: 1, BARRACKS: 1 },
+  visible_enemy_units: { ZERGLING: 3 },
+  visible_enemy_structures: { HATCHERY: 1 },
+  observation_complete: true
+});
+adviceDisclosure = briefing.children[5];
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "true");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "visible");
+assert(adviceDisclosure.textContent.includes("경제와 생산을 유지하세요"));
+adviceDisclosure.open = false;
+adviceDisclosure.dispatchEvent("toggle");
+assert.strictEqual(adviceDisclosure.children.length, 1);
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "suppressed");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "false");
+assert.strictEqual(adviceDisclosure.getAttribute("aria-expanded"), "false");
+assert(!briefing.textContent.includes("경제와 생산을 유지하세요"));
+renderStrategyBriefing({
+  minerals: 314,
+  vespene: 82,
+  supply_used: 19,
+  supply_cap: 27,
+  supply_left: 8,
+  own_units: { SCV: 14 },
+  army_count: 5,
+  own_structures: { COMMANDCENTER: 1, BARRACKS: 1 },
+  visible_enemy_units: { ZERGLING: 3 },
+  visible_enemy_structures: { HATCHERY: 1 },
+  observation_complete: true
+});
+adviceDisclosure = briefing.children[5];
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-toggle-enabled"), "false");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "suppressed");
+assert(!briefing.textContent.includes("경제와 생산을 유지하세요"));
+
+recentEvents = [
+  { command_text: "상태 알려줘", status: "read_only", narration: "현재 상태를 요약합니다." }
+];
+briefingAdviceToggleEnabled = false;
+renderStrategyBriefing({
+  minerals: 314,
+  vespene: 82,
+  supply_used: 19,
+  supply_cap: 27,
+  supply_left: 8,
+  own_units: { SCV: 14 },
+  army_count: 5,
+  own_structures: { COMMANDCENTER: 1, BARRACKS: 1 },
+  visible_enemy_units: { ZERGLING: 3 },
+  visible_enemy_structures: { HATCHERY: 1 },
+  observation_complete: true
+});
+adviceDisclosure = briefing.children[5];
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-requested"), "false");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "suppressed");
+assert.strictEqual(adviceDisclosure.children.length, 1);
+assert(!briefing.textContent.includes("경제와 생산을 유지하세요"));
+
+recentEvents = [
+  { command_text: "지금 뭐 해야 해?", status: "read_only", narration: "추천 흐름을 답합니다." }
+];
+briefingAdviceToggleEnabled = false;
+renderStrategyBriefing({
+  minerals: 314,
+  vespene: 82,
+  supply_used: 19,
+  supply_cap: 27,
+  supply_left: 8,
+  own_units: { SCV: 14 },
+  army_count: 5,
+  own_structures: { COMMANDCENTER: 1, BARRACKS: 1 },
+  visible_enemy_units: { ZERGLING: 3 },
+  visible_enemy_structures: { HATCHERY: 1 },
+  observation_complete: true
+});
+adviceDisclosure = briefing.children[5];
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-requested"), "true");
+assert.strictEqual(adviceDisclosure.getAttribute("data-advice-state"), "visible");
+assert.strictEqual(adviceDisclosure.children.length, 2);
+assert(adviceDisclosure.textContent.includes("경제와 생산을 유지하세요"));
+
+renderStrategyBriefing({
+  minerals: 314,
+  vespene: 82,
+  supply_used: 19,
+  supply_cap: 27,
+  supply_left: 8,
+  own_units: { SCV: 14 },
+  army_count: 5,
+  own_structures: { COMMANDCENTER: 1, BARRACKS: 1 },
+  visible_enemy_units: { ZERGLING: 3 },
+  visible_enemy_structures: { HATCHERY: 1 },
+  observation_complete: false,
+  compacted_memory: {
+    korean_summary: "미네랄 314, 가스 82, 보급 19/27, SCV 14기, 병력 5기"
+  },
+  llm_summary: {
+    summary: "미네랄 314, 가스 82, 보급 19/27, SCV 14기, 병력 5기"
+  },
+  standing_orders: {
+    active_kinds: ["keep_worker_production", "prevent_supply_block"],
+    korean_status: "상비 명령: 지속 SCV 생산 활성, 보급 차단 방지 활성"
+  }
+});
+evidenceText = briefing.children[1].children[1].textContent;
+assert(evidenceText.includes("현재 관측 요약"));
+assert(!evidenceText.includes("압축 메모리 입력"));
+assert(!evidenceText.includes("LLM 요약 입력"));
+
+function countOccurrences(text, needle) {
+  return (text.match(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+}
+
+var repeatedObservation = Array(12).fill(
+  "미네랄 314, 가스 82, 보급 19/27, SCV 14기, 병력 5기"
+).join(". ");
+var oversizedStrategicContext = Array(20).fill(
+  "새 전략은 은폐 밴시 대비 터렛 방어와 앞마당 안정화 확장 생산 정찰 방어 병력 유지입니다"
+).join(" ");
+renderStrategyBriefing({
+  minerals: 314,
+  vespene: 82,
+  supply_used: 19,
+  supply_cap: 27,
+  supply_left: 8,
+  own_units: { SCV: 14 },
+  army_count: 5,
+  own_structures: { COMMANDCENTER: 1, BARRACKS: 1 },
+  visible_enemy_units: { ZERGLING: 3 },
+  visible_enemy_structures: { HATCHERY: 1 },
+  observation_complete: false,
+  compacted_memory: {
+    korean_summary: repeatedObservation + ". " + oversizedStrategicContext
+  },
+  llm_summary: {
+    summary: repeatedObservation + ". " + oversizedStrategicContext
+  },
+  standing_orders: {
+    active_kinds: ["keep_worker_production", "prevent_supply_block"],
+    korean_status: "상비 명령: 지속 SCV 생산 활성, 보급 차단 방지 활성"
+  }
+});
+evidenceText = briefing.children[1].children[1].textContent;
+assert.strictEqual(countOccurrences(evidenceText, "미네랄 314"), 1);
+assert.strictEqual(countOccurrences(evidenceText, "보급 19/27"), 1);
+assert(evidenceText.includes("은폐 밴시 대비 터렛 방어"));
+assert(evidenceText.includes("...(축약)"));
+assert(evidenceText.length <= 1350, "briefing evidence is bounded: " + evidenceText.length);
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(app_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_provider_radio_change_immediately_refreshes_model_choices(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("<script>") + len("<script>")
+        script_end = page.index("</script>", script_start)
+        app_script = page[script_start:script_end]
+        app_script = app_script[: app_script.index('document.getElementById("command-form")')]
+        harness = r"""
+var radios = [
+  { value: "openai", checked: true },
+  { value: "anthropic", checked: false },
+  { value: "gemini", checked: false },
+  { value: "grok", checked: false }
+];
+var logBox = { setAttribute: function () {}, querySelectorAll: function () { return []; } };
+var modelSelect = {
+  children: [],
+  value: "",
+  appendChild: function (child) {
+    this.children.push(child);
+    return child;
+  },
+  set innerHTML(value) {
+    this.children = [];
+  },
+  get innerHTML() {
+    return "";
+  }
+};
+var document = {
+  documentElement: { setAttribute: function () {} },
+  createElement: function () { return { value: "", textContent: "" }; },
+  getElementById: function (id) {
+    if (id === "log") { return logBox; }
+    if (id === "llm-model-select") { return modelSelect; }
+    return null;
+  },
+  querySelectorAll: function (selector) {
+    return selector === "input[name='llm-provider-choice']" ? radios : [];
+  },
+  querySelector: function (selector) {
+    if (selector === "input[name='llm-provider-choice']:checked") {
+      return radios.find(function (radio) { return radio.checked; }) || null;
+    }
+    var valueMatch = selector.match(/input\[name='llm-provider-choice'\]\[value='([^']+)'\]/);
+    if (valueMatch) {
+      return radios.find(function (radio) { return radio.value === valueMatch[1]; }) || null;
+    }
+    return null;
+  }
+};
+var window = {
+  location: { search: "" },
+  setTimeout: function () {},
+  SpeechRecognition: null,
+  webkitSpeechRecognition: null
+};
+var fetch = function () { return Promise.resolve({ json: function () { return {}; } }); };
+var setInterval = function () {};
+var URLSearchParams = global.URLSearchParams;
+function modelValues() {
+  return modelSelect.children.map(function (option) { return option.value; });
+}
+"""
+        scenario = r"""
+const assert = require("assert");
+handleProviderChoiceChange("anthropic");
+assert.strictEqual(selectedProviderValue(), "anthropic");
+assert(modelValues().includes("claude-fable-4-5-20251001"));
+assert(!modelValues().includes("gpt-5.5"));
+assert.strictEqual(modelSelect.value, "claude-fable-4-5-20251001");
+handleProviderChoiceChange("gemini");
+assert.strictEqual(selectedProviderValue(), "gemini");
+assert(modelValues().includes("gemini-3.5-flash"));
+assert(!modelValues().includes("claude-fable-4-5-20251001"));
+assert.strictEqual(modelSelect.value, "gemini-3.5-flash");
+handleProviderChoiceChange("grok");
+assert.strictEqual(selectedProviderValue(), "grok");
+assert(modelValues().includes("grok-4.3"));
+assert(!modelValues().includes("gemini-3.5-flash"));
+assert.strictEqual(modelSelect.value, "grok-4.3");
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(app_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_llm_api_key_status_js_transitions_are_labeled(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("<script>") + len("<script>")
+        script_end = page.index("</script>", script_start)
+        app_script = page[script_start:script_end]
+        app_script = app_script[: app_script.index('document.getElementById("command-form")')]
+        harness = r"""
+function element(id) {
+  return {
+    id: id,
+    textContent: "",
+    className: "",
+    disabled: false,
+    placeholder: "",
+    value: "",
+    children: [],
+    attributes: {},
+    setAttribute: function (name, value) { this.attributes[name] = value; },
+    getAttribute: function (name) { return this.attributes[name] || ""; },
+    appendChild: function (child) { this.children.push(child); return child; },
+    set innerHTML(value) { this.children = []; },
+    get innerHTML() { return ""; }
+  };
+}
+var nodes = {
+  "llm-status": element("llm-status"),
+  "llm-status-label": element("llm-status-label"),
+  "llm-status-message": element("llm-status-message"),
+  "command-input": element("command-input"),
+  "send-button": element("send-button"),
+  "voice-button": element("voice-button"),
+  "llm-model-select": element("llm-model-select"),
+  "log": element("log")
+};
+var radios = [
+  { value: "openai", checked: true },
+  { value: "anthropic", checked: false },
+  { value: "gemini", checked: false },
+  { value: "grok", checked: false }
+];
+var document = {
+  documentElement: { setAttribute: function () {} },
+  createElement: function () { return element(""); },
+  getElementById: function (id) { return nodes[id] || null; },
+  querySelectorAll: function (selector) {
+    if (selector === "input[name='llm-provider-choice']") { return radios; }
+    return [];
+  },
+  querySelector: function (selector) {
+    if (selector === "input[name='llm-provider-choice']:checked") {
+      return radios.find(function (radio) { return radio.checked; }) || null;
+    }
+    var valueMatch = selector.match(/input\[name='llm-provider-choice'\]\[value='([^']+)'\]/);
+    if (valueMatch) {
+      return radios.find(function (radio) { return radio.value === valueMatch[1]; }) || null;
+    }
+    return null;
+  }
+};
+var window = {
+  location: { search: "" },
+  setTimeout: function () {},
+  SpeechRecognition: null,
+  webkitSpeechRecognition: null
+};
+var fetch = function () { return Promise.resolve({ json: function () { return {}; } }); };
+var setInterval = function () {};
+var URLSearchParams = global.URLSearchParams;
+"""
+        scenario = r"""
+const assert = require("assert");
+setLlmStatus("setting", "llmSettingLabel", t("llmSaving"));
+assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "setting");
+assert.strictEqual(nodes["llm-status-label"].textContent, "설정 중");
+assert.strictEqual(nodes["llm-status-message"].textContent, "LLM 키 설정 중...");
+
+renderLlmSettings({ configured: false, provider: "openai", model: "gpt-5.5" });
+assert.strictEqual(nodes["llm-model-select"].value, "gpt-5.5");
+assert.strictEqual(nodes["send-button"].disabled, true);
+
+renderLlmSettings({ configured: true, provider: "openai", model: "gpt-test" });
+assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "success");
+assert.strictEqual(nodes["llm-status-label"].textContent, "설정 완료");
+assert(nodes["llm-status-message"].textContent.includes("LLM 키 설정됨"));
+assert.strictEqual(nodes["send-button"].disabled, false);
+
+setLlmStatus("failed", "llmFailedLabel", t("llmSaveFailed") + ": provider rejected");
+assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "failed");
+assert.strictEqual(nodes["llm-status-label"].textContent, "설정 실패");
+assert(nodes["llm-status-message"].textContent.includes("provider rejected"));
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(app_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_llm_api_key_async_setup_attempts_transition_safely(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("<script>") + len("<script>")
+        script_end = page.index("</script>", script_start)
+        app_script = page[script_start:script_end]
+        app_script = app_script[
+            : app_script.index('var providerOptions = document.getElementById("llm-provider-options")')
+        ]
+        harness = r"""
+function element(id) {
+  return {
+    id: id,
+    textContent: "",
+    className: "",
+    disabled: false,
+    placeholder: "",
+    value: "",
+    children: [],
+    attributes: {},
+    listeners: {},
+    setAttribute: function (name, value) { this.attributes[name] = value; },
+    getAttribute: function (name) { return this.attributes[name] || ""; },
+    appendChild: function (child) { this.children.push(child); return child; },
+    addEventListener: function (name, handler) { this.listeners[name] = handler; },
+    dispatchEvent: function (event) {
+      if (this.listeners[event.type]) { this.listeners[event.type](event); }
+    },
+    focus: function () {},
+    set innerHTML(value) { this.children = []; },
+    get innerHTML() { return ""; }
+  };
+}
+var nodes = {
+  "command-form": element("command-form"),
+  "llm-form": element("llm-form"),
+  "llm-api-key": element("llm-api-key"),
+  "llm-status": element("llm-status"),
+  "llm-status-label": element("llm-status-label"),
+  "llm-status-message": element("llm-status-message"),
+  "command-input": element("command-input"),
+  "send-button": element("send-button"),
+  "voice-button": element("voice-button"),
+  "llm-model-select": element("llm-model-select"),
+  "live-status": element("live-status"),
+  "live-open-button": element("live-open-button"),
+  "log": element("log")
+};
+nodes["llm-model-select"].value = "gpt-test";
+var radios = [
+  { value: "openai", checked: true, addEventListener: function () {} },
+  { value: "anthropic", checked: false, addEventListener: function () {} },
+  { value: "gemini", checked: false, addEventListener: function () {} },
+  { value: "grok", checked: false, addEventListener: function () {} }
+];
+var document = {
+  documentElement: { setAttribute: function () {} },
+  createElement: function () { return element(""); },
+  getElementById: function (id) { return nodes[id] || null; },
+  querySelectorAll: function (selector) {
+    if (selector === "input[name='llm-provider-choice']") { return radios; }
+    if (selector === "[data-command]") { return []; }
+    return [];
+  },
+  querySelector: function (selector) {
+    if (selector === "input[name='llm-provider-choice']:checked") {
+      return radios.find(function (radio) { return radio.checked; }) || null;
+    }
+    var valueMatch = selector.match(/input\[name='llm-provider-choice'\]\[value='([^']+)'\]/);
+    if (valueMatch) {
+      return radios.find(function (radio) { return radio.value === valueMatch[1]; }) || null;
+    }
+    return null;
+  }
+};
+var window = {
+  location: { search: "" },
+  setTimeout: function () {},
+  open: function () {},
+  SpeechRecognition: null,
+  webkitSpeechRecognition: null
+};
+var setInterval = function () {};
+var URLSearchParams = global.URLSearchParams;
+var requests = [];
+function deferred() {
+  var resolve;
+  var reject;
+  var promise = new Promise(function (resolveFn, rejectFn) {
+    resolve = resolveFn;
+    reject = rejectFn;
+  });
+  return { promise: promise, resolve: resolve, reject: reject };
+}
+function response(status, data) {
+  return {
+    ok: status >= 200 && status < 300,
+    status: status,
+    text: function () { return Promise.resolve(JSON.stringify(data)); }
+  };
+}
+var fetch = function (url, options) {
+  var item = { url: url, options: options || {}, deferred: deferred() };
+  requests.push(item);
+  return item.deferred.promise;
+};
+function submitKey(value) {
+  nodes["llm-api-key"].value = value;
+  nodes["llm-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+}
+function flushPromises() {
+  return new Promise(function (resolve) { setImmediate(resolve); });
+}
+"""
+        scenario = r"""
+const assert = require("assert");
+(async function () {
+  submitKey("unit-test-success-input");
+  assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "setting");
+  assert.strictEqual(nodes["llm-status-label"].textContent, "설정 중");
+  assert.strictEqual(nodes["llm-status-message"].textContent, "LLM 키 설정 중...");
+  assert.strictEqual(requests[0].url, "/api/llm");
+  assert.strictEqual(JSON.parse(requests[0].options.body).api_key, "unit-test-success-input");
+
+  requests[0].deferred.resolve(response(200, {
+    configured: true,
+    key_present: true,
+    provider: "openai",
+    model: "gpt-test"
+  }));
+  await flushPromises();
+  assert.strictEqual(requests[1].url, "/api/live/status");
+  requests[1].deferred.resolve(response(200, {
+    enabled: true,
+    status: "idle",
+    url: "",
+    error: ""
+  }));
+  await flushPromises();
+  assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "success");
+  assert.strictEqual(nodes["llm-status-label"].textContent, "설정 완료");
+  assert(nodes["llm-status-message"].textContent.includes("LLM 키 설정됨"));
+  assert(!nodes["llm-status-message"].textContent.includes("unit-test-success-input"));
+  assert.strictEqual(nodes["llm-api-key"].value, "");
+  assert.strictEqual(nodes["send-button"].disabled, false);
+  assert(nodes["live-status"].textContent.includes("StarCraft II 연결 시작 중"));
+
+  submitKey("unit-test-failed-input");
+  assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "setting");
+  requests[2].deferred.resolve(response(400, {
+    configured: false,
+    error: "provider rejected request"
+  }));
+  await flushPromises();
+  assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "failed");
+  assert.strictEqual(nodes["llm-status-label"].textContent, "설정 실패");
+  assert(nodes["llm-status-message"].textContent.includes("provider rejected request"));
+  assert(!nodes["llm-status-message"].textContent.includes("unit-test-failed-input"));
+
+  submitKey("unit-test-stale-success");
+  var staleSuccess = requests[3];
+  submitKey("unit-test-latest-failure");
+  var latestFailure = requests[4];
+  latestFailure.deferred.resolve(response(400, {
+    configured: false,
+    error: "latest attempt failed"
+  }));
+  await flushPromises();
+  assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "failed");
+  assert(nodes["llm-status-message"].textContent.includes("latest attempt failed"));
+
+  staleSuccess.deferred.resolve(response(200, {
+    configured: true,
+    key_present: true,
+    provider: "openai",
+    model: "stale-model"
+  }));
+  await flushPromises();
+  assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "failed");
+  assert(nodes["llm-status-message"].textContent.includes("latest attempt failed"));
+  assert(!nodes["llm-status-message"].textContent.includes("stale-model"));
+})().catch(function (error) {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(app_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_embedded_javascript_is_syntax_valid(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        start = page.index("<script>") + len("<script>")
+        end = page.index("</script>", start)
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(page[start:end])
+            script_file.flush()
+            result = subprocess.run(
+                [node, "--check", script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_standalone_dry_run_wires_process_local_llm_control(self):
+        source = inspect.getsource(web_gui.main)
+        self.assertIn("LocalLLMControl", source)
+        self.assertIn("HybridCommandInterpreter", source)
+        self.assertIn("llm_control=llm_control", source)
 
 
 class WebGuiServerConstructionTest(unittest.TestCase):
@@ -556,6 +2464,35 @@ class WebGuiServerConstructionTest(unittest.TestCase):
             auth_token="secret-token",
         )
         self.assertEqual(server.host, "0.0.0.0")
+
+    def test_live_launch_status_redacts_submitted_api_key_from_child_output(self):
+        submitted_key = "unit-test-" + "live-launch-key"
+
+        class FakeProcess:
+            pid = 4321
+            returncode = None
+            stdout = [
+                f"booting with {submitted_key}\n",
+                f"voiStarcraft2 커맨더 웹 GUI 시작: http://127.0.0.1:9876/?key={submitted_key}\n",
+            ]
+
+            def poll(self):
+                return None
+
+        with mock.patch.object(web_gui.subprocess, "Popen", return_value=FakeProcess()):
+            launcher = web_gui._LiveLaunchManager()
+            started = launcher.start("openai", submitted_key, "gpt-test")
+
+        deadline = time.monotonic() + POLL_DEADLINE_SECONDS
+        snapshot = launcher.snapshot()
+        while time.monotonic() < deadline and snapshot.get("status") != "ready":
+            time.sleep(POLL_INTERVAL_SECONDS)
+            snapshot = launcher.snapshot()
+
+        document = json.dumps({"started": started, "snapshot": snapshot}, ensure_ascii=False)
+        self.assertIn("[redacted]", document)
+        self.assertNotIn(submitted_key, document)
+        self.assertEqual(snapshot["status"], "ready")
 
 
 class WebGuiMainTest(unittest.TestCase):

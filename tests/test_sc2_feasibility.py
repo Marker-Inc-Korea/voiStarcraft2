@@ -73,6 +73,7 @@ def payload_for(intent: str) -> dict[str, object]:
             "unit_group": "all Marines",
             "target": "enemy mineral line",
         },
+        "MOVE_CAMERA": {"intent": "MOVE_CAMERA", "target": "main base"},
     }
     return dict(payloads[intent])
 

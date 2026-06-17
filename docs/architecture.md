@@ -93,7 +93,7 @@ alternative and leaves `before_state == after_state`.
 | Component | Module | Owns | Does not own |
 | --- | --- | --- | --- |
 | Korean command interpreter | `toycraft_commander/interpreter.py` | Maps Korean or mixed text to the nearest supported MVP intent, preserves original `command_text`, returns typed parser failures and clarification prompts. | Resource feasibility, state mutation, combat math, or narration of state changes. |
-| Intent DSL schemas | `toycraft_commander/intents.py` | The exactly 10 canonical intent names, common fields `intent`, `priority`, `constraints`, typed intent-specific payloads, DSL serialization, and payload shape validation. | ToyCraft resource availability, map availability, production queues, or rule execution. |
+| Intent DSL schemas | `toycraft_commander/intents.py` | The exactly 11 canonical intent names, common fields `intent`, `priority`, `constraints`, typed intent-specific payloads, DSL serialization, and payload shape validation. | ToyCraft resource availability, map availability, production queues, or rule execution. |
 | Feasibility validator | `toycraft_commander/feasibility.py` | Checks whether a typed payload can execute against an immutable `ToyCraftState`, including resources, supply, prerequisites, producers, workers, targets, locations, and conflicting constraints. | Applying effects, advancing time, changing queues, or rendering final commander prose. |
 | ToyCraft state and domain models | `toycraft_commander/resources.py`, `toycraft_commander/units.py`, `toycraft_commander/structures.py`, `toycraft_commander/map.py`, `toycraft_commander/ownership.py`, `toycraft_commander/state_resolver.py` | Minimal Terran-focused simulator vocabulary: minerals, gas, supply, SCV, Marine, Vulture, Zealot, structures, named map locations, ownership, and unit-group resolution. | Natural-language parsing, command lifecycle orchestration, or external game APIs. |
 | Rule engine | `toycraft_commander/executor.py` via `ToyCraftRuleEngineInterface` | Deterministic ToyCraft effects for registered feasible commands, including economy ticks, spending, production queues, construction queues, time advancement, defense, expansion, harassment, and state deltas. Feasible commands without a registered effect handler are blocked without mutation. | Free-text interpretation or deciding whether invalid commands should execute. |
@@ -136,9 +136,9 @@ execution seam visible:
 
 ## MVP Scope Guard
 
-The Phase 0 architecture supports exactly these 10 canonical intents:
+The Phase 0 architecture supports exactly these 11 canonical intents:
 `GATHER_RESOURCE`, `BUILD_STRUCTURE`, `TRAIN_WORKER`, `TRAIN_ARMY`, `SCOUT`,
-`SUMMARIZE_STATE`, `DEFEND`, `REPAIR`, `EXPAND`, and `HARASS`.
+`SUMMARIZE_STATE`, `DEFEND`, `REPAIR`, `EXPAND`, `HARASS`, and `MOVE_CAMERA`.
 
 New aliases may map Korean wording to one of these intents, but they must not add
 an eleventh canonical intent. New simulation details are acceptable only when
@@ -163,7 +163,7 @@ Korean text or push-to-talk voice
   -> SC2FeasibilityValidator (gates against SC2CommanderState)
   -> SC2ActionPlanner (semantic SC2ExecutionPlan)
   -> SC2RuntimeExecutor (lifecycle-aware async boundary)
-  -> PythonSC2BotAdapter (seven semantic action methods)
+  -> PythonSC2BotAdapter (eight semantic action methods)
   -> python-sc2 BotAI (real game orders inside the game loop)
   -> SC2KoreanNarrator (Korean commander response)
 ```
@@ -188,8 +188,8 @@ python-sc2, faster-whisper, or sounddevice.
 | Semantic contracts | `starcraft_commander/contracts.py` | `SC2CommandAction`, `SC2ExecutionPlan`, `SC2PlanExecutionResult`, `SC2ActionReport`, `SC2ExecutionError`; strict priority validation; JSON-ready serialization. Pure stdlib. | Planning, execution, narration, or python-sc2 types. |
 | Action planner + runtime executor | `starcraft_commander/sc2_executor.py` | Intent DSL to semantic plan mapping, strict target alias validation (unknown targets rejected with the supported list), lifecycle-aware async execution, structured `MissingBotCapability` errors, per-action audit (`audit['observations']`, `audit['action_reports']`). | Real python-sc2 calls or Korean narration. |
 | State resolver | `starcraft_commander/state_resolver.py` | Never-raise duck-typed resolution of BotAI observations into `SC2CommanderState`; degraded fields recorded as `observation_notes`. | Feasibility decisions or order issuance. |
-| Map resolver | `starcraft_commander/map_resolver.py` | The seven semantic map targets plus two best-effort extras resolved to `MapPoint` coordinates; explicit unavailable entries with reasons; unknown names rejected with available alternatives. | Pathing, combat targeting heuristics, or build placement legality. |
-| BotAI adapter | `starcraft_commander/python_sc2_adapter.py` | The seven semantic action methods translated into duck-typed BotAI operations; `SC2ActionReport` requested-vs-issued counts; no lifecycle method names. python-sc2 lazy-imported only inside functions. | Lifecycle hooks, plan ordering, or narration. |
+| Map resolver | `starcraft_commander/map_resolver.py` | Core semantic map targets plus best-effort extras resolved to `MapPoint` coordinates, including discovered `enemy_front`; auditable `MapGeometryInference` from starts, base clusters, ramps, minerals, and geysers with confidence/visibility/source metadata; explicit unavailable entries with reasons; unknown names rejected with available alternatives. | Pathing, combat targeting heuristics, or build placement legality. |
+| BotAI adapter | `starcraft_commander/python_sc2_adapter.py` | The eight semantic action methods translated into duck-typed BotAI operations; `SC2ActionReport` requested-vs-issued counts; no lifecycle method names. python-sc2 lazy-imported only inside functions. | Lifecycle hooks, plan ordering, or narration. |
 | Live feasibility validator | `starcraft_commander/feasibility.py` | Conservative gating of typed payloads against `SC2CommanderState`: resources, supply, tech prerequisites, producers, workers; unknown or incomplete state rejects mutating commands; only `SUMMARIZE_STATE` survives incomplete observation. | Mutating state or issuing orders. |
 | Korean narrator | `starcraft_commander/narrator.py` | `SC2NarrationResponse` rendering of execution results, rejections, and state summaries; honest `partially_executed`/`blocked` statuses; disclosure of unenforced constraints. | Choosing intents or validating feasibility. |
 | Live pipeline | `starcraft_commander/live_pipeline.py` | `SC2CommandSession` composition, compound-command splitting, `SC2CommandOutcome` per part with stage artifacts only for stages that ran. | Stage-specific logic or game-loop scheduling. |

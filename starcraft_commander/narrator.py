@@ -41,6 +41,7 @@ SC2_KOREAN_TARGET_NAMES: Final[dict[str, str]] = {
     "self_geyser": "본진 가스 간헐천",
     "enemy_main": "적 본진",
     "enemy_ramp": "적 입구",
+    "enemy_front": "적 입구",
     "enemy_natural": "적 앞마당",
     "enemy_mineral_line": "적 일꾼 라인",
 }
@@ -79,6 +80,7 @@ SC2_ACTION_TYPE_KOREAN_LABELS: Final[dict[SC2ActionType, str]] = {
     SC2ActionType.ATTACK_MOVE: "공격 이동",
     SC2ActionType.REPAIR: "수리",
     SC2ActionType.OBSERVE: "정찰",
+    SC2ActionType.MOVE_CAMERA: "카메라 이동",
 }
 """Korean labels for semantic action types, used in error narration."""
 
@@ -118,6 +120,11 @@ SC2_ACTION_REFUSAL_KOREAN_REASONS: Final[dict[str, str]] = {
     "non_positive_count": "요청 수량이 1 미만입니다",
     "missing_producer_metadata": "생산 건물 정보가 계획에 없습니다",
     "producers_stalled": "생산 건물이 훈련 명령을 받지 못했습니다",
+    "missing_camera_capability": "현재 SC2 런타임 어댑터가 카메라 이동 API를 제공하지 않습니다",
+    "camera_refused": "SC2 런타임이 카메라 이동 요청을 거부했습니다",
+    "ambiguous_camera_target": "카메라 대상 위치가 여러 후보와 맞아 하나로 확정할 수 없습니다",
+    "unknown_camera_target": "지정한 카메라 대상이 지원되는 semantic target이 아닙니다",
+    "unscouted_camera_target": "지정한 카메라 대상은 아직 정찰/관측되지 않아 안전하게 이동할 수 없습니다",
 }
 """Machine-readable adapter refusal details translated into Korean reasons."""
 
@@ -578,6 +585,14 @@ def _observe_line(
     return "전장 상태 확인"
 
 
+def _move_camera_line(
+    action: SC2CommandAction,
+    issue: _ActionIssue | None = None,
+) -> str:
+    target = _translate_target(action.target) or "지정 위치"
+    return f"카메라를 {target}{_ro_particle(target)} 이동"
+
+
 _SC2_ACTION_LINE_RENDERERS: Final[
     dict[SC2ActionType, Callable[[SC2CommandAction, _ActionIssue | None], str]]
 ] = {
@@ -588,6 +603,7 @@ _SC2_ACTION_LINE_RENDERERS: Final[
     SC2ActionType.ATTACK_MOVE: _attack_move_line,
     SC2ActionType.REPAIR: _repair_line,
     SC2ActionType.OBSERVE: _observe_line,
+    SC2ActionType.MOVE_CAMERA: _move_camera_line,
 }
 """One Korean line renderer per stable semantic SC2 action type."""
 
@@ -628,6 +644,8 @@ def _error_line(error: SC2ExecutionError) -> str:
         detail = str(error.metadata.get("detail", ""))
         reason = SC2_ACTION_REFUSAL_KOREAN_REASONS.get(detail)
         if reason is None:
+            reason = _sanitized_action_refusal_reason(detail or error.message)
+        if reason is None:
             reason = f"실행기가 동작을 거부했습니다 (세부: {detail or error.message})"
         return f"{label} 거부: {reason}."
     if error.exception_type == "MissingRuntimeAdapter":
@@ -647,6 +665,37 @@ def _error_line(error: SC2ExecutionError) -> str:
         if label is not None:
             return f"{label} 동작 실패: {error.message}"
     return f"실행 실패: {error.message}"
+
+
+def _sanitized_action_refusal_reason(detail: str) -> str | None:
+    """Convert adapter debug details into commander-safe Korean guidance."""
+
+    normalized = str(detail or "")
+    if "unsupported SC2 target location" in normalized:
+        return (
+            "위치 표현을 현재 지도 의미 좌표로 연결하지 못했습니다. "
+            "LLM은 본진, 본진 입구, 앞마당, 본진 가스처럼 관측 가능한 "
+            "semantic target 중 하나로 다시 좁혀야 합니다."
+        )
+    if "no_safe_placement" in normalized:
+        return (
+            "보이는 지형 안에서 안전한 건설 칸을 찾지 못했습니다. "
+            "길목/미네랄 라인을 피해서 본진 안쪽, 본진 앞, 본진 입구처럼 "
+            "다른 위치를 지정해 주세요."
+        )
+    if "invalid_refinery_target" in normalized:
+        if "no_free_geyser" in normalized:
+            return (
+                "사용 가능한 가스 간헐천을 찾지 못했습니다. 이미 가까운 "
+                "간헐천에 정제소가 있거나 아직 다른 간헐천을 관측하지 못했습니다."
+            )
+        if "target_is_not_geyser" in normalized:
+            return "정제소는 일반 지형이 아니라 가스 간헐천 위에만 지을 수 있습니다."
+        return (
+            "정제소 위치를 확정하지 못했습니다. 본진 가스 또는 앞마당 가스처럼 "
+            "관측 가능한 간헐천 기준으로 다시 지정해 주세요."
+        )
+    return None
 
 
 def _army_line(state: SC2CommanderState) -> str:

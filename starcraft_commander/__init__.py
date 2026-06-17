@@ -43,10 +43,15 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "SC2StateResolverInterface": "starcraft_commander.state_resolver",
     "resolve_commander_state": "starcraft_commander.state_resolver",
     # Semantic map resolution.
+    "MapBaseCluster": "starcraft_commander.map_resolver",
+    "MapGeometryInference": "starcraft_commander.map_resolver",
+    "MapGeometryObservation": "starcraft_commander.map_resolver",
+    "MapAnchorPositionResolution": "starcraft_commander.map_resolver",
     "MapPoint": "starcraft_commander.map_resolver",
     "MapTargetResolution": "starcraft_commander.map_resolver",
     "SC2MapResolver": "starcraft_commander.map_resolver",
     "SC2MapResolverInterface": "starcraft_commander.map_resolver",
+    "SC2RuntimeMapResolver": "starcraft_commander.map_resolver",
     # python-sc2 BotAI adapter.
     "MissingPythonSC2Error": "starcraft_commander.python_sc2_adapter",
     "PythonSC2BotAdapter": "starcraft_commander.python_sc2_adapter",
@@ -82,9 +87,11 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "VoiceTranscriberInterface": "starcraft_commander.voice_input",
     "VoiceTranscription": "starcraft_commander.voice_input",
     "transcribe_command_audio": "starcraft_commander.voice_input",
-    # LLM interpretation (rules-first hybrid; anthropic imported lazily
-    # inside the module only when a real client must be built).
+    # LLM interpretation (live command understanding is LLM-mandatory;
+    # provider SDKs are imported lazily only when a real client is built).
     "HybridCommandInterpreter": "starcraft_commander.llm_interpreter",
+    "LLMComboPlan": "starcraft_commander.llm_interpreter",
+    "LLMComboPlanStep": "starcraft_commander.llm_interpreter",
     "LLMCommandInterpreter": "starcraft_commander.llm_interpreter",
     "build_hybrid_interpreter": "starcraft_commander.llm_interpreter",
     # Commander event memory (stdlib-only ring buffer).

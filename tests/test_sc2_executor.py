@@ -32,6 +32,7 @@ from toycraft_commander.intents import (
     ExpandIntent,
     GatherResourceIntent,
     HarassIntent,
+    MoveCameraIntent,
     RepairIntent,
     ScoutIntent,
     SummarizeStateIntent,
@@ -110,6 +111,7 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
                     "attack_move",
                     "repair",
                     "observe",
+                    "move_camera",
                 },
             ),
             SC2_ACTION_TYPES,
@@ -132,6 +134,7 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
                 "REPAIR": ("repair",),
                 "EXPAND": ("build_structure",),
                 "HARASS": ("attack_move",),
+                "MOVE_CAMERA": ("move_camera",),
             },
             SC2_INTENT_ACTION_TYPE_MAP,
         )
@@ -331,6 +334,66 @@ class SC2ActionPlannerTest(unittest.TestCase):
         self.assertEqual("SUPPLYDEPOT", plan.actions[0].subject)
         self.assertEqual("self_ramp", plan.actions[0].target)
 
+    def test_build_refinery_accepts_llm_natural_gas_locations(self) -> None:
+        cases = (
+            "본진 베스핀 가스",
+            "베스핀 가스 geyser",
+            "본진 가스 geyser",
+            "nearest available geyser at main base",
+            "본진 가스 간헐천",
+            "가스 간헐천",
+            "가스",
+        )
+        for location in cases:
+            with self.subTest(location=location):
+                plan = build_sc2_execution_plan(
+                    BuildStructureIntent(structure="Refinery", location=location),
+                )
+                self.assertEqual("REFINERY", plan.actions[0].subject)
+                self.assertEqual("self_geyser", plan.actions[0].target)
+
+    def test_build_structure_accepts_llm_freeform_self_locations(self) -> None:
+        cases = (
+            ("main base near ramp", "self_ramp"),
+            ("본진 근방", "self_main"),
+            ("본진 건설 가능한 위치", "self_main"),
+            ("본진 아래", "self_main"),
+            ("아군 앞마당", "self_natural"),
+            ("default build location", "self_main"),
+            ("safe build location near command center", "self_main"),
+            ("안전한 위치", "self_main"),
+            ("사령부 근처", "self_main"),
+        )
+        for location, expected_target in cases:
+            with self.subTest(location=location):
+                plan = build_sc2_execution_plan(
+                    BuildStructureIntent(structure="Barracks", location=location),
+                )
+                self.assertEqual("BARRACKS", plan.actions[0].subject)
+                self.assertEqual(expected_target, plan.actions[0].target)
+
+    def test_build_structure_preserves_relative_location_policy_metadata(self) -> None:
+        plan = build_sc2_execution_plan(
+            BuildStructureIntent(
+                structure="Supply Depot",
+                location="main ramp",
+                placement_policy={
+                    "anchor": "mineral line",
+                    "anchor_target": "self_mineral_line",
+                    "spatial_relation": "away_from",
+                },
+            ),
+        )
+
+        self.assertEqual(
+            {
+                "anchor": "mineral line",
+                "anchor_target": "self_mineral_line",
+                "spatial_relation": "away_from",
+            },
+            plan.actions[0].metadata["placement_policy"],
+        )
+
     def test_train_army_maps_marine_to_barracks(self) -> None:
         plan = build_sc2_execution_plan(TrainArmyIntent(unit_type="Marine", count=3))
 
@@ -419,13 +482,20 @@ class SC2ActionPlannerTest(unittest.TestCase):
                 {
                     "self_main",
                     "self_ramp",
+                    "self_choke",
                     "self_natural",
+                    "self_third",
                     "self_mineral_line",
                     "self_geyser",
                     "enemy_main",
                     "enemy_ramp",
+                    "enemy_choke",
+                    "enemy_front",
                     "enemy_natural",
+                    "enemy_third",
                     "enemy_mineral_line",
+                    "scout_location",
+                    "last_seen_enemy_area",
                 },
             ),
             SC2_SEMANTIC_TARGET_NAMES,
@@ -468,6 +538,39 @@ class SC2ActionPlannerTest(unittest.TestCase):
                 )
 
                 self.assertEqual(semantic_target, plan.actions[0].target)
+
+    def test_natural_language_targets_use_shared_alias_normalization(self) -> None:
+        cases = (
+            (
+                BuildStructureIntent(
+                    structure="Supply Depot",
+                    location="Main Base",
+                ),
+                "self_main",
+            ),
+            (
+                DefendIntent(location="우리 본 진", unit_group="marines"),
+                "self_main",
+            ),
+            (
+                ScoutIntent(target="적 앞 마당", unit_group="worker_scout"),
+                "enemy_natural",
+            ),
+            (
+                HarassIntent(target="상대 일꾼 라인", unit_group="marines"),
+                "enemy_mineral_line",
+            ),
+            (
+                MoveCameraIntent(target="본진 입 구"),
+                "self_ramp",
+            ),
+        )
+
+        for payload, expected_target in cases:
+            with self.subTest(intent=payload.intent, expected_target=expected_target):
+                plan = build_sc2_execution_plan(payload)
+
+                self.assertEqual(expected_target, plan.actions[0].target)
 
     def test_repair_target_and_gather_resource_stay_verbatim(self) -> None:
         repair = build_sc2_execution_plan(
@@ -785,10 +888,15 @@ class SC2ActionReportContractTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             SC2ActionReport(True, issued_count="2")
         payload = SC2ActionReport(
-            True, requested_count=6, issued_count=2, detail="insufficient_units"
+            True,
+            requested_count=6,
+            issued_count=2,
+            detail="insufficient_units",
+            audit={"failure_reason": "insufficient_units"},
         ).to_dict()
         self.assertEqual(payload, json.loads(json.dumps(payload)))
         self.assertTrue(payload["is_partial"])
+        self.assertEqual("insufficient_units", payload["audit"]["failure_reason"])
 
 
 class SC2RuntimeExecutorReportTest(unittest.TestCase):
@@ -822,7 +930,7 @@ class SC2RuntimeExecutorReportTest(unittest.TestCase):
         self.assertEqual(1, error.metadata["issued_count"])
         self.assertEqual(
             {"applied": True, "requested_count": 3, "issued_count": 1,
-             "is_partial": True, "detail": "unaffordable"},
+             "is_partial": True, "detail": "unaffordable", "audit": {}},
             result.audit["action_reports"]["0"],
         )
         json.dumps(result.to_dict())
@@ -847,12 +955,21 @@ class SC2RuntimeExecutorReportTest(unittest.TestCase):
                     requested_count=3,
                     issued_count=0,
                     detail="no_ready_idle_producer",
+                    audit={"failure_reason": "no_ready_idle_producer"},
                 )
 
         plan = self.make_plan()
         result = asyncio.run(SC2RuntimeExecutor().execute_plan(RefusingBot(), plan))
 
         self.assertFalse(result.success)
+        self.assertEqual(
+            "no_ready_idle_producer",
+            result.audit["action_reports"]["0"]["audit"]["failure_reason"],
+        )
+        self.assertEqual(
+            "no_ready_idle_producer",
+            result.errors[0].metadata["audit"]["failure_reason"],
+        )
         self.assertEqual(plan.actions, result.skipped_actions)
         self.assertEqual("ActionRefused", result.errors[0].exception_type)
         self.assertEqual(

@@ -24,6 +24,10 @@ from unittest import mock
 from starcraft_commander import demo_sc2
 from starcraft_commander.event_memory import CommanderEventMemory
 from starcraft_commander.live_pipeline import SC2CommandSession
+from starcraft_commander.llm_interpreter import (
+    HybridCommandInterpreter,
+    LocalLLMControl,
+)
 from starcraft_commander.map_resolver import (
     SC2_SUPPORTED_SEMANTIC_TARGETS,
     SC2MapResolver,
@@ -42,6 +46,7 @@ from starcraft_commander.voice_input import (
     VoiceTranscription,
 )
 from starcraft_commander.web_gui import DEFAULT_WEB_GUI_PORT, WebGuiBridgeInterface
+from toycraft_commander.interpreter import DEFAULT_COMMAND_INTERPRETER
 
 
 PYTHON_SC2_INSTALLED = importlib.util.find_spec("sc2") is not None
@@ -308,11 +313,99 @@ class LiveModeGuardTest(unittest.TestCase):
     def test_required_llm_reports_missing_api_key_separately(self) -> None:
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
             with self.assertRaises(MissingLLMDependencyError) as context:
-                demo_sc2.build_llm_interpreter()
+                demo_sc2.build_llm_interpreter("anthropic", "claude-sonnet-4-5")
         message = str(context.exception)
         self.assertIn("ANTHROPIC_API_KEY", message)
         self.assertIn("설정", message)
         self.assertNotIn("is not installed", message)
+
+    def test_dry_run_gui_starts_before_web_key_configuration(self) -> None:
+        captured = {}
+
+        def fake_gui(session, args, *, llm_control=None):
+            captured["session"] = session
+            captured["llm_control"] = llm_control
+            return 0
+
+        with mock.patch.object(demo_sc2, "_run_dry_run_gui", fake_gui):
+            result = demo_sc2.run_dry_run(
+                demo_sc2.parse_args(
+                    [
+                        "--dry-run",
+                        "--gui",
+                        "0",
+                        "--llm-provider",
+                        "openai",
+                        "--llm-model",
+                        "gpt-5.5",
+                    ]
+                )
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIsInstance(captured["llm_control"], LocalLLMControl)
+        self.assertFalse(captured["llm_control"].is_available())
+        self.assertIsInstance(captured["session"].interpreter, HybridCommandInterpreter)
+
+    def test_dry_run_gui_enables_live_auto_launch_after_key_setup(self) -> None:
+        captured = {}
+
+        class FakeBridge:
+            def __init__(self, **kwargs):
+                captured["bridge_kwargs"] = kwargs
+
+            def start(self):
+                captured["bridge_started"] = True
+
+            def stop(self):
+                captured["bridge_stopped"] = True
+
+        class FakeServer:
+            url = "http://127.0.0.1:0"
+
+            def __init__(self, **kwargs):
+                captured["server_kwargs"] = kwargs
+
+            def start(self):
+                captured["server_started"] = True
+
+            def stop(self):
+                captured["server_stopped"] = True
+
+        session, _bot = demo_sc2.build_dry_run_session()
+        args = demo_sc2.parse_args(["--dry-run", "--gui", "0"])
+        with mock.patch.object(demo_sc2, "SessionLoopBridge", FakeBridge):
+            with mock.patch.object(demo_sc2, "WebGuiServer", FakeServer):
+                with mock.patch.object(
+                    demo_sc2,
+                    "_serve_until_interrupt",
+                    side_effect=KeyboardInterrupt,
+                ):
+                    result = demo_sc2._run_dry_run_gui(
+                        session,
+                        args,
+                        llm_control=LocalLLMControl(),
+                    )
+
+        self.assertEqual(result, 0)
+        self.assertTrue(captured["server_kwargs"]["auto_launch_live"])
+        self.assertIsInstance(
+            captured["bridge_kwargs"]["llm_control"],
+            LocalLLMControl,
+        )
+        self.assertTrue(captured["server_started"])
+        self.assertTrue(captured["server_stopped"])
+
+    def test_live_local_llm_control_requires_provider_key_before_start(self) -> None:
+        with mock.patch.object(demo_sc2, "require_openai", mock.Mock()):
+            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+                with self.assertRaises(MissingLLMDependencyError) as context:
+                    demo_sc2.build_local_llm_control(
+                        "openai", demo_sc2.DEFAULT_OPENAI_MODEL
+                    )
+        message = str(context.exception)
+        self.assertIn("OPENAI_API_KEY", message)
+        self.assertIn("LLM", message)
 
     @unittest.skipIf(PYTHON_SC2_INSTALLED, "python-sc2 is installed in this environment")
     def test_run_live_raises_actionable_missing_runtime_error(self) -> None:
@@ -371,11 +464,14 @@ class RunLiveWiringTest(unittest.TestCase):
 
         modules = build_fake_sc2_modules(fake_run_game)
         buffer = io.StringIO()
+        llm_control = mock.Mock()
+        llm_control.is_available.return_value = True
+        llm_control.interpret.side_effect = DEFAULT_COMMAND_INTERPRETER.interpret
         with mock.patch.dict(sys.modules, modules):
             with mock.patch.object(
                 demo_sc2,
-                "build_llm_interpreter",
-                mock.Mock(return_value=None),
+                "build_local_llm_control",
+                mock.Mock(return_value=llm_control),
             ):
                 with contextlib.redirect_stdout(buffer):
                     demo_sc2.run_live(demo_sc2.parse_args([]))
@@ -406,11 +502,12 @@ class RunLiveWiringTest(unittest.TestCase):
             raise AssertionError("run_game must not be reached without voice deps")
 
         modules = build_fake_sc2_modules(fail_run_game)
+        llm_control = mock.Mock()
         with mock.patch.dict(sys.modules, modules):
             with mock.patch.object(
                 demo_sc2,
-                "build_llm_interpreter",
-                mock.Mock(return_value=None),
+                "build_local_llm_control",
+                mock.Mock(return_value=llm_control),
             ):
                 with self.assertRaises(RuntimeMissingVoiceDependencyError) as context:
                     demo_sc2.run_live(demo_sc2.parse_args(["--voice"]))

@@ -20,7 +20,7 @@ class ArchitectureDocumentationTest(unittest.TestCase):
             "Command pipeline",
             "SC2 Readiness Boundary",
             "Phase 0 does not implement SC2",
-            "exactly these 10 canonical intents",
+            "exactly these 11 canonical intents",
         )
 
         for term in required_terms:
@@ -102,7 +102,7 @@ class ArchitectureDocumentationTest(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         document = (repo_root / "docs" / "contracts.md").read_text()
 
-        self.assertIn("exactly 10 canonical Phase 0 intent names", document)
+        self.assertIn("exactly 11 canonical Phase 0 intent names", document)
         for intent_name in CANONICAL_INTENT_NAMES:
             with self.subTest(intent=intent_name):
                 self.assertIn(f"`{intent_name}`", document)

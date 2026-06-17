@@ -1,0 +1,121 @@
+goal: >
+  Complete the in-scope Commander product experience on
+  feat/llm-combo-dashboard-i18n so Korean natural-language play works as a
+  production-ready LLM-first StarCraft controller for commands, questions,
+  semantic targets, camera movement, clarification, strategic briefing, and
+  dashboard reliability.
+task_type: code
+brownfield_context:
+  project_type: brownfield
+  target_branch: feat/llm-combo-dashboard-i18n
+  excluded_followups:
+    - PvP and Battle.net/custom-game human-vs-human support
+    - Discord/Hermes command interface
+    - Web minimap or arbitrary coordinate-click building placement UI
+    - Realtime TTS/STT voice loop, tracked separately in GitHub issue #4
+constraints:
+  - LLM is mandatory for this project experience; do not silently degrade into a fake LLM mode for real play.
+  - LLMs may interpret, classify, summarize, and plan combos, but must not call python-sc2 APIs directly.
+  - Every mutating step must pass the existing intent validation, feasibility, planner, and executor safety layers.
+  - General questions must be answered read-only and must never execute game actions.
+  - Clarification is allowed only when a required target, object, quantity, or modifier is genuinely ambiguous.
+  - Clarification must appear as a concrete reverse question in chat, not as generic "10 MVP intents" failure text.
+  - API keys and raw prompts must never appear in user-facing text, logs, tests, or persisted files.
+  - Dashboard polish must reveal backend state and failure reasons; it must not hide missing behavior.
+  - Use the current repository patterns and tests; avoid broad rewrites unrelated to the acceptance criteria.
+acceptance_criteria:
+  - Inputs such as "지금 뭐 해야 해?", "지금 할거 알려줘", "다음 할 일 알려줘", "왜 안돼?", "위치 지정 가능해?", "카메라 움직일 수 있어?", and "llm이랑 대화 가능?" are classified as read-only Q&A and answered from context instead of becoming command clarification failures.
+  - Supported direct StarCraft commands and common Korean aliases/typos execute or block with concrete feasibility reasons. Regression examples include "일꾼생산", "가스생산 시설 지어", "배프빈가스 지어", "배럴 지어", "뵤ㅗ급로 지어", "정찰보내", "자원채취", and "놀고 있는 일꾼들 일시켜".
+  - Macro or compound inputs such as "초반 운영 시작해", "정찰보내고 병영올려", "상태 보고하고 지금 할거 알려줘", and "경제 안정화해" are decomposed through deterministic or LLM ComboPlan and then each step is processed by the existing safe execution pipeline.
+  - Ambiguous inputs produce actionable Korean reverse questions naming the missing field. Examples include "더 멀게 지어" asking what anchor/direction to use, "카메라 사령부로 옮겨" with multiple command centers asking which command center/base, and "저기에 지어" asking for a supported semantic target.
+  - The runtime maintains a semantic target catalog from python-sc2 state for self_main/main/base, self_natural/natural/앞마당, self_ramp/main_ramp/본진 입구, self_mineral_line, self_geyser/main_geyser, enemy_main/enemy_base, enemy_natural, and enemy_ramp/enemy_front when discovered or safely inferable.
+  - If there are multiple townhalls/command centers, "본진" resolves to the initial townhall/start location, "앞마당" resolves to the nearest expansion to main, and generic "사령부로 카메라 옮겨" or "사령부 근처에 지어" asks which base unless the utterance explicitly says 본진, 앞마당, third, newest, or selected semantic base.
+  - Building commands use semantic targets as anchors, then run safe placement search around the anchor. "본진 입구에 보급고 지어", "앞마당에 사령부 지어", "본진 가스에 정제소 지어", and "본진에서 떨어진 곳에 보급고 지어" resolve to auditable target/placement policies or fail with exact reasons.
+  - Relative phrases are supported when anchored, including "본진에서 멀게", "미네랄에서 떨어지게", "입구 쪽으로", and "앞마당 근처". Unanchored modifiers such as "더 멀게" must clarify the reference anchor/direction.
+  - Camera commands map to a MOVE_CAMERA intent and semantic target resolution. "본진 보여줘", "본진 입구로 카메라 옮겨", "앞마당으로 화면 이동", and "적 입구 보여줘" move the camera when runtime capability exists, or return a precise unavailable/not-scouted/ambiguous-base reason when not possible.
+  - Strategic briefing first states the player's current strategy, then gives high-level Korean evidence from current state, recent command history, success/failure records, standing orders, compacted memory, and LLM summary. Advice is hidden by default and shown only when requested or when the dashboard advice toggle is enabled.
+  - LLM setup and strategic briefing panels are collapsed by default, toggles are clickable inside their boxes, chat stays bounded with scroll and compaction, assistant typing uses a visible pending state, voice recording keeps waveform UX, and the space background has nebula/depth rather than a flat dot grid.
+  - Provider radio changes update model choices immediately. API key setup moves through setting, success, or failed states with visible failure reasons. A successful local key setup starts or offers the SC2 connection flow without exposing the key.
+  - Add or update tests covering the exact previously failing examples from the user conversation, including question routing, typo aliases, macro combos, clarification reverse questions, multi-base camera ambiguity, semantic target placement, setup diagnostics, and bounded chat behavior.
+ontology_schema:
+  name: CommanderExperienceCompletion
+  description: >
+    Domain model for completing LLM-first command routing, semantic StarCraft
+    target resolution, camera movement, clarification, strategic briefing, and
+    dashboard reliability.
+  fields:
+    - name: input_text
+      type: string
+      required: true
+      description: Korean typed or spoken user input.
+    - name: route
+      type: enum
+      values: [direct_command, combo_command, question, blocked, clarification]
+      required: true
+      description: Top-level routing decision.
+    - name: combo_plan
+      type: array
+      required: false
+      description: Ordered safe Korean subcommands for macro commands.
+    - name: semantic_target
+      type: object
+      required: false
+      description: Target key, anchor point, confidence, source, and failure reason.
+    - name: placement_policy
+      type: object
+      required: false
+      description: Anchor, relative modifier, search radius, selected tile, and rejection reasons.
+    - name: camera_action
+      type: object
+      required: false
+      description: MOVE_CAMERA capability, target point, ambiguity, and runtime result.
+    - name: clarification_question
+      type: string
+      required: false
+      description: Concrete reverse question shown to the user when input is ambiguous.
+    - name: briefing_context
+      type: object
+      required: false
+      description: State, history, success/failure records, standing orders, compacted memory, and LLM summary.
+    - name: dashboard_state
+      type: object
+      required: false
+      description: Toggle, chat scroll, pending assistant, voice, i18n, and visual state.
+evaluation_principles:
+  - name: RoutingCorrectness
+    weight: 0.25
+    description: Questions, direct commands, macro commands, blocked commands, and clarifications route correctly.
+  - name: ClarificationQuality
+    weight: 0.15
+    description: Ambiguous cases ask concrete reverse questions instead of generic unsupported text.
+  - name: SemanticTargetReliability
+    weight: 0.20
+    description: Targets, multi-base disambiguation, placement policies, and failure reasons are auditable and safe.
+  - name: CameraCapability
+    weight: 0.15
+    description: Camera commands execute when supported or fail precisely when unavailable, unscouted, or ambiguous.
+  - name: BriefingAndDashboardQuality
+    weight: 0.15
+    description: Briefing context and dashboard state match the user-facing product requirements.
+  - name: TestAndSecretSafety
+    weight: 0.10
+    description: Regression tests cover user failures and no secrets are exposed.
+exit_conditions:
+  - name: AcceptancePassed
+    description: All acceptance criteria pass automated tests or documented manual dry-run checks.
+    criteria: Related pytest suites and targeted dry-run examples pass.
+  - name: PreviousFailuresCovered
+    description: Previously failing user examples no longer fall into generic LLM interpretation failure.
+    criteria: Regression tests include the user-provided failing command and question examples.
+  - name: ExclusionsPreserved
+    description: Out-of-scope items remain only as GitHub issues or documentation, not implementation.
+    criteria: PvP, Discord/Hermes, minimap coordinate UI, and realtime TTS/STT are not implemented in this branch.
+  - name: AtomicCommitReady
+    description: The branch is clean and changes are committed atomically after user approval or explicit commit request.
+    criteria: Git status is clean after atomic commit and optional push.
+metadata:
+  seed_id: seed_commander_experience_completion_20260614
+  parent_seed_id: seed_a7d510038389
+  interview_id: interview_20260614_104119
+  ambiguity_score: 0.12
+  created_at: "2026-06-14T10:55:00+09:00"

@@ -1,4 +1,4 @@
-# Claude Code Handoff: TextCraft Commander
+# Claude Code Handoff: voiStarcraft2
 
 This document is the continuation brief for Claude Code or another coding agent.
 It captures the original product intent, the current repository state, what is
@@ -20,7 +20,7 @@ smoke test against an installed StarCraft II (the procedure is documented in
 
 ## Original Product Positioning
 
-TextCraft Commander should let a human command StarCraft by natural language:
+voiStarcraft2 should let a human command StarCraft by natural language:
 
 ```text
 User text or voice
@@ -299,9 +299,11 @@ docs/roadmap-llm-gui.md
 
 Implemented:
 
-- Rules-first LLM fallback via the optional `[llm]` extra, schema-gated to the
-  10 canonical intents and called only once per user utterance. OpenAI/GPT is
-  the default local GUI provider; Anthropic remains supported.
+- LLM-mandatory command interpretation via the optional `[llm]` extra,
+  schema-gated to the 10 canonical intents and called only once per user
+  utterance. Deprecated deterministic rule/keyword matching is retained only
+  for explicit offline `--no-llm` compatibility. OpenAI/GPT is the default
+  local GUI provider; Anthropic remains supported.
 - Thread-safe bounded event memory for GUI history and state-report
   enrichment.
 - Stdlib localhost-first web GUI for dry-run and live sessions, including
@@ -314,7 +316,7 @@ Implemented:
 ### Step 6. Local Smoke Test Instructions — DONE
 
 `docs/sc2-smoke-test.md` documents the SC2 install paths (`SC2PATH`), map
-download/placement, `pip install 'voistarcraft[sc2]'` / `[voice]`, the dry-run
+download/placement, `pip install 'voiStarcraft2[sc2]'` / `[voice]`, the dry-run
 and live commands, the five-step smoke-test acceptance list, and known
 limitations. A local macOS smoke run has reached `Status.in_game` and verified
 localhost GUI state polling plus command execution for state check, SCV
@@ -463,7 +465,7 @@ sed -n '1,110p' docs/sc2-smoke-test.md
 Then, on a machine with StarCraft II installed:
 
 ```bash
-pip install 'voistarcraft[sc2]'
+pip install 'voiStarcraft2[sc2]'
 python3 -m starcraft_commander.demo_sc2 --map AcropolisLE --difficulty easy
 ```
 

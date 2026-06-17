@@ -33,6 +33,15 @@ from toycraft_commander.interpreter import (
     KEEP_WORKER_PRODUCTION_ALIAS,
     KEEP_WORKER_PRODUCTION_CONSTRAINT,
     KEEP_WORKER_PRODUCTION_MAPPINGS,
+    MOVE_CAMERA_CONSTRAINT,
+    MOVE_CAMERA_CHOKE_TARGET_SLOT,
+    MOVE_CAMERA_ENEMY_ENTRANCE_TARGET_SLOT,
+    MOVE_CAMERA_LAST_SEEN_ENEMY_AREA_TARGET_SLOT,
+    MOVE_CAMERA_MAPPINGS,
+    MOVE_CAMERA_NATURAL_EXPANSION_TARGET_SLOT,
+    MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT,
+    MOVE_CAMERA_SCOUT_LOCATION_TARGET_SLOT,
+    MOVE_CAMERA_THIRD_BASE_TARGET_SLOT,
     MOVEMENT_COMMAND_PATTERNS,
     PREVENT_SUPPLY_BLOCK_ALIAS,
     PREVENT_SUPPLY_BLOCK_CONSTRAINT,
@@ -62,14 +71,19 @@ from toycraft_commander.interpreter import (
     SUMMARIZE_STATE_ALIAS,
     SUMMARIZE_STATE_CONSTRAINT,
     SUMMARIZE_STATE_MAPPINGS,
+    SUPPORTED_PARSED_ANCHOR_DISPLAY_LABELS,
+    SUPPORTED_PARSED_ANCHOR_LABEL_KEYS,
+    SUPPORTED_PARSED_ANCHOR_LABELS,
     TRAIN_UNIT_ALIAS,
     TRAIN_UNIT_CONSTRAINT,
     TRAIN_UNIT_MAPPINGS,
+    TRAIN_WORKER_ONESHOT_CONSTRAINT,
     UNIT_SELECTION_COMMAND_PATTERNS,
     AMBIGUOUS_COMMAND_CLARIFICATION_ALTERNATIVES,
     AMBIGUOUS_COMMAND_CLARIFICATION_PROMPT,
     AMBIGUOUS_COMMAND_CLARIFICATION_REASON,
     AMBIGUOUS_COMMAND_FAILURE_CODE,
+    AWAY_FROM_MAIN_PLACEMENT_POLICY,
     MALFORMED_COMMAND_CLARIFICATION_PROMPT,
     MALFORMED_COMMAND_CLARIFICATION_REASON,
     MALFORMED_COMMAND_FAILURE_CODE,
@@ -85,8 +99,24 @@ from toycraft_commander.interpreter import (
     CommandPatternLexicon,
     DEFAULT_COMMAND_INTERPRETER,
     InterpreterMapping,
+    KoreanBaseSelectionIntent,
+    ParsedAnchorLabel,
+    build_ambiguous_build_base_result,
+    build_ambiguous_camera_base_result,
+    build_missing_build_anchor_result,
+    build_missing_build_direction_result,
+    build_missing_build_relative_anchor_result,
+    build_missing_build_semantic_target_result,
     interpret_command,
     interpret_command_text,
+    is_ambiguous_build_base_target,
+    is_ambiguous_camera_base_target,
+    is_distance_only_build_placement,
+    is_unanchored_relative_build_placement,
+    normalize_parsed_anchor_label,
+    parsed_anchor_label_for_key,
+    parse_korean_base_selection,
+    parse_korean_relative_location_phrase,
 )
 from toycraft_commander.failure import CommandFailureStage
 from toycraft_commander.intents import (
@@ -99,6 +129,7 @@ from toycraft_commander.intents import (
     INTENT_DSL_FORMAT_VERSION,
     INTENT_DSL_PAYLOAD_KEY,
     INTENT_PAYLOAD_TYPES,
+    MoveCameraIntent,
     RepairIntent,
     ScoutIntent,
     SummarizeStateIntent,
@@ -302,6 +333,24 @@ KOREAN_UTTERANCE_TO_EXPECTED_DSL_CASES = (
             "constraints": [HARASS_MINERAL_LINE_CONSTRAINT],
             "target": HARASS_MINERAL_LINE_TARGET,
             "unit_group": HARASS_MINERAL_LINE_UNIT_GROUP,
+        },
+    },
+    {
+        "command_text": "본진 보여줘",
+        "expected_dsl": {
+            "intent": "MOVE_CAMERA",
+            "priority": "normal",
+            "constraints": [MOVE_CAMERA_CONSTRAINT],
+            "target": "main base",
+        },
+    },
+    {
+        "command_text": "본진 입구 카메라 보여줘",
+        "expected_dsl": {
+            "intent": "MOVE_CAMERA",
+            "priority": "normal",
+            "constraints": [MOVE_CAMERA_CONSTRAINT],
+            "target": "main ramp",
         },
     },
 )
@@ -559,6 +608,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
             "REPAIR",
             "EXPAND",
             "HARASS",
+            "MOVE_CAMERA",
         )
 
         self.assertEqual(expected_intents, UTTERANCE_MATRIX_CANONICAL_INTENT_NAMES)
@@ -567,8 +617,8 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
             UTTERANCE_MATRIX_CANONICAL_INTENT_NAMES,
         )
         self.assertEqual(CANONICAL_INTENT_NAMES, UTTERANCE_MATRIX_CANONICAL_INTENT_NAMES)
-        self.assertEqual(10, len(UTTERANCE_MATRIX_CANONICAL_INTENT_NAMES))
-        self.assertEqual(10, len(set(UTTERANCE_MATRIX_CANONICAL_INTENT_NAMES)))
+        self.assertEqual(11, len(UTTERANCE_MATRIX_CANONICAL_INTENT_NAMES))
+        self.assertEqual(11, len(set(UTTERANCE_MATRIX_CANONICAL_INTENT_NAMES)))
 
     def test_representative_utterance_matrix_has_two_korean_rows_per_intent(
         self,
@@ -584,7 +634,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         counts_by_intent = Counter(actual_sequence)
 
         self.assertEqual(2, REPRESENTATIVE_UTTERANCES_PER_CANONICAL_INTENT)
-        self.assertEqual(20, len(REPRESENTATIVE_UTTERANCE_MATRIX))
+        self.assertEqual(22, len(REPRESENTATIVE_UTTERANCE_MATRIX))
         self.assertEqual(expected_sequence, actual_sequence)
         self.assertEqual(
             {
@@ -594,7 +644,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
             dict(counts_by_intent),
         )
         self.assertEqual(
-            20,
+            22,
             len({mapping.utterance for mapping in REPRESENTATIVE_UTTERANCE_MATRIX}),
         )
 
@@ -657,11 +707,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
     def test_korean_command_test_corpus_defines_expected_typed_dsl_outputs(
         self,
     ) -> None:
-        self.assertEqual(20, len(KOREAN_COMMAND_TEST_CORPUS))
-        self.assertEqual(
-            KOREAN_UTTERANCE_TO_EXPECTED_DSL_CASES,
-            KOREAN_COMMAND_TEST_CORPUS,
-        )
+        self.assertEqual(22, len(KOREAN_COMMAND_TEST_CORPUS))
         self.assertEqual(
             len(REPRESENTATIVE_UTTERANCE_MATRIX),
             len(KOREAN_COMMAND_TEST_CORPUS),
@@ -694,7 +740,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         matched_count = 0
         mismatches = []
 
-        self.assertEqual(20, len(KOREAN_COMMAND_TEST_CORPUS))
+        self.assertEqual(22, len(KOREAN_COMMAND_TEST_CORPUS))
 
         for corpus_row in KOREAN_COMMAND_TEST_CORPUS:
             command_text = corpus_row["command_text"]
@@ -809,9 +855,9 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
             for case in KOREAN_UTTERANCE_TO_EXPECTED_DSL_CASES
         )
 
-        self.assertEqual(20, len(KOREAN_UTTERANCE_TO_EXPECTED_DSL_CASES))
+        self.assertEqual(22, len(KOREAN_UTTERANCE_TO_EXPECTED_DSL_CASES))
         self.assertEqual(
-            20,
+            22,
             len(
                 {
                     case["command_text"]
@@ -851,7 +897,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
     def test_each_representative_korean_utterance_maps_to_expected_typed_dsl(
         self,
     ) -> None:
-        expected_utterance_suite_count = 20
+        expected_utterance_suite_count = 22
         expected_cases = (
             (
                 "미네랄에 일꾼 세 기 붙여",
@@ -1027,6 +1073,22 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
                     unit_group=HARASS_MINERAL_LINE_UNIT_GROUP,
                 ),
             ),
+            (
+                "본진 보여줘",
+                MoveCameraIntent(
+                    priority="normal",
+                    constraints=(MOVE_CAMERA_CONSTRAINT,),
+                    target="main base",
+                ),
+            ),
+            (
+                "본진 입구 카메라 보여줘",
+                MoveCameraIntent(
+                    priority="normal",
+                    constraints=(MOVE_CAMERA_CONSTRAINT,),
+                    target="main ramp",
+                ),
+            ),
         )
 
         self.assertEqual(expected_utterance_suite_count, len(expected_cases))
@@ -1060,7 +1122,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
                 self.assertEqual(expected_payload.to_dict(), payload.to_dict())
 
     def test_gather_resource_mappings_target_gather_resource_dsl(self) -> None:
-        self.assertEqual(2, len(GATHER_RESOURCE_MAPPINGS))
+        self.assertGreaterEqual(len(GATHER_RESOURCE_MAPPINGS), 4)
 
         for mapping in GATHER_RESOURCE_MAPPINGS:
             with self.subTest(utterance=mapping.utterance):
@@ -1086,10 +1148,16 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
                 self.assertIsInstance(mapping.payload, TrainWorkerIntent)
                 self.assertEqual("TRAIN_WORKER", mapping.payload.intent)
                 self.assertEqual(1, mapping.payload.count)
-                self.assertIn(
-                    KEEP_WORKER_PRODUCTION_CONSTRAINT,
-                    mapping.payload.constraints,
-                )
+                if mapping.utterance == "일꾼생산":
+                    self.assertIn(
+                        TRAIN_WORKER_ONESHOT_CONSTRAINT,
+                        mapping.payload.constraints,
+                    )
+                else:
+                    self.assertIn(
+                        KEEP_WORKER_PRODUCTION_CONSTRAINT,
+                        mapping.payload.constraints,
+                    )
 
     def test_keep_worker_production_utterances_interpret_to_valid_payloads(self) -> None:
         expected_payloads = {
@@ -1448,9 +1516,849 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
                         priority="normal",
                         constraints=(BUILD_STRUCTURE_CONSTRAINT,),
                         structure="Supply Depot",
-                        location="main ramp",
+                        location="main base",
                     ),
                     result.payload,
+                )
+
+    def test_supported_direct_starcraft_aliases_and_typos_resolve_to_typed_intents(
+        self,
+    ) -> None:
+        cases = {
+            "일꾼생산": {
+                "intent": "TRAIN_WORKER",
+                "priority": "normal",
+                "constraints": [TRAIN_WORKER_ONESHOT_CONSTRAINT],
+                "count": 1,
+            },
+            "가스생산 시설 지어": {
+                "intent": "BUILD_STRUCTURE",
+                "priority": "high",
+                "constraints": [BUILD_STRUCTURE_CONSTRAINT],
+                "structure": "Refinery",
+                "location": "main geyser",
+            },
+            "배프빈가스 지어": {
+                "intent": "BUILD_STRUCTURE",
+                "priority": "high",
+                "constraints": [BUILD_STRUCTURE_CONSTRAINT],
+                "structure": "Refinery",
+                "location": "main geyser",
+            },
+            "배럴 지어": {
+                "intent": "BUILD_STRUCTURE",
+                "priority": "normal",
+                "constraints": [BUILD_STRUCTURE_CONSTRAINT],
+                "structure": "Barracks",
+                "location": "main base",
+            },
+            "뵤ㅗ급로 지어": {
+                "intent": "BUILD_STRUCTURE",
+                "priority": "normal",
+                "constraints": [BUILD_STRUCTURE_CONSTRAINT],
+                "structure": "Supply Depot",
+                "location": "main base",
+            },
+            "정찰보내": {
+                "intent": "SCOUT",
+                "priority": "normal",
+                "constraints": [SEND_SCOUT_CONSTRAINT],
+                "target": SEND_SCOUT_DEFAULT_TARGET,
+                "unit_group": SEND_SCOUT_DEFAULT_UNIT_GROUP,
+            },
+            "자원채취": {
+                "intent": "GATHER_RESOURCE",
+                "priority": "normal",
+                "constraints": [GATHER_RESOURCE_CONSTRAINT],
+                "resource": "minerals",
+                "worker_count": 3,
+                "base": "main",
+            },
+            "놀고 있는 일꾼들 일시켜": {
+                "intent": "GATHER_RESOURCE",
+                "priority": "normal",
+                "constraints": [GATHER_RESOURCE_CONSTRAINT],
+                "resource": "minerals",
+                "worker_count": 3,
+                "base": "main",
+            },
+        }
+
+        for command_text, expected_dsl in cases.items():
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsNotNone(result.payload)
+                self.assertEqual(expected_dsl, result.payload.to_dict())
+                self.assertTrue(
+                    validate_intent_payload(result.payload.to_dict()).executable
+                )
+
+    def test_supported_direct_starcraft_aliases_are_canonical_mappings(self) -> None:
+        expected_aliases = {
+            "일꾼생산": KEEP_WORKER_PRODUCTION_ALIAS,
+            "가스생산 시설 지어": BUILD_STRUCTURE_ALIAS,
+            "배프빈가스 지어": BUILD_STRUCTURE_ALIAS,
+            "배럴 지어": BUILD_STRUCTURE_ALIAS,
+            "뵤ㅗ급로 지어": BUILD_STRUCTURE_ALIAS,
+            "정찰보내": SEND_SCOUT_ALIAS,
+            "자원채취": GATHER_RESOURCE_ALIAS,
+            "놀고 있는 일꾼들 일시켜": GATHER_RESOURCE_ALIAS,
+        }
+        mapping_aliases = {
+            mapping.utterance: mapping.alias for mapping in INTERPRETER_MAPPINGS
+        }
+
+        for utterance, expected_alias in expected_aliases.items():
+            with self.subTest(utterance=utterance):
+                self.assertEqual(expected_alias, mapping_aliases[utterance])
+
+    def test_distance_only_build_placement_requests_missing_anchor_clarification(
+        self,
+    ) -> None:
+        cases = (
+            "더 멀게",
+            "좀 더 멀게",
+            "더 멀게 지어",
+            "보급고 더 멀게",
+            "보급고 더 멀게 지어",
+            "서플 더 멀리",
+            "서플 더 멀게 지어",
+            "배럭 더 멀게 지어",
+            "보급고 멀리 지어",
+        )
+
+        for command_text in cases:
+            with self.subTest(command_text=command_text):
+                self.assertIsNone(interpret_command_text(command_text))
+
+                result = interpret_command(command_text)
+
+                self.assertIsNone(result.payload)
+                self.assertTrue(result.clarification_required)
+                self.assertIn("기준점", result.clarification_prompt)
+                self.assertIn("필요한 정보", result.clarification_prompt)
+                self.assertIn("요청은 유지하겠습니다", result.clarification_prompt)
+                self.assertIn(
+                    "어디를 기준으로, 어느 방향으로 더 멀게 지을까요",
+                    result.clarification_prompt,
+                )
+                self.assertIsNotNone(result.failure)
+                self.assertEqual(
+                    "missing_build_anchor",
+                    result.failure.primary_reason.code,
+                )
+                self.assertEqual("BUILD_STRUCTURE", result.failure.intent)
+                self.assertEqual(
+                    ["location"],
+                    result.failure.primary_reason.metadata["missing_fields"],
+                )
+                self.assertIs(
+                    True,
+                    result.failure.primary_reason.metadata["missing_anchor"],
+                )
+
+    def test_unanchored_relative_distance_modifier_classifies_without_build_verb(
+        self,
+    ) -> None:
+        for command_text in ("더 멀게", "좀 더 멀게", "더 멀리"):
+            with self.subTest(command_text=command_text):
+                self.assertTrue(is_distance_only_build_placement(command_text))
+                self.assertIsNone(interpret_command_text(command_text))
+
+                result = interpret_command(command_text)
+
+                self.assertTrue(result.clarification_required)
+                self.assertIsNone(result.payload)
+                self.assertIn(
+                    "어디를 기준으로, 어느 방향으로 더 멀게 지을까요",
+                    result.clarification_prompt,
+                )
+                self.assertIsNotNone(result.failure)
+                self.assertEqual(
+                    "missing_build_anchor",
+                    result.failure.primary_reason.code,
+                )
+
+    def test_unanchored_relative_modifiers_clarify_for_reference_anchor(
+        self,
+    ) -> None:
+        cases = (
+            "근처에 보급고 지어",
+            "쪽으로 배럭 지어",
+            "떨어지게 보급고 지어",
+            "뒤쪽에 벙커 지어",
+        )
+
+        for command_text in cases:
+            with self.subTest(command_text=command_text):
+                self.assertTrue(is_unanchored_relative_build_placement(command_text))
+                self.assertIsNone(interpret_command_text(command_text))
+
+                result = interpret_command(command_text)
+
+                self.assertIsNone(result.payload)
+                self.assertTrue(result.clarification_required)
+                self.assertIn("기준점이나 방향", result.clarification_prompt)
+                self.assertIn("어느 기준 위치나 방향으로 지을까요", result.clarification_prompt)
+                self.assertNotIn("10개 MVP", result.clarification_prompt)
+                self.assertIsNotNone(result.failure)
+                self.assertEqual(
+                    "missing_build_relative_anchor",
+                    result.failure.primary_reason.code,
+                )
+                self.assertEqual("BUILD_STRUCTURE", result.failure.intent)
+                self.assertEqual(
+                    ["location"],
+                    result.failure.primary_reason.metadata["missing_fields"],
+                )
+                self.assertIs(
+                    True,
+                    result.failure.primary_reason.metadata["missing_anchor"],
+                )
+
+    def test_anchored_relative_modifiers_still_resolve(self) -> None:
+        for command_text in (
+            "앞마당 근처에 보급고 지어",
+            "입구 쪽으로 배럭 지어",
+            "미네랄에서 떨어지게 보급고 지어",
+        ):
+            with self.subTest(command_text=command_text):
+                self.assertFalse(is_unanchored_relative_build_placement(command_text))
+                self.assertIsNotNone(interpret_command_text(command_text))
+
+    def test_generic_base_reference_detection_requires_missing_specific_qualifier(
+        self,
+    ) -> None:
+        camera_cases = (
+            ("사령부 보여줘", True),
+            ("커맨드 센터로 화면 이동", True),
+            ("기지로 화면 이동", True),
+            ("멀티 보여줘", True),
+            ("확장으로 카메라 옮겨", True),
+            ("본진 사령부 보여줘", False),
+            ("앞마당 보여줘", False),
+            ("앞마당 커맨드로 카메라 옮겨", False),
+            ("third base로 카메라 옮겨", False),
+            ("3멀티로 카메라 옮겨", False),
+            ("새로 지은 사령부 보여줘", False),
+            ("추가 사령부 1 보여줘", False),
+            ("적 사령부 보여줘", False),
+        )
+        build_cases = (
+            ("사령부 근처에 배럭 지어", True),
+            ("커맨드 주변에 보급고 지어", True),
+            ("기지 옆에 벙커 건설해", True),
+            ("본진 사령부 근처에 배럭 지어", False),
+            ("앞마당 커맨드 주변에 보급고 지어", False),
+            ("third base 근처에 배럭 지어", False),
+            ("새로 지은 사령부 주변에 보급고 지어", False),
+            ("추가 사령부 1 근처에 벙커 지어", False),
+            ("사령부 지어", False),
+            ("배럭 지어", False),
+        )
+
+        for command_text, expected in camera_cases:
+            with self.subTest(kind="camera", command_text=command_text):
+                self.assertEqual(
+                    expected,
+                    is_ambiguous_camera_base_target(command_text),
+                )
+        for command_text, expected in build_cases:
+            with self.subTest(kind="build", command_text=command_text):
+                self.assertEqual(
+                    expected,
+                    is_ambiguous_build_base_target(command_text),
+                )
+
+    def test_explicit_base_selection_modifiers_parse_without_clarification(
+        self,
+    ) -> None:
+        cases = (
+            ("본진 사령부", "main", "main base", "self_main", "main base"),
+            (
+                "앞마당 커맨드",
+                "natural",
+                "natural expansion",
+                "self_natural",
+                "natural expansion",
+            ),
+            ("third base", "third", "third base", "self_third", "third base"),
+            (
+                "새로 지은 사령부",
+                "newest",
+                "newest base",
+                "self_newest",
+                "newest base",
+            ),
+            (
+                "추가 사령부 1",
+                "additional_1",
+                "additional base 1",
+                "self_additional_1",
+                "additional base 1",
+            ),
+        )
+
+        for command_text, selector, label, target, location in cases:
+            with self.subTest(command_text=command_text):
+                base_selection = parse_korean_base_selection(command_text)
+
+                self.assertIsInstance(base_selection, KoreanBaseSelectionIntent)
+                assert base_selection is not None
+                self.assertEqual(selector, base_selection.selector)
+                self.assertEqual(label, base_selection.label)
+                self.assertEqual(target, base_selection.target)
+                self.assertEqual(location, base_selection.location)
+                self.assertEqual(command_text, base_selection.source_text)
+                self.assertEqual(
+                    {
+                        "selector": selector,
+                        "label": label,
+                        "target": target,
+                        "location": location,
+                        "source_text": command_text,
+                        "source": "natural_language",
+                        "confidence": 1.0,
+                    },
+                    base_selection.to_dict(),
+                )
+
+        self.assertIsNone(parse_korean_base_selection("사령부"))
+        self.assertIsNone(parse_korean_base_selection("본진하고 앞마당"))
+
+    def test_explicit_future_base_selectors_build_structured_payloads(
+        self,
+    ) -> None:
+        cases = (
+            ("third base 근처에 배럭 지어", "third base", "third"),
+            ("새로 지은 사령부 주변에 보급고 지어", "newest base", "newest"),
+            ("추가 사령부 1 근처에 벙커 지어", "additional base 1", "additional_1"),
+        )
+
+        for command_text, expected_location, expected_selector in cases:
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsNotNone(result.payload)
+                assert isinstance(result.payload, BuildStructureIntent)
+                self.assertEqual("BUILD_STRUCTURE", result.payload.intent)
+                self.assertEqual(expected_location, result.payload.location)
+                self.assertIsNotNone(result.payload.placement_policy)
+                assert result.payload.placement_policy is not None
+                base_selection = result.payload.placement_policy["base_selection"]
+                self.assertEqual(expected_selector, base_selection["selector"])
+                self.assertEqual(expected_location, base_selection["location"])
+
+    def test_explicit_base_qualified_builds_bypass_expand_clarification(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "본진 사령부 근처에 배럭 지어",
+                "Barracks",
+                "main base",
+                "main",
+                "self_main",
+            ),
+            (
+                "앞마당 커맨드 주변에 보급고 지어",
+                "Supply Depot",
+                "natural expansion",
+                "natural",
+                "self_natural",
+            ),
+        )
+
+        for command_text, structure, location, selector, target in cases:
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsNotNone(result.payload)
+                assert isinstance(result.payload, BuildStructureIntent)
+                self.assertEqual("BUILD_STRUCTURE", result.payload.intent)
+                self.assertEqual(structure, result.payload.structure)
+                self.assertEqual(location, result.payload.location)
+                self.assertIsNotNone(result.payload.placement_policy)
+                assert result.payload.placement_policy is not None
+                self.assertEqual("near", result.payload.placement_policy["spatial_relation"])
+                self.assertEqual(target, result.payload.placement_policy["anchor_target"])
+                base_selection = result.payload.placement_policy["base_selection"]
+                self.assertEqual(selector, base_selection["selector"])
+                self.assertEqual(location, base_selection["location"])
+
+    def test_explicit_future_base_selectors_move_camera_without_clarification(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "앞마당 사령부로 카메라 옮겨",
+                "natural expansion",
+                MOVE_CAMERA_NATURAL_EXPANSION_TARGET_SLOT,
+            ),
+            (
+                "앞마당 커맨드로 화면 이동",
+                "natural expansion",
+                MOVE_CAMERA_NATURAL_EXPANSION_TARGET_SLOT,
+            ),
+            ("third base로 카메라 옮겨", "third base", MOVE_CAMERA_THIRD_BASE_TARGET_SLOT),
+            ("새로 지은 사령부 보여줘", "newest base", ""),
+            ("추가 사령부 1 보여줘", "additional base 1", ""),
+        )
+
+        for command_text, expected_target, expected_target_slot in cases:
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsInstance(result.payload, MoveCameraIntent)
+                assert isinstance(result.payload, MoveCameraIntent)
+                self.assertEqual(expected_target, result.payload.target)
+                self.assertEqual(expected_target_slot, result.payload.target_slot)
+
+    def test_semantic_camera_map_references_map_to_explicit_targets(self) -> None:
+        cases = (
+            ("적 본진 보여줘", "enemy main", ""),
+            ("적 내추럴 보여줘", "enemy natural", ""),
+            ("적 third base 보여줘", "enemy third", MOVE_CAMERA_THIRD_BASE_TARGET_SLOT),
+            ("적 램프 보여줘", "enemy ramp", MOVE_CAMERA_ENEMY_ENTRANCE_TARGET_SLOT),
+            ("초크로 화면 이동", "natural choke", MOVE_CAMERA_CHOKE_TARGET_SLOT),
+            ("적 초크 보여줘", "enemy choke", MOVE_CAMERA_CHOKE_TARGET_SLOT),
+            ("정찰 위치 보여줘", "scout location", MOVE_CAMERA_SCOUT_LOCATION_TARGET_SLOT),
+            (
+                "마지막 적 위치 보여줘",
+                "last seen enemy area",
+                MOVE_CAMERA_LAST_SEEN_ENEMY_AREA_TARGET_SLOT,
+            ),
+        )
+
+        for command_text, expected_target, expected_target_slot in cases:
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsInstance(result.payload, MoveCameraIntent)
+                assert isinstance(result.payload, MoveCameraIntent)
+                self.assertEqual("MOVE_CAMERA", result.payload.intent)
+                self.assertEqual(expected_target, result.payload.target)
+                self.assertEqual(expected_target_slot, result.payload.target_slot)
+
+    def test_korean_main_base_camera_phrases_map_to_move_camera_target(
+        self,
+    ) -> None:
+        cases = (
+            "본진으로 카메라 옮겨",
+            "본진으로 화면 이동",
+            "본진 카메라 보여줘",
+            "본진 화면 보여줘",
+            "우리 본진 보여줘",
+            "메인으로 카메라 옮겨",
+        )
+
+        for command_text in cases:
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsInstance(result.payload, MoveCameraIntent)
+                assert isinstance(result.payload, MoveCameraIntent)
+                self.assertEqual("MOVE_CAMERA", result.payload.intent)
+                self.assertEqual("main base", result.payload.target)
+                self.assertIn(MOVE_CAMERA_CONSTRAINT, result.payload.constraints)
+
+    def test_korean_ramp_and_entrance_camera_phrases_map_to_target_slot(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "본진 입구 보여줘",
+                "main ramp",
+                MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT,
+            ),
+            (
+                "본진 입구로 카메라 옮겨",
+                "main ramp",
+                MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT,
+            ),
+            (
+                "입구로 화면 이동",
+                "main ramp",
+                MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT,
+            ),
+            (
+                "램프로 카메라 옮겨",
+                "main ramp",
+                MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT,
+            ),
+            (
+                "언덕 보여줘",
+                "main ramp",
+                MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT,
+            ),
+            ("적 입구 보여줘", "enemy front", MOVE_CAMERA_ENEMY_ENTRANCE_TARGET_SLOT),
+            (
+                "적 입구로 카메라 옮겨",
+                "enemy front",
+                MOVE_CAMERA_ENEMY_ENTRANCE_TARGET_SLOT,
+            ),
+            (
+                "상대 입구로 화면 이동",
+                "enemy front",
+                MOVE_CAMERA_ENEMY_ENTRANCE_TARGET_SLOT,
+            ),
+        )
+
+        for command_text, expected_target, expected_target_slot in cases:
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsInstance(result.payload, MoveCameraIntent)
+                assert isinstance(result.payload, MoveCameraIntent)
+                self.assertEqual("MOVE_CAMERA", result.payload.intent)
+                self.assertEqual(expected_target, result.payload.target)
+                self.assertEqual(expected_target_slot, result.payload.target_slot)
+                self.assertIn(MOVE_CAMERA_CONSTRAINT, result.payload.constraints)
+
+    def test_anchored_comparative_build_placement_requests_direction_clarification(
+        self,
+    ) -> None:
+        cases = (
+            "본진에서 더 멀게 보급고 지어",
+            "본진보다 더 멀리 배럭 지어",
+            "앞마당에서 더 먼 곳에 벙커 지어",
+        )
+
+        for command_text in cases:
+            with self.subTest(command_text=command_text):
+                self.assertIsNone(interpret_command_text(command_text))
+
+                result = interpret_command(command_text)
+
+                self.assertIsNone(result.payload)
+                self.assertTrue(result.clarification_required)
+                self.assertIn("방향", result.clarification_prompt)
+                self.assertIn("필요한 정보", result.clarification_prompt)
+                self.assertIn("기준으로", result.clarification_prompt)
+                self.assertIn("요청은 유지하겠습니다", result.clarification_prompt)
+                self.assertIn(
+                    "어느 방향으로 더 멀게 지을까요",
+                    result.clarification_prompt,
+                )
+                self.assertIsNotNone(result.failure)
+                self.assertEqual(
+                    "missing_build_direction",
+                    result.failure.primary_reason.code,
+                )
+                self.assertEqual("BUILD_STRUCTURE", result.failure.intent)
+                self.assertEqual(
+                    ["direction"],
+                    result.failure.primary_reason.metadata["missing_fields"],
+                )
+                self.assertIs(
+                    True,
+                    result.failure.primary_reason.metadata["anchor_known"],
+                )
+
+    def test_anchored_far_build_placement_still_resolves(self) -> None:
+        payload = interpret_command_text("일꾼 보급고 생산해. 본진과 떨어진곳으로")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Supply Depot", payload.structure)
+        self.assertEqual("natural expansion", payload.location)
+        self.assertIsNotNone(payload.placement_policy)
+        assert payload.placement_policy is not None
+        for field_name, expected_value in AWAY_FROM_MAIN_PLACEMENT_POLICY.items():
+            self.assertEqual(expected_value, payload.placement_policy[field_name])
+
+    def test_anchored_non_comparative_far_build_placement_still_resolves(self) -> None:
+        payload = interpret_command_text("본진에서 멀게 보급고 지어")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Supply Depot", payload.structure)
+        self.assertEqual("natural expansion", payload.location)
+        self.assertIsNotNone(payload.placement_policy)
+        assert payload.placement_policy is not None
+        for field_name, expected_value in AWAY_FROM_MAIN_PLACEMENT_POLICY.items():
+            self.assertEqual(expected_value, payload.placement_policy[field_name])
+
+    def test_anchored_korean_relative_location_phrases_parse_to_policy_fields(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "본진에서 멀게 보급고 지어",
+                {
+                    "anchor": "main base",
+                    "anchor_target": "self_main",
+                    "spatial_relation": "far_from",
+                },
+            ),
+            (
+                "본진 밖에 보급고 지어",
+                AWAY_FROM_MAIN_PLACEMENT_POLICY,
+            ),
+            (
+                "본진 바깥쪽에 서플라이 디포 지어",
+                AWAY_FROM_MAIN_PLACEMENT_POLICY,
+            ),
+            (
+                "본진 외곽에 벙커 건설해",
+                AWAY_FROM_MAIN_PLACEMENT_POLICY,
+            ),
+            (
+                "본진에서 앞마당으로 멀게 보급고 지어",
+                {
+                    **AWAY_FROM_MAIN_PLACEMENT_POLICY,
+                    "direction": "natural expansion",
+                    "direction_target": "self_natural",
+                },
+            ),
+            (
+                "미네랄에서 떨어지게 보급고 지어",
+                {
+                    "anchor": "mineral line",
+                    "anchor_target": "self_mineral_line",
+                    "spatial_relation": "away_from",
+                },
+            ),
+            (
+                "입구 쪽으로 보급고 지어",
+                {
+                    "anchor": "main ramp",
+                    "anchor_target": "self_ramp",
+                    "spatial_relation": "toward",
+                },
+            ),
+            (
+                "앞마당 근처 배럭 지어",
+                {
+                    "anchor": "natural expansion",
+                    "anchor_target": "self_natural",
+                    "spatial_relation": "near",
+                },
+            ),
+        )
+
+        for command_text, expected_fields in cases:
+            with self.subTest(command_text=command_text):
+                placement = parse_korean_relative_location_phrase(command_text)
+
+                self.assertIsNotNone(placement)
+                placement_dict = placement.to_dict()
+                for field_name, expected_value in expected_fields.items():
+                    self.assertEqual(expected_value, placement_dict[field_name])
+                self.assertEqual(command_text, placement_dict["source_text"])
+
+    def test_supported_parsed_anchor_labels_normalize_semantic_references(
+        self,
+    ) -> None:
+        self.assertEqual(
+            ("base", "mineral", "entrance", "natural_expansion"),
+            SUPPORTED_PARSED_ANCHOR_LABEL_KEYS,
+        )
+        self.assertEqual(
+            ("main base", "mineral line", "main ramp", "natural expansion"),
+            SUPPORTED_PARSED_ANCHOR_DISPLAY_LABELS,
+        )
+        self.assertEqual(4, len(SUPPORTED_PARSED_ANCHOR_LABELS))
+
+        cases = (
+            ("본진", "base", "main base", "self_main"),
+            ("main base", "base", "main base", "self_main"),
+            ("미네랄 라인", "mineral", "mineral line", "self_mineral_line"),
+            ("minerals", "mineral", "mineral line", "self_mineral_line"),
+            ("본진 입구", "entrance", "main ramp", "self_ramp"),
+            ("ramp", "entrance", "main ramp", "self_ramp"),
+            ("앞마당", "natural_expansion", "natural expansion", "self_natural"),
+            ("natural expansion", "natural_expansion", "natural expansion", "self_natural"),
+        )
+        for raw_anchor, key, label, target in cases:
+            with self.subTest(raw_anchor=raw_anchor):
+                anchor = normalize_parsed_anchor_label(raw_anchor)
+
+                self.assertIsNotNone(anchor)
+                assert anchor is not None
+                self.assertEqual(key, anchor.key)
+                self.assertEqual(label, anchor.label)
+                self.assertEqual(target, anchor.target)
+                self.assertIs(parsed_anchor_label_for_key(key), anchor)
+
+        self.assertIsNone(normalize_parsed_anchor_label("섬 멀티"))
+
+    def test_build_structure_payload_carries_relative_location_policy(
+        self,
+    ) -> None:
+        payload = interpret_command_text("미네랄에서 떨어지게 보급고 지어")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Supply Depot", payload.structure)
+        self.assertEqual("main base", payload.location)
+        self.assertEqual(
+            {
+                "anchor": "mineral line",
+                "anchor_target": "self_mineral_line",
+                "spatial_relation": "away_from",
+                "source_text": "미네랄에서떨어지게보급고지어",
+            },
+            payload.placement_policy,
+        )
+        self.assertNotIn("placement_policy", payload.to_dict())
+        validation = validate_intent_payload(payload.to_dict())
+        self.assertTrue(validation.executable)
+
+    def test_main_entrance_build_phrases_carry_explicit_placement_policy(
+        self,
+    ) -> None:
+        cases = (
+            "본진 입구에 서플라이 디포 지어",
+            "본진 입구에 보급고 지어",
+            "입구에 서플 지어",
+            "입구 막는 보급고 지어",
+        )
+
+        for command_text in cases:
+            with self.subTest(command_text=command_text):
+                payload = interpret_command_text(command_text)
+
+                self.assertIsNotNone(payload)
+                assert isinstance(payload, BuildStructureIntent)
+                self.assertEqual("BUILD_STRUCTURE", payload.intent)
+                self.assertEqual("Supply Depot", payload.structure)
+                self.assertEqual("main ramp", payload.location)
+                self.assertIsNotNone(payload.placement_policy)
+                assert payload.placement_policy is not None
+                self.assertEqual("main ramp", payload.placement_policy["anchor"])
+                self.assertEqual("self_ramp", payload.placement_policy["anchor_target"])
+                self.assertEqual("near", payload.placement_policy["spatial_relation"])
+
+    def test_natural_expansion_build_phrases_carry_explicit_placement_policy(
+        self,
+    ) -> None:
+        cases = (
+            ("앞마당에 보급고 지어", "Supply Depot", "natural"),
+            ("앞마당 보급고 지어", "Supply Depot", "natural"),
+            ("내추럴에 배럭 지어", "Barracks", "natural"),
+            ("멀티에 보급고 지어", "Supply Depot", "natural"),
+            ("확장에 벙커 지어", "Bunker", "natural"),
+        )
+
+        for command_text, structure, selector in cases:
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsNotNone(result.payload)
+                assert isinstance(result.payload, BuildStructureIntent)
+                payload = result.payload
+                self.assertEqual("BUILD_STRUCTURE", payload.intent)
+                self.assertEqual(structure, payload.structure)
+                self.assertEqual("natural expansion", payload.location)
+                self.assertIsNotNone(payload.placement_policy)
+                assert payload.placement_policy is not None
+                self.assertEqual("natural expansion", payload.placement_policy["anchor"])
+                self.assertEqual("self_natural", payload.placement_policy["anchor_target"])
+                self.assertEqual("near", payload.placement_policy["spatial_relation"])
+                base_selection = payload.placement_policy["base_selection"]
+                self.assertEqual(selector, base_selection["selector"])
+                self.assertEqual("self_natural", base_selection["target"])
+
+    def test_main_geyser_build_phrases_carry_explicit_placement_policy(
+        self,
+    ) -> None:
+        cases = (
+            "본진 가스에 정제소 지어",
+            "본진 가스에 리파이너리 지어",
+            "가스통 본진 가스에 올려",
+            "가스생산 시설 지어",
+        )
+
+        for command_text in cases:
+            with self.subTest(command_text=command_text):
+                result = interpret_command(command_text)
+
+                self.assertFalse(result.clarification_required)
+                self.assertIsNotNone(result.payload)
+                assert isinstance(result.payload, BuildStructureIntent)
+                payload = result.payload
+                self.assertEqual("BUILD_STRUCTURE", payload.intent)
+                self.assertEqual("Refinery", payload.structure)
+                self.assertEqual("main geyser", payload.location)
+                self.assertIsNotNone(payload.placement_policy)
+                assert payload.placement_policy is not None
+                self.assertEqual("main geyser", payload.placement_policy["anchor"])
+                self.assertEqual("self_geyser", payload.placement_policy["anchor_target"])
+                self.assertEqual("on", payload.placement_policy["spatial_relation"])
+
+    def test_natural_entrance_build_does_not_use_main_entrance_policy(self) -> None:
+        payload = interpret_command_text("앞마당 입구에 벙커 지어")
+
+        self.assertIsNotNone(payload)
+        assert isinstance(payload, BuildStructureIntent)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Bunker", payload.structure)
+        self.assertEqual("natural choke", payload.location)
+        self.assertNotEqual(
+            "self_ramp",
+            (payload.placement_policy or {}).get("anchor_target"),
+        )
+
+    def test_anchored_comparative_build_with_direction_still_resolves(self) -> None:
+        payload = interpret_command_text("본진에서 앞마당으로 더 멀게 보급고 지어")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Supply Depot", payload.structure)
+        self.assertEqual("natural expansion", payload.location)
+        self.assertEqual("main base", payload.placement_policy["anchor"])
+        self.assertEqual("far_from", payload.placement_policy["spatial_relation"])
+        self.assertEqual("natural expansion", payload.placement_policy["direction"])
+
+    def test_deictic_build_placement_requests_supported_semantic_target(
+        self,
+    ) -> None:
+        cases = (
+            "저기 보급고 지어",
+            "저기에 지어",
+            "여기에 보급고 지어",
+            "거기 지어",
+            "거기에 배럭 지어",
+            "거기다 배럭 지어",
+        )
+
+        for command_text in cases:
+            with self.subTest(command_text=command_text):
+                self.assertIsNone(interpret_command_text(command_text))
+
+                result = interpret_command(command_text)
+
+                self.assertIsNone(result.payload)
+                self.assertTrue(result.clarification_required)
+                self.assertIn("semantic target", result.clarification_prompt)
+                self.assertIn("지원되는", result.clarification_prompt)
+                self.assertIn("어디에 지을까요", result.clarification_prompt)
+                self.assertIn("본진 입구", result.clarification_prompt)
+                self.assertIn("앞마당", result.clarification_prompt)
+                self.assertNotIn("10개 MVP", result.clarification_prompt)
+                self.assertIsNotNone(result.failure)
+                self.assertEqual(
+                    "missing_build_semantic_target",
+                    result.failure.primary_reason.code,
+                )
+                self.assertEqual("BUILD_STRUCTURE", result.failure.intent)
+                self.assertEqual(
+                    ["location"],
+                    result.failure.primary_reason.metadata["missing_fields"],
+                )
+                self.assertIs(
+                    True,
+                    result.failure.primary_reason.metadata["deictic_target"],
                 )
 
     def test_build_structure_heuristic_maps_nearby_korean_free_utterance(
@@ -1471,15 +2379,14 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
     def test_build_structure_heuristic_maps_refinery_location(self) -> None:
         payload = interpret_command_text("가스통 본진 가스에 올려")
 
-        self.assertEqual(
-            BuildStructureIntent(
-                priority="high",
-                constraints=(BUILD_STRUCTURE_CONSTRAINT,),
-                structure="Refinery",
-                location="main geyser",
-            ),
-            payload,
-        )
+        self.assertIsNotNone(payload)
+        assert isinstance(payload, BuildStructureIntent)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Refinery", payload.structure)
+        self.assertEqual("main geyser", payload.location)
+        self.assertIsNotNone(payload.placement_policy)
+        assert payload.placement_policy is not None
+        self.assertEqual("self_geyser", payload.placement_policy["anchor_target"])
 
     def test_train_unit_heuristic_maps_nearby_korean_free_utterance(self) -> None:
         payload = interpret_command_text("초반 압박 대비해서 마린 두 기 추가해")
@@ -1686,6 +2593,7 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         # constraint that nothing enforces.
         cases = {
             "일꾼 뽑아": 1,
+            "일꾼 생성해": 1,
             "SCV 하나 뽑아": 1,
             "SCV 두 기 찍어": 2,
             "일꾼 3기 생산해": 3,
@@ -1708,6 +2616,39 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         self.assertIsNotNone(payload)
         self.assertEqual("BUILD_STRUCTURE", payload.intent)
         self.assertEqual("Bunker", payload.structure)
+
+    def test_common_korean_voice_typos_resolve_structure_builds(self) -> None:
+        cases = {
+            "뵤ㅗ급로 지어": "Supply Depot",
+            "뵤ㅗ 급로 설치해": "Supply Depot",
+            "보급로 지어": "Supply Depot",
+            "배프빈가스 지어": "Refinery",
+            "배프빈 가스 건설해": "Refinery",
+            "가스 배럴지어": "Refinery",
+            "배럴 지어": "Barracks",
+            "배럴 건설해": "Barracks",
+        }
+        for command_text, expected_structure in cases.items():
+            with self.subTest(command_text=command_text):
+                payload = interpret_command_text(command_text)
+                self.assertIsNotNone(payload)
+                self.assertEqual("BUILD_STRUCTURE", payload.intent)
+                self.assertEqual(expected_structure, payload.structure)
+
+    def test_gas_production_facility_resolves_as_refinery(self) -> None:
+        payload = interpret_command_text("가스생산 시설 지어")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("BUILD_STRUCTURE", payload.intent)
+        self.assertEqual("Refinery", payload.structure)
+
+    def test_worker_send_without_target_defaults_to_mineral_gathering(self) -> None:
+        payload = interpret_command_text("일꾼 5마리 보내")
+
+        self.assertIsNotNone(payload)
+        self.assertEqual("GATHER_RESOURCE", payload.intent)
+        self.assertEqual("minerals", payload.resource)
+        self.assertEqual(5, payload.worker_count)
 
     def test_retreat_army_heuristic_maps_nearby_korean_free_utterance(self) -> None:
         payload = interpret_command_text("압박 실패했으니까 병력 살려서 뒤로 빼")
@@ -2260,6 +3201,88 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
                 self.assertIn("필요한 정보", result.clarification_prompt)
                 for fragment in expected_fragments:
                     self.assertIn(fragment, result.clarification_prompt)
+
+    def test_ambiguity_clarifications_include_missing_field_names(self) -> None:
+        cases = (
+            (
+                "missing build anchor",
+                build_missing_build_anchor_result,
+                "보급고 더 멀게 지어",
+            ),
+            (
+                "missing build direction",
+                build_missing_build_direction_result,
+                "본진에서 더 멀게 보급고 지어",
+            ),
+            (
+                "missing build relative anchor",
+                build_missing_build_relative_anchor_result,
+                "근처에 보급고 지어",
+            ),
+            (
+                "missing build semantic target",
+                build_missing_build_semantic_target_result,
+                "여기에 보급고 지어",
+            ),
+            (
+                "ambiguous camera base",
+                build_ambiguous_camera_base_result,
+                "사령부 보여줘",
+            ),
+            (
+                "ambiguous build base",
+                build_ambiguous_build_base_result,
+                "사령부 근처에 배럭 지어",
+            ),
+        )
+
+        for case_name, result_builder, command_text in cases:
+            with self.subTest(case_name=case_name):
+                result = result_builder(command_text)
+
+                self.assertTrue(result.clarification_required)
+                self.assertIsNotNone(result.failure)
+                missing_fields = result.failure.primary_reason.metadata[
+                    "missing_fields"
+                ]
+                self.assertTrue(missing_fields)
+                for field_name in missing_fields:
+                    self.assertIn(field_name, result.clarification_prompt)
+
+    def test_deictic_build_clarification_preserves_structure_context(self) -> None:
+        result = build_missing_build_semantic_target_result("여기에 보급고 지어")
+
+        self.assertTrue(result.clarification_required)
+        self.assertIsNone(result.payload)
+        self.assertIn("보급고를 짓는 요청은 유지하겠습니다", result.clarification_prompt)
+        self.assertIn("지원되는 semantic target 중 어디에 지을까요", result.clarification_prompt)
+        self.assertIn("가능한 위치", result.clarification_prompt)
+        self.assertNotIn("10개 MVP", result.clarification_prompt)
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(
+            ["location"],
+            result.failure.primary_reason.metadata["missing_fields"],
+        )
+        self.assertIs(
+            True,
+            result.failure.primary_reason.metadata["structure_detected"],
+        )
+
+    def test_ambiguous_build_base_clarification_preserves_structure_context(
+        self,
+    ) -> None:
+        result = build_ambiguous_build_base_result(
+            "사령부 근처에 배럭 지어",
+            ("본진 사령부(30.0, 30.0)", "앞마당 사령부(45.0, 52.0)"),
+        )
+
+        self.assertTrue(result.clarification_required)
+        self.assertIsNone(result.payload)
+        self.assertIn("배럭을 짓는 요청은 유지하겠습니다", result.clarification_prompt)
+        self.assertIn("어느 사령부 근처", result.clarification_prompt)
+        self.assertIn("본진 사령부(30.0, 30.0)", result.clarification_prompt)
+        self.assertIn("앞마당 사령부(45.0, 52.0)", result.clarification_prompt)
+        self.assertNotIn("10개 MVP", result.clarification_prompt)
 
     def test_ambiguous_command_references_expose_competing_interpretations(
         self,
@@ -2859,6 +3882,39 @@ class KoreanInterpreterMappingTest(unittest.TestCase):
         self.assertIs(
             ClarificationCandidate,
             package_exports.ClarificationCandidate,
+        )
+        self.assertIs(
+            KoreanBaseSelectionIntent,
+            package_exports.KoreanBaseSelectionIntent,
+        )
+        self.assertIs(ParsedAnchorLabel, package_exports.ParsedAnchorLabel)
+        self.assertIs(
+            SUPPORTED_PARSED_ANCHOR_LABELS,
+            package_exports.SUPPORTED_PARSED_ANCHOR_LABELS,
+        )
+        self.assertEqual(
+            SUPPORTED_PARSED_ANCHOR_LABEL_KEYS,
+            package_exports.SUPPORTED_PARSED_ANCHOR_LABEL_KEYS,
+        )
+        self.assertEqual(
+            SUPPORTED_PARSED_ANCHOR_DISPLAY_LABELS,
+            package_exports.SUPPORTED_PARSED_ANCHOR_DISPLAY_LABELS,
+        )
+        self.assertIs(
+            normalize_parsed_anchor_label,
+            package_exports.normalize_parsed_anchor_label,
+        )
+        self.assertIs(
+            parsed_anchor_label_for_key,
+            package_exports.parsed_anchor_label_for_key,
+        )
+        self.assertIs(
+            parse_korean_base_selection,
+            package_exports.parse_korean_base_selection,
+        )
+        self.assertIs(
+            parse_korean_relative_location_phrase,
+            package_exports.parse_korean_relative_location_phrase,
         )
         self.assertEqual(
             UNSUPPORTED_COMMAND_CLARIFICATION_REASON,

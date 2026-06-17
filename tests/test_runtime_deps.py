@@ -115,7 +115,7 @@ class RuntimeDepsUnavailableTest(unittest.TestCase):
                 require_python_sc2()
         message = str(context.exception)
         expected_fragments = (
-            "pip install 'voistarcraft[sc2]'",
+            "pip install 'voiStarcraft2[sc2]'",
             "pip install burnysc2",
             "StarCraft II",
             "docs/sc2-smoke-test.md",
@@ -171,7 +171,7 @@ class RuntimeDepsUnavailableTest(unittest.TestCase):
                     with self.assertRaises(MissingVoiceDependencyError) as context:
                         require_func()
                 message = str(context.exception)
-                self.assertIn("pip install 'voistarcraft[voice]'", message)
+                self.assertIn("pip install 'voiStarcraft2[voice]'", message)
                 self.assertIn(pip_name, message)
                 self.assertIn("설치", message)
                 self.assertEqual(message, expected_hint)
@@ -182,7 +182,7 @@ class RuntimeDepsUnavailableTest(unittest.TestCase):
                 require_anthropic()
         message = str(context.exception)
         expected_fragments = (
-            "pip install 'voistarcraft[llm]'",
+            "pip install 'voiStarcraft2[llm]'",
             "pip install anthropic",
             "ANTHROPIC_API_KEY",
             "설치",

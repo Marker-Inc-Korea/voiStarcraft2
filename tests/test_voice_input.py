@@ -259,7 +259,7 @@ class MissingVoiceDependencyTest(unittest.TestCase):
         for hint in (
             "faster_whisper",
             "pip install",
-            "voistarcraft[voice]",
+            "voiStarcraft2[voice]",
             "faster-whisper sounddevice",
         ):
             with self.subTest(hint=hint):
@@ -270,7 +270,7 @@ class MissingVoiceDependencyTest(unittest.TestCase):
             with self.assertRaises(MissingVoiceDependencyError) as caught:
                 MicrophoneListener().record_seconds(1.0)
         message = str(caught.exception)
-        for hint in ("sounddevice", "pip install", "voistarcraft[voice]"):
+        for hint in ("sounddevice", "pip install", "voiStarcraft2[voice]"):
             with self.subTest(hint=hint):
                 self.assertIn(hint, message)
 

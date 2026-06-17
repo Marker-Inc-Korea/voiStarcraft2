@@ -1,4 +1,4 @@
-"""Optional runtime dependency guards for TextCraft Commander.
+"""Optional runtime dependency guards for voiStarcraft2.
 
 The commander packages must stay importable without StarCraft II, python-sc2
 (the maintained ``burnysc2`` fork providing the ``sc2`` package),
@@ -59,11 +59,11 @@ OPENAI_MODULE_NAME: Final[str] = "openai"
 
 PYTHON_SC2_INSTALL_HINT: Final[str] = (
     "The python-sc2 runtime (importable package 'sc2') is not installed. "
-    "Install it with: pip install 'voistarcraft[sc2]' (or: pip install burnysc2). "
+    "Install it with: pip install 'voiStarcraft2[sc2]' (or: pip install burnysc2). "
     "Running a real game also requires a local StarCraft II installation plus "
     "the map files. See docs/sc2-smoke-test.md for the local smoke-test guide. "
     "python-sc2 런타임('sc2' 패키지)이 설치되어 있지 않습니다. "
-    "pip install 'voistarcraft[sc2]' 또는 pip install burnysc2 명령으로 설치하세요. "
+    "pip install 'voiStarcraft2[sc2]' 또는 pip install burnysc2 명령으로 설치하세요. "
     "실제 게임 실행에는 StarCraft II 본체와 맵 파일 설치도 필요합니다. "
     "자세한 절차는 docs/sc2-smoke-test.md 문서를 참고하세요."
 )
@@ -75,10 +75,10 @@ def _build_voice_install_hint(pip_name: str, korean_role: str) -> str:
 
     return (
         f"The optional voice dependency '{pip_name}' is not installed. "
-        "Install voice support with: pip install 'voistarcraft[voice]' "
+        "Install voice support with: pip install 'voiStarcraft2[voice]' "
         f"(or: pip install {pip_name}). "
         f"음성 명령의 {korean_role} 기능에 필요한 '{pip_name}' 패키지가 "
-        "설치되어 있지 않습니다. pip install 'voistarcraft[voice]' 명령으로 "
+        "설치되어 있지 않습니다. pip install 'voiStarcraft2[voice]' 명령으로 "
         "음성 의존성을 설치하세요."
     )
 
@@ -95,22 +95,22 @@ SOUNDDEVICE_INSTALL_HINT: Final[str] = _build_voice_install_hint(
 
 ANTHROPIC_INSTALL_HINT: Final[str] = (
     "The optional LLM dependency 'anthropic' is not installed. "
-    "Install LLM command interpretation with: pip install 'voistarcraft[llm]' "
+    "Install LLM command interpretation with: pip install 'voiStarcraft2[llm]' "
     "(or: pip install anthropic), then export ANTHROPIC_API_KEY with a valid "
     "Anthropic API key. "
     "자유 발화 한국어 명령 해석(LLM)에 필요한 'anthropic' 패키지가 "
-    "설치되어 있지 않습니다. pip install 'voistarcraft[llm]' 명령으로 설치한 뒤 "
+    "설치되어 있지 않습니다. pip install 'voiStarcraft2[llm]' 명령으로 설치한 뒤 "
     "ANTHROPIC_API_KEY 환경 변수에 유효한 Anthropic API 키를 설정하세요."
 )
 """Actionable bilingual guidance shown when the anthropic SDK is absent."""
 
 OPENAI_INSTALL_HINT: Final[str] = (
     "The optional LLM dependency 'openai' is not installed. "
-    "Install GPT command interpretation with: pip install 'voistarcraft[llm]' "
+    "Install GPT command interpretation with: pip install 'voiStarcraft2[llm]' "
     "(or: pip install openai), then provide an OpenAI API key in the local web GUI "
     "or export OPENAI_API_KEY. "
     "GPT 한국어 명령 해석에 필요한 'openai' 패키지가 설치되어 있지 않습니다. "
-    "pip install 'voistarcraft[llm]' 명령으로 설치한 뒤 로컬 웹 GUI에서 "
+    "pip install 'voiStarcraft2[llm]' 명령으로 설치한 뒤 로컬 웹 GUI에서 "
     "OpenAI API 키를 입력하거나 OPENAI_API_KEY 환경 변수를 설정하세요."
 )
 """Actionable bilingual guidance shown when the OpenAI SDK is absent."""

@@ -23,8 +23,11 @@ Counted semantic methods return a structured
 :class:`~starcraft_commander.contracts.SC2ActionReport` carrying the
 requested versus actually issued order counts, so partial issuance (fewer
 units available than the commander asked for) is never collapsed into an
-unqualified boolean success. ``build_structure`` returns a plain bool
-(one whole structure either starts or it does not), and ``observe`` returns
+unqualified boolean success. ``build_structure`` returns a plain bool when
+one whole structure either starts or it does not, and returns a structured
+refusal report when an unresolved placement anchor has an auditable reason.
+``move_camera`` returns a structured report when the target cannot be safely
+resolved or the runtime refuses the camera move, and ``observe`` returns
 a JSON-ready mapping that the executor stores under
 ``result.audit['observations']``. Attribute gaps on the bot are checked
 before use; genuine runtime exceptions propagate to the executor, which
@@ -44,8 +47,8 @@ from typing import Any, Final, Protocol, runtime_checkable
 from starcraft_commander.contracts import SC2ActionReport, SC2CommandAction
 from starcraft_commander.map_resolver import (
     MapPoint,
-    SC2MapResolver,
     SC2MapResolverInterface,
+    SC2RuntimeMapResolver,
 )
 from starcraft_commander.sc2_executor import SC2_UNIT_TYPE_IDS
 from starcraft_commander.state_resolver import (
@@ -63,8 +66,9 @@ SC2_ADAPTER_ACTION_METHOD_NAMES: Final[tuple[str, ...]] = (
     "attack_move",
     "repair",
     "observe",
+    "move_camera",
 )
-"""The seven semantic action methods ``SC2RuntimeExecutor`` dispatches to."""
+"""The semantic action methods ``SC2RuntimeExecutor`` dispatches to."""
 
 SC2_EXECUTOR_LIFECYCLE_METHOD_NAMES: Final[frozenset[str]] = frozenset(
     {"start", "close", "stop", "on_start", "on_end"}
@@ -113,12 +117,46 @@ SC2_GENERIC_REPAIR_TARGET_NAMES: Final[frozenset[str]] = frozenset(
 SC2_COMMAND_CENTER_SOURCE_STRUCTURE: Final[str] = "Command Center"
 """Planner metadata marker that lets ``build_structure`` prefer expansion."""
 
+SC2_BUILD_PLACEMENT_SEARCH_RADIUS: Final[float] = 6.0
+"""Default bounded tile search radius around resolved build anchors."""
+
+SC2_BUILD_PLACEMENT_ENTITY_CLEARANCE: Final[float] = 1.5
+"""Minimum spacing from observed blocking map entities for build candidates."""
+
+SC2_BUILD_PLACEMENT_ENEMY_CLEARANCE: Final[float] = 4.0
+"""Minimum spacing from observed enemy units before a placement is considered safe."""
+
+SC2_COMMAND_CENTER_MAX_EXPANSION_DISTANCE: Final[float] = 3.0
+"""Maximum snap distance from a requested townhall point to an expansion."""
+
+SC2_REFINERY_MAX_GEYSER_SNAP_DISTANCE: Final[float] = 18.0
+"""Maximum snap distance from a requested refinery anchor to a free geyser.
+
+Main-base geysers can sit far enough apart that using the first geyser as the
+semantic anchor incorrectly rejects the second geyser after the first Refinery
+starts. Keep the radius bounded so visible enemy/remote geysers are not chosen,
+but wide enough for a two-geyser main.
+"""
+
+SC2_TOWNHALL_TYPE_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "COMMANDCENTER",
+        "ORBITALCOMMAND",
+        "PLANETARYFORTRESS",
+        "NEXUS",
+        "HATCHERY",
+        "LAIR",
+        "HIVE",
+    }
+)
+"""Normalized townhall names used to validate expansion occupancy."""
+
 PYTHON_SC2_UNIT_TYPE_HINT: Final[str] = (
     "python-sc2 (importable package 'sc2') is required to resolve UnitTypeId "
-    "names. Install it with: pip install 'voistarcraft[sc2]' (or: pip install "
+    "names. Install it with: pip install 'voiStarcraft2[sc2]' (or: pip install "
     "burnysc2), or inject PythonSC2BotAdapter(unit_type_resolver=...) for "
     "offline tests. python-sc2('sc2' 패키지)가 설치되어 있지 않아 UnitTypeId "
-    "이름을 해석할 수 없습니다. pip install 'voistarcraft[sc2]' 또는 "
+    "이름을 해석할 수 없습니다. pip install 'voiStarcraft2[sc2]' 또는 "
     "pip install burnysc2 명령으로 설치하거나, 오프라인 테스트에서는 "
     "unit_type_resolver를 주입하세요."
 )
@@ -144,7 +182,7 @@ class SC2BotAdapterInterface(Protocol):
     async def assign_workers(self, action: SC2CommandAction) -> SC2ActionReport:
         """Send workers to gather the requested resource near the main base."""
 
-    async def build_structure(self, action: SC2CommandAction) -> bool:
+    async def build_structure(self, action: SC2CommandAction) -> bool | SC2ActionReport:
         """Place one structure near the resolved semantic map target."""
 
     async def train_unit(self, action: SC2CommandAction) -> SC2ActionReport:
@@ -162,6 +200,9 @@ class SC2BotAdapterInterface(Protocol):
     async def observe(self, action: SC2CommandAction) -> Mapping[str, object]:
         """Return a JSON-ready commander state snapshot observation."""
 
+    async def move_camera(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Move the live camera to the resolved semantic map target."""
+
 
 @dataclass
 class PythonSC2BotAdapter:
@@ -176,7 +217,7 @@ class PythonSC2BotAdapter:
     """
 
     bot: object
-    map_resolver: SC2MapResolver | None = None
+    map_resolver: SC2MapResolverInterface | None = None
     state_resolver: SC2StateResolverInterface = DEFAULT_SC2_STATE_RESOLVER
     unit_type_resolver: Callable[[str], object] | None = None
 
@@ -226,7 +267,7 @@ class PythonSC2BotAdapter:
                 issued += 1
         return _issuance_report(action.count, issued, "insufficient_workers")
 
-    async def build_structure(self, action: SC2CommandAction) -> bool:
+    async def build_structure(self, action: SC2CommandAction) -> bool | SC2ActionReport:
         """Build ``action.subject`` near the resolved semantic map target.
 
         ``action.subject`` is a python-sc2 ``UnitTypeId`` name string such as
@@ -242,26 +283,143 @@ class PythonSC2BotAdapter:
         type_id = self._resolve_unit_type(action.subject)
         if not await self._is_affordable(type_id):
             return False
-        source_structure = str(action.metadata.get("source_structure", ""))
-        if source_structure == SC2_COMMAND_CENTER_SOURCE_STRUCTURE:
+        structure_name = _action_structure_name(action)
+        if _normalized_name(action.subject) in SC2_GAS_STRUCTURE_TYPE_NAMES:
+            return await self._build_gas_structure(action, type_id)
+        placement_policy = action.metadata.get("placement_policy")
+        audit_policy = placement_policy if isinstance(placement_policy, Mapping) else None
+        anchor_resolution: object | None = None
+        if audit_policy is not None:
+            anchor_resolution = self._resolve_anchor_position(placement_policy)
+            if not bool(getattr(anchor_resolution, "available", False)):
+                reason = str(getattr(anchor_resolution, "reason", "")).strip()
+                detail = f"unresolved_anchor: {reason or 'placement anchor unavailable'}"
+                return _refusal_report(
+                    1,
+                    detail,
+                    audit=_build_placement_audit(
+                        action,
+                        placement_policy=audit_policy,
+                        anchor_resolution=anchor_resolution,
+                        search_result=None,
+                        failure_reason=detail,
+                    ),
+                )
+            position = getattr(anchor_resolution, "position", None)
+            if not isinstance(position, MapPoint):
+                detail = "unresolved_anchor: missing position"
+                return _refusal_report(
+                    1,
+                    detail,
+                    audit=_build_placement_audit(
+                        action,
+                        placement_policy=audit_policy,
+                        anchor_resolution=anchor_resolution,
+                        search_result=None,
+                        failure_reason=detail,
+                    ),
+                )
+        else:
+            position = self._resolve_target_point(action.target)
+        if position is None:
+            detail = "unresolvable_target"
+            return _refusal_report(
+                1,
+                detail,
+                audit=_build_placement_audit(
+                    action,
+                    placement_policy=audit_policy,
+                    anchor_resolution=anchor_resolution,
+                    search_result=None,
+                    failure_reason=detail,
+                ),
+            )
+        if structure_name == SC2_COMMAND_CENTER_SOURCE_STRUCTURE:
+            position, command_center_rejection = self._validate_command_center_position(
+                position
+            )
+            if position is None:
+                return _refusal_report(
+                    1,
+                    command_center_rejection,
+                    audit=_build_placement_audit(
+                        action,
+                        placement_policy=audit_policy,
+                        anchor_resolution=anchor_resolution,
+                        search_result=None,
+                        failure_reason=command_center_rejection,
+                    ),
+                )
             expand_now = getattr(self.bot, "expand_now", None)
             if callable(expand_now):
                 return await _call_bot_operation(expand_now)
-        if _normalized_name(action.subject) in SC2_GAS_STRUCTURE_TYPE_NAMES:
-            return await self._build_gas_structure(action, type_id)
-        position = self._resolve_target_point(action.target)
-        if position is None:
-            return False
         build = getattr(self.bot, "build", None)
         if not callable(build):
-            return False
-        return await _call_bot_operation(build, type_id, near=_game_point(position))
+            detail = "missing_build_capability"
+            return _refusal_report(
+                1,
+                detail,
+                audit=_build_placement_audit(
+                    action,
+                    placement_policy=audit_policy,
+                    anchor_resolution=anchor_resolution,
+                    search_result=None,
+                    failure_reason=detail,
+                ),
+            )
+        placement = await self._select_build_placement(
+            type_id,
+            position,
+            structure_name=structure_name,
+            placement_policy=audit_policy,
+        )
+        if placement.position is None and _should_retry_main_base_placement(
+            action,
+            structure_name,
+            placement.detail,
+            has_explicit_policy=audit_policy is not None,
+        ):
+            fallback_position = self._resolve_target_point("self_main")
+            if fallback_position is not None:
+                fallback_placement = await self._select_build_placement(
+                    type_id,
+                    fallback_position,
+                    structure_name=structure_name,
+                    placement_policy=audit_policy,
+                )
+                if fallback_placement.position is not None:
+                    placement = fallback_placement
+        if placement.position is None:
+            return _refusal_report(
+                1,
+                placement.detail,
+                audit=_build_placement_audit(
+                    action,
+                    placement_policy=audit_policy,
+                    anchor_resolution=anchor_resolution,
+                    search_result=placement,
+                    failure_reason=placement.detail,
+                ),
+            )
+        built = await _call_bot_operation(
+            build,
+            type_id,
+            near=_game_point(placement.position),
+        )
+        audit = _build_placement_audit(
+            action,
+            placement_policy=audit_policy,
+            anchor_resolution=anchor_resolution,
+            search_result=placement,
+            failure_reason="" if built else "build_refused",
+        )
+        return _issuance_report(1, 1 if built else 0, "build_refused", audit=audit)
 
     async def _build_gas_structure(
         self,
         action: SC2CommandAction,
         type_id: object,
-    ) -> bool:
+    ) -> bool | SC2ActionReport:
         """Build one gas structure on the nearest free vespene geyser unit.
 
         Real python-sc2 rejects gas builds targeted at a position: the build
@@ -271,12 +429,27 @@ class PythonSC2BotAdapter:
         also accepts for gas structures.
         """
 
-        anchor = self._resolve_target_point(action.target)
+        anchor = self._resolve_build_target_point(action)
+        if not _is_gas_semantic_target(action):
+            return _refusal_report(
+                1,
+                "invalid_refinery_target: target_is_not_geyser",
+            )
         if anchor is None:
             anchor = _entity_point(getattr(self.bot, "start_location", None))
         geyser = self._free_geyser(anchor)
         if geyser is None:
-            return False
+            return _refusal_report(1, "invalid_refinery_target: no_free_geyser")
+        geyser_point = _entity_point(geyser)
+        if (
+            anchor is not None
+            and geyser_point is not None
+            and anchor.distance_to(geyser_point) > SC2_REFINERY_MAX_GEYSER_SNAP_DISTANCE
+        ):
+            return _refusal_report(
+                1,
+                "invalid_refinery_target: no_free_geyser_near_anchor",
+            )
         for worker in self._worker_pool():
             build_gas = getattr(worker, "build_gas", None)
             if callable(build_gas):
@@ -395,6 +568,40 @@ class PythonSC2BotAdapter:
 
         return self.state_resolver.resolve(self.bot).to_dict()
 
+    async def move_camera(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Center the live camera on a resolved semantic target when supported."""
+
+        resolution = self._resolve_target_point_resolution(
+            action.target,
+            require_scouted_enemy=True,
+        )
+        if resolution.position is None:
+            return _refusal_report(
+                1,
+                resolution.detail,
+                audit=_target_resolution_audit(resolution),
+            )
+        position = resolution.position
+        destination = _game_point(position)
+        for method_name in (
+            "move_camera",
+            "center_camera",
+            "set_camera_position",
+            "move_camera_spatial",
+        ):
+            method = getattr(self.bot, method_name, None)
+            if callable(method):
+                moved = await _call_bot_operation(method, destination)
+                return _issuance_report(1, 1 if moved else 0, "camera_refused")
+        client = getattr(self.bot, "client", None) or getattr(self.bot, "_client", None)
+        if client is not None:
+            for method_name in ("move_camera", "center_camera"):
+                method = getattr(client, method_name, None)
+                if callable(method):
+                    moved = await _call_bot_operation(method, destination)
+                    return _issuance_report(1, 1 if moved else 0, "camera_refused")
+        return _refusal_report(1, "missing_camera_capability")
+
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-ready description of the adapter configuration."""
 
@@ -407,16 +614,232 @@ class PythonSC2BotAdapter:
         }
 
     def _resolve_map_resolver(self) -> SC2MapResolverInterface:
-        """Return the bound map resolver, deriving it from the bot once."""
+        """Return the bound map resolver, deriving live lookups from the bot."""
 
         if self.map_resolver is None:
-            self.map_resolver = SC2MapResolver.from_bot(self.bot)
+            self.map_resolver = SC2RuntimeMapResolver(self.bot)
         return self.map_resolver
 
     def _resolve_target_point(self, target_name: str) -> MapPoint | None:
         """Resolve one semantic (or aliased) map target into a point."""
 
-        return self._resolve_map_resolver().resolve_point(target_name)
+        return self._resolve_target_point_resolution(target_name).position
+
+    def _resolve_target_point_resolution(
+        self,
+        target_name: str,
+        *,
+        require_scouted_enemy: bool = False,
+    ) -> "_TargetPointResolution":
+        """Resolve a target point while preserving resolver failure metadata."""
+
+        resolver = self._resolve_map_resolver()
+        for method_name in ("resolve", "lookup"):
+            resolve = getattr(resolver, method_name, None)
+            if not callable(resolve):
+                continue
+            resolution = resolve(target_name)
+            position = _entity_point(getattr(resolution, "position", None))
+            if bool(getattr(resolution, "available", False)) and position is not None:
+                target = str(getattr(resolution, "target", "") or target_name)
+                source = str(getattr(resolution, "source", "") or "")
+                if require_scouted_enemy and _is_unscouted_enemy_camera_target(
+                    target=target,
+                    source=source,
+                ):
+                    return _TargetPointResolution(
+                        position=None,
+                        detail="unscouted_camera_target",
+                        reason=(
+                            f"Enemy camera target {target!r} is only inferred from "
+                            f"{source or 'map geometry'} and has not been scouted."
+                        ),
+                        target=target,
+                        source=source,
+                    )
+                return _TargetPointResolution(
+                    position=position,
+                    target=target,
+                    source=source,
+                )
+            reason = str(getattr(resolution, "reason", "") or "")
+            target = str(getattr(resolution, "target", "") or target_name)
+            alternatives = _string_tuple(getattr(resolution, "alternatives", ()))
+            return _TargetPointResolution(
+                position=None,
+                detail=_camera_target_failure_detail(reason),
+                reason=reason,
+                target=target,
+                alternatives=alternatives,
+                source=str(getattr(resolution, "source", "") or ""),
+            )
+
+        position = _entity_point(resolver.resolve_point(target_name))
+        if position is not None:
+            return _TargetPointResolution(position=position, target=target_name)
+        return _TargetPointResolution(
+            position=None,
+            detail="unresolvable_target",
+            reason="Map resolver returned no point for target.",
+            target=target_name,
+        )
+
+    def _resolve_build_target_point(self, action: SC2CommandAction) -> MapPoint | None:
+        """Resolve the world point used for structure placement.
+
+        Relative Korean placement phrases carry an auditable placement policy;
+        when present, its anchor is the safe search center instead of the
+        broader intent location fallback.
+        """
+
+        placement_policy = action.metadata.get("placement_policy")
+        if isinstance(placement_policy, Mapping):
+            return self._resolve_anchor_point(placement_policy)
+        return self._resolve_target_point(action.target)
+
+    def _resolve_anchor_point(self, anchor: object) -> MapPoint | None:
+        """Resolve a placement anchor object/name into a map point."""
+
+        resolution = self._resolve_anchor_position(anchor)
+        if not bool(getattr(resolution, "available", False)):
+            return None
+        position = getattr(resolution, "position", None)
+        return position if isinstance(position, MapPoint) else None
+
+    def _resolve_anchor_position(self, anchor: object) -> object | None:
+        """Resolve a placement anchor and preserve the resolver's failure reason."""
+
+        resolver = self._resolve_map_resolver()
+        resolve_anchor_position = getattr(resolver, "resolve_anchor_position", None)
+        if not callable(resolve_anchor_position):
+            return None
+        return resolve_anchor_position(anchor)
+
+    async def _select_build_placement(
+        self,
+        type_id: object,
+        center: MapPoint,
+        *,
+        structure_name: str,
+        placement_policy: Mapping[str, object] | None,
+    ) -> "_PlacementSearchResult":
+        """Pick the first safe build tile around a resolved semantic anchor."""
+
+        rejection_reasons: list[str] = []
+        search_radius = _placement_search_radius(placement_policy)
+        for candidate in _build_placement_candidates(center, search_radius):
+            rejection = await self._build_placement_rejection(
+                type_id,
+                candidate,
+                structure_name=structure_name,
+            )
+            if rejection:
+                rejection_reasons.append(
+                    f"point({candidate.x:g}, {candidate.y:g}): {rejection}"
+                )
+                continue
+            return _PlacementSearchResult(
+                position=candidate,
+                rejections=tuple(rejection_reasons),
+                search_radius=search_radius,
+            )
+        return _PlacementSearchResult(
+            position=None,
+            rejections=tuple(rejection_reasons),
+            search_radius=search_radius,
+        )
+
+    async def _build_placement_rejection(
+        self,
+        type_id: object,
+        candidate: MapPoint,
+        *,
+        structure_name: str,
+    ) -> str:
+        """Return an auditable rejection reason for an unsafe build candidate."""
+
+        if not _is_candidate_finite(candidate):
+            return "candidate_not_finite"
+        if await _optional_bool_check(
+            self.bot,
+            ("in_map_bounds", "is_in_map_bounds"),
+            candidate,
+        ) is False:
+            return "outside_map_bounds"
+        if await _optional_bool_check(
+            self.bot,
+            (
+                "is_build_location_safe",
+                "is_placement_safe",
+                "is_position_safe",
+                "is_safe_location",
+            ),
+            candidate,
+        ) is False:
+            return "unsafe_location"
+        entity_rejection = _observed_entity_safety_rejection(self.bot, candidate)
+        if entity_rejection:
+            return entity_rejection
+        if await _optional_bool_check(
+            self.bot,
+            ("is_visible", "is_position_visible", "has_vision"),
+            candidate,
+        ) is False:
+            return "not_visible"
+        if await _optional_bool_check(
+            self.bot,
+            ("in_pathing_grid", "is_pathable", "is_position_pathable"),
+            candidate,
+        ) is False:
+            return "not_pathable"
+        if await _optional_bool_check(
+            self.bot,
+            ("in_placement_grid", "is_buildable", "is_position_buildable"),
+            candidate,
+        ) is False:
+            return "not_buildable"
+        can_place = await _optional_buildability_check(self.bot, type_id, candidate)
+        if can_place is False:
+            return "can_place_rejected"
+        constraint = _get_build_placement_constraint(structure_name)
+        if constraint is not None:
+            constraint_rejection = _building_constraint_rejection(
+                self.bot,
+                candidate,
+                constraint,
+            )
+            if constraint_rejection:
+                return constraint_rejection
+        return ""
+
+    def _validate_command_center_position(
+        self,
+        requested: MapPoint,
+    ) -> tuple[MapPoint | None, str]:
+        """Snap command centers to a valid, unclaimed expansion/base point."""
+
+        expansion_points = _expansion_location_points(self.bot)
+        if not expansion_points:
+            return (
+                None,
+                "invalid_command_center_location: missing_expansion_locations",
+            )
+        expansion = _nearest_point(expansion_points, requested)
+        if (
+            expansion is None
+            or requested.distance_to(expansion) > SC2_COMMAND_CENTER_MAX_EXPANSION_DISTANCE
+        ):
+            return (
+                None,
+                "invalid_command_center_location: not_expansion_location",
+            )
+        for townhall_point in _own_townhall_points(self.bot):
+            if townhall_point.distance_to(expansion) <= SC2_COMMAND_CENTER_MAX_EXPANSION_DISTANCE:
+                return (
+                    None,
+                    "invalid_command_center_location: expansion_occupied_by_own_townhall",
+                )
+        return (expansion, "")
 
     def _resolve_unit_type(self, type_name: str) -> object:
         """Resolve a ``UnitTypeId`` name through injection, bot, or python-sc2.
@@ -642,6 +1065,61 @@ class MissingPythonSC2Error(RuntimeError):
     """Raised when UnitTypeId resolution needs python-sc2 but it is absent."""
 
 
+@dataclass(frozen=True)
+class _PlacementSearchResult:
+    """Internal result for anchor-centered build placement search."""
+
+    position: MapPoint | None
+    rejections: tuple[str, ...] = ()
+    search_radius: float = SC2_BUILD_PLACEMENT_SEARCH_RADIUS
+
+    @property
+    def detail(self) -> str:
+        """Return a compact refusal reason safe for executor audit output."""
+
+        if not self.rejections:
+            return "no_safe_placement: no placement candidates generated"
+        preview = "; ".join(self.rejections[:8])
+        suffix = "" if len(self.rejections) <= 8 else f"; +{len(self.rejections) - 8} more"
+        return f"no_safe_placement: {preview}{suffix}"
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-ready placement search outcome."""
+
+        selected_tile = self.position.to_dict() if self.position is not None else None
+        rejected_count = len(self.rejections)
+        selected_result = (
+            {
+                "tile": selected_tile,
+                "reason_code": "",
+                "candidate_index": rejected_count,
+                "source": "python-sc2 build placement search",
+            }
+            if selected_tile is not None
+            else None
+        )
+        no_match = (
+            None
+            if selected_tile is not None
+            else {
+                "reason": self.detail,
+                "reason_code": "no_safe_placement",
+                "search_radius": self.search_radius,
+                "rejected_count": rejected_count,
+            }
+        )
+        return {
+            "status": "selected" if selected_tile is not None else "no_match",
+            "reason_code": "" if selected_tile is not None else "no_safe_placement",
+            "selected_tile": selected_tile,
+            "selected_result": selected_result,
+            "no_match": no_match,
+            "search_radius": self.search_radius,
+            "rejection_reasons": list(self.rejections),
+            "rejected_count": rejected_count,
+        }
+
+
 async def _call_bot_operation(
     operation: Callable[..., object],
     *args: object,
@@ -653,6 +1131,302 @@ async def _call_bot_operation(
     if inspect.isawaitable(result):
         result = await result
     return result is None or bool(result)
+
+
+def _placement_search_radius(
+    placement_policy: Mapping[str, object] | None,
+) -> float:
+    """Read a bounded tile-search radius from planner metadata."""
+
+    if isinstance(placement_policy, Mapping):
+        for key in ("search_radius", "radius"):
+            value = placement_policy.get(key)
+            if _is_real_number(value) and float(value) > 0.0:
+                return max(1.0, min(float(value), 20.0))
+    return SC2_BUILD_PLACEMENT_SEARCH_RADIUS
+
+
+def _build_placement_candidates(
+    center: MapPoint,
+    search_radius: float,
+) -> tuple[MapPoint, ...]:
+    """Return deterministic tile candidates centered on a resolved anchor."""
+
+    max_ring = max(0, int(math.ceil(search_radius)))
+    candidates: list[MapPoint] = [center]
+    offsets: set[tuple[int, int]] = {(0, 0)}
+    for ring in range(1, max_ring + 1):
+        ring_offsets: list[tuple[int, int]] = [
+            (0, -ring),
+            (ring, 0),
+            (0, ring),
+            (-ring, 0),
+            (ring, -ring),
+            (ring, ring),
+            (-ring, ring),
+            (-ring, -ring),
+        ]
+        for step in range(1, ring):
+            ring_offsets.extend(
+                (
+                    (step, -ring),
+                    (ring, step),
+                    (-step, ring),
+                    (-ring, -step),
+                    (-step, -ring),
+                    (ring, -step),
+                    (step, ring),
+                    (-ring, step),
+                )
+            )
+        for dx, dy in ring_offsets:
+            if (dx, dy) in offsets:
+                continue
+            offsets.add((dx, dy))
+            candidate = MapPoint(center.x + dx, center.y + dy)
+            if center.distance_to(candidate) <= search_radius:
+                candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _is_candidate_finite(candidate: MapPoint) -> bool:
+    return _is_real_number(candidate.x) and _is_real_number(candidate.y)
+
+
+async def _optional_bool_check(
+    bot: object,
+    method_names: Sequence[str],
+    candidate: MapPoint,
+) -> bool | None:
+    """Run the first available one-argument BotAI predicate for a candidate."""
+
+    destination = _game_point(candidate)
+    for method_name in method_names:
+        method = getattr(bot, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            result = method(destination)
+        except TypeError:
+            continue
+        if inspect.isawaitable(result):
+            result = await result
+        return _coerce_optional_bool(result)
+    return None
+
+
+async def _optional_buildability_check(
+    bot: object,
+    type_id: object,
+    candidate: MapPoint,
+) -> bool | None:
+    """Run BotAI buildability checks that need both type and position."""
+
+    destination = _game_point(candidate)
+    for method_name in ("can_place", "can_place_single", "can_build"):
+        method = getattr(bot, method_name, None)
+        if not callable(method):
+            continue
+        for args in ((type_id, destination), (destination, type_id)):
+            try:
+                result = method(*args)
+            except TypeError:
+                continue
+            if inspect.isawaitable(result):
+                result = await result
+            return _coerce_optional_bool(result)
+    return None
+
+
+def _coerce_optional_bool(result: object) -> bool | None:
+    """Convert optional BotAI predicate results without treating None as false."""
+
+    if result is None:
+        return None
+    if isinstance(result, (str, bytes)):
+        return bool(result)
+    if isinstance(result, Iterable):
+        values = list(result)
+        return all(bool(value) for value in values)
+    return bool(result)
+
+
+def _observed_entity_safety_rejection(bot: object, candidate: MapPoint) -> str:
+    """Reject candidates overlapping observed blockers or unsafe enemy presence."""
+
+    for group_name in (
+        "structures",
+        "mineral_field",
+        "vespene_geyser",
+        "destructables",
+        "destructibles",
+    ):
+        for entity in _materialize(getattr(bot, group_name, None)):
+            point = _entity_point(entity)
+            if (
+                point is not None
+                and candidate.distance_to(point) <= SC2_BUILD_PLACEMENT_ENTITY_CLEARANCE
+            ):
+                return f"blocked_by_observed_{group_name}"
+    for group_name in ("enemy_units", "enemy_structures"):
+        for entity in _materialize(getattr(bot, group_name, None)):
+            point = _entity_point(entity)
+            if (
+                point is not None
+                and candidate.distance_to(point) <= SC2_BUILD_PLACEMENT_ENEMY_CLEARANCE
+            ):
+                return f"unsafe_near_observed_{group_name}"
+    return ""
+
+
+def _building_constraint_rejection(
+    bot: object,
+    candidate: MapPoint,
+    constraint: object,
+) -> str:
+    """Apply per-building static placement clearance around a candidate."""
+
+    clearance = getattr(constraint, "clearance", None)
+    if clearance is None:
+        return ""
+    if clearance.min_tiles_from_townhall > 0.0:
+        for point in _own_townhall_points(bot):
+            if candidate.distance_to(point) < clearance.min_tiles_from_townhall:
+                return "too_close_to_townhall"
+    if clearance.avoid_mineral_line_overlap or clearance.min_tiles_from_resources > 0.0:
+        for mineral in _materialize(getattr(bot, "mineral_field", None)):
+            point = _entity_point(mineral)
+            if point is None:
+                continue
+            if candidate.distance_to(point) < clearance.min_tiles_from_resources:
+                return "too_close_to_minerals"
+    if clearance.avoid_geyser_overlap or clearance.min_tiles_from_resources > 0.0:
+        for geyser in _materialize(getattr(bot, "vespene_geyser", None)):
+            point = _entity_point(geyser)
+            if point is None:
+                continue
+            if candidate.distance_to(point) < clearance.min_tiles_from_resources:
+                return "too_close_to_geyser"
+    if clearance.require_unclaimed_base:
+        for townhall_point in _own_townhall_points(bot):
+            if candidate.distance_to(townhall_point) <= SC2_COMMAND_CENTER_MAX_EXPANSION_DISTANCE:
+                return "expansion_occupied_by_own_townhall"
+    return ""
+
+
+def _get_build_placement_constraint(structure_name: str) -> object | None:
+    """Lazily load shared placement constraints without adapter import coupling."""
+
+    from toycraft_commander.placement import get_build_placement_constraint
+
+    return get_build_placement_constraint(structure_name)
+
+
+def _should_retry_main_base_placement(
+    action: SC2CommandAction,
+    structure_name: str,
+    failure_detail: str,
+    *,
+    has_explicit_policy: bool,
+) -> bool:
+    """Use main-base fallback when ramp placement is unseen or unbuildable."""
+
+    if has_explicit_policy:
+        return False
+    if _normalized_name(structure_name) in SC2_GAS_STRUCTURE_TYPE_NAMES:
+        return False
+    if action.target != "self_ramp":
+        return False
+    detail = str(failure_detail or "")
+    return "no_safe_placement" in detail and (
+        "not_visible" in detail
+        or "not_buildable" in detail
+        or "can_place_rejected" in detail
+    )
+
+
+def _action_structure_name(action: SC2CommandAction) -> str:
+    """Return the display structure name used by placement constraints."""
+
+    source_structure = action.metadata.get("source_structure")
+    if type(source_structure) is str and source_structure.strip():
+        return source_structure.strip()
+    normalized = _normalized_name(action.subject)
+    if normalized == "SUPPLYDEPOT":
+        return "Supply Depot"
+    if normalized == "COMMANDCENTER":
+        return "Command Center"
+    if normalized == "REFINERY":
+        return "Refinery"
+    return action.subject.strip()
+
+
+def _is_gas_semantic_target(action: SC2CommandAction) -> bool:
+    """Return whether a refinery action intentionally targets a geyser."""
+
+    target = _normalized_name(action.target) or ""
+    if target in {"MAINGEYSER", "SELFGEYSER", "GEYSER"}:
+        return True
+    policy = action.metadata.get("placement_policy")
+    if not isinstance(policy, Mapping):
+        return False
+    anchor = _normalized_name(policy.get("anchor")) or ""
+    anchor_target = _normalized_name(policy.get("anchor_target")) or ""
+    return anchor in {"MAINGEYSER", "SELFGEYSER", "GEYSER"} or anchor_target in {
+        "MAINGEYSER",
+        "SELFGEYSER",
+        "GEYSER",
+    }
+
+
+def _expansion_location_points(bot: object) -> tuple[MapPoint, ...]:
+    """Return BotAI expansion/base locations as map points."""
+
+    points = [
+        point
+        for entry in _materialize(getattr(bot, "expansion_locations_list", None))
+        if (point := _entity_point(entry)) is not None
+    ]
+    return tuple(_unique_points(points))
+
+
+def _own_townhall_points(bot: object) -> tuple[MapPoint, ...]:
+    """Return observed own townhall positions from common BotAI collections."""
+
+    points: list[MapPoint] = []
+    for group_name in ("townhalls", "structures", "owned_townhalls"):
+        for structure in _materialize(getattr(bot, group_name, None)):
+            if _entity_type_name(structure) not in SC2_TOWNHALL_TYPE_NAMES:
+                continue
+            point = _entity_point(structure)
+            if point is not None:
+                points.append(point)
+    return tuple(_unique_points(points))
+
+
+def _nearest_point(
+    points: Sequence[MapPoint],
+    anchor: MapPoint,
+) -> MapPoint | None:
+    """Pick the nearest point to an anchor with a deterministic tie-break."""
+
+    if not points:
+        return None
+    return min(points, key=lambda point: (anchor.distance_to(point), point.x, point.y))
+
+
+def _unique_points(points: Iterable[MapPoint]) -> list[MapPoint]:
+    """Deduplicate map points while preserving first-seen order."""
+
+    unique: list[MapPoint] = []
+    seen: set[tuple[float, float]] = set()
+    for point in points:
+        key = (point.x, point.y)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(point)
+    return unique
 
 
 def _materialize(value: object) -> list[object]:
@@ -723,7 +1497,81 @@ def _unit_type_token(subject: str) -> str | None:
     return None
 
 
-def _refusal_report(requested: int | None, detail: str) -> SC2ActionReport:
+@dataclass(frozen=True)
+class _TargetPointResolution:
+    """Camera/movement target point plus safe failure details for narration."""
+
+    position: MapPoint | None
+    detail: str = "unresolvable_target"
+    reason: str = ""
+    target: str = ""
+    alternatives: tuple[str, ...] = ()
+    source: str = ""
+
+
+def _is_unscouted_enemy_camera_target(*, target: str, source: str) -> bool:
+    """Return whether an enemy camera target lacks direct scouting evidence."""
+
+    if not str(target).startswith("enemy_"):
+        return False
+    normalized_source = str(source).casefold()
+    return not (
+        "enemy vision" in normalized_source
+        or "scouting" in normalized_source
+        or "last-seen" in normalized_source
+        or "last seen" in normalized_source
+    )
+
+
+def _camera_target_failure_detail(reason: str) -> str:
+    """Classify resolver failure text into stable adapter refusal details."""
+
+    normalized = reason.casefold()
+    if "ambiguous" in normalized or "multiple" in normalized:
+        return "ambiguous_camera_target"
+    if (
+        "unscouted" in normalized
+        or "scout" in normalized
+        or "observed" in normalized
+        or "observation" in normalized
+        or "visible" in normalized
+        or "last-seen" in normalized
+        or "last seen" in normalized
+    ):
+        return "unscouted_camera_target"
+    if "unsupported" in normalized or "unknown" in normalized:
+        return "unknown_camera_target"
+    return "unresolvable_target"
+
+
+def _target_resolution_audit(resolution: _TargetPointResolution) -> dict[str, object]:
+    """Return JSON-ready target-resolution evidence for dashboards/logs."""
+
+    audit: dict[str, object] = {"target": resolution.target}
+    if resolution.reason:
+        audit["reason"] = resolution.reason
+    if resolution.source:
+        audit["source"] = resolution.source
+    if resolution.alternatives:
+        audit["alternatives"] = list(resolution.alternatives)
+    return audit
+
+
+def _string_tuple(values: object) -> tuple[str, ...]:
+    """Best-effort conversion of resolver alternatives into safe strings."""
+
+    try:
+        return tuple(str(value) for value in values)
+    except TypeError:
+        return ()
+
+
+def _refusal_report(
+    requested: int | None,
+    detail: str,
+    *,
+    audit: Mapping[str, object] | None = None,
+) -> SC2ActionReport:
     """Build the structured report for an action refused with nothing issued."""
 
     return SC2ActionReport(
@@ -731,6 +1579,7 @@ def _refusal_report(requested: int | None, detail: str) -> SC2ActionReport:
         requested_count=requested if requested is not None and requested >= 0 else None,
         issued_count=0,
         detail=detail,
+        audit=audit or {},
     )
 
 
@@ -738,6 +1587,8 @@ def _issuance_report(
     requested: int | None,
     issued: int,
     shortfall_detail: str,
+    *,
+    audit: Mapping[str, object] | None = None,
 ) -> SC2ActionReport:
     """Build the structured report for counted order issuance.
 
@@ -746,14 +1597,117 @@ def _issuance_report(
     """
 
     if issued <= 0:
-        return _refusal_report(requested, shortfall_detail)
+        return _refusal_report(requested, shortfall_detail, audit=audit)
     partial = requested is not None and issued < requested
     return SC2ActionReport(
         applied=True,
         requested_count=requested,
         issued_count=issued,
         detail=shortfall_detail if partial else "",
+        audit=audit or {},
     )
+
+
+def _build_placement_audit(
+    action: SC2CommandAction,
+    *,
+    placement_policy: Mapping[str, object] | None,
+    anchor_resolution: object | None,
+    search_result: _PlacementSearchResult | None,
+    failure_reason: str,
+) -> dict[str, object]:
+    """Return the auditable output contract for semantic build placement."""
+
+    anchor_position = getattr(anchor_resolution, "position", None)
+    anchor_available = bool(getattr(anchor_resolution, "available", False))
+    resolver_source = str(getattr(anchor_resolution, "source", "") or "")
+    resolved_position = (
+        anchor_position.to_dict() if isinstance(anchor_position, MapPoint) else None
+    )
+    anchor_target = None
+    anchor_label = None
+    anchor_source = "action.target"
+    if isinstance(placement_policy, Mapping):
+        anchor_target = placement_policy.get("anchor_target") or placement_policy.get(
+            "target"
+        )
+        anchor_label = placement_policy.get("anchor")
+        anchor_source = (
+            "placement_policy.anchor_target"
+            if isinstance(anchor_target, str) and anchor_target.strip()
+            else "placement_policy.anchor"
+        )
+    resolved_placement_policy = _resolved_anchor_placement_policy(anchor_resolution)
+    resolver_reason_code = str(getattr(anchor_resolution, "reason_code", "") or "")
+    return {
+        "resolved_target_policy": {
+            "requested_target": action.target,
+            "anchor_target": anchor_target,
+            "anchor_available": anchor_available,
+            "anchor_source": resolver_source,
+            "resolved_point": resolved_position,
+        },
+        "placement_policy": dict(placement_policy) if placement_policy else None,
+        "resolved_placement_policy": resolved_placement_policy,
+        "anchor_source": {
+            "source": anchor_source,
+            "anchor": anchor_label,
+            "anchor_target": anchor_target,
+            "resolver_source": resolver_source,
+            "resolver_reason": str(
+                getattr(anchor_resolution, "reason", "") or ""
+            ),
+            "resolver_reason_code": resolver_reason_code,
+        },
+        "search_result": search_result.to_dict() if search_result is not None else None,
+        "failure_reason": failure_reason,
+        "failure_reason_code": _placement_failure_reason_code(
+            failure_reason,
+            resolver_reason_code=resolver_reason_code,
+            search_result=search_result,
+        ),
+    }
+
+
+def _resolved_anchor_placement_policy(anchor_resolution: object | None) -> dict[str, object] | None:
+    to_dict = getattr(anchor_resolution, "to_dict", None)
+    if not callable(to_dict):
+        return None
+    payload = to_dict()
+    if not isinstance(payload, Mapping):
+        return None
+    policy = payload.get("placement_policy")
+    if not isinstance(policy, Mapping):
+        return None
+    return dict(policy)
+
+
+def _placement_failure_reason_code(
+    failure_reason: str,
+    *,
+    resolver_reason_code: str,
+    search_result: _PlacementSearchResult | None,
+) -> str:
+    """Return a stable machine-readable code for placement audit failures."""
+
+    reason = str(failure_reason).strip()
+    if not reason:
+        return ""
+    if reason.startswith("unresolved_anchor"):
+        return resolver_reason_code or "unresolved_anchor"
+    if reason.startswith("no_safe_placement"):
+        return "no_safe_placement"
+    if reason.startswith("unresolvable_target"):
+        return "unresolvable_target"
+    if reason.startswith("missing_build_capability"):
+        return "missing_build_capability"
+    if reason.startswith("build_refused"):
+        return "build_refused"
+    if reason.startswith("invalid_command_center_location"):
+        return "invalid_command_center_location"
+    if search_result is not None and search_result.position is None:
+        return "no_safe_placement"
+    return "placement_failed"
 
 
 def _point_is_taken(

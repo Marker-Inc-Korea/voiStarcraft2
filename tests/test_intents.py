@@ -42,6 +42,7 @@ from toycraft_commander.intents import (
     IntentCommandResult,
     IntentCommandResultStatus,
     IntentFieldType,
+    MoveCameraIntent,
     PriorityLevel,
     RepairIntent,
     ScoutIntent,
@@ -137,6 +138,12 @@ VALID_RAW_INTENT_PAYLOADS = {
         "target": "enemy mineral line",
         "unit_group": "2 Marines",
     },
+    "MOVE_CAMERA": {
+        "intent": "MOVE_CAMERA",
+        "priority": "normal",
+        "constraints": [],
+        "target": "main base",
+    },
 }
 
 WRONG_RAW_FIELD_TYPE_CASES = {
@@ -154,6 +161,7 @@ WRONG_RAW_FIELD_TYPE_CASES = {
     "REPAIR": ("worker_count", True, "worker_count must be a positive integer"),
     "EXPAND": ("location", 2, "location must be a non-empty string"),
     "HARASS": ("unit_group", False, "unit_group must be a non-empty string"),
+    "MOVE_CAMERA": ("target", 1, "target must be a non-empty string"),
 }
 
 INVALID_INTENT_SPECIFIC_RAW_PAYLOAD_CASES = {
@@ -196,6 +204,10 @@ INVALID_INTENT_SPECIFIC_RAW_PAYLOAD_CASES = {
     "HARASS": (
         {"unit_group": " "},
         "unit_group must be a non-empty string",
+    ),
+    "MOVE_CAMERA": (
+        {"target": ""},
+        "target must be a non-empty string",
     ),
 }
 
@@ -265,9 +277,9 @@ class CompatStrEnumTest(unittest.TestCase):
 
 
 class CanonicalIntentInventoryTest(unittest.TestCase):
-    def test_inventory_has_exactly_ten_unique_intents(self) -> None:
-        self.assertEqual(10, len(CANONICAL_INTENTS))
-        self.assertEqual(10, len(set(CANONICAL_INTENT_NAMES)))
+    def test_inventory_has_exactly_eleven_unique_intents(self) -> None:
+        self.assertEqual(11, len(CANONICAL_INTENTS))
+        self.assertEqual(11, len(set(CANONICAL_INTENT_NAMES)))
 
     def test_utterance_coverage_guard_uses_canonical_inventory(self) -> None:
         expected_intents = (
@@ -281,6 +293,7 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
             "REPAIR",
             "EXPAND",
             "HARASS",
+            "MOVE_CAMERA",
         )
 
         self.assertEqual(expected_intents, UTTERANCE_COVERAGE_CANONICAL_INTENT_NAMES)
@@ -288,9 +301,9 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
             CANONICAL_INTENT_NAMES,
             UTTERANCE_COVERAGE_CANONICAL_INTENT_NAMES,
         )
-        self.assertEqual(10, len(UTTERANCE_COVERAGE_CANONICAL_INTENT_NAMES))
+        self.assertEqual(11, len(UTTERANCE_COVERAGE_CANONICAL_INTENT_NAMES))
         self.assertEqual(
-            10,
+            11,
             len(set(UTTERANCE_COVERAGE_CANONICAL_INTENT_NAMES)),
         )
 
@@ -589,6 +602,7 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
             "REPAIR": ("intent", "priority", "constraints", "target", "worker_count"),
             "EXPAND": ("intent", "priority", "constraints", "location"),
             "HARASS": ("intent", "priority", "constraints", "target", "unit_group"),
+            "MOVE_CAMERA": ("intent", "priority", "constraints", "target"),
         }
 
         self.assertEqual("toycraft.intent_dsl.v1", INTENT_DSL_FORMAT_VERSION)
@@ -840,6 +854,7 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
             "REPAIR": ("target", "worker_count"),
             "EXPAND": ("location",),
             "HARASS": ("target", "unit_group"),
+            "MOVE_CAMERA": ("target",),
         }
 
         for intent_name, field_names in expected_fields.items():
@@ -893,6 +908,7 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
                 "DEFEND": DefendIntent,
                 "REPAIR": RepairIntent,
                 "HARASS": HarassIntent,
+                "MOVE_CAMERA": MoveCameraIntent,
             },
             UNIT_CONTROL_COMBAT_PAYLOAD_TYPES,
         )
@@ -929,6 +945,7 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
             "REPAIR": RepairIntent,
             "EXPAND": ExpandIntent,
             "HARASS": HarassIntent,
+            "MOVE_CAMERA": MoveCameraIntent,
         }
 
         self.assertEqual(expected_payload_types, INTENT_PAYLOAD_TYPES)
@@ -1030,6 +1047,11 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
                 target="enemy mineral line",
                 unit_group="2 Marines",
             ),
+            MoveCameraIntent(
+                priority="normal",
+                constraints=("follow command center",),
+                target="main base",
+            ),
         )
 
         expected_payloads = (
@@ -1065,6 +1087,12 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
                 "constraints": ["retreat below half health"],
                 "target": "enemy mineral line",
                 "unit_group": "2 Marines",
+            },
+            {
+                "intent": "MOVE_CAMERA",
+                "priority": "normal",
+                "constraints": ["follow command center"],
+                "target": "main base",
             },
         )
 
@@ -1146,6 +1174,11 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "intent must be HARASS"):
             HarassIntent(intent="SUMMARIZE_STATE", target="enemy mineral line", unit_group="2 Marines")
 
+        with self.assertRaisesRegex(ValueError, "target must be a non-empty string"):
+            MoveCameraIntent(target="")
+        with self.assertRaisesRegex(ValueError, "intent must be MOVE_CAMERA"):
+            MoveCameraIntent(intent="SCOUT", target="main base")
+
     def test_tech_progression_payloads_reject_malformed_values(self) -> None:
         with self.assertRaisesRegex(ValueError, "location must be a non-empty string"):
             ExpandIntent(location="")
@@ -1171,6 +1204,7 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
             "REPAIR": {"target": "front bunker", "worker_count": 2},
             "EXPAND": {"location": "natural expansion"},
             "HARASS": {"target": "enemy mineral line", "unit_group": "2 Marines"},
+            "MOVE_CAMERA": {"target": "main base"},
         }
         malformed_payload_kwargs = {
             "GATHER_RESOURCE": {
@@ -1190,6 +1224,7 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
             "REPAIR": {"target": "front bunker", "worker_count": 0},
             "EXPAND": {"location": ""},
             "HARASS": {"target": "enemy mineral line", "unit_group": False},
+            "MOVE_CAMERA": {"target": ""},
         }
 
         for intent_name in CANONICAL_INTENT_NAMES:
@@ -1273,6 +1308,12 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
                 "target": "enemy mineral line",
                 "unit_group": "2 Marines",
             },
+            "MOVE_CAMERA": {
+                "intent": "MOVE_CAMERA",
+                "priority": "normal",
+                "constraints": [],
+                "target": "main base",
+            },
         }
         expected_typed_payloads = {
             "GATHER_RESOURCE": GatherResourceIntent(
@@ -1331,6 +1372,11 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
                 constraints=("retreat below half health",),
                 target="enemy mineral line",
                 unit_group="2 Marines",
+            ),
+            "MOVE_CAMERA": MoveCameraIntent(
+                priority="normal",
+                constraints=(),
+                target="main base",
             ),
         }
 
@@ -1465,6 +1511,12 @@ class CanonicalIntentInventoryTest(unittest.TestCase):
                 "constraints": ["retreat below half health"],
                 "target": "enemy mineral line",
                 "unit_group": "2 Marines",
+            },
+            "MOVE_CAMERA": {
+                "intent": "MOVE_CAMERA",
+                "priority": "normal",
+                "constraints": [],
+                "target": "main base",
             },
         }
 

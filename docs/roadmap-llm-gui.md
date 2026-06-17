@@ -11,10 +11,10 @@ Complete ALL remaining stages of the original product plan
 (docs/claude-handoff.md): the user commands in free-form Korean (text or
 voice), the system interprets it and maps it to StarCraft II API actions.
 
-1. **LLM-based interpretation** — free-form Korean → typed Intent DSL via the
-   Anthropic API, as a fallback behind the existing deterministic rule
-   interpreter (hybrid). The original plan's interpreter stage was always
-   meant to handle free utterances; rules alone only cover curated phrasings.
+1. **LLM-based interpretation** — free-form Korean → typed Intent DSL via a
+   required provider LLM. The deterministic rule interpreter is deprecated for
+   production/live command understanding and remains only for explicit
+   `--no-llm` offline compatibility tests.
 2. **Web GUI** — human-viewable interface: command input, narration log with
    statuses, live commander-state panel. Works in dry-run and live mode.
 3. **Event memory** — the original flow's final stage ("narrator / event
@@ -50,12 +50,14 @@ voice), the system interprets it and maps it to StarCraft II API actions.
     derived from the 10-intent `INTENT_SCHEMAS`; output validated through
     `validate_intent_payload` and typed payload construction — the LLM can
     never inject an out-of-vocabulary command.
-  - `HybridCommandInterpreter`: rules first (fast, free, deterministic);
-    LLM fallback only on unsupported/ambiguous; LLM failure → existing
-    Korean clarification.
+  - `HybridCommandInterpreter`: configured sessions are LLM-first and
+    LLM-mandatory; LLM failure returns Korean clarification instead of falling
+    back to deterministic keyword matching.
   - OpenAI/GPT is the default local GUI provider (`gpt-4.1-mini`), with
-    Anthropic still supported. Keys can come from local env vars or the
-    localhost web GUI; web-entered keys stay in process memory.
+    Anthropic still supported. Live startup requires the selected key in local
+    env (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`); the localhost web GUI can
+    rotate the running process key, and web-entered keys stay in process
+    memory.
 - [x] **W2. Event memory** (`starcraft_commander/event_memory.py` +
   `tests/test_event_memory.py`) — thread-safe ring buffer of command
   outcomes with game time; feeds GUI history.

@@ -1,4 +1,9 @@
-"""Korean command interpreter mappings for Phase 0 ToyCraft Commander."""
+"""Deprecated deterministic command mappings for Phase 0 ToyCraft Commander.
+
+Production/live SC2 command understanding is LLM-mandatory. This module is
+kept for explicit offline ``--no-llm`` compatibility, deterministic tests, and
+typed Intent DSL fixture generation.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +26,7 @@ from toycraft_commander.intents import (
     IntentCommandPayload,
     IntentName,
     IntentPayload,
+    MoveCameraIntent,
     Priority,
     RepairIntent,
     ScoutIntent,
@@ -33,9 +39,13 @@ from toycraft_commander.intents import (
 from toycraft_commander.resources import ResourceName
 
 
+RULE_BASED_INTERPRETER_DEPRECATED: Final[bool] = True
+"""Deterministic keyword matching is not a production/live control path."""
+
+
 @dataclass(frozen=True)
 class InterpreterMapping:
-    """Maps Korean free utterances to the nearest supported typed Intent DSL."""
+    """Deprecated offline mapping from utterance to typed Intent DSL."""
 
     alias: str
     utterance: str
@@ -131,6 +141,115 @@ class CommandPatternLexicon:
     english_patterns: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ParsedAnchorLabel:
+    """Supported semantic anchor label parsed from location phrases."""
+
+    key: str
+    label: str
+    target: str
+    aliases: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.key.strip():
+            raise ValueError("parsed anchor key must be non-empty.")
+        if not self.label.strip():
+            raise ValueError("parsed anchor label must be non-empty.")
+        if not self.target.strip():
+            raise ValueError("parsed anchor target must be non-empty.")
+        aliases = tuple(alias for alias in self.aliases if alias.strip())
+        if not aliases:
+            raise ValueError("parsed anchor aliases must be non-empty.")
+        object.__setattr__(self, "aliases", aliases)
+
+    @property
+    def normalized_aliases(self) -> tuple[str, ...]:
+        """Return whitespace-insensitive aliases for parser matching."""
+
+        return _normalize_patterns((self.key, self.label, self.target, *self.aliases))
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-ready anchor-label descriptor."""
+
+        return {
+            "key": self.key,
+            "label": self.label,
+            "target": self.target,
+            "aliases": list(self.aliases),
+        }
+
+
+@dataclass(frozen=True)
+class KoreanRelativeLocationPhrase:
+    """Structured placement meaning parsed from anchored Korean location text."""
+
+    anchor: str
+    spatial_relation: str
+    anchor_target: str
+    source_text: str
+    direction: str = ""
+    direction_target: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.anchor.strip():
+            raise ValueError("relative location anchor must be non-empty.")
+        if not self.spatial_relation.strip():
+            raise ValueError("relative location spatial_relation must be non-empty.")
+        if not self.anchor_target.strip():
+            raise ValueError("relative location anchor_target must be non-empty.")
+        if not self.source_text.strip():
+            raise ValueError("relative location source_text must be non-empty.")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return JSON-ready anchor/relation placement fields."""
+
+        payload: dict[str, object] = {
+            "anchor": self.anchor,
+            "anchor_target": self.anchor_target,
+            "spatial_relation": self.spatial_relation,
+            "source_text": self.source_text,
+        }
+        if self.direction:
+            payload["direction"] = self.direction
+        if self.direction_target:
+            payload["direction_target"] = self.direction_target
+        return payload
+
+
+@dataclass(frozen=True)
+class KoreanBaseSelectionIntent:
+    """Structured base selector parsed from explicit natural-language modifiers."""
+
+    selector: str
+    label: str
+    target: str
+    location: str
+    source_text: str
+    source: str = "natural_language"
+    confidence: float = 1.0
+
+    def __post_init__(self) -> None:
+        for field_name in ("selector", "label", "target", "location", "source_text", "source"):
+            if not str(getattr(self, field_name)).strip():
+                raise ValueError(f"base selection {field_name} must be non-empty.")
+        if not 0.0 <= float(self.confidence) <= 1.0:
+            raise ValueError("base selection confidence must be between 0.0 and 1.0.")
+        object.__setattr__(self, "confidence", float(self.confidence))
+
+    def to_dict(self) -> dict[str, object]:
+        """Return JSON-ready base-selection fields for parser diagnostics."""
+
+        return {
+            "selector": self.selector,
+            "label": self.label,
+            "target": self.target,
+            "location": self.location,
+            "source_text": self.source_text,
+            "source": self.source,
+            "confidence": self.confidence,
+        }
+
+
 UTTERANCE_MATRIX_CANONICAL_INTENT_NAMES: Final[tuple[IntentName, ...]] = (
     UTTERANCE_COVERAGE_CANONICAL_INTENT_NAMES
 )
@@ -177,6 +296,124 @@ AMBIGUOUS_COMMAND_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
 MALFORMED_COMMAND_FAILURE_CODE: Final[str] = "malformed_command_text"
 UNSUPPORTED_COMMAND_FAILURE_CODE: Final[str] = "unsupported_command_text"
 AMBIGUOUS_COMMAND_FAILURE_CODE: Final[str] = "ambiguous_command_text"
+MISSING_BUILD_ANCHOR_FAILURE_CODE: Final[str] = "missing_build_anchor"
+MISSING_BUILD_ANCHOR_CLARIFICATION_REASON: Final[str] = (
+    "Building placement named a distance modifier but no anchor location."
+)
+MISSING_BUILD_ANCHOR_CLARIFICATION_PROMPT: Final[str] = (
+    "건설 위치가 거리만 있고 기준점이 없어 실행하지 않았습니다. "
+    "필요한 정보(location): 어디를 기준으로, 어느 방향으로 더 멀게 지을지 말해 주세요. "
+    "예: 본진에서 멀게 보급고 지어 / 본진 입구보다 뒤에 보급고 지어 / 앞마당 입구에 벙커 지어"
+)
+MISSING_BUILD_ANCHOR_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
+    "본진에서 멀게 보급고 지어",
+    "본진 입구보다 뒤에 보급고 지어",
+    "앞마당 입구에 벙커 지어",
+)
+MISSING_BUILD_DIRECTION_FAILURE_CODE: Final[str] = "missing_build_direction"
+MISSING_BUILD_DIRECTION_CLARIFICATION_REASON: Final[str] = (
+    "Building placement named a farther comparison with a known anchor but no "
+    "directional target."
+)
+MISSING_BUILD_DIRECTION_CLARIFICATION_PROMPT: Final[str] = (
+    "건설 기준점은 알겠지만 어느 방향으로 더 멀게 지을지 몰라 실행하지 않았습니다. "
+    "필요한 정보(direction): 기준점에서 더 멀어질 방향이나 목표 위치를 말해 주세요. "
+    "예: 본진에서 앞마당으로 더 멀게 보급고 지어 / 본진 입구보다 뒤에 보급고 지어 / "
+    "미네랄에서 떨어지게 보급고 지어"
+)
+MISSING_BUILD_DIRECTION_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
+    "본진에서 앞마당으로 더 멀게 보급고 지어",
+    "본진 입구보다 뒤에 보급고 지어",
+    "미네랄에서 떨어지게 보급고 지어",
+)
+MISSING_BUILD_RELATIVE_ANCHOR_FAILURE_CODE: Final[str] = (
+    "missing_build_relative_anchor"
+)
+MISSING_BUILD_RELATIVE_ANCHOR_CLARIFICATION_REASON: Final[str] = (
+    "Building placement named a relative modifier but no reference anchor or "
+    "direction."
+)
+MISSING_BUILD_RELATIVE_ANCHOR_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
+    "앞마당 근처에 보급고 지어",
+    "입구 쪽으로 보급고 지어",
+    "미네랄에서 떨어지게 보급고 지어",
+)
+MISSING_RELATIVE_ACTION_ANCHOR_FAILURE_CODE: Final[str] = (
+    "missing_relative_action_anchor"
+)
+MISSING_RELATIVE_ACTION_ANCHOR_CLARIFICATION_REASON: Final[str] = (
+    "Action target named a relative modifier but no reference anchor or target."
+)
+MISSING_RELATIVE_ACTION_ANCHOR_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
+    "본진 입구로 병력 보내",
+    "앞마당으로 카메라 옮겨",
+    "적 앞마당 정찰 보내",
+)
+MISSING_BUILD_SEMANTIC_TARGET_FAILURE_CODE: Final[str] = (
+    "missing_build_semantic_target"
+)
+MISSING_BUILD_SEMANTIC_TARGET_CLARIFICATION_REASON: Final[str] = (
+    "Building placement used a deictic pointer without a supported semantic target."
+)
+MISSING_BUILD_SEMANTIC_TARGET_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
+    "본진에 보급고 지어",
+    "본진 입구에 보급고 지어",
+    "앞마당에 배럭 지어",
+    "본진 가스에 정제소 지어",
+)
+SUPPORTED_BUILD_SEMANTIC_TARGET_LABELS: Final[tuple[str, ...]] = (
+    "본진",
+    "본진 입구",
+    "앞마당",
+    "앞마당 입구",
+    "본진 가스",
+)
+MISSING_BUILD_STRUCTURE_FAILURE_CODE: Final[str] = "missing_build_structure"
+MISSING_BUILD_STRUCTURE_CLARIFICATION_REASON: Final[str] = (
+    "Build request named a construction action or location but no structure."
+)
+MISSING_BUILD_STRUCTURE_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
+    "사령부 근처에 보급고 지어",
+    "본진 사령부 근처에 배럭 지어",
+    "앞마당 사령부 근처에 벙커 지어",
+)
+AMBIGUOUS_CAMERA_BASE_FAILURE_CODE: Final[str] = "ambiguous_camera_base"
+AMBIGUOUS_CAMERA_BASE_CLARIFICATION_REASON: Final[str] = (
+    "Camera target named a generic command center/base without choosing which base."
+)
+AMBIGUOUS_CAMERA_BASE_CLARIFICATION_PROMPT: Final[str] = (
+    "어느 사령부로 카메라를 옮길지 몰라 실행하지 않았습니다. "
+    "필요한 정보(target): 본진 사령부인지, 앞마당 사령부인지, 새로 지은 사령부인지 말해 주세요. "
+    "예: 본진 보여줘 / 앞마당으로 카메라 옮겨 / 본진 입구 보여줘"
+)
+AMBIGUOUS_CAMERA_BASE_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
+    "본진 보여줘",
+    "앞마당으로 카메라 옮겨",
+    "본진 입구 보여줘",
+)
+AMBIGUOUS_BUILD_BASE_FAILURE_CODE: Final[str] = "ambiguous_build_base"
+AMBIGUOUS_BUILD_BASE_CLARIFICATION_REASON: Final[str] = (
+    "Build placement named a generic command center/base without choosing which base."
+)
+AMBIGUOUS_BUILD_BASE_CLARIFICATION_PROMPT: Final[str] = (
+    "어느 사령부 근처에 건설할지 몰라 실행하지 않았습니다. "
+    "필요한 정보(location): 본진 사령부인지, 앞마당 사령부인지, 새로 지은 사령부인지 말해 주세요. "
+    "예: 본진 사령부 근처에 배럭 지어 / 앞마당 사령부 근처에 보급고 지어"
+)
+AMBIGUOUS_BUILD_BASE_CLARIFICATION_ALTERNATIVES: Final[tuple[str, ...]] = (
+    "본진 사령부 근처에 배럭 지어",
+    "앞마당 사령부 근처에 보급고 지어",
+    "본진에 보급고 지어",
+)
+MOVE_CAMERA_ALIAS: Final[str] = "move_camera"
+MOVE_CAMERA_CONSTRAINT: Final[str] = "move camera to semantic target"
+MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT: Final[str] = "ramp_or_entrance"
+MOVE_CAMERA_ENEMY_ENTRANCE_TARGET_SLOT: Final[str] = "enemy_entrance"
+MOVE_CAMERA_NATURAL_EXPANSION_TARGET_SLOT: Final[str] = "natural_expansion"
+MOVE_CAMERA_THIRD_BASE_TARGET_SLOT: Final[str] = "third_base"
+MOVE_CAMERA_CHOKE_TARGET_SLOT: Final[str] = "choke"
+MOVE_CAMERA_SCOUT_LOCATION_TARGET_SLOT: Final[str] = "scout_location"
+MOVE_CAMERA_LAST_SEEN_ENEMY_AREA_TARGET_SLOT: Final[str] = "last_seen_enemy_area"
 
 GATHER_RESOURCE_ALIAS: Final[str] = "gather_resource"
 GATHER_RESOURCE_CONSTRAINT: Final[str] = "assign workers to requested resource"
@@ -185,9 +422,29 @@ KEEP_WORKER_PRODUCTION_CONSTRAINT: Final[str] = "keep SCV production continuous"
 TRAIN_WORKER_ONESHOT_CONSTRAINT: Final[str] = "train requested SCV count"
 PREVENT_SUPPLY_BLOCK_ALIAS: Final[str] = "prevent_supply_block"
 PREVENT_SUPPLY_BLOCK_CONSTRAINT: Final[str] = "prevent supply block"
-PREVENT_SUPPLY_BLOCK_LOCATION: Final[str] = "main ramp"
+PREVENT_SUPPLY_BLOCK_LOCATION: Final[str] = "main base"
 BUILD_STRUCTURE_ALIAS: Final[str] = "build_structure"
 BUILD_STRUCTURE_CONSTRAINT: Final[str] = "construct requested Terran structure"
+MAIN_ENTRANCE_PLACEMENT_POLICY: Final[dict[str, object]] = {
+    "anchor": "main ramp",
+    "anchor_target": "self_ramp",
+    "spatial_relation": "near",
+}
+NATURAL_EXPANSION_PLACEMENT_POLICY: Final[dict[str, object]] = {
+    "anchor": "natural expansion",
+    "anchor_target": "self_natural",
+    "spatial_relation": "near",
+}
+AWAY_FROM_MAIN_PLACEMENT_POLICY: Final[dict[str, object]] = {
+    "anchor": "main base",
+    "anchor_target": "self_main",
+    "spatial_relation": "far_from",
+}
+MAIN_GEYSER_PLACEMENT_POLICY: Final[dict[str, object]] = {
+    "anchor": "main geyser",
+    "anchor_target": "self_geyser",
+    "spatial_relation": "on",
+}
 TRAIN_UNIT_ALIAS: Final[str] = "train_unit"
 TRAIN_UNIT_CONSTRAINT: Final[str] = "train requested combat unit"
 SEND_SCOUT_ALIAS: Final[str] = "send_scout"
@@ -376,7 +633,7 @@ COMMAND_PATTERN_LEXICONS: Final[tuple[CommandPatternLexicon, ...]] = (
 """All supported command pattern lexicons for Phase 0 text interpretation."""
 
 BUILD_STRUCTURE_DEFAULT_LOCATIONS: Final[dict[StructureName, str]] = {
-    "Supply Depot": "main ramp",
+    "Supply Depot": "main base",
     "Barracks": "main base",
     "Refinery": "main geyser",
     "Bunker": "natural choke",
@@ -384,6 +641,28 @@ BUILD_STRUCTURE_DEFAULT_LOCATIONS: Final[dict[StructureName, str]] = {
 }
 
 GATHER_RESOURCE_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
+    InterpreterMapping(
+        alias=GATHER_RESOURCE_ALIAS,
+        utterance="자원채취",
+        payload=GatherResourceIntent(
+            priority="normal",
+            constraints=(GATHER_RESOURCE_CONSTRAINT,),
+            resource="minerals",
+            worker_count=3,
+            base="main",
+        ),
+    ),
+    InterpreterMapping(
+        alias=GATHER_RESOURCE_ALIAS,
+        utterance="놀고 있는 일꾼들 일시켜",
+        payload=GatherResourceIntent(
+            priority="normal",
+            constraints=(GATHER_RESOURCE_CONSTRAINT,),
+            resource="minerals",
+            worker_count=3,
+            base="main",
+        ),
+    ),
     InterpreterMapping(
         alias=GATHER_RESOURCE_ALIAS,
         utterance="미네랄에 일꾼 세 기 붙여",
@@ -409,6 +688,15 @@ GATHER_RESOURCE_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
 )
 
 KEEP_WORKER_PRODUCTION_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
+    InterpreterMapping(
+        alias=KEEP_WORKER_PRODUCTION_ALIAS,
+        utterance="일꾼생산",
+        payload=TrainWorkerIntent(
+            priority="normal",
+            constraints=(TRAIN_WORKER_ONESHOT_CONSTRAINT,),
+            count=1,
+        ),
+    ),
     InterpreterMapping(
         alias=KEEP_WORKER_PRODUCTION_ALIAS,
         utterance="일꾼 계속 찍어",
@@ -512,12 +800,55 @@ PREVENT_SUPPLY_BLOCK_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
 BUILD_STRUCTURE_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
     InterpreterMapping(
         alias=BUILD_STRUCTURE_ALIAS,
+        utterance="가스생산 시설 지어",
+        payload=BuildStructureIntent(
+            priority="high",
+            constraints=(BUILD_STRUCTURE_CONSTRAINT,),
+            structure="Refinery",
+            location="main geyser",
+            placement_policy=MAIN_GEYSER_PLACEMENT_POLICY,
+        ),
+    ),
+    InterpreterMapping(
+        alias=BUILD_STRUCTURE_ALIAS,
+        utterance="배프빈가스 지어",
+        payload=BuildStructureIntent(
+            priority="high",
+            constraints=(BUILD_STRUCTURE_CONSTRAINT,),
+            structure="Refinery",
+            location="main geyser",
+            placement_policy=MAIN_GEYSER_PLACEMENT_POLICY,
+        ),
+    ),
+    InterpreterMapping(
+        alias=BUILD_STRUCTURE_ALIAS,
+        utterance="배럴 지어",
+        payload=BuildStructureIntent(
+            priority="normal",
+            constraints=(BUILD_STRUCTURE_CONSTRAINT,),
+            structure="Barracks",
+            location="main base",
+        ),
+    ),
+    InterpreterMapping(
+        alias=BUILD_STRUCTURE_ALIAS,
+        utterance="뵤ㅗ급로 지어",
+        payload=BuildStructureIntent(
+            priority="normal",
+            constraints=(BUILD_STRUCTURE_CONSTRAINT,),
+            structure="Supply Depot",
+            location="main base",
+        ),
+    ),
+    InterpreterMapping(
+        alias=BUILD_STRUCTURE_ALIAS,
         utterance="본진 입구에 서플라이 디포 지어",
         payload=BuildStructureIntent(
             priority="normal",
             constraints=(BUILD_STRUCTURE_CONSTRAINT,),
             structure="Supply Depot",
             location="main ramp",
+            placement_policy=MAIN_ENTRANCE_PLACEMENT_POLICY,
         ),
     ),
     InterpreterMapping(
@@ -548,6 +879,7 @@ BUILD_STRUCTURE_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
             constraints=(BUILD_STRUCTURE_CONSTRAINT,),
             structure="Refinery",
             location="main geyser",
+            placement_policy=MAIN_GEYSER_PLACEMENT_POLICY,
         ),
     ),
     InterpreterMapping(
@@ -558,6 +890,7 @@ BUILD_STRUCTURE_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
             constraints=(BUILD_STRUCTURE_CONSTRAINT,),
             structure="Refinery",
             location="main geyser",
+            placement_policy=MAIN_GEYSER_PLACEMENT_POLICY,
         ),
     ),
     InterpreterMapping(
@@ -626,6 +959,16 @@ TRAIN_UNIT_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
 )
 
 SEND_SCOUT_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
+    InterpreterMapping(
+        alias=SEND_SCOUT_ALIAS,
+        utterance="정찰보내",
+        payload=ScoutIntent(
+            priority="normal",
+            constraints=(SEND_SCOUT_CONSTRAINT,),
+            target=SEND_SCOUT_DEFAULT_TARGET,
+            unit_group=SEND_SCOUT_DEFAULT_UNIT_GROUP,
+        ),
+    ),
     InterpreterMapping(
         alias=SEND_SCOUT_ALIAS,
         utterance="SCV 하나로 정찰 보내",
@@ -985,6 +1328,46 @@ EXPAND_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
     ),
 )
 
+MOVE_CAMERA_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
+    InterpreterMapping(
+        alias=MOVE_CAMERA_ALIAS,
+        utterance="본진 보여줘",
+        payload=MoveCameraIntent(
+            priority="normal",
+            constraints=(MOVE_CAMERA_CONSTRAINT,),
+            target="main base",
+        ),
+    ),
+    InterpreterMapping(
+        alias=MOVE_CAMERA_ALIAS,
+        utterance="본진으로 카메라 옮겨",
+        payload=MoveCameraIntent(
+            priority="normal",
+            constraints=(MOVE_CAMERA_CONSTRAINT,),
+            target="main base",
+        ),
+    ),
+    InterpreterMapping(
+        alias=MOVE_CAMERA_ALIAS,
+        utterance="본진으로 화면 이동",
+        payload=MoveCameraIntent(
+            priority="normal",
+            constraints=(MOVE_CAMERA_CONSTRAINT,),
+            target="main base",
+        ),
+    ),
+    InterpreterMapping(
+        alias=MOVE_CAMERA_ALIAS,
+        utterance="본진 입구 카메라 보여줘",
+        payload=MoveCameraIntent(
+            priority="normal",
+            constraints=(MOVE_CAMERA_CONSTRAINT,),
+            target="main ramp",
+            target_slot=MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT,
+        ),
+    ),
+)
+
 REPRESENTATIVE_UTTERANCE_MATRIX: Final[tuple[InterpreterMapping, ...]] = (
     GATHER_RESOURCE_MAPPINGS[0],
     GATHER_RESOURCE_MAPPINGS[1],
@@ -1006,6 +1389,8 @@ REPRESENTATIVE_UTTERANCE_MATRIX: Final[tuple[InterpreterMapping, ...]] = (
     EXPAND_MAPPINGS[1],
     HARASS_MINERAL_LINE_MAPPINGS[0],
     HARASS_MINERAL_LINE_MAPPINGS[1],
+    MOVE_CAMERA_MAPPINGS[0],
+    MOVE_CAMERA_MAPPINGS[1],
 )
 """Representative Korean matrix: exactly 2 utterances per canonical intent."""
 
@@ -1016,7 +1401,7 @@ KOREAN_COMMAND_TEST_CORPUS: Final[tuple[dict[str, object], ...]] = tuple(
     }
     for mapping in REPRESENTATIVE_UTTERANCE_MATRIX
 )
-"""20-row Korean test corpus with JSON-ready expected typed Intent DSL outputs."""
+"""Korean test corpus with JSON-ready expected typed Intent DSL outputs."""
 
 INTERPRETER_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
     *KEEP_WORKER_PRODUCTION_MAPPINGS,
@@ -1032,6 +1417,7 @@ INTERPRETER_MAPPINGS: Final[tuple[InterpreterMapping, ...]] = (
     *GATHER_RESOURCE_MAPPINGS,
     *REPAIR_MAPPINGS,
     *EXPAND_MAPPINGS,
+    *MOVE_CAMERA_MAPPINGS,
 )
 
 
@@ -1127,7 +1513,42 @@ def _resolve_command_payload(
 
     candidates = _build_ambiguous_command_candidates(normalized_command)
     if len(candidates) == 1:
+        if is_deictic_build_placement_missing_semantic_target(
+            command_text,
+            candidates[0].payload,
+        ):
+            return None, ()
+        if is_distance_only_build_placement(command_text, candidates[0].payload):
+            return None, ()
+        if is_farther_build_placement_missing_direction(
+            command_text,
+            candidates[0].payload,
+        ):
+            return None, ()
+        if is_unanchored_relative_build_placement(
+            command_text,
+            candidates[0].payload,
+        ):
+            return None, ()
         return candidates[0].payload, ()
+    explicit_base_camera_payload = _explicit_base_camera_candidate_payload(
+        normalized_command,
+        candidates,
+    )
+    if explicit_base_camera_payload is not None:
+        return explicit_base_camera_payload, ()
+    semantic_camera_payload = _semantic_camera_candidate_payload(
+        normalized_command,
+        candidates,
+    )
+    if semantic_camera_payload is not None:
+        return semantic_camera_payload, ()
+    explicit_base_build_payload = _explicit_base_build_candidate_payload(
+        normalized_command,
+        candidates,
+    )
+    if explicit_base_build_payload is not None:
+        return explicit_base_build_payload, ()
     return None, candidates
 
 
@@ -1173,6 +1594,18 @@ def _build_command_interpretation_result(
             ),
         )
 
+    if is_distance_only_build_placement(command_text, payload):
+        return build_missing_build_anchor_result(command_text)
+
+    if is_farther_build_placement_missing_direction(command_text, payload):
+        return build_missing_build_direction_result(command_text)
+
+    if is_unanchored_relative_build_placement(command_text, payload):
+        return build_missing_build_relative_anchor_result(command_text)
+
+    if is_deictic_build_placement_missing_semantic_target(command_text, payload):
+        return build_missing_build_semantic_target_result(command_text)
+
     if payload is not None:
         return CommandInterpretationResult(
             command_text=command_text,
@@ -1202,6 +1635,9 @@ def _build_command_interpretation_result(
             ),
         )
 
+    if is_build_request_missing_structure(command_text):
+        return build_missing_build_structure_result(command_text)
+
     command_text_value = command_text if isinstance(command_text, str) else ""
     return CommandInterpretationResult(
         command_text=command_text_value,
@@ -1217,6 +1653,433 @@ def _build_command_interpretation_result(
             alternatives=UNSUPPORTED_COMMAND_CLARIFICATION_ALTERNATIVES,
         ),
     )
+
+
+def build_missing_build_anchor_result(command_text: str) -> CommandInterpretationResult:
+    """Ask for the missing placement anchor instead of guessing a build target."""
+
+    command_text_value = command_text if isinstance(command_text, str) else ""
+    clarification_prompt = _build_missing_build_anchor_prompt(command_text_value)
+    return CommandInterpretationResult(
+        command_text=command_text_value,
+        payload=None,
+        clarification_required=True,
+        clarification_prompt=clarification_prompt,
+        reason=MISSING_BUILD_ANCHOR_CLARIFICATION_REASON,
+        alternatives=MISSING_BUILD_ANCHOR_CLARIFICATION_ALTERNATIVES,
+        failure=build_parsing_failure_report(
+            command_text=command_text_value,
+            code=MISSING_BUILD_ANCHOR_FAILURE_CODE,
+            message=MISSING_BUILD_ANCHOR_CLARIFICATION_REASON,
+            alternatives=MISSING_BUILD_ANCHOR_CLARIFICATION_ALTERNATIVES,
+            intent="BUILD_STRUCTURE",
+            metadata={
+                "missing_fields": ["location"],
+                "missing_anchor": True,
+                "missing_direction": True,
+                "placement_modifier": "distance",
+            },
+        ),
+    )
+
+
+def build_missing_build_direction_result(command_text: str) -> CommandInterpretationResult:
+    """Ask for the missing farther-placement direction after an anchor is known."""
+
+    command_text_value = command_text if isinstance(command_text, str) else ""
+    clarification_prompt = _build_missing_build_direction_prompt(command_text_value)
+    return CommandInterpretationResult(
+        command_text=command_text_value,
+        payload=None,
+        clarification_required=True,
+        clarification_prompt=clarification_prompt,
+        reason=MISSING_BUILD_DIRECTION_CLARIFICATION_REASON,
+        alternatives=MISSING_BUILD_DIRECTION_CLARIFICATION_ALTERNATIVES,
+        failure=build_parsing_failure_report(
+            command_text=command_text_value,
+            code=MISSING_BUILD_DIRECTION_FAILURE_CODE,
+            message=MISSING_BUILD_DIRECTION_CLARIFICATION_REASON,
+            alternatives=MISSING_BUILD_DIRECTION_CLARIFICATION_ALTERNATIVES,
+            intent="BUILD_STRUCTURE",
+            metadata={
+                "missing_fields": ["direction"],
+                "missing_anchor": False,
+                "anchor_known": True,
+                "missing_direction": True,
+                "placement_modifier": "farther",
+            },
+        ),
+    )
+
+
+def build_missing_build_relative_anchor_result(
+    command_text: str,
+) -> CommandInterpretationResult:
+    """Ask for the missing anchor/direction for relative build placement."""
+
+    command_text_value = command_text if isinstance(command_text, str) else ""
+    clarification_prompt = _build_missing_build_relative_anchor_prompt(
+        command_text_value
+    )
+    return CommandInterpretationResult(
+        command_text=command_text_value,
+        payload=None,
+        clarification_required=True,
+        clarification_prompt=clarification_prompt,
+        reason=MISSING_BUILD_RELATIVE_ANCHOR_CLARIFICATION_REASON,
+        alternatives=MISSING_BUILD_RELATIVE_ANCHOR_CLARIFICATION_ALTERNATIVES,
+        failure=build_parsing_failure_report(
+            command_text=command_text_value,
+            code=MISSING_BUILD_RELATIVE_ANCHOR_FAILURE_CODE,
+            message=MISSING_BUILD_RELATIVE_ANCHOR_CLARIFICATION_REASON,
+            alternatives=MISSING_BUILD_RELATIVE_ANCHOR_CLARIFICATION_ALTERNATIVES,
+            intent="BUILD_STRUCTURE",
+            metadata={
+                "missing_fields": ["location"],
+                "missing_anchor": True,
+                "missing_direction": True,
+                "placement_modifier": "relative",
+            },
+        ),
+    )
+
+
+def build_missing_relative_action_anchor_result(
+    command_text: str,
+    payload: IntentPayload | None = None,
+) -> CommandInterpretationResult:
+    """Ask for a concrete anchor before moving camera, units, or game actions."""
+
+    command_text_value = command_text if isinstance(command_text, str) else ""
+    intent_name = _payload_intent_name(payload) or "ACTION"
+    return CommandInterpretationResult(
+        command_text=command_text_value,
+        payload=None,
+        clarification_required=True,
+        clarification_prompt=_build_missing_relative_action_anchor_prompt(
+            command_text_value,
+            intent_name,
+        ),
+        reason=MISSING_RELATIVE_ACTION_ANCHOR_CLARIFICATION_REASON,
+        alternatives=MISSING_RELATIVE_ACTION_ANCHOR_CLARIFICATION_ALTERNATIVES,
+        failure=build_parsing_failure_report(
+            command_text=command_text_value,
+            code=MISSING_RELATIVE_ACTION_ANCHOR_FAILURE_CODE,
+            message=MISSING_RELATIVE_ACTION_ANCHOR_CLARIFICATION_REASON,
+            alternatives=MISSING_RELATIVE_ACTION_ANCHOR_CLARIFICATION_ALTERNATIVES,
+            intent=intent_name,
+            metadata={
+                "missing_fields": ["target"],
+                "missing_anchor": True,
+                "relative_modifier": True,
+            },
+        ),
+    )
+
+
+def build_missing_build_semantic_target_result(
+    command_text: str,
+) -> CommandInterpretationResult:
+    """Ask for a supported semantic target instead of guessing a clicked spot."""
+
+    command_text_value = command_text if isinstance(command_text, str) else ""
+    clarification_prompt = _build_missing_build_semantic_target_prompt(
+        command_text_value
+    )
+    structure = _detect_structure_name(_normalize_command_text(command_text_value))
+    return CommandInterpretationResult(
+        command_text=command_text_value,
+        payload=None,
+        clarification_required=True,
+        clarification_prompt=clarification_prompt,
+        reason=MISSING_BUILD_SEMANTIC_TARGET_CLARIFICATION_REASON,
+        alternatives=MISSING_BUILD_SEMANTIC_TARGET_CLARIFICATION_ALTERNATIVES,
+        failure=build_parsing_failure_report(
+            command_text=command_text_value,
+            code=MISSING_BUILD_SEMANTIC_TARGET_FAILURE_CODE,
+            message=MISSING_BUILD_SEMANTIC_TARGET_CLARIFICATION_REASON,
+            alternatives=MISSING_BUILD_SEMANTIC_TARGET_CLARIFICATION_ALTERNATIVES,
+            intent="BUILD_STRUCTURE",
+            metadata={
+                "missing_fields": ["location"],
+                "deictic_target": True,
+                "supported_semantic_targets": list(
+                    SUPPORTED_BUILD_SEMANTIC_TARGET_LABELS
+                ),
+                "structure_detected": structure is not None,
+            },
+        ),
+    )
+
+
+def build_missing_build_structure_result(command_text: str) -> CommandInterpretationResult:
+    """Ask which structure to build instead of guessing from location-only text."""
+
+    command_text_value = command_text if isinstance(command_text, str) else ""
+    clarification_prompt = _build_missing_build_structure_prompt(command_text_value)
+    return CommandInterpretationResult(
+        command_text=command_text_value,
+        payload=None,
+        clarification_required=True,
+        clarification_prompt=clarification_prompt,
+        reason=MISSING_BUILD_STRUCTURE_CLARIFICATION_REASON,
+        alternatives=MISSING_BUILD_STRUCTURE_CLARIFICATION_ALTERNATIVES,
+        failure=build_parsing_failure_report(
+            command_text=command_text_value,
+            code=MISSING_BUILD_STRUCTURE_FAILURE_CODE,
+            message=MISSING_BUILD_STRUCTURE_CLARIFICATION_REASON,
+            alternatives=MISSING_BUILD_STRUCTURE_CLARIFICATION_ALTERNATIVES,
+            intent="BUILD_STRUCTURE",
+            metadata={
+                "missing_fields": ["structure"],
+                "structure_detected": False,
+            },
+        ),
+    )
+
+
+def build_ambiguous_camera_base_result(
+    command_text: str,
+    base_choices: tuple[str, ...] = (),
+) -> CommandInterpretationResult:
+    """Ask for a concrete camera base target instead of guessing a townhall."""
+
+    command_text_value = command_text if isinstance(command_text, str) else ""
+    choices = tuple(choice.strip() for choice in base_choices if choice.strip())
+    alternatives = choices or AMBIGUOUS_CAMERA_BASE_CLARIFICATION_ALTERNATIVES
+    return CommandInterpretationResult(
+        command_text=command_text_value,
+        payload=None,
+        clarification_required=True,
+        clarification_prompt=_build_ambiguous_camera_base_prompt(choices),
+        reason=AMBIGUOUS_CAMERA_BASE_CLARIFICATION_REASON,
+        alternatives=alternatives,
+        failure=build_parsing_failure_report(
+            command_text=command_text_value,
+            code=AMBIGUOUS_CAMERA_BASE_FAILURE_CODE,
+            message=AMBIGUOUS_CAMERA_BASE_CLARIFICATION_REASON,
+            alternatives=alternatives,
+            intent="MOVE_CAMERA",
+            metadata={
+                "missing_fields": ["target"],
+                "ambiguous_base": True,
+                "supported_targets": list(alternatives),
+            },
+        ),
+    )
+
+
+def build_ambiguous_build_base_result(
+    command_text: str,
+    base_choices: tuple[str, ...] = (),
+) -> CommandInterpretationResult:
+    """Ask for a concrete build-near base target instead of guessing."""
+
+    command_text_value = command_text if isinstance(command_text, str) else ""
+    choices = tuple(choice.strip() for choice in base_choices if choice.strip())
+    alternatives = choices or AMBIGUOUS_BUILD_BASE_CLARIFICATION_ALTERNATIVES
+    return CommandInterpretationResult(
+        command_text=command_text_value,
+        payload=None,
+        clarification_required=True,
+        clarification_prompt=_build_ambiguous_build_base_prompt(
+            command_text_value,
+            choices,
+        ),
+        reason=AMBIGUOUS_BUILD_BASE_CLARIFICATION_REASON,
+        alternatives=alternatives,
+        failure=build_parsing_failure_report(
+            command_text=command_text_value,
+            code=AMBIGUOUS_BUILD_BASE_FAILURE_CODE,
+            message=AMBIGUOUS_BUILD_BASE_CLARIFICATION_REASON,
+            alternatives=alternatives,
+            intent="BUILD_STRUCTURE",
+            metadata={
+                "missing_fields": ["location"],
+                "ambiguous_base": True,
+                "supported_targets": list(alternatives),
+            },
+        ),
+    )
+
+
+def _build_ambiguous_camera_base_prompt(base_choices: tuple[str, ...]) -> str:
+    """Return a Korean reverse question listing observed base choices."""
+
+    if not base_choices:
+        return AMBIGUOUS_CAMERA_BASE_CLARIFICATION_PROMPT
+    choices = " / ".join(base_choices)
+    return (
+        "어느 사령부로 카메라를 옮길지 몰라 실행하지 않았습니다. "
+        f"가능한 선택지: {choices}. "
+        "필요한 정보(target): 위 선택지 중 어느 사령부인지 말해 주세요. "
+        "예: 본진 보여줘 / 앞마당으로 카메라 옮겨"
+    )
+
+
+def _build_ambiguous_build_base_prompt(
+    command_text: str,
+    base_choices: tuple[str, ...],
+) -> str:
+    """Return a Korean reverse question listing observed build anchor choices."""
+
+    request = _describe_build_target_request(command_text)
+    if not base_choices:
+        return (
+            f"{request} 요청은 유지하겠습니다. "
+            f"{AMBIGUOUS_BUILD_BASE_CLARIFICATION_PROMPT}"
+        )
+    choices = " / ".join(base_choices)
+    return (
+        f"{request} 요청은 유지하겠습니다. "
+        "어느 사령부 근처에 건설할지 몰라 실행하지 않았습니다. "
+        f"가능한 선택지: {choices}. "
+        "필요한 정보(location): 위 선택지 중 어느 사령부인지 말해 주세요. "
+        "예: 본진 사령부 근처에 배럭 지어 / 앞마당 사령부 근처에 보급고 지어"
+    )
+
+
+def _build_missing_build_structure_prompt(command_text: str) -> str:
+    """Return a Korean reverse question for build text without a structure."""
+
+    command_text_value = command_text.strip()
+    request_prefix = (
+        f"`{command_text_value}` 요청은 유지하겠습니다. "
+        if command_text_value
+        else ""
+    )
+    return (
+        f"{request_prefix}어떤 건물을 지을지 몰라 실행하지 않았습니다. "
+        "필요한 정보(structure): 보급고, 배럭, 정제소, 벙커, 커맨드 센터 중 "
+        "무엇을 지을지 말해 주세요. "
+        "예: 사령부 근처에 보급고 지어 / 본진 사령부 근처에 배럭 지어 / "
+        "앞마당 사령부 근처에 벙커 지어"
+    )
+
+
+def _build_missing_build_anchor_prompt(command_text: str) -> str:
+    """Return a concrete Korean reverse question for distance-only building."""
+
+    request = _describe_build_distance_request(command_text)
+    return (
+        f"{request} 요청은 유지하겠습니다. "
+        "하지만 기준점과 멀어질 방향이 없어 실행하지 않았습니다. "
+        "필요한 정보(location): 어디를 기준으로, 어느 방향으로 더 멀게 지을까요? "
+        "예: 본진에서 앞마당 쪽으로 더 멀게 보급고 지어 / "
+        "본진 입구보다 뒤에 보급고 지어 / 앞마당 입구에 벙커 지어"
+    )
+
+
+def _build_missing_build_direction_prompt(command_text: str) -> str:
+    """Return a concrete Korean reverse question for anchored farther building."""
+
+    request = _describe_build_distance_request(command_text)
+    anchor = _describe_placement_anchor(command_text)
+    return (
+        f"{anchor} 기준으로 {request} 요청은 유지하겠습니다. "
+        "하지만 더 멀어질 방향이나 목표 위치가 없어 실행하지 않았습니다. "
+        "필요한 정보(direction): 어느 방향으로 더 멀게 지을까요? "
+        "예: 본진에서 앞마당 쪽으로 더 멀게 보급고 지어 / "
+        "본진 입구보다 뒤에 보급고 지어 / 미네랄에서 떨어지게 보급고 지어"
+    )
+
+
+def _build_missing_build_relative_anchor_prompt(command_text: str) -> str:
+    """Return a concrete Korean reverse question for unanchored relative build."""
+
+    request = _describe_build_target_request(command_text)
+    return (
+        f"{request} 요청은 유지하겠습니다. "
+        "하지만 근처/쪽/떨어지게 같은 상대 위치에 필요한 기준점이나 방향이 없어 "
+        "실행하지 않았습니다. "
+        "필요한 정보(location): 어느 기준 위치나 방향으로 지을까요? "
+        "예: 앞마당 근처에 보급고 지어 / 입구 쪽으로 보급고 지어 / "
+        "미네랄에서 떨어지게 보급고 지어"
+    )
+
+
+def _build_missing_relative_action_anchor_prompt(
+    command_text: str,
+    intent_name: str,
+) -> str:
+    """Return a concrete Korean reverse question for relative action targets."""
+
+    action_label = _relative_action_intent_label(intent_name)
+    command_text_value = str(command_text or "").strip()
+    request = (
+        f"`{command_text_value}` {action_label}"
+        if command_text_value
+        else action_label
+    )
+    return (
+        f"{request} 요청은 유지하겠습니다. "
+        "하지만 근처/쪽/방향 같은 상대 위치에 필요한 기준점이나 대상이 없어 "
+        "실행하지 않았습니다. "
+        "필요한 정보(target): 어느 기준 위치나 대상으로 실행할까요? "
+        "예: 본진 입구로 병력 보내 / 앞마당으로 카메라 옮겨 / 적 앞마당 정찰 보내"
+    )
+
+
+def _relative_action_intent_label(intent_name: str) -> str:
+    labels = {
+        "MOVE_CAMERA": "카메라 이동",
+        "DEFEND": "병력 이동/방어",
+        "SCOUT": "정찰",
+        "HARASS": "견제",
+        "REPAIR": "수리",
+        "GATHER_RESOURCE": "자원 채취",
+        "TRAIN_WORKER": "일꾼 생산",
+        "TRAIN_ARMY": "병력 생산",
+        "EXPAND": "확장",
+    }
+    return labels.get(str(intent_name or "").strip(), "게임 액션")
+
+
+def _build_missing_build_semantic_target_prompt(command_text: str) -> str:
+    """Return a Korean reverse question for deictic building placement."""
+
+    request = _describe_build_target_request(command_text)
+    supported_targets = ", ".join(SUPPORTED_BUILD_SEMANTIC_TARGET_LABELS)
+    examples = " / ".join(MISSING_BUILD_SEMANTIC_TARGET_CLARIFICATION_ALTERNATIVES)
+    return (
+        f"{request} 요청은 유지하겠습니다. "
+        "`저기/여기/거기`처럼 찍은 위치는 현재 지원되는 semantic target이 아니라 "
+        "실행하지 않았습니다. "
+        f"필요한 정보(location): 지원되는 semantic target 중 어디에 지을까요? "
+        f"가능한 위치: {supported_targets}. "
+        f"예: {examples}"
+    )
+
+
+def _describe_build_distance_request(command_text: str) -> str:
+    normalized_command = _normalize_command_text(command_text)
+    structure = _detect_structure_name(normalized_command)
+    structure_label = _BUILD_STRUCTURE_KOREAN_OBJECT_LABELS.get(structure, "건물을")
+    modifier_label = _detect_distance_modifier_label(normalized_command)
+    return f"{structure_label} {modifier_label} 짓는"
+
+
+def _describe_build_target_request(command_text: str) -> str:
+    normalized_command = _normalize_command_text(command_text)
+    structure = _detect_structure_name(normalized_command)
+    structure_label = _BUILD_STRUCTURE_KOREAN_OBJECT_LABELS.get(structure, "건물을")
+    return f"{structure_label} 짓는"
+
+
+def _detect_distance_modifier_label(normalized_command: str) -> str:
+    if _contains_any_pattern(normalized_command, _FARTHER_COMPARATIVE_PLACEMENT_PATTERNS):
+        return "더 멀게"
+    if _contains_any_pattern(normalized_command, _DISTANCE_ONLY_PLACEMENT_PATTERNS):
+        return "멀게"
+    return "거리 조건에 맞춰"
+
+
+def _describe_placement_anchor(command_text: str) -> str:
+    normalized_command = _normalize_command_text(command_text)
+    for label, patterns in _PLACEMENT_ANCHOR_LABEL_PATTERNS:
+        if _contains_any_pattern(normalized_command, patterns):
+            return label
+    return "말한 기준점"
 
 
 def interpret_command_text(command_text: str) -> IntentPayload | None:
@@ -1255,6 +2118,112 @@ def _build_ambiguous_command_candidates(
     return tuple(deduplicated.values())
 
 
+def _explicit_base_camera_candidate_payload(
+    normalized_command: str,
+    candidates: tuple[ClarificationCandidate, ...],
+) -> IntentPayload | None:
+    """Prefer camera movement when an explicit base is only the camera target."""
+
+    base_selection = parse_korean_base_selection(normalized_command)
+    if base_selection is None:
+        return None
+    if not _contains_any_pattern(normalized_command, _CAMERA_ACTION_PATTERNS):
+        return None
+    if _contains_any_pattern(
+        normalized_command,
+        (*_BUILD_STRUCTURE_VERB_PATTERNS, "확장", "멀티"),
+    ):
+        return None
+    camera_candidates = tuple(
+        candidate for candidate in candidates if candidate.intent == "MOVE_CAMERA"
+    )
+    if len(camera_candidates) != 1:
+        return None
+    return camera_candidates[0].payload
+
+
+def _semantic_camera_candidate_payload(
+    normalized_command: str,
+    candidates: tuple[ClarificationCandidate, ...],
+) -> IntentPayload | None:
+    """Prefer camera movement for explicit semantic map target references."""
+
+    if not _contains_any_pattern(normalized_command, _CAMERA_ACTION_PATTERNS):
+        return None
+    if not _contains_any_pattern(
+        normalized_command,
+        (
+            *_SCOUT_LOCATION_PATTERNS,
+            *_LAST_SEEN_ENEMY_AREA_PATTERNS,
+            *_THIRD_LOCATION_PATTERNS,
+        ),
+    ):
+        return None
+    if _contains_any_pattern(normalized_command, _BUILD_STRUCTURE_VERB_PATTERNS):
+        return None
+    camera_candidates = tuple(
+        candidate for candidate in candidates if candidate.intent == "MOVE_CAMERA"
+    )
+    if len(camera_candidates) != 1:
+        return None
+    return camera_candidates[0].payload
+
+
+def _explicit_base_build_candidate_payload(
+    normalized_command: str,
+    candidates: tuple[ClarificationCandidate, ...],
+) -> IntentPayload | None:
+    """Prefer a concrete structure build over EXPAND for base-qualified builds."""
+
+    if parse_korean_base_selection(normalized_command) is None:
+        return None
+    if not _has_build_structure_verb(normalized_command):
+        return None
+    if _detect_structure_name(normalized_command) is None:
+        return None
+    if _has_explicit_expand_action_for_build_disambiguation(normalized_command):
+        return None
+    build_candidates = tuple(
+        candidate for candidate in candidates if candidate.intent == "BUILD_STRUCTURE"
+    )
+    if len(build_candidates) != 1:
+        return None
+    return build_candidates[0].payload
+
+
+def _has_explicit_expand_action_for_build_disambiguation(
+    normalized_command: str,
+) -> bool:
+    """Return True for expansion verbs, excluding townhall words used as labels."""
+
+    explicit_expand_verbs = _normalize_patterns(
+        (
+            "가져",
+            "먹어",
+            "먹자",
+            "펴",
+            "expand",
+            "take",
+            "secure",
+            "prepare",
+        )
+    )
+    if _contains_any_pattern(normalized_command, explicit_expand_verbs):
+        return True
+    return _contains_any_pattern(
+        normalized_command,
+        _normalize_patterns(
+            (
+                "확장해",
+                "확장하",
+                "확장하고",
+                "멀티해",
+                "멀티하고",
+            )
+        ),
+    )
+
+
 def _build_ambiguous_clarification_prompt(
     candidates: tuple[ClarificationCandidate, ...],
 ) -> str:
@@ -1271,10 +2240,33 @@ def _build_ambiguous_clarification_prompt(
     )
 
 
+MALFORMED_KOREAN_INPUT_NORMALIZATION_RULES: Final[tuple[tuple[str, str], ...]] = (
+    ("가스배럴", "가스통"),
+    ("배프빈가스", "베스핀가스"),
+    ("뵤ㅗ급로", "보급고"),
+    ("뵤ㅗ급", "보급"),
+    ("뵤급로", "보급고"),
+    ("뵤급", "보급"),
+    ("보급로", "보급고"),
+    ("배럴", "배럭"),
+)
+"""Known voice/STT malformations normalized before intent matching.
+
+Rules are ordered from compound to simple forms so ``가스 배럴`` stays a
+Refinery request while standalone ``배럴`` remains the common Barracks typo.
+"""
+
+
 def _normalize_command_text(command_text: str) -> str:
     if not isinstance(command_text, str):
         return ""
-    return "".join(command_text.casefold().split())
+    normalized_command = "".join(command_text.casefold().split())
+    for malformed_token, normalized_token in MALFORMED_KOREAN_INPUT_NORMALIZATION_RULES:
+        normalized_command = normalized_command.replace(
+            malformed_token,
+            normalized_token,
+        )
+    return normalized_command
 
 
 def _normalize_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
@@ -1287,6 +2279,214 @@ def _contains_any_pattern(normalized_command: str, patterns: tuple[str, ...]) ->
     """Return True when any pre-normalized pattern occurs in the command."""
 
     return any(pattern in normalized_command for pattern in patterns)
+
+
+SUPPORTED_PARSED_ANCHOR_LABELS: Final[tuple[ParsedAnchorLabel, ...]] = (
+    ParsedAnchorLabel(
+        key="base",
+        label="main base",
+        target="self_main",
+        aliases=(
+            "본진",
+            "우리 본진",
+            "내 본진",
+            "main",
+            "base",
+            "main base",
+        ),
+    ),
+    ParsedAnchorLabel(
+        key="mineral",
+        label="mineral line",
+        target="self_mineral_line",
+        aliases=(
+            "미네랄",
+            "광물",
+            "미네랄 라인",
+            "본진 미네랄",
+            "mineral",
+            "minerals",
+            "mineral line",
+            "main mineral line",
+        ),
+    ),
+    ParsedAnchorLabel(
+        key="entrance",
+        label="main ramp",
+        target="self_ramp",
+        aliases=(
+            "입구",
+            "본진 입구",
+            "램프",
+            "언덕",
+            "초크",
+            "entrance",
+            "ramp",
+            "main ramp",
+            "choke",
+        ),
+    ),
+    ParsedAnchorLabel(
+        key="natural_expansion",
+        label="natural expansion",
+        target="self_natural",
+        aliases=(
+            "앞마당",
+            "내추럴",
+            "우리 앞마당",
+            "멀티",
+            "확장",
+            "natural",
+            "natural expansion",
+            "expansion",
+        ),
+    ),
+)
+"""Supported parsed anchor labels for safe placement policies."""
+
+SUPPORTED_PARSED_ANCHOR_LABEL_KEYS: Final[tuple[str, ...]] = tuple(
+    anchor.key for anchor in SUPPORTED_PARSED_ANCHOR_LABELS
+)
+"""Stable parsed-anchor key order exposed for tests and UI diagnostics."""
+
+SUPPORTED_PARSED_ANCHOR_DISPLAY_LABELS: Final[tuple[str, ...]] = tuple(
+    anchor.label for anchor in SUPPORTED_PARSED_ANCHOR_LABELS
+)
+"""Human-readable parsed-anchor labels accepted by placement parsing."""
+
+_PARSED_ANCHOR_LABEL_BY_KEY: Final[dict[str, ParsedAnchorLabel]] = {
+    anchor.key: anchor for anchor in SUPPORTED_PARSED_ANCHOR_LABELS
+}
+_PARSED_ANCHOR_NORMALIZED_ALIAS_INDEX: Final[dict[str, ParsedAnchorLabel]] = {
+    alias: anchor
+    for anchor in SUPPORTED_PARSED_ANCHOR_LABELS
+    for alias in anchor.normalized_aliases
+}
+
+
+def parsed_anchor_label_for_key(anchor_key: str) -> ParsedAnchorLabel:
+    """Return one supported parsed-anchor label by stable key."""
+
+    try:
+        return _PARSED_ANCHOR_LABEL_BY_KEY[anchor_key]
+    except KeyError as exc:
+        supported = ", ".join(SUPPORTED_PARSED_ANCHOR_LABEL_KEYS)
+        raise ValueError(
+            f"Unsupported parsed anchor label key: {anchor_key!r}. "
+            f"Supported keys: {supported}."
+        ) from exc
+
+
+def normalize_parsed_anchor_label(anchor_text: str) -> ParsedAnchorLabel | None:
+    """Normalize a user/reference anchor phrase to a supported parsed label."""
+
+    normalized = _normalize_command_text(anchor_text)
+    if not normalized:
+        return None
+    return _PARSED_ANCHOR_NORMALIZED_ALIAS_INDEX.get(normalized)
+
+
+def _relative_location_phrase(
+    *,
+    anchor_key: str,
+    spatial_relation: str,
+    source_text: str,
+    direction_key: str = "",
+) -> KoreanRelativeLocationPhrase:
+    """Build placement policy fields from normalized parsed-anchor labels."""
+
+    anchor = parsed_anchor_label_for_key(anchor_key)
+    direction = parsed_anchor_label_for_key(direction_key) if direction_key else None
+    return KoreanRelativeLocationPhrase(
+        anchor=anchor.label,
+        anchor_target=anchor.target,
+        spatial_relation=spatial_relation,
+        source_text=source_text,
+        direction=direction.label if direction else "",
+        direction_target=direction.target if direction else "",
+    )
+
+
+def _away_from_main_relative_location_phrase(
+    *,
+    source_text: str,
+    direction_key: str = "",
+) -> KoreanRelativeLocationPhrase:
+    """Build the explicit away-from-main placement policy fields."""
+
+    direction = parsed_anchor_label_for_key(direction_key) if direction_key else None
+    return KoreanRelativeLocationPhrase(
+        anchor=str(AWAY_FROM_MAIN_PLACEMENT_POLICY["anchor"]),
+        anchor_target=str(AWAY_FROM_MAIN_PLACEMENT_POLICY["anchor_target"]),
+        spatial_relation=str(AWAY_FROM_MAIN_PLACEMENT_POLICY["spatial_relation"]),
+        source_text=source_text,
+        direction=direction.label if direction else "",
+        direction_target=direction.target if direction else "",
+    )
+
+
+def parse_korean_relative_location_phrase(
+    command_text: str,
+) -> KoreanRelativeLocationPhrase | None:
+    """Parse anchored Korean relative placement into anchor/relation fields."""
+
+    normalized_command = _normalize_command_text(command_text)
+    source_text = command_text.strip() if isinstance(command_text, str) else ""
+    if not normalized_command or not source_text:
+        return None
+
+    if _contains_any_pattern(
+        normalized_command,
+        _MINERAL_AWAY_RELATIVE_LOCATION_PATTERNS,
+    ):
+        return _relative_location_phrase(
+            anchor_key="mineral",
+            spatial_relation="away_from",
+            source_text=source_text,
+        )
+    if _contains_any_pattern(
+        normalized_command,
+        _RAMP_TOWARD_RELATIVE_LOCATION_PATTERNS,
+    ):
+        return _relative_location_phrase(
+            anchor_key="entrance",
+            spatial_relation="toward",
+            source_text=source_text,
+        )
+    if _contains_any_pattern(
+        normalized_command,
+        _NATURAL_NEAR_RELATIVE_LOCATION_PATTERNS,
+    ):
+        return _relative_location_phrase(
+            anchor_key="natural_expansion",
+            spatial_relation="near",
+            source_text=source_text,
+        )
+    has_main_far_phrase = _contains_any_pattern(
+        normalized_command,
+        _MAIN_FAR_RELATIVE_LOCATION_PATTERNS,
+    ) or (
+        _contains_any_pattern(
+            normalized_command,
+            _MAIN_ANCHOR_RELATIVE_LOCATION_PATTERNS,
+        )
+        and _contains_any_pattern(
+            normalized_command,
+            _DISTANCE_ONLY_PLACEMENT_PATTERNS,
+        )
+    )
+    if has_main_far_phrase:
+        direction_key = ""
+        if _contains_any_pattern(
+            normalized_command,
+            _NATURAL_DIRECTION_RELATIVE_LOCATION_PATTERNS,
+        ):
+            direction_key = "natural_expansion"
+        return _away_from_main_relative_location_phrase(
+            source_text=source_text,
+            direction_key=direction_key,
+        )
+    return None
 
 
 _WORKER_SUBJECT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
@@ -1307,7 +2507,19 @@ _PRODUCTION_CONTINUITY_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("계속", "유지", "쉬지말고", "끊기지않게", "keep", "continuous", "constantly"),
 )
 _WORKER_TRAINING_VERB_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
-    ("찍어", "뽑아", "생산", "만들", "눌러", "train", "produce", "queue", "make"),
+    (
+        "찍어",
+        "뽑아",
+        "생산",
+        "생성",
+        "만들",
+        "지어",
+        "눌러",
+        "train",
+        "produce",
+        "queue",
+        "make",
+    ),
 )
 _GATHER_ACTION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     (
@@ -1318,6 +2530,9 @@ _GATHER_ACTION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
         "캐",
         "캐게",
         "보내",
+        "일시켜",
+        "일하게",
+        "놀고있는일꾼",
         "assign",
         "gather",
         "mine",
@@ -1325,7 +2540,7 @@ _GATHER_ACTION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ),
 )
 _GAS_RESOURCE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
-    ("가스", "vespene", "gas"),
+    ("가스", "베스핀", "배스핀", "배프빈", "vespene", "gas"),
 )
 _MINERAL_RESOURCE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("미네랄", "광물", "자원", "resource", "resources", "mineral", "minerals"),
@@ -1336,8 +2551,191 @@ _GENERIC_RESOURCE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
 _NATURAL_BASE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("앞마당", "내추럴", "natural", "expansion"),
 )
+_BASE_SELECTION_DEFINITIONS: Final[
+    tuple[tuple[str, str, str, str, tuple[str, ...]], ...]
+] = (
+    (
+        "main",
+        "main base",
+        "self_main",
+        "main base",
+        _normalize_patterns(
+            (
+                "본진",
+                "본진 사령부",
+                "메인",
+                "메인 베이스",
+                "main",
+                "main base",
+                "main command center",
+                "1번 사령부",
+                "첫 사령부",
+                "첫번째 사령부",
+                "첫째 사령부",
+            )
+        ),
+    ),
+    (
+        "natural",
+        "natural expansion",
+        "self_natural",
+        "natural expansion",
+        _normalize_patterns(
+            (
+                "앞마당",
+                "앞마당 사령부",
+                "내추럴",
+                "내추럴 사령부",
+                "멀티",
+                "확장",
+                "natural",
+                "natural expansion",
+                "natural command center",
+                "2번 사령부",
+                "두번째 사령부",
+                "둘째 사령부",
+            )
+        ),
+    ),
+    (
+        "third",
+        "third base",
+        "self_third",
+        "third base",
+        _normalize_patterns(
+            (
+                "third",
+                "third base",
+                "third command center",
+                "3rd base",
+                "3번 사령부",
+                "세번째 사령부",
+                "셋째 사령부",
+                "삼룡이",
+                "3멀티",
+                "세번째 멀티",
+            )
+        ),
+    ),
+    (
+        "newest",
+        "newest base",
+        "self_newest",
+        "newest base",
+        _normalize_patterns(
+            (
+                "newest",
+                "newest base",
+                "latest base",
+                "새로 지은 사령부",
+                "새 사령부",
+                "최근 사령부",
+                "가장 최근 사령부",
+                "막 지은 사령부",
+                "새로 먹은 멀티",
+            )
+        ),
+    ),
+)
+_ADDITIONAL_BASE_SELECTION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?:추가사령부|추가커맨드|additional(?:base|commandcenter|cc))(?P<index>\d+)"
+)
+
+
+def parse_korean_base_selection(command_text: str) -> KoreanBaseSelectionIntent | None:
+    """Parse explicit base modifiers into a structured selector.
+
+    Generic words like ``사령부`` or bare ``base`` intentionally do not match:
+    those remain clarification cases when multiple townhalls exist.
+    """
+
+    normalized_command = _normalize_command_text(command_text)
+    source_text = command_text.strip() if isinstance(command_text, str) else ""
+    if not normalized_command or not source_text:
+        return None
+
+    additional_match = _ADDITIONAL_BASE_SELECTION_PATTERN.search(normalized_command)
+    if additional_match is not None:
+        index = additional_match.group("index")
+        return KoreanBaseSelectionIntent(
+            selector=f"additional_{index}",
+            label=f"additional base {index}",
+            target=f"self_additional_{index}",
+            location=f"additional base {index}",
+            source_text=source_text,
+        )
+
+    matches: list[KoreanBaseSelectionIntent] = []
+    for selector, label, target, location, patterns in _BASE_SELECTION_DEFINITIONS:
+        if _contains_any_pattern(normalized_command, patterns):
+            matches.append(
+                KoreanBaseSelectionIntent(
+                    selector=selector,
+                    label=label,
+                    target=target,
+                    location=location,
+                    source_text=source_text,
+                )
+            )
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _has_explicit_base_selection(normalized_command: str) -> bool:
+    return parse_korean_base_selection(normalized_command) is not None
+
+
+def _requires_structured_base_selection_metadata(
+    selection: KoreanBaseSelectionIntent | None,
+) -> bool:
+    return selection is not None
+
+
+def _explicit_base_selection_placement_policy(
+    normalized_command: str,
+    selection: KoreanBaseSelectionIntent | None,
+) -> dict[str, object]:
+    """Return placement metadata that keeps explicit base builds auditable."""
+
+    if not _requires_structured_base_selection_metadata(selection):
+        return {}
+    assert selection is not None
+    policy: dict[str, object] = {"base_selection": selection.to_dict()}
+    if _contains_any_pattern(normalized_command, _BUILD_NEAR_BASE_RELATION_PATTERNS):
+        policy["anchor"] = selection.label
+        policy["anchor_target"] = selection.target
+        policy["spatial_relation"] = "near"
+    return policy
 _SUPPLY_SUBJECT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
-    ("서플", "서플라이", "디포", "보급고", "인구", "supply", "supply depot", "depot"),
+    (
+        "서플",
+        "서플라이",
+        "디포",
+        "보급",
+        "보급고",
+        "보급로",
+        "뵤급",
+        "뵤급로",
+        "뵤ㅗ급",
+        "뵤ㅗ급로",
+        "인구",
+        "supply",
+        "supply depot",
+        "depot",
+    ),
+)
+_REFINERY_COMPOUND_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "가스배럴",
+        "가스시설",
+        "가스생산",
+        "가스생산시설",
+        "가스통",
+        "베스핀가스",
+        "배스핀가스",
+        "배프빈가스",
+    ),
 )
 _SUPPLY_PRESSURE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("막히", "안막히", "트이", "부족", "늘려", "뚫", "미리", "block", "blocked", "cap", "room"),
@@ -1346,11 +2744,41 @@ _STRUCTURE_NAME_ALIASES: Final[tuple[tuple[StructureName, tuple[str, ...]], ...]
     (
         "Supply Depot",
         _normalize_patterns(
-            ("서플라이디포", "서플라이", "서플", "보급고", "supplydepot", "depot"),
+            (
+                "서플라이디포",
+                "서플라이",
+                "서플",
+                "보급",
+                "보급고",
+                "보급로",
+                "뵤급",
+                "뵤급로",
+                "뵤ㅗ급",
+                "뵤ㅗ급로",
+                "supplydepot",
+                "depot",
+            ),
         ),
     ),
-    ("Barracks", _normalize_patterns(("배럭스", "배럭", "병영", "barracks", "rax"))),
-    ("Refinery", _normalize_patterns(("리파이너리", "정제소", "가스통", "refinery"))),
+    ("Barracks", _normalize_patterns(("배럭스", "배럭", "배럴", "병영", "barracks", "rax"))),
+    (
+        "Refinery",
+        _normalize_patterns(
+            (
+                "리파이너리",
+                "정제소",
+                "가스통",
+                "가스시설",
+                "가스생산",
+                "가스생산시설",
+                "가스배럴",
+                "베스핀가스",
+                "배스핀가스",
+                "배프빈가스",
+                "refinery",
+            ),
+        ),
+    ),
     ("Bunker", _normalize_patterns(("벙커", "bunker"))),
     (
         "Command Center",
@@ -1367,6 +2795,7 @@ _BUILD_STRUCTURE_VERB_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
         "올려",
         "건설",
         "설치",
+        "생산",
         "만들",
         "build",
         "construct",
@@ -1375,7 +2804,7 @@ _BUILD_STRUCTURE_VERB_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ),
 )
 _NATURAL_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
-    ("앞마당", "natural"),
+    ("앞마당", "내추럴", "natural"),
 )
 _CHOKE_HINT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("입구", "언덕", "초크", "쪽", "choke"),
@@ -1383,11 +2812,311 @@ _CHOKE_HINT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
 _RAMP_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("입구", "언덕", "램프", "ramp"),
 )
+_RAMP_ONLY_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    ("램프", "ramp"),
+)
+_CHOKE_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    ("초크", "choke", "앞마당 입구", "앞마당입구"),
+)
 _GEYSER_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("가스", "geyser"),
 )
 _EXPANSION_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
-    ("앞마당", "멀티", "확장", "natural", "expansion"),
+    ("앞마당", "내추럴", "멀티", "확장", "natural", "expansion"),
+)
+_GENERIC_EXPANSION_CAMERA_BASE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    ("멀티", "확장", "expansion"),
+)
+_THIRD_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "third",
+        "third base",
+        "3rd base",
+        "삼룡이",
+        "3멀티",
+        "세번째 멀티",
+        "세 번째 멀티",
+        "셋째 멀티",
+    ),
+)
+_SCOUT_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "정찰 위치",
+        "정찰위치",
+        "정찰 지점",
+        "정찰지점",
+        "정찰한 곳",
+        "scout location",
+        "scouted location",
+        "last scout location",
+    ),
+)
+_LAST_SEEN_ENEMY_AREA_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "마지막 적 위치",
+        "마지막적위치",
+        "마지막으로 본 적",
+        "최근 본 적 위치",
+        "최근적위치",
+        "last seen enemy",
+        "last seen enemy area",
+        "enemy last seen",
+        "last enemy position",
+    ),
+)
+_FAR_FROM_MAIN_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "본진과떨어",
+        "본진에서떨어",
+        "본진에서멀게",
+        "본진에서멀리",
+        "본진밖",
+        "본진밖에",
+        "본진바깥",
+        "본진바깥에",
+        "본진외곽",
+        "본진외곽에",
+        "본진밖쪽",
+        "본진바깥쪽",
+        "먼곳",
+        "먼 곳",
+        "멀리",
+    ),
+)
+_DISTANCE_ONLY_PLACEMENT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "더멀게",
+        "더멀리",
+        "멀게",
+        "멀리",
+        "먼곳",
+        "먼곳에",
+        "먼데",
+        "떨어진곳",
+        "떨어진곳에",
+    ),
+)
+_FARTHER_COMPARATIVE_PLACEMENT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "더멀게",
+        "더멀리",
+        "더먼곳",
+        "더먼곳에",
+        "더떨어",
+        "더떨어진",
+        "보다멀게",
+        "보다멀리",
+    ),
+)
+_UNANCHORED_RELATIVE_PLACEMENT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "근처",
+        "근처에",
+        "가까이",
+        "쪽으로",
+        "쪽에",
+        "쪽",
+        "방향으로",
+        "방향에",
+        "떨어지게",
+        "떨어져",
+        "떨어뜨려",
+        "뒤쪽",
+        "앞쪽",
+        "위쪽",
+        "아래쪽",
+        "왼쪽",
+        "오른쪽",
+        "near",
+        "toward",
+        "away",
+    ),
+)
+_BARE_DISTANCE_MODIFIER_PLACEMENT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "더멀게",
+        "더멀리",
+        "좀더멀게",
+        "좀더멀리",
+        "멀게",
+        "멀리",
+        "더먼곳",
+        "더먼곳에",
+        "먼곳",
+        "먼곳에",
+    ),
+)
+_PLACEMENT_ANCHOR_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "본진",
+        "앞마당",
+        "내추럴",
+        "입구",
+        "언덕",
+        "램프",
+        "가스",
+        "미네랄",
+        "광물",
+        "멀티",
+        "확장",
+        "초크",
+        "사령부",
+        "커맨드",
+        "main",
+        "base",
+        "natural",
+        "ramp",
+        "geyser",
+        "mineral",
+        "expansion",
+        "choke",
+    ),
+)
+_PLACEMENT_DIRECTION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "쪽으로",
+        "쪽에",
+        "쪽",
+        "앞마당으로",
+        "내추럴로",
+        "입구로",
+        "램프로",
+        "미네랄로",
+        "가스로",
+        "방향",
+        "향해",
+        "향해서",
+        "뒤",
+        "뒤에",
+        "뒤쪽",
+        "앞쪽",
+        "위",
+        "위쪽",
+        "아래",
+        "아래쪽",
+        "왼쪽",
+        "오른쪽",
+        "근처",
+        "near",
+        "toward",
+        "towards",
+        "behind",
+        "back",
+        "left",
+        "right",
+    ),
+)
+_DEICTIC_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "저기",
+        "여기",
+        "거기",
+        "저곳",
+        "이곳",
+        "그곳",
+        "저쪽",
+        "이쪽",
+        "그쪽",
+        "here",
+        "there",
+    ),
+)
+_BUILD_STRUCTURE_KOREAN_OBJECT_LABELS: Final[dict[StructureName | None, str]] = {
+    "Supply Depot": "보급고를",
+    "Barracks": "배럭을",
+    "Refinery": "정제소를",
+    "Bunker": "벙커를",
+    "Command Center": "커맨드 센터를",
+    None: "건물을",
+}
+_PLACEMENT_ANCHOR_LABEL_PATTERNS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("본진", _normalize_patterns(("본진", "main", "base"))),
+    ("앞마당", _normalize_patterns(("앞마당", "내추럴", "natural"))),
+    ("입구", _normalize_patterns(("입구", "초크", "choke"))),
+    ("램프", _normalize_patterns(("램프", "언덕", "ramp"))),
+    ("가스", _normalize_patterns(("가스", "geyser"))),
+    ("확장", _normalize_patterns(("멀티", "확장", "expansion"))),
+)
+_MAIN_FAR_RELATIVE_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "본진에서멀게",
+        "본진에서멀리",
+        "본진과떨어",
+        "본진에서떨어",
+        "본진보다멀게",
+        "본진보다멀리",
+        "본진보다더멀게",
+        "본진보다더멀리",
+        "본진밖",
+        "본진밖에",
+        "본진바깥",
+        "본진바깥에",
+        "본진외곽",
+        "본진외곽에",
+        "본진밖쪽",
+        "본진바깥쪽",
+    ),
+)
+_MAIN_ANCHOR_RELATIVE_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "본진에서",
+        "본진보다",
+        "본진과",
+        "본진밖",
+        "본진바깥",
+        "본진외곽",
+    ),
+)
+_MINERAL_AWAY_RELATIVE_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "미네랄에서떨어",
+        "미네랄라인에서떨어",
+        "미네랄에서멀게",
+        "미네랄에서멀리",
+        "광물에서떨어",
+        "mineralaway",
+        "awayfromminerals",
+    ),
+)
+_RAMP_TOWARD_RELATIVE_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "입구쪽으로",
+        "입구쪽에",
+        "입구쪽",
+        "램프쪽으로",
+        "램프쪽에",
+        "언덕쪽으로",
+        "choketoward",
+        "towardramp",
+    ),
+)
+_NATURAL_NEAR_RELATIVE_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "앞마당근처",
+        "앞마당근처에",
+        "앞마당가까이",
+        "내추럴근처",
+        "naturalnear",
+        "nearnatural",
+    ),
+)
+_NATURAL_DIRECTION_RELATIVE_LOCATION_PATTERNS: Final[tuple[str, ...]] = (
+    _normalize_patterns(("앞마당으로", "내추럴로", "natural"))
+)
+_MAIN_ENTRANCE_DIRECT_PLACEMENT_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "본진입구",
+        "우리입구",
+        "우리본진입구",
+        "아군입구",
+        "내입구",
+        "입구에",
+        "입구앞",
+        "입구근처",
+        "입구막",
+        "입구방어",
+        "입구수비",
+    ),
 )
 _MAIN_BASE_LOCATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("본진", "main base", "base"),
@@ -1412,6 +3141,49 @@ _ARMY_TRAINING_VERB_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
 )
 _SCOUT_ACTION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("정찰", "확인", "체크", "봐", "보러", "살펴", "scout", "check", "send"),
+)
+_CAMERA_ACTION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "카메라",
+        "화면",
+        "시점",
+        "보여줘",
+        "보여",
+        "center",
+        "camera",
+        "view",
+    ),
+)
+_CAMERA_GENERIC_BASE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "사령부",
+        "커맨드센터",
+        "커맨드",
+        "commandcenter",
+        "command centre",
+        "cc",
+        "기지",
+        "base",
+    )
+)
+_BUILD_NEAR_BASE_RELATION_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    (
+        "근처",
+        "주변",
+        "옆",
+        "근방",
+        "가까이",
+        "near",
+        "around",
+        "nextto",
+        "next to",
+    )
+)
+_EXPLICIT_CAMERA_BASE_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    ("본진", "main", "main base")
+)
+_ENEMY_CAMERA_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
+    ("적", "상대", "enemy")
 )
 _PLAIN_SCOUT_ORDER_PATTERNS: Final[tuple[str, ...]] = _normalize_patterns(
     ("정찰", "scout"),
@@ -1798,6 +3570,15 @@ def _looks_like_gather_resource(normalized_command: str) -> bool:
         normalized_command,
         _GENERIC_RESOURCE_PATTERNS,
     )
+    is_worker_send_without_target = (
+        has_worker_subject
+        and _detect_resource_name(normalized_command) is None
+        and _contains_any_pattern(normalized_command, _GATHER_ACTION_PATTERNS)
+        and not _contains_any_pattern(normalized_command, _SCOUT_TARGET_CONTEXT_PATTERNS)
+        and not _detect_structure_name(normalized_command)
+    )
+    if is_worker_send_without_target:
+        return True
     return (
         _detect_resource_name(normalized_command) is not None
         and _contains_any_pattern(normalized_command, _GATHER_ACTION_PATTERNS)
@@ -1810,10 +3591,18 @@ def _detect_resource_name(normalized_command: str) -> ResourceName | None:
         return "gas"
     if _contains_any_pattern(normalized_command, _MINERAL_RESOURCE_PATTERNS):
         return "minerals"
+    if (
+        _contains_any_pattern(normalized_command, _WORKER_SUBJECT_PATTERNS)
+        and _contains_any_pattern(normalized_command, _GATHER_ACTION_PATTERNS)
+    ):
+        return "minerals"
     return None
 
 
 def _detect_worker_base(normalized_command: str) -> str:
+    base_selection = parse_korean_base_selection(normalized_command)
+    if base_selection is not None:
+        return base_selection.selector
     if _contains_any_pattern(normalized_command, _NATURAL_BASE_PATTERNS):
         return "natural"
     return "main"
@@ -1841,6 +3630,8 @@ def _build_structure_target_from_command(
 
 
 def _detect_structure_name(normalized_command: str) -> StructureName | None:
+    if _contains_any_pattern(normalized_command, _REFINERY_COMPOUND_PATTERNS):
+        return "Refinery"
     for structure, aliases in _STRUCTURE_NAME_ALIASES:
         if _contains_any_pattern(normalized_command, aliases):
             return structure
@@ -1855,6 +3646,7 @@ def _detect_structure_location(
     normalized_command: str,
     structure: StructureName,
 ) -> str:
+    base_selection = parse_korean_base_selection(normalized_command)
     if _contains_any_pattern(
         normalized_command, _NATURAL_LOCATION_PATTERNS
     ) and _contains_any_pattern(normalized_command, _CHOKE_HINT_PATTERNS):
@@ -1865,9 +3657,251 @@ def _detect_structure_location(
         return "main geyser"
     if _contains_any_pattern(normalized_command, _EXPANSION_LOCATION_PATTERNS):
         return "natural expansion"
+    if _contains_any_pattern(normalized_command, _FAR_FROM_MAIN_LOCATION_PATTERNS):
+        return "natural expansion"
+    if base_selection is not None:
+        return base_selection.location
     if _contains_any_pattern(normalized_command, _MAIN_BASE_LOCATION_PATTERNS):
         return "main base"
     return BUILD_STRUCTURE_DEFAULT_LOCATIONS[structure]
+
+
+def _main_entrance_placement_policy_for(
+    normalized_command: str,
+    location: str,
+) -> dict[str, object]:
+    """Return the explicit self-ramp policy for Korean entrance build phrases."""
+
+    if location != "main ramp":
+        return {}
+    if _contains_any_pattern(normalized_command, _ENEMY_OWNER_PATTERNS):
+        return {}
+    if (
+        _contains_any_pattern(normalized_command, _NATURAL_LOCATION_PATTERNS)
+        and _contains_any_pattern(normalized_command, _CHOKE_HINT_PATTERNS)
+    ):
+        return {}
+    if not _contains_any_pattern(
+        normalized_command,
+        _MAIN_ENTRANCE_DIRECT_PLACEMENT_PATTERNS,
+    ):
+        return {}
+    return dict(MAIN_ENTRANCE_PLACEMENT_POLICY)
+
+
+def _natural_expansion_placement_policy_for(
+    normalized_command: str,
+    location: str,
+) -> dict[str, object]:
+    """Return the explicit self-natural policy for direct natural build phrases."""
+
+    if location != "natural expansion":
+        return {}
+    if _contains_any_pattern(normalized_command, _ENEMY_OWNER_PATTERNS):
+        return {}
+    if not _contains_any_pattern(normalized_command, _EXPANSION_LOCATION_PATTERNS):
+        return {}
+    return dict(NATURAL_EXPANSION_PLACEMENT_POLICY)
+
+
+def _main_geyser_placement_policy_for(
+    normalized_command: str,
+    location: str,
+) -> dict[str, object]:
+    """Return the explicit self-geyser policy for refinery build phrases."""
+
+    if location != "main geyser":
+        return {}
+    if _contains_any_pattern(normalized_command, _ENEMY_OWNER_PATTERNS):
+        return {}
+    if not _contains_any_pattern(normalized_command, _GEYSER_LOCATION_PATTERNS):
+        return {}
+    return dict(MAIN_GEYSER_PLACEMENT_POLICY)
+
+
+def is_distance_only_build_placement(
+    command_text: str,
+    payload: IntentPayload | None = None,
+) -> bool:
+    """Return True when a build request gives distance but no placement anchor."""
+
+    normalized_command = _normalize_command_text(command_text)
+    if not normalized_command:
+        return False
+    if payload is not None and _payload_intent_name(payload) != "BUILD_STRUCTURE":
+        return False
+    if not _has_distance_modifier_build_context(normalized_command, payload):
+        return False
+    if not _contains_any_pattern(normalized_command, _DISTANCE_ONLY_PLACEMENT_PATTERNS):
+        return False
+    return not _contains_any_pattern(normalized_command, _PLACEMENT_ANCHOR_PATTERNS)
+
+
+def _has_distance_modifier_build_context(
+    normalized_command: str,
+    payload: IntentPayload | None,
+) -> bool:
+    if _has_build_structure_verb(normalized_command):
+        return True
+    if payload is not None:
+        return True
+    if _detect_structure_name(normalized_command) is not None:
+        return True
+    return _is_bare_distance_modifier_placement(normalized_command)
+
+
+def _is_bare_distance_modifier_placement(normalized_command: str) -> bool:
+    """Return True for modifier-only Korean placement phrases like ``더 멀게``."""
+
+    if normalized_command not in _BARE_DISTANCE_MODIFIER_PLACEMENT_PATTERNS:
+        return False
+    if _contains_any_pattern(normalized_command, _PLACEMENT_ANCHOR_PATTERNS):
+        return False
+    return not _contains_any_pattern(normalized_command, _PLACEMENT_DIRECTION_PATTERNS)
+
+
+def is_farther_build_placement_missing_direction(
+    command_text: str,
+    payload: IntentPayload | None = None,
+) -> bool:
+    """Return True when a farther build request has an anchor but no direction."""
+
+    normalized_command = _normalize_command_text(command_text)
+    if not normalized_command:
+        return False
+    if payload is not None and _payload_intent_name(payload) != "BUILD_STRUCTURE":
+        return False
+    if not _has_build_structure_verb(normalized_command):
+        return False
+    if not _contains_any_pattern(
+        normalized_command,
+        _FARTHER_COMPARATIVE_PLACEMENT_PATTERNS,
+    ):
+        return False
+    if not _contains_any_pattern(normalized_command, _PLACEMENT_ANCHOR_PATTERNS):
+        return False
+    return not _contains_any_pattern(normalized_command, _PLACEMENT_DIRECTION_PATTERNS)
+
+
+def is_unanchored_relative_build_placement(
+    command_text: str,
+    payload: IntentPayload | None = None,
+) -> bool:
+    """Return True when a build request has a relative modifier but no anchor."""
+
+    normalized_command = _normalize_command_text(command_text)
+    if not normalized_command:
+        return False
+    if payload is not None and _payload_intent_name(payload) != "BUILD_STRUCTURE":
+        return False
+    if _contains_any_pattern(normalized_command, _DEICTIC_LOCATION_PATTERNS):
+        return False
+    if not _has_relative_modifier_build_context(normalized_command, payload):
+        return False
+    if parse_korean_base_selection(normalized_command) is not None:
+        return False
+    if _contains_any_pattern(normalized_command, _CAMERA_GENERIC_BASE_PATTERNS):
+        return False
+    if not _contains_any_pattern(
+        normalized_command,
+        _UNANCHORED_RELATIVE_PLACEMENT_PATTERNS,
+    ):
+        return False
+    if _payload_has_resolved_placement_anchor(payload):
+        return False
+    return not _contains_any_pattern(normalized_command, _PLACEMENT_ANCHOR_PATTERNS)
+
+
+def is_unanchored_relative_action_target(
+    command_text: str,
+    payload: IntentPayload | None = None,
+) -> bool:
+    """Return True when a mutating payload guessed an unanchored relative target."""
+
+    normalized_command = _normalize_command_text(command_text)
+    if not normalized_command:
+        return False
+    intent_name = _payload_intent_name(payload)
+    if not intent_name or intent_name == "SUMMARIZE_STATE":
+        return False
+    if intent_name == "BUILD_STRUCTURE":
+        return is_unanchored_relative_build_placement(command_text, payload)
+    if _contains_any_pattern(normalized_command, _DEICTIC_LOCATION_PATTERNS):
+        return False
+    if not _contains_any_pattern(
+        normalized_command,
+        _UNANCHORED_RELATIVE_PLACEMENT_PATTERNS,
+    ):
+        return False
+    if _contains_any_pattern(normalized_command, _PLACEMENT_ANCHOR_PATTERNS):
+        return False
+    return _payload_has_target_like_field(payload)
+
+
+def _payload_has_target_like_field(payload: IntentPayload | None) -> bool:
+    if payload is None:
+        return False
+    return any(
+        type(_payload_field(payload, field_name)) is str
+        and bool(str(_payload_field(payload, field_name)).strip())
+        for field_name in ("target", "location", "unit_group", "resource", "base")
+    )
+
+
+def _payload_intent_name(payload: IntentPayload | Mapping[str, object] | None) -> str:
+    return str(_payload_field(payload, "intent") or "")
+
+
+def _payload_field(
+    payload: IntentPayload | Mapping[str, object] | None,
+    field_name: str,
+) -> object:
+    if payload is None:
+        return None
+    if isinstance(payload, Mapping):
+        return payload.get(field_name)
+    return getattr(payload, field_name, None)
+
+
+def _payload_has_resolved_placement_anchor(payload: IntentPayload | None) -> bool:
+    if payload is None or _payload_intent_name(payload) != "BUILD_STRUCTURE":
+        return False
+    placement_policy = _payload_field(payload, "placement_policy")
+    if not isinstance(placement_policy, Mapping):
+        return False
+    if isinstance(placement_policy.get("base_selection"), Mapping):
+        return True
+    return any(
+        type(placement_policy.get(key)) is str and placement_policy.get(key).strip()
+        for key in ("anchor_target", "anchor", "target")
+    )
+
+
+def _has_relative_modifier_build_context(
+    normalized_command: str,
+    payload: IntentPayload | None,
+) -> bool:
+    if payload is not None:
+        return True
+    return _detect_structure_name(normalized_command) is not None
+
+
+def is_deictic_build_placement_missing_semantic_target(
+    command_text: str,
+    payload: IntentPayload | None = None,
+) -> bool:
+    """Return True when a build request points to here/there instead of a target."""
+
+    normalized_command = _normalize_command_text(command_text)
+    if not normalized_command:
+        return False
+    if payload is not None and _payload_intent_name(payload) != "BUILD_STRUCTURE":
+        return False
+    if not _has_build_structure_verb(normalized_command):
+        return False
+    if not _contains_any_pattern(normalized_command, _DEICTIC_LOCATION_PATTERNS):
+        return False
+    return not _contains_any_pattern(normalized_command, _PLACEMENT_ANCHOR_PATTERNS)
 
 
 def _looks_like_train_unit(normalized_command: str) -> bool:
@@ -1901,6 +3935,187 @@ def _detect_send_scout_target(normalized_command: str) -> str:
     return SEND_SCOUT_DEFAULT_TARGET
 
 
+def _looks_like_move_camera(normalized_command: str) -> bool:
+    if not _contains_any_pattern(normalized_command, _CAMERA_ACTION_PATTERNS):
+        return False
+    if _contains_any_pattern(normalized_command, _SCOUT_LOCATION_PATTERNS):
+        return True
+    if _contains_any_pattern(normalized_command, _SCOUT_EXCLUSIVE_ACTION_PATTERNS):
+        return False
+    return any(
+        _contains_any_pattern(normalized_command, patterns)
+        for patterns in (
+            _MAIN_BASE_LOCATION_PATTERNS,
+            _NATURAL_LOCATION_PATTERNS,
+            _THIRD_LOCATION_PATTERNS,
+            _CHOKE_LOCATION_PATTERNS,
+            _RAMP_LOCATION_PATTERNS,
+            _GEYSER_LOCATION_PATTERNS,
+            _EXPANSION_LOCATION_PATTERNS,
+            _SCOUT_LOCATION_PATTERNS,
+            _LAST_SEEN_ENEMY_AREA_PATTERNS,
+            _CAMERA_GENERIC_BASE_PATTERNS,
+            _ENEMY_CAMERA_PATTERNS,
+        )
+    ) or _has_explicit_base_selection(normalized_command)
+
+
+def is_ambiguous_camera_base_target(command_text: str) -> bool:
+    normalized_command = _normalize_command_text(command_text)
+    return _is_ambiguous_camera_base_normalized(normalized_command)
+
+
+def is_ambiguous_build_base_target(
+    command_text: str,
+    payload: IntentPayload | None = None,
+) -> bool:
+    """Return True for generic build-near townhall/base anchors."""
+
+    normalized_command = _normalize_command_text(command_text)
+    if not normalized_command:
+        return False
+    if payload is not None and _payload_intent_name(payload) != "BUILD_STRUCTURE":
+        return False
+    if not _has_build_structure_verb(normalized_command):
+        return False
+    if not _contains_any_pattern(normalized_command, _BUILD_NEAR_BASE_RELATION_PATTERNS):
+        return False
+    if not _contains_any_pattern(normalized_command, _CAMERA_GENERIC_BASE_PATTERNS):
+        return False
+    explicit_base = (
+        _contains_any_pattern(normalized_command, _EXPLICIT_CAMERA_BASE_PATTERNS)
+        or _contains_any_pattern(normalized_command, _NATURAL_LOCATION_PATTERNS)
+        or _contains_any_pattern(normalized_command, _EXPANSION_LOCATION_PATTERNS)
+        or _contains_any_pattern(normalized_command, _RAMP_LOCATION_PATTERNS)
+        or _contains_any_pattern(normalized_command, _GEYSER_LOCATION_PATTERNS)
+        or _contains_any_pattern(normalized_command, _ENEMY_OWNER_PATTERNS)
+        or _has_explicit_base_selection(normalized_command)
+    )
+    return not explicit_base
+
+
+def is_build_request_missing_structure(command_text: str) -> bool:
+    """Return True when build text gives action/location but omits structure."""
+
+    normalized_command = _normalize_command_text(command_text)
+    if not normalized_command:
+        return False
+    if not _has_build_structure_verb(normalized_command):
+        return False
+    if _detect_structure_name(normalized_command) is not None:
+        return False
+    return (
+        _contains_any_pattern(normalized_command, _PLACEMENT_ANCHOR_PATTERNS)
+        or _contains_any_pattern(normalized_command, _CAMERA_GENERIC_BASE_PATTERNS)
+        or _contains_any_pattern(normalized_command, _BUILD_NEAR_BASE_RELATION_PATTERNS)
+    )
+
+
+def _is_ambiguous_camera_base_normalized(normalized_command: str) -> bool:
+    if not _looks_like_move_camera(normalized_command):
+        return False
+    if _contains_any_pattern(normalized_command, _ENEMY_CAMERA_PATTERNS):
+        return False
+    if _is_generic_expansion_camera_base_reference(normalized_command):
+        return True
+    if not _contains_any_pattern(normalized_command, _CAMERA_GENERIC_BASE_PATTERNS):
+        return False
+    explicit_base = (
+        _contains_any_pattern(normalized_command, _EXPLICIT_CAMERA_BASE_PATTERNS)
+        or _contains_any_pattern(normalized_command, _NATURAL_LOCATION_PATTERNS)
+        or _contains_any_pattern(normalized_command, _EXPANSION_LOCATION_PATTERNS)
+        or _contains_any_pattern(normalized_command, _RAMP_LOCATION_PATTERNS)
+        or _has_explicit_base_selection(normalized_command)
+    )
+    return not explicit_base
+
+
+def _is_generic_expansion_camera_base_reference(normalized_command: str) -> bool:
+    """Return True for bare expansion words that can point at several bases."""
+
+    if not _contains_any_pattern(
+        normalized_command,
+        _GENERIC_EXPANSION_CAMERA_BASE_PATTERNS,
+    ):
+        return False
+    return not any(
+        _contains_any_pattern(normalized_command, patterns)
+        for patterns in (
+            _NATURAL_LOCATION_PATTERNS,
+            _THIRD_LOCATION_PATTERNS,
+            _RAMP_LOCATION_PATTERNS,
+        )
+    ) and not any(
+        token in normalized_command
+        for token in (
+            "새로",
+            "최근",
+            "막지은",
+            "가장최근",
+            "추가",
+            "newest",
+            "latest",
+            "additional",
+        )
+    )
+
+
+def _detect_camera_target(normalized_command: str) -> str:
+    if _contains_any_pattern(normalized_command, _LAST_SEEN_ENEMY_AREA_PATTERNS):
+        return "last seen enemy area"
+    if _contains_any_pattern(normalized_command, _SCOUT_LOCATION_PATTERNS):
+        return "scout location"
+    if _contains_any_pattern(normalized_command, _ENEMY_CAMERA_PATTERNS):
+        if _contains_any_pattern(normalized_command, _THIRD_LOCATION_PATTERNS):
+            return "enemy third"
+        if _contains_any_pattern(normalized_command, _NATURAL_LOCATION_PATTERNS):
+            return "enemy natural"
+        if _contains_any_pattern(normalized_command, _CHOKE_LOCATION_PATTERNS):
+            return "enemy choke"
+        if _contains_any_pattern(normalized_command, _RAMP_ONLY_LOCATION_PATTERNS):
+            return "enemy ramp"
+        if _contains_any_pattern(normalized_command, _RAMP_LOCATION_PATTERNS):
+            return "enemy front"
+        return "enemy main"
+    if _contains_any_pattern(normalized_command, _GEYSER_LOCATION_PATTERNS):
+        return "main geyser"
+    if _contains_any_pattern(normalized_command, _CHOKE_LOCATION_PATTERNS):
+        return "natural choke"
+    if _contains_any_pattern(normalized_command, _RAMP_LOCATION_PATTERNS):
+        return "main ramp"
+    if _contains_any_pattern(normalized_command, _THIRD_LOCATION_PATTERNS):
+        return "third base"
+    if _contains_any_pattern(normalized_command, _NATURAL_LOCATION_PATTERNS):
+        return "natural expansion"
+    base_selection = parse_korean_base_selection(normalized_command)
+    if base_selection is not None:
+        return base_selection.location
+    return "main base"
+
+
+def _detect_camera_target_slot(normalized_command: str) -> str:
+    """Return an auditable semantic slot for camera target phrases."""
+
+    if _contains_any_pattern(normalized_command, _LAST_SEEN_ENEMY_AREA_PATTERNS):
+        return MOVE_CAMERA_LAST_SEEN_ENEMY_AREA_TARGET_SLOT
+    if _contains_any_pattern(normalized_command, _SCOUT_LOCATION_PATTERNS):
+        return MOVE_CAMERA_SCOUT_LOCATION_TARGET_SLOT
+    if _contains_any_pattern(normalized_command, _CHOKE_LOCATION_PATTERNS):
+        return MOVE_CAMERA_CHOKE_TARGET_SLOT
+    if _contains_any_pattern(normalized_command, _THIRD_LOCATION_PATTERNS):
+        return MOVE_CAMERA_THIRD_BASE_TARGET_SLOT
+    if _contains_any_pattern(normalized_command, _RAMP_LOCATION_PATTERNS):
+        if _contains_any_pattern(normalized_command, _ENEMY_CAMERA_PATTERNS):
+            return MOVE_CAMERA_ENEMY_ENTRANCE_TARGET_SLOT
+        return MOVE_CAMERA_RAMP_OR_ENTRANCE_TARGET_SLOT
+    if (
+        not _contains_any_pattern(normalized_command, _ENEMY_CAMERA_PATTERNS)
+        and _contains_any_pattern(normalized_command, _NATURAL_LOCATION_PATTERNS)
+    ):
+        return MOVE_CAMERA_NATURAL_EXPANSION_TARGET_SLOT
+    return ""
+
+
 def _detect_send_scout_unit_group(normalized_command: str) -> str:
     marine_count = _detect_marine_count(normalized_command)
     if marine_count is not None:
@@ -1909,6 +4124,12 @@ def _detect_send_scout_unit_group(normalized_command: str) -> str:
 
 
 def _looks_like_defend_ramp(normalized_command: str) -> bool:
+    if _contains_any_pattern(
+        normalized_command, _CAMERA_ACTION_PATTERNS
+    ) and not _contains_any_pattern(
+        normalized_command, _DEFENSE_EXCLUSIVE_ACTION_PATTERNS
+    ):
+        return False
     if _contains_any_pattern(
         normalized_command, _SCOUT_EXCLUSIVE_ACTION_PATTERNS
     ) and not _contains_any_pattern(
@@ -2134,11 +4355,32 @@ def _build_structure_payload(normalized_command: str) -> IntentPayload | None:
         return None
     structure, location = build_structure_target
     priority = "high" if structure in ("Refinery", "Bunker") else "normal"
+    relative_location = parse_korean_relative_location_phrase(normalized_command)
+    base_selection = parse_korean_base_selection(normalized_command)
+    placement_policy: dict[str, object] = {}
+    if relative_location is not None:
+        placement_policy.update(relative_location.to_dict())
+    if not placement_policy:
+        placement_policy.update(
+            _main_entrance_placement_policy_for(normalized_command, location)
+        )
+    if not placement_policy:
+        placement_policy.update(
+            _natural_expansion_placement_policy_for(normalized_command, location)
+        )
+    if not placement_policy:
+        placement_policy.update(
+            _main_geyser_placement_policy_for(normalized_command, location)
+        )
+    placement_policy.update(
+        _explicit_base_selection_placement_policy(normalized_command, base_selection)
+    )
     return BuildStructureIntent(
         priority=priority,
         constraints=(BUILD_STRUCTURE_CONSTRAINT,),
         structure=structure,
         location=location,
+        placement_policy=placement_policy or None,
     )
 
 
@@ -2237,6 +4479,19 @@ def _expand_payload(normalized_command: str) -> IntentPayload | None:
         priority=detect_priority(normalized_command, EXPAND_PRIORITY_KEYWORDS, "normal"),
         constraints=(EXPAND_CONSTRAINT,),
         location=EXPAND_DEFAULT_LOCATION,
+    )
+
+
+def _move_camera_payload(normalized_command: str) -> IntentPayload | None:
+    """Build the MOVE_CAMERA payload when a semantic camera command matches."""
+
+    if not _looks_like_move_camera(normalized_command):
+        return None
+    return MoveCameraIntent(
+        priority="normal",
+        constraints=(MOVE_CAMERA_CONSTRAINT,),
+        target=_detect_camera_target(normalized_command),
+        target_slot=_detect_camera_target_slot(normalized_command),
     )
 
 
@@ -2339,6 +4594,12 @@ INTENT_CANDIDATE_SPECS: Final[tuple[IntentCandidateSpec, ...]] = (
         intent="EXPAND",
         description="앞마당 확장 명령",
         build_payload=_expand_payload,
+    ),
+    IntentCandidateSpec(
+        alias=MOVE_CAMERA_ALIAS,
+        intent="MOVE_CAMERA",
+        description="카메라 이동 명령",
+        build_payload=_move_camera_payload,
     ),
     IntentCandidateSpec(
         alias=SUMMARIZE_STATE_ALIAS,

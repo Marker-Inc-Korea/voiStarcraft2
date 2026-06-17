@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "voistarcraft"
+name = "voiStarcraft2"
 version = "0.1.0"
-description = "TextCraft Commander: a natural-language and voice StarCraft II commander."
+description = "voiStarcraft2: a natural-language and voice StarCraft II commander."
 readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["starcraft", "sc2", "natural-language", "voice", "commander"]

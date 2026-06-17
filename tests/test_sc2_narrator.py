@@ -427,6 +427,44 @@ class SC2KoreanNarratorHonestyTest(unittest.TestCase):
         self.assertEqual(response.status, "blocked")
         self.assertIn("요청한 유닛 그룹에 해당하는 아군 유닛이 없습니다", response.response_text)
 
+    def test_refused_action_error_hides_raw_location_registry(self) -> None:
+        plan = SC2ExecutionPlan(
+            intent_name="BUILD_STRUCTURE",
+            ordered_actions=(
+                _action(SC2ActionType.BUILD_STRUCTURE, "SUPPLYDEPOT", "self_main"),
+            ),
+        )
+        result = SC2PlanExecutionResult(
+            plan=plan,
+            attempted_actions=plan.ordered_actions,
+            applied_actions=(),
+            skipped_actions=plan.ordered_actions,
+            errors=(
+                SC2ExecutionError(
+                    message=(
+                        "unsupported SC2 target location: 'main base near ramp'. "
+                        "Supported targets: self_main, self_ramp."
+                    ),
+                    action_type=SC2ActionType.BUILD_STRUCTURE,
+                    action_index=0,
+                    exception_type="ActionRefused",
+                    metadata={
+                        "detail": (
+                            "unsupported SC2 target location: 'main base near ramp'. "
+                            "Supported targets: self_main, self_ramp."
+                        )
+                    },
+                ),
+            ),
+        )
+
+        response = self.narrator.narrate_plan_result(result)
+
+        self.assertEqual(response.status, "blocked")
+        self.assertIn("위치 표현을 현재 지도 의미 좌표로 연결하지 못했습니다", response.response_text)
+        self.assertNotIn("unsupported SC2 target location", response.response_text)
+        self.assertNotIn("Supported targets", response.response_text)
+
     def test_unenforced_constraint_downgrades_success_with_disclosure(self) -> None:
         # Without standing-order support (the DEFAULT narrator) the
         # continuous-production constraint is honestly disclosed as dropped.
