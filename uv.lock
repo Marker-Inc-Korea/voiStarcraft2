@@ -2068,7 +2068,7 @@ wheels = [
 ]
 
 [[package]]
-name = "voistarcraft"
+name = "voiStarcraft2"
 version = "0.1.0"
 source = { editable = "." }
 

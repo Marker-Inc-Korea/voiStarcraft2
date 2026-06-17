@@ -50,7 +50,7 @@ SCV scouting, mineral gathering, and Supply Depot construction.
 ### Python package install
 
 ```bash
-pip install 'voistarcraft[sc2]'
+pip install 'voiStarcraft2[sc2]'
 # or, equivalently:
 pip install burnysc2
 ```
@@ -59,14 +59,14 @@ pip install burnysc2
 package. Optional voice input additionally needs:
 
 ```bash
-pip install 'voistarcraft[voice]'
+pip install 'voiStarcraft2[voice]'
 # or: pip install faster-whisper sounddevice
 ```
 
 Live mode also requires `[llm]`:
 
 ```bash
-pip install 'voistarcraft[llm]'
+pip install 'voiStarcraft2[llm]'
 # installs OpenAI and Anthropic SDK support
 ```
 
@@ -185,7 +185,7 @@ The optional python-sc2 runtime is not installed. The error message itself
 carries the fix:
 
 ```bash
-pip install 'voistarcraft[sc2]'   # or: pip install burnysc2
+pip install 'voiStarcraft2[sc2]'   # or: pip install burnysc2
 ```
 
 Note the importable package is named `sc2` but the pip distribution is
@@ -209,7 +209,7 @@ matching `.SC2Map` file. Check that:
 ### `MissingVoiceDependencyError`
 
 faster-whisper or sounddevice is absent. Install with
-`pip install 'voistarcraft[voice]'`.
+`pip install 'voiStarcraft2[voice]'`.
 
 ### No audio device / PortAudio error
 

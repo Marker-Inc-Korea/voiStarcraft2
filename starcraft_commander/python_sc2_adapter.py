@@ -153,10 +153,10 @@ SC2_TOWNHALL_TYPE_NAMES: Final[frozenset[str]] = frozenset(
 
 PYTHON_SC2_UNIT_TYPE_HINT: Final[str] = (
     "python-sc2 (importable package 'sc2') is required to resolve UnitTypeId "
-    "names. Install it with: pip install 'voistarcraft[sc2]' (or: pip install "
+    "names. Install it with: pip install 'voiStarcraft2[sc2]' (or: pip install "
     "burnysc2), or inject PythonSC2BotAdapter(unit_type_resolver=...) for "
     "offline tests. python-sc2('sc2' 패키지)가 설치되어 있지 않아 UnitTypeId "
-    "이름을 해석할 수 없습니다. pip install 'voistarcraft[sc2]' 또는 "
+    "이름을 해석할 수 없습니다. pip install 'voiStarcraft2[sc2]' 또는 "
     "pip install burnysc2 명령으로 설치하거나, 오프라인 테스트에서는 "
     "unit_type_resolver를 주입하세요."
 )

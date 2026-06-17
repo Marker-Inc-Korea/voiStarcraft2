@@ -32,7 +32,7 @@ __all__ = [
 
 
 VOICE_INSTALL_HINT: Final[str] = (
-    "pip install 'voistarcraft[voice]' 또는 pip install faster-whisper sounddevice"
+    "pip install 'voiStarcraft2[voice]' 또는 pip install faster-whisper sounddevice"
 )
 """User-facing install hint for the optional voice dependency extras."""
 

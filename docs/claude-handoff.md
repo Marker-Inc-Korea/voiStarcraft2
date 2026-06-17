@@ -1,4 +1,4 @@
-# Claude Code Handoff: TextCraft Commander
+# Claude Code Handoff: voiStarcraft2
 
 This document is the continuation brief for Claude Code or another coding agent.
 It captures the original product intent, the current repository state, what is
@@ -20,7 +20,7 @@ smoke test against an installed StarCraft II (the procedure is documented in
 
 ## Original Product Positioning
 
-TextCraft Commander should let a human command StarCraft by natural language:
+voiStarcraft2 should let a human command StarCraft by natural language:
 
 ```text
 User text or voice
@@ -316,7 +316,7 @@ Implemented:
 ### Step 6. Local Smoke Test Instructions — DONE
 
 `docs/sc2-smoke-test.md` documents the SC2 install paths (`SC2PATH`), map
-download/placement, `pip install 'voistarcraft[sc2]'` / `[voice]`, the dry-run
+download/placement, `pip install 'voiStarcraft2[sc2]'` / `[voice]`, the dry-run
 and live commands, the five-step smoke-test acceptance list, and known
 limitations. A local macOS smoke run has reached `Status.in_game` and verified
 localhost GUI state polling plus command execution for state check, SCV
@@ -465,7 +465,7 @@ sed -n '1,110p' docs/sc2-smoke-test.md
 Then, on a machine with StarCraft II installed:
 
 ```bash
-pip install 'voistarcraft[sc2]'
+pip install 'voiStarcraft2[sc2]'
 python3 -m starcraft_commander.demo_sc2 --map AcropolisLE --difficulty easy
 ```
 

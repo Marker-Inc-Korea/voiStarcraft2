@@ -39,7 +39,7 @@ from starcraft_commander.web_gui import (
 POLL_DEADLINE_SECONDS = 10.0
 POLL_INTERVAL_SECONDS = 0.05
 EXECUTED_FAMILY_STATUSES = frozenset({"executed", "partially_executed"})
-BRIDGE_THREAD_NAME = "voistarcraft-web-gui-session-loop"
+BRIDGE_THREAD_NAME = "voiStarcraft2-web-gui-session-loop"
 
 
 def contains_hangul(text):
@@ -2473,7 +2473,7 @@ class WebGuiServerConstructionTest(unittest.TestCase):
             returncode = None
             stdout = [
                 f"booting with {submitted_key}\n",
-                f"VoiStarCraft 커맨더 웹 GUI 시작: http://127.0.0.1:9876/?key={submitted_key}\n",
+                f"voiStarcraft2 커맨더 웹 GUI 시작: http://127.0.0.1:9876/?key={submitted_key}\n",
             ]
 
             def poll(self):

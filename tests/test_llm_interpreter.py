@@ -1009,7 +1009,7 @@ class LLMAvailabilityTest(unittest.TestCase):
             result = interpreter.interpret(FREE_FORM_DEFEND_UTTERANCE)
         self.assertIsNone(result.payload)
         self.assertTrue(result.clarification_required)
-        self.assertIn("voistarcraft[llm]", result.clarification_prompt)
+        self.assertIn("voiStarcraft2[llm]", result.clarification_prompt)
         self.assertEqual(
             result.failure.primary_reason.code, LLM_UNAVAILABLE_FAILURE_CODE
         )

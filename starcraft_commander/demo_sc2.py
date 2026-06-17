@@ -801,7 +801,7 @@ def _run_dry_run_gui(
                 "--gui에 다른 포트를 지정하거나 --gui 0으로 임시 포트를 사용해 주세요."
             )
             return 1
-        print(f"VoiStarCraft 커맨더 웹 GUI 시작: {server.url}")
+        print(f"voiStarcraft2 커맨더 웹 GUI 시작: {server.url}")
         if args.script:
             for command_text in args.script:
                 print(f"{COMMAND_PROMPT}{command_text}")
@@ -942,7 +942,7 @@ def run_live(args: argparse.Namespace) -> None:
                 )
                 return
             self.gui_server = server
-            print(f"VoiStarCraft 커맨더 웹 GUI 시작: {server.url}")
+            print(f"voiStarcraft2 커맨더 웹 GUI 시작: {server.url}")
 
         async def _feed_commands(self, loop: asyncio.AbstractEventLoop) -> None:
             # The whole loop is guarded: an unexpected reader exception must

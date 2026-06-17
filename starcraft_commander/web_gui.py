@@ -1,7 +1,7 @@
 """Stdlib-only local web GUI for the StarCraft II Korean commander.
 
 ``python -m starcraft_commander.web_gui --dry-run`` serves a single-page
-Korean interface (title: "VoiStarCraft 커맨더") on hard-coded localhost where
+Korean interface (title: "voiStarcraft2 커맨더") on hard-coded localhost where
 a human types commands, watches per-outcome narration with status colors, and
 sees a live economy/army state panel. No FastAPI, Flask, or any third-party
 dependency is used: the server is :class:`http.server.ThreadingHTTPServer`
@@ -57,7 +57,7 @@ WEB_GUI_HOST: Final[str] = "127.0.0.1"
 WEB_GUI_TOKEN_QUERY_PARAM: Final[str] = "token"
 """Query parameter accepted as the web GUI auth token."""
 
-WEB_GUI_TOKEN_HEADER: Final[str] = "X-VoiStarCraft-Token"
+WEB_GUI_TOKEN_HEADER: Final[str] = "X-voiStarcraft2-Token"
 """HTTP header accepted as the web GUI auth token."""
 
 DEFAULT_WEB_GUI_PORT: Final[int] = 8350
@@ -200,7 +200,7 @@ def _redact_json_ready(value: object, *, redactions: Sequence[str] = ()) -> obje
     return _redact_sensitive_text(value, redactions=redactions)
 
 
-WEB_GUI_PAGE_TITLE: Final[str] = "VoiStarCraft 커맨더"
+WEB_GUI_PAGE_TITLE: Final[str] = "voiStarcraft2 커맨더"
 """Korean single-page UI title."""
 
 LLM_REQUIRED_COMMAND_ERROR: Final[str] = (
@@ -270,10 +270,10 @@ WEB_GUI_STATUS_COLORS: Final[Mapping[str, str]] = {
 MAX_COMMAND_BODY_BYTES: Final[int] = 64 * 1024
 """Upper bound for one ``POST /api/command`` body; larger bodies are rejected."""
 
-_BRIDGE_THREAD_NAME: Final[str] = "voistarcraft-web-gui-session-loop"
+_BRIDGE_THREAD_NAME: Final[str] = "voiStarcraft2-web-gui-session-loop"
 """Daemon thread name for the bridge's asyncio loop (asserted clean in tests)."""
 
-_SERVER_THREAD_NAME: Final[str] = "voistarcraft-web-gui-http-server"
+_SERVER_THREAD_NAME: Final[str] = "voiStarcraft2-web-gui-http-server"
 """Daemon thread name for the HTTP server's serve_forever loop."""
 
 _STOP_SENTINEL: Final[object] = object()
@@ -409,7 +409,7 @@ class _LiveLaunchManager:
                 return self._snapshot_unlocked()
             threading.Thread(
                 target=self._read_output,
-                name="voistarcraft-live-launch-reader",
+                name="voiStarcraft2-live-launch-reader",
                 daemon=True,
             ).start()
             return self._snapshot_unlocked()
@@ -3231,7 +3231,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
 class _WebGuiRequestHandler(BaseHTTPRequestHandler):
     """Quiet request handler for the local commander web GUI."""
 
-    server_version = "VoiStarCraftWebGui/1.0"
+    server_version = "voiStarcraft2WebGui/1.0"
     protocol_version = "HTTP/1.1"
 
     @property
@@ -3508,7 +3508,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             {
                 "error": (
                     "웹 GUI 인증 토큰이 필요합니다. 실행 시 출력된 ?token=... URL로 "
-                    "접속하거나 X-VoiStarCraft-Token 헤더를 전달해 주세요."
+                    "접속하거나 X-voiStarcraft2-Token 헤더를 전달해 주세요."
                 )
             },
         )
@@ -3659,7 +3659,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m starcraft_commander.web_gui",
         description=(
-            "VoiStarCraft 커맨더 로컬 웹 GUI. "
+            "voiStarcraft2 커맨더 로컬 웹 GUI. "
             "--dry-run은 내장 가짜 BotAI로 전체 파이프라인을 실행합니다. "
             "실제 게임 연결은 python -m starcraft_commander.demo_sc2 --gui를 사용하세요."
         ),
@@ -3744,7 +3744,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "다른 --port 값을 지정하거나 --port 0으로 임시 포트를 사용해 주세요."
             )
             return 1
-        print(f"VoiStarCraft 커맨더 웹 GUI 시작: {server.url}")
+        print(f"voiStarcraft2 커맨더 웹 GUI 시작: {server.url}")
         print(
             f"브라우저에서 위 주소를 열고 한국어 명령을 입력하세요. "
             f"예: {MVP_DEMO_COMMAND} (종료: Ctrl+C)"

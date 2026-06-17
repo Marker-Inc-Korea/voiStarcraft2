@@ -1,8 +1,8 @@
-# TextCraft Commander (voistarcraft)
+# voiStarcraft2
 
 말하면 스타가 움직인다.
 
-TextCraft Commander turns Korean text or voice commands into semantic
+voiStarcraft2 turns Korean text or voice commands into semantic
 StarCraft commands. It does **not** emulate mouse clicks or screen input.
 Commands are interpreted into a typed Intent DSL, validated against game state,
 planned as semantic actions, and executed through game API boundaries.

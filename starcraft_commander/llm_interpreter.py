@@ -193,7 +193,7 @@ LLM_UNAVAILABLE_REASON: Final[str] = (
 )
 LLM_UNAVAILABLE_CLARIFICATION_PROMPT: Final[str] = (
     "LLM 해석기를 사용할 수 없어 명령을 실행하지 않았습니다. "
-    "대안: pip install 'voistarcraft[llm]' 설치 후 로컬 웹 GUI에서 "
+    "대안: pip install 'voiStarcraft2[llm]' 설치 후 로컬 웹 GUI에서 "
     "API 키를 설정하거나, ToyCraft MVP 명령 중 하나로 다시 말해 주세요. "
     "예: 상태 알려줘 / 일꾼 계속 찍어 / 본진에 배럭 지어"
 )
