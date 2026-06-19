@@ -153,6 +153,27 @@ class PolicyModulationVectorTest(unittest.TestCase):
                     "nested": {"botai_method": "do"},
                 }
             )
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys(
+                {
+                    "goal": "unsafe",
+                    "sequence": [{"raw_action": "attack_move"}],
+                }
+            )
+
+    def test_rejects_raw_runtime_control_keys_in_constraints(self) -> None:
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            PolicyModulationVector.from_mapping(
+                {
+                    "goal": "unsafe",
+                    "constraints": [{"key": "raw_action", "value": "attack"}],
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            PolicySafetyConstraint(
+                key="safe_policy",
+                value=[{"s2client_api": "issue_order"}],
+            )
 
     def test_rejects_invalid_ranges_and_emergency_ttl(self) -> None:
         with self.assertRaisesRegex(ValueError, "confidence"):

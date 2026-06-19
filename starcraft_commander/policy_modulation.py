@@ -91,6 +91,22 @@ def reject_raw_policy_control_keys(mapping: Mapping[str, object], *, path: str =
         if isinstance(value, Mapping):
             next_path = f"{path}.{key}" if path else key
             reject_raw_policy_control_keys(value, path=next_path)
+        elif _is_non_text_sequence(value):
+            next_path = f"{path}.{key}" if path else key
+            _reject_raw_policy_control_keys_in_sequence(value, path=next_path)
+
+
+def _reject_raw_policy_control_keys_in_sequence(
+    values: Sequence[object],
+    *,
+    path: str,
+) -> None:
+    for index, value in enumerate(values):
+        next_path = f"{path}[{index}]"
+        if isinstance(value, Mapping):
+            reject_raw_policy_control_keys(value, path=next_path)
+        elif _is_non_text_sequence(value):
+            _reject_raw_policy_control_keys_in_sequence(value, path=next_path)
 
 
 @dataclass(frozen=True)
@@ -433,8 +449,10 @@ class PolicySafetyConstraint:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _require_text("key", self.key))
-        if isinstance(self.value, Mapping):
-            reject_raw_policy_control_keys(self.value, path=f"constraint.{self.key}")
+        reject_raw_policy_control_keys(
+            {self.key: self.value},
+            path="constraint",
+        )
         if self.reason:
             object.__setattr__(self, "reason", _require_text("reason", self.reason))
 
@@ -605,7 +623,7 @@ def _coerce_domain(value: object, domain_type: type) -> object:
 
 
 def _validate_constraints(values: object) -> tuple[PolicySafetyConstraint, ...]:
-    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+    if not _is_non_text_sequence(values):
         raise ValueError("constraints must be a sequence.")
     result: list[PolicySafetyConstraint] = []
     for value in values:
@@ -710,7 +728,7 @@ def _require_choice(field_name: str, value: object, choices: set[str]) -> str:
 def _validate_string_tuple(name: str, values: object) -> tuple[str, ...]:
     if values is None:
         return ()
-    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+    if not _is_non_text_sequence(values):
         raise ValueError(f"{name} must be a sequence of strings.")
     result = tuple(values)
     for value in result:
@@ -733,3 +751,7 @@ def _int_from_mapping(mapping: Mapping[str, object], key: str, default: int) -> 
     if type(value) is bool or not isinstance(value, int):
         raise TypeError(f"{key} must be an integer.")
     return value
+
+
+def _is_non_text_sequence(value: object) -> bool:
+    return not isinstance(value, (str, bytes)) and isinstance(value, Sequence)
