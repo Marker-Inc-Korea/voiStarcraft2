@@ -82,8 +82,8 @@ def reject_raw_policy_control_keys(mapping: Mapping[str, object], *, path: str =
     for key, value in mapping.items():
         if not isinstance(key, str):
             raise ValueError(f"{path or 'payload'} contains a non-string key.")
-        normalized = key.strip().lower()
-        if normalized in POLICY_MODULATION_RAW_CONTROL_KEYS:
+        normalized = key.strip().lower().replace("-", "_")
+        if _is_raw_policy_control_key(normalized):
             location = f"{path}.{key}" if path else key
             raise ValueError(
                 f"policy modulation payload attempted raw runtime control: {location}"
@@ -755,3 +755,17 @@ def _int_from_mapping(mapping: Mapping[str, object], key: str, default: int) -> 
 
 def _is_non_text_sequence(value: object) -> bool:
     return not isinstance(value, (str, bytes)) and isinstance(value, Sequence)
+
+
+def _is_raw_policy_control_key(normalized_key: str) -> bool:
+    if normalized_key in POLICY_MODULATION_RAW_CONTROL_KEYS:
+        return True
+    for separator in (".", "/", ":"):
+        if separator not in normalized_key:
+            continue
+        if any(
+            part in POLICY_MODULATION_RAW_CONTROL_KEYS
+            for part in normalized_key.split(separator)
+        ):
+            return True
+    return False

@@ -113,6 +113,35 @@ Raw-control keys such as `python_sc2`, `botai_method`, `raw_action`,
 are rejected before a vector can be constructed. Emergency vectors are capped at
 60 seconds even though normal modulation can last up to 900 seconds.
 
+## Provider Compiler Boundary
+
+Issue 10.3 adds `starcraft_commander/policy_modulation_provider.py` as the
+single deterministic compiler between external intent providers and the deep
+DSL. Supported provider roles are LLM, human UI, replay imitation, and future
+neural representation providers. They may produce bounded semantic mappings,
+but they do not get to call MicroMachine, python-sc2, s2client-api, or any raw
+unit command surface.
+
+The compiler accepts two practical shapes:
+
+```text
+LLM/UI semantic payload
+  intent or goal
+  posture / economy / tech / combat / scouting / squad / emergency fields
+  confidence, ttl, override level, constraints, tags
+
+Neural representation payload
+  goal
+  representation axes such as economy.expand_bias or tech.unit_biases.SiegeTank
+  confidence, ttl, override level
+```
+
+Both shapes converge to the same `PolicyModulationVector`. Malformed, unsafe,
+or raw-control-bearing outputs become explicit `refused` results. Ambiguous
+provider outputs become `clarification_required` results. The runtime caller can
+therefore explain the issue to the user without crashing and without handing
+unsafe data to a bot bridge.
+
 ## Stop Condition
 
 The issue #10 sub-plan is complete only when this repository has:
