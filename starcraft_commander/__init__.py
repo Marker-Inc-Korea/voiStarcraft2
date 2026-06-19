@@ -100,6 +100,70 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     # Local web GUI (stdlib http.server, 127.0.0.1 only).
     "SessionLoopBridge": "starcraft_commander.web_gui",
     "WebGuiServer": "starcraft_commander.web_gui",
+    # Human-interruptible policy tree for LLM/BT collaboration experiments.
+    "CommanderPolicyDecision": "starcraft_commander.policy_tree",
+    "CommanderPolicyTree": "starcraft_commander.policy_tree",
+    "CommanderPolicyTreeInterface": "starcraft_commander.policy_tree",
+    "CommanderStrategyProfile": "starcraft_commander.policy_tree",
+    "CombatModulation": "starcraft_commander.policy_modulation",
+    "EconomyModulation": "starcraft_commander.policy_modulation",
+    "EmergencyModulation": "starcraft_commander.policy_modulation",
+    "PolicyModulationSource": "starcraft_commander.policy_modulation",
+    "PolicyModulationVector": "starcraft_commander.policy_modulation",
+    "PolicyOverrideLevel": "starcraft_commander.policy_modulation",
+    "PolicySafetyConstraint": "starcraft_commander.policy_modulation",
+    "ProductionModulation": "starcraft_commander.policy_modulation",
+    "ScoutingModulation": "starcraft_commander.policy_modulation",
+    "SquadModulation": "starcraft_commander.policy_modulation",
+    "StrategyModulation": "starcraft_commander.policy_modulation",
+    "TechModulation": "starcraft_commander.policy_modulation",
+    "WeightedBiases": "starcraft_commander.policy_modulation",
+    "PolicyModulationCompileResult": "starcraft_commander.policy_modulation_provider",
+    "PolicyModulationCompileStatus": "starcraft_commander.policy_modulation_provider",
+    "PolicyModulationProviderInterface": "starcraft_commander.policy_modulation_provider",
+    "PolicyModulationProviderRequest": "starcraft_commander.policy_modulation_provider",
+    "compile_policy_modulation_from_provider": (
+        "starcraft_commander.policy_modulation_provider"
+    ),
+    "compile_policy_modulation_provider_output": (
+        "starcraft_commander.policy_modulation_provider"
+    ),
+    "MICROMACHINE_BRIDGE_PROTOCOL_VERSION": "starcraft_commander.micromachine_bridge",
+    "MICROMACHINE_MANAGER_HOOKS": "starcraft_commander.micromachine_bridge",
+    "MICROMACHINE_MODULATION_UPDATE_SCHEMA": "starcraft_commander.micromachine_bridge",
+    "MICROMACHINE_TELEMETRY_SCHEMA": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBlackboardUpdate": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBridgeEnvelope": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBridgeFailureMode": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBridgeMessageType": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBridgeValidationResult": "starcraft_commander.micromachine_bridge",
+    "MicroMachineManagerHook": "starcraft_commander.micromachine_bridge",
+    "MicroMachineRollbackCommand": "starcraft_commander.micromachine_bridge",
+    "MicroMachineTelemetry": "starcraft_commander.micromachine_bridge",
+    "build_micromachine_bridge_error_envelope": (
+        "starcraft_commander.micromachine_bridge"
+    ),
+    "validate_micromachine_blackboard_update": (
+        "starcraft_commander.micromachine_bridge"
+    ),
+    "MicroMachineModulationEvaluationPlan": (
+        "starcraft_commander.policy_observability"
+    ),
+    "ModulationEvaluationMetric": "starcraft_commander.policy_observability",
+    "ModulationEvaluationMetricKey": "starcraft_commander.policy_observability",
+    "PolicyModulationBridgeStatus": "starcraft_commander.policy_observability",
+    "PolicyModulationDashboardSnapshot": "starcraft_commander.policy_observability",
+    "REQUIRED_EVALUATION_METRICS": "starcraft_commander.policy_observability",
+    "build_issue10_evaluation_plan": "starcraft_commander.policy_observability",
+    "build_policy_modulation_dashboard_snapshot": (
+        "starcraft_commander.policy_observability"
+    ),
+    "default_modulation_evaluation_metrics": (
+        "starcraft_commander.policy_observability"
+    ),
+    "validate_dashboard_snapshot_payload": (
+        "starcraft_commander.policy_observability"
+    ),
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.

@@ -291,6 +291,7 @@ Detailed design docs:
 - [docs/architecture.md](docs/architecture.md)
 - [docs/contracts.md](docs/contracts.md)
 - [docs/claude-handoff.md](docs/claude-handoff.md)
+- [docs/sc2-collaboration-policy-tree.md](docs/sc2-collaboration-policy-tree.md)
 - [docs/sc2-smoke-test.md](docs/sc2-smoke-test.md)
 
 ## Safety And Honesty Contracts
