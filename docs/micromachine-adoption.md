@@ -142,6 +142,47 @@ provider outputs become `clarification_required` results. The runtime caller can
 therefore explain the issue to the user without crashing and without handing
 unsafe data to a bot bridge.
 
+## Sidecar And Blackboard Protocol
+
+Issue 10.4 adds `starcraft_commander/micromachine_bridge.py` as the production
+contract for a MicroMachine sidecar. The contract is still stdlib-only: it
+specifies JSON-ready telemetry, modulation updates, rollback commands, and
+error envelopes without linking this Python project to the C++ bot.
+
+The blackboard update semantics are:
+
+```text
+MicroMachineBlackboardUpdate
+  protocol_version: voi-mm-bridge/v1
+  update_id
+  issued_at_frame
+  expires_at_frame = issued_at_frame + ttl_seconds * 22
+  vector: PolicyModulationVector
+  active_constraints
+  manager_bias_domains
+  rollback_update_id
+```
+
+MicroMachine remains authoritative over real unit actions. The sidecar writes
+only bias/constraint/directive/emergency modulation into a blackboard that
+manager hooks can read. Stale updates are rejected once `current_frame` exceeds
+`expires_at_frame`. Invalid payloads, provider unavailability, bridge
+disconnection, stale modulation, and emergency rollback have explicit failure
+modes so the GUI/logs can surface what happened without crashing.
+
+Required MicroMachine hook mapping is fixed in `MICROMACHINE_MANAGER_HOOKS`:
+
+| DSL domain | MicroMachine hook |
+| --- | --- |
+| `strategy` | `StrategyManager` build/posture selection bias. |
+| `production` | `ProductionManager` and `BuildOrderQueue` queue/tech deviation bias. |
+| `combat` | `CombatCommander` attack/hold/retreat posture bias. |
+| `combat` | `CombatAnalyzer` fight acceptance threshold bias. |
+| `squad` | `Squad` and `SquadOrder` role allocation and regroup bias. |
+| `scouting` | `ScoutManager` target and risk bias. |
+| `economy` | `WorkerManager` expansion, repair, and emergency worker bias. |
+| `combat` | `libvoxelbot` combat simulation threshold bias. |
+
 ## Stop Condition
 
 The issue #10 sub-plan is complete only when this repository has:
