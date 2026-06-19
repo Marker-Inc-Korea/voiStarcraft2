@@ -73,6 +73,46 @@ control, replay imitation, or an AlphaStar-like representation model should all
 emit the same policy modulation vector. The vector may bias or constrain
 MicroMachine; it must not directly command SC2 units.
 
+## Deep Modulation DSL
+
+The first production contract for this layer lives in
+`starcraft_commander/policy_modulation.py`. It is deliberately stdlib-only and
+does not import MicroMachine, python-sc2, or StarCraft II runtime packages.
+
+The top-level payload is `PolicyModulationVector`:
+
+```text
+PolicyModulationVector
+  goal
+  source: human | llm | ui | replay_imitation | neural_representation | system
+  override_level: bias | constraint | directive | emergency
+  confidence: 0.0..1.0
+  ttl_seconds: 1..900
+  strategy / economy / tech / production / combat / scouting / squad / emergency
+  constraints
+  tags
+  rationale
+```
+
+The DSL is deep enough to express MicroMachine manager modulation without
+becoming raw runtime control:
+
+| DSL domain | Intended MicroMachine hook |
+| --- | --- |
+| `strategy` | `StrategyManager` posture, preferred builds, avoided builds, strategic tags. |
+| `economy` | `WorkerManager` and economy-side production pressure. |
+| `tech` | Structure, unit, upgrade, and tech-path bias. |
+| `production` | `ProductionManager` and `BuildOrderQueue` bias. |
+| `combat` | `CombatCommander`, `CombatAnalyzer`, and combat-sim thresholds. |
+| `scouting` | `ScoutManager` target and risk modulation. |
+| `squad` | `Squad`, `SquadOrder`, and `MicroManager` role allocation. |
+| `emergency` | Short-lived cancel, retreat, hold, evacuation, or worker-pull flags. |
+
+Raw-control keys such as `python_sc2`, `botai_method`, `raw_action`,
+`s2client_api`, `unit_tag`, `attack_move`, `train_unit`, or `build_structure`
+are rejected before a vector can be constructed. Emergency vectors are capped at
+60 seconds even though normal modulation can last up to 900 seconds.
+
 ## Stop Condition
 
 The issue #10 sub-plan is complete only when this repository has:
