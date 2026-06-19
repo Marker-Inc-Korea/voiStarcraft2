@@ -126,6 +126,35 @@ class ArchitectureDocumentationTest(unittest.TestCase):
             with self.subTest(action_type=action_type):
                 self.assertIn(f"`{action_type}`", document)
 
+    def test_issue_10_micro_machine_adoption_doc_names_candidate_boundaries(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        document = (repo_root / "docs" / "micromachine-adoption.md").read_text()
+        issue_doc = (repo_root / "docs" / "sc2-collaboration-policy-tree.md").read_text()
+
+        required_terms = (
+            "MicroMachine is the only practical adoption candidate",
+            "Deimos",
+            "Eris",
+            "CommandCenter",
+            "python-sc2",
+            "StrategyManager",
+            "ProductionManager",
+            "CombatCommander",
+            "CombatAnalyzer",
+            "SquadOrder",
+            "ScoutManager",
+            "WorkerManager",
+            "libvoxelbot",
+            "deep policy modulation DSL",
+            "must not directly command SC2 units",
+        )
+
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, document)
+
+        self.assertIn("[micromachine-adoption.md](micromachine-adoption.md)", issue_doc)
+
 
 if __name__ == "__main__":
     unittest.main()
