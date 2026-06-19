@@ -18,6 +18,9 @@ not CommandCenter and not python-sc2. MicroMachine is public and historically
 strong enough to study as a policy source, while Deimos and Eris are stronger
 current AI Arena references but not directly adoptable because their bot logic
 is not publicly downloadable. See [micromachine-adoption.md](micromachine-adoption.md).
+The complete issue #10 architecture, evaluation contract, and stop conditions
+are tracked in
+[issue-10-policy-tree-collaboration.md](issue-10-policy-tree-collaboration.md).
 
 The pragmatic route is to keep the existing python-sc2 executor boundary for
 the current live commander while designing a MicroMachine-compatible modulation

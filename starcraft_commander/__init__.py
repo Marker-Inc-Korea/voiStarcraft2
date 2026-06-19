@@ -146,6 +146,24 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "validate_micromachine_blackboard_update": (
         "starcraft_commander.micromachine_bridge"
     ),
+    "MicroMachineModulationEvaluationPlan": (
+        "starcraft_commander.policy_observability"
+    ),
+    "ModulationEvaluationMetric": "starcraft_commander.policy_observability",
+    "ModulationEvaluationMetricKey": "starcraft_commander.policy_observability",
+    "PolicyModulationBridgeStatus": "starcraft_commander.policy_observability",
+    "PolicyModulationDashboardSnapshot": "starcraft_commander.policy_observability",
+    "REQUIRED_EVALUATION_METRICS": "starcraft_commander.policy_observability",
+    "build_issue10_evaluation_plan": "starcraft_commander.policy_observability",
+    "build_policy_modulation_dashboard_snapshot": (
+        "starcraft_commander.policy_observability"
+    ),
+    "default_modulation_evaluation_metrics": (
+        "starcraft_commander.policy_observability"
+    ),
+    "validate_dashboard_snapshot_payload": (
+        "starcraft_commander.policy_observability"
+    ),
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.

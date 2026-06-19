@@ -183,6 +183,19 @@ Required MicroMachine hook mapping is fixed in `MICROMACHINE_MANAGER_HOOKS`:
 | `economy` | `WorkerManager` expansion, repair, and emergency worker bias. |
 | `combat` | `libvoxelbot` combat simulation threshold bias. |
 
+## Observability And Evaluation
+
+Issue 10.5 adds `starcraft_commander/policy_observability.py`. It exposes a
+JSON-ready dashboard snapshot that separates active modulation updates from
+stale updates and can be attached to `CommanderPolicyTree.to_dict()` without
+requiring StarCraft II or MicroMachine to be installed.
+
+The evaluation contract compares baseline MicroMachine against MicroMachine
+with voi policy modulation. Required metrics are win/loss, crash rate, intent
+compliance, and intervention latency. See
+[issue-10-policy-tree-collaboration.md](issue-10-policy-tree-collaboration.md)
+for the complete architecture and stop conditions.
+
 ## Stop Condition
 
 The issue #10 sub-plan is complete only when this repository has:

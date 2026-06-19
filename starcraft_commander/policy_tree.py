@@ -19,6 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Protocol, runtime_checkable
 
+from starcraft_commander.policy_modulation import reject_raw_policy_control_keys
 from starcraft_commander.standing_orders import (
     STANDING_ORDER_KINDS,
     STANDING_ORDER_KOREAN_LABELS,
@@ -423,13 +424,23 @@ class CommanderPolicyTree:
                 newly_registered.append(kind)
         return tuple(newly_registered)
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(
+        self,
+        *,
+        modulation_snapshot: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
         """Return a JSON-ready tree snapshot for dashboards."""
 
-        return {
+        document: dict[str, object] = {
             "profiles": [profile.to_dict() for profile in self.profiles()],
             "last_decision": self.last_decision().to_dict(),
         }
+        if modulation_snapshot is not None:
+            if not isinstance(modulation_snapshot, Mapping):
+                raise ValueError("modulation_snapshot must be a mapping.")
+            reject_raw_policy_control_keys(modulation_snapshot)
+            document["policy_modulation"] = dict(modulation_snapshot)
+        return document
 
     def _remember(self, decision: CommanderPolicyDecision) -> CommanderPolicyDecision:
         with self._lock:
