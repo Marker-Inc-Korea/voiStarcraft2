@@ -100,6 +100,11 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     # Local web GUI (stdlib http.server, 127.0.0.1 only).
     "SessionLoopBridge": "starcraft_commander.web_gui",
     "WebGuiServer": "starcraft_commander.web_gui",
+    # Human-interruptible policy tree for LLM/BT collaboration experiments.
+    "CommanderPolicyDecision": "starcraft_commander.policy_tree",
+    "CommanderPolicyTree": "starcraft_commander.policy_tree",
+    "CommanderPolicyTreeInterface": "starcraft_commander.policy_tree",
+    "CommanderStrategyProfile": "starcraft_commander.policy_tree",
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.
