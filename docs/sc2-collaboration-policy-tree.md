@@ -13,12 +13,19 @@ drop-in equivalent that gives this project all three properties at once:
 2. Transparent behavior-tree or policy-level control.
 3. Human-in-the-loop intervention through Korean natural language.
 
-For voiStarcraft2, the pragmatic route is to keep the existing python-sc2
-executor boundary and add a human-interruptible policy tree above it. The LLM or
-a future SOTA strategy selector may choose a bounded strategy profile, but the
-profile can only activate deterministic policy leaves or recommend Korean
-utterances that still pass the existing Intent DSL, feasibility, planner, and
-executor gates.
+For voiStarcraft2, the practical non-neural strong-bot target is MicroMachine,
+not CommandCenter and not python-sc2. MicroMachine is public and historically
+strong enough to study as a policy source, while Deimos and Eris are stronger
+current AI Arena references but not directly adoptable because their bot logic
+is not publicly downloadable. See [micromachine-adoption.md](micromachine-adoption.md).
+
+The pragmatic route is to keep the existing python-sc2 executor boundary for
+the current live commander while designing a MicroMachine-compatible modulation
+layer above a strong autonomous bot. The LLM or a future SOTA strategy selector
+may choose a bounded strategy profile or policy modulation vector, but the
+profile can only activate deterministic policy leaves, constraints, or
+recommended Korean utterances that still pass the existing Intent DSL,
+feasibility, planner, and executor gates.
 
 ## Bot Landscape
 
@@ -26,18 +33,20 @@ executor gates.
 | --- | --- | --- |
 | AlphaStar-style research agents | Very strong learned SC2 play. | Not a transparent, user-interruptible product bot; not practical as a local hackable controller. |
 | SC2 AI ladder bots | Mature hand-authored strategies and tactical code. | Usually built as autonomous bots, not Korean-command collaborative control surfaces. |
-| MicroMachine-style SC2 bots | Strong deterministic tactical policies. | Good reference for hand-authored policy leaves, but not an intent/LLM/human intervention architecture by itself. |
-| Sharpy/python-sc2 frameworks | Useful behavior managers and bot architecture ideas. | Framework adoption would be a larger migration; current repo already has python-sc2 seams and tests. |
+| MicroMachine | Public historically strong deterministic SC2 bot with combat simulation, influence-map micro, build selection, and manager seams. | Best practical strong-bot adoption target, but needs a modulation layer rather than direct LLM control. |
+| Deimos / Eris | Current high-ELO AI Arena references. | Bot logic is not public, so they are evidence and inspiration rather than direct adoption targets. |
+| Sharpy / ares-sc2 / python-sc2 frameworks | Useful behavior managers and bot architecture ideas. | Frameworks are not the strong bot; they can inform the DSL and provider boundaries. |
+| CommandCenter | Historical C++ manager architecture and MicroMachine ancestry. | Not a strong-bot candidate and not worth integrating as a product dependency. |
 | Issue #10 LLM + behavior-tree paper | Best architectural match: LLM chooses high-level strategy, behavior tree executes. | Needs local adaptation so LLM output cannot bypass safety gates. |
 
 ## Proposed Shape
 
 ```text
 Human command / model strategy suggestion
-  -> CommanderPolicyTree
-     -> bounded strategy profile
-     -> deterministic policy leaves
-     -> standing orders or recommended utterances only
+  -> CommanderPolicyTree / deep modulation DSL
+     -> bounded strategy profile or policy modulation vector
+     -> deterministic policy leaves, constraints, or manager biases
+     -> standing orders, recommended utterances, or MicroMachine blackboard updates
   -> existing typed Intent DSL
   -> feasibility validator
   -> SC2 action planner
@@ -65,6 +74,24 @@ The tree is designed so a user can always intervene:
 - Model output containing raw API or python-sc2 action keys is rejected.
 - The policy tree never calls python-sc2 and never mutates game state.
 
+## MicroMachine Modulation Direction
+
+MicroMachine should keep playing as MicroMachine. Human or model intent should
+modulate policy-level decisions such as:
+
+- build and strategy selection in `StrategyManager`;
+- production, tech, and expansion priorities in `ProductionManager` and
+  `BuildOrderQueue`;
+- attack, hold, retreat, and combat simulation thresholds in
+  `CombatCommander` and `CombatAnalyzer`;
+- squad roles and harassment allocation in `Squad`, `SquadOrder`, and
+  `MicroManager`;
+- scouting targets and risk tolerance in `ScoutManager`;
+- worker economy, repair, and emergency defense in `WorkerManager`.
+
+This keeps the strong non-neural bot as the executor of tactical detail while
+making user intent a bounded modulation signal.
+
 ## Why This Fits voiStarcraft2
 
 The project already has the right lower-level architecture:
@@ -91,4 +118,3 @@ to plug in behavior-tree ideas without replacing the working command pipeline.
    human approval or a separately approved autonomous mode.
 5. Add more leaves for scout, rally, defend, and production policies once each
    leaf can explain its trigger and stop condition.
-
