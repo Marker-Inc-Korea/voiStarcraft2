@@ -128,6 +128,24 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "compile_policy_modulation_provider_output": (
         "starcraft_commander.policy_modulation_provider"
     ),
+    "MICROMACHINE_BRIDGE_PROTOCOL_VERSION": "starcraft_commander.micromachine_bridge",
+    "MICROMACHINE_MANAGER_HOOKS": "starcraft_commander.micromachine_bridge",
+    "MICROMACHINE_MODULATION_UPDATE_SCHEMA": "starcraft_commander.micromachine_bridge",
+    "MICROMACHINE_TELEMETRY_SCHEMA": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBlackboardUpdate": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBridgeEnvelope": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBridgeFailureMode": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBridgeMessageType": "starcraft_commander.micromachine_bridge",
+    "MicroMachineBridgeValidationResult": "starcraft_commander.micromachine_bridge",
+    "MicroMachineManagerHook": "starcraft_commander.micromachine_bridge",
+    "MicroMachineRollbackCommand": "starcraft_commander.micromachine_bridge",
+    "MicroMachineTelemetry": "starcraft_commander.micromachine_bridge",
+    "build_micromachine_bridge_error_envelope": (
+        "starcraft_commander.micromachine_bridge"
+    ),
+    "validate_micromachine_blackboard_update": (
+        "starcraft_commander.micromachine_bridge"
+    ),
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.
