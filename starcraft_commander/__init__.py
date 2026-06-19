@@ -118,6 +118,16 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "StrategyModulation": "starcraft_commander.policy_modulation",
     "TechModulation": "starcraft_commander.policy_modulation",
     "WeightedBiases": "starcraft_commander.policy_modulation",
+    "PolicyModulationCompileResult": "starcraft_commander.policy_modulation_provider",
+    "PolicyModulationCompileStatus": "starcraft_commander.policy_modulation_provider",
+    "PolicyModulationProviderInterface": "starcraft_commander.policy_modulation_provider",
+    "PolicyModulationProviderRequest": "starcraft_commander.policy_modulation_provider",
+    "compile_policy_modulation_from_provider": (
+        "starcraft_commander.policy_modulation_provider"
+    ),
+    "compile_policy_modulation_provider_output": (
+        "starcraft_commander.policy_modulation_provider"
+    ),
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.
