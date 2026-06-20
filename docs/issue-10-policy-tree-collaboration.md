@@ -38,6 +38,7 @@ provider output.
 | #14 | Added the provider compiler for LLM/UI/replay/neural payloads with refusal and clarification results. |
 | #15 | Added MicroMachine sidecar/blackboard protocol contracts, manager hook mapping, TTL, rollback, and failure modes. |
 | #16 | Adds dashboard observability and baseline-vs-modulated evaluation contracts. |
+| #22 | Adds the concrete filesystem runtime bridge and MicroMachine C++ integration kit. |
 
 ## Evaluation Contract
 
@@ -54,6 +55,27 @@ maps, races, and matchup seeds where possible. Required metrics are:
 Safety gates remain mandatory: no raw SC2 API actions from provider output, no
 bridge crash on invalid payload, and emergency rollback must remain available.
 
+## Runtime Integration Kit
+
+The remaining runtime bridge is implemented in
+`starcraft_commander/micromachine_runtime.py` and
+`integrations/micromachine/`.
+
+The Python sidecar writes:
+
+| File | Purpose |
+| --- | --- |
+| `latest_modulation.json` | Canonical auditable blackboard update. |
+| `latest_modulation.kv` | C++ stdlib-readable flat overlay for MicroMachine hooks. |
+| `modulation_updates.jsonl` | Append-only modulation audit log. |
+| `latest_telemetry.json` | Latest telemetry from the C++ bot. |
+| `telemetry.jsonl` | Append-only telemetry audit log. |
+
+The C++ kit includes `voi_policy_blackboard.hpp`, which can be copied into
+MicroMachine and read from `GameCommander::onFrame(bool executeMacro)`. The
+hook manifest is tied to upstream MicroMachine commit
+`eb893161371dab975a0a7e600f9e250ac03ec1ef`.
+
 ## Stop Conditions
 
 Issue #10 is complete when:
@@ -68,3 +90,5 @@ Issue #10 is complete when:
 6. Evaluation contracts compare baseline MicroMachine vs modulated
    MicroMachine using win/loss, crash rate, intent compliance, and intervention
    latency.
+7. A concrete filesystem sidecar runtime and MicroMachine C++ integration kit
+   exist for local StarCraft II smoke testing.
