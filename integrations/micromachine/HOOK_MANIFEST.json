@@ -1,0 +1,104 @@
+{
+  "integration": "voiStarcraft2 MicroMachine policy modulation",
+  "upstream_repository": "https://github.com/RaphaelRoyerRivard/MicroMachine",
+  "verified_upstream_commit": "eb893161371dab975a0a7e600f9e250ac03ec1ef",
+  "protocol_version": "voi-mm-bridge/v1",
+  "blackboard_files": {
+    "json": "latest_modulation.json",
+    "kv": "latest_modulation.kv",
+    "telemetry": "latest_telemetry.json"
+  },
+  "central_polling_hook": {
+    "source_path": "src/GameCommander.cpp",
+    "function": "GameCommander::onFrame(bool executeMacro)",
+    "anchor": "before m_productionManager.onFrame(executeMacro)",
+    "reason": "GameCommander calls ProductionManager, ScoutManager, and CombatCommander every frame, so this is the safest single polling point."
+  },
+  "manager_hooks": [
+    {
+      "domain": "production",
+      "source_path": "src/ProductionManager.cpp",
+      "header_path": "src/ProductionManager.h",
+      "function": "ProductionManager::onFrame(bool executeMacro)",
+      "secondary_function": "ProductionManager::manageBuildOrderQueue()",
+      "keys": [
+        "production.max_tech_deviation",
+        "production.allow_build_order_rewrite",
+        "tech.unit_biases.TERRAN_SIEGETANK",
+        "economy.expand_bias",
+        "economy.worker_production_bias"
+      ],
+      "intended_effect": "Bias queue priority and tech deviation while preserving MicroMachine build execution."
+    },
+    {
+      "domain": "combat",
+      "source_path": "src/CombatCommander.cpp",
+      "header_path": "src/CombatCommander.h",
+      "function": "CombatCommander::onFrame(const std::vector<Unit> & combatUnits)",
+      "secondary_function": "CombatCommander::shouldWeStartAttacking()",
+      "keys": [
+        "combat.aggression",
+        "combat.defend_bias",
+        "combat.preserve_army_bias",
+        "emergency.cancel_attacks",
+        "emergency.force_retreat"
+      ],
+      "intended_effect": "Bias attack/hold/retreat posture without issuing direct unit orders."
+    },
+    {
+      "domain": "scouting",
+      "source_path": "src/ScoutManager.cpp",
+      "header_path": "src/ScoutManager.h",
+      "function": "ScoutManager::onFrame()",
+      "secondary_function": "ScoutManager::moveScouts()",
+      "keys": [
+        "scouting.scout_priority",
+        "scouting.risk_tolerance",
+        "scouting.require_fresh_enemy_observation"
+      ],
+      "intended_effect": "Bias scout risk and information freshness while ScoutManager keeps movement control."
+    },
+    {
+      "domain": "economy",
+      "source_path": "src/WorkerManager.cpp",
+      "header_path": "src/WorkerManager.h",
+      "function": "WorkerManager::onFrame(bool executeMacro)",
+      "secondary_function": "WorkerManager::handleRepairWorkers()",
+      "keys": [
+        "economy.repair_priority",
+        "economy.gas_priority",
+        "emergency.pull_workers_for_defense",
+        "emergency.evacuate_workers"
+      ],
+      "intended_effect": "Bias repair/gas/worker-defense policies without directly selecting workers."
+    },
+    {
+      "domain": "combat_analysis",
+      "source_path": "src/CombatAnalyzer.cpp",
+      "header_path": "src/CombatAnalyzer.h",
+      "function": "CombatAnalyzer::onFrame()",
+      "secondary_function": "CombatAnalyzer::lowPriorityChecks()",
+      "keys": [
+        "combat.combat_sim_confidence_margin",
+        "combat.engage_threshold_delta",
+        "combat.retreat_threshold_delta"
+      ],
+      "intended_effect": "Bias combat analysis thresholds used by higher-level fight decisions."
+    },
+    {
+      "domain": "squad",
+      "source_path": "src/Squad.cpp",
+      "header_path": "src/Squad.h",
+      "function": "Squad::onFrame()",
+      "secondary_function": "Squad::calcTargets()",
+      "keys": [
+        "squad.main_army_bias",
+        "squad.harassment_bias",
+        "squad.defense_bias",
+        "squad.regroup_bias",
+        "squad.drop_bias"
+      ],
+      "intended_effect": "Bias role allocation/regroup behavior while Squad executes its existing micro managers."
+    }
+  ]
+}

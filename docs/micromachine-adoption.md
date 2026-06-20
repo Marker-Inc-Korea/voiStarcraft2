@@ -196,6 +196,23 @@ compliance, and intervention latency. See
 [issue-10-policy-tree-collaboration.md](issue-10-policy-tree-collaboration.md)
 for the complete architecture and stop conditions.
 
+## Concrete Runtime Kit
+
+The production bridge has a concrete filesystem implementation in
+`starcraft_commander/micromachine_runtime.py`. It writes validated modulation
+updates atomically as canonical JSON plus a flattened `latest_modulation.kv`
+file that MicroMachine can read with the C++ standard library.
+
+The C++ integration kit lives in `integrations/micromachine/`:
+
+- `HOOK_MANIFEST.json` names the verified upstream MicroMachine commit and the
+  real manager hook functions.
+- `voi_policy_blackboard.hpp` is a header-only reader for keys such as
+  `combat.defend_bias`, `economy.expand_bias`, and
+  `emergency.force_retreat`.
+- `README.md` documents the exact `GameCommander::onFrame` polling point and
+  local smoke-test boundary.
+
 ## Stop Condition
 
 The issue #10 sub-plan is complete only when this repository has:
@@ -205,3 +222,4 @@ The issue #10 sub-plan is complete only when this repository has:
 3. A MicroMachine sidecar and blackboard protocol.
 4. Observability and evaluation contracts that compare baseline MicroMachine
    against modulated MicroMachine.
+5. A concrete filesystem runtime bridge and MicroMachine C++ integration kit.
