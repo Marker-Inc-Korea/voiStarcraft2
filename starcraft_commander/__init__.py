@@ -172,6 +172,8 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "MicroMachineInMemoryBlackboard": "starcraft_commander.micromachine_runtime",
     "MicroMachineModulationBackend": "starcraft_commander.micromachine_runtime",
     "MicroMachineRuntimePaths": "starcraft_commander.micromachine_runtime",
+    "build_aggressive_pressure_profile": "starcraft_commander.micromachine_runtime",
+    "build_defensive_hold_profile": "starcraft_commander.micromachine_runtime",
     "flatten_blackboard_update": "starcraft_commander.micromachine_runtime",
     "publish_policy_modulation_provider_output": (
         "starcraft_commander.micromachine_runtime"
