@@ -20,6 +20,7 @@ if [[ ! -d "${S2CLIENT_DIR}/.git" ]]; then
 fi
 git -C "${S2CLIENT_DIR}" fetch --tags
 git -C "${S2CLIENT_DIR}" checkout "${S2CLIENT_COMMIT}"
+git -C "${S2CLIENT_DIR}" reset --hard "${S2CLIENT_COMMIT}"
 git -C "${S2CLIENT_DIR}" apply "${S2CLIENT_PATCH_FILE}"
 
 cmake -S "${S2CLIENT_DIR}" -B "${S2CLIENT_BUILD_DIR}" \
@@ -31,6 +32,7 @@ if [[ ! -d "${MICROMACHINE_DIR}/.git" ]]; then
 fi
 git -C "${MICROMACHINE_DIR}" fetch --tags
 git -C "${MICROMACHINE_DIR}" checkout "${MICROMACHINE_COMMIT}"
+git -C "${MICROMACHINE_DIR}" reset --hard "${MICROMACHINE_COMMIT}"
 git -C "${MICROMACHINE_DIR}" apply "${PATCH_FILE}"
 
 cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \

@@ -149,6 +149,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0001-macos-latest-s2client-policy-blackboard.patch",
             "0001-s2client-macos-launchservices.patch",
             "DSC2Api_SC2API_LIB",
+            "reset --hard",
             "cmake --build",
         ):
             with self.subTest(term=term):
