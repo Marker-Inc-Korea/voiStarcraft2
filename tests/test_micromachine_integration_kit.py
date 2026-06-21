@@ -120,6 +120,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "voiEngageMarginDelta",
             "BaseLocation * closestStartBase = nullptr",
             "!building.type.isRefinery() && !building.type.isAddon()",
+            "m_bot.GetCurrentFrame() < 5000",
             "VOI_SC2_EXTRA_ARGS",
             "PROTOSS_OBSERVERSIEGEMODE",
             "coordinator.SetRawAffectsSelection",
@@ -128,6 +129,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         for term in required_terms:
             with self.subTest(term=term):
                 self.assertIn(term, patch)
+        self.assertNotIn("-\t\t\t\t\t\t\t++neighborsBaseLocation[bl];", patch)
         for term in (
             "extern char **environ",
             "execve(launcher_path.c_str(), &char_list[0], environ)",

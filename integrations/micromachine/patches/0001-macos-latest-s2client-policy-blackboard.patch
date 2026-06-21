@@ -46,7 +46,7 @@ index abb6b8b..3cb7313 100644
 \ No newline at end of file
 +}
 diff --git a/src/BaseLocationManager.cpp b/src/BaseLocationManager.cpp
-index a0858ed..1db7d45 100644
+index a0858ed..03aa0d3 100644
 --- a/src/BaseLocationManager.cpp
 +++ b/src/BaseLocationManager.cpp
 @@ -103,7 +103,7 @@ void BaseLocationManager::onStart()
@@ -84,15 +84,7 @@ index a0858ed..1db7d45 100644
  	}
  
      // construct the map of tile positions to base locations
-@@ -213,7 +232,6 @@ void BaseLocationManager::onStart()
- 						BaseLocation* bl = m_tileBaseLocations[x + xOffset][y + yOffset];
- 						if (bl)
- 						{
--							++neighborsBaseLocation[bl];
- 						}
- 					}
- 				}
-@@ -310,6 +328,19 @@ void BaseLocationManager::onFrame()
+@@ -310,6 +329,19 @@ void BaseLocationManager::onFrame()
  			continue;
  		
          BaseLocation * baseLocation = getBaseLocation(unit.getPosition());
@@ -112,7 +104,7 @@ index a0858ed..1db7d45 100644
  
  		if (baseLocation != nullptr)
  		{
-@@ -893,13 +924,14 @@ void BaseLocationManager::SetLocationAsBlocked(const CCPosition position, UnitTy
+@@ -893,13 +925,14 @@ void BaseLocationManager::SetLocationAsBlocked(const CCPosition position, UnitTy
  		{
  			auto buildingPlacer = m_bot.Buildings().getBuildingPlacer();
  			bool isCreepBlocked = false;
@@ -129,7 +121,7 @@ index a0858ed..1db7d45 100644
  		}
  	}
  }
-@@ -998,4 +1030,4 @@ int BaseLocationManager::getAccessibleMineralFieldCount() const
+@@ -998,4 +1031,4 @@ int BaseLocationManager::getAccessibleMineralFieldCount() const
  			count += base->getMinerals().size();
  	}
  	return count;
@@ -137,7 +129,7 @@ index a0858ed..1db7d45 100644
 \ No newline at end of file
 +}
 diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
-index 2872a0b..8ddfb54 100644
+index 2872a0b..9317af7 100644
 --- a/src/BuildingManager.cpp
 +++ b/src/BuildingManager.cpp
 @@ -99,8 +99,18 @@ void BuildingManager::lowPriorityChecks()
@@ -176,7 +168,7 @@ index 2872a0b..8ddfb54 100644
 +		const bool isOpeningBarracks =
 +			b.type.getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_BARRACKS &&
 +			m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), false, true) == 0 &&
-+			m_bot.GetCurrentFrame() < 2000;
++			m_bot.GetCurrentFrame() < 5000;
 +		bool isEarlyWallBuilding = isOpeningSupplyDepot || isOpeningBarracks ||
 +			(m_bot.Strategy().shouldFinishWallEarly() &&
 +				((b.type.getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT &&
