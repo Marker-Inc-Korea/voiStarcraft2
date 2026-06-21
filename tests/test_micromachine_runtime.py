@@ -14,9 +14,13 @@ from starcraft_commander.micromachine_bridge import (
 from starcraft_commander.micromachine_runtime import (
     LATEST_UPDATE_JSON_NAME,
     LATEST_UPDATE_KV_NAME,
+    MicroMachineBackendPublishResult,
     MicroMachineFilesystemBlackboard,
+    MicroMachineInMemoryBlackboard,
+    MicroMachineModulationBackend,
     MicroMachineRuntimePaths,
     flatten_blackboard_update,
+    publish_policy_modulation_provider_output,
 )
 from starcraft_commander.policy_modulation import (
     CombatModulation,
@@ -24,9 +28,13 @@ from starcraft_commander.policy_modulation import (
     EmergencyModulation,
     PolicyModulationVector,
     PolicyOverrideLevel,
+    PolicyModulationSource,
     StrategyModulation,
     TechModulation,
     WeightedBiases,
+)
+from starcraft_commander.policy_modulation_provider import (
+    PolicyModulationCompileStatus,
 )
 
 
@@ -142,6 +150,164 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             provider = telemetry["managers"]["Provider"]
             self.assertEqual("unavailable", provider["status"])
             self.assertEqual("local LLM key missing", provider["unavailable_reason"])
+
+
+class MicroMachineBackendAbstractionTest(unittest.TestCase):
+    def test_filesystem_and_memory_backends_share_publish_contract(self) -> None:
+        backends: list[MicroMachineModulationBackend] = []
+        with tempfile.TemporaryDirectory() as directory:
+            backends.append(MicroMachineFilesystemBlackboard(directory))
+            backends.append(MicroMachineInMemoryBlackboard())
+
+            for backend in backends:
+                with self.subTest(backend=type(backend).__name__):
+                    update = backend.publish_vector(
+                        _vector(),
+                        current_frame=100,
+                        update_id=f"{type(backend).__name__}-update",
+                    )
+                    telemetry = backend.ingest_telemetry(
+                        {
+                            "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                            "frame": 104,
+                            "bot_name": "MicroMachine",
+                            "race": "Terran",
+                            "managers": {"GameCommander": {"policy_active": True}},
+                            "active_modulation_ids": [update.update_id],
+                            "last_failure": None,
+                        }
+                    )
+                    latest = backend.read_latest_update(current_frame=104)
+                    snapshot = backend.dashboard_snapshot(current_frame=104).to_dict()
+
+                    self.assertIsNotNone(latest)
+                    assert latest is not None
+                    self.assertEqual(update.update_id, latest.update_id)
+                    self.assertEqual(104, telemetry.frame)
+                    self.assertEqual(1, snapshot["active_modulation_count"])
+                    self.assertIsInstance(backend, MicroMachineModulationBackend)
+
+    def test_memory_backend_rejects_raw_payloads_at_telemetry_boundary(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            backend.ingest_telemetry(
+                {
+                    "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                    "frame": 1,
+                    "bot_name": "MicroMachine",
+                    "race": "Terran",
+                    "managers": {"GameCommander": {"raw_action": "attack_move"}},
+                    "active_modulation_ids": [],
+                    "last_failure": None,
+                }
+            )
+
+    def test_backends_reject_raw_control_in_telemetry_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backends: list[MicroMachineModulationBackend] = [
+                MicroMachineFilesystemBlackboard(directory),
+                MicroMachineInMemoryBlackboard(),
+            ]
+
+            for backend in backends:
+                with self.subTest(backend=type(backend).__name__):
+                    with self.assertRaisesRegex(ValueError, "raw runtime control"):
+                        backend.ingest_telemetry(
+                            MicroMachineTelemetry(
+                                frame=1,
+                                managers={
+                                    "GameCommander": {"raw_action": "attack_move"}
+                                },
+                            )
+                        )
+
+    def test_memory_backend_defensively_copies_telemetry_boundaries(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        source = MicroMachineTelemetry(
+            frame=1,
+            managers={
+                "GameCommander": {
+                    "policy": {"active": True},
+                }
+            },
+        )
+
+        ingested = backend.ingest_telemetry(source)
+        source.managers["GameCommander"]["policy"]["raw_action"] = "attack_move"
+        ingested.managers["GameCommander"]["raw_action"] = "attack_move"
+        latest = backend.read_latest_telemetry()
+
+        self.assertIsNotNone(latest)
+        assert latest is not None
+        self.assertNotIn("raw_action", latest.managers["GameCommander"])
+        self.assertNotIn(
+            "raw_action",
+            latest.managers["GameCommander"]["policy"],
+        )
+
+        latest.managers["GameCommander"]["raw_action"] = "attack_move"
+        snapshot = backend.dashboard_snapshot(current_frame=1).to_dict()
+
+        self.assertNotIn(
+            "raw_action",
+            snapshot["telemetry"]["managers"]["GameCommander"],
+        )
+
+    def test_neural_representation_provider_publishes_through_backend(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+
+        result = publish_policy_modulation_provider_output(
+            {
+                "source": "neural_representation",
+                "goal": "two_base_tank_hold",
+                "representation_axes": {
+                    "strategy.posture": "defensive",
+                    "economy.expand_bias": 0.6,
+                    "tech.unit_biases.TERRAN_SIEGETANK": 0.8,
+                    "combat.defend_bias": 0.7,
+                },
+            },
+            backend,
+            current_frame=44,
+            update_id="neural-001",
+        )
+
+        self.assertIsInstance(result, MicroMachineBackendPublishResult)
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        self.assertEqual("neural-001", result.update.update_id)
+        self.assertEqual(
+            PolicyModulationSource.NEURAL_REPRESENTATION,
+            result.update.vector.source,
+        )
+        self.assertEqual("defensive", result.update.vector.strategy.posture)
+        self.assertEqual(
+            {"TERRAN_SIEGETANK": 0.8},
+            result.update.vector.tech.unit_biases.to_dict(),
+        )
+        latest = backend.read_latest_update(current_frame=45)
+        self.assertIsNotNone(latest)
+        assert latest is not None
+        self.assertEqual(result.update.update_id, latest.update_id)
+
+    def test_provider_compile_refusal_does_not_publish_update(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+
+        result = publish_policy_modulation_provider_output(
+            {"goal": "unsafe", "representation": {"raw_action": "attack"}},
+            backend,
+            current_frame=1,
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            PolicyModulationCompileStatus.REFUSED,
+            result.compile_result.status,
+        )
+        self.assertIsNone(result.update)
+        self.assertIsNone(backend.read_latest_update(current_frame=1))
 
 
 class FlatBlackboardUpdateTest(unittest.TestCase):

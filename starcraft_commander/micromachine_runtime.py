@@ -1,9 +1,10 @@
-"""Filesystem runtime bridge for MicroMachine policy modulation.
+"""Runtime backend bridge for MicroMachine policy modulation.
 
-This module turns the issue #10 contracts into a practical sidecar transport:
-validated Python modulation updates are written as canonical JSON plus a flat
-``key=value`` overlay that a C++ MicroMachine hook can read with only the C++
-standard library.
+This module turns the issue #10 contracts into practical sidecar transports.
+The filesystem backend writes canonical JSON plus a flat ``key=value`` overlay
+for the C++ MicroMachine hook, while the backend protocol and in-memory backend
+let LLM, replay, UI, or future neural representation providers publish the same
+bounded modulation vectors without coupling callers to files.
 """
 
 from __future__ import annotations
@@ -11,10 +12,11 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from copy import deepcopy
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol, runtime_checkable
 
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
@@ -24,8 +26,13 @@ from starcraft_commander.micromachine_bridge import (
     validate_micromachine_blackboard_update,
 )
 from starcraft_commander.policy_modulation import (
+    PolicyModulationSource,
     PolicyModulationVector,
     reject_raw_policy_control_keys,
+)
+from starcraft_commander.policy_modulation_provider import (
+    PolicyModulationCompileResult,
+    compile_policy_modulation_provider_output,
 )
 from starcraft_commander.policy_observability import (
     PolicyModulationBridgeStatus,
@@ -39,6 +46,82 @@ LATEST_UPDATE_KV_NAME: Final[str] = "latest_modulation.kv"
 UPDATE_ARCHIVE_JSONL_NAME: Final[str] = "modulation_updates.jsonl"
 LATEST_TELEMETRY_JSON_NAME: Final[str] = "latest_telemetry.json"
 TELEMETRY_ARCHIVE_JSONL_NAME: Final[str] = "telemetry.jsonl"
+
+
+@runtime_checkable
+class MicroMachineModulationBackend(Protocol):
+    """Transport-independent backend for MicroMachine policy modulation."""
+
+    def publish_vector(
+        self,
+        vector: PolicyModulationVector,
+        *,
+        current_frame: int,
+        update_id: str | None = None,
+        rollback_update_id: str | None = None,
+    ) -> MicroMachineBlackboardUpdate:
+        """Validate and publish one modulation vector."""
+
+    def publish_update(
+        self,
+        update: MicroMachineBlackboardUpdate,
+        *,
+        current_frame: int,
+    ) -> MicroMachineBlackboardUpdate:
+        """Validate and publish one already-built update."""
+
+    def read_latest_update(
+        self,
+        *,
+        current_frame: int,
+    ) -> MicroMachineBlackboardUpdate | None:
+        """Return the latest non-stale update, if any."""
+
+    def ingest_telemetry(
+        self,
+        telemetry: MicroMachineTelemetry | Mapping[str, object],
+    ) -> MicroMachineTelemetry:
+        """Validate and ingest one telemetry snapshot."""
+
+    def read_latest_telemetry(self) -> MicroMachineTelemetry | None:
+        """Return the latest telemetry snapshot, if any."""
+
+    def dashboard_snapshot(
+        self,
+        *,
+        current_frame: int,
+        bridge_status: PolicyModulationBridgeStatus | str = (
+            PolicyModulationBridgeStatus.SIMULATED
+        ),
+    ) -> PolicyModulationDashboardSnapshot:
+        """Build a transport-independent dashboard snapshot."""
+
+    def write_provider_unavailable(
+        self,
+        *,
+        current_frame: int,
+        reason: str,
+    ) -> MicroMachineTelemetry:
+        """Record a provider-unavailable failure state."""
+
+
+@dataclass(frozen=True)
+class MicroMachineBackendPublishResult:
+    """Result of compiling provider output and publishing through a backend."""
+
+    compile_result: PolicyModulationCompileResult
+    update: MicroMachineBlackboardUpdate | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.compile_result.ok and self.update is not None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "compile_result": self.compile_result.to_dict(),
+            "update": self.update.to_dict() if self.update else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -154,18 +237,14 @@ class MicroMachineFilesystemBlackboard:
             raise ValueError(result.reason)
         return result.update
 
-    def ingest_telemetry(self, telemetry: MicroMachineTelemetry | Mapping[str, object]) -> MicroMachineTelemetry:
+    def ingest_telemetry(
+        self,
+        telemetry: MicroMachineTelemetry | Mapping[str, object],
+    ) -> MicroMachineTelemetry:
         """Validate and persist telemetry emitted by MicroMachine."""
 
-        if isinstance(telemetry, MicroMachineTelemetry):
-            document = telemetry.to_dict()
-            parsed = telemetry
-        elif isinstance(telemetry, Mapping):
-            reject_raw_policy_control_keys(telemetry)
-            parsed = MicroMachineTelemetry.from_mapping(telemetry)
-            document = parsed.to_dict()
-        else:
-            raise ValueError("telemetry must be a MicroMachineTelemetry or mapping.")
+        parsed = _coerce_telemetry(telemetry)
+        document = parsed.to_dict()
         _atomic_write_text(
             self.paths.latest_telemetry_json,
             json.dumps(document, ensure_ascii=False, sort_keys=True) + "\n",
@@ -228,6 +307,161 @@ class MicroMachineFilesystemBlackboard:
                 last_failure=MicroMachineBridgeFailureMode.PROVIDER_UNAVAILABLE,
             )
         )
+
+
+class MicroMachineInMemoryBlackboard:
+    """In-memory backend for tests and future live model-loop orchestration."""
+
+    def __init__(self) -> None:
+        self.latest_update: MicroMachineBlackboardUpdate | None = None
+        self.update_archive: list[MicroMachineBlackboardUpdate] = []
+        self.latest_telemetry: MicroMachineTelemetry | None = None
+        self.telemetry_archive: list[MicroMachineTelemetry] = []
+
+    def publish_vector(
+        self,
+        vector: PolicyModulationVector,
+        *,
+        current_frame: int,
+        update_id: str | None = None,
+        rollback_update_id: str | None = None,
+    ) -> MicroMachineBlackboardUpdate:
+        update = MicroMachineBlackboardUpdate(
+            update_id=update_id or _new_update_id(),
+            vector=vector,
+            issued_at_frame=_non_negative_int("current_frame", current_frame),
+            rollback_update_id=rollback_update_id,
+        )
+        return self.publish_update(update, current_frame=current_frame)
+
+    def publish_update(
+        self,
+        update: MicroMachineBlackboardUpdate,
+        *,
+        current_frame: int,
+    ) -> MicroMachineBlackboardUpdate:
+        result = validate_micromachine_blackboard_update(
+            update.to_dict(),
+            current_frame=_non_negative_int("current_frame", current_frame),
+        )
+        if not result.accepted:
+            raise ValueError(result.reason or "blackboard update was rejected.")
+        accepted = result.update
+        if accepted is None:
+            raise ValueError("blackboard update validation did not return an update.")
+        self.latest_update = accepted
+        self.update_archive.append(accepted)
+        return accepted
+
+    def read_latest_update(
+        self,
+        *,
+        current_frame: int,
+    ) -> MicroMachineBlackboardUpdate | None:
+        if self.latest_update is None:
+            return None
+        result = validate_micromachine_blackboard_update(
+            self.latest_update.to_dict(),
+            current_frame=_non_negative_int("current_frame", current_frame),
+        )
+        if not result.accepted:
+            raise ValueError(result.reason)
+        return result.update
+
+    def ingest_telemetry(
+        self,
+        telemetry: MicroMachineTelemetry | Mapping[str, object],
+    ) -> MicroMachineTelemetry:
+        parsed = _coerce_telemetry(telemetry)
+        stored = _clone_telemetry(parsed)
+        self.latest_telemetry = stored
+        self.telemetry_archive.append(stored)
+        return _clone_telemetry(stored)
+
+    def read_latest_telemetry(self) -> MicroMachineTelemetry | None:
+        if self.latest_telemetry is None:
+            return None
+        return _clone_telemetry(self.latest_telemetry)
+
+    def dashboard_snapshot(
+        self,
+        *,
+        current_frame: int,
+        bridge_status: PolicyModulationBridgeStatus | str = (
+            PolicyModulationBridgeStatus.SIMULATED
+        ),
+    ) -> PolicyModulationDashboardSnapshot:
+        updates: tuple[MicroMachineBlackboardUpdate, ...] = ()
+        failure: MicroMachineBridgeFailureMode | None = None
+        try:
+            update = self.read_latest_update(current_frame=current_frame)
+            if update is not None:
+                updates = (update,)
+        except ValueError:
+            failure = MicroMachineBridgeFailureMode.INVALID_PAYLOAD
+        telemetry = self.read_latest_telemetry()
+        if telemetry is not None and telemetry.last_failure is not None:
+            failure = telemetry.last_failure
+        return build_policy_modulation_dashboard_snapshot(
+            updates,
+            current_frame=current_frame,
+            bridge_status=bridge_status,
+            telemetry=telemetry,
+            last_failure=failure,
+        )
+
+    def write_provider_unavailable(
+        self,
+        *,
+        current_frame: int,
+        reason: str,
+    ) -> MicroMachineTelemetry:
+        return self.ingest_telemetry(
+            MicroMachineTelemetry(
+                frame=_non_negative_int("current_frame", current_frame),
+                managers={
+                    "Provider": {
+                        "status": "unavailable",
+                        "unavailable_reason": _require_text("reason", reason),
+                    }
+                },
+                active_modulation_ids=(),
+                last_failure=MicroMachineBridgeFailureMode.PROVIDER_UNAVAILABLE,
+            )
+        )
+
+
+def publish_policy_modulation_provider_output(
+    provider_output: object,
+    backend: MicroMachineModulationBackend,
+    *,
+    current_frame: int,
+    default_source: PolicyModulationSource | str = (
+        PolicyModulationSource.NEURAL_REPRESENTATION
+    ),
+    default_goal: str | None = None,
+    update_id: str | None = None,
+    rollback_update_id: str | None = None,
+) -> MicroMachineBackendPublishResult:
+    """Compile provider output and publish it through any modulation backend."""
+
+    compile_result = compile_policy_modulation_provider_output(
+        provider_output,
+        default_source=default_source,
+        default_goal=default_goal,
+    )
+    if not compile_result.ok or compile_result.vector is None:
+        return MicroMachineBackendPublishResult(compile_result=compile_result)
+    update = backend.publish_vector(
+        compile_result.vector,
+        current_frame=current_frame,
+        update_id=update_id,
+        rollback_update_id=rollback_update_id,
+    )
+    return MicroMachineBackendPublishResult(
+        compile_result=compile_result,
+        update=update,
+    )
 
 
 def flatten_blackboard_update(update: MicroMachineBlackboardUpdate) -> str:
@@ -303,6 +537,24 @@ def _read_json_mapping(path: Path) -> Mapping[str, object]:
         raise ValueError(f"{path} must contain a JSON object.")
     reject_raw_policy_control_keys(payload)
     return payload
+
+
+def _coerce_telemetry(
+    telemetry: MicroMachineTelemetry | Mapping[str, object],
+) -> MicroMachineTelemetry:
+    if isinstance(telemetry, MicroMachineTelemetry):
+        document = deepcopy(telemetry.to_dict())
+        reject_raw_policy_control_keys(document)
+        return MicroMachineTelemetry.from_mapping(document)
+    if isinstance(telemetry, Mapping):
+        document = deepcopy(dict(telemetry))
+        reject_raw_policy_control_keys(document)
+        return MicroMachineTelemetry.from_mapping(document)
+    raise ValueError("telemetry must be a MicroMachineTelemetry or mapping.")
+
+
+def _clone_telemetry(telemetry: MicroMachineTelemetry) -> MicroMachineTelemetry:
+    return _coerce_telemetry(telemetry)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
