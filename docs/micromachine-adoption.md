@@ -196,12 +196,26 @@ compliance, and intervention latency. See
 [issue-10-policy-tree-collaboration.md](issue-10-policy-tree-collaboration.md)
 for the complete architecture and stop conditions.
 
-## Concrete Runtime Kit
+## Runtime Backend Abstraction
 
-The production bridge has a concrete filesystem implementation in
-`starcraft_commander/micromachine_runtime.py`. It writes validated modulation
-updates atomically as canonical JSON plus a flattened `latest_modulation.kv`
-file that MicroMachine can read with the C++ standard library.
+The production bridge is expressed through
+`MicroMachineModulationBackend` in
+`starcraft_commander/micromachine_runtime.py`. Callers publish validated
+`PolicyModulationVector` updates, ingest telemetry, record provider failures,
+and build dashboard snapshots through this backend contract rather than
+depending on one transport.
+
+The concrete local MicroMachine backend is still
+`MicroMachineFilesystemBlackboard`. It writes validated modulation updates
+atomically as canonical JSON plus a flattened `latest_modulation.kv` file that
+MicroMachine can read with the C++ standard library. Tests and future
+model-loop orchestration can use `MicroMachineInMemoryBlackboard` with the same
+contract.
+
+Future neural or SOTA representation providers should emit bounded
+representation axes into `publish_policy_modulation_provider_output(...)`.
+That helper compiles provider output through the same raw-control rejection
+path as LLM/UI/replay providers, then publishes through any backend.
 
 The C++ integration kit lives in `integrations/micromachine/`:
 
@@ -222,4 +236,5 @@ The issue #10 sub-plan is complete only when this repository has:
 3. A MicroMachine sidecar and blackboard protocol.
 4. Observability and evaluation contracts that compare baseline MicroMachine
    against modulated MicroMachine.
-5. A concrete filesystem runtime bridge and MicroMachine C++ integration kit.
+5. A backend abstraction, concrete filesystem bridge, in-memory backend, and
+   MicroMachine C++ integration kit.

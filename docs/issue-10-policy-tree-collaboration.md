@@ -57,9 +57,15 @@ bridge crash on invalid payload, and emergency rollback must remain available.
 
 ## Runtime Integration Kit
 
-The remaining runtime bridge is implemented in
+The runtime bridge is implemented in
 `starcraft_commander/micromachine_runtime.py` and
-`integrations/micromachine/`.
+`integrations/micromachine/`. Python callers should depend on
+`MicroMachineModulationBackend` rather than the concrete filesystem class.
+`MicroMachineFilesystemBlackboard` remains the local C++ transport, while
+`MicroMachineInMemoryBlackboard` supports tests and future neural/model-loop
+orchestration. Neural representation providers can publish bounded axes through
+`publish_policy_modulation_provider_output(...)`, which compiles into the same
+`PolicyModulationVector` contract before writing to any backend.
 
 The Python sidecar writes:
 
@@ -92,3 +98,5 @@ Issue #10 is complete when:
    latency.
 7. A concrete filesystem sidecar runtime and MicroMachine C++ integration kit
    exist for local StarCraft II smoke testing.
+8. A backend abstraction exists so future neural representation transports can
+   be swapped in without changing the MicroMachine manager modulation contract.

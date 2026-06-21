@@ -167,9 +167,15 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "LATEST_TELEMETRY_JSON_NAME": "starcraft_commander.micromachine_runtime",
     "LATEST_UPDATE_JSON_NAME": "starcraft_commander.micromachine_runtime",
     "LATEST_UPDATE_KV_NAME": "starcraft_commander.micromachine_runtime",
+    "MicroMachineBackendPublishResult": "starcraft_commander.micromachine_runtime",
     "MicroMachineFilesystemBlackboard": "starcraft_commander.micromachine_runtime",
+    "MicroMachineInMemoryBlackboard": "starcraft_commander.micromachine_runtime",
+    "MicroMachineModulationBackend": "starcraft_commander.micromachine_runtime",
     "MicroMachineRuntimePaths": "starcraft_commander.micromachine_runtime",
     "flatten_blackboard_update": "starcraft_commander.micromachine_runtime",
+    "publish_policy_modulation_provider_output": (
+        "starcraft_commander.micromachine_runtime"
+    ),
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.
