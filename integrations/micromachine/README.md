@@ -87,14 +87,18 @@ launches patched MicroMachine against local StarCraft II, and fails unless
 `smoke-001` modulation and the bot actually executes the opening macro path.
 The smoke pins the Terran strategy to `Terran_MarineRush` and uses a low
 computer difficulty so the gate measures connection, manager initialization,
-and opening macro execution rather than combat pressure.
+and opening macro execution rather than combat pressure. The smoke bootstrap
+also ensures the Terran opening trains at least one Marine after the first
+Barracks so a clean upstream checkout cannot pass by only constructing workers
+and buildings.
 The gate requires `build command type=TERRAN_SUPPLYDEPOT`,
 `TERRAN_SUPPLYDEPOT UnderConstruction`,
-`create direct end item=Barracks result=1`,
 `build command type=TERRAN_BARRACKS`, and
-`TERRAN_BARRACKS UnderConstruction`. It fails immediately on known false
-positive signatures such as `Failed to place Barracks` or
-`Cancel building TERRAN_SUPPLYDEPOT`.
+`TERRAN_BARRACKS UnderConstruction`, followed by a post-Barracks unit command
+such as `create unit item=Marine result=1`, a `build command
+type=TERRAN_REFINERY`, and positive gas income after the Refinery completes. It
+fails immediately on known false positive signatures such as `Failed to place
+Barracks`, `Failed to place Refinery`, or exact building cancellation lines.
 
 ## Verified macOS Runtime
 
@@ -114,17 +118,20 @@ Connected to 127.0.0.1:8167
 WaitJoinGame finished successfully.
 Terran VS Zerg on Acropolis LE
 0: initializeManagers | MicroMachine v1.18.0
-292: constructAssignedBuildings | build command type=TERRAN_SUPPLYDEPOT
+894: constructAssignedBuildings | build command type=TERRAN_SUPPLYDEPOT
 TERRAN_SUPPLYDEPOT UnderConstruction
-996: manageBuildOrderQueue | create direct end item=Barracks result=1
-998: constructAssignedBuildings | build command type=TERRAN_BARRACKS
+3550: constructAssignedBuildings | build command type=TERRAN_BARRACKS
 TERRAN_BARRACKS UnderConstruction
+4590: create | create unit item=Marine result=1
+4940: constructAssignedBuildings | build command type=TERRAN_REFINERY
+TERRAN_REFINERY UnderConstruction
+Gas income:       67
 ```
 
 Telemetry written by the patched bot:
 
 ```json
-{"active_modulation_ids":["smoke-001"],"bot_name":"MicroMachine","frame":1464,"last_failure":null,"managers":{"GameCommander":{"combat_defend_bias":0.75,"emergency_force_retreat":false,"policy_active":true,"update_id":"smoke-001"}},"protocol_version":"voi-mm-bridge/v1","race":"Terran"}
+{"active_modulation_ids":["smoke-001"],"bot_name":"MicroMachine","frame":6098,"last_failure":null,"managers":{"GameCommander":{"combat_defend_bias":0.75,"emergency_force_retreat":false,"policy_active":true,"update_id":"smoke-001"}},"protocol_version":"voi-mm-bridge/v1","race":"Terran"}
 ```
 
 The patch now defers heavy MicroMachine manager initialization until the first
@@ -135,7 +142,13 @@ adds read-only policy accessors and wires `emergency.force_retreat`,
 `CombatCommander` attack/retreat thresholds. The building manager now trusts
 the authoritative SC2 placement query for normal non-addon buildings before
 canceling tracked construction, which prevents an opening Barracks from being
-removed solely because the legacy local tile cache disagrees.
+removed solely because the legacy local tile cache disagrees. The worker
+manager applies the same principle to completed friendly Refineries: if the base
+is not under attack and the depot/refinery are complete, a path-safety false
+negative no longer prevents gas-worker assignment. This fallback is required for
+a full-game macro smoke because the Refinery can be built successfully while gas
+income remains zero if workers are never assigned. Keyword:
+`gas-worker path-safety fallback`.
 
 The `s2client-api` patch also turns the macOS process launch into an
 environment-preserving `execve`, avoids invalid observer/computer setup fields,

@@ -1944,24 +1944,24 @@ index e68c228..bb1b2a2 100644
  	CCPositionType DistSq(const Unit & unit, const Unit & unit2);
      CCPositionType DistSq(const CCPosition & p1, const CCPosition & p2);
 diff --git a/src/WorkerManager.cpp b/src/WorkerManager.cpp
-index 34ff6c9..4f6155b 100644
+index 34ff6c9..aac422b 100644
 --- a/src/WorkerManager.cpp
 +++ b/src/WorkerManager.cpp
-@@ -4,6 +4,7 @@
- #include "Util.h"
- #include "Building.h"
- #include "Micro.h"
-+#include <iostream>
- 
- WorkerManager::WorkerManager(CCBot & bot)
-     : m_bot         (bot)
-@@ -2298,4 +2299,4 @@ void WorkerManager::setMineralMuleDeathFrame(sc2::Tag mineralTag)
- bool WorkerManager::isMineralMuleAvailable(sc2::Tag mineralTag)
- {
- 	return mineralMuleDeathFrame.find(mineralTag) == mineralMuleDeathFrame.end();
--}
-\ No newline at end of file
-+}
+@@ -788,7 +788,13 @@ void WorkerManager::handleGasWorkers()
+                 auto mineralWorker = getMineralWorker(geyser);
+                 if (mineralWorker.isValid())
+                 {
+-                    if (!base->isUnderAttack() && Util::PathFinding::IsPathToGoalSafe(mineralWorker.getUnitPtr(), geyserPosition, true, m_bot))
++                    const bool pathToRefinerySafe = Util::PathFinding::IsPathToGoalSafe(mineralWorker.getUnitPtr(), geyserPosition, true, m_bot);
++                    const bool trustCompletedOwnRefinery = !base->isUnderAttack() && geyser.isCompleted() && depot.isCompleted();
++                    if (!pathToRefinerySafe && trustCompletedOwnRefinery)
++                    {
++                        Util::Log(__FUNCTION__, "Path to completed refinery is not safe; assigning gas worker with refinery fallback.", m_bot);
++                    }
++                    if (!base->isUnderAttack() && (pathToRefinerySafe || trustCompletedOwnRefinery))
+                     {
+                         m_workerData.setWorkerJob(mineralWorker, WorkerJobs::Gas, geyser);
+                     }
 diff --git a/src/main.cpp b/src/main.cpp
 index a13ae41..b0ce753 100644
 --- a/src/main.cpp

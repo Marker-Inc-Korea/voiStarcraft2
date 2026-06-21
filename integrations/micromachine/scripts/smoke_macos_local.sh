@@ -7,8 +7,8 @@ SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
 SC2_EXECUTABLE="${SC2_EXECUTABLE:-${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2}"
 BLACKBOARD_DIR="${BLACKBOARD_DIR:-/private/tmp/voi-mm-smoke}"
 MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
-MIN_TELEMETRY_FRAME="${MIN_TELEMETRY_FRAME:-32}"
-SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-120}"
+MIN_TELEMETRY_FRAME="${MIN_TELEMETRY_FRAME:-5200}"
+SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-600}"
 BOT_LOG="${BLACKBOARD_DIR}/micromachine.log"
 SC2_NET_ADDRESS="${SC2_NET_ADDRESS:-127.0.0.1}"
 SC2_PORTS=(${SC2_PORTS:-8167 8168})
@@ -17,15 +17,22 @@ BOT_PID=""
 REQUIRED_MACRO_EVIDENCE=(
   "build command type=TERRAN_SUPPLYDEPOT"
   "TERRAN_SUPPLYDEPOT UnderConstruction"
-  "create direct end item=Barracks result=1"
   "build command type=TERRAN_BARRACKS"
   "TERRAN_BARRACKS UnderConstruction"
+  "build command type=TERRAN_REFINERY"
+)
+
+POST_BARRACKS_UNIT_EVIDENCE=(
+  "create unit item=Marine result=1"
+  "create unit item=Reaper result=1"
 )
 
 FORBIDDEN_MACRO_FAILURES=(
   "Failed to place Barracks"
-  "Cancel building TERRAN_SUPPLYDEPOT"
-  "Cancel building TERRAN_BARRACKS"
+  "Failed to place Refinery"
+  "Cancel building TERRAN_SUPPLYDEPOT :"
+  "Cancel building TERRAN_BARRACKS :"
+  "Cancel building TERRAN_REFINERY :"
 )
 
 cleanup_runtime() {
@@ -66,7 +73,31 @@ has_required_macro_evidence() {
   for term in "${REQUIRED_MACRO_EVIDENCE[@]}"; do
     has_log_term "${term}" || return 1
   done
+  has_post_barracks_unit_evidence || return 1
+  has_positive_gas_income || return 1
   return 0
+}
+
+has_post_barracks_unit_evidence() {
+  local term
+  for term in "${POST_BARRACKS_UNIT_EVIDENCE[@]}"; do
+    has_log_term "${term}" && return 0
+  done
+  return 1
+}
+
+has_positive_gas_income() {
+  [[ -f "${BOT_LOG}" ]] || return 1
+  awk '
+    /Gas income:/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[0-9]+$/ && $i > 0) {
+          found = 1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "${BOT_LOG}"
 }
 
 print_missing_macro_evidence() {
@@ -76,6 +107,12 @@ print_missing_macro_evidence() {
       echo "missing macro evidence: ${term}" >&2
     fi
   done
+  if ! has_post_barracks_unit_evidence; then
+    echo "missing post-Barracks unit evidence: ${POST_BARRACKS_UNIT_EVIDENCE[*]}" >&2
+  fi
+  if ! has_positive_gas_income; then
+    echo "missing positive gas income after Refinery completion" >&2
+  fi
 }
 
 if [[ "${MAP_FILE}" != /* && -f "${SC2_ROOT}/Maps/${MAP_FILE}" ]]; then
@@ -111,6 +148,11 @@ config["SC2API"]["StepSize"] = 1
 config["Macro"]["SelectStartingBuildBasedOnHistory"] = False
 config["Macro"]["PrintGreetingMessage"] = False
 config["SC2API Strategy"]["Terran"] = "Terran_MarineRush"
+terran_strategies = config["SC2API Strategy"]["Strategies"]
+marine_rush = terran_strategies["Terran_MarineRush"]["OpeningBuildOrder"]
+if "Marine" not in marine_rush:
+    first_barracks = marine_rush.index("Barracks")
+    marine_rush.insert(first_barracks + 1, "Marine")
 path.write_text(json.dumps(config, indent=4) + "\n")
 PY
 
