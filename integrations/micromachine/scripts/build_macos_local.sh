@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="${ROOT_DIR:-/private/tmp/voi-micromachine-runtime}"
+S2CLIENT_DIR="${S2CLIENT_DIR:-${ROOT_DIR}/s2client-api}"
+MICROMACHINE_DIR="${MICROMACHINE_DIR:-${ROOT_DIR}/MicroMachine}"
+S2CLIENT_BUILD_DIR="${S2CLIENT_BUILD_DIR:-${S2CLIENT_DIR}/build-latest}"
+MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
+MICROMACHINE_COMMIT="${MICROMACHINE_COMMIT:-eb893161371dab975a0a7e600f9e250ac03ec1ef}"
+S2CLIENT_COMMIT="${S2CLIENT_COMMIT:-614acc00abb5355e4c94a1b0279b46e9d845b7ce}"
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-macos-latest-s2client-policy-blackboard.patch"
+S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
+
+mkdir -p "${ROOT_DIR}"
+
+if [[ ! -d "${S2CLIENT_DIR}/.git" ]]; then
+  git clone https://github.com/Blizzard/s2client-api "${S2CLIENT_DIR}"
+fi
+git -C "${S2CLIENT_DIR}" fetch --tags
+git -C "${S2CLIENT_DIR}" checkout "${S2CLIENT_COMMIT}"
+git -C "${S2CLIENT_DIR}" apply "${S2CLIENT_PATCH_FILE}"
+
+cmake -S "${S2CLIENT_DIR}" -B "${S2CLIENT_BUILD_DIR}" \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
+
+if [[ ! -d "${MICROMACHINE_DIR}/.git" ]]; then
+  git clone https://github.com/RaphaelRoyerRivard/MicroMachine "${MICROMACHINE_DIR}"
+fi
+git -C "${MICROMACHINE_DIR}" fetch --tags
+git -C "${MICROMACHINE_DIR}" checkout "${MICROMACHINE_COMMIT}"
+git -C "${MICROMACHINE_DIR}" apply "${PATCH_FILE}"
+
+cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DSC2Api_INCLUDE_DIR="${S2CLIENT_DIR}/include" \
+  -DSC2Api_Proto_INCLUDE_DIR="${S2CLIENT_BUILD_DIR}/generated" \
+  -DSC2Api_Protobuf_INCLUDE_DIR="${S2CLIENT_DIR}/contrib/protobuf/src" \
+  -DSC2Api_SC2API_LIB="${S2CLIENT_BUILD_DIR}/bin/libsc2api.a" \
+  -DSC2Api_SC2LIB_LIB="${S2CLIENT_BUILD_DIR}/bin/libsc2lib.a" \
+  -DSC2Api_SC2UTILS_LIB="${S2CLIENT_BUILD_DIR}/bin/libsc2utils.a" \
+  -DSC2Api_SC2PROTOCOL_LIB="${S2CLIENT_BUILD_DIR}/bin/libsc2protocol.a" \
+  -DSC2Api_CIVETWEB_LIB="${S2CLIENT_BUILD_DIR}/bin/libcivetweb.a" \
+  -DSC2Api_PROTOBUF_LIB="${S2CLIENT_BUILD_DIR}/bin/libprotobuf.a"
+cmake --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
+
+printf 'MicroMachine executable: %s\n' "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"
