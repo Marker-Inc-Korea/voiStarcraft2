@@ -131,7 +131,7 @@ Gas income:       67
 Telemetry written by the patched bot:
 
 ```json
-{"active_modulation_ids":["smoke-001"],"bot_name":"MicroMachine","frame":6098,"last_failure":null,"managers":{"GameCommander":{"combat_defend_bias":0.75,"emergency_force_retreat":false,"policy_active":true,"update_id":"smoke-001"}},"protocol_version":"voi-mm-bridge/v1","race":"Terran"}
+{"active_modulation_ids":["smoke-aggressive-pressure"],"bot_name":"MicroMachine","frame":6076,"last_failure":null,"managers":{"CombatCommander":{"active":true,"aggression":0.55,"bounded_intervention":true,"combat_unit_count":1,"defend_bias":0.15,"force_retreat":false},"GameCommander":{"combat_aggression":0.55,"combat_defend_bias":0.15,"emergency_cancel_attacks":false,"emergency_force_retreat":false,"policy_active":true,"scouting_require_fresh_enemy_observation":false,"scouting_risk_tolerance":0.45,"scouting_scout_priority":0.7,"update_id":"smoke-aggressive-pressure"},"ScoutManager":{"active":true,"bounded_intervention":true,"has_worker_scout":true,"require_fresh_enemy_observation":false,"risk_tolerance":0.45,"scout_priority":0.7,"scout_unit_count":1,"status":"Enemy base unknown, exploring","under_attack":false}},"protocol_version":"voi-mm-bridge/v1","race":"Terran"}
 ```
 
 The patch now defers heavy MicroMachine manager initialization until the first
@@ -139,7 +139,14 @@ valid observation is available, preventing the previous frame-0
 `Invalid setup detected. | 0x0000000` / `0x0000001` base-location path. It also
 adds read-only policy accessors and wires `emergency.force_retreat`,
 `emergency.cancel_attacks`, `combat.defend_bias`, and `combat.aggression` into
-`CombatCommander` attack/retreat thresholds. The building manager now trusts
+`CombatCommander` attack/retreat thresholds. Issue 10.10 extends this evidence
+with two bounded intervention profiles: `smoke-defensive-hold` starts as a
+macro-safe defensive/scouting bias, then the smoke publishes
+`smoke-aggressive-pressure` only after the macro gate is already satisfied. The
+patched bot writes both `latest_telemetry.json` and `telemetry.jsonl`, so the
+smoke can verify ScoutManager activity, CombatCommander activity, manager-level
+bias changes, stale modulation, inactive policy, and the defensive-to-aggressive
+transition without issuing raw unit commands. The building manager now trusts
 the authoritative SC2 placement query for normal non-addon buildings before
 canceling tracked construction, which prevents an opening Barracks from being
 removed solely because the legacy local tile cache disagrees. The worker

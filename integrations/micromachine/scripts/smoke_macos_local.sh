@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 MICROMACHINE_DIR="${MICROMACHINE_DIR:-/private/tmp/voi-micromachine-runtime/MicroMachine}"
 MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
 SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
@@ -8,11 +10,15 @@ SC2_EXECUTABLE="${SC2_EXECUTABLE:-${SC2_ROOT}/Versions/Base96883/SC2.app/Content
 BLACKBOARD_DIR="${BLACKBOARD_DIR:-/private/tmp/voi-mm-smoke}"
 MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
 MIN_TELEMETRY_FRAME="${MIN_TELEMETRY_FRAME:-5200}"
+AGGRESSIVE_PROFILE_FRAME="${AGGRESSIVE_PROFILE_FRAME:-2600}"
 SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-600}"
 BOT_LOG="${BLACKBOARD_DIR}/micromachine.log"
 SC2_NET_ADDRESS="${SC2_NET_ADDRESS:-127.0.0.1}"
 SC2_PORTS=(${SC2_PORTS:-8167 8168})
 BOT_PID=""
+DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-smoke-defensive-hold}"
+AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-smoke-aggressive-pressure}"
+AGGRESSIVE_PROFILE_PUBLISHED=0
 
 REQUIRED_MACRO_EVIDENCE=(
   "build command type=TERRAN_SUPPLYDEPOT"
@@ -115,20 +121,53 @@ print_missing_macro_evidence() {
   fi
 }
 
+publish_profile() {
+  local profile="$1"
+  local update_id="$2"
+  local frame="$3"
+  # MicroMachineFilesystemBlackboard writes latest_modulation.kv for the C++ hook.
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${BLACKBOARD_DIR}" "${profile}" "${update_id}" "${frame}"
+import sys
+
+from starcraft_commander.micromachine_runtime import (
+    MicroMachineFilesystemBlackboard,
+    build_aggressive_pressure_profile,
+    build_defensive_hold_profile,
+)
+
+directory, profile_name, update_id, frame_text = sys.argv[1:5]
+backend = MicroMachineFilesystemBlackboard(directory)
+if profile_name == "defensive_hold":
+    vector = build_defensive_hold_profile()
+elif profile_name == "aggressive_pressure":
+    vector = build_aggressive_pressure_profile()
+else:
+    raise SystemExit(f"unknown MicroMachine profile: {profile_name}")
+backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_id)
+PY
+}
+
+telemetry_frame() {
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json"
+import json
+import sys
+from pathlib import Path
+
+try:
+    print(int(json.loads(Path(sys.argv[1]).read_text()).get("frame", 0)))
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
 if [[ "${MAP_FILE}" != /* && -f "${SC2_ROOT}/Maps/${MAP_FILE}" ]]; then
   MAP_FILE="${SC2_ROOT}/Maps/${MAP_FILE}"
 fi
 
 mkdir -p "${BLACKBOARD_DIR}"
 rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}"
-cat > "${BLACKBOARD_DIR}/latest_modulation.kv" <<EOF
-protocol_version=voi-mm-bridge/v1
-update_id=smoke-001
-expires_at_frame=10000
-combat.defend_bias=0.75
-combat.aggression=-0.2
-emergency.force_retreat=false
-EOF
+publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
 
 python3 - <<'PY' "${MICROMACHINE_DIR}/bin/BotConfig.txt" "${MAP_FILE}"
 import json
@@ -174,12 +213,19 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
   fi
 
   if [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]]; then
-    if python3 - "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" <<'PY'
+    current_telemetry_frame="$(telemetry_frame || true)"
+    if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${AGGRESSIVE_PROFILE_FRAME}" ]] && has_required_macro_evidence; then
+      publish_profile "aggressive_pressure" "${AGGRESSIVE_UPDATE_ID}" "${current_telemetry_frame}"
+      AGGRESSIVE_PROFILE_PUBLISHED=1
+    fi
+
+    if python3 - "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${AGGRESSIVE_UPDATE_ID}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 min_frame = int(sys.argv[2])
+aggressive_update_id = sys.argv[3]
 try:
     payload = json.loads(Path(sys.argv[1]).read_text())
 except json.JSONDecodeError:
@@ -187,6 +233,8 @@ except json.JSONDecodeError:
 if payload.get("frame", 0) >= min_frame:
     commander = payload.get("managers", {}).get("GameCommander", {})
     if commander.get("policy_active") is not True:
+        raise SystemExit(1)
+    if commander.get("update_id") != aggressive_update_id:
         raise SystemExit(1)
     raise SystemExit(0)
 raise SystemExit(1)
@@ -228,7 +276,7 @@ if ! has_required_macro_evidence; then
   exit 1
 fi
 
-python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${BOT_LOG}"
+python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${BOT_LOG}" "${DEFENSIVE_UPDATE_ID}" "${AGGRESSIVE_UPDATE_ID}"
 import json
 import sys
 from pathlib import Path
@@ -236,6 +284,8 @@ from pathlib import Path
 telemetry = Path(sys.argv[1])
 min_frame = int(sys.argv[2])
 bot_log = Path(sys.argv[3])
+defensive_update_id = sys.argv[4]
+aggressive_update_id = sys.argv[5]
 payload = json.loads(telemetry.read_text())
 if payload.get("protocol_version") != "voi-mm-bridge/v1":
     raise SystemExit(f"unexpected telemetry protocol in {telemetry}: {payload!r}")
@@ -253,7 +303,40 @@ if not commander:
     )
 if commander.get("policy_active") is not True:
     raise SystemExit(f"GameCommander policy is not active: {commander!r}")
-if commander.get("update_id") != "smoke-001":
+if commander.get("update_id") != aggressive_update_id:
     raise SystemExit(f"unexpected GameCommander update id: {commander!r}")
+managers = payload.get("managers", {})
+combat = managers.get("CombatCommander")
+if not combat or combat.get("active") is not True:
+    raise SystemExit(f"missing CombatCommander activity evidence: {managers!r}")
+if combat.get("bounded_intervention") is not True or combat.get("aggression", 0) <= 0:
+    raise SystemExit(f"missing aggressive CombatCommander modulation evidence: {combat!r}")
+scout = managers.get("ScoutManager")
+if not scout or scout.get("active") is not True:
+    raise SystemExit(f"missing ScoutManager activity evidence: {managers!r}")
+if scout.get("bounded_intervention") is not True:
+    raise SystemExit(f"missing ScoutManager modulation evidence: {scout!r}")
+if scout.get("has_worker_scout") is not True and int(scout.get("scout_unit_count", 0)) <= 0:
+    raise SystemExit(f"no scout movement evidence: {scout!r}")
+if scout.get("status") in (None, "", "None"):
+    raise SystemExit(f"no scout status evidence: {scout!r}")
+archive = telemetry.with_name("telemetry.jsonl")
+if not archive.exists():
+    raise SystemExit(f"missing telemetry archive: {archive}")
+updates = []
+for line in archive.read_text().splitlines():
+    if not line.strip():
+        continue
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    commander_entry = entry.get("managers", {}).get("GameCommander", {})
+    update_id = commander_entry.get("update_id")
+    if update_id:
+        updates.append(update_id)
+for expected in (defensive_update_id, aggressive_update_id):
+    if expected not in updates:
+        raise SystemExit(f"stale modulation or missing profile transition: {expected} not in {archive}")
 print(json.dumps(payload, sort_keys=True))
 PY

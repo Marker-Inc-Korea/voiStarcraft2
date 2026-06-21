@@ -19,6 +19,8 @@ from starcraft_commander.micromachine_runtime import (
     MicroMachineInMemoryBlackboard,
     MicroMachineModulationBackend,
     MicroMachineRuntimePaths,
+    build_aggressive_pressure_profile,
+    build_defensive_hold_profile,
     flatten_blackboard_update,
     publish_policy_modulation_provider_output,
 )
@@ -59,6 +61,34 @@ class MicroMachineRuntimePathsTest(unittest.TestCase):
         self.assertTrue(document["latest_update_json"].endswith(LATEST_UPDATE_JSON_NAME))
         self.assertTrue(document["latest_update_kv"].endswith(LATEST_UPDATE_KV_NAME))
         json.dumps(document)
+
+
+class MicroMachineInterventionProfileTest(unittest.TestCase):
+    def test_defensive_and_aggressive_profiles_bias_managers_without_raw_control(self) -> None:
+        defensive = build_defensive_hold_profile()
+        aggressive = build_aggressive_pressure_profile()
+
+        self.assertEqual("micromachine_defensive_hold", defensive.goal)
+        self.assertLess(defensive.combat.aggression, 0)
+        self.assertGreater(defensive.combat.defend_bias, 0.8)
+        self.assertGreater(defensive.scouting.scout_priority, 0)
+        self.assertLess(defensive.scouting.risk_tolerance, 0)
+        self.assertTrue(defensive.scouting.require_fresh_enemy_observation)
+        self.assertIn("bounded_intervention", defensive.tags)
+
+        self.assertEqual("micromachine_aggressive_pressure", aggressive.goal)
+        self.assertGreater(aggressive.combat.aggression, 0.5)
+        self.assertLess(aggressive.combat.defend_bias, defensive.combat.defend_bias)
+        self.assertGreater(aggressive.scouting.risk_tolerance, 0)
+        self.assertFalse(aggressive.scouting.require_fresh_enemy_observation)
+        self.assertIn("bounded_intervention", aggressive.tags)
+
+        for profile in (defensive, aggressive):
+            with self.subTest(profile=profile.goal):
+                payload = profile.to_dict()
+                json.dumps(payload)
+                self.assertNotIn("raw_action", json.dumps(payload))
+                self.assertNotIn("s2client_api", json.dumps(payload))
 
 
 class MicroMachineFilesystemBlackboardTest(unittest.TestCase):

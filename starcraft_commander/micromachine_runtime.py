@@ -26,8 +26,14 @@ from starcraft_commander.micromachine_bridge import (
     validate_micromachine_blackboard_update,
 )
 from starcraft_commander.policy_modulation import (
+    CombatModulation,
+    EmergencyModulation,
     PolicyModulationSource,
     PolicyModulationVector,
+    PolicyOverrideLevel,
+    PolicySafetyConstraint,
+    ScoutingModulation,
+    SquadModulation,
     reject_raw_policy_control_keys,
 )
 from starcraft_commander.policy_modulation_provider import (
@@ -122,6 +128,82 @@ class MicroMachineBackendPublishResult:
             "compile_result": self.compile_result.to_dict(),
             "update": self.update.to_dict() if self.update else None,
         }
+
+
+def build_defensive_hold_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a bounded MicroMachine profile for holding while scouting safely."""
+
+    return PolicyModulationVector(
+        goal="micromachine_defensive_hold",
+        source=source,
+        override_level=PolicyOverrideLevel.CONSTRAINT,
+        confidence=0.85,
+        ttl_seconds=ttl_seconds,
+        combat=CombatModulation(
+            aggression=-0.35,
+            engage_threshold_delta=0.2,
+            retreat_threshold_delta=0.2,
+            defend_bias=0.85,
+            preserve_army_bias=0.6,
+            combat_sim_confidence_margin=0.15,
+        ),
+        scouting=ScoutingModulation(
+            scout_priority=0.25,
+            risk_tolerance=-0.35,
+            require_fresh_enemy_observation=True,
+        ),
+        squad=SquadModulation(defense_bias=0.65, regroup_bias=0.45),
+        emergency=EmergencyModulation(hold_position=True),
+        constraints=(
+            PolicySafetyConstraint(
+                key="no_raw_unit_control",
+                value=True,
+                reason="Profile may bias managers but must not issue direct unit commands.",
+            ),
+        ),
+        tags=("micromachine", "defensive_hold", "bounded_intervention"),
+        rationale="Hold the army near home, preserve units, and keep scouting evidence fresh.",
+    )
+
+
+def build_aggressive_pressure_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a bounded MicroMachine profile for pressure without raw commands."""
+
+    return PolicyModulationVector(
+        goal="micromachine_aggressive_pressure",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=0.82,
+        ttl_seconds=ttl_seconds,
+        combat=CombatModulation(
+            aggression=0.55,
+            engage_threshold_delta=-0.15,
+            retreat_threshold_delta=-0.1,
+            harassment_bias=0.35,
+            defend_bias=0.15,
+            combat_sim_confidence_margin=-0.1,
+        ),
+        scouting=ScoutingModulation(
+            scout_priority=0.7,
+            risk_tolerance=0.45,
+            require_fresh_enemy_observation=False,
+        ),
+        squad=SquadModulation(
+            main_army_bias=0.45,
+            harassment_bias=0.45,
+            defense_bias=-0.2,
+        ),
+        tags=("micromachine", "aggressive_pressure", "bounded_intervention"),
+        rationale="Bias MicroMachine toward pressure while leaving tactical execution autonomous.",
+    )
 
 
 @dataclass(frozen=True)
