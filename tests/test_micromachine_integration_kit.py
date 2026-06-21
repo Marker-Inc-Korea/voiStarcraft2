@@ -7,6 +7,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = REPO_ROOT / "integrations" / "micromachine"
+PATCH_FILE = KIT_DIR / "patches" / "0001-macos-latest-s2client-policy-blackboard.patch"
+S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
+BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
+SMOKE_SCRIPT = KIT_DIR / "scripts" / "smoke_macos_local.sh"
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
@@ -73,16 +77,118 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         readme = (KIT_DIR / "README.md").read_text()
 
         required_terms = (
+            "GameCommander::onStart",
             "GameCommander::onFrame",
             "latest_modulation.kv",
             "combat.defend_bias",
             "emergency.force_retreat",
+            "emergency.cancel_attacks",
+            "combat.aggression",
             "MicroMachine managers",
             "local StarCraft II installation",
+            "MIN_TELEMETRY_FRAME",
+            "Connected to 127.0.0.1:8167",
+            "WaitJoinGame finished successfully.",
+            "create direct end item=Barracks result=1",
+            "TERRAN_BARRACKS UnderConstruction",
+            "\"policy_active\":true",
+            "pins the Terran strategy to `Terran_MarineRush`",
+            "Invalid setup detected. | 0x0000000",
+            "authoritative SC2 placement query",
+            "environment-preserving `execve`",
+            "outside Codex filesystem/network sandboxing",
         )
         for term in required_terms:
             with self.subTest(term=term):
                 self.assertIn(term, readme)
+
+    def test_patch_bundle_contains_build_bridge_and_smoke_hardening(self) -> None:
+        patch = PATCH_FILE.read_text()
+        s2client_patch = S2CLIENT_PATCH_FILE.read_text()
+
+        required_terms = (
+            "target_link_libraries(MicroMachine ${SC2Api_LIBRARIES})",
+            "file(GLOB_RECURSE LIBVOXELBOT_SOURCES",
+            "#include \"voi_policy_blackboard.hpp\"",
+            "void GameCommander::updateVoiPolicyBlackboard()",
+            "void GameCommander::writeVoiTelemetry() const",
+            "bool CCBot::isInitialObservationReady() const",
+            "void CCBot::initializeManagers()",
+            "m_managersInitialized",
+            "getVoiPolicyBool(\"emergency.force_retreat\", false)",
+            "getVoiPolicyBool(\"emergency.cancel_attacks\", false)",
+            "voiEngageMarginDelta",
+            "BaseLocation * closestStartBase = nullptr",
+            "!building.type.isRefinery() && !building.type.isAddon()",
+            "m_bot.GetCurrentFrame() < 5000",
+            "VOI_SC2_EXTRA_ARGS",
+            "PROTOSS_OBSERVERSIEGEMODE",
+            "coordinator.SetRawAffectsSelection",
+            "diff --git a/src/voi_policy_blackboard.hpp",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+        self.assertNotIn("-\t\t\t\t\t\t\t++neighborsBaseLocation[bl];", patch)
+        for term in (
+            "extern char **environ",
+            "execve(launcher_path.c_str(), &char_list[0], environ)",
+            "data.size() != static_cast<size_t>(width * height)",
+            "options->set_show_cloaked(true)",
+            "options->set_raw_affects_selection(true)",
+            "setup.type == PlayerType::Computer",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, s2client_patch)
+
+    def test_macos_scripts_document_reproducible_build_and_smoke(self) -> None:
+        build_script = BUILD_SCRIPT.read_text()
+        smoke_script = SMOKE_SCRIPT.read_text()
+
+        for term in (
+            "https://github.com/Blizzard/s2client-api",
+            "https://github.com/RaphaelRoyerRivard/MicroMachine",
+            "0001-macos-latest-s2client-policy-blackboard.patch",
+            "0001-s2client-macos-launchservices.patch",
+            "DSC2Api_SC2API_LIB",
+            "reset --hard",
+            "cmake --build",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, build_script)
+
+        for term in (
+            "VOI_MICROMACHINE_BLACKBOARD_DIR",
+            "latest_modulation.kv",
+            "AcropolisLE.SC2Map",
+            "Versions/Base96883/SC2.app/Contents/MacOS/SC2",
+            "latest_telemetry.json",
+            "MIN_TELEMETRY_FRAME",
+            "SMOKE_TIMEOUT_SECONDS",
+            '"EnemyDifficulty"] = 1',
+            '"EnemyRace"] = "Zerg"',
+            '"StepSize"] = 1',
+            '"SC2API Strategy"]["Terran"] = "Terran_MarineRush"',
+            "policy_active",
+            "cleanup_runtime",
+            "pgrep -f",
+            "did not initialize GameCommander",
+            "REQUIRED_MACRO_EVIDENCE",
+            "build command type=TERRAN_SUPPLYDEPOT",
+            "TERRAN_SUPPLYDEPOT UnderConstruction",
+            "create direct end item=Barracks result=1",
+            "build command type=TERRAN_BARRACKS",
+            "TERRAN_BARRACKS UnderConstruction",
+            "FORBIDDEN_MACRO_FAILURES",
+            "Failed to place Barracks",
+            "Cancel building TERRAN_SUPPLYDEPOT",
+            "MicroMachine reached SC2 API but did not execute the required macro opening",
+            "except json.JSONDecodeError",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, smoke_script)
+        self.assertNotIn(") || true", smoke_script)
+        self.assertIn('payload.get("frame", 0) < min_frame', smoke_script)
 
 
 if __name__ == "__main__":

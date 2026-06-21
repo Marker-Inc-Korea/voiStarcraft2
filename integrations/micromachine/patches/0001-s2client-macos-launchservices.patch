@@ -1,0 +1,79 @@
+diff --git a/src/sc2api/sc2_client.cc b/src/sc2api/sc2_client.cc
+index 6e06e7a..9aa3293 100644
+--- a/src/sc2api/sc2_client.cc
++++ b/src/sc2api/sc2_client.cc
+@@ -434,9 +434,11 @@ static bool SampleImageData(const std::string& data, int width, int height, cons
+     if (pointI.x < 0 || pointI.x >= width || pointI.y < 0 || pointI.y >= height) {
+         return false;
+     }
++    if (width <= 0 || height <= 0 || data.size() != static_cast<size_t>(width * height)) {
++        return false;
++    }
+ 
+     // Image data is stored with an upper left origin.
+-    assert(data.size() == width * height);
+     result = data[pointI.x + (height - 1 - pointI.y) * width];
+     return true;
+ }
+@@ -1579,8 +1581,12 @@ bool ControlImp::CreateGame(const std::string& map_name, const std::vector<Playe
+     for (const PlayerSetup& setup : players) {
+         SC2APIProtocol::PlayerSetup* playerSetup = request_create_game->add_player_setup();
+         playerSetup->set_type(SC2APIProtocol::PlayerType(setup.type));
+-        playerSetup->set_race(SC2APIProtocol::Race(int(setup.race) + 1));
+-        playerSetup->set_difficulty(SC2APIProtocol::Difficulty(setup.difficulty));
++        if (setup.type == PlayerType::Participant || setup.type == PlayerType::Computer) {
++            playerSetup->set_race(SC2APIProtocol::Race(int(setup.race) + 1));
++        }
++        if (setup.type == PlayerType::Computer) {
++            playerSetup->set_difficulty(SC2APIProtocol::Difficulty(setup.difficulty));
++        }
+     }
+ 
+     request_create_game->set_realtime(realtime);
+@@ -1679,6 +1685,9 @@ bool ControlImp::RequestJoinGame(PlayerSetup setup, const InterfaceSettings& set
+     SC2APIProtocol::InterfaceOptions* options = request_join_game->mutable_options();
+     options->set_raw(true);
+     options->set_score(true);
++    options->set_show_cloaked(true);
++    options->set_raw_affects_selection(true);
++    options->set_raw_crop_to_playable_area(false);
+     if (settings.use_feature_layers) {
+         SC2APIProtocol::SpatialCameraSetup* setupProto = options->mutable_feature_layer();
+         setupProto->set_width(settings.feature_layer_settings.camera_width);
+diff --git a/src/sc2utils/sc2_manage_process.cc b/src/sc2utils/sc2_manage_process.cc
+index 4ecc4b0..cce7466 100644
+--- a/src/sc2utils/sc2_manage_process.cc
++++ b/src/sc2utils/sc2_manage_process.cc
+@@ -40,6 +40,8 @@
+ 
+ #include <Carbon/Carbon.h>
+ 
++extern char **environ;
++
+ #elif defined(__linux__)
+ 
+ // Linux headers for process manipulation.
+@@ -391,9 +393,11 @@ int _kbhit() {
+ }
+ 
+ uint64_t StartProcess(const std::string& process_path, const std::vector<std::string>& command_line) {
++    std::string launcher_path = process_path;
++
+     std::vector<char*> char_list;
+     // execve expects the process path to be the first argument in the list.
+-    char_list.push_back(const_cast<char*>(process_path.c_str()));
++    char_list.push_back(const_cast<char*>(launcher_path.c_str()));
+     for (auto& s : command_line) {
+         char_list.push_back(const_cast<char*>(s.c_str()));
+     }
+@@ -404,8 +408,8 @@ uint64_t StartProcess(const std::string& process_path, const std::vector<std::st
+     // Start the process.
+     pid_t p = fork();
+     if (p == 0) {
+-        if (execve(char_list[0], &char_list[0], nullptr) == -1) {
+-            std::cerr << "Failed to execute process " << char_list[0]
++        if (execve(launcher_path.c_str(), &char_list[0], environ) == -1) {
++            std::cerr << "Failed to execute process " << launcher_path
+                 << " error: " << strerror(errno) << std::endl;
+             exit(-1);
+         }
