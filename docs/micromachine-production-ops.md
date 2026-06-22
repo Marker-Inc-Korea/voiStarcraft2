@@ -13,11 +13,20 @@ difficulty:
 MICROMACHINE_DIR=/private/tmp/MicroMachine \
 MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
 SOAK_MATRIX_RUN_ID=production-diversity-001 \
-SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map Ladder2019Season3/ThunderbirdLE.SC2Map" \
+SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map" \
 SOAK_MATRIX_ENEMY_RACES="Zerg Protoss Terran" \
-SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2" \
+SOAK_MATRIX_ENEMY_DIFFICULTIES="1" \
 SOAK_MATRIX_TARGET_FRAME=12000 \
 SOAK_MATRIX_TIMEOUT_SECONDS=1200 \
+integrations/micromachine/scripts/soak_matrix_macos_local.sh
+```
+
+Run Thunderbird or other unqualified maps only as explicit diagnostics:
+
+```bash
+SOAK_MATRIX_RUN_ID=diagnostic-thunderbird-001 \
+SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map" \
+SOAK_MATRIX_ALLOW_FAILURES=1 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
 

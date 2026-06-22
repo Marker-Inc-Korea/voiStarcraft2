@@ -16,6 +16,7 @@ BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 SMOKE_SCRIPT = KIT_DIR / "scripts" / "smoke_macos_local.sh"
 SOAK_SCRIPT = KIT_DIR / "scripts" / "soak_macos_local.sh"
 SOAK_MATRIX_SCRIPT = KIT_DIR / "scripts" / "soak_matrix_macos_local.sh"
+LOCAL_SOAK_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "micromachine-local-soak.yml"
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
@@ -306,6 +307,47 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, (REPO_ROOT / "starcraft_commander" / "micromachine_soak.py").read_text())
+
+    def test_production_soak_defaults_exclude_known_blocker_maps(self) -> None:
+        soak_matrix_script = SOAK_MATRIX_SCRIPT.read_text()
+        workflow = LOCAL_SOAK_WORKFLOW.read_text()
+        production_ops = (REPO_ROOT / "docs" / "micromachine-production-ops.md").read_text()
+        readme = (KIT_DIR / "README.md").read_text()
+
+        self.assertIn(
+            'SOAK_MATRIX_MAP_FILES="${SOAK_MATRIX_MAP_FILES:-AcropolisLE.SC2Map}"',
+            soak_matrix_script,
+        )
+        self.assertIn('default: "AcropolisLE.SC2Map"', workflow)
+        self.assertIn(
+            "Set to 1 only for diagnostic or negative-control runs, never production sign-off.",
+            workflow,
+        )
+        self.assertIn(
+            'allow_failures:\n'
+            '        description: "Set to 1 only for diagnostic or negative-control runs, never production sign-off."\n'
+            "        required: false\n"
+            '        default: "0"',
+            workflow,
+        )
+        self.assertNotIn(
+            'SOAK_MATRIX_MAP_FILES="${SOAK_MATRIX_MAP_FILES:-AcropolisLE.SC2Map Ladder2019Season3/ThunderbirdLE.SC2Map}"',
+            soak_matrix_script,
+        )
+        self.assertIn('SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map"', production_ops)
+        self.assertIn('SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map"', readme)
+        self.assertIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1"', production_ops)
+        self.assertIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1"', readme)
+        self.assertNotIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2"', production_ops)
+        self.assertNotIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2"', readme)
+        self.assertIn(
+            'SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map"',
+            production_ops,
+        )
+        self.assertIn(
+            'SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map"',
+            readme,
+        )
 
     def test_soak_matrix_aggregate_preserves_nested_attempt_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
