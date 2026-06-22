@@ -21,7 +21,7 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ matrix.python-version }}
       - name: Install package
-        run: uv sync --python ${{ matrix.python-version }} --extra dev
+        run: uv sync --python ${{ matrix.python-version }} --extra dev --extra llm
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest -q
       - name: Check soak scripts
