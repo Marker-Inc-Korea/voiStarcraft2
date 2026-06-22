@@ -17,6 +17,7 @@ Verified upstream:
 | `patches/0001-macos-latest-s2client-policy-blackboard.patch` | Verified patch bundle for current `s2client-api`, libvoxelbot linking, and the voi blackboard hook. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
+| `scripts/soak_macos_local.sh` | Long-run local StarCraft II soak gate with deterministic artifacts and production sign-off classifiers. |
 
 ## Runtime Files
 
@@ -163,3 +164,102 @@ enables raw observation options needed by MicroMachine, and converts mismatched
 image-grid payloads from process-killing assertions into ordinary false query
 results. The smoke must run outside Codex filesystem/network sandboxing because
 SC2 API loopback and GUI process launch are host-level operations.
+
+## Long-Run Soak Gate
+
+`scripts/soak_macos_local.sh` is the production sign-off gate after the short
+smoke passes. It launches the same patched MicroMachine runtime, publishes a
+macro-safe `soak-defensive-hold` profile first, switches to
+`soak-aggressive-pressure` only after the required SupplyDepot, Barracks,
+Refinery, Marine/Reaper, and positive gas-income evidence appears, and keeps
+refreshing the aggressive profile so a long run cannot silently fall back to
+stale modulation.
+
+Example:
+
+```bash
+MICROMACHINE_DIR=/private/tmp/MicroMachine \
+MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
+SOAK_TARGET_FRAME=12000 \
+SOAK_TIMEOUT_SECONDS=1200 \
+integrations/micromachine/scripts/soak_macos_local.sh
+```
+
+Configurable thresholds:
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `SOAK_TARGET_FRAME` | `12000` | Required latest telemetry frame for pass. |
+| `SOAK_TIMEOUT_SECONDS` | `1200` | Wall-clock budget before timeout failure. |
+| `SOAK_TELEMETRY_STALL_SECONDS` | `90` | Fails if telemetry stops updating before target. |
+| `SOAK_PRODUCTION_DEADLOCK_FRAME` | `7000` | Fails if opening production evidence is still missing. |
+| `SOAK_PRODUCTION_STALL_FRAMES` | `8000` | Fails if no later production log evidence appears within this frame window after target. |
+| `SOAK_MAX_PLACEMENT_FAILURES` | `3` | Fails repeated placement/path/cancel loops. |
+| `SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES` | `128` | Fails if telemetry does not consume the latest modulation refresh after this frame grace window. |
+| `SOAK_MAX_ATTEMPTS` | `2` | Bounded retry count for map/start-location flakes; every attempt keeps its own artifact directory. |
+| `SOAK_NON_RETRYABLE_FAILURE_CODES` | classifier terminal failures | Failure codes that stop retry immediately instead of hiding deterministic bot/runtime failures behind a later pass. |
+| `SOAK_ARTIFACT_ROOT` | `/private/tmp/voi-mm-soak` | Parent for run archives. |
+| `SOAK_RUN_DIR` | `${SOAK_ARTIFACT_ROOT}/${SOAK_RUN_ID}` | Exact deterministic artifact directory when supplied by CI/user. |
+
+The top-level soak writes a summary `soak_report.json` into `SOAK_RUN_DIR`.
+Each bounded retry writes fixed artifact names into
+`SOAK_RUN_DIR/attempt-N/`:
+
+| Artifact | Meaning |
+| --- | --- |
+| `micromachine.log` | Full MicroMachine runtime log. |
+| `latest_telemetry.json` | Latest C++ telemetry snapshot. |
+| `telemetry.jsonl` | Telemetry archive used to prove manager-level intervention. |
+| `latest_modulation.json` / `latest_modulation.kv` | Current bounded policy modulation. |
+| `modulation_updates.jsonl` | Modulation refresh audit trail. |
+| `soak_report.json` | Final classifier report; `ok: true` is required for sign-off. |
+
+The Python classifier behind the script is
+`starcraft_commander.micromachine_soak.classify_micromachine_soak`. It detects
+MicroMachine crash/early process stop, SC2 disconnect signatures, telemetry
+stall, repeated placement failures, no-production deadlock, production stall,
+missing `CombatCommander`/`ScoutManager` bounded intervention, and stale or
+inactive modulation. The live loop runs the classifier with
+`--allow-incomplete` so target-frame progress is allowed while terminal
+failures still stop the run immediately. The final pass requires target frame,
+macro evidence, CombatCommander and ScoutManager intervention evidence, and no
+classifier failures. Aggressive-profile refreshes use frame-suffixed update IDs
+such as `soak-aggressive-pressure-11500`, so the final telemetry must prove
+MicroMachine consumed the latest refresh rather than merely reporting an older
+still-active profile. When the script stops the game after the target frame,
+`soak_report.json` records `termination_reason:
+target_frame_reached_cleanup` instead of presenting the cleanup as a natural
+game exit. If an attempt hits a deterministic classifier failure, it still
+writes its own final `soak_report.json`; the bounded retry wrapper stops on
+non-retryable classifier failures instead of masking them, promotes the first
+passing attempt with artifact paths rewritten relative to top-level
+`SOAK_RUN_DIR`, or writes a failed top-level summary with all attempt reports.
+
+Verified local sign-off evidence for Issue 10.11:
+
+| Run | Evidence |
+| --- | --- |
+| `issue-10-11-final-acropolis-v3` | `SOAK_RUN_DIR=/private/tmp/voi-mm-soak/issue-10-11-final-acropolis-v3`, `MAP_FILE=AcropolisLE.SC2Map`, top-level `soak_report.json` has `ok: true`, `latest_frame: 12056`, `macro_evidence_ok: true`, `manager_intervention_ok: true`, and `termination_reason: target_frame_reached_cleanup`. |
+| `issue-10-11-final-thunderbird-v2` | Negative control: `MAP_FILE=Ladder2019Season3/ThunderbirdLE.SC2Map` stopped on non-retryable `no_production_deadlock` at frame 7089, proving failed macro games are not hidden by retries. |
+
+## Production Sign-Off Criteria
+
+Issue #10 is production-ready for user QA only when all gates below pass on the
+same patched MicroMachine build:
+
+| Gate | Required evidence |
+| --- | --- |
+| Unit contracts | `pytest` passes for DSL, provider compiler, bridge, runtime, observability, and soak classifier. |
+| Patch reproducibility | MicroMachine patch applies to upstream commit `eb893161371dab975a0a7e600f9e250ac03ec1ef`. |
+| Smoke | `smoke_macos_local.sh` reaches `MIN_TELEMETRY_FRAME`, produces real macro evidence, and shows active aggressive modulation. |
+| Manager intervention | Telemetry proves both `CombatCommander.bounded_intervention=true` and `ScoutManager.bounded_intervention=true`. |
+| Long-run soak | `soak_macos_local.sh` reaches `SOAK_TARGET_FRAME` and writes `soak_report.json` with `ok: true`. |
+| Neural/provider swap | Callers use `MicroMachineModulationBackend` / `publish_policy_modulation_provider_output(...)`, not filesystem-specific code, so future neural representation providers can publish the same bounded vector contract. |
+
+Non-blocking risks after sign-off:
+
+| Risk | Mitigation |
+| --- | --- |
+| AI Arena ladder strength is not automatically proven by local soak. | Run later ladder/evaluation batches using the same artifact report format. |
+| The C++ hook remains a patch against a fixed MicroMachine commit. | Re-run patch apply and soak when upstream commit changes. |
+| User intent quality depends on provider output. | Invalid or raw-control provider payloads are rejected before reaching MicroMachine. |

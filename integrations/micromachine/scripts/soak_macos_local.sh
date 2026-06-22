@@ -1,0 +1,511 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+MICROMACHINE_DIR="${MICROMACHINE_DIR:-/private/tmp/MicroMachine}"
+MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
+SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
+SC2_EXECUTABLE="${SC2_EXECUTABLE:-${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2}"
+MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
+SOAK_TARGET_FRAME="${SOAK_TARGET_FRAME:-12000}"
+SOAK_TIMEOUT_SECONDS="${SOAK_TIMEOUT_SECONDS:-1200}"
+SOAK_TELEMETRY_STALL_SECONDS="${SOAK_TELEMETRY_STALL_SECONDS:-90}"
+SOAK_PRODUCTION_DEADLOCK_FRAME="${SOAK_PRODUCTION_DEADLOCK_FRAME:-7000}"
+SOAK_PRODUCTION_STALL_FRAMES="${SOAK_PRODUCTION_STALL_FRAMES:-8000}"
+SOAK_MAX_PLACEMENT_FAILURES="${SOAK_MAX_PLACEMENT_FAILURES:-3}"
+SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES="${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES:-128}"
+SOAK_POLL_SECONDS="${SOAK_POLL_SECONDS:-2}"
+SOAK_BOOTSTRAP_GRACE_SECONDS="${SOAK_BOOTSTRAP_GRACE_SECONDS:-120}"
+SOAK_PROFILE_REFRESH_FRAMES="${SOAK_PROFILE_REFRESH_FRAMES:-7000}"
+SOAK_MAX_ATTEMPTS="${SOAK_MAX_ATTEMPTS:-2}"
+SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-micromachine_crash micromachine_process_stopped sc2_disconnect telemetry_missing telemetry_stall repeated_placement_failures no_production_deadlock production_stall manager_intervention_missing stale_modulation}"
+SOAK_ATTEMPT_INDEX="${SOAK_ATTEMPT_INDEX:-}"
+SOAK_RUN_ID="${SOAK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+SOAK_ARTIFACT_ROOT="${SOAK_ARTIFACT_ROOT:-/private/tmp/voi-mm-soak}"
+# Artifact names inside SOAK_RUN_DIR are deterministic for PR evidence and QA.
+SOAK_RUN_DIR="${SOAK_RUN_DIR:-${SOAK_ARTIFACT_ROOT}/${SOAK_RUN_ID}}"
+BLACKBOARD_DIR="${BLACKBOARD_DIR:-${SOAK_RUN_DIR}}"
+BOT_LOG="${BLACKBOARD_DIR}/micromachine.log"
+SOAK_REPORT="${BLACKBOARD_DIR}/soak_report.json"
+SOAK_LIVE_REPORT="${BLACKBOARD_DIR}/soak_live_report.json"
+# Final classifier requires CombatCommander and ScoutManager bounded_intervention evidence.
+SC2_NET_ADDRESS="${SC2_NET_ADDRESS:-127.0.0.1}"
+SC2_PORTS=(${SC2_PORTS:-8167 8168})
+BOT_PID=""
+BOT_EXIT_CODE=""
+BOT_STOPPED=0
+BOT_TERMINATION_REASON=""
+PREEXISTING_SC2_PORT_PIDS=""
+DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-soak-defensive-hold}"
+AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-soak-aggressive-pressure}"
+AGGRESSIVE_CURRENT_UPDATE_ID=""
+AGGRESSIVE_PROFILE_PUBLISHED=0
+LAST_PROFILE_REFRESH_FRAME=0
+SOAK_TARGET_REACHED=0
+
+if [[ -z "${SOAK_ATTEMPT_INDEX}" && "${SOAK_MAX_ATTEMPTS}" -gt 1 ]]; then
+  mkdir -p "${SOAK_RUN_DIR}"
+  for (( attempt = 1; attempt <= SOAK_MAX_ATTEMPTS; attempt++ )); do
+    attempt_dir="${SOAK_RUN_DIR}/attempt-${attempt}"
+    echo "Starting MicroMachine soak attempt ${attempt}/${SOAK_MAX_ATTEMPTS}: ${attempt_dir}"
+    if SOAK_ATTEMPT_INDEX="${attempt}" SOAK_MAX_ATTEMPTS=1 SOAK_RUN_DIR="${attempt_dir}" BLACKBOARD_DIR="${attempt_dir}" "${BASH_SOURCE[0]}"; then
+      python3 - <<'PY' "${attempt_dir}/soak_report.json" "${SOAK_RUN_DIR}/soak_report.json" "${attempt}" "${attempt_dir}" "${SOAK_RUN_DIR}"
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+attempt = int(sys.argv[3])
+attempt_dir = Path(sys.argv[4])
+root = Path(sys.argv[5])
+payload = json.loads(source.read_text())
+manifest = payload.get("artifact_manifest", {})
+if isinstance(manifest, dict):
+    fixed_manifest = {}
+    for key, value in manifest.items():
+        if not isinstance(value, str):
+            continue
+        artifact = Path(value)
+        if artifact.is_absolute():
+            fixed_manifest[key] = value
+        else:
+            fixed_manifest[key] = str((attempt_dir / artifact).relative_to(root))
+    payload["artifact_manifest"] = fixed_manifest
+payload["selected_attempt"] = attempt
+payload["selected_attempt_dir"] = str(attempt_dir)
+payload["attempt_summary"] = {
+    "attempt": attempt,
+    "status": payload.get("status"),
+    "latest_frame": payload.get("latest_frame"),
+    "failures": payload.get("failures", []),
+}
+target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+      echo "MicroMachine soak passed on attempt ${attempt}/${SOAK_MAX_ATTEMPTS}; report: ${SOAK_REPORT}"
+      exit 0
+    fi
+
+    if [[ -f "${attempt_dir}/soak_report.json" ]]; then
+      if python3 - <<'PY' "${attempt_dir}/soak_report.json" "${SOAK_NON_RETRYABLE_FAILURE_CODES}"
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+non_retryable = set(sys.argv[2].split())
+codes = {
+    failure.get("code")
+    for failure in report.get("failures", [])
+    if isinstance(failure, dict)
+}
+raise SystemExit(0 if codes & non_retryable else 1)
+PY
+      then
+        python3 - <<'PY' "${SOAK_RUN_DIR}" "${SOAK_REPORT}" "${SOAK_MAX_ATTEMPTS}" "${attempt}" "non_retryable_failure"
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+target = Path(sys.argv[2])
+attempts = int(sys.argv[3])
+stopped_at = int(sys.argv[4])
+reason = sys.argv[5]
+reports = []
+for attempt in range(1, attempts + 1):
+    report_path = root / f"attempt-{attempt}" / "soak_report.json"
+    if attempt > stopped_at and not report_path.exists():
+        reports.append({"attempt": attempt, "status": "not_run"})
+        continue
+    if not report_path.exists():
+        reports.append({"attempt": attempt, "status": "missing_report"})
+        continue
+    payload = json.loads(report_path.read_text())
+    reports.append(
+        {
+            "attempt": attempt,
+            "status": payload.get("status"),
+            "latest_frame": payload.get("latest_frame"),
+            "failures": payload.get("failures", []),
+            "report": str(report_path),
+        }
+    )
+target.write_text(
+    json.dumps(
+        {
+            "status": "failed",
+            "ok": False,
+            "attempts": reports,
+            "max_attempts": attempts,
+            "stopped_at_attempt": stopped_at,
+            "stop_reason": reason,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n"
+)
+PY
+        echo "MicroMachine soak stopped after non-retryable attempt ${attempt}; report: ${SOAK_REPORT}" >&2
+        exit 1
+      fi
+    fi
+  done
+
+  python3 - <<'PY' "${SOAK_RUN_DIR}" "${SOAK_REPORT}" "${SOAK_MAX_ATTEMPTS}"
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+target = Path(sys.argv[2])
+attempts = int(sys.argv[3])
+reports = []
+for attempt in range(1, attempts + 1):
+    report_path = root / f"attempt-{attempt}" / "soak_report.json"
+    if not report_path.exists():
+        reports.append({"attempt": attempt, "status": "missing_report"})
+        continue
+    payload = json.loads(report_path.read_text())
+    reports.append(
+        {
+            "attempt": attempt,
+            "status": payload.get("status"),
+            "latest_frame": payload.get("latest_frame"),
+            "failures": payload.get("failures", []),
+            "report": str(report_path),
+        }
+    )
+target.write_text(
+    json.dumps(
+        {
+            "status": "failed",
+            "ok": False,
+            "attempts": reports,
+            "max_attempts": attempts,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n"
+)
+PY
+  echo "MicroMachine soak failed after ${SOAK_MAX_ATTEMPTS} attempts; report: ${SOAK_REPORT}" >&2
+  exit 1
+fi
+
+REQUIRED_MACRO_EVIDENCE=(
+  "build command type=TERRAN_SUPPLYDEPOT"
+  "TERRAN_SUPPLYDEPOT UnderConstruction"
+  "build command type=TERRAN_BARRACKS"
+  "TERRAN_BARRACKS UnderConstruction"
+  "build command type=TERRAN_REFINERY"
+)
+
+POST_BARRACKS_UNIT_EVIDENCE=(
+  "create unit item=Marine result=1"
+  "create unit item=Reaper result=1"
+)
+
+cleanup_runtime() {
+  if [[ -n "${BOT_PID}" ]] && kill -0 "${BOT_PID}" 2>/dev/null; then
+    kill "${BOT_PID}" 2>/dev/null || true
+    wait "${BOT_PID}" 2>/dev/null || true
+  fi
+
+  local port
+  for port in "${SC2_PORTS[@]}"; do
+    while IFS= read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      if [[ " ${PREEXISTING_SC2_PORT_PIDS} " == *" ${pid} "* ]]; then
+        continue
+      fi
+      kill "${pid}" 2>/dev/null || true
+    done < <(sc2_port_pids "${port}" || true)
+  done
+}
+
+trap cleanup_runtime EXIT
+
+has_log_term() {
+  local term="$1"
+  [[ -f "${BOT_LOG}" ]] && grep -Fq "${term}" "${BOT_LOG}"
+}
+
+has_post_barracks_unit_evidence() {
+  local term
+  for term in "${POST_BARRACKS_UNIT_EVIDENCE[@]}"; do
+    has_log_term "${term}" && return 0
+  done
+  return 1
+}
+
+has_positive_gas_income() {
+  [[ -f "${BOT_LOG}" ]] || return 1
+  awk '
+    /Gas income:/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[0-9]+$/ && $i > 0) {
+          found = 1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "${BOT_LOG}"
+}
+
+has_required_macro_evidence() {
+  local term
+  for term in "${REQUIRED_MACRO_EVIDENCE[@]}"; do
+    has_log_term "${term}" || return 1
+  done
+  has_post_barracks_unit_evidence || return 1
+  has_positive_gas_income || return 1
+  return 0
+}
+
+publish_profile() {
+  local profile="$1"
+  local update_id="$2"
+  local frame="$3"
+  local ttl_seconds
+  ttl_seconds=$((SOAK_TIMEOUT_SECONDS + 300))
+  if (( ttl_seconds > 900 )); then
+    ttl_seconds=900
+  fi
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${BLACKBOARD_DIR}" "${profile}" "${update_id}" "${frame}" "${ttl_seconds}"
+import sys
+
+from starcraft_commander.micromachine_runtime import (
+    MicroMachineFilesystemBlackboard,
+    build_aggressive_pressure_profile,
+    build_defensive_hold_profile,
+)
+
+directory, profile_name, update_id, frame_text, ttl_text = sys.argv[1:6]
+backend = MicroMachineFilesystemBlackboard(directory)
+ttl_seconds = int(ttl_text)
+if profile_name == "defensive_hold":
+    vector = build_defensive_hold_profile(ttl_seconds=ttl_seconds)
+elif profile_name == "aggressive_pressure":
+    vector = build_aggressive_pressure_profile(ttl_seconds=ttl_seconds)
+else:
+    raise SystemExit(f"unknown MicroMachine profile: {profile_name}")
+backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_id)
+PY
+}
+
+telemetry_frame() {
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json"
+import json
+import sys
+from pathlib import Path
+
+try:
+    print(int(json.loads(Path(sys.argv[1]).read_text()).get("frame", 0)))
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+sc2_port_pids() {
+  local port="$1"
+  pgrep -f "${SC2_EXECUTABLE} -listen ${SC2_NET_ADDRESS} -port ${port}" || true
+}
+
+capture_preexisting_sc2_port_pids() {
+  local port
+  local pids=()
+  for port in "${SC2_PORTS[@]}"; do
+    while IFS= read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      pids+=("${pid}")
+    done < <(sc2_port_pids "${port}")
+  done
+  PREEXISTING_SC2_PORT_PIDS="${pids[*]:-}"
+}
+
+classify_soak() {
+  local mode="$1"
+  local report_path="$2"
+  local extra_args=()
+  if [[ "${mode}" == "live" ]]; then
+    extra_args+=(--allow-incomplete)
+  fi
+  if [[ -n "${BOT_EXIT_CODE}" ]]; then
+    extra_args+=(--bot-exit-code "${BOT_EXIT_CODE}")
+  fi
+  if [[ "${BOT_STOPPED}" -eq 1 ]]; then
+    extra_args+=(--bot-stopped)
+  fi
+  if [[ -n "${BOT_TERMINATION_REASON}" ]]; then
+    extra_args+=(--termination-reason "${BOT_TERMINATION_REASON}")
+  fi
+  local command=(
+    python3 -m starcraft_commander.micromachine_soak
+    --blackboard-dir "${BLACKBOARD_DIR}" \
+    --bot-log "${BOT_LOG}" \
+    --artifact-dir "${BLACKBOARD_DIR}" \
+    --report "${report_path}" \
+    --target-frame "${SOAK_TARGET_FRAME}" \
+    --timeout-seconds "${SOAK_TIMEOUT_SECONDS}" \
+    --telemetry-stall-seconds "${SOAK_TELEMETRY_STALL_SECONDS}" \
+    --production-deadlock-frame "${SOAK_PRODUCTION_DEADLOCK_FRAME}" \
+    --production-stall-frames "${SOAK_PRODUCTION_STALL_FRAMES}" \
+    --max-placement-failures "${SOAK_MAX_PLACEMENT_FAILURES}" \
+    --modulation-consumption-grace-frames "${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES}"
+  )
+  if (( ${#extra_args[@]} > 0 )); then
+    command+=("${extra_args[@]}")
+  fi
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" "${command[@]}"
+}
+
+fail_from_live_classifier() {
+  local reason="$1"
+  echo "MicroMachine soak live classifier failed: ${reason}" >&2
+  BOT_STOPPED=1
+  BOT_TERMINATION_REASON="live_classifier_failure"
+  cleanup_runtime
+  BOT_PID=""
+  classify_soak "final" "${SOAK_REPORT}" >/dev/null || true
+  tail -200 "${BOT_LOG}" >&2 || true
+  exit 1
+}
+
+if [[ "${MAP_FILE}" != /* && -f "${SC2_ROOT}/Maps/${MAP_FILE}" ]]; then
+  MAP_FILE="${SC2_ROOT}/Maps/${MAP_FILE}"
+fi
+
+mkdir -p "${BLACKBOARD_DIR}"
+rm -f \
+  "${BLACKBOARD_DIR}/latest_telemetry.json" \
+  "${BLACKBOARD_DIR}/telemetry.jsonl" \
+  "${BLACKBOARD_DIR}/latest_modulation.json" \
+  "${BLACKBOARD_DIR}/latest_modulation.kv" \
+  "${BLACKBOARD_DIR}/modulation_updates.jsonl" \
+  "${BOT_LOG}" \
+  "${SOAK_REPORT}" \
+  "${SOAK_LIVE_REPORT}"
+
+publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
+capture_preexisting_sc2_port_pids
+
+python3 - <<'PY' "${MICROMACHINE_DIR}/bin/BotConfig.txt" "${MAP_FILE}"
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+map_file = sys.argv[2]
+config = json.loads(path.read_text())
+config["SC2API"]["PlayAsHuman"] = False
+config["SC2API"]["ForceStepMode"] = True
+config["SC2API"]["MapFile"] = map_file
+config["SC2API"]["PlayVsItSelf"] = bool(int(os.environ.get("SOAK_PLAY_VS_SELF", "0")))
+config["SC2API"]["EnemyDifficulty"] = 1
+config["SC2API"]["EnemyRace"] = "Zerg"
+config["SC2API"]["StepSize"] = 1
+config["Macro"]["SelectStartingBuildBasedOnHistory"] = False
+config["Macro"]["PrintGreetingMessage"] = False
+config["SC2API Strategy"]["Terran"] = "Terran_MarineRush"
+terran_strategies = config["SC2API Strategy"]["Strategies"]
+marine_rush = terran_strategies["Terran_MarineRush"]["OpeningBuildOrder"]
+if "Marine" not in marine_rush:
+    first_barracks = marine_rush.index("Barracks")
+    marine_rush.insert(first_barracks + 1, "Marine")
+path.write_text(json.dumps(config, indent=4) + "\n")
+PY
+
+(
+  cd "${MICROMACHINE_DIR}/bin"
+  VOI_MICROMACHINE_BLACKBOARD_DIR="${BLACKBOARD_DIR}" \
+    VOI_SC2_BOOTSTRAP_SELF_UNITS="${VOI_SC2_BOOTSTRAP_SELF_UNITS:-${VOI_SC2_CONNECT_PORT:+1}}" \
+    "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine" \
+    -e "${SC2_EXECUTABLE}"
+) >"${BOT_LOG}" 2>&1 &
+BOT_PID=$!
+
+deadline=$((SECONDS + SOAK_TIMEOUT_SECONDS))
+bootstrap_deadline=$((SECONDS + SOAK_BOOTSTRAP_GRACE_SECONDS))
+while kill -0 "${BOT_PID}" 2>/dev/null; do
+  current_telemetry_frame="$(telemetry_frame || true)"
+  if [[ -n "${current_telemetry_frame}" ]]; then
+    if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 ]] && has_required_macro_evidence; then
+      AGGRESSIVE_CURRENT_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}-${current_telemetry_frame}"
+      publish_profile "aggressive_pressure" "${AGGRESSIVE_CURRENT_UPDATE_ID}" "${current_telemetry_frame}"
+      AGGRESSIVE_PROFILE_PUBLISHED=1
+      LAST_PROFILE_REFRESH_FRAME="${current_telemetry_frame}"
+    fi
+
+    if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 1 ]] && (( current_telemetry_frame - LAST_PROFILE_REFRESH_FRAME >= SOAK_PROFILE_REFRESH_FRAMES )); then
+      AGGRESSIVE_CURRENT_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}-${current_telemetry_frame}"
+      publish_profile "aggressive_pressure" "${AGGRESSIVE_CURRENT_UPDATE_ID}" "${current_telemetry_frame}"
+      LAST_PROFILE_REFRESH_FRAME="${current_telemetry_frame}"
+    fi
+
+    if ! classify_soak "live" "${SOAK_LIVE_REPORT}" >/dev/null; then
+      fail_from_live_classifier "frame ${current_telemetry_frame}"
+    fi
+    if (( current_telemetry_frame >= SOAK_TARGET_FRAME )); then
+      SOAK_TARGET_REACHED=1
+      break
+    fi
+  elif (( SECONDS >= bootstrap_deadline )); then
+    if ! classify_soak "live" "${SOAK_LIVE_REPORT}" >/dev/null; then
+      fail_from_live_classifier "bootstrap grace exceeded"
+    fi
+  fi
+
+  if (( SECONDS >= deadline )); then
+    echo "MicroMachine soak timed out after ${SOAK_TIMEOUT_SECONDS}s before frame ${SOAK_TARGET_FRAME}" >&2
+    BOT_STOPPED=1
+    BOT_TERMINATION_REASON="timeout"
+    cleanup_runtime
+    BOT_PID=""
+    classify_soak "final" "${SOAK_REPORT}" >/dev/null || true
+    tail -200 "${BOT_LOG}" >&2 || true
+    exit 1
+  fi
+  sleep "${SOAK_POLL_SECONDS}"
+done
+
+if [[ "${SOAK_TARGET_REACHED}" -eq 1 ]]; then
+  cleanup_runtime
+  BOT_PID=""
+  BOT_STOPPED=1
+  BOT_TERMINATION_REASON="target_frame_reached_cleanup"
+elif [[ -n "${BOT_PID}" ]]; then
+  set +e
+  wait "${BOT_PID}"
+  BOT_EXIT_CODE="$?"
+  set -e
+  BOT_STOPPED=1
+  BOT_TERMINATION_REASON="process_exited"
+fi
+
+if classify_soak "final" "${SOAK_REPORT}" >/dev/null; then
+  python3 - <<'PY' "${SOAK_REPORT}"
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+print(
+    "MicroMachine soak passed: "
+    f"frame={payload['latest_frame']} "
+    f"target={payload['config']['target_frame']} "
+    f"artifacts={sys.argv[1]}"
+)
+PY
+  cleanup_runtime
+  exit 0
+fi
+
+echo "MicroMachine soak failed; report: ${SOAK_REPORT}" >&2
+tail -200 "${BOT_LOG}" >&2 || true
+exit 1

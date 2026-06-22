@@ -11,6 +11,7 @@ PATCH_FILE = KIT_DIR / "patches" / "0001-macos-latest-s2client-policy-blackboard
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 SMOKE_SCRIPT = KIT_DIR / "scripts" / "smoke_macos_local.sh"
+SOAK_SCRIPT = KIT_DIR / "scripts" / "soak_macos_local.sh"
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
@@ -144,9 +145,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, s2client_patch)
 
-    def test_macos_scripts_document_reproducible_build_and_smoke(self) -> None:
+    def test_macos_scripts_document_reproducible_build_smoke_and_soak(self) -> None:
         build_script = BUILD_SCRIPT.read_text()
         smoke_script = SMOKE_SCRIPT.read_text()
+        soak_script = SOAK_SCRIPT.read_text()
 
         for term in (
             "https://github.com/Blizzard/s2client-api",
@@ -207,6 +209,67 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, smoke_script)
         self.assertNotIn(") || true", smoke_script)
         self.assertIn('payload.get("frame", 0) < min_frame', smoke_script)
+
+        for term in (
+            "VOI_MICROMACHINE_BLACKBOARD_DIR",
+            "SOAK_TARGET_FRAME",
+            "SOAK_TIMEOUT_SECONDS",
+            "SOAK_TELEMETRY_STALL_SECONDS",
+            "SOAK_PRODUCTION_DEADLOCK_FRAME",
+            "SOAK_PRODUCTION_STALL_FRAMES",
+            "SOAK_MAX_PLACEMENT_FAILURES",
+            "SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES",
+            "SOAK_ARTIFACT_ROOT",
+            "SOAK_RUN_DIR",
+            "soak_report.json",
+            "soak_live_report.json",
+            "starcraft_commander.micromachine_soak",
+            "--allow-incomplete",
+            "telemetry-stall-seconds",
+            "production-deadlock-frame",
+            "max-placement-failures",
+            "modulation-consumption-grace-frames",
+            "termination-reason",
+            "target_frame_reached_cleanup",
+            "live_classifier_failure",
+            "fail_from_live_classifier",
+            "if ! classify_soak \"live\"",
+            "build_defensive_hold_profile",
+            "build_aggressive_pressure_profile",
+            "CombatCommander",
+            "ScoutManager",
+            "bounded_intervention",
+            "REQUIRED_MACRO_EVIDENCE",
+            "TERRAN_BARRACKS UnderConstruction",
+            "create unit item=Marine result=1",
+            "Gas income:",
+            "cleanup_runtime",
+            "SOAK_PROFILE_REFRESH_FRAMES",
+            "SOAK_MAX_ATTEMPTS",
+            "SOAK_ATTEMPT_INDEX",
+            "SOAK_NON_RETRYABLE_FAILURE_CODES",
+            "non_retryable_failure",
+            "attempt_summary",
+            "selected_attempt",
+            "artifact_manifest",
+            "relative_to(root)",
+            "MicroMachine soak passed",
+            "deterministic",
+            "capture_preexisting_sc2_port_pids",
+            "PREEXISTING_SC2_PORT_PIDS",
+            "BOT_TERMINATION_REASON=\"timeout\"",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, soak_script)
+
+        for term in (
+            "telemetry_stall",
+            "repeated_placement_failures",
+            "no_production_deadlock",
+            "stale_modulation",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, (REPO_ROOT / "starcraft_commander" / "micromachine_soak.py").read_text())
 
 
 if __name__ == "__main__":

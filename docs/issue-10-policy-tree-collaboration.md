@@ -39,6 +39,7 @@ provider output.
 | #15 | Added MicroMachine sidecar/blackboard protocol contracts, manager hook mapping, TTL, rollback, and failure modes. |
 | #16 | Adds dashboard observability and baseline-vs-modulated evaluation contracts. |
 | #22 | Adds the concrete filesystem runtime bridge and MicroMachine C++ integration kit. |
+| #26 | Adds long-run soak/sign-off gates for full-game MicroMachine collaboration. |
 
 ## Evaluation Contract
 
@@ -82,6 +83,35 @@ MicroMachine and read from `GameCommander::onFrame(bool executeMacro)`. The
 hook manifest is tied to upstream MicroMachine commit
 `eb893161371dab975a0a7e600f9e250ac03ec1ef`.
 
+## Production Soak Boundary
+
+`starcraft_commander.micromachine_soak` is the host-side production classifier
+for Issue 10.11. It consumes the patched MicroMachine blackboard directory and
+classifies crash/early process exit, SC2 disconnect evidence, telemetry stall,
+repeated placement failures, no-production deadlock, production stall, missing
+manager intervention, and stale modulation. The local script
+`integrations/micromachine/scripts/soak_macos_local.sh` wraps that classifier
+around a real StarCraft II run and archives deterministic artifacts under
+`SOAK_RUN_DIR`.
+
+The soak keeps the same bounded control model as the rest of Issue #10:
+
+```text
+LLM / future neural representation provider
+  -> PolicyModulationVector
+  -> MicroMachineModulationBackend
+  -> latest_modulation.kv
+  -> MicroMachine manager bias hooks
+  -> CombatCommander / ScoutManager / production code keep tactical authority
+```
+
+The soak first publishes defensive hold, waits for real macro evidence, then
+publishes aggressive pressure and refreshes it before TTL expiry. A pass
+requires `soak_report.json` with `ok: true`, the configured target frame,
+macro evidence, `CombatCommander.bounded_intervention=true`,
+`ScoutManager.bounded_intervention=true`, telemetry consumption of the latest
+frame-suffixed modulation refresh, and no classifier failures.
+
 ## Stop Conditions
 
 Issue #10 is complete when:
@@ -100,3 +130,13 @@ Issue #10 is complete when:
    exist for local StarCraft II smoke testing.
 8. A backend abstraction exists so future neural representation transports can
    be swapped in without changing the MicroMachine manager modulation contract.
+9. A long-run soak reaches the configured frame budget with no crash,
+   disconnect, telemetry stall, repeated placement failure, no-production
+   deadlock, stale modulation, or missing manager-intervention evidence.
+
+## Issue 10.11 Local Sign-Off Evidence
+
+| Run | Result |
+| --- | --- |
+| `/private/tmp/voi-mm-soak/issue-10-11-final-acropolis-v3/soak_report.json` | Passed on `AcropolisLE.SC2Map` at frame 12056 with macro evidence, manager intervention, consumed aggressive modulation, and `target_frame_reached_cleanup`. |
+| `/private/tmp/voi-mm-soak/issue-10-11-final-thunderbird-v2/soak_report.json` | Failed as expected on `Ladder2019Season3/ThunderbirdLE.SC2Map` with non-retryable `no_production_deadlock`, preventing false sign-off. |

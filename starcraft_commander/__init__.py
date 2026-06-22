@@ -178,6 +178,14 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "publish_policy_modulation_provider_output": (
         "starcraft_commander.micromachine_runtime"
     ),
+    "MicroMachineSoakConfig": "starcraft_commander.micromachine_soak",
+    "MicroMachineSoakFailure": "starcraft_commander.micromachine_soak",
+    "MicroMachineSoakObservation": "starcraft_commander.micromachine_soak",
+    "MicroMachineSoakReport": "starcraft_commander.micromachine_soak",
+    "build_artifact_manifest": "starcraft_commander.micromachine_soak",
+    "classify_micromachine_soak": "starcraft_commander.micromachine_soak",
+    "has_required_macro_evidence": "starcraft_commander.micromachine_soak",
+    "missing_macro_evidence": "starcraft_commander.micromachine_soak",
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.
