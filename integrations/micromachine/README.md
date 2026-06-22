@@ -18,6 +18,7 @@ Verified upstream:
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
 | `scripts/soak_macos_local.sh` | Long-run local StarCraft II soak gate with deterministic artifacts and production sign-off classifiers. |
+| `scripts/soak_matrix_macos_local.sh` | Map/race/difficulty matrix runner that aggregates per-case soak reports. |
 
 ## Runtime Files
 
@@ -180,6 +181,8 @@ Example:
 ```bash
 MICROMACHINE_DIR=/private/tmp/MicroMachine \
 MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
+SOAK_ENEMY_RACE=Zerg \
+SOAK_ENEMY_DIFFICULTY=1 \
 SOAK_TARGET_FRAME=12000 \
 SOAK_TIMEOUT_SECONDS=1200 \
 integrations/micromachine/scripts/soak_macos_local.sh
@@ -189,6 +192,8 @@ Configurable thresholds:
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
+| `SOAK_ENEMY_RACE` | `Zerg` | Built-in AI enemy race: `Terran`, `Protoss`, `Zerg`, or `Random`. |
+| `SOAK_ENEMY_DIFFICULTY` | `1` | Built-in AI difficulty from 1 to 10. |
 | `SOAK_TARGET_FRAME` | `12000` | Required latest telemetry frame for pass. |
 | `SOAK_TIMEOUT_SECONDS` | `1200` | Wall-clock budget before timeout failure. |
 | `SOAK_TELEMETRY_STALL_SECONDS` | `90` | Fails if telemetry stops updating before target. |
@@ -242,6 +247,42 @@ Verified local sign-off evidence for Issue 10.11:
 | `issue-10-11-final-acropolis-v3` | `SOAK_RUN_DIR=/private/tmp/voi-mm-soak/issue-10-11-final-acropolis-v3`, `MAP_FILE=AcropolisLE.SC2Map`, top-level `soak_report.json` has `ok: true`, `latest_frame: 12056`, `macro_evidence_ok: true`, `manager_intervention_ok: true`, and `termination_reason: target_frame_reached_cleanup`. |
 | `issue-10-11-final-thunderbird-v2` | Negative control: `MAP_FILE=Ladder2019Season3/ThunderbirdLE.SC2Map` stopped on non-retryable `no_production_deadlock` at frame 7089, proving failed macro games are not hidden by retries. |
 
+## Matrix Diversity Gate
+
+Use `scripts/soak_matrix_macos_local.sh` for map, race, and difficulty
+diversity. The runner creates one `soak_macos_local.sh` artifact directory per
+case and writes an aggregate `matrix_report.json`.
+
+Example:
+
+```bash
+MICROMACHINE_DIR=/private/tmp/MicroMachine \
+MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
+SOAK_MATRIX_RUN_ID=production-diversity-001 \
+SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map Ladder2019Season3/ThunderbirdLE.SC2Map" \
+SOAK_MATRIX_ENEMY_RACES="Zerg Protoss Terran" \
+SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2" \
+SOAK_MATRIX_TARGET_FRAME=12000 \
+SOAK_MATRIX_TIMEOUT_SECONDS=1200 \
+integrations/micromachine/scripts/soak_matrix_macos_local.sh
+```
+
+Set `SOAK_MATRIX_ALLOW_FAILURES=1` only for mixed qualification runs that
+intentionally include negative controls. Deterministic classifier failures are
+kept in the matrix report and must not be treated as silent retries. Even with
+failure allowance enabled, the runner requires at least
+`SOAK_MATRIX_MIN_PASSES` passing case, defaulting to 1, so an empty or all-failed
+matrix cannot become a production pass.
+
+Verified local matrix evidence for Issue 10.12:
+
+| Run | Evidence |
+| --- | --- |
+| `issue-10-12-diversity-v1` | `/private/tmp/voi-mm-soak-matrix/issue-10-12-diversity-v1/matrix_report.json` completed six map/race cases with `passed=1` and `failed=5`. `02-AcropolisLE-SC2Map-Protoss-d1` passed at frame 12042 with macro and manager-intervention evidence. Failed cases preserved `no_production_deadlock`, `micromachine_crash`, `micromachine_process_stopped`, and `telemetry_missing` failure codes instead of being false-promoted. |
+
+See `docs/micromachine-production-ops.md` for the CI, self-hosted soak, and
+neural/SOTA provider runbook.
+
 ## Production Sign-Off Criteria
 
 Issue #10 is production-ready for user QA only when all gates below pass on the
@@ -254,7 +295,9 @@ same patched MicroMachine build:
 | Smoke | `smoke_macos_local.sh` reaches `MIN_TELEMETRY_FRAME`, produces real macro evidence, and shows active aggressive modulation. |
 | Manager intervention | Telemetry proves both `CombatCommander.bounded_intervention=true` and `ScoutManager.bounded_intervention=true`. |
 | Long-run soak | `soak_macos_local.sh` reaches `SOAK_TARGET_FRAME` and writes `soak_report.json` with `ok: true`. |
-| Neural/provider swap | Callers use `MicroMachineModulationBackend` / `publish_policy_modulation_provider_output(...)`, not filesystem-specific code, so future neural representation providers can publish the same bounded vector contract. |
+| Matrix diversity | `soak_matrix_macos_local.sh` writes a reviewed `matrix_report.json` that preserves pass and deterministic failure cases. |
+| Neural/provider swap | Callers use `MicroMachineModulationBackend`, `publish_policy_modulation_provider_output(...)`, or `publish_neural_representation_modulation(...)`, so future neural representation providers publish the same bounded vector contract without raw SC2 controls. |
+| CI/operations | Hosted CI runs unit contracts and script syntax; real SC2 soak matrices run from the self-hosted macOS workflow. |
 
 Non-blocking risks after sign-off:
 

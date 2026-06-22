@@ -8,6 +8,8 @@ MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-late
 SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
 SC2_EXECUTABLE="${SC2_EXECUTABLE:-${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2}"
 MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
+SOAK_ENEMY_RACE="${SOAK_ENEMY_RACE:-Zerg}"
+SOAK_ENEMY_DIFFICULTY="${SOAK_ENEMY_DIFFICULTY:-1}"
 SOAK_TARGET_FRAME="${SOAK_TARGET_FRAME:-12000}"
 SOAK_TIMEOUT_SECONDS="${SOAK_TIMEOUT_SECONDS:-1200}"
 SOAK_TELEMETRY_STALL_SECONDS="${SOAK_TELEMETRY_STALL_SECONDS:-90}"
@@ -407,8 +409,14 @@ config["SC2API"]["PlayAsHuman"] = False
 config["SC2API"]["ForceStepMode"] = True
 config["SC2API"]["MapFile"] = map_file
 config["SC2API"]["PlayVsItSelf"] = bool(int(os.environ.get("SOAK_PLAY_VS_SELF", "0")))
-config["SC2API"]["EnemyDifficulty"] = 1
-config["SC2API"]["EnemyRace"] = "Zerg"
+enemy_difficulty = int(os.environ.get("SOAK_ENEMY_DIFFICULTY", "1"))
+if enemy_difficulty < 1 or enemy_difficulty > 10:
+    raise SystemExit("SOAK_ENEMY_DIFFICULTY must be an integer from 1 to 10")
+enemy_race = os.environ.get("SOAK_ENEMY_RACE", "Zerg")
+if enemy_race not in {"Terran", "Protoss", "Zerg", "Random"}:
+    raise SystemExit("SOAK_ENEMY_RACE must be Terran, Protoss, Zerg, or Random")
+config["SC2API"]["EnemyDifficulty"] = enemy_difficulty
+config["SC2API"]["EnemyRace"] = enemy_race
 config["SC2API"]["StepSize"] = 1
 config["Macro"]["SelectStartingBuildBasedOnHistory"] = False
 config["Macro"]["PrintGreetingMessage"] = False

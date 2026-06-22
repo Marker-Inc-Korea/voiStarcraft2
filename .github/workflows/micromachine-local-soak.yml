@@ -1,0 +1,57 @@
+name: micromachine-local-soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      maps:
+        description: "Space-separated SC2 map files."
+        required: false
+        default: "AcropolisLE.SC2Map Ladder2019Season3/ThunderbirdLE.SC2Map"
+      enemy_races:
+        description: "Space-separated enemy races: Terran Protoss Zerg Random."
+        required: false
+        default: "Zerg"
+      enemy_difficulties:
+        description: "Space-separated SC2 built-in AI difficulties, 1-10."
+        required: false
+        default: "1"
+      target_frame:
+        description: "Required frame per soak case."
+        required: false
+        default: "12000"
+      timeout_seconds:
+        description: "Wall-clock timeout per soak case."
+        required: false
+        default: "1200"
+      allow_failures:
+        description: "Set to 1 for mixed pass/fail qualification runs."
+        required: false
+        default: "0"
+
+jobs:
+  real-sc2-soak-matrix:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify local MicroMachine inputs
+        run: |
+          test -x "${MICROMACHINE_BUILD_DIR:-/private/tmp/MicroMachine/build-latest-api}/bin/MicroMachine"
+          test -x "${SC2_EXECUTABLE:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II/Versions/Base96883/SC2.app/Contents/MacOS/SC2}"
+      - name: Run real SC2 MicroMachine soak matrix
+        run: |
+          SOAK_MATRIX_RUN_ID="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+          SOAK_MATRIX_MAP_FILES="${{ inputs.maps }}" \
+          SOAK_MATRIX_ENEMY_RACES="${{ inputs.enemy_races }}" \
+          SOAK_MATRIX_ENEMY_DIFFICULTIES="${{ inputs.enemy_difficulties }}" \
+          SOAK_MATRIX_TARGET_FRAME="${{ inputs.target_frame }}" \
+          SOAK_MATRIX_TIMEOUT_SECONDS="${{ inputs.timeout_seconds }}" \
+          SOAK_MATRIX_ALLOW_FAILURES="${{ inputs.allow_failures }}" \
+          integrations/micromachine/scripts/soak_matrix_macos_local.sh
+      - name: Upload matrix report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: micromachine-soak-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /private/tmp/voi-mm-soak-matrix/gha-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn

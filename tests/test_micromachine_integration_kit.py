@@ -1,6 +1,9 @@
 """Tests for the MicroMachine C++ integration kit artifacts."""
 
 import json
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,6 +15,7 @@ S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 SMOKE_SCRIPT = KIT_DIR / "scripts" / "smoke_macos_local.sh"
 SOAK_SCRIPT = KIT_DIR / "scripts" / "soak_macos_local.sh"
+SOAK_MATRIX_SCRIPT = KIT_DIR / "scripts" / "soak_matrix_macos_local.sh"
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
@@ -149,6 +153,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         build_script = BUILD_SCRIPT.read_text()
         smoke_script = SMOKE_SCRIPT.read_text()
         soak_script = SOAK_SCRIPT.read_text()
+        soak_matrix_script = SOAK_MATRIX_SCRIPT.read_text()
 
         for term in (
             "https://github.com/Blizzard/s2client-api",
@@ -213,6 +218,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         for term in (
             "VOI_MICROMACHINE_BLACKBOARD_DIR",
             "SOAK_TARGET_FRAME",
+            "SOAK_ENEMY_RACE",
+            "SOAK_ENEMY_DIFFICULTY",
             "SOAK_TIMEOUT_SECONDS",
             "SOAK_TELEMETRY_STALL_SECONDS",
             "SOAK_PRODUCTION_DEADLOCK_FRAME",
@@ -263,6 +270,27 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, soak_script)
 
         for term in (
+            "SOAK_MATRIX_MAP_FILES",
+            "SOAK_MATRIX_ENEMY_RACES",
+            "SOAK_MATRIX_ENEMY_DIFFICULTIES",
+            "SOAK_MATRIX_REPORT",
+            "matrix_report.json",
+            "SOAK_MATRIX_ALLOW_FAILURES",
+            "SOAK_MATRIX_STOP_ON_FAILURE",
+            "SOAK_MATRIX_AGGREGATE_ONLY",
+            "SOAK_MATRIX_MIN_PASSES",
+            "case_count",
+            "passed",
+            "failed",
+            "failure_codes",
+            "attempts",
+            "artifact_manifest",
+            "MicroMachine matrix completed",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, soak_matrix_script)
+
+        for term in (
             "telemetry_stall",
             "repeated_placement_failures",
             "no_production_deadlock",
@@ -270,6 +298,106 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, (REPO_ROOT / "starcraft_commander" / "micromachine_soak.py").read_text())
+
+    def test_soak_matrix_aggregate_preserves_nested_attempt_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            passed_case = root / "01-AcropolisLE-SC2Map-Protoss-d1"
+            failed_case = root / "02-ThunderbirdLE-SC2Map-Zerg-d1"
+            passed_case.mkdir()
+            failed_case.mkdir()
+            (passed_case / "soak_report.json").write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "ok": True,
+                        "latest_frame": 12042,
+                        "macro_evidence_ok": True,
+                        "manager_intervention_ok": True,
+                        "selected_attempt": 1,
+                        "artifact_manifest": {"telemetry_archive": "attempt-1/telemetry.jsonl"},
+                    }
+                )
+            )
+            (failed_case / "soak_report.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "ok": False,
+                        "attempts": [
+                            {
+                                "attempt": 1,
+                                "status": "failed",
+                                "latest_frame": 7074,
+                                "failures": [
+                                    {
+                                        "code": "no_production_deadlock",
+                                        "message": "Opening production evidence did not appear.",
+                                        "severity": "terminal",
+                                    }
+                                ],
+                            },
+                            {"attempt": 2, "status": "not_run"},
+                        ],
+                    }
+                )
+            )
+
+            report = root / "matrix_report.json"
+            env = {
+                **os.environ,
+                "SOAK_MATRIX_RUN_DIR": str(root),
+                "SOAK_MATRIX_REPORT": str(report),
+                "SOAK_MATRIX_TARGET_FRAME": "12000",
+                "SOAK_MATRIX_TIMEOUT_SECONDS": "1200",
+                "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                "SOAK_MATRIX_ALLOW_FAILURES": "1",
+            }
+
+            subprocess.run([str(SOAK_MATRIX_SCRIPT)], check=True, env=env)
+
+            payload = json.loads(report.read_text())
+            self.assertFalse(payload["ok"])
+            self.assertEqual(1, payload["passed"])
+            self.assertEqual(1, payload["failed"])
+            failed_payload = payload["cases"][1]
+            self.assertEqual(["no_production_deadlock"], failed_payload["failure_codes"])
+            self.assertEqual("no_production_deadlock", failed_payload["failures"][0]["code"])
+            self.assertEqual(1, failed_payload["failures"][0]["attempt"])
+
+    def test_soak_matrix_allow_failures_rejects_zero_pass_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            failed_case = root / "01-ThunderbirdLE-SC2Map-Zerg-d1"
+            failed_case.mkdir()
+            (failed_case / "soak_report.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "ok": False,
+                        "failures": [{"code": "no_production_deadlock"}],
+                    }
+                )
+            )
+            report = root / "matrix_report.json"
+            env = {
+                **os.environ,
+                "SOAK_MATRIX_RUN_DIR": str(root),
+                "SOAK_MATRIX_REPORT": str(report),
+                "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                "SOAK_MATRIX_ALLOW_FAILURES": "1",
+            }
+
+            completed = subprocess.run(
+                [str(SOAK_MATRIX_SCRIPT)],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(0, completed.returncode)
+            self.assertIn("still requires at least 1 passing case", completed.stdout)
 
 
 if __name__ == "__main__":
