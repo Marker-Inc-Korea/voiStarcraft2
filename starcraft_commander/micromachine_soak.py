@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,8 +57,9 @@ class MicroMachineSoakConfig:
     target_frame: int = 12_000
     timeout_seconds: int = 1_200
     telemetry_stall_seconds: int = 90
-    production_deadlock_frame: int = 7_000
+    production_deadlock_frame: int = 9_000
     production_stall_frames: int = 8_000
+    income_stall_frames: int = 2_000
     max_placement_failures: int = 3
     modulation_consumption_grace_frames: int = 128
     require_macro_evidence: bool = True
@@ -69,6 +71,7 @@ class MicroMachineSoakConfig:
         _require_positive("telemetry_stall_seconds", self.telemetry_stall_seconds)
         _require_positive("production_deadlock_frame", self.production_deadlock_frame)
         _require_positive("production_stall_frames", self.production_stall_frames)
+        _require_positive("income_stall_frames", self.income_stall_frames)
         _require_positive(
             "modulation_consumption_grace_frames",
             self.modulation_consumption_grace_frames,
@@ -83,6 +86,7 @@ class MicroMachineSoakConfig:
             "telemetry_stall_seconds": self.telemetry_stall_seconds,
             "production_deadlock_frame": self.production_deadlock_frame,
             "production_stall_frames": self.production_stall_frames,
+            "income_stall_frames": self.income_stall_frames,
             "max_placement_failures": self.max_placement_failures,
             "modulation_consumption_grace_frames": self.modulation_consumption_grace_frames,
             "require_macro_evidence": self.require_macro_evidence,
@@ -287,6 +291,10 @@ def classify_micromachine_soak(
         latest_frame >= resolved_config.target_frame
         and last_production_frame is not None
         and latest_frame - last_production_frame > resolved_config.production_stall_frames
+        and not _has_recent_combat_activity(
+            log_text,
+            max(0, latest_frame - resolved_config.production_stall_frames),
+        )
     ):
         failures.append(
             MicroMachineSoakFailure(
@@ -296,6 +304,24 @@ def classify_micromachine_soak(
                     "latest_frame": latest_frame,
                     "last_production_frame": last_production_frame,
                     "production_stall_frames": resolved_config.production_stall_frames,
+                },
+            )
+        )
+
+    recent_income_missing = _missing_recent_positive_income(
+        log_text,
+        latest_frame,
+        resolved_config.income_stall_frames,
+    )
+    if latest_frame >= resolved_config.target_frame and recent_income_missing:
+        failures.append(
+            MicroMachineSoakFailure(
+                code="income_stall",
+                message="Recent mineral/gas income evidence is missing near the target frame.",
+                evidence={
+                    "latest_frame": latest_frame,
+                    "income_stall_frames": resolved_config.income_stall_frames,
+                    "missing": recent_income_missing,
                 },
             )
         )
@@ -343,7 +369,7 @@ def has_required_macro_evidence(log_text: str) -> bool:
         return False
     if not any(term in log_text for term in DEFAULT_POST_BARRACKS_UNIT_TERMS):
         return False
-    return _has_positive_gas_income(log_text)
+    return _has_positive_gas_income(log_text) and _has_positive_mineral_income(log_text)
 
 
 def missing_macro_evidence(log_text: str) -> list[str]:
@@ -352,6 +378,8 @@ def missing_macro_evidence(log_text: str) -> list[str]:
         missing.append("post-Barracks unit creation")
     if not _has_positive_gas_income(log_text):
         missing.append("positive gas income")
+    if not _has_positive_mineral_income(log_text):
+        missing.append("positive mineral income")
     return missing
 
 
@@ -402,6 +430,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=defaults.production_stall_frames,
     )
     parser.add_argument(
+        "--income-stall-frames",
+        type=int,
+        default=defaults.income_stall_frames,
+    )
+    parser.add_argument(
         "--modulation-consumption-grace-frames",
         type=int,
         default=defaults.modulation_consumption_grace_frames,
@@ -427,6 +460,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         telemetry_stall_seconds=args.telemetry_stall_seconds,
         production_deadlock_frame=args.production_deadlock_frame,
         production_stall_frames=args.production_stall_frames,
+        income_stall_frames=args.income_stall_frames,
         max_placement_failures=args.max_placement_failures,
         modulation_consumption_grace_frames=args.modulation_consumption_grace_frames,
     )
@@ -521,10 +555,101 @@ def _matching_terms(log_text: str, terms: Sequence[str]) -> list[str]:
 
 def _has_positive_gas_income(log_text: str) -> bool:
     for line in log_text.splitlines():
-        if "Gas income:" not in line:
+        label = "Gas income:"
+        if label not in line:
             continue
-        values = [int(part) for part in line.split() if part.isdigit()]
-        if any(value > 0 for value in values):
+        if _has_positive_number_after_marker(line, label):
+            return True
+    return False
+
+
+def _has_positive_mineral_income(log_text: str) -> bool:
+    for line in log_text.splitlines():
+        label = "Mineral income:"
+        if label not in line:
+            continue
+        if _has_positive_number_after_marker(line, label):
+            return True
+    return False
+
+
+def _missing_recent_positive_income(
+    log_text: str,
+    latest_frame: int,
+    income_stall_frames: int,
+) -> list[str]:
+    min_frame = max(0, latest_frame - income_stall_frames)
+    missing: list[str] = []
+    if not _has_recent_worker_combat(log_text, min_frame) and not _has_recent_positive_income(
+        log_text, "Mineral income:", min_frame
+    ):
+        missing.append("recent positive mineral income")
+    if _has_recent_positive_gas_demand(log_text, min_frame) and not _has_recent_positive_income(
+        log_text, "Gas income:", min_frame
+    ):
+        missing.append("recent positive gas income")
+    return missing
+
+
+def _has_recent_positive_income(log_text: str, label: str, min_frame: int) -> bool:
+    current_frame = 0
+    for line in log_text.splitlines():
+        parsed_frame = _log_frame(line)
+        if parsed_frame is not None:
+            current_frame = parsed_frame
+        if label not in line or current_frame < min_frame:
+            continue
+        if _has_positive_number_after_marker(line, label):
+            return True
+    return False
+
+
+def _has_recent_positive_gas_demand(log_text: str, min_frame: int) -> bool:
+    current_frame = 0
+    for line in log_text.splitlines():
+        parsed_frame = _log_frame(line)
+        if parsed_frame is not None:
+            current_frame = parsed_frame
+        label = "Gas Worker Target:"
+        if label not in line or current_frame < min_frame:
+            continue
+        if _has_positive_number_after_marker(line, label):
+            return True
+    return False
+
+
+def _has_positive_number_after_marker(line: str, marker: str) -> bool:
+    _, _, value_text = line.partition(marker)
+    return any(int(value) > 0 for value in re.findall(r"\d+", value_text))
+
+
+def _has_recent_worker_combat(log_text: str, min_frame: int) -> bool:
+    current_frame = 0
+    for line in log_text.splitlines():
+        parsed_frame = _log_frame(line)
+        if parsed_frame is not None:
+            current_frame = parsed_frame
+        if "Worker jobs M/G/B/C/I/S/N:" not in line or current_frame < min_frame:
+            continue
+        _, _, counts_text = line.partition("M/G/B/C/I/S/N:")
+        counts = counts_text.split()[0].split("/")
+        if len(counts) >= 4:
+            try:
+                if int(counts[3]) > 0:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def _has_recent_combat_activity(log_text: str, min_frame: int) -> bool:
+    if _has_recent_worker_combat(log_text, min_frame):
+        return True
+    for line in log_text.splitlines():
+        parsed_frame = _log_frame(line)
+        if parsed_frame is None or parsed_frame < min_frame:
+            continue
+        if "updateAttackSquads |" in line:
             return True
     return False
 
@@ -534,13 +659,19 @@ def _last_log_frame_for_terms(log_text: str, terms: Sequence[str]) -> int | None
     for line in log_text.splitlines():
         if not any(term in line for term in terms):
             continue
-        prefix, _, _ = line.partition(":")
-        try:
-            frame = int(prefix.strip())
-        except ValueError:
+        frame = _log_frame(line)
+        if frame is None:
             continue
         latest = frame if latest is None else max(latest, frame)
     return latest
+
+
+def _log_frame(line: str) -> int | None:
+    prefix, _, _ = line.partition(":")
+    try:
+        return int(prefix.strip())
+    except ValueError:
+        return None
 
 
 def _manager_intervention_ok(

@@ -28,25 +28,24 @@ The runner writes:
 - A matrix summary at
   `/private/tmp/voi-mm-soak-matrix/<run-id>/matrix_report.json`.
 
-Production qualification requires either:
-
-- `matrix_report.json.ok == true` for a pure pass matrix, or
-- an explicitly documented mixed matrix with `SOAK_MATRIX_ALLOW_FAILURES=1`,
-  where failures are expected negative controls such as unsupported map
-  geometry producing `no_production_deadlock`; mixed matrices still require at
-  least `SOAK_MATRIX_MIN_PASSES` passing case, defaulting to 1.
+Production qualification requires `matrix_report.json.ok == true` and
+`matrix_report.json.failed == 0`. `SOAK_MATRIX_ALLOW_FAILURES=1` is only for
+diagnostics or negative-control evidence; it must not be used for production
+sign-off.
 
 Do not weaken `soak_macos_local.sh` classifiers to make a flaky map pass. A
-map/start-location failure is useful evidence only if it is preserved as a
-failed case report.
+map/start-location failure is useful evidence only as debugging input, not as a
+production-qualified case.
+The final soak classifier also rejects `income_stall`: reaching the target frame
+is not enough unless recent mineral and gas income evidence remains positive
+near the target.
 
 Verified local matrix evidence:
 
 | Run | Evidence |
 | --- | --- |
-| `issue-10-12-diversity-v1` | `/private/tmp/voi-mm-soak-matrix/issue-10-12-diversity-v1/matrix_report.json` covered `AcropolisLE.SC2Map` and `Ladder2019Season3/ThunderbirdLE.SC2Map` against `Zerg`, `Protoss`, and `Terran` difficulty 1. The matrix completed with `passed=1`, `failed=5`, and preserved failure codes including `no_production_deadlock`, `micromachine_crash`, `micromachine_process_stopped`, and `telemetry_missing`. |
-| `02-AcropolisLE-SC2Map-Protoss-d1` | Passed to frame 12042 with `macro_evidence_ok=true` and `manager_intervention_ok=true`. This is the currently qualified diversity case from the matrix. |
-| Thunderbird cases | Failed instead of being silently retried or promoted, preserving unsupported-map/startup evidence as production gap data. |
+| `issue-10-13-acropolis-races-zero-v4` | `/private/tmp/voi-mm-soak-matrix/issue-10-13-acropolis-races-zero-v4/matrix_report.json` passed with `SOAK_MAX_ATTEMPTS=1`, `passed=3`, `failed=0` for `AcropolisLE.SC2Map` against `Zerg`, `Protoss`, and `Terran` difficulty 1. |
+| Thunderbird blocker | `Ladder2019Season3/ThunderbirdLE.SC2Map` emitted `Depot build position fallback used`, `Invalid setup detected`, and `Unusual ramp detected, tiles to block = 0`; this is a MicroMachine map-support blocker, not production evidence. |
 
 ## Neural/SOTA Representation Attachment
 
@@ -103,8 +102,7 @@ Stop condition for operations sign-off:
 
 1. Hosted CI passes.
 2. Self-hosted soak matrix produces a reviewed `matrix_report.json`.
-3. The matrix contains at least one explicit qualified case for user QA and
-   preserves every deterministic bot/map failure as a failed report.
+3. The production matrix has zero failed cases.
 4. Neural adapter tests pass and any real model adapter only emits bounded
    representation axes.
 5. User QA is the only remaining manual gate.

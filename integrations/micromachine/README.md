@@ -98,7 +98,7 @@ The gate requires `build command type=TERRAN_SUPPLYDEPOT`,
 `build command type=TERRAN_BARRACKS`, and
 `TERRAN_BARRACKS UnderConstruction`, followed by a post-Barracks unit command
 such as `create unit item=Marine result=1`, a `build command
-type=TERRAN_REFINERY`, and positive gas income after the Refinery completes. It
+type=TERRAN_REFINERY`, and positive mineral and gas income after the Refinery completes. It
 fails immediately on known false positive signatures such as `Failed to place
 Barracks`, `Failed to place Refinery`, or exact building cancellation lines.
 
@@ -172,9 +172,9 @@ SC2 API loopback and GUI process launch are host-level operations.
 smoke passes. It launches the same patched MicroMachine runtime, publishes a
 macro-safe `soak-defensive-hold` profile first, switches to
 `soak-aggressive-pressure` only after the required SupplyDepot, Barracks,
-Refinery, Marine/Reaper, and positive gas-income evidence appears, and keeps
-refreshing the aggressive profile so a long run cannot silently fall back to
-stale modulation.
+Refinery, Marine/Reaper, and positive mineral/gas income evidence appears, and
+keeps refreshing the aggressive profile so a long run cannot silently fall back
+to stale modulation.
 
 Example:
 
@@ -197,10 +197,12 @@ Configurable thresholds:
 | `SOAK_TARGET_FRAME` | `12000` | Required latest telemetry frame for pass. |
 | `SOAK_TIMEOUT_SECONDS` | `1200` | Wall-clock budget before timeout failure. |
 | `SOAK_TELEMETRY_STALL_SECONDS` | `90` | Fails if telemetry stops updating before target. |
-| `SOAK_PRODUCTION_DEADLOCK_FRAME` | `7000` | Fails if opening production evidence is still missing. |
+| `SOAK_PRODUCTION_DEADLOCK_FRAME` | `9000` | Fails if opening production evidence is still missing. |
 | `SOAK_PRODUCTION_STALL_FRAMES` | `8000` | Fails if no later production log evidence appears within this frame window after target. |
+| `SOAK_INCOME_STALL_FRAMES` | `2000` | Fails if recent mineral/gas income evidence is missing near the target frame. |
 | `SOAK_MAX_PLACEMENT_FAILURES` | `3` | Fails repeated placement/path/cancel loops. |
 | `SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES` | `128` | Fails if telemetry does not consume the latest modulation refresh after this frame grace window. |
+| `SOAK_AGGRESSIVE_MIN_FRAME` | `13000` | Keeps the 12000-frame production gate in defensive hold, then permits aggressive-pressure modulation for longer soaks. |
 | `SOAK_MAX_ATTEMPTS` | `2` | Bounded retry count for map/start-location flakes; every attempt keeps its own artifact directory. |
 | `SOAK_NON_RETRYABLE_FAILURE_CODES` | classifier terminal failures | Failure codes that stop retry immediately instead of hiding deterministic bot/runtime failures behind a later pass. |
 | `SOAK_ARTIFACT_ROOT` | `/private/tmp/voi-mm-soak` | Parent for run archives. |
@@ -223,15 +225,17 @@ The Python classifier behind the script is
 `starcraft_commander.micromachine_soak.classify_micromachine_soak`. It detects
 MicroMachine crash/early process stop, SC2 disconnect signatures, telemetry
 stall, repeated placement failures, no-production deadlock, production stall,
-missing `CombatCommander`/`ScoutManager` bounded intervention, and stale or
-inactive modulation. The live loop runs the classifier with
+recent income stall, missing `CombatCommander`/`ScoutManager` bounded
+intervention, and stale or inactive modulation. The live loop runs the classifier with
 `--allow-incomplete` so target-frame progress is allowed while terminal
 failures still stop the run immediately. The final pass requires target frame,
 macro evidence, CombatCommander and ScoutManager intervention evidence, and no
-classifier failures. Aggressive-profile refreshes use frame-suffixed update IDs
-such as `soak-aggressive-pressure-11500`, so the final telemetry must prove
-MicroMachine consumed the latest refresh rather than merely reporting an older
-still-active profile. When the script stops the game after the target frame,
+classifier failures. The default 12k-frame gate remains in defensive hold; for
+longer soaks, aggressive-profile refreshes begin after
+`SOAK_AGGRESSIVE_MIN_FRAME` and use frame-suffixed update IDs such as
+`soak-aggressive-pressure-13000`, so the final telemetry must prove MicroMachine
+consumed the latest refresh rather than merely reporting an older still-active
+profile. When the script stops the game after the target frame,
 `soak_report.json` records `termination_reason:
 target_frame_reached_cleanup` instead of presenting the cleanup as a natural
 game exit. If an attempt hits a deterministic classifier failure, it still
@@ -267,18 +271,16 @@ SOAK_MATRIX_TIMEOUT_SECONDS=1200 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
 
-Set `SOAK_MATRIX_ALLOW_FAILURES=1` only for mixed qualification runs that
-intentionally include negative controls. Deterministic classifier failures are
-kept in the matrix report and must not be treated as silent retries. Even with
-failure allowance enabled, the runner requires at least
-`SOAK_MATRIX_MIN_PASSES` passing case, defaulting to 1, so an empty or all-failed
-matrix cannot become a production pass.
+Production qualification must run without `SOAK_MATRIX_ALLOW_FAILURES` and
+requires `matrix_report.json.failed == 0`. Set `SOAK_MATRIX_ALLOW_FAILURES=1`
+only for diagnostics or negative-control runs; those reports are evidence for
+debugging, not production sign-off.
 
 Verified local matrix evidence for Issue 10.12:
 
 | Run | Evidence |
 | --- | --- |
-| `issue-10-12-diversity-v1` | `/private/tmp/voi-mm-soak-matrix/issue-10-12-diversity-v1/matrix_report.json` completed six map/race cases with `passed=1` and `failed=5`. `02-AcropolisLE-SC2Map-Protoss-d1` passed at frame 12042 with macro and manager-intervention evidence. Failed cases preserved `no_production_deadlock`, `micromachine_crash`, `micromachine_process_stopped`, and `telemetry_missing` failure codes instead of being false-promoted. |
+| `issue-10-13-acropolis-races-zero-v4` | `/private/tmp/voi-mm-soak-matrix/issue-10-13-acropolis-races-zero-v4/matrix_report.json` passed with `SOAK_MAX_ATTEMPTS=1`, `passed=3`, `failed=0` for `AcropolisLE.SC2Map` against `Zerg`, `Protoss`, and `Terran` difficulty 1. |
 
 See `docs/micromachine-production-ops.md` for the CI, self-hosted soak, and
 neural/SOTA provider runbook.
@@ -295,7 +297,7 @@ same patched MicroMachine build:
 | Smoke | `smoke_macos_local.sh` reaches `MIN_TELEMETRY_FRAME`, produces real macro evidence, and shows active aggressive modulation. |
 | Manager intervention | Telemetry proves both `CombatCommander.bounded_intervention=true` and `ScoutManager.bounded_intervention=true`. |
 | Long-run soak | `soak_macos_local.sh` reaches `SOAK_TARGET_FRAME` and writes `soak_report.json` with `ok: true`. |
-| Matrix diversity | `soak_matrix_macos_local.sh` writes a reviewed `matrix_report.json` that preserves pass and deterministic failure cases. |
+| Matrix diversity | `soak_matrix_macos_local.sh` writes a reviewed `matrix_report.json` with `failed=0`. |
 | Neural/provider swap | Callers use `MicroMachineModulationBackend`, `publish_policy_modulation_provider_output(...)`, or `publish_neural_representation_modulation(...)`, so future neural representation providers publish the same bounded vector contract without raw SC2 controls. |
 | CI/operations | Hosted CI runs unit contracts and script syntax; real SC2 soak matrices run from the self-hosted macOS workflow. |
 

@@ -81,6 +81,7 @@ has_required_macro_evidence() {
   done
   has_post_barracks_unit_evidence || return 1
   has_positive_gas_income || return 1
+  has_positive_mineral_income || return 1
   return 0
 }
 
@@ -106,6 +107,20 @@ has_positive_gas_income() {
   ' "${BOT_LOG}"
 }
 
+has_positive_mineral_income() {
+  [[ -f "${BOT_LOG}" ]] || return 1
+  awk '
+    /Mineral income:/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[0-9]+$/ && $i > 0) {
+          found = 1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "${BOT_LOG}"
+}
+
 print_missing_macro_evidence() {
   local term
   for term in "${REQUIRED_MACRO_EVIDENCE[@]}"; do
@@ -118,6 +133,9 @@ print_missing_macro_evidence() {
   fi
   if ! has_positive_gas_income; then
     echo "missing positive gas income after Refinery completion" >&2
+  fi
+  if ! has_positive_mineral_income; then
+    echo "missing positive mineral income after macro opening" >&2
   fi
 }
 
