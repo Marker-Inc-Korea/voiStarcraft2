@@ -128,6 +128,15 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "compile_policy_modulation_provider_output": (
         "starcraft_commander.policy_modulation_provider"
     ),
+    "DEFAULT_NEURAL_REPRESENTATION_AXES": "starcraft_commander.neural_representation",
+    "NeuralRepresentationModelAdapter": "starcraft_commander.neural_representation",
+    "NeuralRepresentationObservation": "starcraft_commander.neural_representation",
+    "NeuralRepresentationPrediction": "starcraft_commander.neural_representation",
+    "NeuralRepresentationProvider": "starcraft_commander.neural_representation",
+    "StaticNeuralRepresentationAdapter": "starcraft_commander.neural_representation",
+    "publish_neural_representation_modulation": (
+        "starcraft_commander.neural_representation"
+    ),
     "MICROMACHINE_BRIDGE_PROTOCOL_VERSION": "starcraft_commander.micromachine_bridge",
     "MICROMACHINE_MANAGER_HOOKS": "starcraft_commander.micromachine_bridge",
     "MICROMACHINE_MODULATION_UPDATE_SCHEMA": "starcraft_commander.micromachine_bridge",
