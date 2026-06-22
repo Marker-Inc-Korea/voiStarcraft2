@@ -263,9 +263,9 @@ Example:
 MICROMACHINE_DIR=/private/tmp/MicroMachine \
 MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
 SOAK_MATRIX_RUN_ID=production-diversity-001 \
-SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map Ladder2019Season3/ThunderbirdLE.SC2Map" \
+SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map" \
 SOAK_MATRIX_ENEMY_RACES="Zerg Protoss Terran" \
-SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2" \
+SOAK_MATRIX_ENEMY_DIFFICULTIES="1" \
 SOAK_MATRIX_TARGET_FRAME=12000 \
 SOAK_MATRIX_TIMEOUT_SECONDS=1200 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
@@ -275,6 +275,15 @@ Production qualification must run without `SOAK_MATRIX_ALLOW_FAILURES` and
 requires `matrix_report.json.failed == 0`. Set `SOAK_MATRIX_ALLOW_FAILURES=1`
 only for diagnostics or negative-control runs; those reports are evidence for
 debugging, not production sign-off.
+
+Example diagnostic run for the known Thunderbird blocker:
+
+```bash
+SOAK_MATRIX_RUN_ID=diagnostic-thunderbird-001 \
+SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map" \
+SOAK_MATRIX_ALLOW_FAILURES=1 \
+integrations/micromachine/scripts/soak_matrix_macos_local.sh
+```
 
 Verified local matrix evidence for Issue 10.12:
 

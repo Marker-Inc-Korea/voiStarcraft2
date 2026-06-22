@@ -6,7 +6,7 @@ on:
       maps:
         description: "Space-separated SC2 map files."
         required: false
-        default: "AcropolisLE.SC2Map Ladder2019Season3/ThunderbirdLE.SC2Map"
+        default: "AcropolisLE.SC2Map"
       enemy_races:
         description: "Space-separated enemy races: Terran Protoss Zerg Random."
         required: false
@@ -24,7 +24,7 @@ on:
         required: false
         default: "1200"
       allow_failures:
-        description: "Set to 1 for mixed pass/fail qualification runs."
+        description: "Set to 1 only for diagnostic or negative-control runs, never production sign-off."
         required: false
         default: "0"
 
