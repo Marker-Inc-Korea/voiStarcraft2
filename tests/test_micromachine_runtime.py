@@ -31,6 +31,9 @@ from starcraft_commander.policy_modulation import (
     PolicyModulationVector,
     PolicyOverrideLevel,
     PolicyModulationSource,
+    ProductionModulation,
+    ScoutingModulation,
+    SquadModulation,
     StrategyModulation,
     TechModulation,
     WeightedBiases,
@@ -45,11 +48,26 @@ def _vector(ttl_seconds: int = 30) -> PolicyModulationVector:
         goal="defensive_tank_hold",
         override_level=PolicyOverrideLevel.CONSTRAINT,
         ttl_seconds=ttl_seconds,
-        strategy=StrategyModulation(posture="defensive"),
-        economy=EconomyModulation(expand_bias=0.7, repair_priority=0.3),
+        strategy=StrategyModulation(
+            posture="defensive",
+            timing_biases=WeightedBiases({"tank_timing": 0.4}),
+        ),
+        economy=EconomyModulation(
+            expand_bias=0.7,
+            gas_worker_target_bias=0.45,
+            repair_priority=0.3,
+        ),
         tech=TechModulation(unit_biases=WeightedBiases({"TERRAN_SIEGETANK": 0.6})),
-        combat=CombatModulation(defend_bias=0.8, aggression=-0.2),
-        emergency=EmergencyModulation(force_retreat=True),
+        production=ProductionModulation(addon_biases=WeightedBiases({"TECHLAB": 0.5})),
+        combat=CombatModulation(
+            defend_bias=0.8,
+            aggression=-0.2,
+            siege_position_bias=0.7,
+            target_priority_biases=WeightedBiases({"BANELING": 0.9}),
+        ),
+        scouting=ScoutingModulation(scan_priority=0.35),
+        squad=SquadModulation(reinforce_bias=0.4),
+        emergency=EmergencyModulation(force_retreat=True, prioritize_repair=True),
     )
 
 
@@ -115,9 +133,38 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             self.assertEqual("defensive_tank_hold", document["vector"]["goal"])
             kv = latest_kv.read_text()
             self.assertIn("combat.defend_bias=0.8", kv)
+            self.assertIn("combat.siege_position_bias=0.7", kv)
+            self.assertIn("combat.target_priority_biases.BANELING=0.9", kv)
             self.assertIn("tech.unit_biases.TERRAN_SIEGETANK=0.6", kv)
+            self.assertIn("production.addon_biases.TECHLAB=0.5", kv)
+            self.assertIn("scouting.scan_priority=0.35", kv)
+            self.assertIn("squad.reinforce_bias=0.4", kv)
             self.assertIn("emergency.force_retreat=true", kv)
+            self.assertIn("emergency.prioritize_repair=true", kv)
             self.assertEqual(1, len(archive.read_text().splitlines()))
+
+    def test_publish_rejects_unsafe_kv_key_without_partial_latest_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard = MicroMachineFilesystemBlackboard(directory)
+
+            with self.assertRaisesRegex(ValueError, "unsafe characters"):
+                blackboard.publish_vector(
+                    PolicyModulationVector(
+                        goal="hold",
+                        combat=CombatModulation(
+                            target_priority_biases=WeightedBiases(
+                                {"BANELING\ncombat.aggression": 0.9}
+                            ),
+                        ),
+                    ),
+                    current_frame=100,
+                    update_id="unsafe-key",
+                )
+
+            self.assertFalse((Path(directory) / LATEST_UPDATE_JSON_NAME).exists())
+            self.assertFalse((Path(directory) / LATEST_UPDATE_KV_NAME).exists())
+            self.assertFalse((Path(directory) / "modulation_updates.jsonl").exists())
+            self.assertIsNone(blackboard.read_latest_update(current_frame=100))
 
     def test_read_latest_update_rejects_stale_and_raw_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -354,8 +401,28 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
         self.assertIn("source=human\n", text)
         self.assertIn("override_level=constraint\n", text)
         self.assertIn("strategy.posture=defensive\n", text)
+        self.assertIn("strategy.timing_biases.tank_timing=0.4\n", text)
+        self.assertIn("economy.gas_worker_target_bias=0.45\n", text)
         self.assertIn("combat.aggression=-0.2\n", text)
-        self.assertIn("manager_bias_domains=strategy,economy,tech,combat,emergency\n", text)
+        self.assertIn("combat.target_priority_biases.BANELING=0.9\n", text)
+        self.assertIn("manager_bias_domains=strategy,economy,tech,production,combat,scouting,squad,emergency\n", text)
+
+    def test_flatten_update_rejects_injected_kv_keys(self) -> None:
+        update = MicroMachineBlackboardUpdate(
+            update_id="unsafe-key",
+            vector=PolicyModulationVector(
+                goal="hold",
+                combat=CombatModulation(
+                    target_priority_biases=WeightedBiases(
+                        {"BANELING\ncombat.aggression": 0.9}
+                    ),
+                ),
+            ),
+            issued_at_frame=22,
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsafe characters"):
+            flatten_blackboard_update(update)
 
 
 if __name__ == "__main__":

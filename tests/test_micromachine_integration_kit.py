@@ -50,6 +50,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertTrue(hook["keys"])
                 self.assertTrue(hook["function"])
                 self.assertTrue(hook["intended_effect"])
+        pending_keys = manifest["python_blackboard_emitted_but_not_consumed_by_current_cpp_patch"]
+        self.assertIn("production.addon_biases.*", pending_keys)
+        self.assertIn("combat.target_priority_biases.*", pending_keys)
+        self.assertIn("scouting.scan_priority", pending_keys)
+        self.assertIn("squad.reinforce_bias", pending_keys)
+        self.assertIn("emergency.prioritize_repair", pending_keys)
 
     def test_cpp_blackboard_header_is_header_only_and_uses_stdlib(self) -> None:
         header = (KIT_DIR / "voi_policy_blackboard.hpp").read_text()

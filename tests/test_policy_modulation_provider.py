@@ -49,10 +49,21 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 "confidence": 0.84,
                 "ttl": 180,
                 "posture": "defensive",
-                "economy": {"expand_bias": 0.7, "worker_production_bias": 0.4},
+                "timing_biases": {"tank_push": 0.35},
+                "economy": {
+                    "expand_bias": 0.7,
+                    "worker_production_bias": 0.4,
+                    "gas_worker_target_bias": 0.5,
+                },
                 "tech": {"unit_biases": {"SiegeTank": 0.6}},
+                "addon_biases": {"TechLab": 0.45},
                 "combat": {"defend_bias": 0.8, "aggression": -0.2},
+                "siege_position_bias": 0.7,
+                "target_priority_biases": {"Baneling": 0.9},
                 "scouting": {"require_fresh_enemy_observation": True},
+                "scan_priority": 0.4,
+                "contain_bias": 0.3,
+                "prioritize_repair": True,
                 "tags": ["korean_order", "micro_machine"],
             }
         )
@@ -64,9 +75,17 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual(PolicyModulationSource.LLM, result.vector.source)
         self.assertEqual(PolicyOverrideLevel.CONSTRAINT, result.vector.override_level)
         self.assertEqual("defensive", result.vector.strategy.posture)
+        self.assertEqual({"tank_push": 0.35}, result.vector.strategy.timing_biases.to_dict())
         self.assertEqual(0.7, result.vector.economy.expand_bias)
+        self.assertEqual(0.5, result.vector.economy.gas_worker_target_bias)
         self.assertEqual({"SiegeTank": 0.6}, result.vector.tech.unit_biases.to_dict())
+        self.assertEqual({"TechLab": 0.45}, result.vector.production.addon_biases.to_dict())
         self.assertEqual(0.8, result.vector.combat.defend_bias)
+        self.assertEqual(0.7, result.vector.combat.siege_position_bias)
+        self.assertEqual({"Baneling": 0.9}, result.vector.combat.target_priority_biases.to_dict())
+        self.assertEqual(0.4, result.vector.scouting.scan_priority)
+        self.assertEqual(0.3, result.vector.squad.contain_bias)
+        self.assertTrue(result.vector.emergency.prioritize_repair)
 
     def test_compiles_neural_representation_axes_to_same_contract(self) -> None:
         result = compile_policy_modulation_provider_output(
@@ -79,10 +98,15 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 "representation": {
                     "strategy.posture": "defensive",
                     "economy.expand_bias": 0.7,
+                    "economy.expansion_safety_bias": 0.5,
                     "tech.unit_biases.SiegeTank": 0.6,
+                    "production.addon_biases.TechLab": 0.4,
                     "combat.defend_bias": 0.8,
                     "combat.aggression": -0.2,
+                    "combat.target_priority_biases.Baneling": 0.7,
                     "scouting.require_fresh_enemy_observation": True,
+                    "scouting.hidden_tech_scout_bias": 0.5,
+                    "squad.reinforce_bias": 0.4,
                 },
             }
         )
@@ -94,8 +118,28 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual(PolicyModulationSource.NEURAL_REPRESENTATION, vector.source)
         self.assertEqual("defensive", vector.strategy.posture)
         self.assertEqual(0.7, vector.economy.expand_bias)
+        self.assertEqual(0.5, vector.economy.expansion_safety_bias)
         self.assertEqual({"SiegeTank": 0.6}, vector.tech.unit_biases.to_dict())
+        self.assertEqual({"TechLab": 0.4}, vector.production.addon_biases.to_dict())
         self.assertEqual(0.8, vector.combat.defend_bias)
+        self.assertEqual({"Baneling": 0.7}, vector.combat.target_priority_biases.to_dict())
+        self.assertEqual(0.5, vector.scouting.hidden_tech_scout_bias)
+        self.assertEqual(0.4, vector.squad.reinforce_bias)
+
+    def test_flat_aliases_survive_later_domain_objects(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "goal": "two_base_economy",
+                "gas_worker_target_bias": 0.5,
+                "economy": {"expand_bias": 0.7},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual(0.5, result.vector.economy.gas_worker_target_bias)
+        self.assertEqual(0.7, result.vector.economy.expand_bias)
 
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (

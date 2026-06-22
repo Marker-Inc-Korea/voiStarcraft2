@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from copy import deepcopy
 from collections.abc import Mapping
@@ -52,6 +53,7 @@ LATEST_UPDATE_KV_NAME: Final[str] = "latest_modulation.kv"
 UPDATE_ARCHIVE_JSONL_NAME: Final[str] = "modulation_updates.jsonl"
 LATEST_TELEMETRY_JSON_NAME: Final[str] = "latest_telemetry.json"
 TELEMETRY_ARCHIVE_JSONL_NAME: Final[str] = "telemetry.jsonl"
+_KV_KEY_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
 @runtime_checkable
@@ -293,11 +295,13 @@ class MicroMachineFilesystemBlackboard:
         if accepted is None:
             raise ValueError("blackboard update validation did not return an update.")
         document = accepted.to_dict()
+        json_text = json.dumps(document, ensure_ascii=False, sort_keys=True) + "\n"
+        kv_text = flatten_blackboard_update(accepted)
+        _atomic_write_text(self.paths.latest_update_kv, kv_text)
         _atomic_write_text(
             self.paths.latest_update_json,
-            json.dumps(document, ensure_ascii=False, sort_keys=True) + "\n",
+            json_text,
         )
-        _atomic_write_text(self.paths.latest_update_kv, flatten_blackboard_update(accepted))
         _append_jsonl(self.paths.update_archive_jsonl, document)
         return accepted
 
@@ -586,7 +590,9 @@ def flatten_blackboard_update(update: MicroMachineBlackboardUpdate) -> str:
             if isinstance(constraint, Mapping):
                 for key, value in constraint.items():
                     rows.append((f"constraints.{index}.{key}", value))
-    text = "".join(f"{key}={_format_kv_value(value)}\n" for key, value in rows)
+    text = "".join(
+        f"{_format_kv_key(key)}={_format_kv_value(value)}\n" for key, value in rows
+    )
     return text
 
 
@@ -596,6 +602,8 @@ def _flatten_mapping(
     mapping: Mapping[str, object],
 ) -> None:
     for key, value in mapping.items():
+        if type(key) is not str or not key.strip():
+            raise ValueError("blackboard kv keys must be non-empty strings.")
         flat_key = f"{prefix}.{key}"
         if isinstance(value, Mapping):
             _flatten_mapping(rows, flat_key, value)
@@ -603,6 +611,13 @@ def _flatten_mapping(
             rows.append((flat_key, ",".join(str(item) for item in value)))
         else:
             rows.append((flat_key, value))
+
+
+def _format_kv_key(key: str) -> str:
+    normalized = key.strip()
+    if not _KV_KEY_PATTERN.fullmatch(normalized):
+        raise ValueError(f"blackboard kv key contains unsafe characters: {key!r}.")
+    return normalized
 
 
 def _format_kv_value(value: object) -> str:

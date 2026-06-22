@@ -47,12 +47,18 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 posture="defensive",
                 preferred_builds=WeightedBiases({"reaper_expand": 0.6}),
                 avoided_builds=WeightedBiases({"proxy_marauder": -0.8}),
+                timing_biases=WeightedBiases({"tank_timing": 0.45}),
+                transition_biases=WeightedBiases({"bio_tank": 0.5}),
                 strategic_tags=("hold_ramp", "two_base"),
             ),
             economy=EconomyModulation(
                 expand_bias=0.7,
                 worker_production_bias=0.5,
+                gas_worker_target_bias=0.4,
+                mineral_saturation_bias=0.25,
                 repair_priority=0.3,
+                expansion_safety_bias=0.65,
+                mule_priority=0.2,
             ),
             tech=TechModulation(
                 structure_biases=WeightedBiases({"Starport": 0.4}),
@@ -63,18 +69,29 @@ class PolicyModulationVectorTest(unittest.TestCase):
             production=ProductionModulation(
                 queue_biases=WeightedBiases({"Factory": 0.4}),
                 composition_biases=WeightedBiases({"anti_air": 0.2}),
+                addon_biases=WeightedBiases({"TechLab": 0.5}),
+                production_facility_biases=WeightedBiases({"Barracks": 0.3}),
                 max_tech_deviation=0.25,
+                production_continuity_bias=0.6,
+                tech_switch_urgency=0.2,
             ),
             combat=CombatModulation(
                 aggression=-0.2,
                 engage_threshold_delta=0.15,
                 retreat_threshold_delta=0.2,
+                attack_timing_bias=-0.35,
                 defend_bias=0.8,
                 combat_sim_confidence_margin=0.1,
+                siege_position_bias=0.75,
+                kite_bias=0.35,
+                target_priority_biases=WeightedBiases({"Baneling": 0.8}),
             ),
             scouting=ScoutingModulation(
                 scout_priority=0.6,
                 risk_tolerance=-0.3,
+                scout_cadence_bias=0.4,
+                scan_priority=0.5,
+                hidden_tech_scout_bias=0.7,
                 target_biases=WeightedBiases({"enemy_natural": 0.8}),
                 require_fresh_enemy_observation=True,
             ),
@@ -83,8 +100,15 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 harassment_bias=-0.2,
                 defense_bias=0.7,
                 regroup_bias=0.5,
+                split_army_bias=-0.15,
+                reinforce_bias=0.35,
+                contain_bias=0.25,
             ),
-            emergency=EmergencyModulation(cancel_attacks=True),
+            emergency=EmergencyModulation(
+                cancel_attacks=True,
+                prioritize_repair=True,
+                stop_expansion=True,
+            ),
             constraints=(
                 PolicySafetyConstraint(
                     key="no_attack_before",
@@ -102,8 +126,15 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual("llm", document["source"])
         self.assertEqual("constraint", document["override_level"])
         self.assertEqual("defensive", document["strategy"]["posture"])
+        self.assertEqual(0.45, document["strategy"]["timing_biases"]["tank_timing"])
+        self.assertEqual(0.4, document["economy"]["gas_worker_target_bias"])
+        self.assertEqual(0.5, document["production"]["addon_biases"]["TechLab"])
         self.assertEqual(0.15, document["combat"]["engage_threshold_delta"])
+        self.assertEqual(0.75, document["combat"]["siege_position_bias"])
+        self.assertEqual(0.5, document["scouting"]["scan_priority"])
+        self.assertEqual(0.35, document["squad"]["reinforce_bias"])
         self.assertTrue(document["emergency"]["cancel_attacks"])
+        self.assertTrue(document["emergency"]["prioritize_repair"])
         self.assertEqual("no_attack_before", document["constraints"][0]["key"])
         json.dumps(document, ensure_ascii=False)
 
@@ -122,9 +153,11 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 "combat": {
                     "aggression": 0.4,
                     "harassment_bias": 0.25,
+                    "target_priority_biases": {"Baneling": 0.5},
                 },
                 "squad": {
                     "squad_role_biases": {"harass": 0.5, "main_army": 0.2},
+                    "contain_bias": 0.4,
                 },
                 "constraints": [{"key": "require_scouting_before_attack"}],
                 "tags": ["representation_modulation"],
@@ -135,6 +168,8 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual(PolicyOverrideLevel.BIAS, vector.override_level)
         self.assertEqual({"proxy_cyclone": 0.5}, vector.strategy.preferred_builds.to_dict())
         self.assertEqual(0.4, vector.combat.aggression)
+        self.assertEqual({"Baneling": 0.5}, vector.combat.target_priority_biases.to_dict())
+        self.assertEqual(0.4, vector.squad.contain_bias)
         self.assertEqual("require_scouting_before_attack", vector.constraints[0].key)
 
     def test_rejects_raw_runtime_control_keys_at_any_depth(self) -> None:

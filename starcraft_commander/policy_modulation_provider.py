@@ -280,31 +280,51 @@ _DOMAIN_ALIASES = {
     "posture": ("strategy", "posture"),
     "preferred_builds": ("strategy", "preferred_builds"),
     "avoided_builds": ("strategy", "avoided_builds"),
+    "timing_biases": ("strategy", "timing_biases"),
+    "strategy_timing_biases": ("strategy", "timing_biases"),
+    "transition_biases": ("strategy", "transition_biases"),
+    "strategy_transition_biases": ("strategy", "transition_biases"),
     "strategic_tags": ("strategy", "strategic_tags"),
     "expand_bias": ("economy", "expand_bias"),
     "worker_production_bias": ("economy", "worker_production_bias"),
     "worker_bias": ("economy", "worker_production_bias"),
     "gas_priority": ("economy", "gas_priority"),
+    "gas_worker_target_bias": ("economy", "gas_worker_target_bias"),
+    "mineral_saturation_bias": ("economy", "mineral_saturation_bias"),
     "repair_priority": ("economy", "repair_priority"),
     "supply_buffer_bias": ("economy", "supply_buffer_bias"),
+    "expansion_safety_bias": ("economy", "expansion_safety_bias"),
+    "mule_priority": ("economy", "mule_priority"),
     "structure_biases": ("tech", "structure_biases"),
     "unit_biases": ("tech", "unit_biases"),
     "upgrade_biases": ("tech", "upgrade_biases"),
     "tech_path_tags": ("tech", "tech_path_tags"),
     "queue_biases": ("production", "queue_biases"),
     "composition_biases": ("production", "composition_biases"),
+    "addon_biases": ("production", "addon_biases"),
+    "production_facility_biases": ("production", "production_facility_biases"),
     "max_tech_deviation": ("production", "max_tech_deviation"),
+    "production_continuity_bias": ("production", "production_continuity_bias"),
+    "tech_switch_urgency": ("production", "tech_switch_urgency"),
     "allow_build_order_rewrite": ("production", "allow_build_order_rewrite"),
     "aggression": ("combat", "aggression"),
     "combat_aggression": ("combat", "aggression"),
     "engage_threshold_delta": ("combat", "engage_threshold_delta"),
     "retreat_threshold_delta": ("combat", "retreat_threshold_delta"),
+    "attack_timing_bias": ("combat", "attack_timing_bias"),
     "combat_harassment_bias": ("combat", "harassment_bias"),
     "defend_bias": ("combat", "defend_bias"),
     "preserve_army_bias": ("combat", "preserve_army_bias"),
     "combat_sim_confidence_margin": ("combat", "combat_sim_confidence_margin"),
+    "siege_position_bias": ("combat", "siege_position_bias"),
+    "kite_bias": ("combat", "kite_bias"),
+    "flank_bias": ("combat", "flank_bias"),
+    "target_priority_biases": ("combat", "target_priority_biases"),
     "scout_priority": ("scouting", "scout_priority"),
     "risk_tolerance": ("scouting", "risk_tolerance"),
+    "scout_cadence_bias": ("scouting", "scout_cadence_bias"),
+    "scan_priority": ("scouting", "scan_priority"),
+    "hidden_tech_scout_bias": ("scouting", "hidden_tech_scout_bias"),
     "target_biases": ("scouting", "target_biases"),
     "require_fresh_enemy_observation": (
         "scouting",
@@ -315,12 +335,17 @@ _DOMAIN_ALIASES = {
     "defense_bias": ("squad", "defense_bias"),
     "regroup_bias": ("squad", "regroup_bias"),
     "drop_bias": ("squad", "drop_bias"),
+    "split_army_bias": ("squad", "split_army_bias"),
+    "reinforce_bias": ("squad", "reinforce_bias"),
+    "contain_bias": ("squad", "contain_bias"),
     "squad_role_biases": ("squad", "squad_role_biases"),
     "cancel_attacks": ("emergency", "cancel_attacks"),
     "pull_workers_for_defense": ("emergency", "pull_workers_for_defense"),
     "evacuate_workers": ("emergency", "evacuate_workers"),
     "force_retreat": ("emergency", "force_retreat"),
     "hold_position": ("emergency", "hold_position"),
+    "prioritize_repair": ("emergency", "prioritize_repair"),
+    "stop_expansion": ("emergency", "stop_expansion"),
 }
 
 _DOMAIN_KEYS = {
@@ -390,6 +415,16 @@ def _normalize_provider_mapping(
         if canonical_key in _DOMAIN_ALIASES:
             domain, field_name = _DOMAIN_ALIASES[canonical_key]
             _ensure_domain(result, domain)[field_name] = value
+            continue
+        if canonical_key in _DOMAIN_KEYS:
+            if not isinstance(value, Mapping):
+                result[canonical_key] = value
+                continue
+            domain = _ensure_domain(result, canonical_key)
+            for field_name, field_value in value.items():
+                if type(field_name) is not str or not field_name.strip():
+                    raise ValueError(f"{canonical_key} field names must be strings.")
+                domain[field_name] = field_value
             continue
         if canonical_key in _VECTOR_KEYS:
             result[canonical_key] = value
