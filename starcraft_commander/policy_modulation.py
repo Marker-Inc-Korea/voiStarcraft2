@@ -147,6 +147,8 @@ class StrategyModulation:
     posture: str = "balanced"
     preferred_builds: WeightedBiases = field(default_factory=WeightedBiases)
     avoided_builds: WeightedBiases = field(default_factory=WeightedBiases)
+    timing_biases: WeightedBiases = field(default_factory=WeightedBiases)
+    transition_biases: WeightedBiases = field(default_factory=WeightedBiases)
     strategic_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -157,6 +159,8 @@ class StrategyModulation:
         ))
         object.__setattr__(self, "preferred_builds", _coerce_biases(self.preferred_builds))
         object.__setattr__(self, "avoided_builds", _coerce_biases(self.avoided_builds))
+        object.__setattr__(self, "timing_biases", _coerce_biases(self.timing_biases))
+        object.__setattr__(self, "transition_biases", _coerce_biases(self.transition_biases))
         object.__setattr__(
             self,
             "strategic_tags",
@@ -168,6 +172,8 @@ class StrategyModulation:
             "posture": self.posture,
             "preferred_builds": self.preferred_builds.to_dict(),
             "avoided_builds": self.avoided_builds.to_dict(),
+            "timing_biases": self.timing_biases.to_dict(),
+            "transition_biases": self.transition_biases.to_dict(),
             "strategic_tags": list(self.strategic_tags),
         }
 
@@ -179,8 +185,12 @@ class EconomyModulation:
     expand_bias: float = 0.0
     worker_production_bias: float = 0.0
     gas_priority: float = 0.0
+    gas_worker_target_bias: float = 0.0
+    mineral_saturation_bias: float = 0.0
     repair_priority: float = 0.0
     supply_buffer_bias: float = 0.0
+    expansion_safety_bias: float = 0.0
+    mule_priority: float = 0.0
 
     def __post_init__(self) -> None:
         _set_unit_interval_fields(
@@ -189,8 +199,12 @@ class EconomyModulation:
                 "expand_bias",
                 "worker_production_bias",
                 "gas_priority",
+                "gas_worker_target_bias",
+                "mineral_saturation_bias",
                 "repair_priority",
                 "supply_buffer_bias",
+                "expansion_safety_bias",
+                "mule_priority",
             ),
         )
 
@@ -201,8 +215,12 @@ class EconomyModulation:
                 "expand_bias",
                 "worker_production_bias",
                 "gas_priority",
+                "gas_worker_target_bias",
+                "mineral_saturation_bias",
                 "repair_priority",
                 "supply_buffer_bias",
+                "expansion_safety_bias",
+                "mule_priority",
             ),
         )
 
@@ -241,13 +259,23 @@ class ProductionModulation:
 
     queue_biases: WeightedBiases = field(default_factory=WeightedBiases)
     composition_biases: WeightedBiases = field(default_factory=WeightedBiases)
+    addon_biases: WeightedBiases = field(default_factory=WeightedBiases)
+    production_facility_biases: WeightedBiases = field(default_factory=WeightedBiases)
     max_tech_deviation: float = 0.0
+    production_continuity_bias: float = 0.0
+    tech_switch_urgency: float = 0.0
     allow_build_order_rewrite: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "queue_biases", _coerce_biases(self.queue_biases))
         object.__setattr__(
             self, "composition_biases", _coerce_biases(self.composition_biases)
+        )
+        object.__setattr__(self, "addon_biases", _coerce_biases(self.addon_biases))
+        object.__setattr__(
+            self,
+            "production_facility_biases",
+            _coerce_biases(self.production_facility_biases),
         )
         object.__setattr__(
             self,
@@ -261,6 +289,26 @@ class ProductionModulation:
         )
         object.__setattr__(
             self,
+            "production_continuity_bias",
+            _coerce_unit_interval(
+                self.production_continuity_bias,
+                field_name="production_continuity_bias",
+                lower=-1.0,
+                upper=1.0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "tech_switch_urgency",
+            _coerce_unit_interval(
+                self.tech_switch_urgency,
+                field_name="tech_switch_urgency",
+                lower=-1.0,
+                upper=1.0,
+            ),
+        )
+        object.__setattr__(
+            self,
             "allow_build_order_rewrite",
             _coerce_bool(self.allow_build_order_rewrite, "allow_build_order_rewrite"),
         )
@@ -269,7 +317,11 @@ class ProductionModulation:
         return {
             "queue_biases": self.queue_biases.to_dict(),
             "composition_biases": self.composition_biases.to_dict(),
+            "addon_biases": self.addon_biases.to_dict(),
+            "production_facility_biases": self.production_facility_biases.to_dict(),
             "max_tech_deviation": self.max_tech_deviation,
+            "production_continuity_bias": self.production_continuity_bias,
+            "tech_switch_urgency": self.tech_switch_urgency,
             "allow_build_order_rewrite": self.allow_build_order_rewrite,
         }
 
@@ -281,10 +333,15 @@ class CombatModulation:
     aggression: float = 0.0
     engage_threshold_delta: float = 0.0
     retreat_threshold_delta: float = 0.0
+    attack_timing_bias: float = 0.0
     harassment_bias: float = 0.0
     defend_bias: float = 0.0
     preserve_army_bias: float = 0.0
     combat_sim_confidence_margin: float = 0.0
+    siege_position_bias: float = 0.0
+    kite_bias: float = 0.0
+    flank_bias: float = 0.0
+    target_priority_biases: WeightedBiases = field(default_factory=WeightedBiases)
 
     def __post_init__(self) -> None:
         _set_unit_interval_fields(
@@ -293,26 +350,41 @@ class CombatModulation:
                 "aggression",
                 "engage_threshold_delta",
                 "retreat_threshold_delta",
+                "attack_timing_bias",
                 "harassment_bias",
                 "defend_bias",
                 "preserve_army_bias",
                 "combat_sim_confidence_margin",
+                "siege_position_bias",
+                "kite_bias",
+                "flank_bias",
             ),
         )
+        object.__setattr__(
+            self,
+            "target_priority_biases",
+            _coerce_biases(self.target_priority_biases),
+        )
 
-    def to_dict(self) -> dict[str, float]:
-        return _float_fields_to_dict(
+    def to_dict(self) -> dict[str, object]:
+        payload = _float_fields_to_dict(
             self,
             (
                 "aggression",
                 "engage_threshold_delta",
                 "retreat_threshold_delta",
+                "attack_timing_bias",
                 "harassment_bias",
                 "defend_bias",
                 "preserve_army_bias",
                 "combat_sim_confidence_margin",
+                "siege_position_bias",
+                "kite_bias",
+                "flank_bias",
             ),
         )
+        payload["target_priority_biases"] = self.target_priority_biases.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -321,28 +393,21 @@ class ScoutingModulation:
 
     scout_priority: float = 0.0
     risk_tolerance: float = 0.0
+    scout_cadence_bias: float = 0.0
+    scan_priority: float = 0.0
+    hidden_tech_scout_bias: float = 0.0
     target_biases: WeightedBiases = field(default_factory=WeightedBiases)
     require_fresh_enemy_observation: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(
+        _set_unit_interval_fields(
             self,
-            "scout_priority",
-            _coerce_unit_interval(
-                self.scout_priority,
-                field_name="scout_priority",
-                lower=-1.0,
-                upper=1.0,
-            ),
-        )
-        object.__setattr__(
-            self,
-            "risk_tolerance",
-            _coerce_unit_interval(
-                self.risk_tolerance,
-                field_name="risk_tolerance",
-                lower=-1.0,
-                upper=1.0,
+            (
+                "scout_priority",
+                "risk_tolerance",
+                "scout_cadence_bias",
+                "scan_priority",
+                "hidden_tech_scout_bias",
             ),
         )
         object.__setattr__(self, "target_biases", _coerce_biases(self.target_biases))
@@ -359,6 +424,9 @@ class ScoutingModulation:
         return {
             "scout_priority": self.scout_priority,
             "risk_tolerance": self.risk_tolerance,
+            "scout_cadence_bias": self.scout_cadence_bias,
+            "scan_priority": self.scan_priority,
+            "hidden_tech_scout_bias": self.hidden_tech_scout_bias,
             "target_biases": self.target_biases.to_dict(),
             "require_fresh_enemy_observation": self.require_fresh_enemy_observation,
         }
@@ -373,6 +441,9 @@ class SquadModulation:
     defense_bias: float = 0.0
     regroup_bias: float = 0.0
     drop_bias: float = 0.0
+    split_army_bias: float = 0.0
+    reinforce_bias: float = 0.0
+    contain_bias: float = 0.0
     squad_role_biases: WeightedBiases = field(default_factory=WeightedBiases)
 
     def __post_init__(self) -> None:
@@ -384,6 +455,9 @@ class SquadModulation:
                 "defense_bias",
                 "regroup_bias",
                 "drop_bias",
+                "split_army_bias",
+                "reinforce_bias",
+                "contain_bias",
             ),
         )
         object.__setattr__(
@@ -399,6 +473,9 @@ class SquadModulation:
                 "defense_bias",
                 "regroup_bias",
                 "drop_bias",
+                "split_army_bias",
+                "reinforce_bias",
+                "contain_bias",
             ),
         )
         payload["squad_role_biases"] = self.squad_role_biases.to_dict()
@@ -414,6 +491,8 @@ class EmergencyModulation:
     evacuate_workers: bool = False
     force_retreat: bool = False
     hold_position: bool = False
+    prioritize_repair: bool = False
+    stop_expansion: bool = False
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -422,6 +501,8 @@ class EmergencyModulation:
             "evacuate_workers",
             "force_retreat",
             "hold_position",
+            "prioritize_repair",
+            "stop_expansion",
         ):
             object.__setattr__(
                 self,
@@ -436,6 +517,8 @@ class EmergencyModulation:
             "evacuate_workers": self.evacuate_workers,
             "force_retreat": self.force_retreat,
             "hold_position": self.hold_position,
+            "prioritize_repair": self.prioritize_repair,
+            "stop_expansion": self.stop_expansion,
         }
 
 

@@ -95,18 +95,25 @@ PolicyModulationVector
 ```
 
 The DSL is deep enough to express MicroMachine manager modulation without
-becoming raw runtime control:
+becoming raw runtime control. The current patched C++ MicroMachine hook consumes
+the stable subset listed in `integrations/micromachine/HOOK_MANIFEST.json`;
+newer axes are emitted to the blackboard and remain fail-closed until a manager
+hook explicitly reads them.
 
-| DSL domain | Intended MicroMachine hook |
+| DSL domain | Manager-level policy surface |
 | --- | --- |
-| `strategy` | `StrategyManager` posture, preferred builds, avoided builds, strategic tags. |
-| `economy` | `WorkerManager` and economy-side production pressure. |
+| `strategy` | `StrategyManager` posture, preferred/avoided builds, timing-window bias, transition bias, strategic tags. |
+| `economy` | `WorkerManager` and economy-side production pressure: expansion, worker production, gas workers, mineral saturation, repair, supply buffer, MULE priority, and expansion safety. |
 | `tech` | Structure, unit, upgrade, and tech-path bias. |
-| `production` | `ProductionManager` and `BuildOrderQueue` bias. |
-| `combat` | `CombatCommander`, `CombatAnalyzer`, and combat-sim thresholds. |
-| `scouting` | `ScoutManager` target and risk modulation. |
-| `squad` | `Squad`, `SquadOrder`, and `MicroManager` role allocation. |
-| `emergency` | Short-lived cancel, retreat, hold, evacuation, or worker-pull flags. |
+| `production` | `ProductionManager` and `BuildOrderQueue` queue, composition, add-on, facility, continuity, and tech-switch urgency bias. |
+| `combat` | `CombatCommander`, `CombatAnalyzer`, and combat-sim thresholds: aggression, engage/retreat deltas, timing, harassment, defense, army preservation, siege positioning, kiting, flanking, and target-priority bias. |
+| `scouting` | `ScoutManager` scout priority, cadence, scan priority, hidden-tech scouting, target, and risk modulation. |
+| `squad` | `Squad`, `SquadOrder`, and `MicroManager` main-army, defense, harassment, regroup, drop, split, reinforce, contain, and role-allocation bias. |
+| `emergency` | Short-lived cancel, retreat, hold, evacuation, repair-priority, expansion-stop, or worker-pull flags. |
+
+The manifest also lists `python_blackboard_emitted_but_not_consumed_by_current_cpp_patch`
+for axes that are contract-ready on the Python/provider side but still need a
+specific C++ manager hook before they can affect live MicroMachine play.
 
 Raw-control keys such as `python_sc2`, `botai_method`, `raw_action`,
 `s2client_api`, `unit_tag`, `attack_move`, `train_unit`, or `build_structure`
@@ -220,7 +227,8 @@ path as LLM/UI/replay providers, then publishes through any backend.
 The C++ integration kit lives in `integrations/micromachine/`:
 
 - `HOOK_MANIFEST.json` names the verified upstream MicroMachine commit and the
-  real manager hook functions.
+  real manager hook functions, including the current consumed-key subset and
+  the emitted-but-not-yet-consumed DSL axes.
 - `voi_policy_blackboard.hpp` is a header-only reader for keys such as
   `combat.defend_bias`, `economy.expand_bias`, and
   `emergency.force_retreat`.

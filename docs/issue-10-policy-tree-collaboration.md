@@ -23,10 +23,10 @@ provider output.
 
 | Layer | Responsibility |
 | --- | --- |
-| Provider compiler | Turns LLM/UI/replay/neural output into a bounded `PolicyModulationVector` or an explicit refusal/clarification. |
-| Deep DSL | Represents strategy, economy, tech, production, combat, scouting, squad, emergency, confidence, TTL, constraints, and source. |
+| Provider compiler | Turns LLM/UI/replay/neural output into a bounded `PolicyModulationVector` or an explicit refusal/clarification. It maps flat aliases and representation axes into the same manager-level DSL. |
+| Deep DSL | Represents strategy timing/transition, economy saturation/gas/repair, tech, production composition/add-ons/continuity, combat thresholds/target priorities, scouting cadence/scan/hidden-tech, squad allocation, emergency, confidence, TTL, constraints, and source. |
 | Sidecar bridge | Serializes modulation updates, telemetry, rollback, failure envelopes, and stale-update rejection. |
-| MicroMachine hooks | Read manager-domain bias from the blackboard while MicroMachine retains unit tactics and build execution. |
+| MicroMachine hooks | Read the consumed-key subset from the blackboard while MicroMachine retains unit tactics and build execution; emitted-only DSL axes require explicit C++ hook extension before they affect live play. |
 | Observability | Exposes active/stale modulation state and evaluation metrics through JSON-ready snapshots. |
 
 ## Completed Sub-Issues
@@ -82,7 +82,9 @@ The Python sidecar writes:
 The C++ kit includes `voi_policy_blackboard.hpp`, which can be copied into
 MicroMachine and read from `GameCommander::onFrame(bool executeMacro)`. The
 hook manifest is tied to upstream MicroMachine commit
-`eb893161371dab975a0a7e600f9e250ac03ec1ef`.
+`eb893161371dab975a0a7e600f9e250ac03ec1ef` and distinguishes currently
+consumed keys from Python-emitted DSL axes that are not yet consumed by the
+current C++ patch.
 
 ## Production Soak Boundary
 
