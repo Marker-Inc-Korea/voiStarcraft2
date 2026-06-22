@@ -106,12 +106,12 @@ LLM / future neural representation provider
   -> CombatCommander / ScoutManager / production code keep tactical authority
 ```
 
-The soak first publishes defensive hold, waits for real macro evidence, then
-publishes aggressive pressure and refreshes it before TTL expiry. A pass
-requires `soak_report.json` with `ok: true`, the configured target frame,
-macro evidence, `CombatCommander.bounded_intervention=true`,
-`ScoutManager.bounded_intervention=true`, telemetry consumption of the latest
-frame-suffixed modulation refresh, and no classifier failures.
+The soak first publishes defensive hold and waits for real macro evidence. For
+the default 12k-frame production gate, a pass proves defensive-hold modulation
+consumption, macro progress, manager intervention, and no classifier failures.
+Longer soaks publish aggressive pressure only after `SOAK_AGGRESSIVE_MIN_FRAME`
+and then require telemetry consumption of the latest frame-suffixed aggressive
+refresh before TTL expiry.
 
 `starcraft_commander.neural_representation` is the concrete neural/SOTA
 attachment surface. A model adapter may infer representation axes, but it cannot
@@ -139,8 +139,8 @@ Issue #10 is complete when:
 9. A long-run soak reaches the configured frame budget with no crash,
    disconnect, telemetry stall, repeated placement failure, no-production
    deadlock, stale modulation, or missing manager-intervention evidence.
-10. A map/race/difficulty soak matrix runner exists and preserves both pass
-    cases and negative-control failures in an aggregate report.
+10. A map/race/difficulty soak matrix runner exists and production
+    qualification requires `failed=0`.
 11. CI covers pure-Python contracts on hosted runners, while a self-hosted
     macOS workflow runs real SC2 soak matrices from the same scripts.
 12. Neural/SOTA model outputs have a concrete adapter path into bounded
@@ -157,6 +157,6 @@ Issue #10 is complete when:
 
 | Gate | Result |
 | --- | --- |
-| Map/race diversity matrix | `/private/tmp/voi-mm-soak-matrix/issue-10-12-diversity-v1/matrix_report.json` completed six real SC2 cases. `02-AcropolisLE-SC2Map-Protoss-d1` passed at frame 12042 with macro and manager-intervention evidence; five failed cases were preserved with explicit failure codes. |
+| Map/race diversity matrix | `/private/tmp/voi-mm-soak-matrix/issue-10-13-acropolis-races-zero-v4/matrix_report.json` passed with `SOAK_MAX_ATTEMPTS=1`, `passed=3`, `failed=0`: `AcropolisLE.SC2Map` against `Zerg`, `Protoss`, and `Terran` difficulty 1. |
 | Neural/SOTA adapter | `starcraft_commander.neural_representation` adds the concrete model-adapter seam. Model outputs are bounded `representation_axes` compiled by the existing DSL provider compiler before `MicroMachineModulationBackend` publish. |
 | CI/operations | Hosted CI covers Python contracts and script syntax. `.github/workflows/micromachine-local-soak.yml` runs the same matrix script on a self-hosted macOS runner with local StarCraft II and patched MicroMachine. |

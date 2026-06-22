@@ -27,6 +27,9 @@ MACRO_LOG = "\n".join(
         "4590: create | create unit item=Marine result=1",
         "4940: constructAssignedBuildings | build command type=TERRAN_REFINERY",
         "TERRAN_REFINERY UnderConstruction",
+        "11200: drawProductionInformation | Production Information",
+        "Gas Worker Target:3",
+        "Mineral income:       512",
         "Gas income:       67",
         "6100: create | create unit item=Marine result=1",
     )
@@ -84,8 +87,9 @@ class MicroMachineSoakConfigTest(unittest.TestCase):
         config = MicroMachineSoakConfig()
 
         self.assertEqual(12_000, config.target_frame)
-        self.assertEqual(7_000, config.production_deadlock_frame)
+        self.assertEqual(9_000, config.production_deadlock_frame)
         self.assertEqual(8_000, config.production_stall_frames)
+        self.assertEqual(2_000, config.income_stall_frames)
         self.assertEqual(128, config.modulation_consumption_grace_frames)
         json.dumps(config.to_dict())
 
@@ -93,16 +97,23 @@ class MicroMachineSoakConfigTest(unittest.TestCase):
             MicroMachineSoakConfig(target_frame=0)
         with self.assertRaisesRegex(ValueError, "max_placement_failures"):
             MicroMachineSoakConfig(max_placement_failures=-1)
+        with self.assertRaisesRegex(ValueError, "income_stall_frames"):
+            MicroMachineSoakConfig(income_stall_frames=0)
 
 
 class MicroMachineSoakClassifierTest(unittest.TestCase):
-    def test_macro_evidence_requires_building_unit_and_gas_income(self) -> None:
+    def test_macro_evidence_requires_building_unit_and_positive_income(self) -> None:
         self.assertTrue(has_required_macro_evidence(MACRO_LOG))
 
         missing_gas = MACRO_LOG.replace("Gas income:       67", "Gas income:       0")
+        missing_minerals = MACRO_LOG.replace(
+            "Mineral income:       512", "Mineral income:       0"
+        )
 
         self.assertFalse(has_required_macro_evidence(missing_gas))
         self.assertIn("positive gas income", missing_macro_evidence(missing_gas))
+        self.assertFalse(has_required_macro_evidence(missing_minerals))
+        self.assertIn("positive mineral income", missing_macro_evidence(missing_minerals))
 
     def test_passes_when_target_frame_macro_and_manager_intervention_are_present(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -230,6 +241,105 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                     "stale_modulation",
                 },
             )
+
+    def test_detects_income_stall_near_target_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale_income_log = MACRO_LOG.replace(
+                "11200: drawProductionInformation", "6048: drawProductionInformation"
+            )
+            self._write_runtime(root, log_text=stale_income_log, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, income_stall_frames=2_000),
+            )
+
+            self.assert_failure_codes(report, {"income_stall"})
+            income_stall = [failure for failure in report.failures if failure.code == "income_stall"]
+            self.assertEqual(
+                ["recent positive mineral income"],
+                income_stall[0].evidence["missing"],
+            )
+
+    def test_detects_recent_gas_stall_when_target_is_inline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gas_stall_log = "\n".join(
+                (
+                    MACRO_LOG.replace("Gas income:       67", "Gas income:       0"),
+                    "11250: drawProductionInformation | Production Information",
+                    "11251: Gas Worker Target:3",
+                    "11252: Mineral income:       512",
+                    "11253: Gas income:       0",
+                )
+            )
+            self._write_runtime(root, log_text=gas_stall_log, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, income_stall_frames=2_000),
+            )
+
+            self.assert_failure_codes(report, {"income_stall"})
+            income_stall = [failure for failure in report.failures if failure.code == "income_stall"]
+            self.assertEqual(
+                ["recent positive gas income"],
+                income_stall[0].evidence["missing"],
+            )
+
+    def test_income_stall_allows_recent_worker_combat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            combat_log = MACRO_LOG.replace(
+                "6100: create | create unit item=Marine result=1",
+                "6100: create | create unit item=Marine result=1\n"
+                "11200: drawProductionInformation | Production Information\n"
+                "Gas Worker Target:0\n"
+                "Mineral income:       0\n"
+                "Gas income:       0\n"
+                "Worker jobs M/G/B/C/I/S/N:7/0/0/10/2/1/-21",
+            )
+            self._write_runtime(root, log_text=combat_log, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, income_stall_frames=2_000),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+
+    def test_production_stall_allows_recent_combat_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            combat_log = "\n".join(
+                (
+                    MACRO_LOG,
+                    "12450: updateAttackSquads | MainAttackSquad new order = Attack (42, 42)",
+                    "12460: drawProductionInformation | Production Information",
+                    "Worker jobs M/G/B/C/I/S/N:7/0/0/10/2/1/-21",
+                )
+            )
+            self._write_runtime(root, log_text=combat_log, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, production_stall_frames=100),
+            )
+
+            self.assertNotIn("production_stall", {failure.code for failure in report.failures})
 
     def test_detects_latest_modulation_refresh_not_consumed_by_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

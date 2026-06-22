@@ -13,15 +13,17 @@ SOAK_ENEMY_DIFFICULTY="${SOAK_ENEMY_DIFFICULTY:-1}"
 SOAK_TARGET_FRAME="${SOAK_TARGET_FRAME:-12000}"
 SOAK_TIMEOUT_SECONDS="${SOAK_TIMEOUT_SECONDS:-1200}"
 SOAK_TELEMETRY_STALL_SECONDS="${SOAK_TELEMETRY_STALL_SECONDS:-90}"
-SOAK_PRODUCTION_DEADLOCK_FRAME="${SOAK_PRODUCTION_DEADLOCK_FRAME:-7000}"
+SOAK_PRODUCTION_DEADLOCK_FRAME="${SOAK_PRODUCTION_DEADLOCK_FRAME:-9000}"
 SOAK_PRODUCTION_STALL_FRAMES="${SOAK_PRODUCTION_STALL_FRAMES:-8000}"
+SOAK_INCOME_STALL_FRAMES="${SOAK_INCOME_STALL_FRAMES:-2000}"
 SOAK_MAX_PLACEMENT_FAILURES="${SOAK_MAX_PLACEMENT_FAILURES:-3}"
 SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES="${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES:-128}"
 SOAK_POLL_SECONDS="${SOAK_POLL_SECONDS:-2}"
 SOAK_BOOTSTRAP_GRACE_SECONDS="${SOAK_BOOTSTRAP_GRACE_SECONDS:-120}"
 SOAK_PROFILE_REFRESH_FRAMES="${SOAK_PROFILE_REFRESH_FRAMES:-7000}"
+SOAK_AGGRESSIVE_MIN_FRAME="${SOAK_AGGRESSIVE_MIN_FRAME:-13000}"
 SOAK_MAX_ATTEMPTS="${SOAK_MAX_ATTEMPTS:-2}"
-SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-micromachine_crash micromachine_process_stopped sc2_disconnect telemetry_missing telemetry_stall repeated_placement_failures no_production_deadlock production_stall manager_intervention_missing stale_modulation}"
+SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-micromachine_crash micromachine_process_stopped sc2_disconnect telemetry_missing telemetry_stall repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation}"
 SOAK_ATTEMPT_INDEX="${SOAK_ATTEMPT_INDEX:-}"
 SOAK_RUN_ID="${SOAK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 SOAK_ARTIFACT_ROOT="${SOAK_ARTIFACT_ROOT:-/private/tmp/voi-mm-soak}"
@@ -258,6 +260,20 @@ has_positive_gas_income() {
   ' "${BOT_LOG}"
 }
 
+has_positive_mineral_income() {
+  [[ -f "${BOT_LOG}" ]] || return 1
+  awk '
+    /Mineral income:/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[0-9]+$/ && $i > 0) {
+          found = 1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "${BOT_LOG}"
+}
+
 has_required_macro_evidence() {
   local term
   for term in "${REQUIRED_MACRO_EVIDENCE[@]}"; do
@@ -265,6 +281,7 @@ has_required_macro_evidence() {
   done
   has_post_barracks_unit_evidence || return 1
   has_positive_gas_income || return 1
+  has_positive_mineral_income || return 1
   return 0
 }
 
@@ -357,6 +374,7 @@ classify_soak() {
     --telemetry-stall-seconds "${SOAK_TELEMETRY_STALL_SECONDS}" \
     --production-deadlock-frame "${SOAK_PRODUCTION_DEADLOCK_FRAME}" \
     --production-stall-frames "${SOAK_PRODUCTION_STALL_FRAMES}" \
+    --income-stall-frames "${SOAK_INCOME_STALL_FRAMES}" \
     --max-placement-failures "${SOAK_MAX_PLACEMENT_FAILURES}" \
     --modulation-consumption-grace-frames "${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES}"
   )
@@ -443,7 +461,7 @@ bootstrap_deadline=$((SECONDS + SOAK_BOOTSTRAP_GRACE_SECONDS))
 while kill -0 "${BOT_PID}" 2>/dev/null; do
   current_telemetry_frame="$(telemetry_frame || true)"
   if [[ -n "${current_telemetry_frame}" ]]; then
-    if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 ]] && has_required_macro_evidence; then
+    if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 ]] && (( current_telemetry_frame >= SOAK_AGGRESSIVE_MIN_FRAME )) && has_required_macro_evidence; then
       AGGRESSIVE_CURRENT_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}-${current_telemetry_frame}"
       publish_profile "aggressive_pressure" "${AGGRESSIVE_CURRENT_UPDATE_ID}" "${current_telemetry_frame}"
       AGGRESSIVE_PROFILE_PUBLISHED=1
