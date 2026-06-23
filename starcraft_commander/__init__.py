@@ -211,6 +211,15 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "MicroMachineQualificationTier": "starcraft_commander.micromachine_map_pool",
     "load_micromachine_map_pool": "starcraft_commander.micromachine_map_pool",
     "parse_micromachine_map_pool": "starcraft_commander.micromachine_map_pool",
+    "DEFAULT_MAX_EVIDENCE_AGE_SECONDS": (
+        "starcraft_commander.micromachine_release_gate"
+    ),
+    "MicroMachineReleaseGateConfig": (
+        "starcraft_commander.micromachine_release_gate"
+    ),
+    "build_release_gate_report": "starcraft_commander.micromachine_release_gate",
+    "render_release_gate_markdown": "starcraft_commander.micromachine_release_gate",
+    "write_release_gate_outputs": "starcraft_commander.micromachine_release_gate",
     "PREFLIGHT_REPORT_NAME": "starcraft_commander.micromachine_preflight",
     "MicroMachineMapPreflightConfig": "starcraft_commander.micromachine_preflight",
     "preflight_micromachine_map": "starcraft_commander.micromachine_preflight",

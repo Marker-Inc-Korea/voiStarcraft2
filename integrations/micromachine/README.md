@@ -330,6 +330,22 @@ coverage, failed-case absence, diagnostic/disabled exclusion, and optional
 `SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY` matching. Attach both dashboard
 files when asking for final production review.
 
+The final release gate combines these dashboard artifacts with build identity,
+unit-test evidence, and triage evidence:
+
+```bash
+python3 -m starcraft_commander.micromachine_release_gate \
+  --history-root /private/tmp/voi-mm-soak-matrix \
+  --build-identity-report /private/tmp/MicroMachine/build-latest-api/voi_build_identity.json \
+  --unit-evidence /private/tmp/voi-mm-unit-evidence.json \
+  --triage-report /private/tmp/voi-mm-soak-matrix/production-signoff-001/triage_report.json \
+  --output-json /private/tmp/voi-mm-release-gate/release_gate.json \
+  --output-markdown /private/tmp/voi-mm-release-gate/release_gate.md
+```
+
+It exits nonzero for missing, stale, disabled, diagnostic-only, failed, or
+build-mismatched production evidence and leaves only manual user QA.
+
 Example expanded required-pool matrix for user-side QA repetition:
 
 ```bash
@@ -379,6 +395,7 @@ same patched MicroMachine build:
 | Manager intervention | Telemetry proves both `CombatCommander.bounded_intervention=true` and `ScoutManager.bounded_intervention=true`. |
 | Long-run soak | `soak_macos_local.sh` reaches `SOAK_TARGET_FRAME` and writes `soak_report.json` with `ok: true`. |
 | Matrix diversity | `soak_matrix_macos_local.sh` writes a reviewed `matrix_report.json` with `failed=0` plus `triage_report.md` when failures need owner routing. |
+| Final release gate | `python3 -m starcraft_commander.micromachine_release_gate` writes `release_gate.json` and `release_gate.md` with no automated blockers. |
 | Neural/provider swap | Callers use `MicroMachineModulationBackend`, `publish_policy_modulation_provider_output(...)`, or `publish_neural_representation_modulation(...)`, so future neural representation providers publish the same bounded vector contract without raw SC2 controls. |
 | CI/operations | Hosted CI runs unit contracts and script syntax; real SC2 soak matrices run from the self-hosted macOS workflow. |
 
