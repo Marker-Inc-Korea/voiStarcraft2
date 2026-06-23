@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
+import html
 import json
 import os
 import re
@@ -39,6 +41,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Final, Protocol, runtime_checkable
@@ -200,6 +203,69 @@ def _redact_json_ready(value: object, *, redactions: Sequence[str] = ()) -> obje
     return _redact_sensitive_text(value, redactions=redactions)
 
 
+def _clean_blackboard_dir(value: str, fallback: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError("MicroMachine blackboard_dir must be a string.")
+    cleaned = value.strip() or fallback.strip()
+    if not cleaned:
+        raise ValueError("MicroMachine blackboard_dir must be configured.")
+    return cleaned
+
+
+def _default_micromachine_blackboard_dir() -> str:
+    return os.environ.get("VOI_MICROMACHINE_BLACKBOARD_DIR", "").strip() or (
+        "/private/tmp/voi-mm-live"
+    )
+
+
+def _micromachine_status_payload(
+    dashboard: Mapping[str, object],
+    *,
+    telemetry: object | None = None,
+) -> dict[str, object]:
+    """Promote latest blackboard state into the same top-level UI contract."""
+
+    updates = dashboard.get("active_updates")
+    active_updates = updates if isinstance(updates, list) else []
+    latest = (
+        active_updates[0]
+        if active_updates and isinstance(active_updates[0], Mapping)
+        else None
+    )
+    consumption_status = _micromachine_consumption_status(latest, telemetry)
+    return {
+        "status": "published" if latest is not None else "idle",
+        "dashboard": dict(dashboard),
+        "update": dict(latest) if latest is not None else None,
+        "compile_result": None,
+        "consumption_status": consumption_status,
+        "consumed": consumption_status == "consumed",
+    }
+
+
+def _micromachine_consumption_status(
+    update: Mapping[str, object] | None,
+    telemetry: object | None,
+) -> str:
+    if update is None:
+        return "not_published"
+    if telemetry is None:
+        return "pending_telemetry"
+    update_id = str(update.get("update_id", "") or "")
+    issued_at_frame = update.get("issued_at_frame")
+    telemetry_frame = getattr(telemetry, "frame", 0)
+    if (
+        type(issued_at_frame) is not int
+        or type(telemetry_frame) is not int
+        or telemetry_frame <= issued_at_frame
+    ):
+        return "pending_consumption"
+    active_ids = getattr(telemetry, "active_modulation_ids", ())
+    if update_id and update_id in active_ids:
+        return "consumed"
+    return "pending_consumption"
+
+
 WEB_GUI_PAGE_TITLE: Final[str] = "voiStarcraft2 커맨더"
 """Korean single-page UI title."""
 
@@ -278,6 +344,21 @@ _SERVER_THREAD_NAME: Final[str] = "voiStarcraft2-web-gui-http-server"
 
 _STOP_SENTINEL: Final[object] = object()
 """Internal queue sentinel asking the bridge worker loop to exit."""
+
+_MICROMACHINE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
+"""Maximum HTTP wait for one queued MicroMachine modulation submission."""
+
+
+@dataclass(frozen=True)
+class _MicroMachineModulationRequest:
+    """Queued MicroMachine write request, serialized with commander commands."""
+
+    text: str
+    blackboard_dir: str
+    provider_output: Mapping[str, object] | None
+    current_frame: int | None
+    update_id: str | None
+    future: concurrent.futures.Future[Mapping[str, object]]
 
 
 @runtime_checkable
@@ -489,6 +570,7 @@ class SessionLoopBridge:
         history: object | None = None,
         state_resolver: SC2StateResolverInterface = DEFAULT_SC2_STATE_RESOLVER,
         llm_control: object | None = None,
+        micromachine_blackboard_dir: str = "",
     ) -> None:
         if not callable(getattr(session, "process_text", None)):
             raise TypeError("Session loop bridge session must implement process_text().")
@@ -504,6 +586,10 @@ class SessionLoopBridge:
         self._history = store
         self._state_resolver = state_resolver
         self._llm_control = llm_control
+        self._micromachine_blackboard_dir = (
+            micromachine_blackboard_dir.strip()
+            or _default_micromachine_blackboard_dir()
+        )
         self._lifecycle_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -612,12 +698,108 @@ class SessionLoopBridge:
             return dict(snapshot())
         return {"provider": "", "model": "", "configured": False, "key_present": False}
 
+    def micromachine_blackboard_dir(self) -> str:
+        return self._micromachine_blackboard_dir
+
     def configure_llm(self, provider: str, api_key: str, model: str = "") -> Mapping[str, object]:
         control = self._llm_control
         configure = getattr(control, "configure", None)
         if not callable(configure):
             raise RuntimeError("이 세션은 웹 LLM 키 설정을 지원하지 않습니다.")
         return dict(configure(provider, api_key, model))
+
+    def submit_micromachine_modulation(
+        self,
+        text: str,
+        *,
+        blackboard_dir: str = "",
+        provider_output: Mapping[str, object] | None = None,
+        current_frame: int | None = None,
+        update_id: str | None = None,
+    ) -> Mapping[str, object]:
+        if not bool(self.llm_settings_snapshot().get("configured")):
+            raise MissingLLMDependencyError(LLM_REQUIRED_COMMAND_ERROR)
+        if not isinstance(text, str):
+            raise TypeError("MicroMachine command text must be a string.")
+        cleaned = text.strip()
+        if not cleaned:
+            raise ValueError("MicroMachine command text must be non-empty.")
+        loop = self._loop
+        queue = self._queue
+        if loop is None or queue is None or not self.is_running:
+            raise RuntimeError("Session loop bridge is not running; call start() first.")
+        future: concurrent.futures.Future[Mapping[str, object]] = (
+            concurrent.futures.Future()
+        )
+        request = _MicroMachineModulationRequest(
+            text=cleaned,
+            blackboard_dir=blackboard_dir,
+            provider_output=provider_output,
+            current_frame=current_frame,
+            update_id=update_id,
+            future=future,
+        )
+        loop.call_soon_threadsafe(queue.put_nowait, request)
+        return future.result(timeout=_MICROMACHINE_REQUEST_TIMEOUT_SECONDS)
+
+    def _publish_micromachine_modulation(
+        self,
+        text: str,
+        *,
+        blackboard_dir: str = "",
+        provider_output: Mapping[str, object] | None = None,
+        current_frame: int | None = None,
+        update_id: str | None = None,
+    ) -> Mapping[str, object]:
+        from starcraft_commander.micromachine_live_session import (
+            KeywordPolicyModulationProvider,
+            MicroMachineLiveTextSession,
+            StaticJsonPolicyModulationProvider,
+        )
+        from starcraft_commander.micromachine_runtime import (
+            MicroMachineFilesystemBlackboard,
+        )
+
+        root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
+        provider = (
+            StaticJsonPolicyModulationProvider(provider_output)
+            if provider_output is not None
+            else KeywordPolicyModulationProvider()
+        )
+        result = MicroMachineLiveTextSession(
+            MicroMachineFilesystemBlackboard(root),
+            provider,
+        ).submit_text(
+            text,
+            current_frame=current_frame,
+            update_id=update_id,
+            tags=("web_gui",),
+        )
+        payload = result.to_dict()
+        payload["blackboard_dir"] = root
+        return payload
+
+    def micromachine_status(self, *, blackboard_dir: str = "") -> Mapping[str, object]:
+        from starcraft_commander.micromachine_runtime import (
+            MicroMachineFilesystemBlackboard,
+        )
+        from starcraft_commander.policy_observability import (
+            PolicyModulationBridgeStatus,
+        )
+
+        root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
+        backend = MicroMachineFilesystemBlackboard(root)
+        telemetry = backend.read_latest_telemetry()
+        frame = telemetry.frame if telemetry is not None else 0
+        snapshot = backend.dashboard_snapshot(
+            current_frame=frame,
+            bridge_status=PolicyModulationBridgeStatus.CONNECTED,
+        )
+        return {
+            "enabled": True,
+            "blackboard_dir": root,
+            **_micromachine_status_payload(snapshot.to_dict(), telemetry=telemetry),
+        }
 
     def _run_loop(self) -> None:
         """Daemon thread body: run a private asyncio loop draining commands."""
@@ -644,7 +826,31 @@ class SessionLoopBridge:
             item = await queue.get()
             if item is _STOP_SENTINEL:
                 return
+            if isinstance(item, _MicroMachineModulationRequest):
+                self._process_one_micromachine_request(item)
+                continue
             await self._process_one(str(item))
+
+    def _process_one_micromachine_request(
+        self,
+        request: _MicroMachineModulationRequest,
+    ) -> None:
+        """Publish one MicroMachine update on the single bridge worker queue."""
+
+        if request.future.cancelled():
+            return
+        try:
+            payload = self._publish_micromachine_modulation(
+                request.text,
+                blackboard_dir=request.blackboard_dir,
+                provider_output=request.provider_output,
+                current_frame=request.current_frame,
+                update_id=request.update_id,
+            )
+        except Exception as error:  # noqa: BLE001 - returned to HTTP handler.
+            request.future.set_exception(error)
+            return
+        request.future.set_result(payload)
 
     async def _process_one(self, text: str) -> None:
         """Run one utterance through the session; never drop it silently."""
@@ -1358,6 +1564,18 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         <button id="live-refresh-button" type="button" data-i18n="liveRefreshButton">연결 상태 확인</button>
       </div>
     </details>
+    <details id="micromachine-panel" class="collapsible-panel">
+      <summary><span data-i18n="microMachineTitle">MicroMachine 정책 조정</span></summary>
+      <p class="hint" data-i18n="microMachineHint">SC2 화면/키보드 자동화 없이 blackboard에 안전한 정책 bias만 씁니다.</p>
+      <form id="micromachine-form">
+        <label for="micromachine-blackboard-dir" data-i18n="microMachineBlackboardLabel">Blackboard directory</label>
+        <input id="micromachine-blackboard-dir" type="text" value="__MICROMACHINE_BLACKBOARD_DIR__">
+        <label for="micromachine-command-input" data-i18n="microMachineCommandLabel">전략 의도</label>
+        <input id="micromachine-command-input" type="text" autocomplete="off" placeholder="예: 탱크 중심으로 안전하게 버텨">
+        <button type="submit" data-i18n="microMachineSend">MicroMachine에 반영</button>
+      </form>
+      <div id="micromachine-status" aria-live="polite">MicroMachine modulation 대기 중입니다.</div>
+    </details>
   </aside>
 </main>
 </div>
@@ -1528,6 +1746,18 @@ var I18N = {
     liveIdle: "StarCraft II 자동 연결 대기 중입니다.",
     liveOpenButton: "Live GUI 열기",
     liveRefreshButton: "연결 상태 확인",
+    microMachineTitle: "MicroMachine 정책 조정",
+    microMachineHint: "SC2 화면/키보드 자동화 없이 blackboard에 안전한 정책 bias만 씁니다.",
+    microMachineBlackboardLabel: "Blackboard directory",
+    microMachineCommandLabel: "전략 의도",
+    microMachineSend: "MicroMachine에 반영",
+    microMachineSending: "MicroMachine 정책 조정 전송 중...",
+    microMachinePublished: "게시됨",
+    microMachineConsumed: "소비 확인",
+    microMachinePending: "텔레메트리 대기",
+    microMachineRefused: "거부됨",
+    microMachineClarification: "추가 확인 필요",
+    microMachineFailed: "게시 실패",
     llmReady: "LLM 키 설정됨",
     llmMissing: "LLM 필수: API 키를 먼저 설정해야 명령을 보낼 수 있습니다.",
     llmEnterKey: "API 키를 입력하세요.",
@@ -3023,6 +3253,80 @@ function formatLivePid(status) {
   return status && status.pid ? ", pid " + status.pid : "";
 }
 
+function renderMicroMachineStatus(data) {
+  var node = document.getElementById("micromachine-status");
+  if (!node) { return; }
+  if (!data || data.enabled === false) {
+    node.textContent = (data && data.error) || "MicroMachine modulation disabled.";
+    return;
+  }
+  var dashboard = data.dashboard || {};
+  var active = Array.isArray(dashboard.active_updates) ? dashboard.active_updates : [];
+  var latest = active.length ? active[0] : null;
+  var parts = [];
+  if (data.status) { parts.push(String(data.status)); }
+  if (data.consumption_status) { parts.push(String(data.consumption_status)); }
+  if (latest && latest.update_id) { parts.push("update " + latest.update_id); }
+  if (latest && Array.isArray(latest.manager_bias_domains)) {
+    parts.push("domains " + latest.manager_bias_domains.join(", "));
+  }
+  if (dashboard.telemetry && typeof dashboard.telemetry.frame === "number") {
+    parts.push("frame " + dashboard.telemetry.frame);
+  }
+  if (data.compile_result && data.compile_result.refusal_reason) {
+    parts.push(t("microMachineRefused") + ": " + data.compile_result.refusal_reason);
+  }
+  if (data.compile_result && data.compile_result.clarification_prompt) {
+    parts.push(t("microMachineClarification") + ": " + data.compile_result.clarification_prompt);
+  }
+  if (dashboard.last_failure) { parts.push("failure " + dashboard.last_failure); }
+  node.textContent = parts.length ? parts.join(" | ") : t("microMachinePending");
+}
+
+function pollMicroMachineStatus() {
+  var input = document.getElementById("micromachine-blackboard-dir");
+  var suffix = authQuery;
+  var directory = input ? input.value.trim() : "";
+  if (directory) {
+    suffix += (suffix ? "&" : "?") + "blackboard_dir=" + encodeURIComponent(directory);
+  }
+  fetch("/api/micromachine/status" + suffix)
+    .then(parseJsonResponse)
+    .then(renderMicroMachineStatus)
+    .catch(function (error) {
+      var node = document.getElementById("micromachine-status");
+      if (node) { node.textContent = t("microMachineFailed") + ": " + error.message; }
+    });
+}
+
+var microMachineForm = document.getElementById("micromachine-form");
+if (microMachineForm) {
+  microMachineForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var commandInput = document.getElementById("micromachine-command-input");
+    var blackboardInput = document.getElementById("micromachine-blackboard-dir");
+    var text = commandInput.value.trim();
+    if (!text) { return; }
+    document.getElementById("micromachine-status").textContent = t("microMachineSending");
+    fetch("/api/micromachine/modulate" + authQuery, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: text,
+        blackboard_dir: blackboardInput.value.trim()
+      })
+    })
+      .then(parseJsonResponse)
+      .then(function (data) {
+        renderMicroMachineStatus(data);
+        if (data.ok) { commandInput.value = ""; }
+      })
+      .catch(function (error) {
+        document.getElementById("micromachine-status").textContent = t("microMachineFailed") + ": " + error.message;
+      });
+  });
+}
+
 document.getElementById("command-form").addEventListener("submit", function (event) {
   event.preventDefault();
   var input = document.getElementById("command-input");
@@ -3182,6 +3486,7 @@ function setupVoiceInput() {
 
 setInterval(pollHistory, POLL_INTERVAL_MS);
 setInterval(pollState, POLL_INTERVAL_MS);
+setInterval(pollMicroMachineStatus, POLL_INTERVAL_MS);
 applyLanguage("ko");
 setLlmStatus("checking", "llmCheckingLabel", t("llmChecking"));
 renderModelSelect(selectedProviderValue(), "");
@@ -3189,6 +3494,7 @@ setupVoiceInput();
 pollHistory();
 pollState();
 pollLlmSettings();
+pollMicroMachineStatus();
 </script>
 </body>
 </html>
@@ -3196,9 +3502,16 @@ pollLlmSettings();
 """Embedded single-page Korean UI template (no external CDN)."""
 
 
-def render_web_gui_page() -> str:
+def render_web_gui_page(micromachine_blackboard_dir: str = "") -> str:
     """Render the embedded single-page Korean web GUI HTML."""
 
+    blackboard_dir = html.escape(
+        _clean_blackboard_dir(
+            micromachine_blackboard_dir,
+            _default_micromachine_blackboard_dir(),
+        ),
+        quote=True,
+    )
     return (
         _WEB_GUI_PAGE_TEMPLATE
         .replace("__TITLE__", WEB_GUI_PAGE_TITLE)
@@ -3208,6 +3521,7 @@ def render_web_gui_page() -> str:
         .replace("__COLOR_BLOCKED__", WEB_GUI_STATUS_COLORS["blocked"])
         .replace("__COLOR_CLARIFICATION__", WEB_GUI_STATUS_COLORS["clarification"])
         .replace("__COLOR_READ_ONLY__", WEB_GUI_STATUS_COLORS["read_only"])
+        .replace("__MICROMACHINE_BLACKBOARD_DIR__", blackboard_dir)
     )
 
 
@@ -3249,7 +3563,18 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path in ("/", "/index.html"):
-            self._send_html(HTTPStatus.OK, render_web_gui_page())
+            blackboard_dir = ""
+            default_blackboard_dir = getattr(
+                self._bridge,
+                "micromachine_blackboard_dir",
+                None,
+            )
+            if callable(default_blackboard_dir):
+                blackboard_dir = str(default_blackboard_dir())
+            self._send_html(
+                HTTPStatus.OK,
+                render_web_gui_page(blackboard_dir),
+            )
             return
         if path == "/api/state":
             self._handle_state()
@@ -3262,6 +3587,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/live/status":
             self._handle_live_status()
+            return
+        if path == "/api/micromachine/status":
+            self._handle_micromachine_status()
             return
         self._send_not_found()
 
@@ -3276,6 +3604,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/llm":
             self._handle_llm_configure()
+            return
+        if path == "/api/micromachine/modulate":
+            self._handle_micromachine_modulate()
             return
         # Drain any request body so a keep-alive connection stays usable.
         self._read_request_body()
@@ -3442,6 +3773,112 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, launcher.snapshot())
 
+    def _handle_micromachine_status(self) -> None:
+        status_fn = getattr(self._bridge, "micromachine_status", None)
+        if not callable(status_fn):
+            self._send_json(
+                HTTPStatus.OK,
+                {"enabled": False, "error": "MicroMachine modulation bridge is disabled."},
+            )
+            return
+        params = parse_qs(urlsplit(self.path).query)
+        blackboard_dir = params.get("blackboard_dir", [""])[0] or ""
+        try:
+            self._send_json(
+                HTTPStatus.OK,
+                dict(status_fn(blackboard_dir=blackboard_dir)),
+            )
+        except Exception as error:  # noqa: BLE001 - surfaced honestly.
+            self._send_internal_error(error)
+
+    def _handle_micromachine_modulate(self) -> None:
+        submit_fn = getattr(self._bridge, "submit_micromachine_modulation", None)
+        if not callable(submit_fn):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"accepted": False, "error": "MicroMachine modulation bridge is disabled."},
+            )
+            return
+        body = self._read_request_body()
+        if body is None:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "MicroMachine 요청 JSON 본문을 읽을 수 없습니다."},
+            )
+            return
+        try:
+            document = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "MicroMachine 요청 본문이 올바른 JSON이 아닙니다."},
+            )
+            return
+        if not isinstance(document, Mapping):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "MicroMachine 요청 본문은 JSON 객체여야 합니다."},
+            )
+            return
+        text = document.get("text")
+        if not isinstance(text, str) or not text.strip():
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "text 필드는 비어 있지 않은 문자열이어야 합니다."},
+            )
+            return
+        provider_output = document.get("provider_output")
+        if provider_output is not None and not isinstance(provider_output, Mapping):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "provider_output 필드는 JSON 객체여야 합니다."},
+            )
+            return
+        current_frame = document.get("current_frame")
+        if current_frame is not None and (
+            type(current_frame) is bool or not isinstance(current_frame, int)
+        ):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "current_frame 필드는 정수여야 합니다."},
+            )
+            return
+        try:
+            payload = dict(
+                submit_fn(
+                    text.strip(),
+                    blackboard_dir=str(document.get("blackboard_dir", "") or ""),
+                    provider_output=provider_output,
+                    current_frame=current_frame,
+                    update_id=(
+                        str(document["update_id"]).strip()
+                        if isinstance(document.get("update_id"), str)
+                        else None
+                    ),
+                )
+            )
+        except MissingLLMDependencyError:
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {"accepted": False, "error": LLM_REQUIRED_COMMAND_ERROR},
+            )
+            return
+        except concurrent.futures.TimeoutError:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "accepted": False,
+                    "error": "MicroMachine modulation request timed out.",
+                },
+            )
+            return
+        except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
+            self._send_internal_error(error)
+            return
+        status = HTTPStatus.ACCEPTED if bool(payload.get("ok")) else HTTPStatus.OK
+        payload["accepted"] = bool(payload.get("ok"))
+        self._send_json(status, payload)
+
     def _read_request_body(self) -> bytes | None:
         """Read the request body; ``None`` marks malformed/oversized input."""
 
@@ -3475,7 +3912,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     f"지원하지 않는 경로입니다: {urlsplit(self.path).path}. "
                     "사용 가능한 경로: GET /, GET /api/state, "
                     "GET /api/history?after=N, GET/POST /api/llm, "
-                    "POST /api/command."
+                    "POST /api/command, GET /api/micromachine/status, "
+                    "POST /api/micromachine/modulate."
                 )
             },
         )
