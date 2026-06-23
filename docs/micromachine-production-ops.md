@@ -72,6 +72,21 @@ sign-off.
 The matrix runner rejects `SOAK_MATRIX_QUALIFICATION_TIER=production` combined
 with `SOAK_MATRIX_ALLOW_FAILURES=1`.
 
+Before launching a case, the matrix runner now writes
+`preflight_report.json`. Preflight distinguishes:
+
+- `unsupported_map`: the map is unknown, excluded, or outside the selected tier.
+- `missing_map`: a configured `SOAK_MATRIX_MAP_ROOTS` lookup could not find the map.
+- `geometry_risk`: manifest metadata indicates a ramp/start-location risk.
+- `placement_risk`: manifest metadata indicates a wall-off/build-placement risk.
+- `production_runtime_failure`: preflight passed, but the later soak report failed.
+
+Required production cases fail closed on preflight errors. Diagnostic cases can
+collect preflight blockers as evidence, but they still do not count as
+production signoff.
+`SOAK_MATRIX_MAP_ROOTS` is a colon-separated list so macOS paths with spaces,
+such as a `StarCraft II` install directory, remain valid.
+
 Artifact retention:
 
 - GitHub Actions uploads from `.github/workflows/micromachine-local-soak.yml`

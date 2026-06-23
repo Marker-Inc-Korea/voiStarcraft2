@@ -54,13 +54,29 @@ def aggregate_matrix_run(
     failed = 0
     for case_dir in sorted(path for path in root.iterdir() if path.is_dir()):
         report_path = case_dir / "soak_report.json"
+        preflight_path = case_dir / "preflight_report.json"
+        preflight = _read_optional_json_mapping(preflight_path)
         case: dict[str, object] = {
             "case_id": case_dir.name,
             "case_dir": str(case_dir),
             "report": str(report_path),
+            "preflight_report": str(preflight_path),
+            "preflight": preflight,
+            "preflight_status": preflight.get("status") if preflight else None,
+            "preflight_ok": preflight.get("ok") if preflight else None,
+            "preflight_failure_codes": (
+                preflight.get("failure_codes") if preflight else []
+            ),
         }
         if not report_path.exists():
-            case.update({"status": "missing_report", "ok": False, "failures": []})
+            case.update(
+                {
+                    "status": "missing_report",
+                    "ok": False,
+                    "failures": [],
+                    "failure_phase": "missing_report",
+                }
+            )
             failed += 1
             cases.append(case)
             continue
@@ -78,11 +94,35 @@ def aggregate_matrix_run(
             {
                 "status": payload.get("status"),
                 "ok": ok,
+                "failure_phase": _case_failure_phase(
+                    ok=ok,
+                    preflight_ok=(
+                        preflight.get("ok")
+                        if preflight
+                        else _mapping_value(payload, "preflight", "ok")
+                    ),
+                ),
                 "latest_frame": payload.get("latest_frame"),
                 "macro_evidence_ok": payload.get("macro_evidence_ok"),
                 "manager_intervention_ok": payload.get("manager_intervention_ok"),
                 "failures": flattened_failures,
                 "failure_codes": failure_codes,
+                "preflight": preflight or payload.get("preflight", {}),
+                "preflight_status": (
+                    preflight.get("status")
+                    if preflight
+                    else _mapping_value(payload, "preflight", "status")
+                ),
+                "preflight_ok": (
+                    preflight.get("ok")
+                    if preflight
+                    else _mapping_value(payload, "preflight", "ok")
+                ),
+                "preflight_failure_codes": (
+                    preflight.get("failure_codes")
+                    if preflight
+                    else _mapping_value(payload, "preflight", "failure_codes", default=[])
+                ),
                 "attempts": (
                     payload["attempts"] if isinstance(payload.get("attempts"), list) else []
                 ),
@@ -384,6 +424,35 @@ def _read_json_mapping(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path} must contain a JSON object.")
     return payload
+
+
+def _case_failure_phase(*, ok: bool, preflight_ok: object) -> str:
+    if ok:
+        return "passed"
+    if preflight_ok is False:
+        return "preflight_failure"
+    if preflight_ok is True:
+        return "production_runtime_failure"
+    return "production_runtime_failure"
+
+
+def _read_optional_json_mapping(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    return _read_json_mapping(path)
+
+
+def _mapping_value(
+    payload: Mapping[str, object],
+    key: str,
+    nested_key: str,
+    *,
+    default: object = None,
+) -> object:
+    value = payload.get(key)
+    if isinstance(value, Mapping):
+        return value.get(nested_key, default)
+    return default
 
 
 def _counter_payload(counter: Counter[str]) -> list[dict[str, object]]:

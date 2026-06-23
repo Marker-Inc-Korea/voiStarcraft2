@@ -9,6 +9,7 @@ SOAK_MATRIX_RUN_DIR="${SOAK_MATRIX_RUN_DIR:-${SOAK_MATRIX_ARTIFACT_ROOT}/${SOAK_
 SOAK_MATRIX_REPORT="${SOAK_MATRIX_REPORT:-${SOAK_MATRIX_RUN_DIR}/matrix_report.json}"
 SOAK_MATRIX_QUALIFICATION_TIER="${SOAK_MATRIX_QUALIFICATION_TIER:-production}"
 SOAK_MATRIX_MAP_POOL_MANIFEST="${SOAK_MATRIX_MAP_POOL_MANIFEST:-${SCRIPT_DIR}/../MICROMACHINE_MAP_POOL.json}"
+SOAK_MATRIX_MAP_ROOTS="${SOAK_MATRIX_MAP_ROOTS:-}"
 if [[ -z "${SOAK_MATRIX_MAP_FILES:-}" ]]; then
   SOAK_MATRIX_MAP_FILES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field map_files)"
 fi
@@ -112,6 +113,36 @@ if [[ "${SOAK_MATRIX_AGGREGATE_ONLY}" != "1" ]]; then
         case_id="$(printf '%02d' "${run_index}")-$(echo "${map_file}" | tr '/ .' '---')-${enemy_race}-d${enemy_difficulty}"
         case_dir="${SOAK_MATRIX_RUN_DIR}/${case_id}"
         echo "Starting MicroMachine matrix case ${case_id}"
+        preflight_args=(
+          --map-file "${map_file}"
+          --qualification-tier "${SOAK_MATRIX_QUALIFICATION_TIER}"
+          --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}"
+          --output "${case_dir}/preflight_report.json"
+          --write-soak-report "${case_dir}/soak_report.json"
+          --enemy-race "${enemy_race}"
+          --enemy-difficulty "${enemy_difficulty}"
+          --target-frame "${SOAK_MATRIX_TARGET_FRAME}"
+          --timeout-seconds "${SOAK_MATRIX_TIMEOUT_SECONDS}"
+        )
+        if [[ -n "${SOAK_MATRIX_MAP_ROOTS}" ]]; then
+          IFS=':' read -r -a map_roots <<< "${SOAK_MATRIX_MAP_ROOTS}"
+          for map_root in "${map_roots[@]}"; do
+            if [[ -n "${map_root}" ]]; then
+              preflight_args+=(--map-root "${map_root}")
+            fi
+          done
+        fi
+        set +e
+        python3 -m starcraft_commander.micromachine_preflight "${preflight_args[@]}"
+        preflight_exit="$?"
+        set -e
+        if [[ "${preflight_exit}" -ne 0 ]]; then
+          echo "MicroMachine matrix preflight failed for ${case_id}; runtime skipped"
+          if [[ "${SOAK_MATRIX_STOP_ON_FAILURE}" == "1" ]]; then
+            break 3
+          fi
+          continue
+        fi
         set +e
         SOAK_RUN_ID="${case_id}" \
           SOAK_RUN_DIR="${case_dir}" \

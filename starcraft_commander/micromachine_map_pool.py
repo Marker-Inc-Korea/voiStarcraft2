@@ -36,6 +36,9 @@ class MicroMachineMapEntry:
     status: str
     reason: str
     promotion_rule: str
+    expected_start_locations: int | None = None
+    preflight_risk_codes: tuple[str, ...] = ()
+    preflight_notes: str = ""
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,9 @@ class MicroMachineMapPool:
                     "status": entry.status,
                     "reason": entry.reason,
                     "promotion_rule": entry.promotion_rule,
+                    "expected_start_locations": entry.expected_start_locations,
+                    "preflight_risk_codes": list(entry.preflight_risk_codes),
+                    "preflight_notes": entry.preflight_notes,
                 }
                 for entry in maps
             ],
@@ -223,16 +229,52 @@ def _parse_maps(value: object) -> tuple[MicroMachineMapEntry, ...]:
         if classification not in MAP_CLASSIFICATIONS:
             raise ValueError(f"unsupported map classification: {classification}")
         entries.append(
-            MicroMachineMapEntry(
-                map_file=map_file,
-                display_name=_require_string(item, "display_name"),
-                classification=classification,
-                status=_require_string(item, "status"),
-                reason=_require_string(item, "reason"),
-                promotion_rule=_require_string(item, "promotion_rule"),
-            )
+            _parse_map_entry(item, map_file=map_file, classification=classification)
         )
     return tuple(entries)
+
+
+def _parse_map_entry(
+    item: Mapping[str, object],
+    *,
+    map_file: str,
+    classification: str,
+) -> MicroMachineMapEntry:
+    preflight = item.get("preflight", {})
+    if preflight is None:
+        preflight = {}
+    if not isinstance(preflight, Mapping):
+        raise ValueError(f"preflight for {map_file} must be an object.")
+    expected_start_locations = preflight.get("expected_start_locations")
+    if expected_start_locations is not None:
+        if type(expected_start_locations) is bool or not isinstance(
+            expected_start_locations, int
+        ):
+            raise ValueError(f"preflight.expected_start_locations for {map_file} must be an integer.")
+        if expected_start_locations <= 0:
+            raise ValueError(f"preflight.expected_start_locations for {map_file} must be positive.")
+    risk_codes = preflight.get("risk_codes", [])
+    if not isinstance(risk_codes, list):
+        raise ValueError(f"preflight.risk_codes for {map_file} must be a list.")
+    parsed_risk_codes: list[str] = []
+    for index, code in enumerate(risk_codes):
+        if not isinstance(code, str) or not code:
+            raise ValueError(f"preflight.risk_codes[{index}] for {map_file} must be a string.")
+        parsed_risk_codes.append(code)
+    notes = preflight.get("notes", "")
+    if not isinstance(notes, str):
+        raise ValueError(f"preflight.notes for {map_file} must be a string.")
+    return MicroMachineMapEntry(
+        map_file=map_file,
+        display_name=_require_string(item, "display_name"),
+        classification=classification,
+        status=_require_string(item, "status"),
+        reason=_require_string(item, "reason"),
+        promotion_rule=_require_string(item, "promotion_rule"),
+        expected_start_locations=expected_start_locations,
+        preflight_risk_codes=tuple(parsed_risk_codes),
+        preflight_notes=notes,
+    )
 
 
 def _parse_tiers(value: object) -> dict[str, MicroMachineQualificationTier]:
