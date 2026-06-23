@@ -100,6 +100,7 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             self.assertEqual("preflight_failure", report["cases"][1]["failure_phase"])
             self.assertEqual("missing_report", report["cases"][2]["status"])
             self.assertEqual("missing_report", report["cases"][2]["failure_phase"])
+            self.assertEqual(["missing_report"], report["cases"][2]["failure_codes"])
             self.assertEqual("Acropolis", report["cases"][2]["map_file"])
             self.assertEqual("Terran", report["cases"][2]["enemy_race"])
             self.assertEqual(1, report["cases"][2]["enemy_difficulty"])

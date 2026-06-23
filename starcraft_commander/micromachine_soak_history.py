@@ -82,6 +82,7 @@ def aggregate_matrix_run(
                     "status": "missing_report",
                     "ok": False,
                     "failures": [],
+                    "failure_codes": ["missing_report"],
                     "failure_phase": "missing_report",
                     **dimensions,
                 }
