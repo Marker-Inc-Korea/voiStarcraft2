@@ -209,6 +209,9 @@ def _triage_case(
         "preflight_ok": case.get("preflight_ok"),
         "failure_phase": case.get("failure_phase"),
         "failure_codes": codes,
+        "classifier_failures": _failure_objects(case.get("failures")),
+        "telemetry_health": _telemetry_health(case),
+        "profile_context": _profile_context(case),
         "category": category,
         "owner_hint": owner,
         "log_signatures": signatures,
@@ -278,6 +281,52 @@ def _collect_signatures(
         text = _read_text(Path(bot_log))
         signatures.extend(signature for signature in LOG_SIGNATURES if signature in text)
     return sorted(dict.fromkeys(signatures))
+
+
+def _failure_objects(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    failures: list[dict[str, object]] = []
+    for failure in value:
+        if not isinstance(failure, Mapping):
+            continue
+        failures.append(
+            {
+                "code": failure.get("code"),
+                "message": failure.get("message"),
+                "severity": failure.get("severity"),
+                "evidence": failure.get("evidence") if isinstance(failure.get("evidence"), Mapping) else {},
+                "attempt": failure.get("attempt"),
+                "attempt_status": failure.get("attempt_status"),
+            }
+        )
+    return failures
+
+
+def _telemetry_health(case: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "latest_frame": case.get("latest_frame"),
+        "target_reached": case.get("target_reached"),
+        "macro_evidence_ok": case.get("macro_evidence_ok"),
+        "manager_intervention_ok": case.get("manager_intervention_ok"),
+        "preflight_ok": case.get("preflight_ok"),
+    }
+
+
+def _profile_context(case: Mapping[str, object]) -> dict[str, object]:
+    config = case.get("config") if isinstance(case.get("config"), Mapping) else {}
+    observation = case.get("observation") if isinstance(case.get("observation"), Mapping) else {}
+    return {
+        "strategy_profiles": case.get("strategy_profiles") if isinstance(case.get("strategy_profiles"), list) else [],
+        "expected_profile_tags": (
+            config.get("expected_profile_tags") if isinstance(config.get("expected_profile_tags"), list) else []
+        ),
+        "active_modulation_ids": (
+            observation.get("active_modulation_ids")
+            if isinstance(observation.get("active_modulation_ids"), list)
+            else []
+        ),
+    }
 
 
 def _reproduction_command(case: Mapping[str, object], preflight: object, tier: str) -> str:

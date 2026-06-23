@@ -194,6 +194,7 @@ python3 -m starcraft_commander.micromachine_triage \
   --output-json "${SOAK_MATRIX_TRIAGE_JSON}" \
   --output-markdown "${SOAK_MATRIX_TRIAGE_MD}" >/dev/null
 
+set +e
 python3 - <<'PY' "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_ALLOW_FAILURES}" "${SOAK_MATRIX_MIN_PASSES}"
 import json
 import sys
@@ -223,3 +224,10 @@ if allow_failures:
     )
 raise SystemExit(1)
 PY
+matrix_exit="$?"
+set -e
+if [[ "${matrix_exit}" -ne 0 && -f "${SOAK_MATRIX_TRIAGE_MD}" ]]; then
+  echo "MicroMachine matrix triage summary: ${SOAK_MATRIX_TRIAGE_MD}" >&2
+  sed -n '1,120p' "${SOAK_MATRIX_TRIAGE_MD}" >&2 || true
+fi
+exit "${matrix_exit}"
