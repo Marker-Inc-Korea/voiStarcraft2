@@ -121,7 +121,7 @@ The local machine smoke completed these boundaries on 2026-06-21:
 - Map: `AcropolisLE.SC2Map`
 - `s2client-api` commit: `614acc00abb5355e4c94a1b0279b46e9d845b7ce`
 - MicroMachine commit: `eb893161371dab975a0a7e600f9e250ac03ec1ef`
-- MicroMachine executable: `/private/tmp/MicroMachine/build-latest-api/bin/MicroMachine`
+- MicroMachine executable: `/private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/bin/MicroMachine`
 
 Launcher contract:
 
@@ -129,32 +129,41 @@ Launcher contract:
 | --- | --- | --- |
 | `SC2_LAUNCH_MODE` | `auto` | `direct` forces a `Versions/Base*/SC2.app/Contents/MacOS/SC2` binary, `battlenet` forces the Battle.net wrapper, and `auto` prefers the pinned Base96883 binary when present, otherwise the latest direct Base binary. |
 | `SC2_ATTACH_TIMEOUT_MS` | `120000` | Explicit `s2client-api` attach timeout passed as `-t` so host `ExecuteInfo.txt` cannot shorten the launch window. |
+| `SC2_USE_RUNTIME_DIR_ARGS` | `0` | Opt-in direct-launch compatibility mode that passes `-dataDir ${SC2_ROOT_ALIAS} -tempDir ${SC2_TEMP_DIR}` through `VOI_SC2_EXTRA_ARGS`. Leave disabled on Base97364 hosts where those extra args prevent the SC2 API listener from opening. |
 | `SC2_ROOT_ALIAS` | `/private/tmp/voi-sc2-root` | Symlink alias for the local StarCraft II install; avoids whitespace splitting in `VOI_SC2_EXTRA_ARGS`. |
-| `SC2_TEMP_DIR` | `/private/tmp/voi-sc2-temp-micromachine` | SC2 temp directory passed through `VOI_SC2_EXTRA_ARGS` for direct launches. |
+| `SC2_TEMP_DIR` | `/private/tmp/voi-sc2-temp-micromachine` | SC2 temp directory passed through `VOI_SC2_EXTRA_ARGS` only when `SC2_USE_RUNTIME_DIR_ARGS=1`. |
 | `SC2_CLEAN_PORTS_BEFORE_LAUNCH` | `1` | Kills stale processes bound to the configured SC2 API ports before launch, preventing false passes against an old SC2 session. |
 | `SC2_BATTLENET_EXECUTABLE` | `/Applications/Battle.net.app/Contents/MacOS/Battle.net` | Explicit `SC2_LAUNCH_MODE=battlenet` diagnostic launcher only; clean-start production smoke should use direct Base launch. |
 | `SC2_BATTLENET_GAME` | `s2_kokr` | Battle.net game selector passed through `VOI_SC2_EXTRA_ARGS` when `SC2_LAUNCH_MODE=battlenet` is forced. |
 
 On this host the old pinned Base96883 direct executable is no longer present.
-Earlier clean-start testing against Base97364 showed the requested API port can
-appear only after an initial 6119 bootstrap listener appears. The production
-smoke/soak scripts therefore keep `SC2_LAUNCH_MODE=auto` on direct Base launch,
-pass `-t ${SC2_ATTACH_TIMEOUT_MS}`, and add
-`VOI_SC2_EXTRA_ARGS=-dataDir /private/tmp/voi-sc2-root -tempDir ...`. The
-Battle.net wrapper is not a production fallback because clean-start testing
-showed it can launch only the Battle.net shell without opening the requested
-SC2 API port; it remains available only as an explicit diagnostic mode.
+Fresh launcher isolation on 2026-06-24 showed Base97364 can open the requested
+SC2 API listener and complete `s2client-api` join/observation when launched
+without direct runtime-dir extra args. The same `voi_probe` launch hangs before
+the API listener when `-dataDir ... -tempDir ...` is injected through
+`VOI_SC2_EXTRA_ARGS`. A second isolation pass showed Base97364 crashes if
+internal `VOI_*` sidecar variables are inherited by the SC2 child process. The
+macOS `s2client-api` launch patch therefore preserves the host environment for
+LaunchServices compatibility but filters `VOI_*` before `execve`. The production
+smoke/soak scripts keep `SC2_LAUNCH_MODE=auto` on direct Base launch, pass `-t
+${SC2_ATTACH_TIMEOUT_MS}`, and leave direct runtime-dir args disabled by
+default. Set `SC2_USE_RUNTIME_DIR_ARGS=1` only for hosts that require explicit
+SC2 data/temp directories. The Battle.net wrapper is not a production fallback
+because clean-start testing showed it can launch only the Battle.net shell
+without opening the requested SC2 API port; it remains available only as an
+explicit diagnostic mode.
 
 Latest host re-check on 2026-06-24: the Python/blackboard contracts still
-pass, but this workstation did not produce fresh runtime smoke telemetry.
-`SC2_LAUNCH_MODE=direct` launched the only installed direct binary
-`Base97364/SC2.app` and immediately opened Blizzard Error before any API port
-was available. `SC2_LAUNCH_MODE=battlenet` reused the Battle.net shell but did
-not open the requested SC2 API listener. Treat the 2026-06-21 artifacts below
-as historical evidence for the patched build, not as a fresh production
-sign-off for the current local SC2 installation. A current production sign-off
-requires rerunning smoke/soak until `latest_telemetry.json` and macro evidence
-are regenerated on the active SC2 install.
+pass, and direct Base97364 launcher isolation passes with no direct runtime-dir
+extra args via the standalone `s2client-api` probe. Patched MicroMachine direct
+launch still crashes Base97364 before the SC2 API listener is available, even
+after removing direct runtime-dir args and stripping sidecar `VOI_*` variables
+from the SC2 launch boundary. Treat the 2026-06-21 artifacts below as
+historical evidence for the patched build until the current MicroMachine
+smoke/soak regenerates `latest_telemetry.json` and macro evidence on the active
+SC2 install. Current production sign-off remains blocked specifically on the
+MicroMachine-to-Base97364 launch path, not on SC2 installation or map
+availability.
 
 Observed smoke evidence:
 
@@ -222,8 +231,6 @@ to stale modulation.
 Example:
 
 ```bash
-MICROMACHINE_DIR=/private/tmp/MicroMachine \
-MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
 SOAK_ENEMY_RACE=Zerg \
 SOAK_ENEMY_DIFFICULTY=1 \
 SOAK_TARGET_FRAME=12000 \
@@ -345,8 +352,6 @@ verify local map availability.
 Example:
 
 ```bash
-MICROMACHINE_DIR=/private/tmp/MicroMachine \
-MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
 SOAK_MATRIX_RUN_ID=production-diversity-001 \
 SOAK_MATRIX_QUALIFICATION_TIER=production \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
@@ -369,7 +374,7 @@ unit-test evidence, and triage evidence:
 ```bash
 python3 -m starcraft_commander.micromachine_release_gate \
   --history-root /private/tmp/voi-mm-soak-matrix \
-  --build-identity-report /private/tmp/MicroMachine/build-latest-api/voi_build_identity.json \
+  --build-identity-report /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/voi_build_identity.json \
   --unit-evidence /private/tmp/voi-mm-unit-evidence.json \
   --triage-report /private/tmp/voi-mm-soak-matrix/production-signoff-001/triage_report.json \
   --output-json /private/tmp/voi-mm-release-gate/release_gate.json \
@@ -382,8 +387,6 @@ build-mismatched production evidence and leaves only manual user QA.
 Example expanded required-pool matrix for user-side QA repetition:
 
 ```bash
-MICROMACHINE_DIR=/private/tmp/MicroMachine \
-MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
 SOAK_MATRIX_RUN_ID=extended-required-pool-001 \
 SOAK_MATRIX_QUALIFICATION_TIER=extended \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh

@@ -17,6 +17,8 @@ SMOKE_SCRIPT = KIT_DIR / "scripts" / "smoke_macos_local.sh"
 SOAK_SCRIPT = KIT_DIR / "scripts" / "soak_macos_local.sh"
 SOAK_MATRIX_SCRIPT = KIT_DIR / "scripts" / "soak_matrix_macos_local.sh"
 LOCAL_SOAK_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "micromachine-local-soak.yml"
+DEFAULT_MICROMACHINE_DIR = "/private/tmp/voi-micromachine-runtime/MicroMachine"
+DEFAULT_MICROMACHINE_BUILD_DIR = f"{DEFAULT_MICROMACHINE_DIR}/build-latest-api"
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
@@ -141,6 +143,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "m_queue.queueAsHighestPriority(supplyProviderType, false)",
             "Path to completed refinery is not safe; assigning gas worker with refinery fallback.",
             "VOI_SC2_EXTRA_ARGS",
+            "ScopedVoiEnvironmentStripper",
+            "VOI_MICROMACHINE_BLACKBOARD_DIR",
+            "stripVoiEnvForSc2Child",
             "PROTOSS_OBSERVERSIEGEMODE",
             "coordinator.SetRawAffectsSelection",
             "diff --git a/src/voi_policy_blackboard.hpp",
@@ -151,7 +156,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("-\t\t\t\t\t\t\t++neighborsBaseLocation[bl];", patch)
         for term in (
             "extern char **environ",
-            "execve(launcher_path.c_str(), &char_list[0], environ)",
+            'std::strncmp(*env, "VOI_", 4) == 0',
+            "environment_list.data()",
+            "execve(launcher_path.c_str(), &char_list[0], environment_list.data())",
             "data.size() != static_cast<size_t>(width * height)",
             "options->set_show_cloaked(true)",
             "options->set_raw_affects_selection(true)",
@@ -165,6 +172,36 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         smoke_script = SMOKE_SCRIPT.read_text()
         soak_script = SOAK_SCRIPT.read_text()
         soak_matrix_script = SOAK_MATRIX_SCRIPT.read_text()
+
+        self.assertIn(
+            'ROOT_DIR="${ROOT_DIR:-/private/tmp/voi-micromachine-runtime}"',
+            build_script,
+        )
+        for script_name, script in (
+            ("smoke", smoke_script),
+            ("soak", soak_script),
+        ):
+            with self.subTest(script=script_name, contract="default patched MicroMachine root"):
+                self.assertIn(
+                    f'MICROMACHINE_DIR="${{MICROMACHINE_DIR:-{DEFAULT_MICROMACHINE_DIR}}}"',
+                    script,
+                )
+                self.assertIn(
+                    'MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"',
+                    script,
+                )
+                self.assertIn(
+                    '[[ "${SC2_EXECUTABLE}" != "${SC2_BATTLENET_EXECUTABLE}" && "${SC2_USE_RUNTIME_DIR_ARGS}" == "1" ]]',
+                    script,
+                )
+                self.assertIn(
+                    'elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" && "${SC2_USE_RUNTIME_DIR_ARGS}" == "1" ]]; then',
+                    script,
+                )
+        self.assertIn(
+            f'SOAK_MATRIX_DEFAULT_BUILD_DIR="${{MICROMACHINE_BUILD_DIR:-{DEFAULT_MICROMACHINE_BUILD_DIR}}}"',
+            soak_matrix_script,
+        )
 
         for term in (
             "https://github.com/Blizzard/s2client-api",
@@ -197,6 +234,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SC2_LAUNCH_MODE",
             "SC2_BATTLENET_EXECUTABLE",
             "SC2_ATTACH_TIMEOUT_MS",
+            "SC2_USE_RUNTIME_DIR_ARGS",
             "SC2_ROOT_ALIAS",
             "SC2_RUNTIME_ROOT",
             "SC2_TEMP_DIR",
@@ -301,6 +339,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SC2_LAUNCH_MODE",
             "SC2_BATTLENET_EXECUTABLE",
             "SC2_ATTACH_TIMEOUT_MS",
+            "SC2_USE_RUNTIME_DIR_ARGS",
             "resolve_map_file",
             "prepare_launch_contract",
             "map file not found",

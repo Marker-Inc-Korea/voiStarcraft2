@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -485,7 +486,7 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
             self.assertIn("MicroMachine Production Release Gate", output_markdown.read_text())
             completed = subprocess.run(
                 [
-                    "python",
+                    sys.executable,
                     "-m",
                     "starcraft_commander.micromachine_release_gate",
                     "--history-root",

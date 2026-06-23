@@ -2559,6 +2559,15 @@ diff --git a/src/main.cpp b/src/main.cpp
 index a13ae41..7150684 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
+@@ -10,6 +10,8 @@
+ #include "sc2utils/sc2_manage_process.h"
+ #include "sc2api/sc2_api.h"
+ #include <string>
++#include <utility>
++#include <vector>
+ #ifdef _WINDOWS
+ 	#include "StackWalker.h"
+ 	#include <direct.h>
 @@ -43,9 +43,9 @@ public:
  
  };
@@ -2572,7 +2581,7 @@ index a13ae41..7150684 100644
  	char buffer[255];
  	char *answer = getcwd(buffer, sizeof(buffer));
  	std::string s_cwd;
-@@ -56,10 +56,38 @@ std::string getexepath()
+@@ -56,10 +56,72 @@ std::string getexepath()
  	return s_cwd;
  #else
  	return "Executable path not available on Linux";
@@ -2611,6 +2620,40 @@ index a13ae41..7150684 100644
 +	return "";
 +}
 +
++class ScopedVoiEnvironmentStripper {
++    std::vector<std::pair<std::string, std::string>> m_saved;
++
++public:
++    ScopedVoiEnvironmentStripper()
++    {
++        const char * names[] = {
++            "VOI_MICROMACHINE_BLACKBOARD_DIR",
++            "VOI_SC2_BOOTSTRAP_SELF_UNITS",
++            "VOI_SC2_CONNECT_PORT",
++            "VOI_SC2_DIAGNOSTIC_AGENT",
++            "VOI_SC2_EXTRA_ARGS",
++            nullptr,
++        };
++        for (const char ** name = names; *name != nullptr; ++name)
++        {
++            const char * value = std::getenv(*name);
++            if (value != nullptr)
++            {
++                m_saved.emplace_back(*name, value);
++                unsetenv(*name);
++            }
++        }
++    }
++
++    ~ScopedVoiEnvironmentStripper()
++    {
++        for (const auto & item : m_saved)
++        {
++            setenv(item.first.c_str(), item.second.c_str(), 1);
++        }
++    }
++};
++
 +void handler(int sig) {
  	time_t t;
  	char buffer[80];
@@ -2623,7 +2666,7 @@ index a13ae41..7150684 100644
  
      coordinator.SetParticipants({
          spectatingPlayer,
-@@ -345,8 +372,37 @@ int main(int argc, char* argv[])
+@@ -345,8 +406,38 @@ int main(int argc, char* argv[])
  	coordinator.SetFeatureLayers(settings);
  #endif
  
@@ -2658,12 +2701,13 @@ index a13ae41..7150684 100644
 +    }
 +    else
 +    {
++        ScopedVoiEnvironmentStripper stripVoiEnvForSc2Child;
 +        coordinator.LaunchStarcraft();
 +    }
      coordinator.StartGame(mapString);
  	
      // Step forward the game simulation.
-@@ -354,4 +410,4 @@ int main(int argc, char* argv[])
+@@ -354,4 +445,4 @@ int main(int argc, char* argv[])
      {
      }
      return 0;
