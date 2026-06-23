@@ -1,0 +1,278 @@
+"""Tests for MicroMachine soak matrix history aggregation."""
+
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from starcraft_commander.micromachine_soak_history import (
+    SoakHistoryConfig,
+    aggregate_matrix_run,
+    aggregate_soak_history,
+    render_soak_history_markdown,
+    write_dashboard_outputs,
+)
+
+
+class MicroMachineSoakHistoryTest(unittest.TestCase):
+    def test_aggregate_matrix_run_flattens_failures_and_counts_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            passed = root / "01-Acropolis-Zerg-d1"
+            failed = root / "02-Acropolis-Protoss-d1"
+            missing = root / "03-Acropolis-Terran-d1"
+            passed.mkdir()
+            failed.mkdir()
+            missing.mkdir()
+            self.write_soak_report(
+                passed / "soak_report.json",
+                ok=True,
+                status="passed",
+                latest_frame=12_500,
+                map_file="AcropolisLE.SC2Map",
+                enemy_race="Zerg",
+                enemy_difficulty=1,
+            )
+            self.write_soak_report(
+                failed / "soak_report.json",
+                ok=False,
+                status="failed",
+                latest_frame=8_000,
+                map_file="AcropolisLE.SC2Map",
+                enemy_race="Protoss",
+                enemy_difficulty=1,
+                failures=[{"code": "no_production_deadlock"}],
+                attempts=[
+                    {
+                        "attempt": 1,
+                        "status": "failed",
+                        "failures": [{"code": "telemetry_stall"}],
+                    }
+                ],
+            )
+
+            report = aggregate_matrix_run(
+                root,
+                target_frame=12_000,
+                timeout_seconds=1_200,
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertEqual("failed", report["status"])
+            self.assertEqual(3, report["case_count"])
+            self.assertEqual(1, report["passed"])
+            self.assertEqual(2, report["failed"])
+            self.assertEqual(
+                ["no_production_deadlock", "telemetry_stall"],
+                report["cases"][1]["failure_codes"],
+            )
+            self.assertEqual("missing_report", report["cases"][2]["status"])
+
+    def test_history_dashboard_counts_failures_maps_and_artifact_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "run-001"
+            second = root / "run-002"
+            first.mkdir()
+            second.mkdir()
+            (first / "matrix_report.json").write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "passed",
+                        "target_frame": 12_000,
+                        "timeout_seconds": 1_200,
+                        "case_count": 1,
+                        "passed": 1,
+                        "failed": 0,
+                        "cases": [
+                            {
+                                "case_id": "case-a",
+                                "ok": True,
+                                "map_file": "AcropolisLE.SC2Map",
+                                "enemy_race": "Zerg",
+                                "enemy_difficulty": 1,
+                                "failure_codes": [],
+                            }
+                        ],
+                    }
+                )
+            )
+            (second / "matrix_report.json").write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "status": "failed",
+                        "target_frame": 12_000,
+                        "timeout_seconds": 1_200,
+                        "case_count": 1,
+                        "passed": 0,
+                        "failed": 1,
+                        "cases": [
+                            {
+                                "case_id": "case-b",
+                                "ok": False,
+                                "map_file": "ThunderbirdLE.SC2Map",
+                                "enemy_race": "Protoss",
+                                "enemy_difficulty": 1,
+                                "failure_codes": ["no_production_deadlock"],
+                            }
+                        ],
+                    }
+                )
+            )
+
+            dashboard = aggregate_soak_history(SoakHistoryConfig(roots=(root,)))
+            markdown = render_soak_history_markdown(dashboard)
+
+            self.assertFalse(dashboard["ok"])
+            self.assertEqual(2, dashboard["run_count"])
+            self.assertEqual(1, dashboard["passed_runs"])
+            self.assertEqual(1, dashboard["failed_runs"])
+            self.assertEqual(
+                [{"value": "no_production_deadlock", "count": 1}],
+                dashboard["failure_codes"],
+            )
+            self.assertIn(
+                "ThunderbirdLE.SC2Map",
+                {entry["value"] for entry in dashboard["maps"]},
+            )
+            self.assertIn("MicroMachine Soak History", markdown)
+            self.assertIn("no_production_deadlock", markdown)
+
+    def test_history_dashboard_recent_limit_uses_mtime_not_lexicographic_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            older = root / "gha-999-1"
+            newer = root / "gha-1000-1"
+            older.mkdir()
+            newer.mkdir()
+            for run_dir, ok in ((older, True), (newer, False)):
+                (run_dir / "matrix_report.json").write_text(
+                    json.dumps(
+                        {
+                            "ok": ok,
+                            "status": "passed" if ok else "failed",
+                            "case_count": 1,
+                            "passed": 1 if ok else 0,
+                            "failed": 0 if ok else 1,
+                            "cases": [
+                                {
+                                    "case_id": run_dir.name,
+                                    "failure_codes": (
+                                        [] if ok else ["newer_failure"]
+                                    ),
+                                }
+                            ],
+                        }
+                    )
+                )
+            os.utime(older / "matrix_report.json", (100.0, 100.0))
+            os.utime(newer / "matrix_report.json", (200.0, 200.0))
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(roots=(root,), recent_limit=1)
+            )
+
+            self.assertEqual("gha-1000-1", dashboard["runs"][0]["run_id"])
+            self.assertEqual(
+                [{"value": "newer_failure", "count": 1}],
+                dashboard["failure_codes"],
+            )
+
+    def test_write_dashboard_outputs_is_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dashboard = {
+                "status": "passed",
+                "ok": True,
+                "run_count": 1,
+                "passed_runs": 1,
+                "failed_runs": 0,
+                "case_count": 1,
+                "passed_cases": 1,
+                "failed_cases": 0,
+                "failure_codes": [],
+                "runs": [],
+            }
+            output_json = root / "dashboard.json"
+            output_markdown = root / "dashboard.md"
+
+            write_dashboard_outputs(
+                dashboard,
+                output_json=output_json,
+                output_markdown=output_markdown,
+            )
+
+            self.assertEqual(dashboard, json.loads(output_json.read_text()))
+            self.assertIn("Status: `passed`", output_markdown.read_text())
+
+    def test_matrix_script_disabled_mode_writes_artifacts_without_sc2(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = root / "disabled-run"
+            script = Path("integrations/micromachine/scripts/soak_matrix_macos_local.sh")
+
+            completed = subprocess.run(
+                [str(script)],
+                check=True,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "PYTHONPATH": ".",
+                    "SOAK_MATRIX_ENABLED": "0",
+                    "SOAK_MATRIX_RUN_DIR": str(run_dir),
+                    "SOAK_MATRIX_REPORT": str(run_dir / "matrix_report.json"),
+                    "SOAK_MATRIX_HISTORY_JSON": str(run_dir / "history.json"),
+                    "SOAK_MATRIX_HISTORY_MD": str(run_dir / "history.md"),
+                },
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("MicroMachine matrix disabled", completed.stdout)
+            report = json.loads((run_dir / "matrix_report.json").read_text())
+            self.assertEqual("disabled", report["status"])
+            self.assertFalse(report["ok"])
+            history = json.loads((run_dir / "history.json").read_text())
+            self.assertEqual("disabled", history["status"])
+            self.assertEqual(0, history["run_count"])
+            self.assertIn("disabled", (run_dir / "history.md").read_text())
+
+    def write_soak_report(
+        self,
+        path: Path,
+        *,
+        ok: bool,
+        status: str,
+        latest_frame: int,
+        map_file: str,
+        enemy_race: str,
+        enemy_difficulty: int,
+        failures: list[dict[str, object]] | None = None,
+        attempts: list[dict[str, object]] | None = None,
+    ) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "ok": ok,
+                    "status": status,
+                    "latest_frame": latest_frame,
+                    "macro_evidence_ok": ok,
+                    "manager_intervention_ok": ok,
+                    "map_file": map_file,
+                    "enemy_race": enemy_race,
+                    "enemy_difficulty": enemy_difficulty,
+                    "failures": failures or [],
+                    "attempts": attempts or [],
+                    "artifact_manifest": {"bot_log": "micromachine.log"},
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

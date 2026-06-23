@@ -21,6 +21,20 @@ SOAK_MATRIX_TIMEOUT_SECONDS=1200 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
 
+Disable real SC2 execution without deleting the workflow or scripts:
+
+```bash
+SOAK_MATRIX_ENABLED=0 \
+SOAK_MATRIX_RUN_ID=disabled-maintenance-window \
+integrations/micromachine/scripts/soak_matrix_macos_local.sh
+```
+
+Disabled mode writes `matrix_report.json`, `soak_history_dashboard.json`, and
+`soak_history_dashboard.md` with `status: disabled` and exits successfully. Use
+this for maintenance windows or when the self-hosted runner is intentionally
+offline. A disabled run is not production sign-off evidence because
+`matrix_report.json.ok == false`.
+
 Run Thunderbird or other unqualified maps only as explicit diagnostics:
 
 ```bash
@@ -36,11 +50,26 @@ The runner writes:
   `/private/tmp/voi-mm-soak-matrix/<run-id>/<case-id>/`.
 - A matrix summary at
   `/private/tmp/voi-mm-soak-matrix/<run-id>/matrix_report.json`.
+- A recent-history JSON dashboard at
+  `/private/tmp/voi-mm-soak-matrix/<run-id>/soak_history_dashboard.json`.
+- A Markdown summary at
+  `/private/tmp/voi-mm-soak-matrix/<run-id>/soak_history_dashboard.md`.
 
 Production qualification requires `matrix_report.json.ok == true` and
 `matrix_report.json.failed == 0`. `SOAK_MATRIX_ALLOW_FAILURES=1` is only for
 diagnostics or negative-control evidence; it must not be used for production
 sign-off.
+
+Artifact retention:
+
+- GitHub Actions uploads from `.github/workflows/micromachine-local-soak.yml`
+  are pinned to `retention-days: 30`.
+- Local self-hosted artifacts remain under `/private/tmp/voi-mm-soak-matrix`
+  until the operator deletes old run directories.
+- Keep the most recent passing production run and any recent failed diagnostic
+  run needed for triage before cleaning old directories.
+- Never delete a failed run before `failure_codes`, `matrix_report.json`, and
+  `soak_history_dashboard.md` have been reviewed or attached to the issue/PR.
 
 Do not weaken `soak_macos_local.sh` classifiers to make a flaky map pass. A
 map/start-location failure is useful evidence only as debugging input, not as a
@@ -103,9 +132,12 @@ Real SC2 GUI soak:
 
 - `.github/workflows/micromachine-local-soak.yml`
 - Manual `workflow_dispatch`.
+- Default input `enable_soak=0` writes disabled artifacts only.
+- Set `enable_soak=1` to verify local inputs and run real StarCraft II.
 - Requires a self-hosted macOS runner with StarCraft II, maps, and the patched
   MicroMachine build already installed.
-- Uploads the matrix artifact directory from `/private/tmp/voi-mm-soak-matrix`.
+- Uploads the matrix artifact directory from `/private/tmp/voi-mm-soak-matrix`,
+  including `matrix_report.json` and the history dashboard files.
 
 Stop condition for operations sign-off:
 
