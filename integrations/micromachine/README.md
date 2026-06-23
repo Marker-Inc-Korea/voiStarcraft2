@@ -117,11 +117,44 @@ Barracks`, `Failed to place Refinery`, or exact building cancellation lines.
 The local machine smoke completed these boundaries on 2026-06-21:
 
 - StarCraft II install: `/Users/jinminseong/Desktop/StarCraft2/StarCraft II`
-- SC2 executable used by `s2client-api`: `Versions/Base96883/SC2.app/Contents/MacOS/SC2`
+- SC2 launcher used by `s2client-api`: `SC2_EXECUTABLE` when provided, otherwise `SC2_LAUNCH_MODE=auto`
 - Map: `AcropolisLE.SC2Map`
 - `s2client-api` commit: `614acc00abb5355e4c94a1b0279b46e9d845b7ce`
 - MicroMachine commit: `eb893161371dab975a0a7e600f9e250ac03ec1ef`
 - MicroMachine executable: `/private/tmp/MicroMachine/build-latest-api/bin/MicroMachine`
+
+Launcher contract:
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `SC2_LAUNCH_MODE` | `auto` | `direct` forces a `Versions/Base*/SC2.app/Contents/MacOS/SC2` binary, `battlenet` forces the Battle.net wrapper, and `auto` prefers the pinned Base96883 binary when present, otherwise the latest direct Base binary. |
+| `SC2_ATTACH_TIMEOUT_MS` | `120000` | Explicit `s2client-api` attach timeout passed as `-t` so host `ExecuteInfo.txt` cannot shorten the launch window. |
+| `SC2_ROOT_ALIAS` | `/private/tmp/voi-sc2-root` | Symlink alias for the local StarCraft II install; avoids whitespace splitting in `VOI_SC2_EXTRA_ARGS`. |
+| `SC2_TEMP_DIR` | `/private/tmp/voi-sc2-temp-micromachine` | SC2 temp directory passed through `VOI_SC2_EXTRA_ARGS` for direct launches. |
+| `SC2_CLEAN_PORTS_BEFORE_LAUNCH` | `1` | Kills stale processes bound to the configured SC2 API ports before launch, preventing false passes against an old SC2 session. |
+| `SC2_BATTLENET_EXECUTABLE` | `/Applications/Battle.net.app/Contents/MacOS/Battle.net` | Explicit `SC2_LAUNCH_MODE=battlenet` diagnostic launcher only; clean-start production smoke should use direct Base launch. |
+| `SC2_BATTLENET_GAME` | `s2_kokr` | Battle.net game selector passed through `VOI_SC2_EXTRA_ARGS` when `SC2_LAUNCH_MODE=battlenet` is forced. |
+
+On this host the old pinned Base96883 direct executable is no longer present.
+Earlier clean-start testing against Base97364 showed the requested API port can
+appear only after an initial 6119 bootstrap listener appears. The production
+smoke/soak scripts therefore keep `SC2_LAUNCH_MODE=auto` on direct Base launch,
+pass `-t ${SC2_ATTACH_TIMEOUT_MS}`, and add
+`VOI_SC2_EXTRA_ARGS=-dataDir /private/tmp/voi-sc2-root -tempDir ...`. The
+Battle.net wrapper is not a production fallback because clean-start testing
+showed it can launch only the Battle.net shell without opening the requested
+SC2 API port; it remains available only as an explicit diagnostic mode.
+
+Latest host re-check on 2026-06-24: the Python/blackboard contracts still
+pass, but this workstation did not produce fresh runtime smoke telemetry.
+`SC2_LAUNCH_MODE=direct` launched the only installed direct binary
+`Base97364/SC2.app` and immediately opened Blizzard Error before any API port
+was available. `SC2_LAUNCH_MODE=battlenet` reused the Battle.net shell but did
+not open the requested SC2 API listener. Treat the 2026-06-21 artifacts below
+as historical evidence for the patched build, not as a fresh production
+sign-off for the current local SC2 installation. A current production sign-off
+requires rerunning smoke/soak until `latest_telemetry.json` and macro evidence
+are regenerated on the active SC2 install.
 
 Observed smoke evidence:
 

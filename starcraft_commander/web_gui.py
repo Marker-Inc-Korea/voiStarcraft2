@@ -1564,17 +1564,17 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         <button id="live-refresh-button" type="button" data-i18n="liveRefreshButton">연결 상태 확인</button>
       </div>
     </details>
-    <details id="micromachine-panel" class="collapsible-panel">
-      <summary><span data-i18n="microMachineTitle">MicroMachine 정책 조정</span></summary>
-      <p class="hint" data-i18n="microMachineHint">SC2 화면/키보드 자동화 없이 blackboard에 안전한 정책 bias만 씁니다.</p>
+    <details id="micromachine-panel" class="collapsible-panel" open>
+      <summary><span data-i18n="microMachineTitle">MicroMachine live text injection</span></summary>
+      <p class="hint" data-i18n="microMachineHint">여기에 전략 의도를 입력하면 LLM/DSL modulation으로 컴파일되어 MicroMachine blackboard에 안전한 정책 bias로 전달됩니다. SC2 화면/키보드 자동화나 raw unit 명령은 쓰지 않습니다.</p>
       <form id="micromachine-form">
         <label for="micromachine-blackboard-dir" data-i18n="microMachineBlackboardLabel">Blackboard directory</label>
         <input id="micromachine-blackboard-dir" type="text" value="__MICROMACHINE_BLACKBOARD_DIR__">
-        <label for="micromachine-command-input" data-i18n="microMachineCommandLabel">전략 의도</label>
-        <input id="micromachine-command-input" type="text" autocomplete="off" placeholder="예: 탱크 중심으로 안전하게 버텨">
-        <button type="submit" data-i18n="microMachineSend">MicroMachine에 반영</button>
+        <label for="micromachine-command-input" data-i18n="microMachineCommandLabel">MicroMachine에 주입할 텍스트 의도</label>
+        <input id="micromachine-command-input" type="text" autocomplete="off" placeholder="예: 탱크 중심으로 안전하게 버티고, 무리한 진출은 막아">
+        <button type="submit" data-i18n="microMachineSend">MicroMachine live modulation 전송</button>
       </form>
-      <div id="micromachine-status" aria-live="polite">MicroMachine modulation 대기 중입니다.</div>
+      <div id="micromachine-status" aria-live="polite">MicroMachine live text injection 대기 중입니다.</div>
     </details>
   </aside>
 </main>
@@ -1746,12 +1746,12 @@ var I18N = {
     liveIdle: "StarCraft II 자동 연결 대기 중입니다.",
     liveOpenButton: "Live GUI 열기",
     liveRefreshButton: "연결 상태 확인",
-    microMachineTitle: "MicroMachine 정책 조정",
-    microMachineHint: "SC2 화면/키보드 자동화 없이 blackboard에 안전한 정책 bias만 씁니다.",
+    microMachineTitle: "MicroMachine live text injection",
+    microMachineHint: "여기에 전략 의도를 입력하면 LLM/DSL modulation으로 컴파일되어 MicroMachine blackboard에 안전한 정책 bias로 전달됩니다. SC2 화면/키보드 자동화나 raw unit 명령은 쓰지 않습니다.",
     microMachineBlackboardLabel: "Blackboard directory",
-    microMachineCommandLabel: "전략 의도",
-    microMachineSend: "MicroMachine에 반영",
-    microMachineSending: "MicroMachine 정책 조정 전송 중...",
+    microMachineCommandLabel: "MicroMachine에 주입할 텍스트 의도",
+    microMachineSend: "MicroMachine live modulation 전송",
+    microMachineSending: "MicroMachine live modulation 전송 중...",
     microMachinePublished: "게시됨",
     microMachineConsumed: "소비 확인",
     microMachinePending: "텔레메트리 대기",
@@ -1851,6 +1851,18 @@ var I18N = {
     liveIdle: "Waiting to auto-connect StarCraft II.",
     liveOpenButton: "Open Live GUI",
     liveRefreshButton: "Check Status",
+    microMachineTitle: "MicroMachine live text injection",
+    microMachineHint: "Type a strategic intent here to compile it into LLM/DSL modulation and publish safe policy bias to the MicroMachine blackboard. It does not automate the SC2 screen/keyboard or send raw unit commands.",
+    microMachineBlackboardLabel: "Blackboard directory",
+    microMachineCommandLabel: "Text intent to inject into MicroMachine",
+    microMachineSend: "Send MicroMachine live modulation",
+    microMachineSending: "Sending MicroMachine live modulation...",
+    microMachinePublished: "Published",
+    microMachineConsumed: "Consumed",
+    microMachinePending: "Waiting for telemetry",
+    microMachineRefused: "Refused",
+    microMachineClarification: "Clarification needed",
+    microMachineFailed: "Publish failed",
     llmReady: "LLM key configured",
     llmMissing: "LLM required: configure an API key before sending commands.",
     llmEnterKey: "Enter an API key.",
@@ -1944,6 +1956,18 @@ var I18N = {
     liveIdle: "正在等待自动连接 StarCraft II。",
     liveOpenButton: "打开 Live GUI",
     liveRefreshButton: "检查状态",
+    microMachineTitle: "MicroMachine live text injection",
+    microMachineHint: "在这里输入战略意图，系统会编译为 LLM/DSL modulation，并把安全的 policy bias 写入 MicroMachine blackboard。不会自动操作 SC2 画面/键盘，也不会发送 raw unit 命令。",
+    microMachineBlackboardLabel: "Blackboard directory",
+    microMachineCommandLabel: "要注入 MicroMachine 的文本意图",
+    microMachineSend: "发送 MicroMachine live modulation",
+    microMachineSending: "正在发送 MicroMachine live modulation...",
+    microMachinePublished: "已发布",
+    microMachineConsumed: "已消费",
+    microMachinePending: "等待 telemetry",
+    microMachineRefused: "已拒绝",
+    microMachineClarification: "需要进一步确认",
+    microMachineFailed: "发布失败",
     llmReady: "LLM key 已设置",
     llmMissing: "必须先设置 LLM API key 才能发送命令。",
     llmEnterKey: "请输入 API key。",

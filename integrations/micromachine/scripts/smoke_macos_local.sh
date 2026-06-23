@@ -6,7 +6,102 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 MICROMACHINE_DIR="${MICROMACHINE_DIR:-/private/tmp/voi-micromachine-runtime/MicroMachine}"
 MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
 SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
-SC2_EXECUTABLE="${SC2_EXECUTABLE:-${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2}"
+SC2_LAUNCH_MODE="${SC2_LAUNCH_MODE:-auto}"
+SC2_BATTLENET_EXECUTABLE="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
+SC2_BATTLENET_GAME="${SC2_BATTLENET_GAME:-s2_kokr}"
+SC2_ATTACH_TIMEOUT_MS="${SC2_ATTACH_TIMEOUT_MS:-120000}"
+SC2_TEMP_DIR="${SC2_TEMP_DIR:-/private/tmp/voi-sc2-temp-micromachine}"
+SC2_ROOT_ALIAS="${SC2_ROOT_ALIAS:-/private/tmp/voi-sc2-root}"
+if [[ -z "${SC2_CLEAN_PORTS_BEFORE_LAUNCH+x}" ]]; then
+  if [[ -n "${VOI_SC2_CONNECT_PORT:-}" ]]; then
+    SC2_CLEAN_PORTS_BEFORE_LAUNCH=0
+  else
+    SC2_CLEAN_PORTS_BEFORE_LAUNCH=1
+  fi
+fi
+
+resolve_latest_direct_sc2_executable() {
+  local pinned="${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2"
+  if [[ -x "${pinned}" ]]; then
+    printf '%s\n' "${pinned}"
+    return
+  fi
+
+  local versions_dir="${SC2_ROOT}/Versions"
+  if [[ -d "${versions_dir}" ]]; then
+    local latest
+    latest="$(find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f | sort -r | head -n 1)"
+    if [[ -n "${latest}" && -x "${latest}" ]]; then
+      printf '%s\n' "${latest}"
+      return
+    fi
+  fi
+
+  printf '%s\n' "${pinned}"
+}
+
+resolve_sc2_executable() {
+  case "${SC2_LAUNCH_MODE}" in
+    direct)
+      resolve_latest_direct_sc2_executable
+      ;;
+    battlenet)
+      printf '%s\n' "${SC2_BATTLENET_EXECUTABLE}"
+      ;;
+    auto)
+      local pinned="${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2"
+      if [[ -x "${pinned}" ]]; then
+        printf '%s\n' "${pinned}"
+      else
+        resolve_latest_direct_sc2_executable
+      fi
+      ;;
+    *)
+      echo "MicroMachine smoke rejected: SC2_LAUNCH_MODE must be auto, direct, or battlenet." >&2
+      exit 2
+      ;;
+  esac
+}
+
+prepare_sc2_runtime_root() {
+  if [[ "${SC2_ROOT}" == *" "* ]]; then
+    ln -sfn "${SC2_ROOT}" "${SC2_ROOT_ALIAS}"
+    printf '%s\n' "${SC2_ROOT_ALIAS}"
+  else
+    printf '%s\n' "${SC2_ROOT}"
+  fi
+}
+
+resolve_map_file() {
+  local map_file="$1"
+  if [[ "${map_file}" == /* ]]; then
+    printf '%s\n' "${map_file}"
+    return
+  fi
+
+  local candidate="${SC2_ROOT}/Maps/${map_file}"
+  if [[ -f "${candidate}" ]]; then
+    printf '%s\n' "${candidate}"
+    return
+  fi
+
+  echo "MicroMachine smoke rejected: map file not found: ${map_file} (looked under ${SC2_ROOT}/Maps)." >&2
+  exit 2
+}
+
+prepare_launch_contract() {
+  if [[ ! -x "${SC2_EXECUTABLE}" ]]; then
+    echo "MicroMachine smoke rejected: SC2 executable is not runnable: ${SC2_EXECUTABLE}" >&2
+    exit 2
+  fi
+  if [[ "${SC2_EXECUTABLE}" != "${SC2_BATTLENET_EXECUTABLE}" ]]; then
+    mkdir -p "${SC2_TEMP_DIR}"
+  fi
+  MAP_FILE="$(resolve_map_file "${MAP_FILE}")"
+}
+
+SC2_EXECUTABLE="${SC2_EXECUTABLE:-$(resolve_sc2_executable)}"
+SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
 BLACKBOARD_DIR="${BLACKBOARD_DIR:-/private/tmp/voi-mm-smoke}"
 MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
 MIN_TELEMETRY_FRAME="${MIN_TELEMETRY_FRAME:-5200}"
@@ -16,6 +111,12 @@ BOT_LOG="${BLACKBOARD_DIR}/micromachine.log"
 SC2_NET_ADDRESS="${SC2_NET_ADDRESS:-127.0.0.1}"
 SC2_PORTS=(${SC2_PORTS:-8167 8168})
 BOT_PID=""
+PREEXISTING_SC2_PORT_PIDS=""
+if [[ "${SC2_EXECUTABLE}" == "${SC2_BATTLENET_EXECUTABLE}" && -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
+  VOI_SC2_EXTRA_ARGS="--game=${SC2_BATTLENET_GAME} --gamepath=${SC2_RUNTIME_ROOT}/"
+elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
+  VOI_SC2_EXTRA_ARGS="-dataDir ${SC2_RUNTIME_ROOT} -tempDir ${SC2_TEMP_DIR}"
+fi
 DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-smoke-defensive-hold}"
 AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-smoke-aggressive-pressure}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
@@ -41,6 +142,34 @@ FORBIDDEN_MACRO_FAILURES=(
   "Cancel building TERRAN_REFINERY :"
 )
 
+sc2_port_pids() {
+  local port="$1"
+  lsof -nP -tiTCP:"${port}" 2>/dev/null | sort -u || true
+}
+
+clean_sc2_ports_before_launch() {
+  [[ "${SC2_CLEAN_PORTS_BEFORE_LAUNCH}" == "1" ]] || return
+  local port
+  for port in "${SC2_PORTS[@]}"; do
+    while IFS= read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      kill "${pid}" 2>/dev/null || true
+    done < <(sc2_port_pids "${port}")
+  done
+}
+
+capture_preexisting_sc2_port_pids() {
+  local port
+  local pids=()
+  for port in "${SC2_PORTS[@]}"; do
+    while IFS= read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      pids+=("${pid}")
+    done < <(sc2_port_pids "${port}")
+  done
+  PREEXISTING_SC2_PORT_PIDS="${pids[*]:-}"
+}
+
 cleanup_runtime() {
   if [[ -n "${BOT_PID}" ]] && kill -0 "${BOT_PID}" 2>/dev/null; then
     kill "${BOT_PID}" 2>/dev/null || true
@@ -51,8 +180,11 @@ cleanup_runtime() {
   for port in "${SC2_PORTS[@]}"; do
     while IFS= read -r pid; do
       [[ -n "${pid}" ]] || continue
+      if [[ " ${PREEXISTING_SC2_PORT_PIDS} " == *" ${pid} "* ]]; then
+        continue
+      fi
       kill "${pid}" 2>/dev/null || true
-    done < <(pgrep -f "${SC2_EXECUTABLE} -listen ${SC2_NET_ADDRESS} -port ${port}" || true)
+    done < <(sc2_port_pids "${port}")
   done
 }
 
@@ -179,13 +311,13 @@ except Exception:
 PY
 }
 
-if [[ "${MAP_FILE}" != /* && -f "${SC2_ROOT}/Maps/${MAP_FILE}" ]]; then
-  MAP_FILE="${SC2_ROOT}/Maps/${MAP_FILE}"
-fi
+prepare_launch_contract
 
 mkdir -p "${BLACKBOARD_DIR}"
 rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}"
 publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
+clean_sc2_ports_before_launch
+capture_preexisting_sc2_port_pids
 
 python3 - <<'PY' "${MICROMACHINE_DIR}/bin/BotConfig.txt" "${MAP_FILE}"
 import json
@@ -199,7 +331,7 @@ config["SC2API"]["PlayAsHuman"] = False
 config["SC2API"]["ForceStepMode"] = True
 config["SC2API"]["MapFile"] = map_file
 config["SC2API"]["PlayVsItSelf"] = bool(int(__import__("os").environ.get("SMOKE_PLAY_VS_SELF", "0")))
-config["SC2API"]["EnemyDifficulty"] = 1
+config["SC2API"]["EnemyDifficulty"] = int(__import__("os").environ.get("SMOKE_ENEMY_DIFFICULTY", "1"))
 config["SC2API"]["EnemyRace"] = "Zerg"
 config["SC2API"]["StepSize"] = 1
 config["Macro"]["SelectStartingBuildBasedOnHistory"] = False
@@ -216,9 +348,11 @@ PY
 (
   cd "${MICROMACHINE_DIR}/bin"
   VOI_MICROMACHINE_BLACKBOARD_DIR="${BLACKBOARD_DIR}" \
+    VOI_SC2_EXTRA_ARGS="${VOI_SC2_EXTRA_ARGS:-}" \
     VOI_SC2_BOOTSTRAP_SELF_UNITS="${VOI_SC2_BOOTSTRAP_SELF_UNITS:-${VOI_SC2_CONNECT_PORT:+1}}" \
     "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine" \
-    -e "${SC2_EXECUTABLE}"
+    -e "${SC2_EXECUTABLE}" \
+    -t "${SC2_ATTACH_TIMEOUT_MS}"
 ) >"${BOT_LOG}" 2>&1 &
 BOT_PID=$!
 

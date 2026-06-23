@@ -447,15 +447,10 @@ index fdac0fd..6fd429f 100644
  			std::find(unusableBuildLocation.begin(), unusableBuildLocation.end(), buildLocation) != unusableBuildLocation.end())
  		{
  			auto actualOffset = offset * offsetJumpMultiplier;
-@@ -400,7 +463,7 @@ CCTilePosition BuildingPlacer::getBuildLocationNear(const Building & b, bool ign
- 					continue;
- 			}
-
+@@ -400,2 +463,2 @@ CCTilePosition BuildingPlacer::getBuildLocationNear(const Building & b, bool ign
 -			if (canBuildHere(pos.x, pos.y, b.type, ignoreReserved, checkInfluenceMap, includeExtraTiles, ignoreExtraBorder))
 +			if (canBuildHere(pos.x, pos.y, b.type, ignoreReserved, effectiveCheckInfluenceMap, includeExtraTiles, ignoreExtraBorder))
  			{
- 				return pos;
- 			}
 @@ -480,8 +543,8 @@ bool BuildingPlacer::tileOverlapsBaseLocation(int x, int y, UnitType type) const
  bool BuildingPlacer::buildable(const UnitType type, int x, int y, bool ignoreReservedTiles) const
  {
@@ -1045,7 +1040,7 @@ index a8d5f3a..a8016ff 100644
  	// TODO instead of separing by bases, we should separate by clusters
  	std::list<RegionArmyInformation> regions;
  	// for each of our occupied regions
-@@ -2288,13 +2310,7 @@ void CombatCommander::updateDefenseSquads()
+@@ -2288,12 +2288,6 @@ void CombatCommander::updateDefenseSquads()
  		int enemyWorkers = 0;
  		for (auto & unit : m_bot.GetKnownEnemyUnits())
  		{
@@ -1055,11 +1050,9 @@ index a8d5f3a..a8016ff 100644
 -				continue;
 -			}
 -
--			// we don't want to try to defend against a creep tumor
-+			// we don't want to try to defend against a creep tumor
+ 			// we don't want to try to defend against a creep tumor
  			if (unit.isBurrowed() && unit.getUnitPtr()->last_seen_game_loop != m_bot.GetCurrentFrame())
  				continue;
- 
 @@ -3876,4 +3892,4 @@ void CombatCommander::updateFirstProxyReaperGoingThroughNatural()
  		}
  	}
@@ -1462,6 +1455,21 @@ index 3859fdb..1624307 100644
  						{
  							m_queue.removeCurrentHighestPriorityItem();
  							break;
+@@ -324,6 +325,14 @@ void ProductionManager::manageBuildOrderQueue()
+ 								{
+ 									supplyBlockedFrames++;
+ 									Util::Log(__FUNCTION__, "Supply blocked | 0x00000007", m_bot);
++									if (!m_queue.contains(supplyProviderType) && m_bot.Buildings().countBeingBuilt(supplyProvider) == 0)
++									{
++										m_queue.queueAsHighestPriority(supplyProviderType, false);
++										Util::Log(__FUNCTION__, "Supply provider recovery queued after supply block.", m_bot);
++										m_bot.StopProfiling("0.10.2.2.2.2.1      Build without premovement");
++										m_bot.StopProfiling("0.10.2.2.2.2      tryingToBuild");
++										break;
++									}
+ 								}
+ 							}
+ 							m_bot.StartProfiling("0.10.2.2.2.2.1.1      canMakeNow");
 @@ -334,6 +335,10 @@ void ProductionManager::manageBuildOrderQueue()
  								// create it and remove it from the _queue
  								m_bot.StartProfiling("0.10.2.2.2.2.1.2      create");
@@ -1613,7 +1621,7 @@ index 3859fdb..1624307 100644
  		{
  			return false;
  		}
--
+-		
  		auto worker = m_bot.Workers().getClosestAvailableWorkerTo(Util::GetPosition(nextRefinery));
  		if (!worker.isValid())
  		{
@@ -1824,20 +1832,20 @@ index 4a213cd..6853a05 100644
 --- a/src/TechTree.cpp
 +++ b/src/TechTree.cpp
 @@ -58,7 +58,6 @@ void TechTree::initUnitTypeData()
-     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_WARPPRISM, m_bot)] =               { sc2::Race::Protoss, 0, 0, 2, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_WARPPRISM, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_ROBOTICSFACILITY, m_bot) }, {}, {} };
-     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_WARPPRISMPHASING, m_bot)] =        { sc2::Race::Protoss, 0, 0, 2, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_WARPPRISM, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_ROBOTICSFACILITY, m_bot) }, {}, {} };
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_WARPPRISM, m_bot)] =               { sc2::Race::Protoss, 0, 0, 2, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_WARPPRISM, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_ROBOTICSFACILITY, m_bot) }, {}, {} }; 
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_WARPPRISMPHASING, m_bot)] =        { sc2::Race::Protoss, 0, 0, 2, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_WARPPRISM, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_ROBOTICSFACILITY, m_bot) }, {}, {} }; 
      m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_OBSERVER, m_bot)] =                { sc2::Race::Protoss, 0, 0, 1, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_OBSERVER, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_ROBOTICSFACILITY, m_bot) }, {}, {} };
 -	m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_OBSERVERSIEGEMODE, m_bot)] =		{ sc2::Race::Protoss, 0, 0, 1, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_OBSERVER, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_ROBOTICSFACILITY, m_bot) }, {}, {} };
      m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_IMMORTAL, m_bot)] =                { sc2::Race::Protoss, 0, 0, 4, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_IMMORTAL, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_ROBOTICSFACILITY, m_bot) }, {}, {} };
      m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_CARRIER, m_bot)] =                 { sc2::Race::Protoss, 0, 0, 6, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_CARRIER, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_STARGATE, m_bot) }, { UnitType(sc2::UNIT_TYPEID::PROTOSS_FLEETBEACON, m_bot) }, {} };
-     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_ORACLE, m_bot)] =                  { sc2::Race::Protoss, 0, 0, 3, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_ORACLE, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_STARGATE, m_bot) }, {}, {} };
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::PROTOSS_ORACLE, m_bot)] =                  { sc2::Race::Protoss, 0, 0, 3, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_ORACLE, 0, { UnitType(sc2::UNIT_TYPEID::PROTOSS_STARGATE, m_bot) }, {}, {} }; 
 @@ -72,7 +71,6 @@ void TechTree::initUnitTypeData()
-     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER, m_bot)] =            { sc2::Race::Terran, 0, 0, 0, 0, true, true, false, false, false,  true, false, sc2::ABILITY_ID::BUILD_COMMANDCENTER, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, {}, {} };
-     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT, m_bot)] =              { sc2::Race::Terran, 0, 0, 0, 0, true, true, false, false,  true, false, false, sc2::ABILITY_ID::BUILD_SUPPLYDEPOT, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, {}, {} };
-     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_REFINERY, m_bot)] =                 { sc2::Race::Terran, 0, 0, 0, 0, true, true, false,  true, false, false, false, sc2::ABILITY_ID::BUILD_REFINERY, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, {}, {} };
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER, m_bot)] =            { sc2::Race::Terran, 0, 0, 0, 0, true, true, false, false, false,  true, false, sc2::ABILITY_ID::BUILD_COMMANDCENTER, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, {}, {} }; 
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT, m_bot)] =              { sc2::Race::Terran, 0, 0, 0, 0, true, true, false, false,  true, false, false, sc2::ABILITY_ID::BUILD_SUPPLYDEPOT, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, {}, {} };  
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_REFINERY, m_bot)] =                 { sc2::Race::Terran, 0, 0, 0, 0, true, true, false,  true, false, false, false, sc2::ABILITY_ID::BUILD_REFINERY, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, {}, {} }; 
 -	m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_REFINERYRICH, m_bot)] =				{ sc2::Race::Terran, 0, 0, 0, 0, true, true, false,  true, false, false, false, sc2::ABILITY_ID::BUILD_REFINERY, 0,{ UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) },{},{} };
      m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_ARMORY, m_bot)] =                   { sc2::Race::Terran, 0, 0, 0, 0, true, true, false, false, false, false, false, sc2::ABILITY_ID::BUILD_ARMORY, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, { UnitType(sc2::UNIT_TYPEID::TERRAN_FACTORY, m_bot) }, {} };
-     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_BARRACKS, m_bot)] =                 { sc2::Race::Terran, 0, 0, 0, 0, true, true, false, false, false, false, false, sc2::ABILITY_ID::BUILD_BARRACKS, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, { UnitType(sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT, m_bot) }, {} };
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_BARRACKS, m_bot)] =                 { sc2::Race::Terran, 0, 0, 0, 0, true, true, false, false, false, false, false, sc2::ABILITY_ID::BUILD_BARRACKS, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, { UnitType(sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT, m_bot) }, {} }; 
      m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_SENSORTOWER, m_bot)] =              { sc2::Race::Terran, 0, 0, 0, 0, true, true, false, false, false, false, false, sc2::ABILITY_ID::BUILD_SENSORTOWER, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_SCV, m_bot) }, { UnitType(sc2::UNIT_TYPEID::TERRAN_ENGINEERINGBAY, m_bot) }, {} };
 @@ -184,7 +182,6 @@ void TechTree::initUnitTypeData()
      m_unitTypeData[UnitType(sc2::UNIT_TYPEID::ZERG_RAVAGERCOCOON, m_bot)] =              { sc2::Race::Zerg, 0, 0, 2, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::MORPH_RAVAGER, 0, { UnitType(sc2::UNIT_TYPEID::ZERG_ROACH, m_bot) }, { UnitType(sc2::UNIT_TYPEID::ZERG_ROACHWARREN, m_bot) }, {} };
@@ -1874,7 +1882,7 @@ index 8e96bf3..a275320 100644
 -    return m_unit->cloak != sc2::Unit::NotCloaked && m_unit->cloak != sc2::Unit::CloakedUnknown;
 +    return m_unit->cloak != sc2::Unit::NotCloaked && m_unit->cloak != sc2::Unit::Unknown;
  }
-
+ 
  bool Unit::isFlying() const
 @@ -296,7 +296,6 @@ bool Unit::isLight() const
  		case sc2::UNIT_TYPEID::PROTOSS_HIGHTEMPLAR:
@@ -1903,14 +1911,14 @@ index 8e96bf3..a275320 100644
 @@ -767,25 +764,7 @@ bool Unit::unloadUnit(const sc2::Tag passengerTag) const
  		return false;
  	}
-
+ 
 -	SC2APIProtocol::RequestAction* request_action = m_bot->Actions()->GetRequestAction();
 -	{
 -		// select unit
 -		SC2APIProtocol::Action *action = request_action->add_actions();
 -		SC2APIProtocol::ActionRaw *action_raw = action->mutable_action_raw();
 -		SC2APIProtocol::ActionRawUnitCommand *command = action_raw->mutable_unit_command();
--
+-	
 -		command->set_ability_id(0);
 -		command->add_unit_tags(m_unit->tag);
 -	}
@@ -1919,16 +1927,16 @@ index 8e96bf3..a275320 100644
 -		SC2APIProtocol::Action *action = request_action->add_actions();
 -		SC2APIProtocol::ActionUI *action_ui = action->mutable_action_ui();
 -		SC2APIProtocol::ActionCargoPanelUnload *command = action_ui->mutable_cargo_panel();
--
+-	
 -		command->set_unit_index(passengerIndex);
 -	}
 -	m_bot->Actions()->SendActions();
 +	return false;
  }
-
+ 
  sc2::AvailableAbilities Unit::getAbilities() const
 @@ -905,4 +884,4 @@ void Unit::getBuildingLimits(CCTilePosition & bottomLeft, CCTilePosition & topRi
-
+ 
  	bottomLeft = CCTilePosition(minX, minY);
  	topRight = CCTilePosition(maxX, maxY);
 -}
@@ -2153,7 +2161,7 @@ index a63df1a..d2535d0 100644
 --- a/src/Util.cpp
 +++ b/src/Util.cpp
 @@ -93,9 +93,9 @@ struct Util::PathFinding::IMNode
-
+ 
  void Util::Initialize(CCBot & bot, CCRace race, const sc2::GameInfo & _gameInfo)
  {
 -	richRefineryId = bot.Config().StarCraft2Version > "4.10.4" ? sc2::UNIT_TYPEID(1943) : sc2::UNIT_TYPEID::TERRAN_REFINERYRICH;
@@ -2188,14 +2196,14 @@ index a63df1a..d2535d0 100644
 -			m_pathable[x][y] = pathingGrid.IsPathable(point);
 +			unsigned char encodedPathing = index < gameInfo->pathing_grid.data.size() ? gameInfo->pathing_grid.data[index] : 255;
 +			m_pathable[x][y] = encodedPathing == 255 ? false : true;
-
+ 
  			//Placement
 -			/*unsigned char encodedPlacement = gameInfo->placement_grid.data[index];
 -			m_placement[x][y] = encodedPlacement == 255 ? true : false;*/
 -			m_placement[x][y] = placementGrid.IsPlacable(point);
 +			unsigned char encodedPlacement = index < gameInfo->placement_grid.data.size() ? gameInfo->placement_grid.data[index] : 0;
 +			m_placement[x][y] = encodedPlacement == 255 ? true : false;
-
+ 			
  			//Terrain height
 -			/*unsigned char encodedHeight = gameInfo->terrain_height.data[index];
 -			m_terrainHeight[x][y] = float(encodedHeight) / 8.f - 15.875f;*/
@@ -2204,7 +2212,7 @@ index a63df1a..d2535d0 100644
 +			m_terrainHeight[x][y] = float(encodedHeight) / 8.f - 15.875f;
  		}
  	}
-
+ 
 @@ -552,7 +545,7 @@ std::list<CCPosition> Util::PathFinding::FindOptimalPath(const sc2::Unit * unit,
  		if (shouldTriggerExit)
  		{
@@ -2220,7 +2228,7 @@ index a63df1a..d2535d0 100644
  	unit->last_seen_game_loop = 0;
 -	unit->is_hallucination = false;
  }
-
+ 
  sc2::Unit * Util::CreateDummyFromUnit(sc2::Unit * dummyModel, const sc2::Unit * unit)
 @@ -2317,8 +2309,6 @@ void Util::getThreats(const sc2::Unit * unit, const sc2::Units & targets, sc2::U
  			outThreats.push_back(targetUnit);
@@ -2232,13 +2240,13 @@ index a63df1a..d2535d0 100644
  			continue;
  		if (targetUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_SCV && Contains(targetUnit, bot.GetEnemySCVBuilders()))
 @@ -2482,7 +2472,7 @@ bool Util::isUnitLockedOn(const sc2::Unit * unit)
-
+ 
  bool Util::isUnitDisabled(const sc2::Unit * unit)
  {
 -	return unitHasBuff(unit, sc2::BUFF_ID::RAVENSCRAMBLERMISSILE);
 +	return false;
  }
-
+ 
  bool Util::isUnitLifted(const sc2::Unit * unit)
 @@ -2599,7 +2589,6 @@ bool Util::IsPositionUnderDetection(CCPosition position, CCBot & bot)
  		sc2::UNIT_TYPEID::TERRAN_MISSILETURRET,
@@ -2258,13 +2266,13 @@ index a63df1a..d2535d0 100644
  			if(distance <= detectionRange * detectionRange)
  			{
 @@ -2638,7 +2627,7 @@ bool Util::IsPositionUnderDetection(CCPosition position, CCBot & bot)
-
+ 
  bool Util::IsUnitCloakedAndSafe(const sc2::Unit * unit, CCBot & bot)
  {
 -	return unit->cloak == sc2::Unit::CloakedAllied && !Util::IsPositionUnderDetection(unit->pos, bot) && unit->energy >= 5 && bot.Analyzer().getUnitState(unit).GetRecentDamageTaken() == 0;
 +	return unit->cloak == sc2::Unit::Cloaked && !Util::IsPositionUnderDetection(unit->pos, bot) && unit->energy >= 5 && bot.Analyzer().getUnitState(unit).GetRecentDamageTaken() == 0;
  }
-
+ 
  bool Util::IsAbilityAvailable(sc2::ABILITY_ID abilityId, const sc2::Unit * unit, const std::vector<sc2::AvailableAbilities> & availableAbilitiesForUnits)
 @@ -2679,8 +2668,6 @@ bool Util::IsFarMineralPatch(const sc2::UNIT_TYPEID type)
  		case sc2::UNIT_TYPEID::NEUTRAL_MINERALFIELD750:
@@ -2278,7 +2286,7 @@ index a63df1a..d2535d0 100644
 @@ -2770,6 +2757,11 @@ CCPosition Util::GetPosition(const CCTilePosition & tile)
  #endif
  }
-
+ 
 +CCPosition Util::GetPosition(const CCPosition & pos)
 +{
 +	return pos;
@@ -2290,7 +2298,7 @@ index a63df1a..d2535d0 100644
 @@ -2780,6 +2772,16 @@ float Util::Dist(const CCTilePosition & p1, const CCTilePosition & p2)
  	return sqrtf((float)Util::DistSq(p1, p2));
  }
-
+ 
 +float Util::Dist(const CCPosition & p1, const CCTilePosition & p2)
 +{
 +	return sqrtf((float)Util::DistSq(p1, p2));
@@ -2307,7 +2315,7 @@ index a63df1a..d2535d0 100644
 @@ -2798,6 +2800,22 @@ CCPositionType Util::DistSq(const CCTilePosition & p1, const CCTilePosition & p2
  	return dx * dx + dy * dy;
  }
-
+ 
 +CCPositionType Util::DistSq(const CCPosition & p1, const CCTilePosition & p2)
 +{
 +	CCPositionType dx = p1.x - p2.x;
