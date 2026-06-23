@@ -28,13 +28,18 @@ from starcraft_commander.micromachine_bridge import (
 )
 from starcraft_commander.policy_modulation import (
     CombatModulation,
+    EconomyModulation,
     EmergencyModulation,
     PolicyModulationSource,
     PolicyModulationVector,
     PolicyOverrideLevel,
     PolicySafetyConstraint,
+    ProductionModulation,
     ScoutingModulation,
     SquadModulation,
+    StrategyModulation,
+    TechModulation,
+    WeightedBiases,
     reject_raw_policy_control_keys,
 )
 from starcraft_commander.policy_modulation_provider import (
@@ -53,6 +58,15 @@ LATEST_UPDATE_KV_NAME: Final[str] = "latest_modulation.kv"
 UPDATE_ARCHIVE_JSONL_NAME: Final[str] = "modulation_updates.jsonl"
 LATEST_TELEMETRY_JSON_NAME: Final[str] = "latest_telemetry.json"
 TELEMETRY_ARCHIVE_JSONL_NAME: Final[str] = "telemetry.jsonl"
+MICROMACHINE_STRATEGY_PROFILE_VERSION: Final[int] = 1
+MICROMACHINE_STRATEGY_PROFILE_KEYS: Final[tuple[str, ...]] = (
+    "defensive_hold",
+    "economic_expansion",
+    "aggressive_pressure",
+    "scouting_map_control",
+    "tech_transition",
+    "emergency_recovery",
+)
 _KV_KEY_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
@@ -206,6 +220,200 @@ def build_aggressive_pressure_profile(
         tags=("micromachine", "aggressive_pressure", "bounded_intervention"),
         rationale="Bias MicroMachine toward pressure while leaving tactical execution autonomous.",
     )
+
+
+def build_economic_expansion_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a bounded profile that biases economy without raw build commands."""
+
+    return PolicyModulationVector(
+        goal="micromachine_economic_expansion",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=0.78,
+        ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(
+            posture="economic",
+            timing_biases=WeightedBiases({"third_base_timing": 0.35}),
+        ),
+        economy=EconomyModulation(
+            expand_bias=0.65,
+            worker_production_bias=0.45,
+            gas_priority=0.2,
+            mineral_saturation_bias=0.55,
+            supply_buffer_bias=0.35,
+            expansion_safety_bias=0.25,
+        ),
+        production=ProductionModulation(production_continuity_bias=0.35),
+        combat=CombatModulation(defend_bias=0.55, aggression=-0.15),
+        scouting=ScoutingModulation(scout_priority=0.45, risk_tolerance=-0.05),
+        squad=SquadModulation(defense_bias=0.35, regroup_bias=0.25),
+        tags=("micromachine", "economic_expansion", "bounded_intervention"),
+        rationale="Bias MicroMachine toward safer worker, supply, and expansion continuity.",
+    )
+
+
+def build_scouting_map_control_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a bounded profile for fresh information and map presence."""
+
+    return PolicyModulationVector(
+        goal="micromachine_scouting_map_control",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=0.8,
+        ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(posture="balanced", strategic_tags=("map_control",)),
+        combat=CombatModulation(aggression=0.15, defend_bias=0.35, harassment_bias=0.25),
+        scouting=ScoutingModulation(
+            scout_priority=0.9,
+            risk_tolerance=0.25,
+            scan_priority=0.45,
+            require_fresh_enemy_observation=True,
+        ),
+        squad=SquadModulation(main_army_bias=0.2, harassment_bias=0.25, defense_bias=0.05),
+        tags=("micromachine", "scouting_map_control", "bounded_intervention"),
+        rationale="Bias scouting and harassment managers toward fresh enemy observations.",
+    )
+
+
+def build_tech_transition_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a bounded profile for higher-tech composition transition."""
+
+    return PolicyModulationVector(
+        goal="micromachine_tech_transition",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=0.76,
+        ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(
+            posture="balanced",
+            transition_biases=WeightedBiases({"bio_to_factory": 0.45}),
+        ),
+        economy=EconomyModulation(gas_priority=0.55, gas_worker_target_bias=0.35),
+        tech=TechModulation(
+            structure_biases=WeightedBiases({"TERRAN_FACTORY": 0.45, "TERRAN_STARPORT": 0.25}),
+            unit_biases=WeightedBiases({"TERRAN_SIEGETANK": 0.5, "TERRAN_MEDIVAC": 0.35}),
+            upgrade_biases=WeightedBiases({"STIMPACK": 0.35}),
+            tech_path_tags=("factory_transition",),
+        ),
+        production=ProductionModulation(
+            addon_biases=WeightedBiases({"TECHLAB": 0.45}),
+            max_tech_deviation=0.35,
+            tech_switch_urgency=0.4,
+        ),
+        combat=CombatModulation(defend_bias=0.35, preserve_army_bias=0.35),
+        tags=("micromachine", "tech_transition", "bounded_intervention"),
+        rationale="Bias tech and production managers toward a safe mid-game transition.",
+    )
+
+
+def build_emergency_recovery_profile(
+    *,
+    ttl_seconds: int = 180,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a short-TTL emergency profile for recovery without raw retreat clicks."""
+
+    ttl_seconds = min(ttl_seconds, 60)
+    return PolicyModulationVector(
+        goal="micromachine_emergency_recovery",
+        source=source,
+        override_level=PolicyOverrideLevel.EMERGENCY,
+        confidence=0.88,
+        ttl_seconds=ttl_seconds,
+        economy=EconomyModulation(repair_priority=0.85, supply_buffer_bias=0.4),
+        combat=CombatModulation(
+            aggression=-0.75,
+            retreat_threshold_delta=0.35,
+            defend_bias=0.95,
+            preserve_army_bias=0.8,
+        ),
+        scouting=ScoutingModulation(scout_priority=0.2, risk_tolerance=-0.55),
+        squad=SquadModulation(defense_bias=0.9, regroup_bias=0.7),
+        emergency=EmergencyModulation(
+            force_retreat=True,
+            cancel_attacks=True,
+            prioritize_repair=True,
+            hold_position=True,
+        ),
+        constraints=(
+            PolicySafetyConstraint(
+                key="short_ttl_emergency_only",
+                value=True,
+                reason="Emergency recovery must expire quickly and remain manager-bounded.",
+            ),
+        ),
+        tags=("micromachine", "emergency_recovery", "bounded_intervention"),
+        rationale="Bias MicroMachine toward survival and repair while avoiding direct unit control.",
+    )
+
+
+def build_micromachine_strategy_profile(
+    profile_key: str,
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Build one named MicroMachine strategy profile."""
+
+    builders = {
+        "defensive_hold": build_defensive_hold_profile,
+        "economic_expansion": build_economic_expansion_profile,
+        "aggressive_pressure": build_aggressive_pressure_profile,
+        "scouting_map_control": build_scouting_map_control_profile,
+        "tech_transition": build_tech_transition_profile,
+        "emergency_recovery": build_emergency_recovery_profile,
+    }
+    try:
+        builder = builders[profile_key]
+    except KeyError as exc:
+        raise ValueError(f"unknown MicroMachine strategy profile: {profile_key}") from exc
+    return builder(ttl_seconds=ttl_seconds, source=source)
+
+
+def micromachine_strategy_profile_catalog() -> dict[str, dict[str, object]]:
+    """Return versioned, JSON-ready profile metadata for docs and tests."""
+
+    return {
+        "schema_version": MICROMACHINE_STRATEGY_PROFILE_VERSION,
+        "profiles": {
+            "defensive_hold": {
+                "managers": ["CombatCommander", "ScoutManager", "Squad"],
+                "expected_tags": ["defensive_hold", "bounded_intervention"],
+            },
+            "economic_expansion": {
+                "managers": ["WorkerManager", "ProductionManager", "CombatCommander"],
+                "expected_tags": ["economic_expansion", "bounded_intervention"],
+            },
+            "aggressive_pressure": {
+                "managers": ["CombatCommander", "ScoutManager", "Squad"],
+                "expected_tags": ["aggressive_pressure", "bounded_intervention"],
+            },
+            "scouting_map_control": {
+                "managers": ["ScoutManager", "CombatCommander", "Squad"],
+                "expected_tags": ["scouting_map_control", "bounded_intervention"],
+            },
+            "tech_transition": {
+                "managers": ["ProductionManager", "WorkerManager", "CombatCommander"],
+                "expected_tags": ["tech_transition", "bounded_intervention"],
+            },
+            "emergency_recovery": {
+                "managers": ["CombatCommander", "WorkerManager", "Squad"],
+                "expected_tags": ["emergency_recovery", "bounded_intervention"],
+            },
+        },
+    }
 
 
 @dataclass(frozen=True)

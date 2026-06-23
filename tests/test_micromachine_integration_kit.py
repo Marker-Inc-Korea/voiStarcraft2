@@ -253,8 +253,6 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "live_classifier_failure",
             "fail_from_live_classifier",
             "if ! classify_soak \"live\"",
-            "build_defensive_hold_profile",
-            "build_aggressive_pressure_profile",
             "CombatCommander",
             "ScoutManager",
             "bounded_intervention",
@@ -265,6 +263,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "Mineral income:",
             "cleanup_runtime",
             "SOAK_PROFILE_REFRESH_FRAMES",
+            "SOAK_PROFILE_SEQUENCE",
+            "default_defensive_to_aggressive",
+            "build_micromachine_strategy_profile",
+            "MICROMACHINE_STRATEGY_PROFILE_KEYS",
+            "PROFILE_SCHEDULE_FRAMES[$index] <= SOAK_TARGET_FRAME",
+            "unknown SOAK_PROFILE_SEQUENCE profile",
+            "strategy_profile_missing",
+            "--expected-profile-tags",
             "SOAK_AGGRESSIVE_MIN_FRAME",
             "SOAK_MAX_ATTEMPTS",
             "SOAK_ATTEMPT_INDEX",
@@ -359,6 +365,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=production", production_ops)
         self.assertIn("MICROMACHINE_MAP_POOL.json", readme)
         self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=production", readme)
+        self.assertIn("SOAK_PROFILE_SEQUENCE", readme)
+        self.assertIn("economic_expansion@6000", readme)
+        self.assertIn("strategy_profile_missing", readme)
+        self.assertIn("emergency_recovery", production_ops)
         self.assertIn("thunderbird_walloff_geometry_no_production_deadlock", production_ops)
         self.assertIn("thunderbird_walloff_geometry_no_production_deadlock", readme)
         self.assertIn("docs/micromachine-thunderbird-blocker.md", production_ops)
@@ -597,6 +607,27 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
             self.assertEqual(2, completed.returncode)
             self.assertIn("extended tier cannot set SOAK_MATRIX_ALLOW_FAILURES=1", completed.stderr)
+
+    def test_soak_script_rejects_unknown_future_profile_before_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            completed = subprocess.run(
+                [str(SOAK_SCRIPT)],
+                env={
+                    **os.environ,
+                    "SOAK_MAX_ATTEMPTS": "1",
+                    "SOAK_RUN_DIR": str(root / "run"),
+                    "BLACKBOARD_DIR": str(root / "run"),
+                    "SOAK_PROFILE_SEQUENCE": "raw_action@13000",
+                    "SOAK_TARGET_FRAME": "12000",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(0, completed.returncode)
+            self.assertIn("unknown SOAK_PROFILE_SEQUENCE profile", completed.stderr)
 
     def test_soak_matrix_rejects_invalid_local_failure_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

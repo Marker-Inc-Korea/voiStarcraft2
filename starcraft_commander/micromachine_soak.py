@@ -64,6 +64,7 @@ class MicroMachineSoakConfig:
     modulation_consumption_grace_frames: int = 128
     require_macro_evidence: bool = True
     require_manager_intervention: bool = True
+    expected_profile_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_positive("target_frame", self.target_frame)
@@ -78,6 +79,11 @@ class MicroMachineSoakConfig:
         )
         if type(self.max_placement_failures) is bool or self.max_placement_failures < 0:
             raise ValueError("max_placement_failures must be a non-negative integer.")
+        object.__setattr__(
+            self,
+            "expected_profile_tags",
+            _string_tuple("expected_profile_tags", self.expected_profile_tags),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -91,6 +97,7 @@ class MicroMachineSoakConfig:
             "modulation_consumption_grace_frames": self.modulation_consumption_grace_frames,
             "require_macro_evidence": self.require_macro_evidence,
             "require_manager_intervention": self.require_manager_intervention,
+            "expected_profile_tags": list(self.expected_profile_tags),
         }
 
 
@@ -346,6 +353,13 @@ def classify_micromachine_soak(
     )
     if stale_failure is not None:
         failures.append(stale_failure)
+    profile_failure = _classify_expected_profile_tags(
+        observation,
+        latest_frame,
+        resolved_config,
+    )
+    if profile_failure is not None:
+        failures.append(profile_failure)
 
     target_reached = latest_frame >= resolved_config.target_frame
     status = "passed" if target_reached and macro_evidence_ok and manager_intervention_ok and not failures else "failed"
@@ -452,6 +466,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Return success while the run is still below target if no terminal failures exist.",
     )
+    parser.add_argument("--expected-profile-tags", default="")
     args = parser.parse_args(argv)
 
     config = MicroMachineSoakConfig(
@@ -463,6 +478,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         income_stall_frames=args.income_stall_frames,
         max_placement_failures=args.max_placement_failures,
         modulation_consumption_grace_frames=args.modulation_consumption_grace_frames,
+        expected_profile_tags=tuple(
+            item for item in args.expected_profile_tags.split() if item
+        ),
     )
     observation = MicroMachineSoakObservation(
         blackboard_dir=Path(args.blackboard_dir),
@@ -484,6 +502,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _require_positive(name: str, value: int) -> None:
     if type(value) is bool or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer.")
+
+
+def _string_tuple(name: str, value: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raise ValueError(f"{name} must be a sequence of strings.")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{name}[{index}] must be a non-empty string.")
+        result.append(item.strip())
+    return tuple(result)
 
 
 def _read_text(path: Path) -> str:
@@ -764,6 +793,41 @@ def _classify_stale_modulation(
             evidence={"latest_frame": latest_frame, "expires_at_frame": expires_at_frame},
         )
     return None
+
+
+def _classify_expected_profile_tags(
+    observation: MicroMachineSoakObservation,
+    latest_frame: int,
+    config: MicroMachineSoakConfig,
+) -> MicroMachineSoakFailure | None:
+    expected = set(config.expected_profile_tags)
+    if latest_frame < config.target_frame or not expected:
+        return None
+    observed = _observed_modulation_tags(observation)
+    missing = sorted(expected - observed)
+    if not missing:
+        return None
+    return MicroMachineSoakFailure(
+        code="strategy_profile_missing",
+        message="Expected long-horizon strategy profile tags were not published.",
+        evidence={"expected": sorted(expected), "observed": sorted(observed), "missing": missing},
+    )
+
+
+def _observed_modulation_tags(observation: MicroMachineSoakObservation) -> set[str]:
+    tags: set[str] = set()
+    updates = _read_jsonl_mappings(observation.modulation_archive_path)
+    latest = _read_json_mapping(observation.latest_modulation_path)
+    if latest:
+        updates.append(latest)
+    for update in updates:
+        vector = update.get("vector")
+        if not isinstance(vector, Mapping):
+            continue
+        vector_tags = vector.get("tags")
+        if isinstance(vector_tags, list):
+            tags.update(tag for tag in vector_tags if isinstance(tag, str) and tag)
+    return tags
 
 
 def _latest_modulation_update(

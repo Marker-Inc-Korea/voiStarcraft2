@@ -22,8 +22,9 @@ SOAK_POLL_SECONDS="${SOAK_POLL_SECONDS:-2}"
 SOAK_BOOTSTRAP_GRACE_SECONDS="${SOAK_BOOTSTRAP_GRACE_SECONDS:-120}"
 SOAK_PROFILE_REFRESH_FRAMES="${SOAK_PROFILE_REFRESH_FRAMES:-7000}"
 SOAK_AGGRESSIVE_MIN_FRAME="${SOAK_AGGRESSIVE_MIN_FRAME:-13000}"
+SOAK_PROFILE_SEQUENCE="${SOAK_PROFILE_SEQUENCE:-default_defensive_to_aggressive}"
 SOAK_MAX_ATTEMPTS="${SOAK_MAX_ATTEMPTS:-2}"
-SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-micromachine_crash micromachine_process_stopped sc2_disconnect telemetry_missing telemetry_stall repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation}"
+SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-micromachine_crash micromachine_process_stopped sc2_disconnect telemetry_missing telemetry_stall repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing}"
 SOAK_ATTEMPT_INDEX="${SOAK_ATTEMPT_INDEX:-}"
 SOAK_RUN_ID="${SOAK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 SOAK_ARTIFACT_ROOT="${SOAK_ARTIFACT_ROOT:-/private/tmp/voi-mm-soak}"
@@ -44,9 +45,13 @@ PREEXISTING_SC2_PORT_PIDS=""
 DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-soak-defensive-hold}"
 AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-soak-aggressive-pressure}"
 AGGRESSIVE_CURRENT_UPDATE_ID=""
-AGGRESSIVE_PROFILE_PUBLISHED=0
+ACTIVE_PROFILE_KEY=""
 LAST_PROFILE_REFRESH_FRAME=0
 SOAK_TARGET_REACHED=0
+PROFILE_SCHEDULE_KEYS=()
+PROFILE_SCHEDULE_FRAMES=()
+PROFILE_SCHEDULE_PUBLISHED=()
+SOAK_EXPECTED_PROFILE_TAGS=""
 
 if [[ -z "${SOAK_ATTEMPT_INDEX}" && "${SOAK_MAX_ATTEMPTS}" -gt 1 ]]; then
   mkdir -p "${SOAK_RUN_DIR}"
@@ -299,21 +304,103 @@ import sys
 
 from starcraft_commander.micromachine_runtime import (
     MicroMachineFilesystemBlackboard,
-    build_aggressive_pressure_profile,
-    build_defensive_hold_profile,
+    build_micromachine_strategy_profile,
 )
 
 directory, profile_name, update_id, frame_text, ttl_text = sys.argv[1:6]
 backend = MicroMachineFilesystemBlackboard(directory)
 ttl_seconds = int(ttl_text)
-if profile_name == "defensive_hold":
-    vector = build_defensive_hold_profile(ttl_seconds=ttl_seconds)
-elif profile_name == "aggressive_pressure":
-    vector = build_aggressive_pressure_profile(ttl_seconds=ttl_seconds)
-else:
-    raise SystemExit(f"unknown MicroMachine profile: {profile_name}")
+vector = build_micromachine_strategy_profile(profile_name, ttl_seconds=ttl_seconds)
 backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_id)
 PY
+}
+
+parse_profile_schedule() {
+  local sequence="$1"
+  PROFILE_SCHEDULE_KEYS=()
+  PROFILE_SCHEDULE_FRAMES=()
+  PROFILE_SCHEDULE_PUBLISHED=()
+  if [[ "${sequence}" == "default_defensive_to_aggressive" ]]; then
+    PROFILE_SCHEDULE_KEYS=("defensive_hold" "aggressive_pressure")
+    PROFILE_SCHEDULE_FRAMES=(0 "${SOAK_AGGRESSIVE_MIN_FRAME}")
+  elif [[ "${sequence}" == *","* || "${sequence}" == *"@"* ]]; then
+    IFS=',' read -r -a entries <<< "${sequence}"
+    local entry key frame
+    for entry in "${entries[@]}"; do
+      [[ -n "${entry}" ]] || continue
+      key="${entry%@*}"
+      frame="0"
+      if [[ "${entry}" == *"@"* ]]; then
+        frame="${entry##*@}"
+      fi
+      if [[ ! "${frame}" =~ ^[0-9]+$ ]]; then
+        echo "MicroMachine soak rejected: invalid profile schedule frame in ${entry}" >&2
+        exit 2
+      fi
+      PROFILE_SCHEDULE_KEYS+=("${key}")
+      PROFILE_SCHEDULE_FRAMES+=("${frame}")
+    done
+  else
+    PROFILE_SCHEDULE_KEYS=("${sequence}")
+    PROFILE_SCHEDULE_FRAMES=(0)
+  fi
+  if (( ${#PROFILE_SCHEDULE_KEYS[@]} == 0 )); then
+    echo "MicroMachine soak rejected: empty SOAK_PROFILE_SEQUENCE" >&2
+    exit 2
+  fi
+  local index
+  for (( index = 0; index < ${#PROFILE_SCHEDULE_KEYS[@]}; index++ )); do
+    PROFILE_SCHEDULE_PUBLISHED+=(0)
+  done
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${PROFILE_SCHEDULE_KEYS[@]}"
+import sys
+
+from starcraft_commander.micromachine_runtime import MICROMACHINE_STRATEGY_PROFILE_KEYS
+
+allowed = set(MICROMACHINE_STRATEGY_PROFILE_KEYS)
+unknown = [key for key in sys.argv[1:] if key not in allowed]
+if unknown:
+    raise SystemExit(
+        "MicroMachine soak rejected: unknown SOAK_PROFILE_SEQUENCE profile(s): "
+        + ", ".join(unknown)
+    )
+PY
+  local expected=()
+  for (( index = 0; index < ${#PROFILE_SCHEDULE_KEYS[@]}; index++ )); do
+    if (( PROFILE_SCHEDULE_FRAMES[$index] <= SOAK_TARGET_FRAME )); then
+      expected+=("${PROFILE_SCHEDULE_KEYS[$index]}")
+    fi
+  done
+  if (( ${#expected[@]} == 0 )); then
+    echo "MicroMachine soak rejected: SOAK_PROFILE_SEQUENCE has no profile scheduled before SOAK_TARGET_FRAME." >&2
+    exit 2
+  fi
+  SOAK_EXPECTED_PROFILE_TAGS="${expected[*]}"
+}
+
+publish_due_profiles() {
+  local current_frame="$1"
+  local index key frame update_id
+  for (( index = 0; index < ${#PROFILE_SCHEDULE_KEYS[@]}; index++ )); do
+    [[ "${PROFILE_SCHEDULE_PUBLISHED[$index]}" -eq 0 ]] || continue
+    key="${PROFILE_SCHEDULE_KEYS[$index]}"
+    frame="${PROFILE_SCHEDULE_FRAMES[$index]}"
+    (( current_frame >= frame )) || continue
+    if [[ "${key}" == "aggressive_pressure" ]] && ! has_required_macro_evidence; then
+      continue
+    fi
+    update_id="soak-${key}-${current_frame}"
+    if [[ "${key}" == "defensive_hold" && "${current_frame}" == "0" ]]; then
+      update_id="${DEFENSIVE_UPDATE_ID}"
+    elif [[ "${key}" == "aggressive_pressure" ]]; then
+      update_id="${AGGRESSIVE_UPDATE_ID}-${current_frame}"
+      AGGRESSIVE_CURRENT_UPDATE_ID="${update_id}"
+    fi
+    publish_profile "${key}" "${update_id}" "${current_frame}"
+    PROFILE_SCHEDULE_PUBLISHED[$index]=1
+    ACTIVE_PROFILE_KEY="${key}"
+    LAST_PROFILE_REFRESH_FRAME="${current_frame}"
+  done
 }
 
 telemetry_frame() {
@@ -376,7 +463,8 @@ classify_soak() {
     --production-stall-frames "${SOAK_PRODUCTION_STALL_FRAMES}" \
     --income-stall-frames "${SOAK_INCOME_STALL_FRAMES}" \
     --max-placement-failures "${SOAK_MAX_PLACEMENT_FAILURES}" \
-    --modulation-consumption-grace-frames "${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES}"
+    --modulation-consumption-grace-frames "${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES}" \
+    --expected-profile-tags "${SOAK_EXPECTED_PROFILE_TAGS}"
   )
   if (( ${#extra_args[@]} > 0 )); then
     command+=("${extra_args[@]}")
@@ -411,7 +499,8 @@ rm -f \
   "${SOAK_REPORT}" \
   "${SOAK_LIVE_REPORT}"
 
-publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
+parse_profile_schedule "${SOAK_PROFILE_SEQUENCE}"
+publish_due_profiles "0"
 capture_preexisting_sc2_port_pids
 
 python3 - <<'PY' "${MICROMACHINE_DIR}/bin/BotConfig.txt" "${MAP_FILE}"
@@ -461,16 +550,10 @@ bootstrap_deadline=$((SECONDS + SOAK_BOOTSTRAP_GRACE_SECONDS))
 while kill -0 "${BOT_PID}" 2>/dev/null; do
   current_telemetry_frame="$(telemetry_frame || true)"
   if [[ -n "${current_telemetry_frame}" ]]; then
-    if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 ]] && (( current_telemetry_frame >= SOAK_AGGRESSIVE_MIN_FRAME )) && has_required_macro_evidence; then
-      AGGRESSIVE_CURRENT_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}-${current_telemetry_frame}"
-      publish_profile "aggressive_pressure" "${AGGRESSIVE_CURRENT_UPDATE_ID}" "${current_telemetry_frame}"
-      AGGRESSIVE_PROFILE_PUBLISHED=1
-      LAST_PROFILE_REFRESH_FRAME="${current_telemetry_frame}"
-    fi
+    publish_due_profiles "${current_telemetry_frame}"
 
-    if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 1 ]] && (( current_telemetry_frame - LAST_PROFILE_REFRESH_FRAME >= SOAK_PROFILE_REFRESH_FRAMES )); then
-      AGGRESSIVE_CURRENT_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}-${current_telemetry_frame}"
-      publish_profile "aggressive_pressure" "${AGGRESSIVE_CURRENT_UPDATE_ID}" "${current_telemetry_frame}"
+    if [[ -n "${ACTIVE_PROFILE_KEY}" ]] && (( current_telemetry_frame - LAST_PROFILE_REFRESH_FRAME >= SOAK_PROFILE_REFRESH_FRAMES )); then
+      publish_profile "${ACTIVE_PROFILE_KEY}" "soak-${ACTIVE_PROFILE_KEY}-refresh-${current_telemetry_frame}" "${current_telemetry_frame}"
       LAST_PROFILE_REFRESH_FRAME="${current_telemetry_frame}"
     fi
 
