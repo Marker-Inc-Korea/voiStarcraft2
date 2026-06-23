@@ -87,6 +87,10 @@ The runner writes:
   `/private/tmp/voi-mm-soak-matrix/<run-id>/soak_history_dashboard.json`.
 - A Markdown summary at
   `/private/tmp/voi-mm-soak-matrix/<run-id>/soak_history_dashboard.md`.
+- A compact failure triage JSON report at
+  `/private/tmp/voi-mm-soak-matrix/<run-id>/triage_report.json`.
+- A GitHub-ready failure triage Markdown report at
+  `/private/tmp/voi-mm-soak-matrix/<run-id>/triage_report.md`.
 
 Production qualification requires `matrix_report.json.ok == true` and
 `matrix_report.json.failed == 0`. `SOAK_MATRIX_ALLOW_FAILURES=1` is only for
@@ -119,7 +123,7 @@ Artifact retention:
 - Keep the most recent passing production run and any recent failed diagnostic
   run needed for triage before cleaning old directories.
 - Never delete a failed run before `failure_codes`, `matrix_report.json`, and
-  `soak_history_dashboard.md` have been reviewed or attached to the issue/PR.
+  `triage_report.md` have been reviewed or attached to the issue/PR.
 
 Do not weaken `soak_macos_local.sh` classifiers to make a flaky map pass. A
 map/start-location failure is useful evidence only as debugging input, not as a
