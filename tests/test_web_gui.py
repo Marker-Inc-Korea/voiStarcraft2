@@ -282,7 +282,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "/api/live/status",
             "parseJsonResponse",
             "micromachine-panel",
-            "MicroMachine 정책 조정",
+            "MicroMachine live text injection",
+            "MicroMachine에 주입할 텍스트 의도",
+            "MicroMachine live modulation 전송",
+            "LLM/DSL modulation",
             "renderMicroMachineStatus",
             "pollMicroMachineStatus",
             "setInterval(pollHistory",
@@ -317,6 +320,30 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual(directory, document["blackboard_dir"])
             with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
                 self.assertIn("combat.defend_bias=0.7", handle.read())
+
+    def test_micromachine_modulation_endpoint_compiles_plain_gui_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "탱크로 안전하게 수비하면서 버텨",
+                    "blackboard_dir": directory,
+                    "current_frame": 21,
+                    "update_id": "web-keyword-1",
+                }
+            )
+
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+            self.assertIn("application/json", content_type)
+            document = json.loads(payload.decode("utf-8"))
+            self.assertTrue(document["accepted"], document)
+            self.assertTrue(document["ok"], document)
+            self.assertEqual("published", document["status"])
+            self.assertEqual("web-keyword-1", document["update"]["update_id"])
+            self.assertEqual("constraint", document["compile_result"]["vector"]["override_level"])
+            with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
+                kv = handle.read()
+            self.assertIn("combat.defend_bias=0.65", kv)
+            self.assertIn("squad.defense_bias=0.45", kv)
 
     def test_micromachine_status_endpoint_renders_latest_dashboard(self):
         with tempfile.TemporaryDirectory() as directory:
