@@ -520,8 +520,10 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             self.assertFalse(report["ok"])
             history = json.loads((run_dir / "history.json").read_text())
             self.assertEqual("disabled", history["status"])
-            self.assertEqual(0, history["run_count"])
-            self.assertEqual("none", history["streaks"]["current_status"])
+            self.assertEqual(1, history["run_count"])
+            self.assertEqual("disabled", history["runs"][0]["status"])
+            self.assertFalse(history["runs"][0]["enabled"])
+            self.assertEqual("disabled", history["streaks"]["current_status"])
             self.assertEqual("blocked", history["production_signoff"]["status"])
             self.assertEqual(
                 [{"run_id": "disabled-run", "reason": "disabled"}],

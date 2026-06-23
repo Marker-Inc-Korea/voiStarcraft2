@@ -102,9 +102,9 @@ payload = {
 dashboard = {
     "status": "disabled",
     "ok": False,
-    "run_count": 0,
+    "run_count": 1,
     "passed_runs": 0,
-    "failed_runs": 0,
+    "failed_runs": 1,
     "case_count": 0,
     "passed_cases": 0,
     "failed_cases": 0,
@@ -113,7 +113,7 @@ dashboard = {
     "enemy_races": [],
     "enemy_difficulties": [],
     "target_frames": [],
-    "streaks": {"current_status": "none", "current_pass_streak": 0, "current_fail_streak": 0},
+    "streaks": {"current_status": "disabled", "current_pass_streak": 0, "current_fail_streak": 1},
     "production_signoff": {
         "status": "blocked",
         "ok": False,
@@ -126,7 +126,24 @@ dashboard = {
         "coverage": {"required_count": 0, "observed_count": 0, "missing_count": 0, "missing": []},
         "blockers": [{"code": "no_eligible_production_runs"}],
     },
-    "runs": [],
+    "runs": [
+        {
+            "run_id": report.parent.name,
+            "report": str(report),
+            "artifact_dir": str(report.parent),
+            "ok": False,
+            "status": "disabled",
+            "enabled": False,
+            "case_count": 0,
+            "passed": 0,
+            "failed": 0,
+            "qualification_tier": qualification_tier,
+            "allow_failures": allow_failures,
+            "strategy_profiles": strategy_profiles,
+            "build_identity": build_identity,
+            "failure_codes": [],
+        }
+    ],
 }
 report.parent.mkdir(parents=True, exist_ok=True)
 history_json.parent.mkdir(parents=True, exist_ok=True)
