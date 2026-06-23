@@ -148,6 +148,69 @@ sign-off.
 The matrix runner rejects `SOAK_MATRIX_QUALIFICATION_TIER=production` combined
 with `SOAK_MATRIX_ALLOW_FAILURES=1`.
 
+## Final Release Gate
+
+Issue #51 adds the final automated gate before manual user QA. It verifies
+already-produced evidence; it does not launch SC2, mutate the MicroMachine
+blackboard, or give providers raw SC2 control. Missing files, stale evidence,
+disabled runs, diagnostic-only runs, build mismatches, failed matrix cases, and
+failed triage reports all block the release.
+
+Create unit-test evidence after hosted or local unit-contracts pass:
+
+```bash
+uv run pytest -q
+python3 - <<'PY' > /private/tmp/voi-mm-unit-evidence.json
+import json
+print(json.dumps({
+    "ok": True,
+    "status": "passed",
+    "command": "uv run pytest -q",
+    "summary": "unit-contracts passed locally or in GitHub CI"
+}, sort_keys=True))
+PY
+```
+
+Run the final gate from existing matrix artifacts:
+
+```bash
+BUILD_IDENTITY_REPORT=/private/tmp/MicroMachine/build-latest-api/voi_build_identity.json
+python3 -m starcraft_commander.micromachine_release_gate \
+  --history-root /private/tmp/voi-mm-soak-matrix \
+  --build-identity-report "${BUILD_IDENTITY_REPORT}" \
+  --unit-evidence /private/tmp/voi-mm-unit-evidence.json \
+  --triage-report /private/tmp/voi-mm-soak-matrix/production-signoff-001/triage_report.json \
+  --output-json /private/tmp/voi-mm-release-gate/release_gate.json \
+  --output-markdown /private/tmp/voi-mm-release-gate/release_gate.md
+```
+
+The command exits zero only when:
+
+- The map-pool production tier matches the dashboard signoff requirements.
+- The recent-N production signoff is `passed`.
+- Every eligible production matrix report exists, is enabled, has
+  `allow_failures=false`, and has `failed=0`.
+- Build identity is recorded, valid, and matches the matrix evidence.
+- Unit-test evidence exists and reports `ok=true`.
+- Triage evidence exists and has `failed_case_count=0`.
+- Evidence is fresh; the default maximum age is 14 days. Use
+  `--no-evidence-age-limit` only for deterministic review of archived evidence,
+  not for production sign-off.
+
+Attach both release-gate outputs to the final PR:
+
+- `release_gate.json` for machine-readable final verdict.
+- `release_gate.md` for reviewer-ready blockers, evidence paths, and the manual
+  user QA checklist.
+
+The final gate intentionally leaves only user QA:
+
+- Launch the patched MicroMachine build against the local StarCraft II install.
+- Submit live text strategy intents through the UI and confirm bounded DSL
+  modulation is consumed.
+- Watch one full game for human-visible strategic alignment and no unexpected
+  manual-control surface.
+
 Before launching a case, the matrix runner now writes
 `preflight_report.json`. Preflight distinguishes:
 
@@ -266,4 +329,6 @@ Stop condition for operations sign-off:
 3. The production matrix has zero failed cases.
 4. Neural adapter tests pass and any real model adapter only emits bounded
    representation axes.
-5. User QA is the only remaining manual gate.
+5. `python3 -m starcraft_commander.micromachine_release_gate` exits zero and
+   writes `release_gate.json` plus `release_gate.md`.
+6. User QA is the only remaining manual gate.
