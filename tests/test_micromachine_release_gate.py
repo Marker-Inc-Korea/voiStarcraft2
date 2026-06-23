@@ -251,6 +251,116 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
                 {blocker["code"] for blocker in report["blockers"]},
             )
 
+    def test_release_gate_blocks_stale_matrix_report_from_history_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.write_green_evidence(root, build_identity="build-a")
+            old = time.time() - 10
+            matrix_path = root / "run-green" / "matrix_report.json"
+            os.utime(matrix_path, (old, old))
+
+            report = build_release_gate_report(
+                MicroMachineReleaseGateConfig(
+                    history_roots=(root,),
+                    build_identity_report=paths["build_identity"],
+                    unit_evidence=paths["unit"],
+                    triage_reports=(paths["triage"],),
+                    max_evidence_age_seconds=1,
+                )
+            )
+
+            stale_blockers = [
+                blocker
+                for blocker in report["blockers"]
+                if blocker["code"] == "stale_evidence"
+            ]
+            self.assertFalse(report["ok"])
+            self.assertTrue(
+                any(blocker["path"] == str(matrix_path) for blocker in stale_blockers)
+            )
+
+    def test_release_gate_recomputes_coverage_from_matrix_report_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.write_supporting_evidence(root, build_identity="build-a")
+            matrix_dir = root / "run-forged-dashboard"
+            matrix_dir.mkdir()
+            matrix_path = matrix_dir / "matrix_report.json"
+            matrix_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "passed",
+                        "enabled": True,
+                        "target_frame": 12_000,
+                        "timeout_seconds": 1_200,
+                        "qualification_tier": "production",
+                        "allow_failures": False,
+                        "strategy_profiles": ["default_defensive_to_aggressive"],
+                        "build_identity": "build-a",
+                        "build_identity_ok": True,
+                        "build_identity_failure_codes": [],
+                        "case_count": 1,
+                        "passed": 1,
+                        "failed": 0,
+                        "cases": [
+                            self.matrix_case(
+                                "Zerg",
+                                case_ok=True,
+                                failure_codes=[],
+                            )
+                        ],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            dashboard_path = root / "forged_dashboard.json"
+            dashboard_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "passed",
+                        "run_count": 1,
+                        "case_count": 3,
+                        "production_signoff": self.green_signoff(),
+                        "runs": [
+                            {
+                                "run_id": "run-forged-dashboard",
+                                "report": str(matrix_path),
+                                "ok": True,
+                                "status": "passed",
+                                "case_count": 3,
+                                "passed": 3,
+                                "failed": 0,
+                                "qualification_tier": "production",
+                                "allow_failures": False,
+                                "build_identity": "build-a",
+                            }
+                        ],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+
+            report = build_release_gate_report(
+                MicroMachineReleaseGateConfig(
+                    history_dashboard=dashboard_path,
+                    build_identity_report=paths["build_identity"],
+                    unit_evidence=paths["unit"],
+                    triage_reports=(paths["triage"],),
+                    max_evidence_age_seconds=None,
+                )
+            )
+
+            codes = {blocker["code"] for blocker in report["blockers"]}
+            self.assertFalse(report["ok"])
+            self.assertIn("matrix_coverage_incomplete", codes)
+            self.assertEqual(3, report["matrix_coverage"]["required_count"])
+            self.assertEqual(1, report["matrix_coverage"]["observed_count"])
+            self.assertEqual(2, report["matrix_coverage"]["missing_count"])
+
     def test_release_gate_outputs_and_cli_exit_codes_are_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -414,6 +524,34 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
             "enemy_difficulty": 1,
             "strategy_profiles": ["default_defensive_to_aggressive"],
             "failure_codes": failure_codes or [],
+        }
+
+    def green_signoff(self) -> dict[str, object]:
+        return {
+            "ok": True,
+            "status": "passed",
+            "signoff_tier": "production",
+            "eligible_run_count": 1,
+            "excluded_run_count": 0,
+            "eligible_runs": ["run-forged-dashboard"],
+            "excluded_runs": [],
+            "required": {
+                "map_files": ["AcropolisLE.SC2Map"],
+                "enemy_races": ["Zerg", "Protoss", "Terran"],
+                "enemy_difficulties": [1],
+                "strategy_profiles": ["default_defensive_to_aggressive"],
+            },
+            "coverage": {
+                "required_count": 3,
+                "observed_count": 3,
+                "missing_count": 0,
+                "missing": [],
+            },
+            "build_identity": {
+                "required": "build-a",
+                "observed": ["build-a"],
+            },
+            "blockers": [],
         }
 
 

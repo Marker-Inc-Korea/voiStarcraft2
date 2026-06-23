@@ -119,12 +119,14 @@ def build_release_gate_report(
     unit_evidence = _read_unit_evidence(config.unit_evidence, blockers)
     triage = _read_triage_reports(config.triage_reports, blockers)
     signoff = _dashboard_signoff(dashboard, blockers)
-    matrix_reports = _verify_matrix_reports(
+    matrix_verification = _verify_matrix_reports(
         dashboard,
+        tier_summary=tier_summary,
         required_build_identity=required_identity,
         signoff_tier=config.signoff_tier,
         blockers=blockers,
     )
+    evidence_paths.extend(matrix_verification["paths"])
     _verify_map_pool_alignment(tier_summary, signoff, blockers)
     _verify_production_signoff(signoff, blockers)
     _verify_build_identity(
@@ -162,7 +164,8 @@ def build_release_gate_report(
             "case_count": dashboard.get("case_count"),
             "production_signoff": signoff,
         },
-        "matrix_reports": matrix_reports,
+        "matrix_reports": matrix_verification["reports"],
+        "matrix_coverage": matrix_verification["coverage"],
         "triage_reports": triage,
         "blockers": blockers,
         "user_qa_remaining": list(config.user_qa_items),
@@ -465,15 +468,19 @@ def _dashboard_signoff(
 def _verify_matrix_reports(
     dashboard: Mapping[str, object],
     *,
+    tier_summary: Mapping[str, object],
     required_build_identity: str | None,
     signoff_tier: str,
     blockers: list[dict[str, object]],
-) -> list[dict[str, object]]:
+) -> dict[str, object]:
     runs = dashboard.get("runs")
     if not isinstance(runs, list) or not runs:
         blockers.append({"code": "missing_matrix_runs"})
-        return []
+        coverage = _build_matrix_coverage(tier_summary, set())
+        return {"reports": [], "coverage": coverage, "paths": []}
     results: list[dict[str, object]] = []
+    paths: list[Path] = []
+    observed_coverage: set[tuple[str, str, int, str | None]] = set()
     eligible_count = 0
     for run in runs:
         if not isinstance(run, Mapping):
@@ -493,6 +500,7 @@ def _verify_matrix_reports(
             )
             continue
         payload = _read_json_mapping(path, blockers, "matrix_report")
+        paths.append(path)
         is_eligible = (
             payload.get("enabled", True) is not False
             and payload.get("qualification_tier") == signoff_tier
@@ -520,6 +528,15 @@ def _verify_matrix_reports(
                         "actual": payload.get("build_identity"),
                     }
                 )
+            if (
+                payload.get("ok") is True
+                and failed == 0
+                and (
+                    required_build_identity is None
+                    or payload.get("build_identity") == required_build_identity
+                )
+            ):
+                observed_coverage.update(_matrix_observed_coverage(payload))
         results.append(
             {
                 "run_id": run.get("run_id"),
@@ -534,7 +551,89 @@ def _verify_matrix_reports(
         )
     if eligible_count == 0:
         blockers.append({"code": "no_eligible_matrix_report"})
-    return results
+    coverage = _build_matrix_coverage(tier_summary, observed_coverage)
+    if coverage["missing_count"] != 0 or coverage["observed_count"] != coverage["required_count"]:
+        blockers.append(
+            {
+                "code": "matrix_coverage_incomplete",
+                "required_count": coverage["required_count"],
+                "observed_count": coverage["observed_count"],
+                "missing_count": coverage["missing_count"],
+            }
+        )
+    return {"reports": results, "coverage": coverage, "paths": paths}
+
+
+def _matrix_observed_coverage(
+    matrix_payload: Mapping[str, object],
+) -> set[tuple[str, str, int, str | None]]:
+    observed: set[tuple[str, str, int, str | None]] = set()
+    run_profiles = _string_items(matrix_payload.get("strategy_profiles"))
+    cases = matrix_payload.get("cases")
+    if not isinstance(cases, list):
+        return observed
+    for case in cases:
+        if not isinstance(case, Mapping) or case.get("ok") is not True:
+            continue
+        base = _case_coverage_base(case)
+        if base is None:
+            continue
+        profiles = _string_items(case.get("strategy_profiles")) or run_profiles
+        if not profiles:
+            observed.add((*base, None))
+            continue
+        for profile in profiles:
+            observed.add((*base, profile))
+    return observed
+
+
+def _build_matrix_coverage(
+    tier_summary: Mapping[str, object],
+    observed: set[tuple[str, str, int, str | None]],
+) -> dict[str, object]:
+    required_profiles = _string_items(tier_summary.get("strategy_profiles"))
+    profiles: list[str | None] = required_profiles or [None]
+    required = {
+        (map_file, race, difficulty, profile)
+        for map_file in _string_items(tier_summary.get("map_files"))
+        for race in _string_items(tier_summary.get("enemy_races"))
+        for difficulty in _int_items(tier_summary.get("enemy_difficulties"))
+        for profile in profiles
+    }
+    missing = [_coverage_payload(key) for key in sorted(required) if key not in observed]
+    return {
+        "required_count": len(required),
+        "observed_count": len(required.intersection(observed)),
+        "missing_count": len(missing),
+        "missing": missing,
+    }
+
+
+def _case_coverage_base(case: Mapping[str, object]) -> tuple[str, str, int] | None:
+    map_file = case.get("map_file")
+    enemy_race = case.get("enemy_race")
+    difficulty = case.get("enemy_difficulty")
+    if not isinstance(map_file, str) or not map_file:
+        return None
+    if not isinstance(enemy_race, str) or not enemy_race:
+        return None
+    if type(difficulty) is bool or not isinstance(difficulty, int):
+        return None
+    return (map_file, enemy_race, difficulty)
+
+
+def _coverage_payload(
+    key: tuple[str, str, int, str | None],
+) -> dict[str, object]:
+    map_file, enemy_race, difficulty, profile = key
+    payload: dict[str, object] = {
+        "map_file": map_file,
+        "enemy_race": enemy_race,
+        "enemy_difficulty": difficulty,
+    }
+    if profile is not None:
+        payload["strategy_profile"] = profile
+    return payload
 
 
 def _verify_map_pool_alignment(
