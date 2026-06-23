@@ -27,6 +27,10 @@ on:
         description: "Set to 1 only for diagnostic or negative-control runs, never production sign-off."
         required: false
         default: "0"
+      enable_soak:
+        description: "Set to 1 to run real self-hosted SC2 soak. Default 0 writes disabled artifacts only."
+        required: false
+        default: "0"
 
 jobs:
   real-sc2-soak-matrix:
@@ -35,12 +39,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify local MicroMachine inputs
+        if: inputs.enable_soak == '1'
         run: |
           test -x "${MICROMACHINE_BUILD_DIR:-/private/tmp/MicroMachine/build-latest-api}/bin/MicroMachine"
           test -x "${SC2_EXECUTABLE:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II/Versions/Base96883/SC2.app/Contents/MacOS/SC2}"
-      - name: Run real SC2 MicroMachine soak matrix
+      - name: Run or disable real SC2 MicroMachine soak matrix
         run: |
           SOAK_MATRIX_RUN_ID="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+          SOAK_MATRIX_ENABLED="${{ inputs.enable_soak }}" \
           SOAK_MATRIX_MAP_FILES="${{ inputs.maps }}" \
           SOAK_MATRIX_ENEMY_RACES="${{ inputs.enemy_races }}" \
           SOAK_MATRIX_ENEMY_DIFFICULTIES="${{ inputs.enemy_difficulties }}" \
@@ -55,3 +61,4 @@ jobs:
           name: micromachine-soak-matrix-${{ github.run_id }}-${{ github.run_attempt }}
           path: /private/tmp/voi-mm-soak-matrix/gha-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: warn
+          retention-days: 30

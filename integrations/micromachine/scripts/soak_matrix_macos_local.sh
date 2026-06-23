@@ -16,8 +16,61 @@ SOAK_MATRIX_STOP_ON_FAILURE="${SOAK_MATRIX_STOP_ON_FAILURE:-0}"
 SOAK_MATRIX_ALLOW_FAILURES="${SOAK_MATRIX_ALLOW_FAILURES:-0}"
 SOAK_MATRIX_AGGREGATE_ONLY="${SOAK_MATRIX_AGGREGATE_ONLY:-0}"
 SOAK_MATRIX_MIN_PASSES="${SOAK_MATRIX_MIN_PASSES:-1}"
+SOAK_MATRIX_ENABLED="${SOAK_MATRIX_ENABLED:-1}"
+SOAK_MATRIX_HISTORY_JSON="${SOAK_MATRIX_HISTORY_JSON:-${SOAK_MATRIX_RUN_DIR}/soak_history_dashboard.json}"
+SOAK_MATRIX_HISTORY_MD="${SOAK_MATRIX_HISTORY_MD:-${SOAK_MATRIX_RUN_DIR}/soak_history_dashboard.md}"
 
+# The Python aggregator preserves per-case failure_codes, attempts, and
+# artifact_manifest fields in matrix_report.json and the history dashboard.
 mkdir -p "${SOAK_MATRIX_RUN_DIR}"
+
+if [[ "${SOAK_MATRIX_ENABLED}" != "1" ]]; then
+  python3 - <<'PY' "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_HISTORY_JSON}" "${SOAK_MATRIX_HISTORY_MD}"
+import json
+import sys
+from pathlib import Path
+
+report = Path(sys.argv[1])
+history_json = Path(sys.argv[2])
+history_md = Path(sys.argv[3])
+payload = {
+    "status": "disabled",
+    "ok": False,
+    "enabled": False,
+    "case_count": 0,
+    "passed": 0,
+    "failed": 0,
+    "cases": [],
+}
+dashboard = {
+    "status": "disabled",
+    "ok": False,
+    "run_count": 0,
+    "passed_runs": 0,
+    "failed_runs": 0,
+    "case_count": 0,
+    "passed_cases": 0,
+    "failed_cases": 0,
+    "failure_codes": [],
+    "maps": [],
+    "enemy_races": [],
+    "enemy_difficulties": [],
+    "target_frames": [],
+    "runs": [],
+}
+report.parent.mkdir(parents=True, exist_ok=True)
+history_json.parent.mkdir(parents=True, exist_ok=True)
+report.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+history_json.write_text(json.dumps(dashboard, indent=2, sort_keys=True) + "\n")
+history_md.write_text(
+    "# MicroMachine Soak History\n\n"
+    "- Status: `disabled`\n"
+    "- Soak execution was skipped because `SOAK_MATRIX_ENABLED` was not `1`.\n"
+)
+print(f"MicroMachine matrix disabled: {report}")
+PY
+  exit 0
+fi
 
 if [[ "${SOAK_MATRIX_AGGREGATE_ONLY}" != "1" ]]; then
   run_index=0
@@ -48,94 +101,16 @@ if [[ "${SOAK_MATRIX_AGGREGATE_ONLY}" != "1" ]]; then
   done
 fi
 
-python3 - <<'PY' "${SOAK_MATRIX_RUN_DIR}" "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_TARGET_FRAME}" "${SOAK_MATRIX_TIMEOUT_SECONDS}"
-import json
-import sys
-from pathlib import Path
+python3 -m starcraft_commander.micromachine_soak_history matrix-report \
+  --run-dir "${SOAK_MATRIX_RUN_DIR}" \
+  --output "${SOAK_MATRIX_REPORT}" \
+  --target-frame "${SOAK_MATRIX_TARGET_FRAME}" \
+  --timeout-seconds "${SOAK_MATRIX_TIMEOUT_SECONDS}"
 
-root = Path(sys.argv[1])
-target = Path(sys.argv[2])
-target_frame = int(sys.argv[3])
-timeout_seconds = int(sys.argv[4])
-cases = []
-passed = 0
-failed = 0
-for case_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-    report_path = case_dir / "soak_report.json"
-    case = {
-        "case_id": case_dir.name,
-        "case_dir": str(case_dir),
-        "report": str(report_path),
-    }
-    if not report_path.exists():
-        case.update({"status": "missing_report", "ok": False, "failures": []})
-        failed += 1
-        cases.append(case)
-        continue
-    payload = json.loads(report_path.read_text())
-    ok = payload.get("ok") is True
-    attempts = payload.get("attempts", [])
-    direct_failures = payload.get("failures", [])
-    flattened_failures = list(direct_failures) if isinstance(direct_failures, list) else []
-    if isinstance(attempts, list):
-        for attempt in attempts:
-            if not isinstance(attempt, dict):
-                continue
-            for failure in attempt.get("failures", []):
-                if isinstance(failure, dict):
-                    flattened_failures.append(
-                        {
-                            **failure,
-                            "attempt": attempt.get("attempt"),
-                            "attempt_status": attempt.get("status"),
-                        }
-                    )
-    failure_codes = sorted(
-        {
-            failure.get("code")
-            for failure in flattened_failures
-            if isinstance(failure, dict) and failure.get("code")
-        }
-    )
-    case.update(
-        {
-            "status": payload.get("status"),
-            "ok": ok,
-            "latest_frame": payload.get("latest_frame"),
-            "macro_evidence_ok": payload.get("macro_evidence_ok"),
-            "manager_intervention_ok": payload.get("manager_intervention_ok"),
-            "failures": flattened_failures,
-            "failure_codes": failure_codes,
-            "attempts": attempts if isinstance(attempts, list) else [],
-            "selected_attempt": payload.get("selected_attempt"),
-            "artifact_manifest": payload.get("artifact_manifest", {}),
-        }
-    )
-    if ok:
-        passed += 1
-    else:
-        failed += 1
-    cases.append(case)
-
-target.write_text(
-    json.dumps(
-        {
-            "status": "passed" if failed == 0 and cases else "failed",
-            "ok": failed == 0 and bool(cases),
-            "target_frame": target_frame,
-            "timeout_seconds": timeout_seconds,
-            "case_count": len(cases),
-            "passed": passed,
-            "failed": failed,
-            "cases": cases,
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    + "\n"
-)
-print(f"MicroMachine matrix report: {target}")
-PY
+python3 -m starcraft_commander.micromachine_soak_history history-dashboard \
+  --root "${SOAK_MATRIX_ARTIFACT_ROOT}" \
+  --output-json "${SOAK_MATRIX_HISTORY_JSON}" \
+  --output-markdown "${SOAK_MATRIX_HISTORY_MD}"
 
 python3 - <<'PY' "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_ALLOW_FAILURES}" "${SOAK_MATRIX_MIN_PASSES}"
 import json
