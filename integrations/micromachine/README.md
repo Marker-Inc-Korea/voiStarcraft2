@@ -264,6 +264,8 @@ which currently requires `AcropolisLE.SC2Map` against Zerg, Protoss, and Terran
 at difficulty 1. `Ladder2019Season3/ThunderbirdLE.SC2Map` remains diagnostic
 until the no-production deadlock blocker is fixed. Excluded maps are outside
 the support contract and cannot be used for production sign-off.
+The `extended` tier keeps the same required map pool but expands the declared
+race/difficulty matrix to Zerg, Protoss, and Terran at difficulties 1 and 2.
 Each case writes `preflight_report.json` before SC2 launch. Known unsupported,
 missing, geometry-risk, or placement-risk maps are turned into ordinary failed
 case artifacts instead of being hidden by a late no-production deadlock.
@@ -284,6 +286,16 @@ Production qualification must run without `SOAK_MATRIX_ALLOW_FAILURES` and
 requires `matrix_report.json.failed == 0`. Set `SOAK_MATRIX_ALLOW_FAILURES=1`
 only for diagnostics or negative-control runs; those reports are evidence for
 debugging, not production sign-off.
+
+Example expanded required-pool matrix for user-side QA repetition:
+
+```bash
+MICROMACHINE_DIR=/private/tmp/MicroMachine \
+MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
+SOAK_MATRIX_RUN_ID=extended-required-pool-001 \
+SOAK_MATRIX_QUALIFICATION_TIER=extended \
+integrations/micromachine/scripts/soak_matrix_macos_local.sh
+```
 
 Example diagnostic run for the known Thunderbird blocker:
 

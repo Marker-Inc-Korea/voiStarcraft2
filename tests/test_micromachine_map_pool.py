@@ -59,6 +59,12 @@ class MicroMachineMapPoolTest(unittest.TestCase):
         excluded = [entry for entry in pool.maps if entry.classification == "excluded"]
         self.assertEqual(["Custom/UnknownOrUnvetted.SC2Map"], [entry.map_file for entry in excluded])
 
+        extended = pool.to_summary("extended")
+        self.assertEqual(["AcropolisLE.SC2Map"], extended["map_files"])
+        self.assertEqual(["Zerg", "Protoss", "Terran"], extended["enemy_races"])
+        self.assertEqual([1, 2], extended["enemy_difficulties"])
+        self.assertFalse(extended["allow_failures"])
+
     def test_cli_prints_shell_friendly_matrix_defaults(self) -> None:
         completed = subprocess.run(
             [

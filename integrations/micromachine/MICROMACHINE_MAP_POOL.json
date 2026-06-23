@@ -97,6 +97,15 @@
       "timeout_seconds": 1200,
       "strategy_profiles": ["default_defensive_to_aggressive"]
     },
+    "extended": {
+      "description": "Expanded required-pool qualification across baseline ladder races and low-to-medium built-in AI difficulty tiers.",
+      "map_classifications": ["required"],
+      "enemy_races": ["Zerg", "Protoss", "Terran"],
+      "enemy_difficulties": [1, 2],
+      "target_frame": 12000,
+      "timeout_seconds": 1200,
+      "strategy_profiles": ["default_defensive_to_aggressive"]
+    },
     "diagnostic": {
       "description": "Known blockers and unqualified maps; never production signoff.",
       "map_classifications": ["diagnostic"],

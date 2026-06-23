@@ -71,12 +71,14 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 timeout_seconds=1_200,
                 qualification_tier="diagnostic",
                 allow_failures=True,
+                strategy_profiles=("default_defensive_to_aggressive",),
             )
 
             self.assertFalse(report["ok"])
             self.assertEqual("failed", report["status"])
             self.assertEqual("diagnostic", report["qualification_tier"])
             self.assertTrue(report["allow_failures"])
+            self.assertEqual(["default_defensive_to_aggressive"], report["strategy_profiles"])
             self.assertEqual(3, report["case_count"])
             self.assertEqual(1, report["passed"])
             self.assertEqual(2, report["failed"])
@@ -85,12 +87,69 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 report["cases"][1]["failure_codes"],
             )
             self.assertEqual("passed", report["cases"][0]["preflight_status"])
+            self.assertEqual(12_000, report["cases"][0]["target_frame"])
+            self.assertEqual(1_200, report["cases"][0]["timeout_seconds"])
+            self.assertEqual("diagnostic", report["cases"][0]["qualification_tier"])
+            self.assertEqual(
+                ["default_defensive_to_aggressive"],
+                report["cases"][0]["strategy_profiles"],
+            )
             self.assertEqual("failed", report["cases"][1]["preflight_status"])
             self.assertEqual(["geometry_risk"], report["cases"][1]["preflight_failure_codes"])
             self.assertEqual("passed", report["cases"][0]["failure_phase"])
             self.assertEqual("preflight_failure", report["cases"][1]["failure_phase"])
             self.assertEqual("missing_report", report["cases"][2]["status"])
             self.assertEqual("missing_report", report["cases"][2]["failure_phase"])
+            self.assertEqual(["missing_report"], report["cases"][2]["failure_codes"])
+            self.assertEqual("Acropolis", report["cases"][2]["map_file"])
+            self.assertEqual("Terran", report["cases"][2]["enemy_race"])
+            self.assertEqual(1, report["cases"][2]["enemy_difficulty"])
+
+    def test_required_failure_is_not_hidden_by_later_diagnostic_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            required_failed = root / "01-Acropolis-Zerg-d1"
+            diagnostic_passed = root / "02-Thunderbird-Zerg-d1"
+            required_failed.mkdir()
+            diagnostic_passed.mkdir()
+            self.write_soak_report(
+                required_failed / "soak_report.json",
+                ok=False,
+                status="failed",
+                latest_frame=7_000,
+                map_file="AcropolisLE.SC2Map",
+                enemy_race="Zerg",
+                enemy_difficulty=1,
+                failures=[{"code": "no_production_deadlock"}],
+            )
+            self.write_soak_report(
+                diagnostic_passed / "soak_report.json",
+                ok=True,
+                status="passed",
+                latest_frame=12_500,
+                map_file="Ladder2019Season3/ThunderbirdLE.SC2Map",
+                enemy_race="Zerg",
+                enemy_difficulty=1,
+            )
+
+            report = aggregate_matrix_run(
+                root,
+                target_frame=12_000,
+                timeout_seconds=1_200,
+                qualification_tier="production",
+                allow_failures=False,
+                strategy_profiles=("default_defensive_to_aggressive",),
+            )
+
+            self.assertFalse(report["ok"])
+            self.assertEqual("failed", report["status"])
+            self.assertEqual(1, report["passed"])
+            self.assertEqual(1, report["failed"])
+            self.assertEqual(["no_production_deadlock"], report["cases"][0]["failure_codes"])
+            self.assertEqual(
+                "Ladder2019Season3/ThunderbirdLE.SC2Map",
+                report["cases"][1]["map_file"],
+            )
 
     def test_history_dashboard_counts_failures_maps_and_artifact_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -276,6 +335,7 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             self.assertEqual("disabled", report["status"])
             self.assertEqual("production", report["qualification_tier"])
             self.assertFalse(report["allow_failures"])
+            self.assertEqual(["default_defensive_to_aggressive"], report["strategy_profiles"])
             self.assertFalse(report["ok"])
             history = json.loads((run_dir / "history.json").read_text())
             self.assertEqual("disabled", history["status"])

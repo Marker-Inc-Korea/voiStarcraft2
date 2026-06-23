@@ -26,6 +26,21 @@ SOAK_MATRIX_QUALIFICATION_TIER=production \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
 
+Use the expanded required-pool tier when validating the next ladder-style
+race/difficulty matrix before user QA:
+
+```bash
+MICROMACHINE_DIR=/private/tmp/MicroMachine \
+MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
+SOAK_MATRIX_RUN_ID=extended-required-pool-001 \
+SOAK_MATRIX_QUALIFICATION_TIER=extended \
+integrations/micromachine/scripts/soak_matrix_macos_local.sh
+```
+
+The `extended` tier still includes only required maps. It expands the built-in
+AI matrix to Zerg, Protoss, and Terran at difficulties 1 and 2, and it keeps
+`failed=0` as the pass condition.
+
 Explicit environment overrides such as `SOAK_MATRIX_MAP_FILES`,
 `SOAK_MATRIX_ENEMY_RACES`, `SOAK_MATRIX_ENEMY_DIFFICULTIES`,
 `SOAK_MATRIX_TARGET_FRAME`, and `SOAK_MATRIX_TIMEOUT_SECONDS` still take

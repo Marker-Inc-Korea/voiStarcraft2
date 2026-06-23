@@ -39,6 +39,7 @@ def aggregate_matrix_run(
     timeout_seconds: int,
     qualification_tier: str = "production",
     allow_failures: bool = False,
+    strategy_profiles: Sequence[str] = (),
 ) -> dict[str, object]:
     """Build one deterministic matrix_report.json payload from case reports."""
 
@@ -49,6 +50,7 @@ def aggregate_matrix_run(
         raise ValueError("qualification_tier must be a non-empty string.")
     if type(allow_failures) is not bool:
         raise ValueError("allow_failures must be a boolean.")
+    profiles = _string_sequence("strategy_profiles", strategy_profiles)
     cases: list[dict[str, object]] = []
     passed = 0
     failed = 0
@@ -67,14 +69,22 @@ def aggregate_matrix_run(
             "preflight_failure_codes": (
                 preflight.get("failure_codes") if preflight else []
             ),
+            "target_frame": target,
+            "timeout_seconds": timeout,
+            "qualification_tier": qualification_tier,
+            "allow_failures": allow_failures,
+            "strategy_profiles": list(profiles),
         }
         if not report_path.exists():
+            dimensions = _case_dimensions_from_sources(case_dir.name, preflight, {})
             case.update(
                 {
                     "status": "missing_report",
                     "ok": False,
                     "failures": [],
+                    "failure_codes": ["missing_report"],
                     "failure_phase": "missing_report",
+                    **dimensions,
                 }
             )
             failed += 1
@@ -132,9 +142,7 @@ def aggregate_matrix_run(
                     if isinstance(payload.get("artifact_manifest"), Mapping)
                     else {}
                 ),
-                "map_file": _case_value(payload, "map_file"),
-                "enemy_race": _case_value(payload, "enemy_race"),
-                "enemy_difficulty": _case_value(payload, "enemy_difficulty"),
+                **_case_dimensions_from_sources(case_dir.name, preflight, payload),
             }
         )
         if ok:
@@ -149,6 +157,7 @@ def aggregate_matrix_run(
         "timeout_seconds": timeout,
         "qualification_tier": qualification_tier,
         "allow_failures": allow_failures,
+        "strategy_profiles": list(profiles),
         "case_count": len(cases),
         "passed": passed,
         "failed": failed,
@@ -322,6 +331,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     matrix.add_argument("--timeout-seconds", required=True, type=int)
     matrix.add_argument("--qualification-tier", default="production")
     matrix.add_argument("--allow-failures", action="store_true")
+    matrix.add_argument("--strategy-profiles", default="")
 
     history = subparsers.add_parser("history-dashboard")
     history.add_argument("--root", action="append", required=True)
@@ -341,6 +351,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             qualification_tier=args.qualification_tier,
             allow_failures=args.allow_failures,
+            strategy_profiles=tuple(
+                item for item in args.strategy_profiles.split() if item
+            ),
         )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -419,6 +432,40 @@ def _case_value(payload: Mapping[str, object], key: str) -> object:
     return None
 
 
+def _case_dimensions_from_sources(
+    case_id: str,
+    preflight: Mapping[str, object],
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    map_file = _case_value(payload, "map_file") or preflight.get("map_file")
+    enemy_race = _case_value(payload, "enemy_race")
+    enemy_difficulty = _case_value(payload, "enemy_difficulty")
+    parsed = _case_dimensions_from_id(case_id)
+    return {
+        "map_file": map_file or parsed["map_file"],
+        "enemy_race": enemy_race or parsed["enemy_race"],
+        "enemy_difficulty": enemy_difficulty or parsed["enemy_difficulty"],
+    }
+
+
+def _case_dimensions_from_id(case_id: str) -> dict[str, object]:
+    parts = case_id.split("-")
+    if len(parts) < 4:
+        return {"map_file": None, "enemy_race": None, "enemy_difficulty": None}
+    race = parts[-2]
+    difficulty_token = parts[-1]
+    difficulty: int | None = None
+    if difficulty_token.startswith("d") and difficulty_token[1:].isdigit():
+        difficulty = int(difficulty_token[1:])
+    map_tokens = parts[1:-2]
+    map_file = "/".join(map_tokens) if map_tokens else None
+    if map_file == "AcropolisLE/SC2Map":
+        map_file = "AcropolisLE.SC2Map"
+    elif map_file == "Ladder2019Season3/ThunderbirdLE/SC2Map":
+        map_file = "Ladder2019Season3/ThunderbirdLE.SC2Map"
+    return {"map_file": map_file, "enemy_race": race, "enemy_difficulty": difficulty}
+
+
 def _read_json_mapping(path: Path) -> dict[str, object]:
     payload = json.loads(path.read_text())
     if not isinstance(payload, dict):
@@ -484,6 +531,17 @@ def _require_non_negative_int(name: str, value: object) -> int:
     if value < 0:
         raise ValueError(f"{name} cannot be negative.")
     return value
+
+
+def _string_sequence(name: str, value: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raise ValueError(f"{name} must be a sequence of strings.")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{name}[{index}] must be a non-empty string.")
+        result.append(item)
+    return tuple(result)
 
 
 def _require_positive_int(name: str, value: object) -> int:
