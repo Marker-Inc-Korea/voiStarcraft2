@@ -46,8 +46,8 @@ SOAK_MATRIX_ENABLED="${SOAK_MATRIX_ENABLED:-1}"
 SOAK_MATRIX_HISTORY_JSON="${SOAK_MATRIX_HISTORY_JSON:-${SOAK_MATRIX_RUN_DIR}/soak_history_dashboard.json}"
 SOAK_MATRIX_HISTORY_MD="${SOAK_MATRIX_HISTORY_MD:-${SOAK_MATRIX_RUN_DIR}/soak_history_dashboard.md}"
 
-if [[ "${SOAK_MATRIX_QUALIFICATION_TIER}" == "production" && "${SOAK_MATRIX_ALLOW_FAILURES}" == "1" ]]; then
-  echo "MicroMachine matrix rejected: production tier cannot set SOAK_MATRIX_ALLOW_FAILURES=1." >&2
+if [[ "${SOAK_MATRIX_QUALIFICATION_TIER}" =~ ^(production|extended)$ && "${SOAK_MATRIX_ALLOW_FAILURES}" == "1" ]]; then
+  echo "MicroMachine matrix rejected: ${SOAK_MATRIX_QUALIFICATION_TIER} tier cannot set SOAK_MATRIX_ALLOW_FAILURES=1." >&2
   exit 2
 fi
 
@@ -202,8 +202,11 @@ print(
 if payload["ok"]:
     raise SystemExit(0)
 if allow_failures and payload["case_count"] > 0 and payload["passed"] >= min_passes:
-    if payload.get("qualification_tier") == "production":
-        print("MicroMachine matrix rejected: production tier requires failed=0.")
+    if payload.get("qualification_tier") in {"production", "extended"}:
+        print(
+            "MicroMachine matrix rejected: "
+            f"{payload.get('qualification_tier')} tier requires failed=0."
+        )
         raise SystemExit(1)
     raise SystemExit(0)
 if allow_failures:

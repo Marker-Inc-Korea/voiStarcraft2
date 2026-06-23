@@ -574,6 +574,30 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             self.assertEqual(2, completed.returncode)
             self.assertIn("production tier cannot set SOAK_MATRIX_ALLOW_FAILURES=1", completed.stderr)
 
+    def test_soak_matrix_rejects_allow_failures_for_extended_tier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report = root / "matrix_report.json"
+            env = {
+                **os.environ,
+                "SOAK_MATRIX_RUN_DIR": str(root),
+                "SOAK_MATRIX_REPORT": str(report),
+                "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                "SOAK_MATRIX_QUALIFICATION_TIER": "extended",
+                "SOAK_MATRIX_ALLOW_FAILURES": "1",
+            }
+
+            completed = subprocess.run(
+                [str(SOAK_MATRIX_SCRIPT)],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(2, completed.returncode)
+            self.assertIn("extended tier cannot set SOAK_MATRIX_ALLOW_FAILURES=1", completed.stderr)
+
     def test_soak_matrix_rejects_invalid_local_failure_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

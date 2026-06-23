@@ -76,12 +76,14 @@ def aggregate_matrix_run(
             "strategy_profiles": list(profiles),
         }
         if not report_path.exists():
+            dimensions = _case_dimensions_from_sources(case_dir.name, preflight, {})
             case.update(
                 {
                     "status": "missing_report",
                     "ok": False,
                     "failures": [],
                     "failure_phase": "missing_report",
+                    **dimensions,
                 }
             )
             failed += 1
@@ -139,9 +141,7 @@ def aggregate_matrix_run(
                     if isinstance(payload.get("artifact_manifest"), Mapping)
                     else {}
                 ),
-                "map_file": _case_value(payload, "map_file"),
-                "enemy_race": _case_value(payload, "enemy_race"),
-                "enemy_difficulty": _case_value(payload, "enemy_difficulty"),
+                **_case_dimensions_from_sources(case_dir.name, preflight, payload),
             }
         )
         if ok:
@@ -429,6 +429,40 @@ def _case_value(payload: Mapping[str, object], key: str) -> object:
     if isinstance(config, Mapping) and config.get(key) not in (None, ""):
         return config.get(key)
     return None
+
+
+def _case_dimensions_from_sources(
+    case_id: str,
+    preflight: Mapping[str, object],
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    map_file = _case_value(payload, "map_file") or preflight.get("map_file")
+    enemy_race = _case_value(payload, "enemy_race")
+    enemy_difficulty = _case_value(payload, "enemy_difficulty")
+    parsed = _case_dimensions_from_id(case_id)
+    return {
+        "map_file": map_file or parsed["map_file"],
+        "enemy_race": enemy_race or parsed["enemy_race"],
+        "enemy_difficulty": enemy_difficulty or parsed["enemy_difficulty"],
+    }
+
+
+def _case_dimensions_from_id(case_id: str) -> dict[str, object]:
+    parts = case_id.split("-")
+    if len(parts) < 4:
+        return {"map_file": None, "enemy_race": None, "enemy_difficulty": None}
+    race = parts[-2]
+    difficulty_token = parts[-1]
+    difficulty: int | None = None
+    if difficulty_token.startswith("d") and difficulty_token[1:].isdigit():
+        difficulty = int(difficulty_token[1:])
+    map_tokens = parts[1:-2]
+    map_file = "/".join(map_tokens) if map_tokens else None
+    if map_file == "AcropolisLE/SC2Map":
+        map_file = "AcropolisLE.SC2Map"
+    elif map_file == "Ladder2019Season3/ThunderbirdLE/SC2Map":
+        map_file = "Ladder2019Season3/ThunderbirdLE.SC2Map"
+    return {"map_file": map_file, "enemy_race": race, "enemy_difficulty": difficulty}
 
 
 def _read_json_mapping(path: Path) -> dict[str, object]:
