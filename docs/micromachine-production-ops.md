@@ -113,11 +113,33 @@ Attach both files to the final PR or issue comment:
 Useful signoff overrides:
 
 ```bash
+BUILD_IDENTITY_REPORT=/private/tmp/MicroMachine/build-latest-api/voi_build_identity.json
 SOAK_MATRIX_SIGNOFF_TIER=production \
-SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY=/private/tmp/MicroMachine/build-latest-api \
+SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY="$(python3 -m starcraft_commander.micromachine_build_identity --read-report "${BUILD_IDENTITY_REPORT}" --field identity)" \
+SOAK_MATRIX_BUILD_IDENTITY_REPORT="${BUILD_IDENTITY_REPORT}" \
 SOAK_MATRIX_RUN_ID=production-signoff-001 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
+
+Build identity must come from a reproducible patched build report, not an
+implicit local binary path. Rebuild and emit the report with:
+
+```bash
+ROOT_DIR=/private/tmp/voi-micromachine-runtime \
+MICROMACHINE_DIR=/private/tmp/MicroMachine \
+MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
+MICROMACHINE_BUILD_IDENTITY_REPORT=/private/tmp/MicroMachine/build-latest-api/voi_build_identity.json \
+integrations/micromachine/scripts/build_macos_local.sh
+```
+
+The report records the upstream MicroMachine commit, `s2client-api` commit,
+MicroMachine patch checksum, `s2client-api` patch checksum, hook manifest
+checksum, map-pool checksum, blackboard header checksum, binary path, and binary
+checksum. The matrix runner reads that report by default from
+`$MICROMACHINE_BUILD_DIR/voi_build_identity.json` and writes the report identity
+into `matrix_report.json.build_identity`. Production signoff blocks
+`unrecorded` or missing build identities and blocks mismatches when
+`SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY` is set.
 
 Production qualification requires `matrix_report.json.ok == true` and
 `matrix_report.json.failed == 0`. `SOAK_MATRIX_ALLOW_FAILURES=1` is only for

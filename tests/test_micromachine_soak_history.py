@@ -289,6 +289,7 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 ok=True,
                 status="passed",
                 qualification_tier="production",
+                build_identity="build-a",
                 cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
             )
 
@@ -422,6 +423,70 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 {blocker["code"] for blocker in signoff["blockers"]},
             )
 
+    def test_production_signoff_blocks_missing_build_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-unrecorded-build",
+                ok=True,
+                status="passed",
+                qualification_tier="production",
+                build_identity="unrecorded",
+                cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg",),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                )
+            )
+
+            signoff = dashboard["production_signoff"]
+            self.assertFalse(signoff["ok"])
+            self.assertIn(
+                "missing_build_identity",
+                {blocker["code"] for blocker in signoff["blockers"]},
+            )
+
+    def test_production_signoff_blocks_invalid_build_identity_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-invalid-build",
+                ok=True,
+                status="passed",
+                qualification_tier="production",
+                build_identity="sha256:bad-build",
+                build_identity_ok=False,
+                build_identity_failure_codes=["missing_binary"],
+                cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg",),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                )
+            )
+
+            signoff = dashboard["production_signoff"]
+            self.assertFalse(signoff["ok"])
+            blocker_codes = {blocker["code"] for blocker in signoff["blockers"]}
+            self.assertIn("invalid_build_identity", blocker_codes)
+            invalid = next(
+                blocker
+                for blocker in signoff["blockers"]
+                if blocker["code"] == "invalid_build_identity"
+            )
+            self.assertEqual(["missing_binary"], invalid["failure_codes"])
+
     def test_history_dashboard_recent_limit_uses_mtime_not_lexicographic_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -531,6 +596,39 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             )
             self.assertIn("disabled", (run_dir / "history.md").read_text())
 
+    def test_matrix_script_disabled_mode_keeps_artifacts_for_malformed_build_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = root / "malformed-build-run"
+            identity_report = root / "empty-build-identity.json"
+            identity_report.write_text("")
+            script = Path("integrations/micromachine/scripts/soak_matrix_macos_local.sh")
+
+            subprocess.run(
+                [str(script)],
+                check=True,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "PYTHONPATH": ".",
+                    "SOAK_MATRIX_ENABLED": "0",
+                    "SOAK_MATRIX_BUILD_IDENTITY_REPORT": str(identity_report),
+                    "SOAK_MATRIX_RUN_DIR": str(run_dir),
+                    "SOAK_MATRIX_REPORT": str(run_dir / "matrix_report.json"),
+                    "SOAK_MATRIX_HISTORY_JSON": str(run_dir / "history.json"),
+                    "SOAK_MATRIX_HISTORY_MD": str(run_dir / "history.md"),
+                },
+                capture_output=True,
+                text=True,
+            )
+
+            report = json.loads((run_dir / "matrix_report.json").read_text())
+            self.assertEqual("unrecorded", report["build_identity"])
+            self.assertFalse(report["build_identity_ok"])
+            self.assertEqual(["disabled"], report["build_identity_failure_codes"])
+            history = json.loads((run_dir / "history.json").read_text())
+            self.assertEqual(1, history["run_count"])
+            self.assertEqual("disabled", history["runs"][0]["status"])
+
     def write_soak_report(
         self,
         path: Path,
@@ -597,6 +695,8 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
         enabled: bool = True,
         failed: int | None = None,
         build_identity: str | None = None,
+        build_identity_ok: bool | None = None,
+        build_identity_failure_codes: list[str] | None = None,
     ) -> None:
         run_dir.mkdir()
         failed_count = failed if failed is not None else sum(1 for case in cases if not case["ok"])
@@ -610,6 +710,8 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             "allow_failures": allow_failures,
             "strategy_profiles": ["default_defensive_to_aggressive"],
             "build_identity": build_identity,
+            "build_identity_ok": build_identity_ok,
+            "build_identity_failure_codes": build_identity_failure_codes or [],
             "case_count": len(cases),
             "passed": len(cases) - failed_count,
             "failed": failed_count,

@@ -8,6 +8,7 @@ S2CLIENT_BUILD_DIR="${S2CLIENT_BUILD_DIR:-${S2CLIENT_DIR}/build-latest}"
 MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
 MICROMACHINE_COMMIT="${MICROMACHINE_COMMIT:-eb893161371dab975a0a7e600f9e250ac03ec1ef}"
 S2CLIENT_COMMIT="${S2CLIENT_COMMIT:-614acc00abb5355e4c94a1b0279b46e9d845b7ce}"
+MICROMACHINE_BUILD_IDENTITY_REPORT="${MICROMACHINE_BUILD_IDENTITY_REPORT:-${MICROMACHINE_BUILD_DIR}/voi_build_identity.json}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-macos-latest-s2client-policy-blackboard.patch"
@@ -50,4 +51,13 @@ cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DSC2Api_PROTOBUF_LIB="${S2CLIENT_BUILD_DIR}/bin/libprotobuf.a"
 cmake --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
 
+python3 -m starcraft_commander.micromachine_build_identity \
+  --micromachine-dir "${MICROMACHINE_DIR}" \
+  --s2client-dir "${S2CLIENT_DIR}" \
+  --micromachine-build-dir "${MICROMACHINE_BUILD_DIR}" \
+  --micromachine-commit "${MICROMACHINE_COMMIT}" \
+  --s2client-commit "${S2CLIENT_COMMIT}" \
+  --output "${MICROMACHINE_BUILD_IDENTITY_REPORT}"
+
 printf 'MicroMachine executable: %s\n' "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"
+printf 'MicroMachine build identity report: %s\n' "${MICROMACHINE_BUILD_IDENTITY_REPORT}"
