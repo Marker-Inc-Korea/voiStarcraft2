@@ -41,6 +41,7 @@ provider output.
 | #22 | Adds the concrete filesystem runtime bridge and MicroMachine C++ integration kit. |
 | #26 | Adds long-run soak/sign-off gates for full-game MicroMachine collaboration. |
 | 10.12 | Adds map/race/difficulty matrix operations, self-hosted soak CI, and concrete neural representation adapter attachment. |
+| 10.16 | Adds a stdlib live text session and CLI that compile bounded provider output into MicroMachine blackboard updates and report telemetry consumption. |
 
 ## Evaluation Contract
 
@@ -85,6 +86,13 @@ hook manifest is tied to upstream MicroMachine commit
 `eb893161371dab975a0a7e600f9e250ac03ec1ef` and distinguishes currently
 consumed keys from Python-emitted DSL axes that are not yet consumed by the
 current C++ patch.
+
+`starcraft_commander.micromachine_live_session` is the local live text sidecar.
+It accepts user text, invokes a bounded provider adapter, writes only compiled
+`PolicyModulationVector` output through `MicroMachineModulationBackend`, and
+reports consumption from `MicroMachineTelemetry.active_modulation_ids`. It does
+not read the SC2 screen, inject keyboard/mouse input, or call python-sc2 raw
+runtime actions.
 
 ## Production Soak Boundary
 

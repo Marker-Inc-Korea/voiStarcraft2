@@ -187,6 +187,12 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "publish_policy_modulation_provider_output": (
         "starcraft_commander.micromachine_runtime"
     ),
+    "KeywordPolicyModulationProvider": "starcraft_commander.micromachine_live_session",
+    "LiveModulationConsumptionStatus": "starcraft_commander.micromachine_live_session",
+    "LiveModulationStatus": "starcraft_commander.micromachine_live_session",
+    "LiveTextModulationResult": "starcraft_commander.micromachine_live_session",
+    "MicroMachineLiveTextSession": "starcraft_commander.micromachine_live_session",
+    "StaticJsonPolicyModulationProvider": "starcraft_commander.micromachine_live_session",
     "MicroMachineSoakConfig": "starcraft_commander.micromachine_soak",
     "MicroMachineSoakFailure": "starcraft_commander.micromachine_soak",
     "MicroMachineSoakObservation": "starcraft_commander.micromachine_soak",

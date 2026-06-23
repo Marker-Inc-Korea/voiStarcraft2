@@ -297,12 +297,13 @@ class MicroMachineFilesystemBlackboard:
         document = accepted.to_dict()
         json_text = json.dumps(document, ensure_ascii=False, sort_keys=True) + "\n"
         kv_text = flatten_blackboard_update(accepted)
-        _atomic_write_text(self.paths.latest_update_kv, kv_text)
-        _atomic_write_text(
+        _append_jsonl(self.paths.update_archive_jsonl, document)
+        _write_latest_update_transactionally(
             self.paths.latest_update_json,
             json_text,
+            self.paths.latest_update_kv,
+            kv_text,
         )
-        _append_jsonl(self.paths.update_archive_jsonl, document)
         return accepted
 
     def read_latest_update(
@@ -359,11 +360,15 @@ class MicroMachineFilesystemBlackboard:
             update = self.read_latest_update(current_frame=current_frame)
             if update is not None:
                 updates = (update,)
-        except ValueError:
+        except (OSError, TypeError, ValueError):
             failure = MicroMachineBridgeFailureMode.INVALID_PAYLOAD
-        telemetry = self.read_latest_telemetry()
-        if telemetry is not None and telemetry.last_failure is not None:
-            failure = telemetry.last_failure
+        try:
+            telemetry = self.read_latest_telemetry()
+            if telemetry is not None and telemetry.last_failure is not None:
+                failure = telemetry.last_failure
+        except (OSError, TypeError, ValueError):
+            telemetry = None
+            failure = MicroMachineBridgeFailureMode.INVALID_PAYLOAD
         return build_policy_modulation_dashboard_snapshot(
             updates,
             current_frame=current_frame,
@@ -659,6 +664,37 @@ def _atomic_write_text(path: Path, text: str) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(text)
     os.replace(temporary, path)
+
+
+def _write_latest_update_transactionally(
+    json_path: Path,
+    json_text: str,
+    kv_path: Path,
+    kv_text: str,
+) -> None:
+    old_json = _read_existing_text(json_path)
+    old_kv = _read_existing_text(kv_path)
+    try:
+        _atomic_write_text(json_path, json_text)
+        _atomic_write_text(kv_path, kv_text)
+    except Exception:
+        _restore_text_path(json_path, old_json)
+        _restore_text_path(kv_path, old_kv)
+        raise
+
+
+def _read_existing_text(path: Path) -> tuple[bool, str]:
+    if not path.exists():
+        return (False, "")
+    return (True, path.read_text())
+
+
+def _restore_text_path(path: Path, snapshot: tuple[bool, str]) -> None:
+    existed, text = snapshot
+    if existed:
+        _atomic_write_text(path, text)
+    elif path.exists():
+        path.unlink()
 
 
 def _append_jsonl(path: Path, payload: Mapping[str, object]) -> None:
