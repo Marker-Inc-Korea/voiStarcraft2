@@ -314,6 +314,12 @@ Production qualification must run without `SOAK_MATRIX_ALLOW_FAILURES` and
 requires `matrix_report.json.failed == 0`. Set `SOAK_MATRIX_ALLOW_FAILURES=1`
 only for diagnostics or negative-control runs; those reports are evidence for
 debugging, not production sign-off.
+The runner also writes `soak_history_dashboard.json` and
+`soak_history_dashboard.md`. Their `production_signoff` section checks the
+recent-N enabled production runs against required map/race/difficulty/profile
+coverage, failed-case absence, diagnostic/disabled exclusion, and optional
+`SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY` matching. Attach both dashboard
+files when asking for final production review.
 
 Example expanded required-pool matrix for user-side QA repetition:
 

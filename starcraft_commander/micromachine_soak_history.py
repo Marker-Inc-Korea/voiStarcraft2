@@ -22,6 +22,12 @@ class SoakHistoryConfig:
     output_json: Path | None = None
     output_markdown: Path | None = None
     recent_limit: int = 20
+    signoff_tier: str = "production"
+    required_map_files: tuple[str, ...] = ()
+    required_enemy_races: tuple[str, ...] = ()
+    required_enemy_difficulties: tuple[int, ...] = ()
+    required_strategy_profiles: tuple[str, ...] = ()
+    required_build_identity: str | None = None
 
     def __post_init__(self) -> None:
         if not self.roots:
@@ -30,6 +36,33 @@ class SoakHistoryConfig:
             if not isinstance(root, Path):
                 raise ValueError("roots must contain Path values.")
         _require_positive_int("recent_limit", self.recent_limit)
+        if not isinstance(self.signoff_tier, str) or not self.signoff_tier:
+            raise ValueError("signoff_tier must be a non-empty string.")
+        object.__setattr__(
+            self,
+            "required_map_files",
+            _string_sequence("required_map_files", self.required_map_files),
+        )
+        object.__setattr__(
+            self,
+            "required_enemy_races",
+            _string_sequence("required_enemy_races", self.required_enemy_races),
+        )
+        for value in self.required_enemy_difficulties:
+            _require_positive_int("required_enemy_difficulties[]", value)
+        object.__setattr__(
+            self,
+            "required_strategy_profiles",
+            _string_sequence(
+                "required_strategy_profiles",
+                self.required_strategy_profiles,
+            ),
+        )
+        if self.required_build_identity is not None and (
+            not isinstance(self.required_build_identity, str)
+            or not self.required_build_identity.strip()
+        ):
+            raise ValueError("required_build_identity must be a non-empty string.")
 
 
 def aggregate_matrix_run(
@@ -40,6 +73,7 @@ def aggregate_matrix_run(
     qualification_tier: str = "production",
     allow_failures: bool = False,
     strategy_profiles: Sequence[str] = (),
+    build_identity: str | None = None,
 ) -> dict[str, object]:
     """Build one deterministic matrix_report.json payload from case reports."""
 
@@ -51,6 +85,10 @@ def aggregate_matrix_run(
     if type(allow_failures) is not bool:
         raise ValueError("allow_failures must be a boolean.")
     profiles = _string_sequence("strategy_profiles", strategy_profiles)
+    if build_identity is not None and (
+        not isinstance(build_identity, str) or not build_identity.strip()
+    ):
+        raise ValueError("build_identity must be a non-empty string.")
     cases: list[dict[str, object]] = []
     passed = 0
     failed = 0
@@ -74,6 +112,7 @@ def aggregate_matrix_run(
             "qualification_tier": qualification_tier,
             "allow_failures": allow_failures,
             "strategy_profiles": list(profiles),
+            "build_identity": build_identity,
         }
         if not report_path.exists():
             dimensions = _case_dimensions_from_sources(case_dir.name, preflight, {})
@@ -165,6 +204,7 @@ def aggregate_matrix_run(
         "qualification_tier": qualification_tier,
         "allow_failures": allow_failures,
         "strategy_profiles": list(profiles),
+        "build_identity": build_identity,
         "case_count": len(cases),
         "passed": passed,
         "failed": failed,
@@ -191,6 +231,7 @@ def aggregate_soak_history(config: SoakHistoryConfig) -> dict[str, object]:
     total_cases = 0
     total_passed_cases = 0
     total_failed_cases = 0
+    signoff_inputs: list[dict[str, object]] = []
     for report_path in reports[: config.recent_limit]:
         payload = _read_json_mapping(report_path)
         cases = payload.get("cases", [])
@@ -220,29 +261,43 @@ def aggregate_soak_history(config: SoakHistoryConfig) -> dict[str, object]:
                 value = case.get(key)
                 if value not in (None, ""):
                     counter[str(value)] += 1
+        run_summary = {
+            "run_id": report_path.parent.name,
+            "report": str(report_path),
+            "artifact_dir": str(report_path.parent),
+            "ok": run_ok,
+            "status": payload.get("status", "unknown"),
+            "enabled": payload.get("enabled", True),
+            "case_count": payload.get("case_count", len(case_list)),
+            "passed": passed_cases,
+            "failed": failed_cases,
+            "target_frame": payload.get("target_frame"),
+            "timeout_seconds": payload.get("timeout_seconds"),
+            "qualification_tier": payload.get("qualification_tier"),
+            "allow_failures": payload.get("allow_failures"),
+            "strategy_profiles": (
+                payload["strategy_profiles"]
+                if isinstance(payload.get("strategy_profiles"), list)
+                else []
+            ),
+            "build_identity": payload.get("build_identity"),
+            "failure_codes": sorted(
+                {
+                    code
+                    for case in case_list
+                    if isinstance(case, Mapping)
+                    for code in case.get("failure_codes", [])
+                    if isinstance(code, str)
+                }
+            ),
+        }
         runs.append(
+            run_summary
+        )
+        signoff_inputs.append(
             {
-                "run_id": report_path.parent.name,
-                "report": str(report_path),
-                "artifact_dir": str(report_path.parent),
-                "ok": run_ok,
-                "status": payload.get("status", "unknown"),
-                "case_count": payload.get("case_count", len(case_list)),
-                "passed": passed_cases,
-                "failed": failed_cases,
-                "target_frame": payload.get("target_frame"),
-                "timeout_seconds": payload.get("timeout_seconds"),
-                "qualification_tier": payload.get("qualification_tier"),
-                "allow_failures": payload.get("allow_failures"),
-                "failure_codes": sorted(
-                    {
-                        code
-                        for case in case_list
-                        if isinstance(case, Mapping)
-                        for code in case.get("failure_codes", [])
-                        if isinstance(code, str)
-                    }
-                ),
+                **run_summary,
+                "cases": case_list,
             }
         )
     dashboard = {
@@ -259,6 +314,8 @@ def aggregate_soak_history(config: SoakHistoryConfig) -> dict[str, object]:
         "enemy_races": _counter_payload(races),
         "enemy_difficulties": _counter_payload(difficulties),
         "target_frames": _counter_payload(target_frames),
+        "streaks": _run_streaks(runs),
+        "production_signoff": _build_production_signoff(signoff_inputs, config),
         "runs": runs,
     }
     return dashboard
@@ -276,9 +333,53 @@ def render_soak_history_markdown(dashboard: Mapping[str, object]) -> str:
         f"- Cases: {dashboard.get('case_count', 0)} "
         f"(passed {dashboard.get('passed_cases', 0)}, failed {dashboard.get('failed_cases', 0)})",
         "",
+    ]
+    streaks = dashboard.get("streaks")
+    if isinstance(streaks, Mapping):
+        lines.extend(
+            [
+                f"- Current pass streak: {streaks.get('current_pass_streak', 0)}",
+                f"- Current fail streak: {streaks.get('current_fail_streak', 0)}",
+                "",
+            ]
+        )
+    lines.extend([
+        "## Production Signoff",
+        "",
+    ])
+    signoff = dashboard.get("production_signoff")
+    if isinstance(signoff, Mapping):
+        coverage = signoff.get("coverage") if isinstance(signoff.get("coverage"), Mapping) else {}
+        lines.extend(
+            [
+                f"- Status: `{signoff.get('status', 'unknown')}`",
+                f"- Tier: `{signoff.get('signoff_tier', 'production')}`",
+                f"- Eligible runs: {signoff.get('eligible_run_count', 0)}",
+                f"- Coverage: {coverage.get('observed_count', 0)} / "
+                f"{coverage.get('required_count', 0)}",
+            ]
+        )
+        blockers = signoff.get("blockers")
+        if isinstance(blockers, list) and blockers:
+            lines.extend(["", "| Blocker | Detail |", "| --- | --- |"])
+            for blocker in blockers[:20]:
+                if not isinstance(blocker, Mapping):
+                    continue
+                detail = ", ".join(
+                    f"{key}={value}"
+                    for key, value in blocker.items()
+                    if key != "code" and value not in (None, "", [])
+                )
+                lines.append(f"| `{blocker.get('code', '')}` | {detail or '-'} |")
+        else:
+            lines.append("- No signoff blockers in the selected recent-N window.")
+        lines.append("")
+    else:
+        lines.extend(["No production signoff payload was generated.", ""])
+    lines.extend([
         "## Failure Codes",
         "",
-    ]
+    ])
     failure_codes = dashboard.get("failure_codes")
     if isinstance(failure_codes, list) and failure_codes:
         lines.extend(_counter_table(failure_codes, "Failure code"))
@@ -326,6 +427,220 @@ def write_dashboard_outputs(
         output_markdown.write_text(render_soak_history_markdown(dashboard))
 
 
+def _run_streaks(runs: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    pass_streak = 0
+    for run in runs:
+        if run.get("ok") is True:
+            pass_streak += 1
+        else:
+            break
+    fail_streak = 0
+    for run in runs:
+        if run.get("ok") is not True:
+            fail_streak += 1
+        else:
+            break
+    return {
+        "current_status": (
+            "passed"
+            if runs and runs[0].get("ok") is True
+            else "failed"
+            if runs
+            else "none"
+        ),
+        "current_pass_streak": pass_streak,
+        "current_fail_streak": fail_streak,
+    }
+
+
+def _build_production_signoff(
+    runs: Sequence[Mapping[str, object]],
+    config: SoakHistoryConfig,
+) -> dict[str, object]:
+    required = _required_coverage(config)
+    observed: dict[tuple[str, str, int, str | None], dict[str, object]] = {}
+    blockers: list[dict[str, object]] = []
+    eligible_runs: list[str] = []
+    excluded_runs: list[dict[str, object]] = []
+    observed_builds: set[str] = set()
+
+    if not config.required_map_files:
+        blockers.append({"code": "missing_required_maps", "message": "No required map files were configured."})
+    if not config.required_enemy_races:
+        blockers.append({"code": "missing_required_races", "message": "No required enemy races were configured."})
+    if not config.required_enemy_difficulties:
+        blockers.append(
+            {
+                "code": "missing_required_difficulties",
+                "message": "No required enemy difficulties were configured.",
+            }
+        )
+
+    for run in runs:
+        run_id = str(run.get("run_id", ""))
+        exclusion = _signoff_exclusion_reason(run, config.signoff_tier)
+        if exclusion is not None:
+            excluded_runs.append({"run_id": run_id, "reason": exclusion})
+            continue
+        eligible_runs.append(run_id)
+        build_identity = run.get("build_identity")
+        if isinstance(build_identity, str) and build_identity:
+            observed_builds.add(build_identity)
+        build_matches = True
+        if config.required_build_identity is not None and build_identity != config.required_build_identity:
+            build_matches = False
+            blockers.append(
+                {
+                    "code": "build_mismatch",
+                    "run_id": run_id,
+                    "expected": config.required_build_identity,
+                    "actual": build_identity,
+                }
+            )
+        if run.get("ok") is not True or _int_value(run.get("failed")) > 0:
+            blockers.append(
+                {
+                    "code": "failed_required_case",
+                    "run_id": run_id,
+                    "failed": _int_value(run.get("failed")),
+                    "failure_codes": (
+                        run["failure_codes"]
+                        if isinstance(run.get("failure_codes"), list)
+                        else []
+                    ),
+                }
+            )
+            continue
+        if not build_matches:
+            continue
+        run_profiles = _string_list(run.get("strategy_profiles"))
+        cases = run.get("cases")
+        if not isinstance(cases, list):
+            continue
+        for case in cases:
+            if not isinstance(case, Mapping) or case.get("ok") is not True:
+                continue
+            key_base = _case_coverage_base(case)
+            if key_base is None:
+                continue
+            case_profiles = _string_list(case.get("strategy_profiles")) or run_profiles
+            profiles = config.required_strategy_profiles or (None,)
+            for profile in profiles:
+                if profile is not None and profile not in case_profiles:
+                    continue
+                coverage_key = (*key_base, profile)
+                observed[coverage_key] = {
+                    "run_id": run_id,
+                    "map_file": key_base[0],
+                    "enemy_race": key_base[1],
+                    "enemy_difficulty": key_base[2],
+                    "strategy_profile": profile,
+                }
+
+    missing = [
+        _coverage_payload(key)
+        for key in sorted(required)
+        if key not in observed
+    ]
+    for item in missing:
+        blockers.append({"code": "missing_required_coverage", **item})
+    if not eligible_runs:
+        blockers.append(
+            {
+                "code": "no_eligible_production_runs",
+                "message": "No enabled production runs were found in the selected recent-N window.",
+            }
+        )
+
+    ok = not blockers and bool(eligible_runs)
+    return {
+        "status": "passed" if ok else "blocked",
+        "ok": ok,
+        "signoff_tier": config.signoff_tier,
+        "window_size": config.recent_limit,
+        "eligible_run_count": len(eligible_runs),
+        "excluded_run_count": len(excluded_runs),
+        "eligible_runs": eligible_runs,
+        "excluded_runs": excluded_runs,
+        "required": {
+            "map_files": list(config.required_map_files),
+            "enemy_races": list(config.required_enemy_races),
+            "enemy_difficulties": list(config.required_enemy_difficulties),
+            "strategy_profiles": list(config.required_strategy_profiles),
+        },
+        "coverage": {
+            "required_count": len(required),
+            "observed_count": len(observed),
+            "missing_count": len(missing),
+            "missing": missing,
+        },
+        "build_identity": {
+            "required": config.required_build_identity,
+            "observed": sorted(observed_builds),
+        },
+        "blockers": blockers,
+    }
+
+
+def _required_coverage(
+    config: SoakHistoryConfig,
+) -> set[tuple[str, str, int, str | None]]:
+    profiles: tuple[str | None, ...] = config.required_strategy_profiles or (None,)
+    return {
+        (map_file, race, difficulty, profile)
+        for map_file in config.required_map_files
+        for race in config.required_enemy_races
+        for difficulty in config.required_enemy_difficulties
+        for profile in profiles
+    }
+
+
+def _signoff_exclusion_reason(
+    run: Mapping[str, object],
+    signoff_tier: str,
+) -> str | None:
+    if run.get("enabled") is False or run.get("status") == "disabled":
+        return "disabled"
+    if run.get("qualification_tier") != signoff_tier:
+        return "non_signoff_tier"
+    if run.get("allow_failures") is True:
+        return "allow_failures_enabled"
+    return None
+
+
+def _case_coverage_base(case: Mapping[str, object]) -> tuple[str, str, int] | None:
+    map_file = case.get("map_file")
+    enemy_race = case.get("enemy_race")
+    difficulty = case.get("enemy_difficulty")
+    if not isinstance(map_file, str) or not map_file:
+        return None
+    if not isinstance(enemy_race, str) or not enemy_race:
+        return None
+    if type(difficulty) is bool or not isinstance(difficulty, int):
+        return None
+    return (map_file, enemy_race, difficulty)
+
+
+def _coverage_payload(
+    key: tuple[str, str, int, str | None],
+) -> dict[str, object]:
+    map_file, enemy_race, difficulty, profile = key
+    payload: dict[str, object] = {
+        "map_file": map_file,
+        "enemy_race": enemy_race,
+        "enemy_difficulty": difficulty,
+    }
+    if profile is not None:
+        payload["strategy_profile"] = profile
+    return payload
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Aggregate MicroMachine soak matrix history.",
@@ -339,12 +654,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
     matrix.add_argument("--qualification-tier", default="production")
     matrix.add_argument("--allow-failures", action="store_true")
     matrix.add_argument("--strategy-profiles", default="")
+    matrix.add_argument("--build-identity", default="")
 
     history = subparsers.add_parser("history-dashboard")
     history.add_argument("--root", action="append", required=True)
     history.add_argument("--output-json", required=True)
     history.add_argument("--output-markdown", required=True)
     history.add_argument("--recent-limit", type=int, default=20)
+    history.add_argument("--signoff-tier", default="production")
+    history.add_argument("--required-map-files", default="")
+    history.add_argument("--required-enemy-races", default="")
+    history.add_argument("--required-enemy-difficulties", default="")
+    history.add_argument("--required-strategy-profiles", default="")
+    history.add_argument("--required-build-identity", default="")
     return parser
 
 
@@ -361,6 +683,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             strategy_profiles=tuple(
                 item for item in args.strategy_profiles.split() if item
             ),
+            build_identity=args.build_identity or None,
         )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -370,6 +693,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         SoakHistoryConfig(
             roots=tuple(Path(root) for root in args.root),
             recent_limit=args.recent_limit,
+            signoff_tier=args.signoff_tier,
+            required_map_files=tuple(
+                item for item in args.required_map_files.split() if item
+            ),
+            required_enemy_races=tuple(
+                item for item in args.required_enemy_races.split() if item
+            ),
+            required_enemy_difficulties=tuple(
+                int(item) for item in args.required_enemy_difficulties.split() if item
+            ),
+            required_strategy_profiles=tuple(
+                item for item in args.required_strategy_profiles.split() if item
+            ),
+            required_build_identity=args.required_build_identity or None,
         )
     )
     write_dashboard_outputs(
