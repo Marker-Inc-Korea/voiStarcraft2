@@ -7,25 +7,52 @@ SOAK_MATRIX_RUN_ID="${SOAK_MATRIX_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 SOAK_MATRIX_ARTIFACT_ROOT="${SOAK_MATRIX_ARTIFACT_ROOT:-/private/tmp/voi-mm-soak-matrix}"
 SOAK_MATRIX_RUN_DIR="${SOAK_MATRIX_RUN_DIR:-${SOAK_MATRIX_ARTIFACT_ROOT}/${SOAK_MATRIX_RUN_ID}}"
 SOAK_MATRIX_REPORT="${SOAK_MATRIX_REPORT:-${SOAK_MATRIX_RUN_DIR}/matrix_report.json}"
-SOAK_MATRIX_MAP_FILES="${SOAK_MATRIX_MAP_FILES:-AcropolisLE.SC2Map}"
-SOAK_MATRIX_ENEMY_RACES="${SOAK_MATRIX_ENEMY_RACES:-Zerg}"
-SOAK_MATRIX_ENEMY_DIFFICULTIES="${SOAK_MATRIX_ENEMY_DIFFICULTIES:-1}"
-SOAK_MATRIX_TARGET_FRAME="${SOAK_MATRIX_TARGET_FRAME:-${SOAK_TARGET_FRAME:-12000}}"
-SOAK_MATRIX_TIMEOUT_SECONDS="${SOAK_MATRIX_TIMEOUT_SECONDS:-${SOAK_TIMEOUT_SECONDS:-1200}}"
+SOAK_MATRIX_QUALIFICATION_TIER="${SOAK_MATRIX_QUALIFICATION_TIER:-production}"
+SOAK_MATRIX_MAP_POOL_MANIFEST="${SOAK_MATRIX_MAP_POOL_MANIFEST:-${SCRIPT_DIR}/../MICROMACHINE_MAP_POOL.json}"
+if [[ -z "${SOAK_MATRIX_MAP_FILES:-}" ]]; then
+  SOAK_MATRIX_MAP_FILES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field map_files)"
+fi
+if [[ -z "${SOAK_MATRIX_ENEMY_RACES:-}" ]]; then
+  SOAK_MATRIX_ENEMY_RACES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field enemy_races)"
+fi
+if [[ -z "${SOAK_MATRIX_ENEMY_DIFFICULTIES:-}" ]]; then
+  SOAK_MATRIX_ENEMY_DIFFICULTIES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field enemy_difficulties)"
+fi
+if [[ -z "${SOAK_MATRIX_TARGET_FRAME:-}" ]]; then
+  SOAK_MATRIX_TARGET_FRAME="${SOAK_TARGET_FRAME:-$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field target_frame)}"
+fi
+if [[ -z "${SOAK_MATRIX_TIMEOUT_SECONDS:-}" ]]; then
+  SOAK_MATRIX_TIMEOUT_SECONDS="${SOAK_TIMEOUT_SECONDS:-$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field timeout_seconds)}"
+fi
 SOAK_MATRIX_STOP_ON_FAILURE="${SOAK_MATRIX_STOP_ON_FAILURE:-0}"
-SOAK_MATRIX_ALLOW_FAILURES="${SOAK_MATRIX_ALLOW_FAILURES:-0}"
+if [[ -z "${SOAK_MATRIX_ALLOW_FAILURES:-}" ]]; then
+  SOAK_MATRIX_ALLOW_FAILURES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field allow_failures)"
+fi
+if [[ ! "${SOAK_MATRIX_QUALIFICATION_TIER}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "MicroMachine matrix rejected: invalid SOAK_MATRIX_QUALIFICATION_TIER=${SOAK_MATRIX_QUALIFICATION_TIER}." >&2
+  exit 2
+fi
+if [[ ! "${SOAK_MATRIX_ALLOW_FAILURES}" =~ ^[01]$ ]]; then
+  echo "MicroMachine matrix rejected: SOAK_MATRIX_ALLOW_FAILURES must be 0 or 1." >&2
+  exit 2
+fi
 SOAK_MATRIX_AGGREGATE_ONLY="${SOAK_MATRIX_AGGREGATE_ONLY:-0}"
 SOAK_MATRIX_MIN_PASSES="${SOAK_MATRIX_MIN_PASSES:-1}"
 SOAK_MATRIX_ENABLED="${SOAK_MATRIX_ENABLED:-1}"
 SOAK_MATRIX_HISTORY_JSON="${SOAK_MATRIX_HISTORY_JSON:-${SOAK_MATRIX_RUN_DIR}/soak_history_dashboard.json}"
 SOAK_MATRIX_HISTORY_MD="${SOAK_MATRIX_HISTORY_MD:-${SOAK_MATRIX_RUN_DIR}/soak_history_dashboard.md}"
 
+if [[ "${SOAK_MATRIX_QUALIFICATION_TIER}" == "production" && "${SOAK_MATRIX_ALLOW_FAILURES}" == "1" ]]; then
+  echo "MicroMachine matrix rejected: production tier cannot set SOAK_MATRIX_ALLOW_FAILURES=1." >&2
+  exit 2
+fi
+
 # The Python aggregator preserves per-case failure_codes, attempts, and
 # artifact_manifest fields in matrix_report.json and the history dashboard.
 mkdir -p "${SOAK_MATRIX_RUN_DIR}"
 
 if [[ "${SOAK_MATRIX_ENABLED}" != "1" ]]; then
-  python3 - <<'PY' "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_HISTORY_JSON}" "${SOAK_MATRIX_HISTORY_MD}"
+  python3 - <<'PY' "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_HISTORY_JSON}" "${SOAK_MATRIX_HISTORY_MD}" "${SOAK_MATRIX_QUALIFICATION_TIER}" "${SOAK_MATRIX_ALLOW_FAILURES}"
 import json
 import sys
 from pathlib import Path
@@ -33,10 +60,14 @@ from pathlib import Path
 report = Path(sys.argv[1])
 history_json = Path(sys.argv[2])
 history_md = Path(sys.argv[3])
+qualification_tier = sys.argv[4]
+allow_failures = sys.argv[5] == "1"
 payload = {
     "status": "disabled",
     "ok": False,
     "enabled": False,
+    "qualification_tier": qualification_tier,
+    "allow_failures": allow_failures,
     "case_count": 0,
     "passed": 0,
     "failed": 0,
@@ -101,11 +132,18 @@ if [[ "${SOAK_MATRIX_AGGREGATE_ONLY}" != "1" ]]; then
   done
 fi
 
-python3 -m starcraft_commander.micromachine_soak_history matrix-report \
-  --run-dir "${SOAK_MATRIX_RUN_DIR}" \
-  --output "${SOAK_MATRIX_REPORT}" \
-  --target-frame "${SOAK_MATRIX_TARGET_FRAME}" \
+matrix_report_args=(
+  matrix-report
+  --run-dir "${SOAK_MATRIX_RUN_DIR}"
+  --output "${SOAK_MATRIX_REPORT}"
+  --target-frame "${SOAK_MATRIX_TARGET_FRAME}"
   --timeout-seconds "${SOAK_MATRIX_TIMEOUT_SECONDS}"
+  --qualification-tier "${SOAK_MATRIX_QUALIFICATION_TIER}"
+)
+if [[ "${SOAK_MATRIX_ALLOW_FAILURES}" == "1" ]]; then
+  matrix_report_args+=(--allow-failures)
+fi
+python3 -m starcraft_commander.micromachine_soak_history "${matrix_report_args[@]}"
 
 python3 -m starcraft_commander.micromachine_soak_history history-dashboard \
   --root "${SOAK_MATRIX_ARTIFACT_ROOT}" \
@@ -127,6 +165,9 @@ print(
 if payload["ok"]:
     raise SystemExit(0)
 if allow_failures and payload["case_count"] > 0 and payload["passed"] >= min_passes:
+    if payload.get("qualification_tier") == "production":
+        print("MicroMachine matrix rejected: production tier requires failed=0.")
+        raise SystemExit(1)
     raise SystemExit(0)
 if allow_failures:
     print(

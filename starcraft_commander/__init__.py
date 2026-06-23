@@ -201,6 +201,12 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "classify_micromachine_soak": "starcraft_commander.micromachine_soak",
     "has_required_macro_evidence": "starcraft_commander.micromachine_soak",
     "missing_macro_evidence": "starcraft_commander.micromachine_soak",
+    "DEFAULT_MAP_POOL_PATH": "starcraft_commander.micromachine_map_pool",
+    "MicroMachineMapEntry": "starcraft_commander.micromachine_map_pool",
+    "MicroMachineMapPool": "starcraft_commander.micromachine_map_pool",
+    "MicroMachineQualificationTier": "starcraft_commander.micromachine_map_pool",
+    "load_micromachine_map_pool": "starcraft_commander.micromachine_map_pool",
+    "parse_micromachine_map_pool": "starcraft_commander.micromachine_map_pool",
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.

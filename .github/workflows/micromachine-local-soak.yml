@@ -3,30 +3,34 @@ name: micromachine-local-soak
 on:
   workflow_dispatch:
     inputs:
+      qualification_tier:
+        description: "Map-pool qualification tier from MICROMACHINE_MAP_POOL.json."
+        required: false
+        default: "production"
       maps:
-        description: "Space-separated SC2 map files."
+        description: "Optional override: space-separated SC2 map files. Empty uses map-pool tier defaults."
         required: false
-        default: "AcropolisLE.SC2Map"
+        default: ""
       enemy_races:
-        description: "Space-separated enemy races: Terran Protoss Zerg Random."
+        description: "Optional override: space-separated enemy races. Empty uses map-pool tier defaults."
         required: false
-        default: "Zerg"
+        default: ""
       enemy_difficulties:
-        description: "Space-separated SC2 built-in AI difficulties, 1-10."
+        description: "Optional override: space-separated AI difficulties, 1-10. Empty uses map-pool tier defaults."
         required: false
-        default: "1"
+        default: ""
       target_frame:
-        description: "Required frame per soak case."
+        description: "Optional override: required frame per soak case. Empty uses map-pool tier default."
         required: false
-        default: "12000"
+        default: ""
       timeout_seconds:
-        description: "Wall-clock timeout per soak case."
+        description: "Optional override: wall-clock timeout per soak case. Empty uses map-pool tier default."
         required: false
-        default: "1200"
+        default: ""
       allow_failures:
-        description: "Set to 1 only for diagnostic or negative-control runs, never production sign-off."
+        description: "Optional override. Set to 1 only for diagnostic or negative-control runs, never production sign-off. Empty uses map-pool tier default."
         required: false
-        default: "0"
+        default: ""
       enable_soak:
         description: "Set to 1 to run real self-hosted SC2 soak. Default 0 writes disabled artifacts only."
         required: false
@@ -44,15 +48,63 @@ jobs:
           test -x "${MICROMACHINE_BUILD_DIR:-/private/tmp/MicroMachine/build-latest-api}/bin/MicroMachine"
           test -x "${SC2_EXECUTABLE:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II/Versions/Base96883/SC2.app/Contents/MacOS/SC2}"
       - name: Run or disable real SC2 MicroMachine soak matrix
+        env:
+          INPUT_ENABLE_SOAK: ${{ inputs.enable_soak }}
+          INPUT_QUALIFICATION_TIER: ${{ inputs.qualification_tier }}
+          INPUT_ALLOW_FAILURES: ${{ inputs.allow_failures }}
+          INPUT_MAPS: ${{ inputs.maps }}
+          INPUT_ENEMY_RACES: ${{ inputs.enemy_races }}
+          INPUT_ENEMY_DIFFICULTIES: ${{ inputs.enemy_difficulties }}
+          INPUT_TARGET_FRAME: ${{ inputs.target_frame }}
+          INPUT_TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
         run: |
-          SOAK_MATRIX_RUN_ID="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-          SOAK_MATRIX_ENABLED="${{ inputs.enable_soak }}" \
-          SOAK_MATRIX_MAP_FILES="${{ inputs.maps }}" \
-          SOAK_MATRIX_ENEMY_RACES="${{ inputs.enemy_races }}" \
-          SOAK_MATRIX_ENEMY_DIFFICULTIES="${{ inputs.enemy_difficulties }}" \
-          SOAK_MATRIX_TARGET_FRAME="${{ inputs.target_frame }}" \
-          SOAK_MATRIX_TIMEOUT_SECONDS="${{ inputs.timeout_seconds }}" \
-          SOAK_MATRIX_ALLOW_FAILURES="${{ inputs.allow_failures }}" \
+          validate_optional() {
+            local name="$1"
+            local value="$2"
+            local pattern="$3"
+            if [[ -n "${value}" && ! "${value}" =~ ${pattern} ]]; then
+              echo "Invalid ${name}: ${value}" >&2
+              exit 2
+            fi
+          }
+          validate_required() {
+            local name="$1"
+            local value="$2"
+            local pattern="$3"
+            if [[ -z "${value}" || ! "${value}" =~ ${pattern} ]]; then
+              echo "Invalid ${name}: ${value}" >&2
+              exit 2
+            fi
+          }
+          validate_required enable_soak "${INPUT_ENABLE_SOAK}" '^[01]$'
+          validate_required qualification_tier "${INPUT_QUALIFICATION_TIER}" '^[A-Za-z0-9_-]+$'
+          validate_optional allow_failures "${INPUT_ALLOW_FAILURES}" '^[01]$'
+          validate_optional maps "${INPUT_MAPS}" '^[A-Za-z0-9_./ -]+$'
+          validate_optional enemy_races "${INPUT_ENEMY_RACES}" '^[A-Za-z ]+$'
+          validate_optional enemy_difficulties "${INPUT_ENEMY_DIFFICULTIES}" '^[0-9 ]+$'
+          validate_optional target_frame "${INPUT_TARGET_FRAME}" '^[0-9]+$'
+          validate_optional timeout_seconds "${INPUT_TIMEOUT_SECONDS}" '^[0-9]+$'
+          export SOAK_MATRIX_RUN_ID="gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export SOAK_MATRIX_ENABLED="${INPUT_ENABLE_SOAK}"
+          export SOAK_MATRIX_QUALIFICATION_TIER="${INPUT_QUALIFICATION_TIER}"
+          if [[ -n "${INPUT_ALLOW_FAILURES}" ]]; then
+            export SOAK_MATRIX_ALLOW_FAILURES="${INPUT_ALLOW_FAILURES}"
+          fi
+          if [[ -n "${INPUT_MAPS}" ]]; then
+            export SOAK_MATRIX_MAP_FILES="${INPUT_MAPS}"
+          fi
+          if [[ -n "${INPUT_ENEMY_RACES}" ]]; then
+            export SOAK_MATRIX_ENEMY_RACES="${INPUT_ENEMY_RACES}"
+          fi
+          if [[ -n "${INPUT_ENEMY_DIFFICULTIES}" ]]; then
+            export SOAK_MATRIX_ENEMY_DIFFICULTIES="${INPUT_ENEMY_DIFFICULTIES}"
+          fi
+          if [[ -n "${INPUT_TARGET_FRAME}" ]]; then
+            export SOAK_MATRIX_TARGET_FRAME="${INPUT_TARGET_FRAME}"
+          fi
+          if [[ -n "${INPUT_TIMEOUT_SECONDS}" ]]; then
+            export SOAK_MATRIX_TIMEOUT_SECONDS="${INPUT_TIMEOUT_SECONDS}"
+          fi
           integrations/micromachine/scripts/soak_matrix_macos_local.sh
       - name: Upload matrix report
         uses: actions/upload-artifact@v4

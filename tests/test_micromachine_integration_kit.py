@@ -287,6 +287,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SOAK_MATRIX_MAP_FILES",
             "SOAK_MATRIX_ENEMY_RACES",
             "SOAK_MATRIX_ENEMY_DIFFICULTIES",
+            "SOAK_MATRIX_QUALIFICATION_TIER",
+            "MICROMACHINE_MAP_POOL.json",
+            "starcraft_commander.micromachine_map_pool",
             "SOAK_MATRIX_REPORT",
             "matrix_report.json",
             "SOAK_MATRIX_ALLOW_FAILURES",
@@ -319,31 +322,39 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         workflow = LOCAL_SOAK_WORKFLOW.read_text()
         production_ops = (REPO_ROOT / "docs" / "micromachine-production-ops.md").read_text()
         readme = (KIT_DIR / "README.md").read_text()
+        map_pool = json.loads((KIT_DIR / "MICROMACHINE_MAP_POOL.json").read_text())
 
         self.assertIn(
-            'SOAK_MATRIX_MAP_FILES="${SOAK_MATRIX_MAP_FILES:-AcropolisLE.SC2Map}"',
+            'SOAK_MATRIX_QUALIFICATION_TIER="${SOAK_MATRIX_QUALIFICATION_TIER:-production}"',
             soak_matrix_script,
         )
-        self.assertIn('default: "AcropolisLE.SC2Map"', workflow)
+        self.assertIn("starcraft_commander.micromachine_map_pool", soak_matrix_script)
+        self.assertIn("qualification_tier:", workflow)
+        self.assertIn('default: "production"', workflow)
+        self.assertIn('default: ""', workflow)
+        self.assertIn("INPUT_MAPS:", workflow)
+        self.assertIn("validate_required qualification_tier", workflow)
+        self.assertIn("validate_optional maps", workflow)
+        self.assertNotIn('[[ -n "${{ inputs.maps }}" ]]', workflow)
         self.assertIn(
-            "Set to 1 only for diagnostic or negative-control runs, never production sign-off.",
+            "Empty uses map-pool tier default.",
             workflow,
         )
         self.assertIn(
             'allow_failures:\n'
-            '        description: "Set to 1 only for diagnostic or negative-control runs, never production sign-off."\n'
+            '        description: "Optional override. Set to 1 only for diagnostic or negative-control runs, never production sign-off. Empty uses map-pool tier default."\n'
             "        required: false\n"
-            '        default: "0"',
+            '        default: ""',
             workflow,
         )
         self.assertNotIn(
             'SOAK_MATRIX_MAP_FILES="${SOAK_MATRIX_MAP_FILES:-AcropolisLE.SC2Map Ladder2019Season3/ThunderbirdLE.SC2Map}"',
             soak_matrix_script,
         )
-        self.assertIn('SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map"', production_ops)
-        self.assertIn('SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map"', readme)
-        self.assertIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1"', production_ops)
-        self.assertIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1"', readme)
+        self.assertIn("MICROMACHINE_MAP_POOL.json", production_ops)
+        self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=production", production_ops)
+        self.assertIn("MICROMACHINE_MAP_POOL.json", readme)
+        self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=production", readme)
         self.assertNotIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2"', production_ops)
         self.assertNotIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2"', readme)
         self.assertIn(
@@ -354,6 +365,25 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             'SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map"',
             readme,
         )
+        required_maps = [
+            item["map_file"]
+            for item in map_pool["maps"]
+            if item["classification"] == "required"
+        ]
+        diagnostic_maps = [
+            item["map_file"]
+            for item in map_pool["maps"]
+            if item["classification"] == "diagnostic"
+        ]
+        self.assertEqual(["AcropolisLE.SC2Map"], required_maps)
+        self.assertEqual(["Ladder2019Season3/ThunderbirdLE.SC2Map"], diagnostic_maps)
+        self.assertFalse(map_pool["contract"]["production_allows_failures"])
+        excluded_maps = [
+            item["map_file"]
+            for item in map_pool["maps"]
+            if item["classification"] == "excluded"
+        ]
+        self.assertEqual(["Custom/UnknownOrUnvetted.SC2Map"], excluded_maps)
 
     def test_soak_matrix_aggregate_preserves_nested_attempt_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -407,6 +437,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "SOAK_MATRIX_TARGET_FRAME": "12000",
                 "SOAK_MATRIX_TIMEOUT_SECONDS": "1200",
                 "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                "SOAK_MATRIX_QUALIFICATION_TIER": "diagnostic",
                 "SOAK_MATRIX_ALLOW_FAILURES": "1",
             }
 
@@ -441,6 +472,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "SOAK_MATRIX_RUN_DIR": str(root),
                 "SOAK_MATRIX_REPORT": str(report),
                 "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                "SOAK_MATRIX_QUALIFICATION_TIER": "diagnostic",
                 "SOAK_MATRIX_ALLOW_FAILURES": "1",
             }
 
@@ -454,6 +486,113 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
             self.assertNotEqual(0, completed.returncode)
             self.assertIn("still requires at least 1 passing case", completed.stdout)
+
+    def test_soak_matrix_uses_manifest_allow_failures_only_for_diagnostic_tier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            failed_case = root / "01-ThunderbirdLE-SC2Map-Zerg-d1"
+            failed_case.mkdir()
+            (failed_case / "soak_report.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "ok": False,
+                        "failures": [{"code": "no_production_deadlock"}],
+                    }
+                )
+            )
+            common_env = {
+                **os.environ,
+                "SOAK_MATRIX_RUN_DIR": str(root),
+                "SOAK_MATRIX_REPORT": str(root / "matrix_report.json"),
+                "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                "SOAK_MATRIX_MIN_PASSES": "0",
+            }
+
+            production = subprocess.run(
+                [str(SOAK_MATRIX_SCRIPT)],
+                env={**common_env, "SOAK_MATRIX_QUALIFICATION_TIER": "production"},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            diagnostic = subprocess.run(
+                [str(SOAK_MATRIX_SCRIPT)],
+                env={**common_env, "SOAK_MATRIX_QUALIFICATION_TIER": "diagnostic"},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(0, production.returncode)
+            self.assertEqual(0, diagnostic.returncode, diagnostic.stdout + diagnostic.stderr)
+
+    def test_soak_matrix_rejects_allow_failures_for_production_tier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report = root / "matrix_report.json"
+            env = {
+                **os.environ,
+                "SOAK_MATRIX_RUN_DIR": str(root),
+                "SOAK_MATRIX_REPORT": str(report),
+                "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                "SOAK_MATRIX_QUALIFICATION_TIER": "production",
+                "SOAK_MATRIX_ALLOW_FAILURES": "1",
+            }
+
+            completed = subprocess.run(
+                [str(SOAK_MATRIX_SCRIPT)],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(2, completed.returncode)
+            self.assertIn("production tier cannot set SOAK_MATRIX_ALLOW_FAILURES=1", completed.stderr)
+
+    def test_soak_matrix_rejects_invalid_local_failure_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            completed = subprocess.run(
+                [str(SOAK_MATRIX_SCRIPT)],
+                env={
+                    **os.environ,
+                    "SOAK_MATRIX_RUN_DIR": str(root),
+                    "SOAK_MATRIX_REPORT": str(root / "matrix_report.json"),
+                    "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                    "SOAK_MATRIX_ALLOW_FAILURES": "maybe",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(2, completed.returncode)
+            self.assertIn("SOAK_MATRIX_ALLOW_FAILURES must be 0 or 1", completed.stderr)
+
+    def test_soak_matrix_report_records_qualification_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            passed_case = root / "01-AcropolisLE-SC2Map-Zerg-d1"
+            passed_case.mkdir()
+            (passed_case / "soak_report.json").write_text(
+                json.dumps({"status": "passed", "ok": True, "latest_frame": 12042})
+            )
+            report = root / "matrix_report.json"
+            env = {
+                **os.environ,
+                "SOAK_MATRIX_RUN_DIR": str(root),
+                "SOAK_MATRIX_REPORT": str(report),
+                "SOAK_MATRIX_AGGREGATE_ONLY": "1",
+                "SOAK_MATRIX_QUALIFICATION_TIER": "diagnostic",
+            }
+
+            subprocess.run([str(SOAK_MATRIX_SCRIPT)], check=True, env=env)
+
+            payload = json.loads(report.read_text())
+            self.assertEqual("diagnostic", payload["qualification_tier"])
+            self.assertTrue(payload["allow_failures"])
 
 
 if __name__ == "__main__":
