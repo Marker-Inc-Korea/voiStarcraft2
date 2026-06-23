@@ -157,6 +157,11 @@ def parse_micromachine_map_pool(payload: Mapping[str, object]) -> MicroMachineMa
         raise ValueError("contract.default_tier must be production.")
     if production_tier.map_classifications != ("required",):
         raise ValueError("production tier must include only required maps.")
+    for entry in maps:
+        if entry.blocker is not None and entry.classification != "diagnostic":
+            raise ValueError(
+                "maps with active blocker metadata must remain diagnostic until promoted."
+            )
     if not any(entry.classification == "diagnostic" for entry in maps):
         raise ValueError("map pool must contain at least one diagnostic map.")
     if not any(entry.classification == "excluded" for entry in maps):

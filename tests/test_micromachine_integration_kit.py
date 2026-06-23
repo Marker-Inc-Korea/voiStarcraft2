@@ -369,10 +369,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             'SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map"',
             production_ops,
         )
+        self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=diagnostic", production_ops)
         self.assertIn(
             'SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map"',
             readme,
         )
+        self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=diagnostic", readme)
         required_maps = [
             item["map_file"]
             for item in map_pool["maps"]

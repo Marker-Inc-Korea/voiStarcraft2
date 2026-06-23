@@ -289,6 +289,7 @@ Example diagnostic run for the known Thunderbird blocker:
 
 ```bash
 SOAK_MATRIX_RUN_ID=diagnostic-thunderbird-001 \
+SOAK_MATRIX_QUALIFICATION_TIER=diagnostic \
 SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map" \
 SOAK_MATRIX_ALLOW_FAILURES=1 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh

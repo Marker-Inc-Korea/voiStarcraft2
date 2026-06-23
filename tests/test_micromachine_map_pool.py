@@ -183,6 +183,13 @@ class MicroMachineMapPoolTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "blocker .* must be an object"):
             parse_micromachine_map_pool(payload)
 
+    def test_manifest_rejects_blocker_in_required_pool(self) -> None:
+        payload = self._default_payload()
+        payload["maps"][1]["classification"] = "required"
+
+        with self.assertRaisesRegex(ValueError, "active blocker metadata must remain diagnostic"):
+            parse_micromachine_map_pool(payload)
+
     def test_loads_explicit_manifest_path(self) -> None:
         payload = self._default_payload()
         payload["tiers"]["production"]["enemy_difficulties"] = [1, 2]
