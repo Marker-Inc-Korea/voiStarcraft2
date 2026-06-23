@@ -363,6 +363,7 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                     "latest_frame": latest_frame,
                     "macro_evidence_ok": ok,
                     "manager_intervention_ok": ok,
+                    "target_reached": ok,
                     "map_file": map_file,
                     "enemy_race": enemy_race,
                     "enemy_difficulty": enemy_difficulty,

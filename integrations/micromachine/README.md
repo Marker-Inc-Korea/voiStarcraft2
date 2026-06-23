@@ -363,7 +363,7 @@ same patched MicroMachine build:
 | Smoke | `smoke_macos_local.sh` reaches `MIN_TELEMETRY_FRAME`, produces real macro evidence, and shows active aggressive modulation. |
 | Manager intervention | Telemetry proves both `CombatCommander.bounded_intervention=true` and `ScoutManager.bounded_intervention=true`. |
 | Long-run soak | `soak_macos_local.sh` reaches `SOAK_TARGET_FRAME` and writes `soak_report.json` with `ok: true`. |
-| Matrix diversity | `soak_matrix_macos_local.sh` writes a reviewed `matrix_report.json` with `failed=0`. |
+| Matrix diversity | `soak_matrix_macos_local.sh` writes a reviewed `matrix_report.json` with `failed=0` plus `triage_report.md` when failures need owner routing. |
 | Neural/provider swap | Callers use `MicroMachineModulationBackend`, `publish_policy_modulation_provider_output(...)`, or `publish_neural_representation_modulation(...)`, so future neural representation providers publish the same bounded vector contract without raw SC2 controls. |
 | CI/operations | Hosted CI runs unit contracts and script syntax; real SC2 soak matrices run from the self-hosted macOS workflow. |
 

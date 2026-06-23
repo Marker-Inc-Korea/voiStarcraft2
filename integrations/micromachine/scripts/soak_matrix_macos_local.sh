@@ -45,6 +45,8 @@ SOAK_MATRIX_MIN_PASSES="${SOAK_MATRIX_MIN_PASSES:-1}"
 SOAK_MATRIX_ENABLED="${SOAK_MATRIX_ENABLED:-1}"
 SOAK_MATRIX_HISTORY_JSON="${SOAK_MATRIX_HISTORY_JSON:-${SOAK_MATRIX_RUN_DIR}/soak_history_dashboard.json}"
 SOAK_MATRIX_HISTORY_MD="${SOAK_MATRIX_HISTORY_MD:-${SOAK_MATRIX_RUN_DIR}/soak_history_dashboard.md}"
+SOAK_MATRIX_TRIAGE_JSON="${SOAK_MATRIX_TRIAGE_JSON:-${SOAK_MATRIX_RUN_DIR}/triage_report.json}"
+SOAK_MATRIX_TRIAGE_MD="${SOAK_MATRIX_TRIAGE_MD:-${SOAK_MATRIX_RUN_DIR}/triage_report.md}"
 
 if [[ "${SOAK_MATRIX_QUALIFICATION_TIER}" =~ ^(production|extended)$ && "${SOAK_MATRIX_ALLOW_FAILURES}" == "1" ]]; then
   echo "MicroMachine matrix rejected: ${SOAK_MATRIX_QUALIFICATION_TIER} tier cannot set SOAK_MATRIX_ALLOW_FAILURES=1." >&2
@@ -187,6 +189,12 @@ python3 -m starcraft_commander.micromachine_soak_history history-dashboard \
   --output-json "${SOAK_MATRIX_HISTORY_JSON}" \
   --output-markdown "${SOAK_MATRIX_HISTORY_MD}"
 
+python3 -m starcraft_commander.micromachine_triage \
+  --matrix-report "${SOAK_MATRIX_REPORT}" \
+  --output-json "${SOAK_MATRIX_TRIAGE_JSON}" \
+  --output-markdown "${SOAK_MATRIX_TRIAGE_MD}" >/dev/null
+
+set +e
 python3 - <<'PY' "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_ALLOW_FAILURES}" "${SOAK_MATRIX_MIN_PASSES}"
 import json
 import sys
@@ -216,3 +224,10 @@ if allow_failures:
     )
 raise SystemExit(1)
 PY
+matrix_exit="$?"
+set -e
+if [[ "${matrix_exit}" -ne 0 && -f "${SOAK_MATRIX_TRIAGE_MD}" ]]; then
+  echo "MicroMachine matrix triage summary: ${SOAK_MATRIX_TRIAGE_MD}" >&2
+  sed -n '1,120p' "${SOAK_MATRIX_TRIAGE_MD}" >&2 || true
+fi
+exit "${matrix_exit}"
