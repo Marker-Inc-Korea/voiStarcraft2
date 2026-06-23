@@ -113,8 +113,10 @@ Attach both files to the final PR or issue comment:
 Useful signoff overrides:
 
 ```bash
+BUILD_IDENTITY_REPORT=/private/tmp/MicroMachine/build-latest-api/voi_build_identity.json
 SOAK_MATRIX_SIGNOFF_TIER=production \
-SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY=/private/tmp/MicroMachine/build-latest-api \
+SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY="$(python3 -m starcraft_commander.micromachine_build_identity --read-report "${BUILD_IDENTITY_REPORT}" --field identity)" \
+SOAK_MATRIX_BUILD_IDENTITY_REPORT="${BUILD_IDENTITY_REPORT}" \
 SOAK_MATRIX_RUN_ID=production-signoff-001 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
