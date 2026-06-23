@@ -49,10 +49,18 @@ Run Thunderbird or other unqualified maps only as explicit diagnostics:
 
 ```bash
 SOAK_MATRIX_RUN_ID=diagnostic-thunderbird-001 \
+SOAK_MATRIX_QUALIFICATION_TIER=diagnostic \
 SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map" \
 SOAK_MATRIX_ALLOW_FAILURES=1 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
+
+The Thunderbird blocker is tracked as
+`thunderbird_walloff_geometry_no_production_deadlock` in the map-pool manifest.
+See `docs/micromachine-thunderbird-blocker.md` for the artifact path,
+root-cause candidates, reproduction command, and promotion criteria. Do not
+move Thunderbird into the required pool until that checklist passes with
+`SOAK_MATRIX_ALLOW_FAILURES=0`.
 
 The runner writes:
 
@@ -110,7 +118,7 @@ Verified local matrix evidence:
 | Run | Evidence |
 | --- | --- |
 | `issue-10-13-acropolis-races-zero-v4` | `/private/tmp/voi-mm-soak-matrix/issue-10-13-acropolis-races-zero-v4/matrix_report.json` passed with `SOAK_MAX_ATTEMPTS=1`, `passed=3`, `failed=0` for `AcropolisLE.SC2Map` against `Zerg`, `Protoss`, and `Terran` difficulty 1. |
-| Thunderbird blocker | `Ladder2019Season3/ThunderbirdLE.SC2Map` emitted `Depot build position fallback used`, `Invalid setup detected`, and `Unusual ramp detected, tiles to block = 0`; this is a MicroMachine map-support blocker, not production evidence. |
+| Thunderbird blocker | `Ladder2019Season3/ThunderbirdLE.SC2Map` emitted `Depot build position fallback used`, `Invalid setup detected`, and `Unusual ramp detected, tiles to block = 0`; this is `thunderbird_walloff_geometry_no_production_deadlock`, a MicroMachine map-support blocker, not production evidence. |
 
 ## Neural/SOTA Representation Attachment
 

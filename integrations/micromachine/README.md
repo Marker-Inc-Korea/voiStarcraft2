@@ -289,10 +289,18 @@ Example diagnostic run for the known Thunderbird blocker:
 
 ```bash
 SOAK_MATRIX_RUN_ID=diagnostic-thunderbird-001 \
+SOAK_MATRIX_QUALIFICATION_TIER=diagnostic \
 SOAK_MATRIX_MAP_FILES="Ladder2019Season3/ThunderbirdLE.SC2Map" \
 SOAK_MATRIX_ALLOW_FAILURES=1 \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
+
+The manifest records this as
+`thunderbird_walloff_geometry_no_production_deadlock` with the known artifact
+path, reproduction command, root-cause candidates, evidence signatures, and
+promotion criteria. See `docs/micromachine-thunderbird-blocker.md`. Do not
+promote Thunderbird to production until it passes the documented 12000-frame
+matrix gate with `SOAK_MATRIX_ALLOW_FAILURES=0`.
 
 Verified local matrix evidence for Issue 10.12:
 

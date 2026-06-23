@@ -43,6 +43,19 @@ class MicroMachineMapPoolTest(unittest.TestCase):
             ["geometry_risk", "placement_risk"],
             diagnostic["maps"][0]["preflight_risk_codes"],
         )
+        blocker = diagnostic["maps"][0]["blocker"]
+        self.assertIsInstance(blocker, dict)
+        self.assertEqual(
+            "thunderbird_walloff_geometry_no_production_deadlock",
+            blocker["code"],
+        )
+        self.assertEqual("no_production_deadlock", blocker["runtime_failure_code"])
+        self.assertIn(
+            "/private/tmp/voi-mm-soak/issue-10-11-final-thunderbird-v2/soak_report.json",
+            blocker["artifact_path"],
+        )
+        self.assertIn("ramp_detection", blocker["root_cause_candidates"])
+        self.assertIn("no_production_deadlock", blocker["evidence_signatures"])
         excluded = [entry for entry in pool.maps if entry.classification == "excluded"]
         self.assertEqual(["Custom/UnknownOrUnvetted.SC2Map"], [entry.map_file for entry in excluded])
 
@@ -149,6 +162,32 @@ class MicroMachineMapPoolTest(unittest.TestCase):
         payload["maps"][0]["preflight"]["risk_codes"] = "geometry_risk"
 
         with self.assertRaisesRegex(ValueError, "must be a list"):
+            parse_micromachine_map_pool(payload)
+
+    def test_manifest_rejects_malformed_blocker_metadata(self) -> None:
+        payload = self._default_payload()
+        payload["maps"][1]["blocker"]["code"] = ""
+
+        with self.assertRaisesRegex(ValueError, "code must be a non-empty string"):
+            parse_micromachine_map_pool(payload)
+
+        payload = self._default_payload()
+        payload["maps"][1]["blocker"]["promotion_criteria"] = []
+
+        with self.assertRaisesRegex(ValueError, "promotion_criteria must be a non-empty list"):
+            parse_micromachine_map_pool(payload)
+
+        payload = self._default_payload()
+        payload["maps"][1]["blocker"] = "no_production_deadlock"
+
+        with self.assertRaisesRegex(ValueError, "blocker .* must be an object"):
+            parse_micromachine_map_pool(payload)
+
+    def test_manifest_rejects_blocker_in_required_pool(self) -> None:
+        payload = self._default_payload()
+        payload["maps"][1]["classification"] = "required"
+
+        with self.assertRaisesRegex(ValueError, "active blocker metadata must remain diagnostic"):
             parse_micromachine_map_pool(payload)
 
     def test_loads_explicit_manifest_path(self) -> None:

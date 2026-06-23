@@ -60,6 +60,7 @@ def preflight_micromachine_map(config: MicroMachineMapPreflightConfig) -> dict[s
         notes = ""
         promotion_rule = ""
         reason = ""
+        blocker = None
     else:
         classification = entry.classification
         manifest_status = entry.status
@@ -68,6 +69,7 @@ def preflight_micromachine_map(config: MicroMachineMapPreflightConfig) -> dict[s
         notes = entry.preflight_notes
         promotion_rule = entry.promotion_rule
         reason = entry.reason
+        blocker = entry.blocker
         tier_allows_class = classification in tier.map_classifications
         checks.append(
             {
@@ -161,6 +163,7 @@ def preflight_micromachine_map(config: MicroMachineMapPreflightConfig) -> dict[s
         "preflight_notes": notes,
         "promotion_rule": promotion_rule,
         "reason": reason,
+        "blocker": dict(blocker) if blocker is not None else None,
     }
 
 
