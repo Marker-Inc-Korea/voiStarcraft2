@@ -28,6 +28,21 @@ fi
 if [[ -z "${SOAK_MATRIX_STRATEGY_PROFILES:-}" ]]; then
   SOAK_MATRIX_STRATEGY_PROFILES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field strategy_profiles)"
 fi
+SOAK_MATRIX_BUILD_IDENTITY="${SOAK_MATRIX_BUILD_IDENTITY:-${MICROMACHINE_BUILD_ID:-${MICROMACHINE_BUILD_DIR:-unrecorded}}}"
+SOAK_MATRIX_SIGNOFF_TIER="${SOAK_MATRIX_SIGNOFF_TIER:-production}"
+if [[ -z "${SOAK_MATRIX_SIGNOFF_MAP_FILES:-}" ]]; then
+  SOAK_MATRIX_SIGNOFF_MAP_FILES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_SIGNOFF_TIER}" --field map_files)"
+fi
+if [[ -z "${SOAK_MATRIX_SIGNOFF_ENEMY_RACES:-}" ]]; then
+  SOAK_MATRIX_SIGNOFF_ENEMY_RACES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_SIGNOFF_TIER}" --field enemy_races)"
+fi
+if [[ -z "${SOAK_MATRIX_SIGNOFF_ENEMY_DIFFICULTIES:-}" ]]; then
+  SOAK_MATRIX_SIGNOFF_ENEMY_DIFFICULTIES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_SIGNOFF_TIER}" --field enemy_difficulties)"
+fi
+if [[ -z "${SOAK_MATRIX_SIGNOFF_STRATEGY_PROFILES:-}" ]]; then
+  SOAK_MATRIX_SIGNOFF_STRATEGY_PROFILES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_SIGNOFF_TIER}" --field strategy_profiles)"
+fi
+SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY="${SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY:-}"
 SOAK_MATRIX_STOP_ON_FAILURE="${SOAK_MATRIX_STOP_ON_FAILURE:-0}"
 if [[ -z "${SOAK_MATRIX_ALLOW_FAILURES:-}" ]]; then
   SOAK_MATRIX_ALLOW_FAILURES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field allow_failures)"
@@ -58,7 +73,7 @@ fi
 mkdir -p "${SOAK_MATRIX_RUN_DIR}"
 
 if [[ "${SOAK_MATRIX_ENABLED}" != "1" ]]; then
-  python3 - <<'PY' "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_HISTORY_JSON}" "${SOAK_MATRIX_HISTORY_MD}" "${SOAK_MATRIX_QUALIFICATION_TIER}" "${SOAK_MATRIX_ALLOW_FAILURES}" "${SOAK_MATRIX_STRATEGY_PROFILES}"
+  python3 - <<'PY' "${SOAK_MATRIX_REPORT}" "${SOAK_MATRIX_HISTORY_JSON}" "${SOAK_MATRIX_HISTORY_MD}" "${SOAK_MATRIX_QUALIFICATION_TIER}" "${SOAK_MATRIX_ALLOW_FAILURES}" "${SOAK_MATRIX_STRATEGY_PROFILES}" "${SOAK_MATRIX_BUILD_IDENTITY}" "${SOAK_MATRIX_SIGNOFF_TIER}"
 import json
 import sys
 from pathlib import Path
@@ -69,6 +84,8 @@ history_md = Path(sys.argv[3])
 qualification_tier = sys.argv[4]
 allow_failures = sys.argv[5] == "1"
 strategy_profiles = [item for item in sys.argv[6].split() if item]
+build_identity = sys.argv[7]
+signoff_tier = sys.argv[8]
 payload = {
     "status": "disabled",
     "ok": False,
@@ -76,6 +93,7 @@ payload = {
     "qualification_tier": qualification_tier,
     "allow_failures": allow_failures,
     "strategy_profiles": strategy_profiles,
+    "build_identity": build_identity,
     "case_count": 0,
     "passed": 0,
     "failed": 0,
@@ -95,6 +113,19 @@ dashboard = {
     "enemy_races": [],
     "enemy_difficulties": [],
     "target_frames": [],
+    "streaks": {"current_status": "none", "current_pass_streak": 0, "current_fail_streak": 0},
+    "production_signoff": {
+        "status": "blocked",
+        "ok": False,
+        "signoff_tier": signoff_tier,
+        "window_size": 0,
+        "eligible_run_count": 0,
+        "excluded_run_count": 1,
+        "eligible_runs": [],
+        "excluded_runs": [{"run_id": report.parent.name, "reason": "disabled"}],
+        "coverage": {"required_count": 0, "observed_count": 0, "missing_count": 0, "missing": []},
+        "blockers": [{"code": "no_eligible_production_runs"}],
+    },
     "runs": [],
 }
 report.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +136,7 @@ history_md.write_text(
     "# MicroMachine Soak History\n\n"
     "- Status: `disabled`\n"
     "- Soak execution was skipped because `SOAK_MATRIX_ENABLED` was not `1`.\n"
+    "- Production signoff: `blocked` (disabled run excluded).\n"
 )
 print(f"MicroMachine matrix disabled: {report}")
 PY
@@ -178,6 +210,7 @@ matrix_report_args=(
   --timeout-seconds "${SOAK_MATRIX_TIMEOUT_SECONDS}"
   --qualification-tier "${SOAK_MATRIX_QUALIFICATION_TIER}"
   --strategy-profiles "${SOAK_MATRIX_STRATEGY_PROFILES}"
+  --build-identity "${SOAK_MATRIX_BUILD_IDENTITY}"
 )
 if [[ "${SOAK_MATRIX_ALLOW_FAILURES}" == "1" ]]; then
   matrix_report_args+=(--allow-failures)
@@ -187,7 +220,13 @@ python3 -m starcraft_commander.micromachine_soak_history "${matrix_report_args[@
 python3 -m starcraft_commander.micromachine_soak_history history-dashboard \
   --root "${SOAK_MATRIX_ARTIFACT_ROOT}" \
   --output-json "${SOAK_MATRIX_HISTORY_JSON}" \
-  --output-markdown "${SOAK_MATRIX_HISTORY_MD}"
+  --output-markdown "${SOAK_MATRIX_HISTORY_MD}" \
+  --signoff-tier "${SOAK_MATRIX_SIGNOFF_TIER}" \
+  --required-map-files "${SOAK_MATRIX_SIGNOFF_MAP_FILES}" \
+  --required-enemy-races "${SOAK_MATRIX_SIGNOFF_ENEMY_RACES}" \
+  --required-enemy-difficulties "${SOAK_MATRIX_SIGNOFF_ENEMY_DIFFICULTIES}" \
+  --required-strategy-profiles "${SOAK_MATRIX_SIGNOFF_STRATEGY_PROFILES}" \
+  --required-build-identity "${SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY}"
 
 python3 -m starcraft_commander.micromachine_triage \
   --matrix-report "${SOAK_MATRIX_REPORT}" \

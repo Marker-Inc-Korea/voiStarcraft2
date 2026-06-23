@@ -92,6 +92,33 @@ The runner writes:
 - A GitHub-ready failure triage Markdown report at
   `/private/tmp/voi-mm-soak-matrix/<run-id>/triage_report.md`.
 
+The history dashboard includes a `production_signoff` object. It is the
+recent-N production evidence gate, not just a run counter. It only counts
+enabled runs from the configured signoff tier, excludes disabled and diagnostic
+runs, and blocks signoff when:
+
+- No eligible production run exists in the recent window.
+- Any eligible production run has `ok != true` or `failed > 0`.
+- Required map, enemy race, enemy difficulty, or strategy profile coverage is
+  missing.
+- `SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY` is set and a run was produced
+  by a different MicroMachine build.
+
+Attach both files to the final PR or issue comment:
+
+- `soak_history_dashboard.json` for machine-readable `production_signoff`.
+- `soak_history_dashboard.md` for reviewer-readable status, blockers, and
+  recent run paths.
+
+Useful signoff overrides:
+
+```bash
+SOAK_MATRIX_SIGNOFF_TIER=production \
+SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY=/private/tmp/MicroMachine/build-latest-api \
+SOAK_MATRIX_RUN_ID=production-signoff-001 \
+integrations/micromachine/scripts/soak_matrix_macos_local.sh
+```
+
 Production qualification requires `matrix_report.json.ok == true` and
 `matrix_report.json.failed == 0`. `SOAK_MATRIX_ALLOW_FAILURES=1` is only for
 diagnostics or negative-control evidence; it must not be used for production

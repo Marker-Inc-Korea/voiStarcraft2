@@ -216,6 +216,9 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             self.assertEqual(2, dashboard["run_count"])
             self.assertEqual(1, dashboard["passed_runs"])
             self.assertEqual(1, dashboard["failed_runs"])
+            self.assertEqual("failed", dashboard["streaks"]["current_status"])
+            self.assertEqual(0, dashboard["streaks"]["current_pass_streak"])
+            self.assertEqual(1, dashboard["streaks"]["current_fail_streak"])
             self.assertIn(
                 ("production", False),
                 {
@@ -240,6 +243,184 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             )
             self.assertIn("MicroMachine Soak History", markdown)
             self.assertIn("no_production_deadlock", markdown)
+
+    def test_production_signoff_passes_all_green_required_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-green",
+                ok=True,
+                status="passed",
+                qualification_tier="production",
+                build_identity="build-a",
+                cases=[
+                    self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True),
+                    self.matrix_case("AcropolisLE.SC2Map", "Protoss", 1, ok=True),
+                    self.matrix_case("AcropolisLE.SC2Map", "Terran", 1, ok=True),
+                ],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg", "Protoss", "Terran"),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                    required_build_identity="build-a",
+                )
+            )
+            markdown = render_soak_history_markdown(dashboard)
+
+            signoff = dashboard["production_signoff"]
+            self.assertTrue(signoff["ok"])
+            self.assertEqual("passed", signoff["status"])
+            self.assertEqual(3, signoff["coverage"]["required_count"])
+            self.assertEqual(3, signoff["coverage"]["observed_count"])
+            self.assertEqual([], signoff["blockers"])
+            self.assertIn("Production Signoff", markdown)
+            self.assertIn("Status: `passed`", markdown)
+
+    def test_production_signoff_blocks_missing_required_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-partial",
+                ok=True,
+                status="passed",
+                qualification_tier="production",
+                cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg", "Protoss"),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                )
+            )
+
+            signoff = dashboard["production_signoff"]
+            self.assertFalse(signoff["ok"])
+            self.assertEqual("blocked", signoff["status"])
+            self.assertEqual(1, signoff["coverage"]["missing_count"])
+            self.assertIn(
+                "missing_required_coverage",
+                {blocker["code"] for blocker in signoff["blockers"]},
+            )
+
+    def test_production_signoff_excludes_disabled_and_diagnostic_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-diagnostic",
+                ok=True,
+                status="passed",
+                qualification_tier="diagnostic",
+                allow_failures=True,
+                cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
+            )
+            self.write_matrix_report(
+                root / "run-disabled",
+                ok=False,
+                status="disabled",
+                qualification_tier="production",
+                enabled=False,
+                cases=[],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg",),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                )
+            )
+
+            signoff = dashboard["production_signoff"]
+            self.assertFalse(signoff["ok"])
+            self.assertEqual(0, signoff["eligible_run_count"])
+            self.assertEqual(2, signoff["excluded_run_count"])
+            self.assertEqual(
+                {"disabled", "non_signoff_tier"},
+                {entry["reason"] for entry in signoff["excluded_runs"]},
+            )
+            self.assertIn(
+                "no_eligible_production_runs",
+                {blocker["code"] for blocker in signoff["blockers"]},
+            )
+
+    def test_production_signoff_blocks_failed_required_case(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-failed",
+                ok=False,
+                status="failed",
+                qualification_tier="production",
+                failed=1,
+                cases=[
+                    self.matrix_case(
+                        "AcropolisLE.SC2Map",
+                        "Zerg",
+                        1,
+                        ok=False,
+                        failure_codes=["no_production_deadlock"],
+                    )
+                ],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg",),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                )
+            )
+
+            signoff = dashboard["production_signoff"]
+            self.assertFalse(signoff["ok"])
+            self.assertIn(
+                "failed_required_case",
+                {blocker["code"] for blocker in signoff["blockers"]},
+            )
+
+    def test_production_signoff_blocks_build_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-old-build",
+                ok=True,
+                status="passed",
+                qualification_tier="production",
+                build_identity="old-build",
+                cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg",),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                    required_build_identity="new-build",
+                )
+            )
+
+            signoff = dashboard["production_signoff"]
+            self.assertFalse(signoff["ok"])
+            self.assertEqual(["old-build"], signoff["build_identity"]["observed"])
+            self.assertIn(
+                "build_mismatch",
+                {blocker["code"] for blocker in signoff["blockers"]},
+            )
 
     def test_history_dashboard_recent_limit_uses_mtime_not_lexicographic_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -340,6 +521,12 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             history = json.loads((run_dir / "history.json").read_text())
             self.assertEqual("disabled", history["status"])
             self.assertEqual(0, history["run_count"])
+            self.assertEqual("none", history["streaks"]["current_status"])
+            self.assertEqual("blocked", history["production_signoff"]["status"])
+            self.assertEqual(
+                [{"run_id": "disabled-run", "reason": "disabled"}],
+                history["production_signoff"]["excluded_runs"],
+            )
             self.assertIn("disabled", (run_dir / "history.md").read_text())
 
     def write_soak_report(
@@ -374,6 +561,60 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 sort_keys=True,
             )
             + "\n"
+        )
+
+    def matrix_case(
+        self,
+        map_file: str,
+        enemy_race: str,
+        enemy_difficulty: int,
+        *,
+        ok: bool,
+        failure_codes: list[str] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "case_id": f"{map_file}-{enemy_race}-d{enemy_difficulty}",
+            "ok": ok,
+            "status": "passed" if ok else "failed",
+            "map_file": map_file,
+            "enemy_race": enemy_race,
+            "enemy_difficulty": enemy_difficulty,
+            "strategy_profiles": ["default_defensive_to_aggressive"],
+            "failure_codes": failure_codes or [],
+        }
+
+    def write_matrix_report(
+        self,
+        run_dir: Path,
+        *,
+        ok: bool,
+        status: str,
+        qualification_tier: str,
+        cases: list[dict[str, object]],
+        allow_failures: bool = False,
+        enabled: bool = True,
+        failed: int | None = None,
+        build_identity: str | None = None,
+    ) -> None:
+        run_dir.mkdir()
+        failed_count = failed if failed is not None else sum(1 for case in cases if not case["ok"])
+        payload = {
+            "ok": ok,
+            "status": status,
+            "enabled": enabled,
+            "target_frame": 12_000,
+            "timeout_seconds": 1_200,
+            "qualification_tier": qualification_tier,
+            "allow_failures": allow_failures,
+            "strategy_profiles": ["default_defensive_to_aggressive"],
+            "build_identity": build_identity,
+            "case_count": len(cases),
+            "passed": len(cases) - failed_count,
+            "failed": failed_count,
+            "cases": cases,
+        }
+        (run_dir / "matrix_report.json").write_text(
+            json.dumps(payload, sort_keys=True) + "\n"
         )
 
 
