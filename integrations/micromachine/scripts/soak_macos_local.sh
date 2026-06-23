@@ -101,7 +101,6 @@ prepare_launch_contract() {
 }
 
 SC2_EXECUTABLE="${SC2_EXECUTABLE:-$(resolve_sc2_executable)}"
-SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
 MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
 SOAK_ENEMY_RACE="${SOAK_ENEMY_RACE:-Zerg}"
 SOAK_ENEMY_DIFFICULTY="${SOAK_ENEMY_DIFFICULTY:-1}"
@@ -133,11 +132,6 @@ SOAK_LIVE_REPORT="${BLACKBOARD_DIR}/soak_live_report.json"
 SC2_NET_ADDRESS="${SC2_NET_ADDRESS:-127.0.0.1}"
 SC2_PORTS=(${SC2_PORTS:-8167 8168})
 BOT_PID=""
-if [[ "${SC2_EXECUTABLE}" == "${SC2_BATTLENET_EXECUTABLE}" && -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
-  VOI_SC2_EXTRA_ARGS="--game=${SC2_BATTLENET_GAME} --gamepath=${SC2_RUNTIME_ROOT}/"
-elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
-  VOI_SC2_EXTRA_ARGS="-dataDir ${SC2_RUNTIME_ROOT} -tempDir ${SC2_TEMP_DIR}"
-fi
 BOT_EXIT_CODE=""
 BOT_STOPPED=0
 BOT_TERMINATION_REASON=""
@@ -595,7 +589,14 @@ fail_from_live_classifier() {
   exit 1
 }
 
+parse_profile_schedule "${SOAK_PROFILE_SEQUENCE}"
 prepare_launch_contract
+SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
+if [[ "${SC2_EXECUTABLE}" == "${SC2_BATTLENET_EXECUTABLE}" && -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
+  VOI_SC2_EXTRA_ARGS="--game=${SC2_BATTLENET_GAME} --gamepath=${SC2_RUNTIME_ROOT}/"
+elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
+  VOI_SC2_EXTRA_ARGS="-dataDir ${SC2_RUNTIME_ROOT} -tempDir ${SC2_TEMP_DIR}"
+fi
 
 mkdir -p "${BLACKBOARD_DIR}"
 rm -f \
@@ -608,7 +609,6 @@ rm -f \
   "${SOAK_REPORT}" \
   "${SOAK_LIVE_REPORT}"
 
-parse_profile_schedule "${SOAK_PROFILE_SEQUENCE}"
 publish_due_profiles "0"
 clean_sc2_ports_before_launch
 capture_preexisting_sc2_port_pids

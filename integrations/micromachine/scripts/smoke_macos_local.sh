@@ -101,7 +101,6 @@ prepare_launch_contract() {
 }
 
 SC2_EXECUTABLE="${SC2_EXECUTABLE:-$(resolve_sc2_executable)}"
-SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
 BLACKBOARD_DIR="${BLACKBOARD_DIR:-/private/tmp/voi-mm-smoke}"
 MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
 MIN_TELEMETRY_FRAME="${MIN_TELEMETRY_FRAME:-5200}"
@@ -112,11 +111,6 @@ SC2_NET_ADDRESS="${SC2_NET_ADDRESS:-127.0.0.1}"
 SC2_PORTS=(${SC2_PORTS:-8167 8168})
 BOT_PID=""
 PREEXISTING_SC2_PORT_PIDS=""
-if [[ "${SC2_EXECUTABLE}" == "${SC2_BATTLENET_EXECUTABLE}" && -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
-  VOI_SC2_EXTRA_ARGS="--game=${SC2_BATTLENET_GAME} --gamepath=${SC2_RUNTIME_ROOT}/"
-elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
-  VOI_SC2_EXTRA_ARGS="-dataDir ${SC2_RUNTIME_ROOT} -tempDir ${SC2_TEMP_DIR}"
-fi
 DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-smoke-defensive-hold}"
 AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-smoke-aggressive-pressure}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
@@ -312,6 +306,12 @@ PY
 }
 
 prepare_launch_contract
+SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
+if [[ "${SC2_EXECUTABLE}" == "${SC2_BATTLENET_EXECUTABLE}" && -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
+  VOI_SC2_EXTRA_ARGS="--game=${SC2_BATTLENET_GAME} --gamepath=${SC2_RUNTIME_ROOT}/"
+elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
+  VOI_SC2_EXTRA_ARGS="-dataDir ${SC2_RUNTIME_ROOT} -tempDir ${SC2_TEMP_DIR}"
+fi
 
 mkdir -p "${BLACKBOARD_DIR}"
 rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}"
