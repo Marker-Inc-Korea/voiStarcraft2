@@ -352,7 +352,30 @@ parse_profile_schedule() {
   for (( index = 0; index < ${#PROFILE_SCHEDULE_KEYS[@]}; index++ )); do
     PROFILE_SCHEDULE_PUBLISHED+=(0)
   done
-  SOAK_EXPECTED_PROFILE_TAGS="${PROFILE_SCHEDULE_KEYS[*]}"
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${PROFILE_SCHEDULE_KEYS[@]}"
+import sys
+
+from starcraft_commander.micromachine_runtime import MICROMACHINE_STRATEGY_PROFILE_KEYS
+
+allowed = set(MICROMACHINE_STRATEGY_PROFILE_KEYS)
+unknown = [key for key in sys.argv[1:] if key not in allowed]
+if unknown:
+    raise SystemExit(
+        "MicroMachine soak rejected: unknown SOAK_PROFILE_SEQUENCE profile(s): "
+        + ", ".join(unknown)
+    )
+PY
+  local expected=()
+  for (( index = 0; index < ${#PROFILE_SCHEDULE_KEYS[@]}; index++ )); do
+    if (( PROFILE_SCHEDULE_FRAMES[$index] <= SOAK_TARGET_FRAME )); then
+      expected+=("${PROFILE_SCHEDULE_KEYS[$index]}")
+    fi
+  done
+  if (( ${#expected[@]} == 0 )); then
+    echo "MicroMachine soak rejected: SOAK_PROFILE_SEQUENCE has no profile scheduled before SOAK_TARGET_FRAME." >&2
+    exit 2
+  fi
+  SOAK_EXPECTED_PROFILE_TAGS="${expected[*]}"
 }
 
 publish_due_profiles() {
