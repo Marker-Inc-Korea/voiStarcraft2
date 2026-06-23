@@ -74,6 +74,8 @@ def aggregate_matrix_run(
     allow_failures: bool = False,
     strategy_profiles: Sequence[str] = (),
     build_identity: str | None = None,
+    build_identity_ok: bool | None = None,
+    build_identity_failure_codes: Sequence[str] = (),
 ) -> dict[str, object]:
     """Build one deterministic matrix_report.json payload from case reports."""
 
@@ -89,6 +91,12 @@ def aggregate_matrix_run(
         not isinstance(build_identity, str) or not build_identity.strip()
     ):
         raise ValueError("build_identity must be a non-empty string.")
+    if build_identity_ok is not None and type(build_identity_ok) is not bool:
+        raise ValueError("build_identity_ok must be a boolean.")
+    build_failure_codes = _string_sequence(
+        "build_identity_failure_codes",
+        build_identity_failure_codes,
+    )
     cases: list[dict[str, object]] = []
     passed = 0
     failed = 0
@@ -113,6 +121,8 @@ def aggregate_matrix_run(
             "allow_failures": allow_failures,
             "strategy_profiles": list(profiles),
             "build_identity": build_identity,
+            "build_identity_ok": build_identity_ok,
+            "build_identity_failure_codes": list(build_failure_codes),
         }
         if not report_path.exists():
             dimensions = _case_dimensions_from_sources(case_dir.name, preflight, {})
@@ -205,6 +215,8 @@ def aggregate_matrix_run(
         "allow_failures": allow_failures,
         "strategy_profiles": list(profiles),
         "build_identity": build_identity,
+        "build_identity_ok": build_identity_ok,
+        "build_identity_failure_codes": list(build_failure_codes),
         "case_count": len(cases),
         "passed": passed,
         "failed": failed,
@@ -281,6 +293,12 @@ def aggregate_soak_history(config: SoakHistoryConfig) -> dict[str, object]:
                 else []
             ),
             "build_identity": payload.get("build_identity"),
+            "build_identity_ok": payload.get("build_identity_ok"),
+            "build_identity_failure_codes": (
+                payload["build_identity_failure_codes"]
+                if isinstance(payload.get("build_identity_failure_codes"), list)
+                else []
+            ),
             "failure_codes": sorted(
                 {
                     code
@@ -487,6 +505,7 @@ def _build_production_signoff(
         if isinstance(build_identity, str) and build_identity:
             observed_builds.add(build_identity)
         build_matches = True
+        build_identity_ok = run.get("build_identity_ok")
         if not isinstance(build_identity, str) or not build_identity or build_identity == "unrecorded":
             build_matches = False
             blockers.append(
@@ -494,6 +513,20 @@ def _build_production_signoff(
                     "code": "missing_build_identity",
                     "run_id": run_id,
                     "actual": build_identity,
+                }
+            )
+        elif build_identity_ok is False:
+            build_matches = False
+            blockers.append(
+                {
+                    "code": "invalid_build_identity",
+                    "run_id": run_id,
+                    "identity": build_identity,
+                    "failure_codes": (
+                        run["build_identity_failure_codes"]
+                        if isinstance(run.get("build_identity_failure_codes"), list)
+                        else []
+                    ),
                 }
             )
         if config.required_build_identity is not None and build_identity != config.required_build_identity:
@@ -664,6 +697,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     matrix.add_argument("--allow-failures", action="store_true")
     matrix.add_argument("--strategy-profiles", default="")
     matrix.add_argument("--build-identity", default="")
+    matrix.add_argument("--build-identity-ok", choices=("0", "1"), default="")
+    matrix.add_argument("--build-identity-failure-codes", default="")
 
     history = subparsers.add_parser("history-dashboard")
     history.add_argument("--root", action="append", required=True)
@@ -693,6 +728,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 item for item in args.strategy_profiles.split() if item
             ),
             build_identity=args.build_identity or None,
+            build_identity_ok=(
+                None if args.build_identity_ok == "" else args.build_identity_ok == "1"
+            ),
+            build_identity_failure_codes=tuple(
+                item for item in args.build_identity_failure_codes.split() if item
+            ),
         )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)

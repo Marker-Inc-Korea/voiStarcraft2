@@ -30,13 +30,18 @@ if [[ -z "${SOAK_MATRIX_STRATEGY_PROFILES:-}" ]]; then
 fi
 SOAK_MATRIX_DEFAULT_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-/private/tmp/MicroMachine/build-latest-api}"
 SOAK_MATRIX_BUILD_IDENTITY_REPORT="${SOAK_MATRIX_BUILD_IDENTITY_REPORT:-${MICROMACHINE_BUILD_IDENTITY_REPORT:-${SOAK_MATRIX_DEFAULT_BUILD_DIR}/voi_build_identity.json}}"
+SOAK_MATRIX_BUILD_IDENTITY_OK="${SOAK_MATRIX_BUILD_IDENTITY_OK:-0}"
+SOAK_MATRIX_BUILD_IDENTITY_FAILURE_CODES="${SOAK_MATRIX_BUILD_IDENTITY_FAILURE_CODES:-missing_build_identity_report}"
 if [[ -z "${SOAK_MATRIX_BUILD_IDENTITY:-}" && -f "${SOAK_MATRIX_BUILD_IDENTITY_REPORT}" ]]; then
   SOAK_MATRIX_BUILD_IDENTITY="$(python3 -m starcraft_commander.micromachine_build_identity \
-    --micromachine-dir "${MICROMACHINE_DIR:-/private/tmp/MicroMachine}" \
-    --s2client-dir "${S2CLIENT_DIR:-/private/tmp/voi-micromachine-runtime/s2client-api}" \
-    --micromachine-build-dir "${SOAK_MATRIX_DEFAULT_BUILD_DIR}" \
-    --output "${SOAK_MATRIX_BUILD_IDENTITY_REPORT}" \
+    --read-report "${SOAK_MATRIX_BUILD_IDENTITY_REPORT}" \
     --field identity)"
+  SOAK_MATRIX_BUILD_IDENTITY_OK="$(python3 -m starcraft_commander.micromachine_build_identity \
+    --read-report "${SOAK_MATRIX_BUILD_IDENTITY_REPORT}" \
+    --field ok)"
+  SOAK_MATRIX_BUILD_IDENTITY_FAILURE_CODES="$(python3 -m starcraft_commander.micromachine_build_identity \
+    --read-report "${SOAK_MATRIX_BUILD_IDENTITY_REPORT}" \
+    --field failure-codes)"
 fi
 SOAK_MATRIX_BUILD_IDENTITY="${SOAK_MATRIX_BUILD_IDENTITY:-${MICROMACHINE_BUILD_ID:-unrecorded}}"
 SOAK_MATRIX_SIGNOFF_TIER="${SOAK_MATRIX_SIGNOFF_TIER:-production}"
@@ -104,6 +109,8 @@ payload = {
     "allow_failures": allow_failures,
     "strategy_profiles": strategy_profiles,
     "build_identity": build_identity,
+    "build_identity_ok": False,
+    "build_identity_failure_codes": ["disabled"],
     "case_count": 0,
     "passed": 0,
     "failed": 0,
@@ -151,6 +158,8 @@ dashboard = {
             "allow_failures": allow_failures,
             "strategy_profiles": strategy_profiles,
             "build_identity": build_identity,
+            "build_identity_ok": False,
+            "build_identity_failure_codes": ["disabled"],
             "failure_codes": [],
         }
     ],
@@ -238,6 +247,8 @@ matrix_report_args=(
   --qualification-tier "${SOAK_MATRIX_QUALIFICATION_TIER}"
   --strategy-profiles "${SOAK_MATRIX_STRATEGY_PROFILES}"
   --build-identity "${SOAK_MATRIX_BUILD_IDENTITY}"
+  --build-identity-ok "${SOAK_MATRIX_BUILD_IDENTITY_OK}"
+  --build-identity-failure-codes "${SOAK_MATRIX_BUILD_IDENTITY_FAILURE_CODES}"
 )
 if [[ "${SOAK_MATRIX_ALLOW_FAILURES}" == "1" ]]; then
   matrix_report_args+=(--allow-failures)

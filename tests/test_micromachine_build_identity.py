@@ -39,8 +39,11 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config = self.build_config(root, binary=False)
 
             report = build_micromachine_build_identity(config)
+            output = root / "identity.json"
+            write_build_identity_report(report, output)
 
             self.assertFalse(report["ok"])
+            self.assertEqual(report["identity"], read_build_identity(output))
             self.assertIn(
                 "missing_binary",
                 {failure["code"] for failure in report["failures"]},

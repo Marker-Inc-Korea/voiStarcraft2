@@ -452,6 +452,41 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 {blocker["code"] for blocker in signoff["blockers"]},
             )
 
+    def test_production_signoff_blocks_invalid_build_identity_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-invalid-build",
+                ok=True,
+                status="passed",
+                qualification_tier="production",
+                build_identity="sha256:bad-build",
+                build_identity_ok=False,
+                build_identity_failure_codes=["missing_binary"],
+                cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg",),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                )
+            )
+
+            signoff = dashboard["production_signoff"]
+            self.assertFalse(signoff["ok"])
+            blocker_codes = {blocker["code"] for blocker in signoff["blockers"]}
+            self.assertIn("invalid_build_identity", blocker_codes)
+            invalid = next(
+                blocker
+                for blocker in signoff["blockers"]
+                if blocker["code"] == "invalid_build_identity"
+            )
+            self.assertEqual(["missing_binary"], invalid["failure_codes"])
+
     def test_history_dashboard_recent_limit_uses_mtime_not_lexicographic_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -627,6 +662,8 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
         enabled: bool = True,
         failed: int | None = None,
         build_identity: str | None = None,
+        build_identity_ok: bool | None = None,
+        build_identity_failure_codes: list[str] | None = None,
     ) -> None:
         run_dir.mkdir()
         failed_count = failed if failed is not None else sum(1 for case in cases if not case["ok"])
@@ -640,6 +677,8 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             "allow_failures": allow_failures,
             "strategy_profiles": ["default_defensive_to_aggressive"],
             "build_identity": build_identity,
+            "build_identity_ok": build_identity_ok,
+            "build_identity_failure_codes": build_identity_failure_codes or [],
             "case_count": len(cases),
             "passed": len(cases) - failed_count,
             "failed": failed_count,

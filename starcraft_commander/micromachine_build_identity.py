@@ -157,9 +157,9 @@ def read_build_identity(path: Path | str) -> str | None:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Emit MicroMachine build identity.")
-    parser.add_argument("--micromachine-dir", required=True)
-    parser.add_argument("--s2client-dir", required=True)
-    parser.add_argument("--micromachine-build-dir", required=True)
+    parser.add_argument("--micromachine-dir")
+    parser.add_argument("--s2client-dir")
+    parser.add_argument("--micromachine-build-dir")
     parser.add_argument("--micromachine-commit", default=DEFAULT_MICROMACHINE_COMMIT)
     parser.add_argument("--s2client-commit", default=DEFAULT_S2CLIENT_COMMIT)
     parser.add_argument("--micromachine-patch", default=str(DEFAULT_MICROMACHINE_PATCH))
@@ -167,13 +167,27 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
     parser.add_argument("--blackboard-header", default=str(DEFAULT_BLACKBOARD_HEADER))
+    parser.add_argument("--read-report")
     parser.add_argument("--output")
-    parser.add_argument("--field", choices=("identity", "ok"))
+    parser.add_argument("--field", choices=("identity", "ok", "failure-codes"))
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_argument_parser().parse_args(argv)
+    if args.read_report:
+        payload = _read_report(Path(args.read_report))
+        if args.field == "identity":
+            print(payload.get("identity") or "unrecorded")
+        elif args.field == "ok":
+            print("1" if payload.get("ok") is True else "0")
+        elif args.field == "failure-codes":
+            print(" ".join(_failure_codes(payload)))
+        else:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if not args.micromachine_dir or not args.s2client_dir or not args.micromachine_build_dir:
+        raise SystemExit("--micromachine-dir, --s2client-dir, and --micromachine-build-dir are required.")
     report = build_micromachine_build_identity(
         MicroMachineBuildIdentityConfig(
             micromachine_dir=Path(args.micromachine_dir),
@@ -228,6 +242,29 @@ def _git_head(path: Path) -> str | None:
         return None
     value = completed.stdout.strip()
     return value or None
+
+
+def _read_report(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {"identity": "unrecorded", "ok": False, "failures": [{"code": "missing_build_identity_report"}]}
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        return {"identity": "unrecorded", "ok": False, "failures": [{"code": "invalid_build_identity_report"}]}
+    return payload
+
+
+def _failure_codes(payload: Mapping[str, object]) -> list[str]:
+    failures = payload.get("failures")
+    if not isinstance(failures, list):
+        return []
+    codes: list[str] = []
+    for failure in failures:
+        if not isinstance(failure, Mapping):
+            continue
+        code = failure.get("code")
+        if isinstance(code, str) and code:
+            codes.append(code)
+    return codes
 
 
 if __name__ == "__main__":
