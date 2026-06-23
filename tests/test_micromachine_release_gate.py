@@ -361,6 +361,104 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
             self.assertEqual(1, report["matrix_coverage"]["observed_count"])
             self.assertEqual(2, report["matrix_coverage"]["missing_count"])
 
+    def test_release_gate_blocks_matrix_build_identity_not_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.write_supporting_evidence(root, build_identity="build-a")
+            matrix_dir = root / "run-invalid-matrix-build"
+            matrix_dir.mkdir()
+            matrix_path = matrix_dir / "matrix_report.json"
+            matrix_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "passed",
+                        "enabled": True,
+                        "target_frame": 12_000,
+                        "timeout_seconds": 1_200,
+                        "qualification_tier": "production",
+                        "allow_failures": False,
+                        "strategy_profiles": ["default_defensive_to_aggressive"],
+                        "build_identity": "build-a",
+                        "build_identity_ok": False,
+                        "build_identity_failure_codes": ["missing_binary"],
+                        "case_count": 3,
+                        "passed": 3,
+                        "failed": 0,
+                        "cases": [
+                            self.matrix_case(
+                                "Zerg",
+                                case_ok=True,
+                                failure_codes=[],
+                            ),
+                            self.matrix_case(
+                                "Protoss",
+                                case_ok=True,
+                                failure_codes=[],
+                            ),
+                            self.matrix_case(
+                                "Terran",
+                                case_ok=True,
+                                failure_codes=[],
+                            ),
+                        ],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            dashboard_path = root / "forged_build_dashboard.json"
+            dashboard_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "passed",
+                        "run_count": 1,
+                        "case_count": 3,
+                        "production_signoff": self.green_signoff(
+                            run_id="run-invalid-matrix-build"
+                        ),
+                        "runs": [
+                            {
+                                "run_id": "run-invalid-matrix-build",
+                                "report": str(matrix_path),
+                                "ok": True,
+                                "status": "passed",
+                                "case_count": 3,
+                                "passed": 3,
+                                "failed": 0,
+                                "qualification_tier": "production",
+                                "allow_failures": False,
+                                "build_identity": "build-a",
+                            }
+                        ],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+
+            report = build_release_gate_report(
+                MicroMachineReleaseGateConfig(
+                    history_dashboard=dashboard_path,
+                    build_identity_report=paths["build_identity"],
+                    unit_evidence=paths["unit"],
+                    triage_reports=(paths["triage"],),
+                    max_evidence_age_seconds=None,
+                )
+            )
+
+            codes = {blocker["code"] for blocker in report["blockers"]}
+            self.assertFalse(report["ok"])
+            self.assertIn("matrix_build_identity_invalid", codes)
+            self.assertIn("matrix_coverage_incomplete", codes)
+            invalid = next(
+                blocker
+                for blocker in report["blockers"]
+                if blocker["code"] == "matrix_build_identity_invalid"
+            )
+            self.assertEqual(["missing_binary"], invalid["failure_codes"])
+
     def test_release_gate_outputs_and_cli_exit_codes_are_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -526,14 +624,14 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
             "failure_codes": failure_codes or [],
         }
 
-    def green_signoff(self) -> dict[str, object]:
+    def green_signoff(self, *, run_id: str = "run-forged-dashboard") -> dict[str, object]:
         return {
             "ok": True,
             "status": "passed",
             "signoff_tier": "production",
             "eligible_run_count": 1,
             "excluded_run_count": 0,
-            "eligible_runs": ["run-forged-dashboard"],
+            "eligible_runs": [run_id],
             "excluded_runs": [],
             "required": {
                 "map_files": ["AcropolisLE.SC2Map"],

@@ -509,6 +509,7 @@ def _verify_matrix_reports(
         if is_eligible:
             eligible_count += 1
             failed = _int_value(payload.get("failed"))
+            matrix_build_ok = payload.get("build_identity_ok") is True
             if payload.get("ok") is not True or failed != 0:
                 blockers.append(
                     {
@@ -528,9 +529,21 @@ def _verify_matrix_reports(
                         "actual": payload.get("build_identity"),
                     }
                 )
+            if not matrix_build_ok:
+                blockers.append(
+                    {
+                        "code": "matrix_build_identity_invalid",
+                        "run_id": run.get("run_id"),
+                        "identity": payload.get("build_identity"),
+                        "failure_codes": _string_items(
+                            payload.get("build_identity_failure_codes")
+                        ),
+                    }
+                )
             if (
                 payload.get("ok") is True
                 and failed == 0
+                and matrix_build_ok
                 and (
                     required_build_identity is None
                     or payload.get("build_identity") == required_build_identity
