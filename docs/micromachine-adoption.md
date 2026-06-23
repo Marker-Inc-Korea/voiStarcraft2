@@ -224,6 +224,27 @@ representation axes into `publish_policy_modulation_provider_output(...)`.
 That helper compiles provider output through the same raw-control rejection
 path as LLM/UI/replay providers, then publishes through any backend.
 
+For live text commands while patched MicroMachine is running, use
+`MicroMachineLiveTextSession` or the module CLI. The session reads the latest
+telemetry frame when available, builds a `PolicyModulationProviderRequest`,
+compiles provider output through the same DSL safety gate, publishes through
+`MicroMachineModulationBackend`, and reports whether telemetry shows the update
+id in `active_modulation_ids`.
+
+```bash
+python -m starcraft_commander.micromachine_live_session \
+  --blackboard-dir /private/tmp/voi-mm-live \
+  --command "탱크 중심으로 안전하게 버텨" \
+  --provider-output-json '{"goal":"탱크 중심으로 안전하게 버텨","override_level":"constraint","combat":{"defend_bias":0.7,"aggression":-0.2}}' \
+  --update-id live-hold-001 \
+  --pretty
+```
+
+If `--provider-output-json` or `--provider-output-file` is omitted, the CLI uses
+a deterministic keyword provider for smoke testing. Production LLM adapters
+should implement `PolicyModulationProviderInterface` and return bounded
+semantic JSON; they still cannot publish raw SC2 actions directly.
+
 The C++ integration kit lives in `integrations/micromachine/`:
 
 - `HOOK_MANIFEST.json` names the verified upstream MicroMachine commit and the
