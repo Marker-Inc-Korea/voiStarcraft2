@@ -113,8 +113,15 @@ def aggregate_matrix_run(
                     ),
                 ),
                 "latest_frame": payload.get("latest_frame"),
+                "target_reached": payload.get("target_reached"),
                 "macro_evidence_ok": payload.get("macro_evidence_ok"),
                 "manager_intervention_ok": payload.get("manager_intervention_ok"),
+                "config": payload["config"] if isinstance(payload.get("config"), Mapping) else {},
+                "observation": (
+                    payload["observation"]
+                    if isinstance(payload.get("observation"), Mapping)
+                    else {}
+                ),
                 "failures": flattened_failures,
                 "failure_codes": failure_codes,
                 "preflight": preflight or payload.get("preflight", {}),

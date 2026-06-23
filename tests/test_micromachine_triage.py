@@ -10,6 +10,7 @@ from starcraft_commander.micromachine_triage import (
     triage_matrix_report,
     write_triage_outputs,
 )
+from starcraft_commander.micromachine_soak_history import aggregate_matrix_run
 
 
 class MicroMachineTriageTest(unittest.TestCase):
@@ -114,6 +115,85 @@ class MicroMachineTriageTest(unittest.TestCase):
         self.assertEqual(
             ["Unusual ramp detected, tiles to block = 0"],
             failure["log_signatures"],
+        )
+
+    def test_triage_preserves_runtime_classifier_health_and_profile_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            case_dir = root / "01-AcropolisLE-SC2Map-Zerg-d1"
+            case_dir.mkdir()
+            (case_dir / "preflight_report.json").write_text(
+                json.dumps({"status": "passed", "ok": True, "failure_codes": []})
+                + "\n"
+            )
+            (case_dir / "soak_report.json").write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "status": "failed",
+                        "latest_frame": 9_000,
+                        "target_reached": False,
+                        "macro_evidence_ok": False,
+                        "manager_intervention_ok": True,
+                        "map_file": "AcropolisLE.SC2Map",
+                        "enemy_race": "Zerg",
+                        "enemy_difficulty": 1,
+                        "config": {"expected_profile_tags": ["pressure-timing"]},
+                        "observation": {"active_modulation_ids": ["dsl-rush-001"]},
+                        "failures": [
+                            {
+                                "code": "no_production_deadlock",
+                                "message": "No production structure completed.",
+                                "severity": "terminal",
+                                "evidence": {"latest_frame": 9_000},
+                            }
+                        ],
+                    }
+                )
+                + "\n"
+            )
+
+            matrix = aggregate_matrix_run(
+                root,
+                target_frame=12_000,
+                timeout_seconds=1_200,
+                qualification_tier="production",
+                allow_failures=False,
+                strategy_profiles=("default_defensive_to_aggressive",),
+            )
+            triage = triage_matrix_report(matrix)
+
+        failure = triage["ranked_failures"][0]
+        self.assertEqual(
+            [
+                {
+                    "code": "no_production_deadlock",
+                    "message": "No production structure completed.",
+                    "severity": "terminal",
+                    "evidence": {"latest_frame": 9_000},
+                    "attempt": None,
+                    "attempt_status": None,
+                }
+            ],
+            failure["classifier_failures"],
+        )
+        self.assertEqual(
+            {
+                "latest_frame": 9_000,
+                "target_reached": False,
+                "macro_evidence_ok": False,
+                "manager_intervention_ok": True,
+                "preflight_ok": True,
+            },
+            failure["telemetry_health"],
+        )
+        self.assertEqual(
+            {
+                "strategy_profiles": ["default_defensive_to_aggressive"],
+                "expected_profile_tags": ["pressure-timing"],
+                "active_modulation_ids": ["dsl-rush-001"],
+            },
+            failure["profile_context"],
         )
 
     def test_write_outputs_is_deterministic(self) -> None:
