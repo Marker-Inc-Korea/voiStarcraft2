@@ -17,9 +17,13 @@ import tempfile
 import threading
 import time
 import unittest
+from http import HTTPStatus
 from types import SimpleNamespace
 from unittest import mock
 
+from starcraft_commander.micromachine_bridge import (
+    MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+)
 from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.llm_interpreter import LocalLLMControl
@@ -168,6 +172,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             headers={"Content-Type": "application/json"},
         )
 
+    def post_micromachine_modulation(self, payload):
+        body = json.dumps(payload).encode("utf-8")
+        return self.request(
+            "POST",
+            "/api/micromachine/modulate",
+            body=body,
+            headers={"Content-Type": "application/json"},
+        )
+
     def post_llm_config_with_control(self, llm_control, api_key="unit-test-sensitive"):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session, llm_control=llm_control)
@@ -224,6 +237,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "/api/history?after=",
             "/api/state",
             "/api/command",
+            "/api/micromachine/modulate",
+            "/api/micromachine/status",
             "전송",
             "커맨더 채팅",
             "전장 대시보드",
@@ -266,11 +281,222 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "grok-4.3",
             "/api/live/status",
             "parseJsonResponse",
+            "micromachine-panel",
+            "MicroMachine 정책 조정",
+            "renderMicroMachineStatus",
+            "pollMicroMachineStatus",
             "setInterval(pollHistory",
             "setInterval(pollState",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, page)
+
+    def test_micromachine_modulation_endpoint_publishes_to_blackboard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "탱크로 수비해",
+                    "blackboard_dir": directory,
+                    "current_frame": 12,
+                    "update_id": "web-live-1",
+                    "provider_output": {
+                        "goal": "탱크로 수비해",
+                        "override_level": "constraint",
+                        "combat": {"defend_bias": 0.7, "aggression": -0.2},
+                    },
+                }
+            )
+
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+            self.assertIn("application/json", content_type)
+            document = json.loads(payload.decode("utf-8"))
+            self.assertTrue(document["accepted"], document)
+            self.assertTrue(document["ok"], document)
+            self.assertEqual("published", document["status"])
+            self.assertEqual("web-live-1", document["update"]["update_id"])
+            self.assertEqual(directory, document["blackboard_dir"])
+            with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
+                self.assertIn("combat.defend_bias=0.7", handle.read())
+
+    def test_micromachine_status_endpoint_renders_latest_dashboard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "수비",
+                    "blackboard_dir": directory,
+                    "current_frame": 1,
+                    "update_id": "web-status-1",
+                    "provider_output": {
+                        "goal": "수비",
+                        "combat": {"defend_bias": 0.5},
+                    },
+                }
+            )
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            self.assertTrue(document["enabled"])
+            self.assertEqual(directory, document["blackboard_dir"])
+            active = document["dashboard"]["active_updates"]
+            self.assertEqual("web-status-1", active[0]["update_id"])
+            self.assertIn("combat", active[0]["manager_bias_domains"])
+            self.assertEqual("published", document["status"])
+            self.assertEqual("web-status-1", document["update"]["update_id"])
+            self.assertEqual("pending_telemetry", document["consumption_status"])
+            self.assertFalse(document["consumed"])
+
+    def test_micromachine_status_requires_post_publish_telemetry_before_consumed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "수비",
+                    "blackboard_dir": directory,
+                    "current_frame": 10,
+                    "update_id": "web-consume-1",
+                    "provider_output": {
+                        "goal": "수비",
+                        "combat": {"defend_bias": 0.5},
+                    },
+                }
+            )
+            telemetry_path = f"{directory}/latest_telemetry.json"
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 10,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {},
+                "active_modulation_ids": ["web-consume-1"],
+                "last_failure": None,
+            }
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+
+            same_frame = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+            self.assertEqual("pending_consumption", same_frame["consumption_status"])
+            self.assertFalse(same_frame["consumed"])
+
+            telemetry["frame"] = 11
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+
+            later_frame = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+            self.assertEqual("consumed", later_frame["consumption_status"])
+            self.assertTrue(later_frame["consumed"])
+
+    def test_micromachine_modulation_fails_closed_without_llm_configuration(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            body = json.dumps({"text": "탱크로 수비해"}).encode("utf-8")
+            connection.request(
+                "POST",
+                "/api/micromachine/modulate",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+        self.assertEqual(HTTPStatus.CONFLICT, HTTPStatus(response.status))
+        self.assertFalse(payload["accepted"])
+        self.assertIn("LLM 키", payload["error"])
+
+    def test_micromachine_modulation_requests_are_serialized_on_bridge_queue(self):
+        active_count = 0
+        max_active_count = 0
+        lock = threading.Lock()
+        release_first = threading.Event()
+        first_entered = threading.Event()
+
+        def slow_publish(text, **kwargs):
+            nonlocal active_count, max_active_count
+            with lock:
+                active_count += 1
+                max_active_count = max(max_active_count, active_count)
+                is_first = active_count == 1 and not first_entered.is_set()
+            if is_first:
+                first_entered.set()
+                release_first.wait(timeout=5)
+            time.sleep(0.02)
+            with lock:
+                active_count -= 1
+            return {
+                "ok": True,
+                "status": "published",
+                "consumption_status": "pending_telemetry",
+                "dashboard": {"active_updates": []},
+            }
+
+        results = []
+        start = threading.Barrier(3)
+
+        def submit(index):
+            start.wait(timeout=5)
+            status, _content_type, payload = self.post_micromachine_modulation(
+                {"text": f"수비 {index}"}
+            )
+            results.append((status, json.loads(payload.decode("utf-8"))))
+
+        with mock.patch.object(
+            self.bridge,
+            "_publish_micromachine_modulation",
+            side_effect=slow_publish,
+        ):
+            threads = [
+                threading.Thread(target=submit, args=(index,))
+                for index in range(2)
+            ]
+            for thread in threads:
+                thread.start()
+            start.wait(timeout=5)
+            self.assertTrue(first_entered.wait(timeout=5))
+            release_first.set()
+            for thread in threads:
+                thread.join(timeout=5)
+
+        self.assertEqual(2, len(results))
+        self.assertTrue(
+            all(HTTPStatus(status) is HTTPStatus.ACCEPTED for status, _ in results)
+        )
+        self.assertEqual(1, max_active_count)
+
+    def test_index_page_uses_bridge_micromachine_blackboard_default(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=FakeConfiguredLLMControl(),
+            micromachine_blackboard_dir="/tmp/voi-mm-custom&safe",
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        try:
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            page = response.read().decode("utf-8")
+        finally:
+            connection.close()
+
+        self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
+        self.assertIn('value="/tmp/voi-mm-custom&amp;safe"', page)
 
     def test_report_command_yields_read_only_event_with_korean_narration(self):
         status, _content_type, payload = self.post_command("상황 보고해줘")
