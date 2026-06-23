@@ -388,6 +388,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertEqual(["AcropolisLE.SC2Map"], required_maps)
         self.assertEqual(["Ladder2019Season3/ThunderbirdLE.SC2Map"], diagnostic_maps)
         self.assertFalse(map_pool["contract"]["production_allows_failures"])
+        self.assertEqual([1, 2], map_pool["tiers"]["extended"]["enemy_difficulties"])
+        self.assertEqual(["required"], map_pool["tiers"]["extended"]["map_classifications"])
         diagnostic_entry = next(
             item for item in map_pool["maps"] if item["classification"] == "diagnostic"
         )

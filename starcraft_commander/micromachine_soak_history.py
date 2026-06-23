@@ -39,6 +39,7 @@ def aggregate_matrix_run(
     timeout_seconds: int,
     qualification_tier: str = "production",
     allow_failures: bool = False,
+    strategy_profiles: Sequence[str] = (),
 ) -> dict[str, object]:
     """Build one deterministic matrix_report.json payload from case reports."""
 
@@ -49,6 +50,7 @@ def aggregate_matrix_run(
         raise ValueError("qualification_tier must be a non-empty string.")
     if type(allow_failures) is not bool:
         raise ValueError("allow_failures must be a boolean.")
+    profiles = _string_sequence("strategy_profiles", strategy_profiles)
     cases: list[dict[str, object]] = []
     passed = 0
     failed = 0
@@ -67,6 +69,11 @@ def aggregate_matrix_run(
             "preflight_failure_codes": (
                 preflight.get("failure_codes") if preflight else []
             ),
+            "target_frame": target,
+            "timeout_seconds": timeout,
+            "qualification_tier": qualification_tier,
+            "allow_failures": allow_failures,
+            "strategy_profiles": list(profiles),
         }
         if not report_path.exists():
             case.update(
@@ -149,6 +156,7 @@ def aggregate_matrix_run(
         "timeout_seconds": timeout,
         "qualification_tier": qualification_tier,
         "allow_failures": allow_failures,
+        "strategy_profiles": list(profiles),
         "case_count": len(cases),
         "passed": passed,
         "failed": failed,
@@ -322,6 +330,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     matrix.add_argument("--timeout-seconds", required=True, type=int)
     matrix.add_argument("--qualification-tier", default="production")
     matrix.add_argument("--allow-failures", action="store_true")
+    matrix.add_argument("--strategy-profiles", default="")
 
     history = subparsers.add_parser("history-dashboard")
     history.add_argument("--root", action="append", required=True)
@@ -341,6 +350,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             qualification_tier=args.qualification_tier,
             allow_failures=args.allow_failures,
+            strategy_profiles=tuple(
+                item for item in args.strategy_profiles.split() if item
+            ),
         )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -484,6 +496,17 @@ def _require_non_negative_int(name: str, value: object) -> int:
     if value < 0:
         raise ValueError(f"{name} cannot be negative.")
     return value
+
+
+def _string_sequence(name: str, value: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raise ValueError(f"{name} must be a sequence of strings.")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{name}[{index}] must be a non-empty string.")
+        result.append(item)
+    return tuple(result)
 
 
 def _require_positive_int(name: str, value: object) -> int:
