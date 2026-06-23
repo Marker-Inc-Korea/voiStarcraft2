@@ -245,6 +245,23 @@ a deterministic keyword provider for smoke testing. Production LLM adapters
 should implement `PolicyModulationProviderInterface` and return bounded
 semantic JSON; they still cannot publish raw SC2 actions directly.
 
+For in-game SC2 chat, the supported boundary is
+`MicroMachineChatModulationBridge` in
+`starcraft_commander.micromachine_chat_modulation`. It only accepts structured
+`chat_events` supplied by patched MicroMachine telemetry or a sidecar adapter,
+deduplicates message ids, filters for explicit user messages (`from_user=true`
+or configured player allowlists), and routes eligible text into the same
+`MicroMachineLiveTextSession`.
+
+Unsupported and forbidden chat paths:
+
+- If telemetry has no `chat_events` field, the bridge returns
+  `unsupported_no_chat_source`.
+- OCR, screen scraping, mouse automation, global keyboard hooks, and raw
+  python-sc2/s2client-api command payloads are intentionally not fallback paths.
+- Chat payloads containing raw-control-shaped keys such as `raw_actions`,
+  `unit_tag`, `attack_move`, or `python_sc2` are rejected before modulation.
+
 The C++ integration kit lives in `integrations/micromachine/`:
 
 - `HOOK_MANIFEST.json` names the verified upstream MicroMachine commit and the
