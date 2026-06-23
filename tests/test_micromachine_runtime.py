@@ -19,9 +19,12 @@ from starcraft_commander.micromachine_runtime import (
     MicroMachineInMemoryBlackboard,
     MicroMachineModulationBackend,
     MicroMachineRuntimePaths,
+    MICROMACHINE_STRATEGY_PROFILE_KEYS,
     build_aggressive_pressure_profile,
     build_defensive_hold_profile,
+    build_micromachine_strategy_profile,
     flatten_blackboard_update,
+    micromachine_strategy_profile_catalog,
     publish_policy_modulation_provider_output,
 )
 from starcraft_commander.policy_modulation import (
@@ -107,6 +110,31 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
                 json.dumps(payload)
                 self.assertNotIn("raw_action", json.dumps(payload))
                 self.assertNotIn("s2client_api", json.dumps(payload))
+
+    def test_named_strategy_profile_catalog_is_versioned_and_bounded(self) -> None:
+        catalog = micromachine_strategy_profile_catalog()
+
+        self.assertEqual(1, catalog["schema_version"])
+        self.assertEqual(
+            set(MICROMACHINE_STRATEGY_PROFILE_KEYS),
+            set(catalog["profiles"]),
+        )
+        for key in MICROMACHINE_STRATEGY_PROFILE_KEYS:
+            with self.subTest(profile=key):
+                vector = build_micromachine_strategy_profile(key)
+                payload = vector.to_dict()
+                self.assertIn(key, payload["tags"])
+                self.assertIn("bounded_intervention", payload["tags"])
+                self.assertNotIn("raw_action", json.dumps(payload))
+                self.assertNotIn("unit_tag", json.dumps(payload))
+                self.assertTrue(catalog["profiles"][key]["managers"])
+
+        emergency = build_micromachine_strategy_profile("emergency_recovery", ttl_seconds=600)
+        self.assertLessEqual(emergency.ttl_seconds, 60)
+
+    def test_unknown_strategy_profile_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown MicroMachine strategy profile"):
+            build_micromachine_strategy_profile("raw_action")
 
 
 class MicroMachineFilesystemBlackboardTest(unittest.TestCase):

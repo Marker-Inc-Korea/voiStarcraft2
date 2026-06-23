@@ -203,6 +203,7 @@ Configurable thresholds:
 | `SOAK_INCOME_STALL_FRAMES` | `2000` | Fails if recent mineral/gas income evidence is missing near the target frame. |
 | `SOAK_MAX_PLACEMENT_FAILURES` | `3` | Fails repeated placement/path/cancel loops. |
 | `SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES` | `128` | Fails if telemetry does not consume the latest modulation refresh after this frame grace window. |
+| `SOAK_PROFILE_SEQUENCE` | `default_defensive_to_aggressive` | Profile schedule: one profile key, the default schedule, or comma-separated `profile@frame` entries. |
 | `SOAK_AGGRESSIVE_MIN_FRAME` | `13000` | Keeps the 12000-frame production gate in defensive hold, then permits aggressive-pressure modulation for longer soaks. |
 | `SOAK_MAX_ATTEMPTS` | `2` | Bounded retry count for map/start-location flakes; every attempt keeps its own artifact directory. |
 | `SOAK_NON_RETRYABLE_FAILURE_CODES` | classifier terminal failures | Failure codes that stop retry immediately instead of hiding deterministic bot/runtime failures behind a later pass. |
@@ -222,21 +223,48 @@ Each bounded retry writes fixed artifact names into
 | `modulation_updates.jsonl` | Modulation refresh audit trail. |
 | `soak_report.json` | Final classifier report; `ok: true` is required for sign-off. |
 
+Named long-horizon profiles:
+
+| Profile | Primary manager bias |
+| --- | --- |
+| `defensive_hold` | `CombatCommander`, `ScoutManager`, and squad defense/regroup bias. |
+| `economic_expansion` | `WorkerManager` and `ProductionManager` economy continuity with safer defense. |
+| `aggressive_pressure` | `CombatCommander`, `ScoutManager`, and harassment/main-army pressure. |
+| `scouting_map_control` | `ScoutManager` fresh observations and light map-control pressure. |
+| `tech_transition` | `ProductionManager`/tech bias toward factory, upgrades, and gas support. |
+| `emergency_recovery` | Short-TTL emergency defense, retreat, repair, and regroup bias. |
+
 The Python classifier behind the script is
 `starcraft_commander.micromachine_soak.classify_micromachine_soak`. It detects
 MicroMachine crash/early process stop, SC2 disconnect signatures, telemetry
 stall, repeated placement failures, no-production deadlock, production stall,
 recent income stall, missing `CombatCommander`/`ScoutManager` bounded
-intervention, and stale or inactive modulation. The live loop runs the classifier with
+intervention, stale or inactive modulation, and missing expected strategy
+profile tags. The live loop runs the classifier with
 `--allow-incomplete` so target-frame progress is allowed while terminal
 failures still stop the run immediately. The final pass requires target frame,
 macro evidence, CombatCommander and ScoutManager intervention evidence, and no
-classifier failures. The default 12k-frame gate remains in defensive hold; for
-longer soaks, aggressive-profile refreshes begin after
-`SOAK_AGGRESSIVE_MIN_FRAME` and use frame-suffixed update IDs such as
-`soak-aggressive-pressure-13000`, so the final telemetry must prove MicroMachine
-consumed the latest refresh rather than merely reporting an older still-active
-profile. When the script stops the game after the target frame,
+classifier failures. The default schedule is
+`SOAK_PROFILE_SEQUENCE=default_defensive_to_aggressive`: it publishes
+`defensive_hold` at frame 0, then publishes `aggressive_pressure` only after
+`SOAK_AGGRESSIVE_MIN_FRAME` and required macro evidence are both present. Custom
+long-horizon schedules can run a single profile or a comma-separated
+`profile@frame` sequence:
+
+```bash
+SOAK_PROFILE_SEQUENCE="defensive_hold@0,economic_expansion@6000,scouting_map_control@9000,tech_transition@13000" \
+integrations/micromachine/scripts/soak_macos_local.sh
+```
+
+Every scheduled profile is built by
+`build_micromachine_strategy_profile(...)`, published through
+`MicroMachineFilesystemBlackboard`, and recorded in `modulation_updates.jsonl`.
+The classifier receives the expected profile tags and fails with
+`strategy_profile_missing` if the archive does not prove those bounded profiles
+were published. Profile refreshes use frame-suffixed update IDs such as
+`soak-aggressive-pressure-refresh-20000`, so final telemetry must prove
+MicroMachine consumed the latest refresh rather than merely reporting an older
+still-active profile. When the script stops the game after the target frame,
 `soak_report.json` records `termination_reason:
 target_frame_reached_cleanup` instead of presenting the cleanup as a natural
 game exit. If an attempt hits a deterministic classifier failure, it still

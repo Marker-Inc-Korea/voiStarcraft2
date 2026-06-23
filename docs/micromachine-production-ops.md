@@ -128,6 +128,23 @@ The final soak classifier also rejects `income_stall`: reaching the target frame
 is not enough unless recent mineral and gas income evidence remains positive
 near the target.
 
+Long-horizon strategy profile soak uses `SOAK_PROFILE_SEQUENCE`. The default
+`default_defensive_to_aggressive` schedule publishes `defensive_hold` at frame
+0 and delays `aggressive_pressure` until the configured aggressive frame and
+macro evidence are both present. For deeper DSL QA, use an explicit sequence:
+
+```bash
+SOAK_PROFILE_SEQUENCE="defensive_hold@0,economic_expansion@6000,scouting_map_control@9000,tech_transition@13000" \
+integrations/micromachine/scripts/soak_macos_local.sh
+```
+
+Profiles are bounded manager bias vectors, not raw commands. The current
+catalog is `defensive_hold`, `economic_expansion`, `aggressive_pressure`,
+`scouting_map_control`, `tech_transition`, and `emergency_recovery`. The final
+classifier records expected profile tags in `soak_report.json` and fails with
+`strategy_profile_missing` if `modulation_updates.jsonl` does not prove the
+scheduled profiles were published.
+
 Verified local matrix evidence:
 
 | Run | Evidence |

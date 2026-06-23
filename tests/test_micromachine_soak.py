@@ -78,7 +78,10 @@ def _modulation(
         "update_id": update_id,
         "issued_at_frame": 6_000,
         "expires_at_frame": expires_at_frame,
-        "vector": {"goal": "micromachine_aggressive_pressure"},
+        "vector": {
+            "goal": "micromachine_aggressive_pressure",
+            "tags": ["aggressive_pressure", "bounded_intervention"],
+        },
     }
 
 
@@ -413,6 +416,30 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             self.assert_failure_codes(report, {"stale_modulation"})
             stale = [failure for failure in report.failures if failure.code == "stale_modulation"]
             self.assertIn("missing or unreadable", stale[0].message)
+
+    def test_detects_missing_expected_strategy_profile_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_profile_tags=("aggressive_pressure", "tech_transition"),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"strategy_profile_missing"})
+            missing = [
+                failure
+                for failure in report.failures
+                if failure.code == "strategy_profile_missing"
+            ][0]
+            self.assertEqual(["tech_transition"], missing.evidence["missing"])
 
     def test_cli_report_serialization_is_stable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
