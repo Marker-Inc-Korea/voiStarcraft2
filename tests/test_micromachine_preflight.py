@@ -43,6 +43,19 @@ class MicroMachinePreflightTest(unittest.TestCase):
         )
         self.assertTrue(report["skip_runtime"])
         self.assertFalse(report["production_blocking"])
+        blocker = report["blocker"]
+        self.assertIsInstance(blocker, dict)
+        self.assertEqual(
+            "thunderbird_walloff_geometry_no_production_deadlock",
+            blocker["code"],
+        )
+        self.assertEqual("no_production_deadlock", blocker["runtime_failure_code"])
+        self.assertIn("ramp_walloff_build_placement", blocker["root_cause_area"])
+        self.assertIn("Unusual ramp detected, tiles to block = 0", blocker["evidence_signatures"])
+        self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=diagnostic", blocker["reproduction_command"])
+        self.assertTrue(
+            any("12000 frames" in item for item in blocker["promotion_criteria"])
+        )
 
     def test_required_tier_rejects_diagnostic_map(self) -> None:
         report = preflight_micromachine_map(

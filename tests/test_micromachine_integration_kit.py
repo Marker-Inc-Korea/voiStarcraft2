@@ -359,6 +359,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=production", production_ops)
         self.assertIn("MICROMACHINE_MAP_POOL.json", readme)
         self.assertIn("SOAK_MATRIX_QUALIFICATION_TIER=production", readme)
+        self.assertIn("thunderbird_walloff_geometry_no_production_deadlock", production_ops)
+        self.assertIn("thunderbird_walloff_geometry_no_production_deadlock", readme)
+        self.assertIn("docs/micromachine-thunderbird-blocker.md", production_ops)
+        self.assertIn("docs/micromachine-thunderbird-blocker.md", readme)
         self.assertNotIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2"', production_ops)
         self.assertNotIn('SOAK_MATRIX_ENEMY_DIFFICULTIES="1 2"', readme)
         self.assertIn(
@@ -382,6 +386,17 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertEqual(["AcropolisLE.SC2Map"], required_maps)
         self.assertEqual(["Ladder2019Season3/ThunderbirdLE.SC2Map"], diagnostic_maps)
         self.assertFalse(map_pool["contract"]["production_allows_failures"])
+        diagnostic_entry = next(
+            item for item in map_pool["maps"] if item["classification"] == "diagnostic"
+        )
+        self.assertEqual(
+            "thunderbird_walloff_geometry_no_production_deadlock",
+            diagnostic_entry["blocker"]["code"],
+        )
+        self.assertEqual(
+            "no_production_deadlock",
+            diagnostic_entry["blocker"]["runtime_failure_code"],
+        )
         excluded_maps = [
             item["map_file"]
             for item in map_pool["maps"]

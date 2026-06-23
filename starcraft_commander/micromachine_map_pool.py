@@ -39,6 +39,7 @@ class MicroMachineMapEntry:
     expected_start_locations: int | None = None
     preflight_risk_codes: tuple[str, ...] = ()
     preflight_notes: str = ""
+    blocker: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class MicroMachineMapPool:
                     "expected_start_locations": entry.expected_start_locations,
                     "preflight_risk_codes": list(entry.preflight_risk_codes),
                     "preflight_notes": entry.preflight_notes,
+                    "blocker": dict(entry.blocker) if entry.blocker is not None else None,
                 }
                 for entry in maps
             ],
@@ -264,6 +266,7 @@ def _parse_map_entry(
     notes = preflight.get("notes", "")
     if not isinstance(notes, str):
         raise ValueError(f"preflight.notes for {map_file} must be a string.")
+    blocker = _parse_blocker(item.get("blocker"), map_file=map_file)
     return MicroMachineMapEntry(
         map_file=map_file,
         display_name=_require_string(item, "display_name"),
@@ -274,7 +277,28 @@ def _parse_map_entry(
         expected_start_locations=expected_start_locations,
         preflight_risk_codes=tuple(parsed_risk_codes),
         preflight_notes=notes,
+        blocker=blocker,
     )
+
+
+def _parse_blocker(value: object, *, map_file: str) -> Mapping[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"blocker for {map_file} must be an object.")
+
+    blocker: dict[str, object] = {
+        "code": _require_string(value, "code"),
+        "runtime_failure_code": _require_string(value, "runtime_failure_code"),
+        "artifact_path": _require_string(value, "artifact_path"),
+        "root_cause_area": _require_string(value, "root_cause_area"),
+        "root_cause_candidates": list(_string_tuple(value, "root_cause_candidates")),
+        "less_likely_candidates": list(_string_tuple(value, "less_likely_candidates")),
+        "evidence_signatures": list(_string_tuple(value, "evidence_signatures")),
+        "reproduction_command": _require_string(value, "reproduction_command"),
+        "promotion_criteria": list(_string_tuple(value, "promotion_criteria")),
+    }
+    return blocker
 
 
 def _parse_tiers(value: object) -> dict[str, MicroMachineQualificationTier]:

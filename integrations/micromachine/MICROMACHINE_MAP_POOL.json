@@ -36,6 +36,33 @@
         "expected_start_locations": 2,
         "risk_codes": ["geometry_risk", "placement_risk"],
         "notes": "Known ramp/wall-off/build-placement blocker from Thunderbird no-production deadlock evidence."
+      },
+      "blocker": {
+        "code": "thunderbird_walloff_geometry_no_production_deadlock",
+        "runtime_failure_code": "no_production_deadlock",
+        "artifact_path": "/private/tmp/voi-mm-soak/issue-10-11-final-thunderbird-v2/soak_report.json",
+        "root_cause_area": "ramp_walloff_build_placement",
+        "root_cause_candidates": [
+          "ramp_detection",
+          "wall_off_tile_calculation",
+          "depot_barracks_placement"
+        ],
+        "less_likely_candidates": [
+          "worker_path_safety",
+          "production_manager_state"
+        ],
+        "evidence_signatures": [
+          "Depot build position fallback used",
+          "Invalid setup detected",
+          "Unusual ramp detected, tiles to block = 0",
+          "no_production_deadlock"
+        ],
+        "reproduction_command": "SOAK_MATRIX_RUN_ID=diagnostic-thunderbird-001 SOAK_MATRIX_QUALIFICATION_TIER=diagnostic SOAK_MATRIX_MIN_PASSES=0 integrations/micromachine/scripts/soak_matrix_macos_local.sh",
+        "promotion_criteria": [
+          "Remove geometry_risk and placement_risk only after a patched MicroMachine build passes Thunderbird at 12000 frames.",
+          "Required evidence: macro_evidence_ok=true, manager_intervention_ok=true, fresh modulation consumption, failed=0, and SOAK_MATRIX_ALLOW_FAILURES=0.",
+          "Promotion must move Thunderbird from diagnostic to required in MICROMACHINE_MAP_POOL.json and keep production tier failed=0."
+        ]
       }
     },
     {
