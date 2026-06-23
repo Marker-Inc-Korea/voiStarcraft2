@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "contract": {
+    "name": "voiStarcraft2 MicroMachine production map pool",
+    "parent_issue": 48,
+    "default_tier": "production",
+    "qualification_requires_failed_zero": true,
+    "production_allows_failures": false,
+    "notes": [
+      "Production support is the explicit required pool, not every custom SC2 map.",
+      "Diagnostic maps collect blocker evidence and never count as production signoff."
+    ]
+  },
+  "maps": [
+    {
+      "map_file": "AcropolisLE.SC2Map",
+      "display_name": "Acropolis LE",
+      "classification": "required",
+      "status": "qualified_baseline",
+      "reason": "Known local MicroMachine macro and race-matrix evidence exists.",
+      "promotion_rule": "Keep in required pool while production matrix remains failed=0."
+    },
+    {
+      "map_file": "Ladder2019Season3/ThunderbirdLE.SC2Map",
+      "display_name": "Thunderbird LE",
+      "classification": "diagnostic",
+      "status": "blocked_no_production_deadlock",
+      "reason": "Known MicroMachine map-support blocker: ramp/wall-off/placement path produced no_production_deadlock.",
+      "promotion_rule": "Promote only after Issue 48.3 proves 12k-frame macro soak with failed=0 and no allow-failures."
+    },
+    {
+      "map_file": "Custom/UnknownOrUnvetted.SC2Map",
+      "display_name": "Unknown or unvetted custom map",
+      "classification": "excluded",
+      "status": "unsupported_by_contract",
+      "reason": "Placeholder class for maps outside the declared production and diagnostic pools.",
+      "promotion_rule": "Move to diagnostic first, collect preflight/soak evidence, then promote to required only after failed=0 production evidence."
+    }
+  ],
+  "tiers": {
+    "smoke": {
+      "description": "Fast required-pool verification for local smoke iteration.",
+      "map_classifications": ["required"],
+      "enemy_races": ["Zerg"],
+      "enemy_difficulties": [1],
+      "target_frame": 12000,
+      "timeout_seconds": 1200,
+      "strategy_profiles": ["default_defensive_to_aggressive"]
+    },
+    "production": {
+      "description": "Current production qualification tier before expanded map hardening.",
+      "map_classifications": ["required"],
+      "enemy_races": ["Zerg", "Protoss", "Terran"],
+      "enemy_difficulties": [1],
+      "target_frame": 12000,
+      "timeout_seconds": 1200,
+      "strategy_profiles": ["default_defensive_to_aggressive"]
+    },
+    "diagnostic": {
+      "description": "Known blockers and unqualified maps; never production signoff.",
+      "map_classifications": ["diagnostic"],
+      "enemy_races": ["Zerg"],
+      "enemy_difficulties": [1],
+      "target_frame": 12000,
+      "timeout_seconds": 1200,
+      "strategy_profiles": ["default_defensive_to_aggressive"],
+      "allow_failures": true
+    }
+  }
+}

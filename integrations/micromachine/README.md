@@ -19,6 +19,7 @@ Verified upstream:
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
 | `scripts/soak_macos_local.sh` | Long-run local StarCraft II soak gate with deterministic artifacts and production sign-off classifiers. |
 | `scripts/soak_matrix_macos_local.sh` | Map/race/difficulty matrix runner that aggregates per-case soak reports. |
+| `MICROMACHINE_MAP_POOL.json` | Versioned required/diagnostic/excluded map-pool contract used by production matrix defaults. |
 
 ## Runtime Files
 
@@ -256,6 +257,13 @@ Verified local sign-off evidence for Issue 10.11:
 Use `scripts/soak_matrix_macos_local.sh` for map, race, and difficulty
 diversity. The runner creates one `soak_macos_local.sh` artifact directory per
 case and writes an aggregate `matrix_report.json`.
+When explicit `SOAK_MATRIX_*` overrides are not provided, the runner reads
+`MICROMACHINE_MAP_POOL.json` and uses the selected
+`SOAK_MATRIX_QUALIFICATION_TIER` defaults. The default tier is `production`,
+which currently requires `AcropolisLE.SC2Map` against Zerg, Protoss, and Terran
+at difficulty 1. `Ladder2019Season3/ThunderbirdLE.SC2Map` remains diagnostic
+until the no-production deadlock blocker is fixed. Excluded maps are outside
+the support contract and cannot be used for production sign-off.
 
 Example:
 
@@ -263,11 +271,7 @@ Example:
 MICROMACHINE_DIR=/private/tmp/MicroMachine \
 MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
 SOAK_MATRIX_RUN_ID=production-diversity-001 \
-SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map" \
-SOAK_MATRIX_ENEMY_RACES="Zerg Protoss Terran" \
-SOAK_MATRIX_ENEMY_DIFFICULTIES="1" \
-SOAK_MATRIX_TARGET_FRAME=12000 \
-SOAK_MATRIX_TIMEOUT_SECONDS=1200 \
+SOAK_MATRIX_QUALIFICATION_TIER=production \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
 

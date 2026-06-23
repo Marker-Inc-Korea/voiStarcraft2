@@ -37,12 +37,18 @@ def aggregate_matrix_run(
     *,
     target_frame: int,
     timeout_seconds: int,
+    qualification_tier: str = "production",
+    allow_failures: bool = False,
 ) -> dict[str, object]:
     """Build one deterministic matrix_report.json payload from case reports."""
 
     root = Path(run_dir)
     target = _require_non_negative_int("target_frame", target_frame)
     timeout = _require_non_negative_int("timeout_seconds", timeout_seconds)
+    if not isinstance(qualification_tier, str) or not qualification_tier:
+        raise ValueError("qualification_tier must be a non-empty string.")
+    if type(allow_failures) is not bool:
+        raise ValueError("allow_failures must be a boolean.")
     cases: list[dict[str, object]] = []
     passed = 0
     failed = 0
@@ -101,6 +107,8 @@ def aggregate_matrix_run(
         "ok": failed == 0 and bool(cases),
         "target_frame": target,
         "timeout_seconds": timeout,
+        "qualification_tier": qualification_tier,
+        "allow_failures": allow_failures,
         "case_count": len(cases),
         "passed": passed,
         "failed": failed,
@@ -168,6 +176,8 @@ def aggregate_soak_history(config: SoakHistoryConfig) -> dict[str, object]:
                 "failed": failed_cases,
                 "target_frame": payload.get("target_frame"),
                 "timeout_seconds": payload.get("timeout_seconds"),
+                "qualification_tier": payload.get("qualification_tier"),
+                "allow_failures": payload.get("allow_failures"),
                 "failure_codes": sorted(
                     {
                         code
@@ -270,6 +280,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     matrix.add_argument("--output", required=True)
     matrix.add_argument("--target-frame", required=True, type=int)
     matrix.add_argument("--timeout-seconds", required=True, type=int)
+    matrix.add_argument("--qualification-tier", default="production")
+    matrix.add_argument("--allow-failures", action="store_true")
 
     history = subparsers.add_parser("history-dashboard")
     history.add_argument("--root", action="append", required=True)
@@ -287,6 +299,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(args.run_dir),
             target_frame=args.target_frame,
             timeout_seconds=args.timeout_seconds,
+            qualification_tier=args.qualification_tier,
+            allow_failures=args.allow_failures,
         )
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)

@@ -57,10 +57,14 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 root,
                 target_frame=12_000,
                 timeout_seconds=1_200,
+                qualification_tier="diagnostic",
+                allow_failures=True,
             )
 
             self.assertFalse(report["ok"])
             self.assertEqual("failed", report["status"])
+            self.assertEqual("diagnostic", report["qualification_tier"])
+            self.assertTrue(report["allow_failures"])
             self.assertEqual(3, report["case_count"])
             self.assertEqual(1, report["passed"])
             self.assertEqual(2, report["failed"])
@@ -84,6 +88,8 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                         "status": "passed",
                         "target_frame": 12_000,
                         "timeout_seconds": 1_200,
+                        "qualification_tier": "production",
+                        "allow_failures": False,
                         "case_count": 1,
                         "passed": 1,
                         "failed": 0,
@@ -107,6 +113,8 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                         "status": "failed",
                         "target_frame": 12_000,
                         "timeout_seconds": 1_200,
+                        "qualification_tier": "diagnostic",
+                        "allow_failures": True,
                         "case_count": 1,
                         "passed": 0,
                         "failed": 1,
@@ -131,6 +139,20 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             self.assertEqual(2, dashboard["run_count"])
             self.assertEqual(1, dashboard["passed_runs"])
             self.assertEqual(1, dashboard["failed_runs"])
+            self.assertIn(
+                ("production", False),
+                {
+                    (run.get("qualification_tier"), run.get("allow_failures"))
+                    for run in dashboard["runs"]
+                },
+            )
+            self.assertIn(
+                ("diagnostic", True),
+                {
+                    (run.get("qualification_tier"), run.get("allow_failures"))
+                    for run in dashboard["runs"]
+                },
+            )
             self.assertEqual(
                 [{"value": "no_production_deadlock", "count": 1}],
                 dashboard["failure_codes"],
@@ -234,6 +256,8 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             self.assertIn("MicroMachine matrix disabled", completed.stdout)
             report = json.loads((run_dir / "matrix_report.json").read_text())
             self.assertEqual("disabled", report["status"])
+            self.assertEqual("production", report["qualification_tier"])
+            self.assertFalse(report["allow_failures"])
             self.assertFalse(report["ok"])
             history = json.loads((run_dir / "history.json").read_text())
             self.assertEqual("disabled", history["status"])

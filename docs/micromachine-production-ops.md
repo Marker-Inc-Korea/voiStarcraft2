@@ -6,6 +6,15 @@ operations.
 
 ## Map And Game Diversity Gate
 
+The production map pool is versioned in
+`integrations/micromachine/MICROMACHINE_MAP_POOL.json`. That manifest is the
+source of truth for required, diagnostic, and excluded maps. Production support
+means the required pool in that file; it does not mean every custom StarCraft II
+map is supported.
+Diagnostic maps are known investigation targets and cannot count as production
+signoff. Excluded maps are outside the support contract until they are promoted
+to diagnostic and then to required with artifact-backed zero-failure evidence.
+
 Use the matrix runner when validating more than one map, enemy race, or enemy
 difficulty:
 
@@ -13,13 +22,14 @@ difficulty:
 MICROMACHINE_DIR=/private/tmp/MicroMachine \
 MICROMACHINE_BUILD_DIR=/private/tmp/MicroMachine/build-latest-api \
 SOAK_MATRIX_RUN_ID=production-diversity-001 \
-SOAK_MATRIX_MAP_FILES="AcropolisLE.SC2Map" \
-SOAK_MATRIX_ENEMY_RACES="Zerg Protoss Terran" \
-SOAK_MATRIX_ENEMY_DIFFICULTIES="1" \
-SOAK_MATRIX_TARGET_FRAME=12000 \
-SOAK_MATRIX_TIMEOUT_SECONDS=1200 \
+SOAK_MATRIX_QUALIFICATION_TIER=production \
 integrations/micromachine/scripts/soak_matrix_macos_local.sh
 ```
+
+Explicit environment overrides such as `SOAK_MATRIX_MAP_FILES`,
+`SOAK_MATRIX_ENEMY_RACES`, `SOAK_MATRIX_ENEMY_DIFFICULTIES`,
+`SOAK_MATRIX_TARGET_FRAME`, and `SOAK_MATRIX_TIMEOUT_SECONDS` still take
+precedence for diagnostics and one-off investigations.
 
 Disable real SC2 execution without deleting the workflow or scripts:
 
@@ -59,6 +69,8 @@ Production qualification requires `matrix_report.json.ok == true` and
 `matrix_report.json.failed == 0`. `SOAK_MATRIX_ALLOW_FAILURES=1` is only for
 diagnostics or negative-control evidence; it must not be used for production
 sign-off.
+The matrix runner rejects `SOAK_MATRIX_QUALIFICATION_TIER=production` combined
+with `SOAK_MATRIX_ALLOW_FAILURES=1`.
 
 Artifact retention:
 
