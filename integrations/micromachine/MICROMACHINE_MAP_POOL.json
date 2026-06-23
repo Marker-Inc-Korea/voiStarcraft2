@@ -18,7 +18,12 @@
       "classification": "required",
       "status": "qualified_baseline",
       "reason": "Known local MicroMachine macro and race-matrix evidence exists.",
-      "promotion_rule": "Keep in required pool while production matrix remains failed=0."
+      "promotion_rule": "Keep in required pool while production matrix remains failed=0.",
+      "preflight": {
+        "expected_start_locations": 2,
+        "risk_codes": [],
+        "notes": "Baseline production map; no known MicroMachine geometry blocker."
+      }
     },
     {
       "map_file": "Ladder2019Season3/ThunderbirdLE.SC2Map",
@@ -26,7 +31,12 @@
       "classification": "diagnostic",
       "status": "blocked_no_production_deadlock",
       "reason": "Known MicroMachine map-support blocker: ramp/wall-off/placement path produced no_production_deadlock.",
-      "promotion_rule": "Promote only after Issue 48.3 proves 12k-frame macro soak with failed=0 and no allow-failures."
+      "promotion_rule": "Promote only after Issue 48.3 proves 12k-frame macro soak with failed=0 and no allow-failures.",
+      "preflight": {
+        "expected_start_locations": 2,
+        "risk_codes": ["geometry_risk", "placement_risk"],
+        "notes": "Known ramp/wall-off/build-placement blocker from Thunderbird no-production deadlock evidence."
+      }
     },
     {
       "map_file": "Custom/UnknownOrUnvetted.SC2Map",
@@ -34,7 +44,11 @@
       "classification": "excluded",
       "status": "unsupported_by_contract",
       "reason": "Placeholder class for maps outside the declared production and diagnostic pools.",
-      "promotion_rule": "Move to diagnostic first, collect preflight/soak evidence, then promote to required only after failed=0 production evidence."
+      "promotion_rule": "Move to diagnostic first, collect preflight/soak evidence, then promote to required only after failed=0 production evidence.",
+      "preflight": {
+        "risk_codes": ["unsupported_map"],
+        "notes": "Explicitly excluded from MicroMachine production support."
+      }
     }
   ],
   "tiers": {

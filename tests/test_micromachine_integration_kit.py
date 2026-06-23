@@ -285,11 +285,15 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         for term in (
             "SOAK_MATRIX_MAP_FILES",
+            "SOAK_MATRIX_MAP_ROOTS",
+            "IFS=':' read -r -a map_roots",
             "SOAK_MATRIX_ENEMY_RACES",
             "SOAK_MATRIX_ENEMY_DIFFICULTIES",
             "SOAK_MATRIX_QUALIFICATION_TIER",
             "MICROMACHINE_MAP_POOL.json",
             "starcraft_commander.micromachine_map_pool",
+            "starcraft_commander.micromachine_preflight",
+            "preflight_report.json",
             "SOAK_MATRIX_REPORT",
             "matrix_report.json",
             "SOAK_MATRIX_ALLOW_FAILURES",
@@ -570,6 +574,62 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
             self.assertEqual(2, completed.returncode)
             self.assertIn("SOAK_MATRIX_ALLOW_FAILURES must be 0 or 1", completed.stderr)
+
+    def test_soak_matrix_preflight_skips_known_diagnostic_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report = root / "matrix_report.json"
+            env = {
+                **os.environ,
+                "SOAK_MATRIX_RUN_DIR": str(root),
+                "SOAK_MATRIX_REPORT": str(report),
+                "SOAK_MATRIX_AGGREGATE_ONLY": "0",
+                "SOAK_MATRIX_QUALIFICATION_TIER": "diagnostic",
+                "SOAK_MATRIX_MIN_PASSES": "0",
+            }
+
+            subprocess.run([str(SOAK_MATRIX_SCRIPT)], check=True, env=env)
+
+            payload = json.loads(report.read_text())
+            self.assertEqual(1, payload["case_count"])
+            case = payload["cases"][0]
+            self.assertEqual("failed", case["preflight_status"])
+            self.assertEqual(["geometry_risk", "placement_risk"], case["preflight_failure_codes"])
+            self.assertEqual(["geometry_risk", "placement_risk"], case["failure_codes"])
+
+    def test_soak_matrix_preflight_blocks_required_missing_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            missing_maps = root / "StarCraft II Maps"
+            missing_maps.mkdir()
+            run_dir = root / "run"
+            report = run_dir / "matrix_report.json"
+            env = {
+                **os.environ,
+                "SOAK_MATRIX_RUN_DIR": str(run_dir),
+                "SOAK_MATRIX_REPORT": str(report),
+                "SOAK_MATRIX_AGGREGATE_ONLY": "0",
+                "SOAK_MATRIX_QUALIFICATION_TIER": "production",
+                "SOAK_MATRIX_MAP_FILES": "AcropolisLE.SC2Map",
+                "SOAK_MATRIX_ENEMY_RACES": "Zerg",
+                "SOAK_MATRIX_MAP_ROOTS": str(missing_maps),
+            }
+
+            completed = subprocess.run(
+                [str(SOAK_MATRIX_SCRIPT)],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(0, completed.returncode)
+            payload = json.loads(report.read_text())
+            self.assertEqual(1, payload["failed"])
+            case = payload["cases"][0]
+            self.assertEqual("preflight_failure", case["failure_phase"])
+            self.assertEqual(["missing_map"], case["preflight_failure_codes"])
+            self.assertEqual(["missing_map"], case["failure_codes"])
 
     def test_soak_matrix_report_records_qualification_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

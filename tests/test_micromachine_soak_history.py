@@ -26,6 +26,18 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             passed.mkdir()
             failed.mkdir()
             missing.mkdir()
+            (passed / "preflight_report.json").write_text(
+                json.dumps({"status": "passed", "ok": True, "failure_codes": []})
+            )
+            (failed / "preflight_report.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "ok": False,
+                        "failure_codes": ["geometry_risk"],
+                    }
+                )
+            )
             self.write_soak_report(
                 passed / "soak_report.json",
                 ok=True,
@@ -72,7 +84,13 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 ["no_production_deadlock", "telemetry_stall"],
                 report["cases"][1]["failure_codes"],
             )
+            self.assertEqual("passed", report["cases"][0]["preflight_status"])
+            self.assertEqual("failed", report["cases"][1]["preflight_status"])
+            self.assertEqual(["geometry_risk"], report["cases"][1]["preflight_failure_codes"])
+            self.assertEqual("passed", report["cases"][0]["failure_phase"])
+            self.assertEqual("preflight_failure", report["cases"][1]["failure_phase"])
             self.assertEqual("missing_report", report["cases"][2]["status"])
+            self.assertEqual("missing_report", report["cases"][2]["failure_phase"])
 
     def test_history_dashboard_counts_failures_maps_and_artifact_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

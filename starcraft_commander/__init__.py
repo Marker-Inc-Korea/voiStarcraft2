@@ -207,6 +207,10 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "MicroMachineQualificationTier": "starcraft_commander.micromachine_map_pool",
     "load_micromachine_map_pool": "starcraft_commander.micromachine_map_pool",
     "parse_micromachine_map_pool": "starcraft_commander.micromachine_map_pool",
+    "PREFLIGHT_REPORT_NAME": "starcraft_commander.micromachine_preflight",
+    "MicroMachineMapPreflightConfig": "starcraft_commander.micromachine_preflight",
+    "preflight_micromachine_map": "starcraft_commander.micromachine_preflight",
+    "write_preflight_failure_soak_report": "starcraft_commander.micromachine_preflight",
     # Standing orders (in-game-loop code policies, never LLM-per-frame).
     "StandingOrderController": "starcraft_commander.standing_orders",
     # Optional runtime dependency guards.

@@ -264,6 +264,11 @@ which currently requires `AcropolisLE.SC2Map` against Zerg, Protoss, and Terran
 at difficulty 1. `Ladder2019Season3/ThunderbirdLE.SC2Map` remains diagnostic
 until the no-production deadlock blocker is fixed. Excluded maps are outside
 the support contract and cannot be used for production sign-off.
+Each case writes `preflight_report.json` before SC2 launch. Known unsupported,
+missing, geometry-risk, or placement-risk maps are turned into ordinary failed
+case artifacts instead of being hidden by a late no-production deadlock.
+Set `SOAK_MATRIX_MAP_ROOTS` to a colon-separated list when the preflight should
+verify local map availability.
 
 Example:
 

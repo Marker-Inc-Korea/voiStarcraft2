@@ -30,6 +30,8 @@ class MicroMachineMapPoolTest(unittest.TestCase):
         self.assertEqual(["Zerg", "Protoss", "Terran"], production["enemy_races"])
         self.assertEqual([1], production["enemy_difficulties"])
         self.assertFalse(production["allow_failures"])
+        self.assertEqual([], production["maps"][0]["preflight_risk_codes"])
+        self.assertEqual(2, production["maps"][0]["expected_start_locations"])
 
         diagnostic = pool.to_summary("diagnostic")
         self.assertEqual(
@@ -37,6 +39,10 @@ class MicroMachineMapPoolTest(unittest.TestCase):
             diagnostic["map_files"],
         )
         self.assertTrue(diagnostic["allow_failures"])
+        self.assertEqual(
+            ["geometry_risk", "placement_risk"],
+            diagnostic["maps"][0]["preflight_risk_codes"],
+        )
         excluded = [entry for entry in pool.maps if entry.classification == "excluded"]
         self.assertEqual(["Custom/UnknownOrUnvetted.SC2Map"], [entry.map_file for entry in excluded])
 
@@ -130,6 +136,19 @@ class MicroMachineMapPoolTest(unittest.TestCase):
         payload["maps"].append(copy.deepcopy(payload["maps"][0]))
 
         with self.assertRaisesRegex(ValueError, "duplicate map_file"):
+            parse_micromachine_map_pool(payload)
+
+    def test_manifest_rejects_malformed_preflight_metadata(self) -> None:
+        payload = self._default_payload()
+        payload["maps"][0]["preflight"]["expected_start_locations"] = 0
+
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            parse_micromachine_map_pool(payload)
+
+        payload = self._default_payload()
+        payload["maps"][0]["preflight"]["risk_codes"] = "geometry_risk"
+
+        with self.assertRaisesRegex(ValueError, "must be a list"):
             parse_micromachine_map_pool(payload)
 
     def test_loads_explicit_manifest_path(self) -> None:
