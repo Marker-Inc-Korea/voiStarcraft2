@@ -94,6 +94,13 @@ reports consumption from `MicroMachineTelemetry.active_modulation_ids`. It does
 not read the SC2 screen, inject keyboard/mouse input, or call python-sc2 raw
 runtime actions.
 
+`starcraft_commander.micromachine_chat_modulation` is the safe in-game chat
+boundary. It can route only sidecar/telemetry-supplied `chat_events` into the
+same live text session, after user-message filtering, dedupe, and raw-control
+key rejection. If patched MicroMachine telemetry does not expose chat events,
+the result is `unsupported_no_chat_source`; OCR and global input hooks remain
+forbidden.
+
 ## Production Soak Boundary
 
 `starcraft_commander.micromachine_soak` is the host-side production classifier
