@@ -487,6 +487,15 @@ def _build_production_signoff(
         if isinstance(build_identity, str) and build_identity:
             observed_builds.add(build_identity)
         build_matches = True
+        if not isinstance(build_identity, str) or not build_identity or build_identity == "unrecorded":
+            build_matches = False
+            blockers.append(
+                {
+                    "code": "missing_build_identity",
+                    "run_id": run_id,
+                    "actual": build_identity,
+                }
+            )
         if config.required_build_identity is not None and build_identity != config.required_build_identity:
             build_matches = False
             blockers.append(

@@ -289,6 +289,7 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
                 ok=True,
                 status="passed",
                 qualification_tier="production",
+                build_identity="build-a",
                 cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
             )
 
@@ -419,6 +420,35 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             self.assertEqual(["old-build"], signoff["build_identity"]["observed"])
             self.assertIn(
                 "build_mismatch",
+                {blocker["code"] for blocker in signoff["blockers"]},
+            )
+
+    def test_production_signoff_blocks_missing_build_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_matrix_report(
+                root / "run-unrecorded-build",
+                ok=True,
+                status="passed",
+                qualification_tier="production",
+                build_identity="unrecorded",
+                cases=[self.matrix_case("AcropolisLE.SC2Map", "Zerg", 1, ok=True)],
+            )
+
+            dashboard = aggregate_soak_history(
+                SoakHistoryConfig(
+                    roots=(root,),
+                    required_map_files=("AcropolisLE.SC2Map",),
+                    required_enemy_races=("Zerg",),
+                    required_enemy_difficulties=(1,),
+                    required_strategy_profiles=("default_defensive_to_aggressive",),
+                )
+            )
+
+            signoff = dashboard["production_signoff"]
+            self.assertFalse(signoff["ok"])
+            self.assertIn(
+                "missing_build_identity",
                 {blocker["code"] for blocker in signoff["blockers"]},
             )
 

@@ -173,6 +173,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "reset --hard",
             "apply --check --ignore-space-change --whitespace=nowarn",
             "cmake --build",
+            "MICROMACHINE_BUILD_IDENTITY_REPORT",
+            "starcraft_commander.micromachine_build_identity",
+            "voi_build_identity.json",
         ):
             with self.subTest(term=term):
                 self.assertIn(term, build_script)
@@ -307,6 +310,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "starcraft_commander.micromachine_triage",
             "triage_report.json",
             "triage_report.md",
+            "SOAK_MATRIX_BUILD_IDENTITY_REPORT",
+            "SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY",
+            "starcraft_commander.micromachine_build_identity",
             "SOAK_MATRIX_ALLOW_FAILURES",
             "SOAK_MATRIX_STOP_ON_FAILURE",
             "SOAK_MATRIX_AGGREGATE_ONLY",

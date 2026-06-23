@@ -80,6 +80,15 @@ only read bounded keys such as `combat.defend_bias`, `economy.expand_bias`, or
 `emergency.force_retreat` and then let existing MicroMachine managers decide
 how to act.
 
+## Build Identity
+
+`scripts/build_macos_local.sh` writes
+`$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
+report includes pinned MicroMachine and `s2client-api` commits, patch
+checksums, config/header checksums, binary path, and binary checksum. Matrix
+production signoff consumes that identity and blocks `unrecorded` or mismatched
+builds.
+
 ## Local Smoke Test Gate
 
 This repository can test the Python sidecar, file transport, key flattening,

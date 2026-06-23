@@ -28,7 +28,17 @@ fi
 if [[ -z "${SOAK_MATRIX_STRATEGY_PROFILES:-}" ]]; then
   SOAK_MATRIX_STRATEGY_PROFILES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field strategy_profiles)"
 fi
-SOAK_MATRIX_BUILD_IDENTITY="${SOAK_MATRIX_BUILD_IDENTITY:-${MICROMACHINE_BUILD_ID:-${MICROMACHINE_BUILD_DIR:-unrecorded}}}"
+SOAK_MATRIX_DEFAULT_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-/private/tmp/MicroMachine/build-latest-api}"
+SOAK_MATRIX_BUILD_IDENTITY_REPORT="${SOAK_MATRIX_BUILD_IDENTITY_REPORT:-${MICROMACHINE_BUILD_IDENTITY_REPORT:-${SOAK_MATRIX_DEFAULT_BUILD_DIR}/voi_build_identity.json}}"
+if [[ -z "${SOAK_MATRIX_BUILD_IDENTITY:-}" && -f "${SOAK_MATRIX_BUILD_IDENTITY_REPORT}" ]]; then
+  SOAK_MATRIX_BUILD_IDENTITY="$(python3 -m starcraft_commander.micromachine_build_identity \
+    --micromachine-dir "${MICROMACHINE_DIR:-/private/tmp/MicroMachine}" \
+    --s2client-dir "${S2CLIENT_DIR:-/private/tmp/voi-micromachine-runtime/s2client-api}" \
+    --micromachine-build-dir "${SOAK_MATRIX_DEFAULT_BUILD_DIR}" \
+    --output "${SOAK_MATRIX_BUILD_IDENTITY_REPORT}" \
+    --field identity)"
+fi
+SOAK_MATRIX_BUILD_IDENTITY="${SOAK_MATRIX_BUILD_IDENTITY:-${MICROMACHINE_BUILD_ID:-unrecorded}}"
 SOAK_MATRIX_SIGNOFF_TIER="${SOAK_MATRIX_SIGNOFF_TIER:-production}"
 if [[ -z "${SOAK_MATRIX_SIGNOFF_MAP_FILES:-}" ]]; then
   SOAK_MATRIX_SIGNOFF_MAP_FILES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_SIGNOFF_TIER}" --field map_files)"
@@ -42,7 +52,7 @@ fi
 if [[ -z "${SOAK_MATRIX_SIGNOFF_STRATEGY_PROFILES:-}" ]]; then
   SOAK_MATRIX_SIGNOFF_STRATEGY_PROFILES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_SIGNOFF_TIER}" --field strategy_profiles)"
 fi
-SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY="${SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY:-}"
+SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY="${SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY:-${SOAK_MATRIX_BUILD_IDENTITY}}"
 SOAK_MATRIX_STOP_ON_FAILURE="${SOAK_MATRIX_STOP_ON_FAILURE:-0}"
 if [[ -z "${SOAK_MATRIX_ALLOW_FAILURES:-}" ]]; then
   SOAK_MATRIX_ALLOW_FAILURES="$(python3 -m starcraft_commander.micromachine_map_pool --manifest "${SOAK_MATRIX_MAP_POOL_MANIFEST}" --tier "${SOAK_MATRIX_QUALIFICATION_TIER}" --field allow_failures)"
