@@ -10,6 +10,11 @@ from starcraft_commander.micromachine_triage import (
     triage_matrix_report,
     write_triage_outputs,
 )
+from starcraft_commander.micromachine_soak import (
+    MicroMachineSoakConfig,
+    MicroMachineSoakObservation,
+    classify_micromachine_soak,
+)
 from starcraft_commander.micromachine_soak_history import aggregate_matrix_run
 
 
@@ -126,32 +131,47 @@ class MicroMachineTriageTest(unittest.TestCase):
                 json.dumps({"status": "passed", "ok": True, "failure_codes": []})
                 + "\n"
             )
-            (case_dir / "soak_report.json").write_text(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "status": "failed",
-                        "latest_frame": 9_000,
-                        "target_reached": False,
-                        "macro_evidence_ok": False,
-                        "manager_intervention_ok": True,
-                        "map_file": "AcropolisLE.SC2Map",
-                        "enemy_race": "Zerg",
-                        "enemy_difficulty": 1,
-                        "config": {"expected_profile_tags": ["pressure-timing"]},
-                        "observation": {"active_modulation_ids": ["dsl-rush-001"]},
-                        "failures": [
-                            {
-                                "code": "no_production_deadlock",
-                                "message": "No production structure completed.",
-                                "severity": "terminal",
-                                "evidence": {"latest_frame": 9_000},
-                            }
-                        ],
-                    }
-                )
-                + "\n"
+            telemetry = {
+                "frame": 9_000,
+                "active_modulation_ids": ["dsl-rush-001"],
+                "managers": {
+                    "GameCommander": {
+                        "policy_active": True,
+                        "update_id": "dsl-rush-001",
+                    },
+                    "CombatCommander": {"bounded_intervention": True},
+                    "ScoutManager": {"bounded_intervention": True},
+                },
+            }
+            modulation = {
+                "update_id": "dsl-rush-001",
+                "issued_at_frame": 8_000,
+                "expires_at_frame": 20_000,
+                "vector": {"tags": ["pressure-timing"]},
+            }
+            (case_dir / "latest_telemetry.json").write_text(
+                json.dumps(telemetry) + "\n"
             )
+            (case_dir / "telemetry.jsonl").write_text(json.dumps(telemetry) + "\n")
+            (case_dir / "latest_modulation.json").write_text(
+                json.dumps(modulation) + "\n"
+            )
+            (case_dir / "modulation_updates.jsonl").write_text(
+                json.dumps(modulation) + "\n"
+            )
+            (case_dir / "micromachine.log").write_text("Connected to SC2\n")
+            classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=case_dir,
+                    bot_log=case_dir / "micromachine.log",
+                    artifact_dir=case_dir,
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    production_deadlock_frame=8_000,
+                    expected_profile_tags=("pressure-timing",),
+                ),
+            ).write_json(case_dir / "soak_report.json")
 
             matrix = aggregate_matrix_run(
                 root,
@@ -164,19 +184,14 @@ class MicroMachineTriageTest(unittest.TestCase):
             triage = triage_matrix_report(matrix)
 
         failure = triage["ranked_failures"][0]
-        self.assertEqual(
-            [
-                {
-                    "code": "no_production_deadlock",
-                    "message": "No production structure completed.",
-                    "severity": "terminal",
-                    "evidence": {"latest_frame": 9_000},
-                    "attempt": None,
-                    "attempt_status": None,
-                }
-            ],
-            failure["classifier_failures"],
-        )
+        self.assertEqual(1, len(failure["classifier_failures"]))
+        classifier_failure = failure["classifier_failures"][0]
+        self.assertEqual("no_production_deadlock", classifier_failure["code"])
+        self.assertEqual("terminal", classifier_failure["severity"])
+        self.assertEqual(9_000, classifier_failure["evidence"]["latest_frame"])
+        self.assertIn("missing_terms", classifier_failure["evidence"])
+        self.assertIsNone(classifier_failure["attempt"])
+        self.assertIsNone(classifier_failure["attempt_status"])
         self.assertEqual(
             {
                 "latest_frame": 9_000,

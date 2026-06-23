@@ -182,7 +182,7 @@ class MicroMachineSoakReport:
             "status": self.status,
             "ok": self.ok,
             "config": self.config.to_dict(),
-            "observation": self.observation.to_dict(),
+            "observation": _observation_report_payload(self.observation),
             "latest_frame": self.latest_frame,
             "target_reached": self.target_reached,
             "macro_evidence_ok": self.macro_evidence_ok,
@@ -195,6 +195,19 @@ class MicroMachineSoakReport:
         output = Path(path)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n")
+
+
+def _observation_report_payload(
+    observation: MicroMachineSoakObservation,
+) -> dict[str, object]:
+    payload = observation.to_dict()
+    telemetry = _read_json_mapping(observation.latest_telemetry_path)
+    active_ids = telemetry.get("active_modulation_ids")
+    if isinstance(active_ids, list):
+        payload["active_modulation_ids"] = [
+            value for value in active_ids if isinstance(value, str) and value
+        ]
+    return payload
 
 
 def classify_micromachine_soak(
