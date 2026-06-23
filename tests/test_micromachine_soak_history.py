@@ -596,6 +596,39 @@ class MicroMachineSoakHistoryTest(unittest.TestCase):
             )
             self.assertIn("disabled", (run_dir / "history.md").read_text())
 
+    def test_matrix_script_disabled_mode_keeps_artifacts_for_malformed_build_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = root / "malformed-build-run"
+            identity_report = root / "empty-build-identity.json"
+            identity_report.write_text("")
+            script = Path("integrations/micromachine/scripts/soak_matrix_macos_local.sh")
+
+            subprocess.run(
+                [str(script)],
+                check=True,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "PYTHONPATH": ".",
+                    "SOAK_MATRIX_ENABLED": "0",
+                    "SOAK_MATRIX_BUILD_IDENTITY_REPORT": str(identity_report),
+                    "SOAK_MATRIX_RUN_DIR": str(run_dir),
+                    "SOAK_MATRIX_REPORT": str(run_dir / "matrix_report.json"),
+                    "SOAK_MATRIX_HISTORY_JSON": str(run_dir / "history.json"),
+                    "SOAK_MATRIX_HISTORY_MD": str(run_dir / "history.md"),
+                },
+                capture_output=True,
+                text=True,
+            )
+
+            report = json.loads((run_dir / "matrix_report.json").read_text())
+            self.assertEqual("unrecorded", report["build_identity"])
+            self.assertFalse(report["build_identity_ok"])
+            self.assertEqual(["disabled"], report["build_identity_failure_codes"])
+            history = json.loads((run_dir / "history.json").read_text())
+            self.assertEqual(1, history["run_count"])
+            self.assertEqual("disabled", history["runs"][0]["status"])
+
     def write_soak_report(
         self,
         path: Path,

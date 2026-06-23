@@ -247,7 +247,10 @@ def _git_head(path: Path) -> str | None:
 def _read_report(path: Path) -> dict[str, object]:
     if not path.exists():
         return {"identity": "unrecorded", "ok": False, "failures": [{"code": "missing_build_identity_report"}]}
-    payload = json.loads(path.read_text())
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"identity": "unrecorded", "ok": False, "failures": [{"code": "invalid_build_identity_report"}]}
     if not isinstance(payload, dict):
         return {"identity": "unrecorded", "ok": False, "failures": [{"code": "invalid_build_identity_report"}]}
     return payload

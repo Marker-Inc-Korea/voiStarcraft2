@@ -1,6 +1,7 @@
 """Tests for reproducible MicroMachine build identity reports."""
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,6 +64,28 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 first["checksums"]["micromachine_patch_sha256"],
                 second["checksums"]["micromachine_patch_sha256"],
             )
+
+    def test_read_report_cli_treats_malformed_json_as_invalid_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "identity.json"
+            report.write_text("")
+
+            completed = subprocess.run(
+                [
+                    "python3",
+                    "-m",
+                    "starcraft_commander.micromachine_build_identity",
+                    "--read-report",
+                    str(report),
+                    "--field",
+                    "failure-codes",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual("invalid_build_identity_report", completed.stdout.strip())
 
     def build_config(
         self,
