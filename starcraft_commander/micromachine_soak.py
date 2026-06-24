@@ -60,6 +60,7 @@ class MicroMachineSoakConfig:
     production_deadlock_frame: int = 9_000
     production_stall_frames: int = 8_000
     income_stall_frames: int = 2_000
+    bootstrap_no_start_units_frame: int = 1_200
     max_placement_failures: int = 3
     modulation_consumption_grace_frames: int = 128
     require_macro_evidence: bool = True
@@ -73,6 +74,7 @@ class MicroMachineSoakConfig:
         _require_positive("production_deadlock_frame", self.production_deadlock_frame)
         _require_positive("production_stall_frames", self.production_stall_frames)
         _require_positive("income_stall_frames", self.income_stall_frames)
+        _require_positive("bootstrap_no_start_units_frame", self.bootstrap_no_start_units_frame)
         _require_positive(
             "modulation_consumption_grace_frames",
             self.modulation_consumption_grace_frames,
@@ -93,6 +95,7 @@ class MicroMachineSoakConfig:
             "production_deadlock_frame": self.production_deadlock_frame,
             "production_stall_frames": self.production_stall_frames,
             "income_stall_frames": self.income_stall_frames,
+            "bootstrap_no_start_units_frame": self.bootstrap_no_start_units_frame,
             "max_placement_failures": self.max_placement_failures,
             "modulation_consumption_grace_frames": self.modulation_consumption_grace_frames,
             "require_macro_evidence": self.require_macro_evidence,
@@ -275,7 +278,11 @@ def classify_micromachine_soak(
             )
         )
 
-    no_start_units_failure = _classify_bootstrap_no_start_units(telemetry, telemetry_archive)
+    no_start_units_failure = _classify_bootstrap_no_start_units(
+        telemetry,
+        telemetry_archive,
+        resolved_config.bootstrap_no_start_units_frame,
+    )
     if no_start_units_failure is not None:
         failures.append(no_start_units_failure)
 
@@ -466,6 +473,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=defaults.income_stall_frames,
     )
     parser.add_argument(
+        "--bootstrap-no-start-units-frame",
+        type=int,
+        default=defaults.bootstrap_no_start_units_frame,
+    )
+    parser.add_argument(
         "--modulation-consumption-grace-frames",
         type=int,
         default=defaults.modulation_consumption_grace_frames,
@@ -493,6 +505,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         production_deadlock_frame=args.production_deadlock_frame,
         production_stall_frames=args.production_stall_frames,
         income_stall_frames=args.income_stall_frames,
+        bootstrap_no_start_units_frame=args.bootstrap_no_start_units_frame,
         max_placement_failures=args.max_placement_failures,
         modulation_consumption_grace_frames=args.modulation_consumption_grace_frames,
         expected_profile_tags=tuple(
@@ -573,6 +586,7 @@ def _latest_frame(
 def _classify_bootstrap_no_start_units(
     latest_telemetry: Mapping[str, object],
     telemetry_archive: Sequence[Mapping[str, object]],
+    threshold_frame: int,
 ) -> MicroMachineSoakFailure | None:
     for telemetry in (latest_telemetry, *reversed(tuple(telemetry_archive))):
         managers = telemetry.get("managers")
@@ -591,7 +605,7 @@ def _classify_bootstrap_no_start_units(
         game_info_height = _int_value(ccbot.get("game_info_height"))
         enemy_start_locations = _int_value(ccbot.get("enemy_start_location_count"))
         if (
-            frame > 0
+            frame >= threshold_frame
             and player_id > 0
             and self_count == 0
             and resource_depot_count == 0

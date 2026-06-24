@@ -29,6 +29,7 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
                     build_identity_report=paths["build_identity"],
                     unit_evidence=paths["unit"],
                     triage_reports=(paths["triage"],),
+                    map_pool=self.write_risk_free_map_pool(root),
                     max_evidence_age_seconds=None,
                 )
             )
@@ -41,6 +42,31 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
             self.assertEqual(1, len(report["matrix_reports"]))
             self.assertIn("User QA Remaining", markdown)
             self.assertIn("bounded policy modulation", markdown)
+
+    def test_release_gate_blocks_default_map_pool_runtime_risk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self.write_green_evidence(root, build_identity="build-a")
+
+            report = build_release_gate_report(
+                MicroMachineReleaseGateConfig(
+                    history_roots=(root,),
+                    build_identity_report=paths["build_identity"],
+                    unit_evidence=paths["unit"],
+                    triage_reports=(paths["triage"],),
+                    max_evidence_age_seconds=None,
+                )
+            )
+
+            blockers = [
+                blocker
+                for blocker in report["blockers"]
+                if blocker["code"] == "map_pool_runtime_risk"
+            ]
+            self.assertFalse(report["ok"])
+            self.assertEqual(1, len(blockers))
+            self.assertEqual("AcropolisLE.SC2Map", blockers[0]["map_file"])
+            self.assertEqual(["bootstrap_no_start_units"], blockers[0]["preflight_risk_codes"])
 
     def test_release_gate_blocks_missing_required_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -82,6 +108,7 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
                     build_identity_report=paths["build_identity"],
                     unit_evidence=paths["unit"],
                     triage_reports=(paths["triage"],),
+                    map_pool=self.write_risk_free_map_pool(root),
                     max_evidence_age_seconds=None,
                 )
             )
@@ -497,6 +524,8 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
                     str(paths["unit"]),
                     "--triage-report",
                     str(paths["triage"]),
+                    "--map-pool",
+                    str(self.write_risk_free_map_pool(root)),
                     "--no-evidence-age-limit",
                 ],
                 check=True,
@@ -514,6 +543,98 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
         paths = self.write_supporting_evidence(root, build_identity=build_identity)
         self.write_matrix_report(root / "run-green", build_identity=build_identity)
         return paths
+
+    def write_risk_free_map_pool(self, root: Path) -> Path:
+        path = root / "risk_free_map_pool.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "contract": {
+                        "name": "risk-free test MicroMachine map pool",
+                        "parent_issue": 48,
+                        "default_tier": "production",
+                        "qualification_requires_failed_zero": True,
+                        "production_allows_failures": False,
+                    },
+                    "maps": [
+                        {
+                            "map_file": "AcropolisLE.SC2Map",
+                            "display_name": "Acropolis LE",
+                            "classification": "required",
+                            "status": "qualified_baseline",
+                            "reason": "Synthetic unit-test manifest with no active runtime risk.",
+                            "promotion_rule": "Already qualified in this isolated test fixture.",
+                            "preflight": {
+                                "expected_start_locations": 2,
+                                "risk_codes": [],
+                                "notes": "",
+                            },
+                        },
+                        {
+                            "map_file": "Ladder2019Season3/ThunderbirdLE.SC2Map",
+                            "display_name": "Thunderbird LE",
+                            "classification": "diagnostic",
+                            "status": "blocked_no_production_deadlock",
+                            "reason": "Diagnostic fixture entry.",
+                            "promotion_rule": "Promote only after failed=0 evidence.",
+                            "preflight": {
+                                "expected_start_locations": 2,
+                                "risk_codes": ["geometry_risk"],
+                                "notes": "Diagnostic only.",
+                            },
+                            "blocker": {
+                                "code": "thunderbird_walloff_geometry_no_production_deadlock",
+                                "runtime_failure_code": "no_production_deadlock",
+                                "artifact_path": "/tmp/diagnostic.json",
+                                "root_cause_area": "ramp_walloff_build_placement",
+                                "root_cause_candidates": ["ramp_detection"],
+                                "less_likely_candidates": ["worker_path_safety"],
+                                "evidence_signatures": ["no_production_deadlock"],
+                                "reproduction_command": "diagnostic-only",
+                                "promotion_criteria": ["failed=0"],
+                            },
+                        },
+                        {
+                            "map_file": "Custom/UnknownOrUnvetted.SC2Map",
+                            "display_name": "Unknown or unvetted custom map",
+                            "classification": "excluded",
+                            "status": "unsupported_by_contract",
+                            "reason": "Excluded fixture entry.",
+                            "promotion_rule": "Move to diagnostic before production.",
+                            "preflight": {
+                                "risk_codes": ["unsupported_map"],
+                                "notes": "Excluded.",
+                            },
+                        },
+                    ],
+                    "tiers": {
+                        "production": {
+                            "description": "Risk-free fixture production tier.",
+                            "map_classifications": ["required"],
+                            "enemy_races": ["Zerg", "Protoss", "Terran"],
+                            "enemy_difficulties": [1],
+                            "target_frame": 12000,
+                            "timeout_seconds": 1200,
+                            "strategy_profiles": ["default_defensive_to_aggressive"],
+                        },
+                        "diagnostic": {
+                            "description": "Fixture diagnostic tier.",
+                            "map_classifications": ["diagnostic"],
+                            "enemy_races": ["Zerg"],
+                            "enemy_difficulties": [1],
+                            "target_frame": 12000,
+                            "timeout_seconds": 1200,
+                            "strategy_profiles": ["default_defensive_to_aggressive"],
+                            "allow_failures": True,
+                        },
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        return path
 
     def write_supporting_evidence(
         self,

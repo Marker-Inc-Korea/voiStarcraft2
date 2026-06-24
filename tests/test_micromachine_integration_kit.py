@@ -212,6 +212,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",
+            "canonical_checkout_path",
+            "pwd -P",
+            "require_disposable_checkout_mutation",
+            "safe_clean_git_checkout",
+            "MICROMACHINE_ALLOW_DESTRUCTIVE_CLEAN",
+            "Refusing to ${action} override checkout outside",
             "submodule update --init --recursive",
             "apply --check --ignore-space-change --whitespace=nowarn",
             "cmake --build",
@@ -301,6 +307,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SOAK_PRODUCTION_DEADLOCK_FRAME",
             "SOAK_PRODUCTION_STALL_FRAMES",
             "SOAK_INCOME_STALL_FRAMES",
+            "SOAK_BOOTSTRAP_NO_START_UNITS_FRAME",
             "SOAK_MAX_PLACEMENT_FAILURES",
             "SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES",
             "SOAK_ARTIFACT_ROOT",
@@ -312,6 +319,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "telemetry-stall-seconds",
             "production-deadlock-frame",
             "income-stall-frames",
+            "bootstrap-no-start-units-frame",
             "max-placement-failures",
             "modulation-consumption-grace-frames",
             "termination-reason",
@@ -411,6 +419,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         for term in (
             "telemetry_stall",
             "bootstrap_no_start_units",
+            "bootstrap_no_start_units_frame",
             "repeated_placement_failures",
             "no_production_deadlock",
             "income_stall",
@@ -461,6 +470,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertIn("python3 -m starcraft_commander.micromachine_release_gate", readme)
         self.assertIn("release_gate.json", readme)
         self.assertIn("release_gate.md", readme)
+        self.assertIn("map_pool_runtime_risk", (REPO_ROOT / "starcraft_commander" / "micromachine_release_gate.py").read_text())
         self.assertIn("economic_expansion@6000", readme)
         self.assertIn("strategy_profile_missing", readme)
         self.assertIn("emergency_recovery", production_ops)
