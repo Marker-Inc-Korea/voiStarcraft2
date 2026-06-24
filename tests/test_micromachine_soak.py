@@ -93,6 +93,7 @@ class MicroMachineSoakConfigTest(unittest.TestCase):
         self.assertEqual(9_000, config.production_deadlock_frame)
         self.assertEqual(8_000, config.production_stall_frames)
         self.assertEqual(2_000, config.income_stall_frames)
+        self.assertEqual(1_200, config.bootstrap_no_start_units_frame)
         self.assertEqual(128, config.modulation_consumption_grace_frames)
         json.dumps(config.to_dict())
 
@@ -102,6 +103,8 @@ class MicroMachineSoakConfigTest(unittest.TestCase):
             MicroMachineSoakConfig(max_placement_failures=-1)
         with self.assertRaisesRegex(ValueError, "income_stall_frames"):
             MicroMachineSoakConfig(income_stall_frames=0)
+        with self.assertRaisesRegex(ValueError, "bootstrap_no_start_units_frame"):
+            MicroMachineSoakConfig(bootstrap_no_start_units_frame=0)
 
 
 class MicroMachineSoakClassifierTest(unittest.TestCase):
@@ -194,6 +197,88 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             )
 
             self.assert_failure_codes(report, {"telemetry_stall", "no_production_deadlock"})
+
+    def test_detects_joined_game_without_starting_self_units(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = {
+                "protocol_version": "voi-mm-bridge/v1",
+                "frame": 1_524,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CCBot": {
+                        "bootstrap_status": "waiting_for_initial_observation",
+                        "player_id": 1,
+                        "self_count": 0,
+                        "resource_depot_count": 0,
+                        "game_info_width": 144,
+                        "game_info_height": 160,
+                        "enemy_start_location_count": 1,
+                    }
+                },
+                "active_modulation_ids": [],
+                "last_failure": "bootstrap_waiting",
+            }
+            self._write_runtime(
+                root,
+                log_text="Connected to 127.0.0.1:8167\nWaitJoinGame finished successfully.",
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"bootstrap_no_start_units"})
+
+    def test_start_unit_classifier_waits_until_bootstrap_threshold_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = {
+                "protocol_version": "voi-mm-bridge/v1",
+                "frame": 600,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CCBot": {
+                        "bootstrap_status": "waiting_for_initial_observation",
+                        "player_id": 1,
+                        "self_count": 0,
+                        "resource_depot_count": 0,
+                        "game_info_width": 144,
+                        "game_info_height": 160,
+                        "enemy_start_location_count": 1,
+                    }
+                },
+                "active_modulation_ids": [],
+                "last_failure": "bootstrap_waiting",
+            }
+            self._write_runtime(
+                root,
+                log_text="Connected to 127.0.0.1:8167\nWaitJoinGame finished successfully.",
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    bootstrap_no_start_units_frame=1_200,
+                ),
+            )
+
+            self.assertNotIn(
+                "bootstrap_no_start_units",
+                {failure.code for failure in report.failures},
+            )
 
     def test_uses_archive_when_latest_telemetry_is_temporarily_unreadable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

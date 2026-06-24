@@ -128,6 +128,7 @@ def build_release_gate_report(
     )
     evidence_paths.extend(matrix_verification["paths"])
     _verify_map_pool_alignment(tier_summary, signoff, blockers)
+    _verify_map_pool_runtime_risks(tier_summary, blockers)
     _verify_production_signoff(signoff, blockers)
     _verify_build_identity(
         build_identity,
@@ -672,6 +673,28 @@ def _verify_map_pool_alignment(
                     "actual": actual,
                 }
             )
+
+
+def _verify_map_pool_runtime_risks(
+    tier_summary: Mapping[str, object],
+    blockers: list[dict[str, object]],
+) -> None:
+    for item in _sequence(tier_summary.get("maps")):
+        if not isinstance(item, Mapping):
+            continue
+        risk_codes = _string_items(item.get("preflight_risk_codes"))
+        status = item.get("status")
+        blocked_status = isinstance(status, str) and status.startswith("blocked")
+        if not risk_codes and not blocked_status:
+            continue
+        blockers.append(
+            {
+                "code": "map_pool_runtime_risk",
+                "map_file": item.get("map_file"),
+                "status": status,
+                "preflight_risk_codes": risk_codes,
+            }
+        )
 
 
 def _verify_production_signoff(

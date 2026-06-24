@@ -1,3 +1,17 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4be20d1..1eb8192 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -97,6 +97,9 @@ add_subdirectory("contrib/civetweb")
+ 
+ # Enable IPv6 in civetweb
+ target_compile_options(civetweb-c-library PUBLIC -DUSE_IPV6=1)
++if (CMAKE_C_COMPILER_ID MATCHES "Clang")
++    target_compile_options(civetweb-c-library PRIVATE -Wno-unknown-warning-option -Wno-error=unknown-warning-option)
++endif()
+ 
+ # Run protobufs cmake.
+ add_subdirectory("contrib/protobuf/cmake")
 diff --git a/src/sc2api/sc2_client.cc b/src/sc2api/sc2_client.cc
 index 6e06e7a..9aa3293 100644
 --- a/src/sc2api/sc2_client.cc

@@ -154,16 +154,17 @@ without opening the requested SC2 API port; it remains available only as an
 explicit diagnostic mode.
 
 Latest host re-check on 2026-06-24: the Python/blackboard contracts still
-pass, and direct Base97364 launcher isolation passes with no direct runtime-dir
-extra args via the standalone `s2client-api` probe. Patched MicroMachine direct
-launch still crashes Base97364 before the SC2 API listener is available, even
-after removing direct runtime-dir args and stripping sidecar `VOI_*` variables
-from the SC2 launch boundary. Treat the 2026-06-21 artifacts below as
-historical evidence for the patched build until the current MicroMachine
-smoke/soak regenerates `latest_telemetry.json` and macro evidence on the active
-SC2 install. Current production sign-off remains blocked specifically on the
-MicroMachine-to-Base97364 launch path, not on SC2 installation or map
-availability.
+pass, direct Base97364 opens the SC2 API listener, and patched MicroMachine
+reaches `WaitJoinGame finished successfully.` The remaining production blocker
+is no longer "cannot connect"; it is `bootstrap_no_start_units`: `CreateGame`
+joins and map info loads, but telemetry stays at `CCBot.bootstrap_waiting` with
+`self_count=0` and `resource_depot_count=0`. The same symptom reproduced with a
+temporary `s2client-api` `bot_simple` probe on the active host, so the current
+blocker is in the Base97364/local-map CreateGame start-unit contract rather
+than the MicroMachine DSL/blackboard layer. Treat the 2026-06-21 artifacts
+below as historical evidence only until current smoke/soak regenerates
+`latest_telemetry.json`, GameCommander/CombatCommander/ScoutManager telemetry,
+and macro evidence on the active SC2 install.
 
 Observed smoke evidence:
 

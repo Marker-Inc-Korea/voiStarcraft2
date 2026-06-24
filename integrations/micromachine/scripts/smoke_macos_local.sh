@@ -115,6 +115,7 @@ PREEXISTING_SC2_PORT_PIDS=""
 DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-smoke-defensive-hold}"
 AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-smoke-aggressive-pressure}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
+NO_START_UNITS_FRAME="${NO_START_UNITS_FRAME:-1200}"
 
 REQUIRED_MACRO_EVIDENCE=(
   "build command type=TERRAN_SUPPLYDEPOT"
@@ -306,6 +307,39 @@ except Exception:
 PY
 }
 
+has_no_start_units_bootstrap_blocker() {
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${NO_START_UNITS_FRAME}"
+import json
+import sys
+from pathlib import Path
+
+threshold = int(sys.argv[2])
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text())
+except Exception:
+    raise SystemExit(1)
+frame = int(payload.get("frame", 0) or 0)
+ccbot = payload.get("managers", {}).get("CCBot", {})
+if (
+    frame >= threshold
+    and ccbot.get("bootstrap_status") == "waiting_for_initial_observation"
+    and int(ccbot.get("player_id", 0) or 0) > 0
+    and int(ccbot.get("self_count", 0) or 0) == 0
+    and int(ccbot.get("resource_depot_count", 0) or 0) == 0
+    and int(ccbot.get("game_info_width", 0) or 0) > 0
+    and int(ccbot.get("game_info_height", 0) or 0) > 0
+):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+print_no_start_units_bootstrap_blocker() {
+  echo "MicroMachine bootstrap_no_start_units: SC2 API joined and map info loaded, but the participant has no starting self units or resource depot." >&2
+  cat "${BLACKBOARD_DIR}/latest_telemetry.json" >&2 || true
+}
+
 prepare_launch_contract
 SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
 if [[ "${SC2_EXECUTABLE}" == "${SC2_BATTLENET_EXECUTABLE}" && -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
@@ -367,6 +401,12 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
 
   if [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]]; then
     current_telemetry_frame="$(telemetry_frame || true)"
+    if has_no_start_units_bootstrap_blocker; then
+      cleanup_runtime
+      print_no_start_units_bootstrap_blocker
+      tail -200 "${BOT_LOG}" >&2 || true
+      exit 1
+    fi
     if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${AGGRESSIVE_PROFILE_FRAME}" ]] && has_required_macro_evidence; then
       publish_profile "aggressive_pressure" "${AGGRESSIVE_UPDATE_ID}" "${current_telemetry_frame}"
       AGGRESSIVE_PROFILE_PUBLISHED=1
@@ -424,6 +464,9 @@ fi
 
 if ! has_required_macro_evidence; then
   echo "MicroMachine reached SC2 API but did not execute the required macro opening" >&2
+  if has_no_start_units_bootstrap_blocker; then
+    print_no_start_units_bootstrap_blocker
+  fi
   print_missing_macro_evidence
   tail -200 "${BOT_LOG}" >&2 || true
   exit 1

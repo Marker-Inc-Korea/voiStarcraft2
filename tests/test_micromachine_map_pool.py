@@ -30,7 +30,10 @@ class MicroMachineMapPoolTest(unittest.TestCase):
         self.assertEqual(["Zerg", "Protoss", "Terran"], production["enemy_races"])
         self.assertEqual([1], production["enemy_difficulties"])
         self.assertFalse(production["allow_failures"])
-        self.assertEqual([], production["maps"][0]["preflight_risk_codes"])
+        self.assertEqual(
+            ["bootstrap_no_start_units"],
+            production["maps"][0]["preflight_risk_codes"],
+        )
         self.assertEqual(2, production["maps"][0]["expected_start_locations"])
 
         diagnostic = pool.to_summary("diagnostic")

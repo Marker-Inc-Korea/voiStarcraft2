@@ -14,7 +14,56 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-macos-latest-s2client-policy-blackboard.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 
+canonical_checkout_path() {
+  local path="$1"
+  if [[ -e "${path}" ]]; then
+    (cd "${path}" && pwd -P)
+    return
+  fi
+
+  local parent
+  local base
+  parent="$(dirname "${path}")"
+  base="$(basename "${path}")"
+  if [[ -d "${parent}" ]]; then
+    printf '%s/%s\n' "$(cd "${parent}" && pwd -P)" "${base}"
+    return
+  fi
+  printf '%s/%s\n' "$(canonical_checkout_path "${parent}")" "${base}"
+}
+
+require_disposable_checkout_mutation() {
+  local checkout_dir="$1"
+  local expected_root="$2"
+  local action="$3"
+  local canonical_root
+  local canonical_checkout
+  canonical_root="$(canonical_checkout_path "${expected_root}")"
+  canonical_checkout="$(canonical_checkout_path "${checkout_dir}")"
+
+  case "${canonical_checkout}" in
+    "${canonical_root}"/*)
+      ;;
+    *)
+      if [[ "${MICROMACHINE_ALLOW_DESTRUCTIVE_CLEAN:-0}" != "1" ]]; then
+        echo "Refusing to ${action} override checkout outside ${canonical_root}: ${canonical_checkout}" >&2
+        echo "Set MICROMACHINE_ALLOW_DESTRUCTIVE_CLEAN=1 only for disposable external clones." >&2
+        exit 2
+      fi
+      ;;
+  esac
+}
+
+safe_clean_git_checkout() {
+  local checkout_dir="$1"
+  local expected_root="$2"
+  require_disposable_checkout_mutation "${checkout_dir}" "${expected_root}" "git clean"
+  git -C "${checkout_dir}" clean -fdx
+}
+
 mkdir -p "${ROOT_DIR}"
+require_disposable_checkout_mutation "${S2CLIENT_DIR}" "${ROOT_DIR}" "mutate"
+require_disposable_checkout_mutation "${MICROMACHINE_DIR}" "${ROOT_DIR}" "mutate"
 
 if [[ ! -d "${S2CLIENT_DIR}/.git" ]]; then
   git clone https://github.com/Blizzard/s2client-api "${S2CLIENT_DIR}"
@@ -22,6 +71,8 @@ fi
 git -C "${S2CLIENT_DIR}" fetch --tags
 git -C "${S2CLIENT_DIR}" checkout "${S2CLIENT_COMMIT}"
 git -C "${S2CLIENT_DIR}" reset --hard "${S2CLIENT_COMMIT}"
+safe_clean_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}"
+git -C "${S2CLIENT_DIR}" submodule update --init --recursive
 git -C "${S2CLIENT_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${S2CLIENT_PATCH_FILE}"
 git -C "${S2CLIENT_DIR}" apply --ignore-space-change --whitespace=nowarn "${S2CLIENT_PATCH_FILE}"
 
@@ -35,6 +86,8 @@ fi
 git -C "${MICROMACHINE_DIR}" fetch --tags
 git -C "${MICROMACHINE_DIR}" checkout "${MICROMACHINE_COMMIT}"
 git -C "${MICROMACHINE_DIR}" reset --hard "${MICROMACHINE_COMMIT}"
+safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
+git -C "${MICROMACHINE_DIR}" submodule update --init --recursive
 git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
 
