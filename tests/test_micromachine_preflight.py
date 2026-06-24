@@ -16,16 +16,17 @@ from starcraft_commander.micromachine_preflight import (
 
 
 class MicroMachinePreflightTest(unittest.TestCase):
-    def test_required_acropolis_passes_without_map_roots(self) -> None:
+    def test_required_acropolis_blocks_on_current_start_unit_risk(self) -> None:
         report = preflight_micromachine_map(
             MicroMachineMapPreflightConfig(map_file="AcropolisLE.SC2Map")
         )
 
-        self.assertTrue(report["ok"])
-        self.assertEqual("passed", report["status"])
+        self.assertFalse(report["ok"])
+        self.assertEqual("failed", report["status"])
         self.assertEqual("required", report["classification"])
-        self.assertEqual([], report["failure_codes"])
-        self.assertFalse(report["skip_runtime"])
+        self.assertEqual(["bootstrap_no_start_units"], report["failure_codes"])
+        self.assertTrue(report["skip_runtime"])
+        self.assertTrue(report["production_blocking"])
 
     def test_thunderbird_diagnostic_reports_geometry_and_placement_risk(self) -> None:
         report = preflight_micromachine_map(
@@ -96,8 +97,12 @@ class MicroMachinePreflightTest(unittest.TestCase):
             )
 
         self.assertFalse(missing["ok"])
-        self.assertEqual(["missing_map"], missing["failure_codes"])
-        self.assertTrue(present["ok"])
+        self.assertEqual(
+            ["bootstrap_no_start_units", "missing_map"],
+            missing["failure_codes"],
+        )
+        self.assertFalse(present["ok"])
+        self.assertEqual(["bootstrap_no_start_units"], present["failure_codes"])
 
     def test_writes_soak_compatible_failure_report(self) -> None:
         report = preflight_micromachine_map(

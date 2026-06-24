@@ -160,6 +160,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "environment_list.data()",
             "execve(launcher_path.c_str(), &char_list[0], environment_list.data())",
             "data.size() != static_cast<size_t>(width * height)",
+            "target_compile_options(civetweb-c-library PRIVATE -Wno-unknown-warning-option -Wno-error=unknown-warning-option)",
             "options->set_show_cloaked(true)",
             "options->set_raw_affects_selection(true)",
             "setup.type == PlayerType::Computer",
@@ -210,6 +211,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0001-s2client-macos-launchservices.patch",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
+            "clean -fdx",
+            "submodule update --init --recursive",
             "apply --check --ignore-space-change --whitespace=nowarn",
             "cmake --build",
             "MICROMACHINE_BUILD_IDENTITY_REPORT",
@@ -279,6 +282,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "Failed to place Barracks",
             "Cancel building TERRAN_SUPPLYDEPOT :",
             "MicroMachine reached SC2 API but did not execute the required macro opening",
+            "bootstrap_no_start_units",
+            "NO_START_UNITS_FRAME",
             "except json.JSONDecodeError",
         ):
             with self.subTest(term=term):
@@ -405,6 +410,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         for term in (
             "telemetry_stall",
+            "bootstrap_no_start_units",
             "repeated_placement_failures",
             "no_production_deadlock",
             "income_stall",
@@ -791,8 +797,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             self.assertEqual(1, payload["failed"])
             case = payload["cases"][0]
             self.assertEqual("preflight_failure", case["failure_phase"])
-            self.assertEqual(["missing_map"], case["preflight_failure_codes"])
-            self.assertEqual(["missing_map"], case["failure_codes"])
+            self.assertEqual(
+                ["bootstrap_no_start_units", "missing_map"],
+                case["preflight_failure_codes"],
+            )
+            self.assertEqual(
+                ["bootstrap_no_start_units", "missing_map"],
+                case["failure_codes"],
+            )
 
     def test_soak_matrix_report_records_qualification_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

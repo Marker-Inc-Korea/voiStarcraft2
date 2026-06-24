@@ -275,6 +275,10 @@ def classify_micromachine_soak(
             )
         )
 
+    no_start_units_failure = _classify_bootstrap_no_start_units(telemetry, telemetry_archive)
+    if no_start_units_failure is not None:
+        failures.append(no_start_units_failure)
+
     placement_failure_count = sum(log_text.count(term) for term in PLACEMENT_FAILURE_TERMS)
     if placement_failure_count > resolved_config.max_placement_failures:
         failures.append(
@@ -564,6 +568,53 @@ def _latest_frame(
     frames = [_int_value(latest_telemetry.get("frame"))]
     frames.extend(_int_value(entry.get("frame")) for entry in telemetry_archive)
     return max(frames, default=0)
+
+
+def _classify_bootstrap_no_start_units(
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+) -> MicroMachineSoakFailure | None:
+    for telemetry in (latest_telemetry, *reversed(tuple(telemetry_archive))):
+        managers = telemetry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        ccbot = managers.get("CCBot")
+        if not isinstance(ccbot, Mapping):
+            continue
+        if ccbot.get("bootstrap_status") != "waiting_for_initial_observation":
+            continue
+        frame = _int_value(telemetry.get("frame"))
+        player_id = _int_value(ccbot.get("player_id"))
+        self_count = _int_value(ccbot.get("self_count"))
+        resource_depot_count = _int_value(ccbot.get("resource_depot_count"))
+        game_info_width = _int_value(ccbot.get("game_info_width"))
+        game_info_height = _int_value(ccbot.get("game_info_height"))
+        enemy_start_locations = _int_value(ccbot.get("enemy_start_location_count"))
+        if (
+            frame > 0
+            and player_id > 0
+            and self_count == 0
+            and resource_depot_count == 0
+            and game_info_width > 0
+            and game_info_height > 0
+        ):
+            return MicroMachineSoakFailure(
+                code="bootstrap_no_start_units",
+                message=(
+                    "SC2 API joined and map info loaded, but the participant has no "
+                    "starting self units or resource depot."
+                ),
+                evidence={
+                    "frame": frame,
+                    "player_id": player_id,
+                    "self_count": self_count,
+                    "resource_depot_count": resource_depot_count,
+                    "game_info_width": game_info_width,
+                    "game_info_height": game_info_height,
+                    "enemy_start_location_count": enemy_start_locations,
+                },
+            )
+    return None
 
 
 def _int_value(value: object) -> int:

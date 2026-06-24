@@ -77,6 +77,13 @@ root-cause candidates, reproduction command, and promotion criteria. Do not
 move Thunderbird into the required pool until that checklist passes with
 `SOAK_MATRIX_ALLOW_FAILURES=0`.
 
+The active Base97364 host also has a required-pool blocker tracked as
+`base97364_local_create_game_no_start_units`. This is not a connection failure:
+SC2 opens the API listener and `WaitJoinGame` succeeds, but telemetry remains at
+`CCBot.bootstrap_waiting` with `self_count=0` and `resource_depot_count=0`.
+Production sign-off must remain blocked while any smoke, soak, matrix, or
+release-gate evidence contains `bootstrap_no_start_units`.
+
 The runner writes:
 
 - Per-case artifacts under

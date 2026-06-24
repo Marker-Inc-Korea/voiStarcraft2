@@ -195,6 +195,44 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
 
             self.assert_failure_codes(report, {"telemetry_stall", "no_production_deadlock"})
 
+    def test_detects_joined_game_without_starting_self_units(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = {
+                "protocol_version": "voi-mm-bridge/v1",
+                "frame": 1_524,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CCBot": {
+                        "bootstrap_status": "waiting_for_initial_observation",
+                        "player_id": 1,
+                        "self_count": 0,
+                        "resource_depot_count": 0,
+                        "game_info_width": 144,
+                        "game_info_height": 160,
+                        "enemy_start_location_count": 1,
+                    }
+                },
+                "active_modulation_ids": [],
+                "last_failure": "bootstrap_waiting",
+            }
+            self._write_runtime(
+                root,
+                log_text="Connected to 127.0.0.1:8167\nWaitJoinGame finished successfully.",
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"bootstrap_no_start_units"})
+
     def test_uses_archive_when_latest_telemetry_is_temporarily_unreadable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
