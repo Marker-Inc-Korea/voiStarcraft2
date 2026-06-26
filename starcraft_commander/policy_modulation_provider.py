@@ -180,8 +180,10 @@ def compile_policy_modulation_provider_output(
             return _refused(source, "provider output must be a mapping.")
         reject_raw_policy_control_keys(provider_output)
         source = _coerce_source(provider_output.get("source", source))
-        provider_status = _extract_provider_status(provider_output)
-        clarification = _extract_clarification(provider_output)
+        control_mapping = _extract_terminal_control_mapping(provider_output)
+        source = _coerce_source(control_mapping.get("source", source))
+        provider_status = _extract_provider_status(control_mapping)
+        clarification = _extract_clarification(control_mapping)
         if clarification or provider_status is PolicyModulationCompileStatus.CLARIFICATION_REQUIRED:
             return PolicyModulationCompileResult(
                 status=PolicyModulationCompileStatus.CLARIFICATION_REQUIRED,
@@ -191,7 +193,7 @@ def compile_policy_modulation_provider_output(
                     or "의도를 정책 조정으로 변환하려면 더 구체적인 전략 목표가 필요합니다."
                 ),
             )
-        refusal = _extract_refusal(provider_output)
+        refusal = _extract_refusal(control_mapping)
         vector_payload = _extract_vector_payload(provider_output)
         if refusal or provider_status is PolicyModulationCompileStatus.REFUSED:
             return _refused(source, refusal or "provider refused policy modulation.")
@@ -411,6 +413,35 @@ def _extract_vector_payload(mapping: Mapping[str, object]) -> Mapping[str, objec
         }
         return {**metadata, **value}
     return None
+
+
+def _extract_terminal_control_mapping(mapping: Mapping[str, object]) -> Mapping[str, object]:
+    for key in _VECTOR_WRAPPER_KEYS:
+        value = mapping.get(key)
+        if not isinstance(value, Mapping):
+            continue
+        status = str(value.get("status", "") or "").strip().lower()
+        has_terminal_signal = (
+            status
+            in {
+                PolicyModulationCompileStatus.CLARIFICATION_REQUIRED.value,
+                PolicyModulationCompileStatus.REFUSED.value,
+            }
+            or bool(value.get("clarification_prompt"))
+            or bool(value.get("needs_clarification"))
+            or bool(value.get("refusal_reason"))
+        )
+        if has_terminal_signal:
+            metadata = {
+                canonical: mapping[raw]
+                for raw in _WRAPPER_METADATA_KEYS
+                if raw in mapping
+                for canonical in (_TOP_LEVEL_ALIASES.get(raw, raw),)
+            }
+            return {**metadata, **value}
+    if any(key in mapping for key in _CONTROL_KEYS):
+        return mapping
+    return mapping
 
 
 def _normalize_provider_mapping(

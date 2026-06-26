@@ -60,20 +60,51 @@ POLICY_MODULATION_RAW_CONTROL_KEYS: Final[frozenset[str]] = frozenset(
         "click",
         "command",
         "commands",
+        "direct_command",
+        "direct_commands",
+        "direct_key",
+        "direct_keys",
+        "direct_sc2_command",
+        "direct_sc2_commands",
         "do",
+        "hotkey",
+        "hotkeys",
         "issue_order",
+        "key_down",
+        "key_press",
+        "key_up",
+        "keyboard",
+        "keyboard_key",
+        "keyboard_keys",
+        "keyboard_shortcut",
+        "keyboard_shortcuts",
+        "keypress",
         "mouse",
+        "press_key",
         "python_sc2",
         "python_sc2_call",
         "raw_action",
         "raw_actions",
+        "raw_command",
+        "raw_commands",
+        "raw_key",
+        "raw_keys",
         "s2client_api",
+        "sc2_command",
+        "sc2_commands",
+        "send_key",
+        "send_keys",
         "train_unit",
         "unit_tag",
         "unit_tags",
     }
 )
 """Keys rejected from provider mappings before they can reach a bot bridge."""
+
+POLICY_MODULATION_RAW_CONTROL_KEY_ALIASES: Final[frozenset[str]] = frozenset(
+    key.replace("_", "") for key in POLICY_MODULATION_RAW_CONTROL_KEYS
+)
+"""Separator-insensitive raw-control key aliases for camelCase/acronyms."""
 
 
 def reject_raw_policy_control_keys(mapping: Mapping[str, object], *, path: str = "") -> None:
@@ -82,7 +113,7 @@ def reject_raw_policy_control_keys(mapping: Mapping[str, object], *, path: str =
     for key, value in mapping.items():
         if not isinstance(key, str):
             raise ValueError(f"{path or 'payload'} contains a non-string key.")
-        normalized = key.strip().lower().replace("-", "_")
+        normalized = _normalize_policy_control_key(key)
         if _is_raw_policy_control_key(normalized):
             location = f"{path}.{key}" if path else key
             raise ValueError(
@@ -1012,15 +1043,68 @@ def _is_non_text_sequence(value: object) -> bool:
     return not isinstance(value, (str, bytes)) and isinstance(value, Sequence)
 
 
+def _normalize_policy_control_key(value: str) -> str:
+    """Canonicalize key spellings so camelCase cannot bypass raw-control checks."""
+
+    result: list[str] = []
+    previous = ""
+    for character in value.strip():
+        if character in {"-", " ", "\t", "\n", "\r"}:
+            if result and result[-1] != "_":
+                result.append("_")
+        elif character.isupper():
+            if (
+                result
+                and result[-1] != "_"
+                and (previous.islower() or previous.isdigit())
+            ):
+                result.append("_")
+            result.append(character.lower())
+        else:
+            result.append(character.lower())
+        previous = character
+    return "".join(result).strip("_")
+
+
 def _is_raw_policy_control_key(normalized_key: str) -> bool:
     if normalized_key in POLICY_MODULATION_RAW_CONTROL_KEYS:
+        return True
+    compact = _compact_policy_control_key(normalized_key)
+    if compact in POLICY_MODULATION_RAW_CONTROL_KEY_ALIASES:
+        return True
+    if _is_keyboard_control_alias(compact):
         return True
     for separator in (".", "/", ":"):
         if separator not in normalized_key:
             continue
         if any(
             part in POLICY_MODULATION_RAW_CONTROL_KEYS
+            or _compact_policy_control_key(part) in POLICY_MODULATION_RAW_CONTROL_KEY_ALIASES
+            or _is_keyboard_control_alias(_compact_policy_control_key(part))
             for part in normalized_key.split(separator)
         ):
             return True
     return False
+
+
+def _compact_policy_control_key(value: str) -> str:
+    return "".join(character for character in value if character.isalnum())
+
+
+def _is_keyboard_control_alias(compact_key: str) -> bool:
+    has_key_token = "key" in compact_key or "hotkey" in compact_key
+    if not has_key_token:
+        return False
+    return any(
+        marker in compact_key
+        for marker in (
+            "direct",
+            "down",
+            "keyboard",
+            "press",
+            "raw",
+            "send",
+            "shortcut",
+            "up",
+        )
+    )
