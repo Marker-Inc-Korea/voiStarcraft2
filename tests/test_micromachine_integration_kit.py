@@ -152,7 +152,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "!building.type.isRefinery() && !building.type.isAddon()",
             "m_bot.GetCurrentFrame() < 5000",
             "canTrustOpeningWallPlacement",
-            "trusting valid uncontested opening wall placement.",
+            "trusting valid uncontested buildable placement.",
             "Supply provider recovery queued after supply block.",
             "m_queue.queueAsHighestPriority(supplyProviderType, false)",
             "Path to completed refinery is not safe; assigning gas worker with refinery fallback.",
@@ -162,11 +162,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "stripVoiEnvForSc2Child",
             "PROTOSS_OBSERVERSIEGEMODE",
             "coordinator.SetRawAffectsSelection",
-            "diff --git a/src/voi_policy_blackboard.hpp",
         )
         for term in required_terms:
             with self.subTest(term=term):
                 self.assertIn(term, patch)
+        self.assertTrue((KIT_DIR / "voi_policy_blackboard.hpp").is_file())
         self.assertNotIn("-\t\t\t\t\t\t\t++neighborsBaseLocation[bl];", patch)
         for term in (
             "extern char **environ",
