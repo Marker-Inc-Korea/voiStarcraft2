@@ -16,35 +16,34 @@
       "map_file": "AcropolisLE.SC2Map",
       "display_name": "Acropolis LE",
       "classification": "required",
-      "status": "blocked_no_start_units",
-      "reason": "Current Base97364 local CreateGame joins successfully but the participant starts with self_count=0 and resource_depot_count=0, so MicroMachine cannot initialize managers or execute macro.",
-      "promotion_rule": "Restore qualified_baseline only after direct MicroMachine smoke regenerates macro evidence and bootstrap_no_start_units is absent with failed=0.",
+      "status": "qualified_baseline",
+      "reason": "Base97364 direct launch with VOI_SC2_CREATEGAME_MAP_DATA=1 now produces own start units, real MicroMachine macro evidence, gas income, manager intervention, and a 12000-frame Acropolis soak pass.",
+      "promotion_rule": "Keep qualified_baseline only while probe/smoke/production matrix evidence remains failed=0 with no bootstrap_no_start_units, no production deadlock, and no income stall.",
       "preflight": {
         "expected_start_locations": 2,
-        "risk_codes": ["bootstrap_no_start_units"],
-        "notes": "Historical baseline evidence is invalid on the active Base97364 host until a real self depot/SCV start is observed."
+        "risk_codes": [],
+        "notes": "Qualified on 2026-06-25 after bootstrap probe, realtime smoke, and 12000-frame Acropolis soak passed on Base97364 with real MicroMachine runtime evidence."
       },
-      "current_blocker": {
-        "code": "base97364_local_create_game_no_start_units",
-        "runtime_failure_code": "bootstrap_no_start_units",
-        "artifact_path": "/private/tmp/voi-mm-smoke-runtime-final/latest_telemetry.json",
-        "root_cause_area": "sc2_create_game_start_units",
-        "root_cause_candidates": [
-          "Base97364 local map CreateGame compatibility",
-          "installed map pack melee metadata",
-          "s2client-api local map launch contract"
-        ],
+      "evidence": {
+        "bootstrap_probe": "/private/tmp/voi-mm-bootstrap-probe-issue-67-final/probe_report.json",
+        "smoke": "/private/tmp/voi-mm-smoke-issue-67-final/smoke_attempts.json",
+        "soak": "/private/tmp/voi-mm-soak/issue-67-gasfix-acropolis-12000/soak_report.json",
         "evidence_signatures": [
-          "Connected to 127.0.0.1:8167",
-          "WaitJoinGame finished successfully.",
-          "\"bootstrap_status\":\"waiting_for_initial_observation\"",
-          "\"self_count\":0",
-          "\"resource_depot_count\":0"
+          "self_count=9",
+          "self_worker_count=8",
+          "resource_depot_count=1",
+          "smoke frame=5299",
+          "Gas income: 44",
+          "Gas income: 67",
+          "soak frame=12060",
+          "macro_evidence_ok=true",
+          "manager_intervention_ok=true"
         ],
-        "promotion_criteria": [
-          "latest_telemetry.json must show GameCommander, CombatCommander, and ScoutManager telemetry instead of CCBot bootstrap_waiting.",
-          "Smoke must include SupplyDepot, Barracks, Refinery, Marine/Reaper, positive mineral income, positive gas income, and aggressive modulation transition evidence.",
-          "SOAK_MATRIX_QUALIFICATION_TIER=production must finish with failed=0 and no bootstrap_no_start_units failures."
+        "regression_blockers": [
+          "bootstrap_no_start_units",
+          "no_production_deadlock",
+          "production_stall",
+          "income_stall"
         ]
       }
     },

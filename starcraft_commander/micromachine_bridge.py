@@ -8,6 +8,7 @@ commands out of the Python boundary.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -22,6 +23,11 @@ from starcraft_commander.policy_modulation import (
 MICROMACHINE_BRIDGE_PROTOCOL_VERSION: Final[str] = "voi-mm-bridge/v1"
 MICROMACHINE_GAME_LOOPS_PER_SECOND: Final[int] = 22
 """Conservative integer game-loop conversion for blackboard TTL expiry."""
+
+MICROMACHINE_UPDATE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+)
+"""Safe identifier subset shared by JSON telemetry and KV blackboard files."""
 
 
 class MicroMachineBridgeMessageType(str, Enum):
@@ -81,13 +87,19 @@ MICROMACHINE_MODULATION_UPDATE_SCHEMA: Final[dict[str, object]] = {
     ],
     "properties": {
         "protocol_version": {"const": MICROMACHINE_BRIDGE_PROTOCOL_VERSION},
-        "update_id": {"type": "string"},
+        "update_id": {
+            "type": "string",
+            "pattern": MICROMACHINE_UPDATE_ID_PATTERN.pattern,
+        },
         "issued_at_frame": {"type": "integer", "minimum": 0},
         "expires_at_frame": {"type": "integer", "minimum": 0},
         "vector": {"type": "object"},
         "active_constraints": {"type": "array"},
         "manager_bias_domains": {"type": "array"},
-        "rollback_update_id": {"type": ["string", "null"]},
+        "rollback_update_id": {
+            "type": ["string", "null"],
+            "pattern": MICROMACHINE_UPDATE_ID_PATTERN.pattern,
+        },
     },
 }
 """JSON-schema-like modulation update contract for the sidecar blackboard."""
@@ -189,7 +201,11 @@ class MicroMachineBlackboardUpdate:
 
     def __post_init__(self) -> None:
         _require_protocol(self.protocol_version)
-        object.__setattr__(self, "update_id", _require_text("update_id", self.update_id))
+        object.__setattr__(
+            self,
+            "update_id",
+            require_micromachine_update_id("update_id", self.update_id),
+        )
         object.__setattr__(
             self,
             "issued_at_frame",
@@ -214,7 +230,10 @@ class MicroMachineBlackboardUpdate:
             object.__setattr__(
                 self,
                 "rollback_update_id",
-                _require_text("rollback_update_id", self.rollback_update_id),
+                require_micromachine_update_id(
+                    "rollback_update_id",
+                    self.rollback_update_id,
+                ),
             )
 
     @classmethod
@@ -539,6 +558,15 @@ def _require_text(field_name: str, value: object) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string.")
     return value.strip()
+
+
+def require_micromachine_update_id(field_name: str, value: object) -> str:
+    update_id = _require_text(field_name, value)
+    if MICROMACHINE_UPDATE_ID_PATTERN.fullmatch(update_id) is None:
+        raise ValueError(
+            f"{field_name} must match {MICROMACHINE_UPDATE_ID_PATTERN.pattern!r}."
+        )
+    return update_id
 
 
 def _string_tuple(name: str, values: object) -> tuple[str, ...]:

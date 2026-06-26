@@ -13,6 +13,7 @@ KIT_DIR = REPO_ROOT / "integrations" / "micromachine"
 PATCH_FILE = KIT_DIR / "patches" / "0001-macos-latest-s2client-policy-blackboard.patch"
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
+PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
 SMOKE_SCRIPT = KIT_DIR / "scripts" / "smoke_macos_local.sh"
 SOAK_SCRIPT = KIT_DIR / "scripts" / "soak_macos_local.sh"
 SOAK_MATRIX_SCRIPT = KIT_DIR / "scripts" / "soak_matrix_macos_local.sh"
@@ -113,6 +114,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "gas-worker path-safety fallback",
             "environment-preserving `execve`",
             "outside Codex filesystem/network sandboxing",
+            "VOI_SC2_CREATEGAME_MAP_DATA=1",
+            "local_map.map_data",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -135,6 +138,17 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "getVoiPolicyBool(\"emergency.cancel_attacks\", false)",
             "voiEngageMarginDelta",
             "BaseLocation * closestStartBase = nullptr",
+            "adoptAsPlayerStartLocation(Players::Self, selfDepot)",
+            "closeToResourceCenter",
+            "closeToMineralCenter",
+            "const bool forceVoiScout = getVoiPolicyFloat(\"scouting.scout_priority\", 0.0f) >= 0.35f",
+            "NoScoutOn2PlayersMap && enemyBaseLocation != nullptr && !forceVoiScout",
+            "workerSplitBase = m_bot.Bases().getPlayerStartingBaseLocation(Players::Self)",
+            "Skipping frame1 worker split: no occupied or starting self base location.",
+            "Skipping frame1 worker split: no valid resource depot.",
+            "Unit depot = ressourceDepot",
+            "ownCompletedRefinery",
+            "geyser.getPlayer() == Players::Self",
             "!building.type.isRefinery() && !building.type.isAddon()",
             "m_bot.GetCurrentFrame() < 5000",
             "canTrustOpeningWallPlacement",
@@ -156,20 +170,42 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("-\t\t\t\t\t\t\t++neighborsBaseLocation[bl];", patch)
         for term in (
             "extern char **environ",
+            "#include <sys/wait.h>",
+            "FindProcessByPathAndPort",
+            "waitpid(p, &status, 0)",
             'std::strncmp(*env, "VOI_", 4) == 0',
             "environment_list.data()",
             "execve(launcher_path.c_str(), &char_list[0], environment_list.data())",
             "data.size() != static_cast<size_t>(width * height)",
             "target_compile_options(civetweb-c-library PRIVATE -Wno-unknown-warning-option -Wno-error=unknown-warning-option)",
+            "add_executable(voi_bootstrap_probe src/voi_bootstrap_probe.cc)",
+            "target_link_libraries(voi_bootstrap_probe sc2api sc2lib sc2utils)",
+            "voi-s2client-bootstrap-probe/v1",
+            "bootstrap_no_start_units",
+            "resource_depot_count",
+            "self_worker_count",
             "options->set_show_cloaked(true)",
             "options->set_raw_affects_selection(true)",
+            "setup.type == PlayerType::Participant || setup.type == PlayerType::Computer",
             "setup.type == PlayerType::Computer",
+            "VOI_SC2_CREATEGAME_MAP_DATA",
+            "VoiAttachCreateGameMapData",
+            "local_map->set_map_data(data)",
+            "raw_observation_present",
+            "raw_self_worker_count",
+            "raw_resource_depot_count",
+            "obs->GetRawObservation()",
+            "available_index_ = {0, 0}",
+            "Skipping unit with unsupported display type",
+            "Skipping unit with unsupported alliance",
+            "Coercing unsupported cloak state to Unknown",
         ):
             with self.subTest(term=term):
                 self.assertIn(term, s2client_patch)
 
     def test_macos_scripts_document_reproducible_build_smoke_and_soak(self) -> None:
         build_script = BUILD_SCRIPT.read_text()
+        probe_script = PROBE_SCRIPT.read_text()
         smoke_script = SMOKE_SCRIPT.read_text()
         soak_script = SOAK_SCRIPT.read_text()
         soak_matrix_script = SOAK_MATRIX_SCRIPT.read_text()
@@ -229,6 +265,30 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, build_script)
 
         for term in (
+            "voi_bootstrap_probe",
+            "PROBE_OUTPUT",
+            "PROBE_MAX_FRAME",
+            "PROBE_STEP_SIZE",
+            "PROBE_ENEMY_RACE",
+            "PROBE_ENEMY_DIFFICULTY",
+            "SC2_PORT_START",
+            "SC2_MAP_AS_PROVIDED",
+            "SC2_USE_RUNTIME_DIR_ARGS",
+            "VOI_SC2_CREATEGAME_MAP_DATA",
+            "SC2_CLEAN_PORTS_BEFORE_LAUNCH",
+            "SC2_POST_CLEAN_SETTLE_SECONDS",
+            "clean_sc2_ports_before_launch",
+            "settle_after_sc2_port_cleanup",
+            "MicroMachine bootstrap probe failed",
+            "bootstrap probe false pass",
+            "self_worker_count",
+            "resource_depot_count",
+            "Run integrations/micromachine/scripts/build_macos_local.sh",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, probe_script)
+
+        for term in (
             "VOI_MICROMACHINE_BLACKBOARD_DIR",
             "build_defensive_hold_profile",
             "build_aggressive_pressure_profile",
@@ -248,6 +308,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SC2_RUNTIME_ROOT",
             "SC2_TEMP_DIR",
             "SC2_CLEAN_PORTS_BEFORE_LAUNCH",
+            "SC2_POST_CLEAN_SETTLE_SECONDS",
+            "VOI_SC2_CREATEGAME_MAP_DATA",
             "mkdir -p \"${SC2_TEMP_DIR}\"",
             "-dataDir",
             "-tempDir",
@@ -255,7 +317,25 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "latest_telemetry.json",
             "MIN_TELEMETRY_FRAME",
             "SMOKE_TIMEOUT_SECONDS",
+            "SMOKE_MAX_ATTEMPTS",
+            "SMOKE_RETRY_SETTLE_SECONDS",
+            "SMOKE_ATTEMPT_INDEX",
+            "smoke_attempts.json",
+            "MicroMachine smoke retrying after retryable frame-0 startup failure",
+            "startup_frame_threshold",
+            "latest_frame >= startup_frame_threshold",
+            "macro_terms",
+            "non_retryable_terms",
+            "retryable_startup_failure",
+            "selected_attempt",
+            "micromachine_combined.log",
+            "RUNTIME_LOG_BASELINE",
+            "runtime_log_baseline.tsv",
+            "record_runtime_log_baseline",
+            "stream_current_run_log",
+            "runtime_log_start_offset",
             '"EnemyDifficulty"] = int',
+            '"ForceStepMode"] = bool(int(__import__("os").environ.get("SMOKE_FORCE_STEP_MODE", "0")))',
             '"EnemyRace"] = "Zerg"',
             '"StepSize"] = 1',
             '"SC2API Strategy"]["Terran"] = "Terran_MarineRush"',
@@ -269,6 +349,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "smoke-aggressive-pressure",
             "cleanup_runtime",
             "clean_sc2_ports_before_launch",
+            "settle_after_sc2_port_cleanup",
             "lsof -nP -tiTCP",
             "capture_preexisting_sc2_port_pids",
             "PREEXISTING_SC2_PORT_PIDS",
@@ -302,6 +383,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SOAK_TARGET_FRAME",
             "SOAK_ENEMY_RACE",
             "SOAK_ENEMY_DIFFICULTY",
+            '"ForceStepMode"] = bool(int(os.environ.get("SOAK_FORCE_STEP_MODE", "0")))',
             "SOAK_TIMEOUT_SECONDS",
             "SOAK_TELEMETRY_STALL_SECONDS",
             "SOAK_PRODUCTION_DEADLOCK_FRAME",
@@ -347,8 +429,25 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--expected-profile-tags",
             "SOAK_AGGRESSIVE_MIN_FRAME",
             "SOAK_MAX_ATTEMPTS",
+            "SOAK_RETRY_SETTLE_SECONDS",
+            "MicroMachine soak retrying after retryable startup failure",
             "SOAK_ATTEMPT_INDEX",
             "SOAK_NON_RETRYABLE_FAILURE_CODES",
+            "bootstrap_no_start_units repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing",
+            "retryable_startup_codes",
+            "\"telemetry_missing\"",
+            "latest_frame == 0 and codes and codes <= retryable_startup_codes",
+            "payload[\"attempts\"] = attempts",
+            "CLASSIFIER_BOT_LOG",
+            "micromachine_combined.log",
+            "latest_runtime_log",
+            "RUNTIME_LOG_BASELINE",
+            "runtime_log_baseline.tsv",
+            "record_runtime_log_baseline",
+            "stream_current_run_log",
+            "runtime_log_start_offset",
+            "refresh_classifier_log",
+            "runtime_log_start.marker",
             "SC2_LAUNCH_MODE",
             "SC2_BATTLENET_EXECUTABLE",
             "SC2_ATTACH_TIMEOUT_MS",
@@ -361,8 +460,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SC2_RUNTIME_ROOT",
             "SC2_TEMP_DIR",
             "SC2_CLEAN_PORTS_BEFORE_LAUNCH",
+            "SC2_POST_CLEAN_SETTLE_SECONDS",
+            "VOI_SC2_CREATEGAME_MAP_DATA",
             "mkdir -p \"${SC2_TEMP_DIR}\"",
             "clean_sc2_ports_before_launch",
+            "settle_after_sc2_port_cleanup",
             "lsof -nP -tiTCP",
             "VOI_SC2_EXTRA_ARGS",
             "-t \"${SC2_ATTACH_TIMEOUT_MS}\"",
@@ -807,14 +909,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             self.assertEqual(1, payload["failed"])
             case = payload["cases"][0]
             self.assertEqual("preflight_failure", case["failure_phase"])
-            self.assertEqual(
-                ["bootstrap_no_start_units", "missing_map"],
-                case["preflight_failure_codes"],
-            )
-            self.assertEqual(
-                ["bootstrap_no_start_units", "missing_map"],
-                case["failure_codes"],
-            )
+            self.assertEqual(["missing_map"], case["preflight_failure_codes"])
+            self.assertEqual(["missing_map"], case["failure_codes"])
 
     def test_soak_matrix_report_records_qualification_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

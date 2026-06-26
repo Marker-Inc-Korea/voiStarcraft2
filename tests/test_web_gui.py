@@ -286,7 +286,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "MicroMachine에 주입할 텍스트 의도",
             "MicroMachine live modulation 전송",
             "LLM/DSL modulation",
+            "micromachine-intervention-dashboard",
+            "DSL intervention dashboard",
+            "Raw modulation / telemetry evidence",
             "renderMicroMachineStatus",
+            "renderMicroMachineIntervention",
             "pollMicroMachineStatus",
             "setInterval(pollHistory",
             "setInterval(pollState",
@@ -345,6 +349,27 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertIn("combat.defend_bias=0.65", kv)
             self.assertIn("squad.defense_bias=0.45", kv)
 
+    def test_micromachine_modulation_rejects_unsafe_update_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "수비",
+                    "blackboard_dir": directory,
+                    "current_frame": 1,
+                    "update_id": 'bad"id',
+                    "provider_output": {
+                        "goal": "수비",
+                        "combat": {"defend_bias": 0.5},
+                    },
+                }
+            )
+
+            self.assertEqual(HTTPStatus.BAD_REQUEST, HTTPStatus(status))
+            self.assertIn("application/json", content_type)
+            document = json.loads(payload.decode("utf-8"))
+            self.assertFalse(document["accepted"])
+            self.assertIn("update_id", document["error"])
+
     def test_micromachine_status_endpoint_renders_latest_dashboard(self):
         with tempfile.TemporaryDirectory() as directory:
             self.post_micromachine_modulation(
@@ -373,6 +398,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual("web-status-1", document["update"]["update_id"])
             self.assertEqual("pending_telemetry", document["consumption_status"])
             self.assertFalse(document["consumed"])
+            intervention = document["intervention"]
+            self.assertFalse(intervention["applied"])
+            self.assertEqual("web-status-1", intervention["latest_update_id"])
+            self.assertEqual(["combat"], intervention["manager_bias_domains"])
+            self.assertEqual("수비", intervention["goal"])
 
     def test_micromachine_status_requires_post_publish_telemetry_before_consumed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -406,8 +436,34 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
             self.assertEqual("pending_consumption", same_frame["consumption_status"])
             self.assertFalse(same_frame["consumed"])
+            self.assertFalse(same_frame["intervention"]["applied"])
+            self.assertTrue(same_frame["intervention"]["policy_active"] is False)
 
             telemetry["frame"] = 11
+            telemetry["active_modulation_ids"] = ["stale-update"]
+            telemetry["managers"] = {
+                "GameCommander": {
+                    "policy_active": True,
+                    "update_id": "stale-update",
+                }
+            }
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+
+            stale_frame = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+            self.assertEqual("pending_consumption", stale_frame["consumption_status"])
+            self.assertFalse(stale_frame["intervention"]["applied"])
+            self.assertFalse(stale_frame["intervention"]["policy_active"])
+
+            telemetry["active_modulation_ids"] = ["web-consume-1"]
+            telemetry["managers"] = {
+                "GameCommander": {
+                    "policy_active": True,
+                    "update_id": "web-consume-1",
+                }
+            }
             with open(telemetry_path, "w", encoding="utf-8") as handle:
                 json.dump(telemetry, handle)
 
@@ -416,6 +472,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
             self.assertEqual("consumed", later_frame["consumption_status"])
             self.assertTrue(later_frame["consumed"])
+            self.assertTrue(later_frame["intervention"]["applied"])
+            self.assertTrue(later_frame["intervention"]["policy_active"])
+            self.assertEqual(
+                ["web-consume-1"],
+                later_frame["intervention"]["active_modulation_ids"],
+            )
+            self.assertEqual(11, later_frame["intervention"]["telemetry_frame"])
 
     def test_micromachine_modulation_fails_closed_without_llm_configuration(self):
         session, _bot = build_dry_run_session()

@@ -47,6 +47,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 
+from starcraft_commander.micromachine_bridge import require_micromachine_update_id
 from starcraft_commander.runtime_deps import MissingLLMDependencyError
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
@@ -237,6 +238,11 @@ def _micromachine_status_payload(
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
         "update": dict(latest) if latest is not None else None,
+        "intervention": _micromachine_intervention_summary(
+            latest,
+            telemetry,
+            consumption_status=consumption_status,
+        ),
         "compile_result": None,
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
@@ -264,6 +270,83 @@ def _micromachine_consumption_status(
     if update_id and update_id in active_ids:
         return "consumed"
     return "pending_consumption"
+
+
+def _micromachine_intervention_summary(
+    update: Mapping[str, object] | None,
+    telemetry: object | None,
+    *,
+    consumption_status: str,
+) -> dict[str, object]:
+    """Return a compact UI contract proving whether DSL reached MicroMachine."""
+
+    telemetry_document = _telemetry_to_mapping(telemetry)
+    active_ids = _string_list(telemetry_document.get("active_modulation_ids", ()))
+    managers = telemetry_document.get("managers", {})
+    if not isinstance(managers, Mapping):
+        managers = {}
+    update_id = str(update.get("update_id", "") or "") if update else ""
+    update_is_active = bool(update_id and update_id in active_ids)
+    policy_active = any(
+        isinstance(payload, Mapping)
+        and payload.get("policy_active") is True
+        and (
+            (update_id and payload.get("update_id") == update_id)
+            or update_is_active
+        )
+        for payload in managers.values()
+    )
+    vector = update.get("vector", {}) if update else {}
+    if not isinstance(vector, Mapping):
+        vector = {}
+    telemetry_frame = telemetry_document.get("frame")
+    if type(telemetry_frame) is not int:
+        telemetry_frame = None
+    issued_at_frame = update.get("issued_at_frame") if update else None
+    if type(issued_at_frame) is not int:
+        issued_at_frame = None
+    return {
+        "applied": consumption_status == "consumed",
+        "policy_active": policy_active,
+        "latest_update_id": update_id,
+        "active_modulation_ids": active_ids,
+        "telemetry_frame": telemetry_frame,
+        "issued_at_frame": issued_at_frame,
+        "manager_bias_domains": _string_list(
+            update.get("manager_bias_domains", ()) if update else ()
+        ),
+        "goal": str(vector.get("goal", "") or ""),
+        "override_level": str(vector.get("override_level", "") or ""),
+        "confidence": vector.get("confidence"),
+        "source": str(vector.get("source", "") or ""),
+        "manager_snapshot": {
+            str(manager): dict(payload)
+            for manager, payload in managers.items()
+            if isinstance(payload, Mapping)
+        },
+    }
+
+
+def _telemetry_to_mapping(telemetry: object | None) -> dict[str, object]:
+    if telemetry is None:
+        return {}
+    to_dict = getattr(telemetry, "to_dict", None)
+    if callable(to_dict):
+        try:
+            document = to_dict()
+        except Exception:
+            document = None
+        if isinstance(document, Mapping):
+            return dict(document)
+    if isinstance(telemetry, Mapping):
+        return dict(telemetry)
+    return {}
+
+
+def _string_list(values: object) -> list[str]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
+        return []
+    return [str(value) for value in values if value is not None]
 
 
 WEB_GUI_PAGE_TITLE: Final[str] = "voiStarcraft2 커맨더"
@@ -777,6 +860,14 @@ class SessionLoopBridge:
         )
         payload = result.to_dict()
         payload["blackboard_dir"] = root
+        dashboard = payload.get("dashboard", {})
+        telemetry = dashboard.get("telemetry") if isinstance(dashboard, Mapping) else None
+        update = payload.get("update")
+        payload["intervention"] = _micromachine_intervention_summary(
+            update if isinstance(update, Mapping) else None,
+            telemetry,
+            consumption_status=str(payload.get("consumption_status", "") or ""),
+        )
         return payload
 
     def micromachine_status(self, *, blackboard_dir: str = "") -> Mapping[str, object]:
@@ -1318,6 +1409,63 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     flex: 1; margin-top: 0 !important; padding: 9px 10px !important;
     background: rgba(255, 255, 255, 0.9) !important; color: #071225 !important;
   }
+  #micromachine-panel label {
+    display: block; margin: 8px 0 4px; color: var(--muted);
+    font-size: 0.78rem; font-weight: 900;
+  }
+  #micromachine-panel input {
+    width: 100%; padding: 10px 11px; border: 1px solid rgba(96, 112, 128, 0.28);
+    border-radius: 12px; background: rgba(255, 255, 255, 0.92); color: #071225;
+  }
+  #micromachine-panel button {
+    width: 100%; margin-top: 10px; padding: 11px 12px; border: none; border-radius: 14px;
+    background: linear-gradient(135deg, var(--amber), var(--accent)); color: #061126;
+    font-weight: 900; cursor: pointer;
+  }
+  #micromachine-status {
+    margin-top: 10px; padding: 10px 11px; border: 1px solid var(--line);
+    border-radius: 14px; background: rgba(255, 255, 255, 0.08);
+    color: var(--ink); font-size: 0.8rem; line-height: 1.45;
+  }
+  #micromachine-intervention-dashboard {
+    margin-top: 10px; padding: 12px; border: 1px solid rgba(77, 238, 234, 0.28);
+    border-radius: 18px; background: rgba(2, 6, 23, 0.42);
+  }
+  .micro-intervention-header {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    margin-bottom: 10px;
+  }
+  .micro-badge {
+    flex: 0 0 auto; padding: 4px 8px; border-radius: 999px;
+    border: 1px solid var(--line); font-size: 0.68rem; font-weight: 900;
+  }
+  .micro-badge-applied { color: #4ade80; background: rgba(34, 197, 94, 0.14); }
+  .micro-badge-active { color: var(--accent); background: rgba(77, 238, 234, 0.12); }
+  .micro-badge-pending { color: var(--amber); background: rgba(245, 158, 11, 0.14); }
+  .micro-intervention-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0;
+  }
+  .micro-intervention-grid > div {
+    min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--line);
+    border-radius: 14px; background: rgba(255, 255, 255, 0.07);
+  }
+  .micro-intervention-grid dt {
+    margin: 0 0 5px; color: var(--muted); font-size: 0.68rem; font-weight: 900;
+  }
+  .micro-intervention-grid dd {
+    margin: 0; min-width: 0; color: var(--ink); font-size: 0.82rem; font-weight: 800;
+    overflow-wrap: anywhere;
+  }
+  .micro-json-panel {
+    margin-top: 9px; color: var(--muted); font-size: 0.78rem;
+  }
+  .micro-json-panel summary { cursor: pointer; font-weight: 900; color: var(--accent); }
+  #micromachine-raw-evidence {
+    max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px;
+    border: 1px solid var(--line); border-radius: 12px;
+    background: rgba(0, 0, 0, 0.28); color: var(--ink); font-size: 0.72rem;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
   #log {
     flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px;
     background:
@@ -1575,6 +1723,42 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         <button type="submit" data-i18n="microMachineSend">MicroMachine live modulation 전송</button>
       </form>
       <div id="micromachine-status" aria-live="polite">MicroMachine live text injection 대기 중입니다.</div>
+      <section id="micromachine-intervention-dashboard" aria-live="polite">
+        <div class="micro-intervention-header">
+          <strong data-i18n="microMachineDashboardTitle">DSL intervention dashboard</strong>
+          <span id="micromachine-applied-badge" class="micro-badge micro-badge-pending" data-i18n="microMachinePending">텔레메트리 대기</span>
+        </div>
+        <dl class="micro-intervention-grid">
+          <div>
+            <dt data-i18n="microMachineLatestUpdate">Latest update</dt>
+            <dd id="micromachine-latest-update">-</dd>
+          </div>
+          <div>
+            <dt data-i18n="microMachineActiveIds">Active ids in MicroMachine</dt>
+            <dd id="micromachine-active-ids">-</dd>
+          </div>
+          <div>
+            <dt data-i18n="microMachineFrame">Telemetry frame</dt>
+            <dd id="micromachine-frame">-</dd>
+          </div>
+          <div>
+            <dt data-i18n="microMachineDomains">Bias domains</dt>
+            <dd id="micromachine-domains">-</dd>
+          </div>
+          <div class="wide-card">
+            <dt data-i18n="microMachineGoal">Compiled DSL goal</dt>
+            <dd id="micromachine-goal">-</dd>
+          </div>
+          <div class="wide-card">
+            <dt data-i18n="microMachineManagers">Manager evidence</dt>
+            <dd id="micromachine-managers">-</dd>
+          </div>
+        </dl>
+        <details class="micro-json-panel">
+          <summary data-i18n="microMachineRawEvidence">Raw modulation / telemetry evidence</summary>
+          <pre id="micromachine-raw-evidence">{}</pre>
+        </details>
+      </section>
     </details>
   </aside>
 </main>
@@ -1755,6 +1939,14 @@ var I18N = {
     microMachinePublished: "게시됨",
     microMachineConsumed: "소비 확인",
     microMachinePending: "텔레메트리 대기",
+    microMachineDashboardTitle: "DSL 개입 대시보드",
+    microMachineLatestUpdate: "최신 update",
+    microMachineActiveIds: "MicroMachine active id",
+    microMachineFrame: "Telemetry frame",
+    microMachineDomains: "Bias domain",
+    microMachineGoal: "컴파일된 DSL goal",
+    microMachineManagers: "Manager 증거",
+    microMachineRawEvidence: "Raw modulation / telemetry 증거",
     microMachineRefused: "거부됨",
     microMachineClarification: "추가 확인 필요",
     microMachineFailed: "게시 실패",
@@ -1860,6 +2052,14 @@ var I18N = {
     microMachinePublished: "Published",
     microMachineConsumed: "Consumed",
     microMachinePending: "Waiting for telemetry",
+    microMachineDashboardTitle: "DSL intervention dashboard",
+    microMachineLatestUpdate: "Latest update",
+    microMachineActiveIds: "Active ids in MicroMachine",
+    microMachineFrame: "Telemetry frame",
+    microMachineDomains: "Bias domains",
+    microMachineGoal: "Compiled DSL goal",
+    microMachineManagers: "Manager evidence",
+    microMachineRawEvidence: "Raw modulation / telemetry evidence",
     microMachineRefused: "Refused",
     microMachineClarification: "Clarification needed",
     microMachineFailed: "Publish failed",
@@ -1965,6 +2165,14 @@ var I18N = {
     microMachinePublished: "已发布",
     microMachineConsumed: "已消费",
     microMachinePending: "等待 telemetry",
+    microMachineDashboardTitle: "DSL intervention dashboard",
+    microMachineLatestUpdate: "最新 update",
+    microMachineActiveIds: "MicroMachine active id",
+    microMachineFrame: "Telemetry frame",
+    microMachineDomains: "Bias domain",
+    microMachineGoal: "已编译 DSL goal",
+    microMachineManagers: "Manager evidence",
+    microMachineRawEvidence: "Raw modulation / telemetry evidence",
     microMachineRefused: "已拒绝",
     microMachineClarification: "需要进一步确认",
     microMachineFailed: "发布失败",
@@ -3277,11 +3485,82 @@ function formatLivePid(status) {
   return status && status.pid ? ", pid " + status.pid : "";
 }
 
+function setMicroMachineText(id, value) {
+  var node = document.getElementById(id);
+  if (!node) { return; }
+  if (Array.isArray(value)) {
+    node.textContent = value.length ? value.join(", ") : "-";
+    return;
+  }
+  if (value === null || value === undefined || value === "") {
+    node.textContent = "-";
+    return;
+  }
+  node.textContent = String(value);
+}
+
+function summarizeMicroMachineManagers(managers) {
+  if (!managers || typeof managers !== "object") { return "-"; }
+  var parts = [];
+  Object.keys(managers).forEach(function (manager) {
+    var payload = managers[manager] || {};
+    if (payload.policy_active === true) {
+      parts.push(manager + ": policy_active");
+    } else if (payload.active === true) {
+      parts.push(manager + ": active");
+    }
+  });
+  return parts.length ? parts.join(" | ") : "-";
+}
+
+function updateMicroMachineBadge(intervention, status) {
+  var badge = document.getElementById("micromachine-applied-badge");
+  if (!badge) { return; }
+  badge.className = "micro-badge micro-badge-pending";
+  if (intervention && intervention.applied) {
+    badge.className = "micro-badge micro-badge-applied";
+    badge.textContent = t("microMachineConsumed");
+    return;
+  }
+  if (intervention && intervention.policy_active) {
+    badge.className = "micro-badge micro-badge-active";
+    badge.textContent = "policy_active";
+    return;
+  }
+  badge.textContent = status || t("microMachinePending");
+}
+
+function renderMicroMachineIntervention(data) {
+  var intervention = (data && data.intervention) || {};
+  setMicroMachineText("micromachine-latest-update", intervention.latest_update_id);
+  setMicroMachineText("micromachine-active-ids", intervention.active_modulation_ids);
+  setMicroMachineText("micromachine-frame", intervention.telemetry_frame);
+  setMicroMachineText("micromachine-domains", intervention.manager_bias_domains);
+  var goalParts = [];
+  if (intervention.goal) { goalParts.push(intervention.goal); }
+  if (intervention.override_level) { goalParts.push("override=" + intervention.override_level); }
+  if (intervention.confidence !== null && intervention.confidence !== undefined) {
+    goalParts.push("confidence=" + intervention.confidence);
+  }
+  setMicroMachineText("micromachine-goal", goalParts.join(" | "));
+  setMicroMachineText("micromachine-managers", summarizeMicroMachineManagers(intervention.manager_snapshot));
+  updateMicroMachineBadge(intervention, data && data.consumption_status);
+  var raw = document.getElementById("micromachine-raw-evidence");
+  if (raw) {
+    raw.textContent = JSON.stringify({
+      intervention: intervention,
+      update: data && data.update,
+      telemetry: data && data.dashboard && data.dashboard.telemetry
+    }, null, 2);
+  }
+}
+
 function renderMicroMachineStatus(data) {
   var node = document.getElementById("micromachine-status");
   if (!node) { return; }
   if (!data || data.enabled === false) {
     node.textContent = (data && data.error) || "MicroMachine modulation disabled.";
+    renderMicroMachineIntervention(data || {});
     return;
   }
   var dashboard = data.dashboard || {};
@@ -3305,6 +3584,7 @@ function renderMicroMachineStatus(data) {
   }
   if (dashboard.last_failure) { parts.push("failure " + dashboard.last_failure); }
   node.textContent = parts.length ? parts.join(" | ") : t("microMachinePending");
+  renderMicroMachineIntervention(data);
 }
 
 function pollMicroMachineStatus() {
@@ -3868,19 +4148,26 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         try:
+            update_id = (
+                require_micromachine_update_id("update_id", document["update_id"])
+                if isinstance(document.get("update_id"), str)
+                else None
+            )
             payload = dict(
                 submit_fn(
                     text.strip(),
                     blackboard_dir=str(document.get("blackboard_dir", "") or ""),
                     provider_output=provider_output,
                     current_frame=current_frame,
-                    update_id=(
-                        str(document["update_id"]).strip()
-                        if isinstance(document.get("update_id"), str)
-                        else None
-                    ),
+                    update_id=update_id,
                 )
             )
+        except ValueError as error:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": str(error)},
+            )
+            return
         except MissingLLMDependencyError:
             self._send_json(
                 HTTPStatus.CONFLICT,

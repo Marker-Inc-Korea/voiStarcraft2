@@ -43,7 +43,7 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
             self.assertIn("User QA Remaining", markdown)
             self.assertIn("bounded policy modulation", markdown)
 
-    def test_release_gate_blocks_default_map_pool_runtime_risk(self) -> None:
+    def test_release_gate_allows_qualified_default_map_pool(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths = self.write_green_evidence(root, build_identity="build-a")
@@ -63,10 +63,7 @@ class MicroMachineReleaseGateTest(unittest.TestCase):
                 for blocker in report["blockers"]
                 if blocker["code"] == "map_pool_runtime_risk"
             ]
-            self.assertFalse(report["ok"])
-            self.assertEqual(1, len(blockers))
-            self.assertEqual("AcropolisLE.SC2Map", blockers[0]["map_file"])
-            self.assertEqual(["bootstrap_no_start_units"], blockers[0]["preflight_risk_codes"])
+            self.assertEqual([], blockers)
 
     def test_release_gate_blocks_missing_required_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

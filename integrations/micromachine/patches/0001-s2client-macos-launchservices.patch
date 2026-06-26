@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4be20d1..1eb8192 100644
+index 4be20d1..0e53d40 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -97,6 +97,9 @@ add_subdirectory("contrib/civetweb")
@@ -12,11 +12,44 @@ index 4be20d1..1eb8192 100644
  
  # Run protobufs cmake.
  add_subdirectory("contrib/protobuf/cmake")
+@@ -130,6 +133,11 @@ endif ()
+ 
+ add_subdirectory("src")
+ 
++add_executable(voi_bootstrap_probe src/voi_bootstrap_probe.cc)
++target_include_directories(voi_bootstrap_probe PRIVATE include)
++target_include_directories(voi_bootstrap_probe SYSTEM PRIVATE "${PROJECT_BINARY_DIR}/generated")
++target_link_libraries(voi_bootstrap_probe sc2api sc2lib sc2utils)
++
+ # Exclude SDL and related projects to work around linker issue.
+ if (NOT APPLE)
+     set_target_properties(sc2renderer PROPERTIES FOLDER utilities)
+diff --git a/include/sc2api/sc2_unit.h b/include/sc2api/sc2_unit.h
+index 8c6c31b..3215b90 100644
+--- a/include/sc2api/sc2_unit.h
++++ b/include/sc2api/sc2_unit.h
+@@ -217,7 +217,7 @@ private:
+     typedef std::pair<size_t, size_t> PoolIndex;
+     // std::array<Unit, ENTRY_SIZE>
+     std::vector<std::vector<Unit> > unit_pool_;
+-    PoolIndex available_index_;
++    PoolIndex available_index_ = {0, 0};
+     std::unordered_map<Tag, Unit*> tag_to_unit_;
+     std::unordered_map<Tag, Unit*> tag_to_existing_unit_;
+ };
 diff --git a/src/sc2api/sc2_client.cc b/src/sc2api/sc2_client.cc
-index 6e06e7a..9aa3293 100644
+index 6e06e7a..7600bff 100644
 --- a/src/sc2api/sc2_client.cc
 +++ b/src/sc2api/sc2_client.cc
-@@ -434,9 +434,11 @@ static bool SampleImageData(const std::string& data, int width, int height, cons
+@@ -13,6 +13,7 @@
+ #include <cassert>
+ #include <limits>
+ #include <fstream>
++#include <cstdlib>
+ 
+ #include "s2clientprotocol/sc2api.pb.h"
+ 
+@@ -434,9 +435,11 @@ static bool SampleImageData(const std::string& data, int width, int height, cons
      if (pointI.x < 0 || pointI.x >= width || pointI.y < 0 || pointI.y >= height) {
          return false;
      }
@@ -29,7 +62,70 @@ index 6e06e7a..9aa3293 100644
      result = data[pointI.x + (height - 1 - pointI.y) * width];
      return true;
  }
-@@ -1579,8 +1581,12 @@ bool ControlImp::CreateGame(const std::string& map_name, const std::vector<Playe
+@@ -1540,6 +1543,38 @@ bool ControlImp::RemoteSaveMap(const void* data, int data_size, std::string remo
+     return success;
+ }
+ 
++static bool VoiUseCreateGameMapData() {
++    const char* value = std::getenv("VOI_SC2_CREATEGAME_MAP_DATA");
++    return value != nullptr && std::string(value) == "1";
++}
++
++static void VoiAttachCreateGameMapData(SC2APIProtocol::LocalMap* local_map, const std::string& path) {
++    if (!VoiUseCreateGameMapData()) {
++        return;
++    }
++
++    std::ifstream file(path, std::ios::binary);
++    if (!file) {
++        std::cerr << "VOI_SC2_CREATEGAME_MAP_DATA failed to open map bytes: " << path << std::endl;
++        return;
++    }
++    file.seekg(0, std::ios::end);
++    const std::streamoff size = file.tellg();
++    if (size <= 0) {
++        std::cerr << "VOI_SC2_CREATEGAME_MAP_DATA rejected empty map bytes: " << path << std::endl;
++        return;
++    }
++    std::string data(static_cast<std::size_t>(size), '\0');
++    file.seekg(0, std::ios::beg);
++    file.read(&data[0], size);
++    if (!file) {
++        std::cerr << "VOI_SC2_CREATEGAME_MAP_DATA failed while reading map bytes: " << path << std::endl;
++        return;
++    }
++    local_map->set_map_data(data);
++    std::cerr << "VOI_SC2_CREATEGAME_MAP_DATA attached " << data.size() << " map bytes from " << path << std::endl;
++}
++
+ void ControlImp::ResolveMap (const std::string& map_name, SC2APIProtocol::RequestCreateGame* request) {
+     // BattleNet map
+     if (!HasExtension(map_name, ".SC2Map")) {
+@@ -1551,6 +1586,7 @@ void ControlImp::ResolveMap (const std::string& map_name, SC2APIProtocol::Reques
+     SC2APIProtocol::LocalMap* local_map = request->mutable_local_map();
+     if (DoesFileExist(map_name)) {
+         local_map->set_map_path(map_name);
++        VoiAttachCreateGameMapData(local_map, map_name);
+         return;
+     }
+ 
+@@ -1558,6 +1594,7 @@ void ControlImp::ResolveMap (const std::string& map_name, SC2APIProtocol::Reques
+     std::string game_relative = GetGameMapsDirectory(pi_.process_path) + map_name;
+     if (DoesFileExist(game_relative)) {
+         local_map->set_map_path(map_name);
++        VoiAttachCreateGameMapData(local_map, game_relative);
+         return;
+     }
+ 
+@@ -1565,6 +1602,7 @@ void ControlImp::ResolveMap (const std::string& map_name, SC2APIProtocol::Reques
+     std::string library_relative = GetLibraryMapsDirectory() + map_name;
+     if (DoesFileExist(library_relative)) {
+         local_map->set_map_path(library_relative);
++        VoiAttachCreateGameMapData(local_map, library_relative);
+         return;
+     }
+ 
+@@ -1579,8 +1617,12 @@ bool ControlImp::CreateGame(const std::string& map_name, const std::vector<Playe
      for (const PlayerSetup& setup : players) {
          SC2APIProtocol::PlayerSetup* playerSetup = request_create_game->add_player_setup();
          playerSetup->set_type(SC2APIProtocol::PlayerType(setup.type));
@@ -44,7 +140,7 @@ index 6e06e7a..9aa3293 100644
      }
  
      request_create_game->set_realtime(realtime);
-@@ -1679,6 +1685,9 @@ bool ControlImp::RequestJoinGame(PlayerSetup setup, const InterfaceSettings& set
+@@ -1679,6 +1721,9 @@ bool ControlImp::RequestJoinGame(PlayerSetup setup, const InterfaceSettings& set
      SC2APIProtocol::InterfaceOptions* options = request_join_game->mutable_options();
      options->set_raw(true);
      options->set_score(true);
@@ -54,11 +150,54 @@ index 6e06e7a..9aa3293 100644
      if (settings.use_feature_layers) {
          SC2APIProtocol::SpatialCameraSetup* setupProto = options->mutable_feature_layer();
          setupProto->set_width(settings.feature_layer_settings.camera_width);
+diff --git a/src/sc2api/sc2_proto_to_pods.cc b/src/sc2api/sc2_proto_to_pods.cc
+index 8c8f7c9..b1d682f 100644
+--- a/src/sc2api/sc2_proto_to_pods.cc
++++ b/src/sc2api/sc2_proto_to_pods.cc
+@@ -166,10 +166,16 @@ bool Convert(const ObservationRawPtr& observation_raw, UnitPool& unit_pool, uint
+         }
+ 
+         if (!Convert(observation_unit.display_type(), unit->display_type)) {
+-            return false;
++            std::cerr << "Skipping unit with unsupported display type: tag="
++                      << observation_unit.tag() << " display_type="
++                      << static_cast<int>(observation_unit.display_type()) << std::endl;
++            continue;
+         }
+         if (!Convert(observation_unit.alliance(), unit->alliance)) {
+-            return false;
++            std::cerr << "Skipping unit with unsupported alliance: tag="
++                      << observation_unit.tag() << " alliance="
++                      << static_cast<int>(observation_unit.alliance()) << std::endl;
++            continue;
+         }
+ 
+         unit->tag = observation_unit.tag();
+@@ -185,7 +191,10 @@ bool Convert(const ObservationRawPtr& observation_raw, UnitPool& unit_pool, uint
+         unit->build_progress = observation_unit.build_progress();
+         if (observation_unit.has_cloak()) {
+             if (!Convert(observation_unit.cloak(), unit->cloak)) {
+-                return false;
++                unit->cloak = Unit::Unknown;
++                std::cerr << "Coercing unsupported cloak state to Unknown: tag="
++                          << observation_unit.tag() << " cloak="
++                          << static_cast<int>(observation_unit.cloak()) << std::endl;
+             }
+         }
+         else {
 diff --git a/src/sc2utils/sc2_manage_process.cc b/src/sc2utils/sc2_manage_process.cc
-index 4ecc4b0..cce7466 100644
+index 4ecc4b0..9eb4d72 100644
 --- a/src/sc2utils/sc2_manage_process.cc
 +++ b/src/sc2utils/sc2_manage_process.cc
-@@ -40,6 +40,8 @@
+@@ -29,6 +29,7 @@
+ #include <sys/stat.h>
+ #include <sys/select.h>
+ #include <sys/ioctl.h>
++#include <sys/wait.h>
+ #include <signal.h>
+ #include <errno.h>
+ #include <cstring>
+@@ -40,6 +41,8 @@
  
  #include <Carbon/Carbon.h>
  
@@ -67,17 +206,108 @@ index 4ecc4b0..cce7466 100644
  #elif defined(__linux__)
  
  // Linux headers for process manipulation.
-@@ -391,21 +393,32 @@ int _kbhit() {
+@@ -390,22 +393,121 @@ int _kbhit() {
+     return bytesWaiting;
  }
  
- uint64_t StartProcess(const std::string& process_path, const std::vector<std::string>& command_line) {
-+    std::string launcher_path = process_path;
++#if defined(__APPLE__)
++uint64_t FindProcessByPathAndPort(const std::string& process_path, const std::vector<std::string>& command_line, int timeout_ms) {
++    std::string port;
++    for (size_t i = 0; i + 1 < command_line.size(); ++i) {
++        if (command_line[i] == "-port") {
++            port = command_line[i + 1];
++            break;
++        }
++    }
++    if (port.empty()) {
++        return 0;
++    }
 +
-     std::vector<char*> char_list;
-     // execve expects the process path to be the first argument in the list.
++    const int sleep_ms = 100;
++    int waited_ms = 0;
++    while (waited_ms <= timeout_ms) {
++        FILE* pipe = popen("ps -axo pid=,command=", "r");
++        if (pipe != nullptr) {
++            char line[8192];
++            while (fgets(line, sizeof(line), pipe) != nullptr) {
++                std::string text(line);
++                if (text.find(process_path) == std::string::npos) {
++                    continue;
++                }
++                if (text.find("-port " + port) == std::string::npos) {
++                    continue;
++                }
++                char* end = nullptr;
++                const uint64_t pid = std::strtoull(text.c_str(), &end, 10);
++                pclose(pipe);
++                return pid;
++            }
++            pclose(pipe);
++        }
++        SleepFor(sleep_ms);
++        waited_ms += sleep_ms;
++    }
++
++    return 0;
++}
++#endif
++
+ uint64_t StartProcess(const std::string& process_path, const std::vector<std::string>& command_line) {
+-    std::vector<char*> char_list;
+-    // execve expects the process path to be the first argument in the list.
 -    char_list.push_back(const_cast<char*>(process_path.c_str()));
-+    char_list.push_back(const_cast<char*>(launcher_path.c_str()));
++    std::string launcher_path = process_path;
++    std::vector<std::string> launch_arguments;
++    bool launched_via_open = false;
++
++#if defined(__APPLE__)
++    const char* disable_launchservices = getenv("VOI_SC2_DISABLE_LAUNCHSERVICES");
++    const std::string app_marker = ".app/Contents/MacOS/";
++    const std::string::size_type app_marker_pos = process_path.find(app_marker);
++    if (!(disable_launchservices != nullptr && std::strcmp(disable_launchservices, "1") == 0)
++        && app_marker_pos != std::string::npos) {
++        auto shell_quote = [](const std::string& value) {
++            std::string quoted = "'";
++            for (char ch : value) {
++                if (ch == '\'') {
++                    quoted += "'\\''";
++                } else {
++                    quoted += ch;
++                }
++            }
++            quoted += "'";
++            return quoted;
++        };
++
++        std::string command = "open -n ";
++        command += shell_quote(process_path.substr(0, app_marker_pos + 4));
++        command += " --args";
++        for (const auto& s : command_line) {
++            command += " ";
++            command += shell_quote(s);
++        }
++
++        launcher_path = "/bin/zsh";
++        launch_arguments.push_back("zsh");
++        launch_arguments.push_back("-lc");
++        launch_arguments.push_back(command);
++        launched_via_open = true;
++    } else {
++        launch_arguments.push_back(launcher_path);
++        for (auto& s : command_line) {
++            launch_arguments.push_back(s);
++        }
++    }
++#else
++    launch_arguments.push_back(launcher_path);
      for (auto& s : command_line) {
++        launch_arguments.push_back(s);
++    }
++#endif
++
++    std::vector<char*> char_list;
++    char_list.reserve(launch_arguments.size() + 1);
++    for (auto& s : launch_arguments) {
          char_list.push_back(const_cast<char*>(s.c_str()));
      }
  
@@ -103,3 +333,518 @@ index 4ecc4b0..cce7466 100644
                  << " error: " << strerror(errno) << std::endl;
              exit(-1);
          }
+@@ -413,6 +515,18 @@ uint64_t StartProcess(const std::string& process_path, const std::vector<std::st
+         SleepFor(1000);
+     }
+ 
++    uint64_t tracked_pid = p;
++#if defined(__APPLE__)
++    if (launched_via_open) {
++        int status = 0;
++        waitpid(p, &status, 0);
++        const uint64_t actual_pid = FindProcessByPathAndPort(process_path, command_line, 30000);
++        if (actual_pid != 0) {
++            tracked_pid = actual_pid;
++        }
++    }
++#endif
++
+     static bool hook_sig = true;
+     if (hook_sig) {
+         struct sigaction action;
+@@ -423,11 +535,10 @@ uint64_t StartProcess(const std::string& process_path, const std::vector<std::st
+         memset(&action, 0, sizeof(struct sigaction));
+         // Kill process started by this process of SIGTERM and SIGSEGV.
+         action.sa_handler = KillRunningProcesses;
+         sigaction(SIGTERM, &action, NULL);
+-        sigaction(SIGSEGV, &action, NULL);
+         sigaction(SIGINT, &action, NULL);
+         hook_sig = false;
+     }
+ 
+-    AddPid(p);
++    AddPid(tracked_pid);
+ 
+-    return p;
++    return tracked_pid;
+ }
+ 
+ bool IsProcessRunning(uint64_t process_id) {
+diff --git a/src/voi_bootstrap_probe.cc b/src/voi_bootstrap_probe.cc
+new file mode 100644
+index 0000000..3cda46b
+--- /dev/null
++++ b/src/voi_bootstrap_probe.cc
+@@ -0,0 +1,472 @@
++#include "sc2api/sc2_api.h"
++#include "sc2api/sc2_typeenums.h"
++#include "sc2utils/sc2_manage_process.h"
++
++#include <cstdlib>
++#include <fstream>
++#include <iostream>
++#include <map>
++#include <sstream>
++#include <string>
++#include <vector>
++
++namespace {
++
++std::string getenv_or(const char* name, const std::string& fallback) {
++    const char* value = std::getenv(name);
++    if (value == nullptr || value[0] == '\0') {
++        return fallback;
++    }
++    return value;
++}
++
++int getenv_int(const char* name, int fallback) {
++    const char* value = std::getenv(name);
++    if (value == nullptr || value[0] == '\0') {
++        return fallback;
++    }
++    return std::atoi(value);
++}
++
++std::string json_escape(const std::string& value) {
++    std::ostringstream out;
++    for (char ch : value) {
++        switch (ch) {
++        case '\\':
++            out << "\\\\";
++            break;
++        case '"':
++            out << "\\\"";
++            break;
++        case '\n':
++            out << "\\n";
++            break;
++        case '\r':
++            out << "\\r";
++            break;
++        case '\t':
++            out << "\\t";
++            break;
++        default:
++            out << ch;
++            break;
++        }
++    }
++    return out.str();
++}
++
++const char* race_name(sc2::Race race) {
++    switch (race) {
++    case sc2::Race::Terran:
++        return "Terran";
++    case sc2::Race::Zerg:
++        return "Zerg";
++    case sc2::Race::Protoss:
++        return "Protoss";
++    case sc2::Race::Random:
++        return "Random";
++    }
++    return "Unknown";
++}
++
++sc2::Race parse_race(const std::string& value, sc2::Race fallback) {
++    if (value == "Terran" || value == "terran") {
++        return sc2::Race::Terran;
++    }
++    if (value == "Zerg" || value == "zerg") {
++        return sc2::Race::Zerg;
++    }
++    if (value == "Protoss" || value == "protoss") {
++        return sc2::Race::Protoss;
++    }
++    if (value == "Random" || value == "random") {
++        return sc2::Race::Random;
++    }
++    return fallback;
++}
++
++sc2::Difficulty parse_difficulty(int value) {
++    if (value < static_cast<int>(sc2::Difficulty::VeryEasy)) {
++        return sc2::Difficulty::VeryEasy;
++    }
++    if (value > static_cast<int>(sc2::Difficulty::CheatInsane)) {
++        return sc2::Difficulty::CheatInsane;
++    }
++    return static_cast<sc2::Difficulty>(value);
++}
++
++bool is_terran_resource_depot(sc2::UNIT_TYPEID type) {
++    return type == sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER
++        || type == sc2::UNIT_TYPEID::TERRAN_ORBITALCOMMAND
++        || type == sc2::UNIT_TYPEID::TERRAN_PLANETARYFORTRESS;
++}
++
++bool is_terran_worker(sc2::UNIT_TYPEID type) {
++    return type == sc2::UNIT_TYPEID::TERRAN_SCV;
++}
++
++struct UnitSample {
++    uint64_t tag;
++    int type;
++    int alliance;
++    int owner;
++    float x;
++    float y;
++    float z;
++    float build_progress;
++};
++
++bool is_raw_terran_worker(int type) {
++    return type == static_cast<int>(sc2::UNIT_TYPEID::TERRAN_SCV);
++}
++
++bool is_raw_terran_resource_depot(int type) {
++    return type == static_cast<int>(sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER)
++        || type == static_cast<int>(sc2::UNIT_TYPEID::TERRAN_ORBITALCOMMAND)
++        || type == static_cast<int>(sc2::UNIT_TYPEID::TERRAN_PLANETARYFORTRESS);
++}
++
++class BootstrapProbe final : public sc2::Agent {
++public:
++    BootstrapProbe(std::string output_path, std::string map_file, int max_frame)
++        : output_path_(std::move(output_path))
++        , map_file_(std::move(map_file))
++        , max_frame_(max_frame) {
++    }
++
++    void OnGameStart() final {
++        saw_game_start_ = true;
++        capture("game_start");
++    }
++
++    void OnStep() final {
++        capture("step");
++        if (resource_depot_count_ > 0 && self_worker_count_ > 0) {
++            done_ = true;
++            failure_code_.clear();
++            return;
++        }
++        if (latest_frame_ >= static_cast<uint32_t>(max_frame_)) {
++            done_ = true;
++            failure_code_ = "bootstrap_no_start_units";
++        }
++    }
++
++    bool done() const {
++        return done_;
++    }
++
++    bool ok() const {
++        return failure_code_.empty() && resource_depot_count_ > 0 && self_worker_count_ > 0;
++    }
++
++    int exit_code() const {
++        return ok() ? 0 : 3;
++    }
++
++    void set_failure(const std::string& code) {
++        failure_code_ = code;
++        done_ = true;
++    }
++
++    void write_report() const {
++        std::ofstream out(output_path_);
++        out << "{\n";
++        out << "  \"protocol_version\": \"voi-s2client-bootstrap-probe/v1\",\n";
++        out << "  \"ok\": " << (ok() ? "true" : "false") << ",\n";
++        out << "  \"failure_code\": ";
++        if (ok()) {
++            out << "null";
++        } else {
++            out << "\"" << json_escape(failure_code_.empty() ? "probe_incomplete" : failure_code_) << "\"";
++        }
++        out << ",\n";
++        out << "  \"map_file\": \"" << json_escape(map_file_) << "\",\n";
++        out << "  \"saw_game_start\": " << (saw_game_start_ ? "true" : "false") << ",\n";
++        out << "  \"last_capture_phase\": \"" << json_escape(last_capture_phase_) << "\",\n";
++        out << "  \"latest_frame\": " << latest_frame_ << ",\n";
++        out << "  \"max_frame\": " << max_frame_ << ",\n";
++        out << "  \"player_id\": " << player_id_ << ",\n";
++        out << "  \"total_unit_count\": " << total_unit_count_ << ",\n";
++        out << "  \"self_count\": " << self_count_ << ",\n";
++        out << "  \"self_worker_count\": " << self_worker_count_ << ",\n";
++        out << "  \"resource_depot_count\": " << resource_depot_count_ << ",\n";
++        out << "  \"neutral_count\": " << neutral_count_ << ",\n";
++        out << "  \"enemy_count\": " << enemy_count_ << ",\n";
++        out << "  \"food_workers\": " << food_workers_ << ",\n";
++        out << "  \"food_cap\": " << food_cap_ << ",\n";
++        out << "  \"minerals\": " << minerals_ << ",\n";
++        out << "  \"vespene\": " << vespene_ << ",\n";
++        out << "  \"start_location\": {\"x\": " << start_x_ << ", \"y\": " << start_y_ << ", \"z\": " << start_z_ << "},\n";
++        out << "  \"type_counts\": {";
++        bool first_type = true;
++        for (const auto& item : type_counts_) {
++            if (!first_type) {
++                out << ", ";
++            }
++            first_type = false;
++            out << "\"" << item.first << "\": " << item.second;
++        }
++        out << "},\n";
++        out << "  \"sample_units\": [";
++        for (std::size_t i = 0; i < sample_units_.size(); ++i) {
++            const UnitSample& sample = sample_units_[i];
++            if (i != 0) {
++                out << ", ";
++            }
++            out << "{\"tag\": " << sample.tag
++                << ", \"type\": " << sample.type
++                << ", \"alliance\": " << sample.alliance
++                << ", \"owner\": " << sample.owner
++                << ", \"x\": " << sample.x
++                << ", \"y\": " << sample.y
++                << ", \"z\": " << sample.z
++                << ", \"build_progress\": " << sample.build_progress
++                << "}";
++        }
++        out << "],\n";
++        out << "  \"raw_observation_present\": " << (raw_observation_present_ ? "true" : "false") << ",\n";
++        out << "  \"raw_total_unit_count\": " << raw_total_unit_count_ << ",\n";
++        out << "  \"raw_self_count\": " << raw_self_count_ << ",\n";
++        out << "  \"raw_self_worker_count\": " << raw_self_worker_count_ << ",\n";
++        out << "  \"raw_resource_depot_count\": " << raw_resource_depot_count_ << ",\n";
++        out << "  \"raw_neutral_count\": " << raw_neutral_count_ << ",\n";
++        out << "  \"raw_enemy_count\": " << raw_enemy_count_ << ",\n";
++        out << "  \"raw_type_counts\": {";
++        bool first_raw_type = true;
++        for (const auto& item : raw_type_counts_) {
++            if (!first_raw_type) {
++                out << ", ";
++            }
++            first_raw_type = false;
++            out << "\"" << item.first << "\": " << item.second;
++        }
++        out << "},\n";
++        out << "  \"raw_sample_units\": [";
++        for (std::size_t i = 0; i < raw_sample_units_.size(); ++i) {
++            const UnitSample& sample = raw_sample_units_[i];
++            if (i != 0) {
++                out << ", ";
++            }
++            out << "{\"tag\": " << sample.tag
++                << ", \"type\": " << sample.type
++                << ", \"alliance\": " << sample.alliance
++                << ", \"owner\": " << sample.owner
++                << ", \"x\": " << sample.x
++                << ", \"y\": " << sample.y
++                << ", \"z\": " << sample.z
++                << ", \"build_progress\": " << sample.build_progress
++                << "}";
++        }
++        out << "]\n";
++        out << "}\n";
++    }
++
++private:
++    void capture(const std::string& phase) {
++        const sc2::ObservationInterface* obs = Observation();
++        if (obs == nullptr) {
++            return;
++        }
++
++        last_capture_phase_ = phase;
++        latest_frame_ = obs->GetGameLoop();
++        player_id_ = obs->GetPlayerID();
++        food_workers_ = obs->GetFoodWorkers();
++        food_cap_ = obs->GetFoodCap();
++        minerals_ = obs->GetMinerals();
++        vespene_ = obs->GetVespene();
++
++        const sc2::Point3D start = obs->GetStartLocation();
++        start_x_ = start.x;
++        start_y_ = start.y;
++        start_z_ = start.z;
++
++        total_unit_count_ = 0;
++        self_count_ = 0;
++        self_worker_count_ = 0;
++        resource_depot_count_ = 0;
++        neutral_count_ = 0;
++        enemy_count_ = 0;
++        type_counts_.clear();
++        sample_units_.clear();
++        raw_observation_present_ = false;
++        raw_total_unit_count_ = 0;
++        raw_self_count_ = 0;
++        raw_self_worker_count_ = 0;
++        raw_resource_depot_count_ = 0;
++        raw_neutral_count_ = 0;
++        raw_enemy_count_ = 0;
++        raw_type_counts_.clear();
++        raw_sample_units_.clear();
++
++        const sc2::Units units = obs->GetUnits();
++        total_unit_count_ = static_cast<int>(units.size());
++        for (const sc2::Unit* unit : units) {
++            if (unit == nullptr) {
++                continue;
++            }
++            const int type = static_cast<int>(unit->unit_type);
++            type_counts_[type] += 1;
++            if (sample_units_.size() < 24) {
++                sample_units_.push_back(UnitSample{
++                    unit->tag,
++                    type,
++                    static_cast<int>(unit->alliance),
++                    unit->owner,
++                    unit->pos.x,
++                    unit->pos.y,
++                    unit->pos.z,
++                    unit->build_progress,
++                });
++            }
++
++            if (unit->alliance == sc2::Unit::Alliance::Self) {
++                ++self_count_;
++                if (is_terran_worker(unit->unit_type)) {
++                    ++self_worker_count_;
++                }
++                if (is_terran_resource_depot(unit->unit_type)) {
++                    ++resource_depot_count_;
++                }
++            } else if (unit->alliance == sc2::Unit::Alliance::Neutral) {
++                ++neutral_count_;
++            } else if (unit->alliance == sc2::Unit::Alliance::Enemy) {
++                ++enemy_count_;
++            }
++        }
++
++        const SC2APIProtocol::Observation* raw_observation = obs->GetRawObservation();
++        if (raw_observation == nullptr || !raw_observation->has_raw_data()) {
++            return;
++        }
++
++        raw_observation_present_ = true;
++        const SC2APIProtocol::ObservationRaw& raw_data = raw_observation->raw_data();
++        raw_total_unit_count_ = raw_data.units_size();
++        for (int i = 0; i < raw_data.units_size(); ++i) {
++            const SC2APIProtocol::Unit& unit = raw_data.units(i);
++            const int type = static_cast<int>(unit.unit_type());
++            const int alliance = static_cast<int>(unit.alliance());
++            raw_type_counts_[type] += 1;
++            if (raw_sample_units_.size() < 24) {
++                raw_sample_units_.push_back(UnitSample{
++                    unit.tag(),
++                    type,
++                    alliance,
++                    unit.owner(),
++                    unit.pos().x(),
++                    unit.pos().y(),
++                    unit.pos().z(),
++                    unit.build_progress(),
++                });
++            }
++
++            if (unit.alliance() == SC2APIProtocol::Self) {
++                ++raw_self_count_;
++                if (is_raw_terran_worker(type)) {
++                    ++raw_self_worker_count_;
++                }
++                if (is_raw_terran_resource_depot(type)) {
++                    ++raw_resource_depot_count_;
++                }
++            } else if (unit.alliance() == SC2APIProtocol::Neutral) {
++                ++raw_neutral_count_;
++            } else if (unit.alliance() == SC2APIProtocol::Enemy) {
++                ++raw_enemy_count_;
++            }
++        }
++    }
++
++    std::string output_path_;
++    std::string map_file_;
++    int max_frame_;
++    bool saw_game_start_ = false;
++    bool done_ = false;
++    std::string failure_code_ = "probe_not_started";
++    std::string last_capture_phase_ = "none";
++    uint32_t latest_frame_ = 0;
++    uint32_t player_id_ = 0;
++    int total_unit_count_ = 0;
++    int self_count_ = 0;
++    int self_worker_count_ = 0;
++    int resource_depot_count_ = 0;
++    int neutral_count_ = 0;
++    int enemy_count_ = 0;
++    int food_workers_ = 0;
++    int food_cap_ = 0;
++    int minerals_ = 0;
++    int vespene_ = 0;
++    float start_x_ = 0.0f;
++    float start_y_ = 0.0f;
++    float start_z_ = 0.0f;
++    std::map<int, int> type_counts_;
++    std::vector<UnitSample> sample_units_;
++    bool raw_observation_present_ = false;
++    int raw_total_unit_count_ = 0;
++    int raw_self_count_ = 0;
++    int raw_self_worker_count_ = 0;
++    int raw_resource_depot_count_ = 0;
++    int raw_neutral_count_ = 0;
++    int raw_enemy_count_ = 0;
++    std::map<int, int> raw_type_counts_;
++    std::vector<UnitSample> raw_sample_units_;
++};
++
++}  // namespace
++
++int main(int argc, char* argv[]) {
++    const std::string output_path = getenv_or("PROBE_OUTPUT", "/private/tmp/voi-mm-bootstrap-probe/probe_report.json");
++    const std::string map_file = getenv_or("MAP_FILE", "AcropolisLE.SC2Map");
++    const int max_frame = getenv_int("PROBE_MAX_FRAME", 1200);
++    const int step_size = getenv_int("PROBE_STEP_SIZE", 1);
++    const int timeout_ms = getenv_int("SC2_ATTACH_TIMEOUT_MS", 120000);
++    const int port_start = getenv_int("SC2_PORT_START", 8168);
++    const sc2::Race enemy_race = parse_race(getenv_or("PROBE_ENEMY_RACE", "Zerg"), sc2::Race::Zerg);
++    const sc2::Difficulty enemy_difficulty = parse_difficulty(getenv_int("PROBE_ENEMY_DIFFICULTY", 1));
++
++    BootstrapProbe probe(output_path, map_file, max_frame);
++    sc2::Coordinator coordinator;
++    if (!coordinator.LoadSettings(argc, argv)) {
++        probe.set_failure("load_settings_failed");
++        probe.write_report();
++        return 2;
++    }
++
++    coordinator.SetRealtime(false);
++    coordinator.SetStepSize(step_size);
++    coordinator.SetTimeoutMS(static_cast<uint32_t>(timeout_ms));
++    coordinator.SetPortStart(port_start);
++    coordinator.SetParticipants({
++        sc2::CreateParticipant(sc2::Race::Terran, &probe),
++        sc2::CreateComputer(enemy_race, enemy_difficulty),
++    });
++
++    const char* voi_extra_args = std::getenv("VOI_SC2_EXTRA_ARGS");
++    if (voi_extra_args != nullptr && voi_extra_args[0] != '\0') {
++        std::istringstream extra_args(voi_extra_args);
++        std::string arg;
++        while (extra_args >> arg) {
++            coordinator.AddCommandLine(arg);
++        }
++    }
++
++    std::cout << "VOI bootstrap probe starting Terran VS " << race_name(enemy_race)
++              << " on " << map_file << std::endl;
++    coordinator.LaunchStarcraft();
++    if (!coordinator.StartGame(map_file)) {
++        probe.set_failure("start_game_failed");
++        probe.write_report();
++        return 2;
++    }
++
++    while (!probe.done() && coordinator.Update()) {
++    }
++
++    if (!probe.done()) {
++        probe.set_failure("coordinator_stopped_before_probe_complete");
++    }
++    coordinator.LeaveGame();
++    probe.write_report();
++    return probe.exit_code();
++}

@@ -30,11 +30,13 @@ class MicroMachineMapPoolTest(unittest.TestCase):
         self.assertEqual(["Zerg", "Protoss", "Terran"], production["enemy_races"])
         self.assertEqual([1], production["enemy_difficulties"])
         self.assertFalse(production["allow_failures"])
-        self.assertEqual(
-            ["bootstrap_no_start_units"],
-            production["maps"][0]["preflight_risk_codes"],
-        )
+        self.assertEqual("qualified_baseline", production["maps"][0]["status"])
+        self.assertEqual([], production["maps"][0]["preflight_risk_codes"])
         self.assertEqual(2, production["maps"][0]["expected_start_locations"])
+        evidence = self._default_payload()["maps"][0]["evidence"]
+        self.assertIsInstance(evidence, dict)
+        self.assertIn("/private/tmp/voi-mm-smoke-issue-67-final", evidence["smoke"])
+        self.assertIn("income_stall", evidence["regression_blockers"])
 
         diagnostic = pool.to_summary("diagnostic")
         self.assertEqual(
