@@ -235,6 +235,28 @@ class PolicyModulationVectorTest(unittest.TestCase):
                     "sequence": [{"raw_action": "attack_move"}],
                 }
             )
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "rawCommand": "attack"})
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys(
+                {"goal": "unsafe", "nested": {"directSC2Command": "move"}}
+            )
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "attackMove": "enemy"})
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "S2ClientAPI": "attack"})
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "BotAIMethod": "do"})
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "S2.Client.API": "attack"})
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "Bot/AI/Method": "do"})
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "attack.move": "enemy"})
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "keyDown": "a"})
+        with self.assertRaisesRegex(ValueError, "raw runtime control"):
+            reject_raw_policy_control_keys({"goal": "unsafe", "keyboardShortcut": "control+a"})
 
     def test_rejects_raw_runtime_control_keys_in_constraints(self) -> None:
         with self.assertRaisesRegex(ValueError, "raw runtime control"):

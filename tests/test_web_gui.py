@@ -11,6 +11,7 @@ import http.client
 import inspect
 import io
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -285,9 +286,17 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "MicroMachine live text injection",
             "MicroMachine에 주입할 텍스트 의도",
             "MicroMachine live modulation 전송",
+            "Semantic army group",
+            "Location intent",
+            "Unit classes",
+            "Safety margin",
+            "Scope duration seconds",
+            "TTL seconds",
             "LLM/DSL modulation",
             "micromachine-intervention-dashboard",
             "DSL intervention dashboard",
+            "Consumed axes by manager",
+            "Recent tactical logs",
             "Raw modulation / telemetry evidence",
             "renderMicroMachineStatus",
             "renderMicroMachineIntervention",
@@ -348,6 +357,207 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 kv = handle.read()
             self.assertIn("combat.defend_bias=0.65", kv)
             self.assertIn("squad.defense_bias=0.45", kv)
+
+    def test_micromachine_modulation_endpoint_publishes_semantic_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, _content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "메인 병력으로 적 앞마당을 압박해",
+                    "blackboard_dir": directory,
+                    "current_frame": 30,
+                    "update_id": "web-scope-1",
+                    "semantic_scope": {
+                        "army_group": "main",
+                        "unit_classes": ["marine", "siege_tank"],
+                        "location_intent": "enemy_natural",
+                        "duration_seconds": 120,
+                        "require_safety_margin": 0.25,
+                    },
+                    "ttl_seconds": 180,
+                }
+            )
+
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+            document = json.loads(payload.decode("utf-8"))
+            self.assertTrue(document["ok"], document)
+            scope = document["compile_result"]["vector"]["scope"]
+            self.assertEqual("main", scope["army_group"])
+            self.assertEqual(["marine", "siege_tank"], scope["unit_classes"])
+            self.assertEqual("enemy_natural", scope["location_intent"])
+            self.assertEqual(120, scope["duration_seconds"])
+            self.assertEqual(180, document["compile_result"]["vector"]["ttl_seconds"])
+            with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
+                kv = handle.read()
+            self.assertIn("scope.army_group=main", kv)
+            self.assertIn("scope.location_intent=enemy_natural", kv)
+            self.assertIn("scope.unit_classes=marine,siege_tank", kv)
+
+    def test_micromachine_modulation_preserves_strict_partial_scope_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, _content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "메인 병력만 엄격하게 적 앞마당 압박",
+                    "blackboard_dir": directory,
+                    "current_frame": 31,
+                    "update_id": "web-strict-scope-1",
+                    "provider_output": {
+                        "goal": "strict main pressure",
+                        "override_level": "bias",
+                        "combat": {"aggression": 0.25},
+                    },
+                    "semantic_scope": {
+                        "allow_partial_scope": False,
+                    },
+                }
+            )
+
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+            document = json.loads(payload.decode("utf-8"))
+            self.assertTrue(document["ok"], document)
+            scope = document["compile_result"]["vector"]["scope"]
+            self.assertIn("allow_partial_scope", scope)
+            self.assertFalse(scope["allow_partial_scope"])
+            with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
+                self.assertIn("scope.allow_partial_scope=false", handle.read())
+            status_document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+            requested_scope = status_document["intervention"]["tactical_scope"]["requested"]
+            self.assertIn("allow_partial_scope", requested_scope)
+            self.assertFalse(requested_scope["allow_partial_scope"])
+
+    def test_micromachine_modulation_accepts_string_unit_class_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for raw_unit_classes, expected in (
+                ("siege_tank, workers", ["siege_tank", "workers"]),
+                ("siege tank worker", ["siege_tank", "workers"]),
+            ):
+                with self.subTest(raw_unit_classes=raw_unit_classes):
+                    status, _content_type, payload = self.post_micromachine_modulation(
+                        {
+                            "text": "유닛 클래스 범위 테스트",
+                            "blackboard_dir": directory,
+                            "current_frame": 32,
+                            "provider_output": {
+                                "goal": "scope unit class alias",
+                                "override_level": "bias",
+                                "combat": {"aggression": 0.1},
+                            },
+                            "semantic_scope": {
+                                "unit_classes": raw_unit_classes,
+                            },
+                        }
+                    )
+
+                    self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+                    document = json.loads(payload.decode("utf-8"))
+                    self.assertTrue(document["ok"], document)
+                    scope = document["compile_result"]["vector"]["scope"]
+                    self.assertEqual(expected, scope["unit_classes"])
+
+    def test_micromachine_modulation_endpoint_rejects_raw_scope_control(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, _content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "이 유닛으로 공격해",
+                    "blackboard_dir": directory,
+                    "semantic_scope": {
+                        "unit_tag": 123,
+                    },
+                }
+            )
+
+            self.assertEqual(HTTPStatus.BAD_REQUEST, HTTPStatus(status))
+            document = json.loads(payload.decode("utf-8"))
+            self.assertFalse(document["accepted"])
+            self.assertIn("raw runtime control", document["error"])
+
+    def test_micromachine_modulation_endpoint_rejects_raw_keyboard_control(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, _content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "단축키로 유닛을 보내",
+                    "blackboard_dir": directory,
+                    "provider_output": {
+                        "goal": "unsafe direct control",
+                        "keyboard": {"press": "a"},
+                    },
+                }
+            )
+
+            self.assertEqual(HTTPStatus.BAD_REQUEST, HTTPStatus(status))
+            document = json.loads(payload.decode("utf-8"))
+            self.assertFalse(document["accepted"])
+            self.assertIn("raw runtime control", document["error"])
+            self.assertIn("keyboard", document["error"])
+
+    def test_micromachine_modulation_merges_scope_into_wrapped_provider_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, _content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "적 앞마당 압박",
+                    "blackboard_dir": directory,
+                    "current_frame": 12,
+                    "update_id": "web-wrapper-scope-1",
+                    "provider_output": {
+                        "modulation": {
+                            "goal": "wrapped pressure",
+                            "override_level": "bias",
+                            "combat": {"aggression": 0.25},
+                        },
+                    },
+                    "semantic_scope": {
+                        "army_group": "main",
+                        "location_intent": "enemy_natural",
+                    },
+                }
+            )
+
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+            document = json.loads(payload.decode("utf-8"))
+            self.assertTrue(document["ok"], document)
+            scope = document["compile_result"]["vector"]["scope"]
+            self.assertEqual("main", scope["army_group"])
+            self.assertEqual("enemy_natural", scope["location_intent"])
+            with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
+                kv = handle.read()
+            self.assertIn("scope.army_group=main", kv)
+            self.assertIn("scope.location_intent=enemy_natural", kv)
+
+    def test_micromachine_modulation_preserves_wrapped_terminal_provider_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, _content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "불확실하면 물어봐",
+                    "blackboard_dir": directory,
+                    "provider_output": {
+                        "modulation": {
+                            "status": "clarification_required",
+                            "clarification_prompt": "공격 타이밍을 더 구체화해 주세요.",
+                        },
+                    },
+                    "semantic_scope": {
+                        "army_group": "main",
+                        "location_intent": "enemy_natural",
+                    },
+                }
+            )
+
+            self.assertEqual(HTTPStatus.OK, HTTPStatus(status))
+            document = json.loads(payload.decode("utf-8"))
+            self.assertFalse(document["accepted"])
+            self.assertFalse(document["ok"])
+            self.assertIsNone(document["update"])
+            self.assertEqual("clarification_required", document["status"])
+            self.assertEqual(
+                "clarification_required",
+                document["compile_result"]["status"],
+            )
+            self.assertEqual(
+                "공격 타이밍을 더 구체화해 주세요.",
+                document["compile_result"]["clarification_prompt"],
+            )
+            self.assertFalse(os.path.exists(f"{directory}/latest_modulation.kv"))
 
     def test_micromachine_modulation_rejects_unsafe_update_id(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -479,6 +689,153 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 later_frame["intervention"]["active_modulation_ids"],
             )
             self.assertEqual(11, later_frame["intervention"]["telemetry_frame"])
+
+    def test_micromachine_status_exposes_tactical_dashboard_and_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "메인 병력으로 적 앞마당을 contain 해",
+                    "blackboard_dir": directory,
+                    "current_frame": 40,
+                    "update_id": "web-tactical-1",
+                    "provider_output": {
+                        "goal": "contain enemy natural",
+                        "override_level": "bias",
+                        "combat": {
+                            "aggression": 0.45,
+                            "target_priority_biases": {
+                                "worker_line": 0.4,
+                                "townhall": 0.25,
+                            },
+                        },
+                        "squad": {"contain_bias": 0.35, "reinforce_bias": 0.2},
+                        "scope": {
+                            "army_group": "main",
+                            "location_intent": "enemy_natural",
+                            "min_units": 2,
+                        },
+                    },
+                }
+            )
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 45,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CombatCommander": {
+                        "active": True,
+                        "policy_active": True,
+                        "update_id": "web-tactical-1",
+                        "aggression": 0.45,
+                        "consumed_axes": "combat.aggression,combat.target_priority_biases.*",
+                    },
+                    "Squad": {
+                        "active": True,
+                        "contain_bias": 0.35,
+                        "scope_army_group": "main",
+                        "scope_location_intent": "enemy_natural",
+                        "scope_min_units": 2,
+                        "target_worker_line_bias": 0.4,
+                        "target_townhall_bias": 0.25,
+                        "consumed_axes": "squad.contain_bias,scope.location_intent",
+                    },
+                },
+                "active_modulation_ids": ["web-tactical-1"],
+                "last_failure": None,
+            }
+            with open(f"{directory}/latest_telemetry.json", "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+            with open(f"{directory}/micromachine.log", "w", encoding="utf-8") as handle:
+                handle.write(
+                    "45: updateAttackSquads | MainAttackSquad new order = Attack enemy natural\n"
+                    "46: calcTargets | target worker_line selected by policy modulation\n"
+                )
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            intervention = document["intervention"]
+            self.assertEqual("consumed", document["consumption_status"])
+            self.assertEqual("contain", intervention["tactical_posture"])
+            self.assertEqual(
+                ["combat.aggression", "combat.target_priority_biases.*"],
+                intervention["consumed_axes_by_manager"]["CombatCommander"],
+            )
+            self.assertEqual("main", intervention["tactical_scope"]["requested"]["army_group"])
+            self.assertEqual(
+                "worker_line",
+                intervention["target_priority"]["selected_target_class"],
+            )
+            self.assertTrue(intervention["log_snippets"])
+            self.assertIn("calcTargets", intervention["log_snippets"][-1]["line"])
+
+    def test_micromachine_status_does_not_read_symlinked_tactical_logs(self):
+        if not hasattr(os, "symlink"):
+            self.skipTest("os.symlink is unavailable on this platform")
+        with tempfile.TemporaryDirectory() as directory:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8") as outside:
+                outside.write(
+                    "99: calcTargets | leaked outside blackboard policy modulation\n"
+                )
+                outside.flush()
+                os.symlink(outside.name, f"{directory}/micromachine.log")
+                self.post_micromachine_modulation(
+                    {
+                        "text": "적 앞마당 압박",
+                        "blackboard_dir": directory,
+                        "current_frame": 20,
+                        "update_id": "web-log-symlink-1",
+                        "provider_output": {
+                            "goal": "pressure",
+                            "combat": {"aggression": 0.3},
+                        },
+                    }
+                )
+
+                document = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+
+            snippets = document["intervention"]["log_snippets"]
+            self.assertFalse(
+                any("leaked outside blackboard" in item["line"] for item in snippets)
+            )
+
+    def test_micromachine_status_persists_refusal_after_polling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, _content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "불확실하면 물어봐",
+                    "blackboard_dir": directory,
+                    "provider_output": {
+                        "status": "clarification_required",
+                        "clarification_prompt": "공격 타이밍을 더 구체화해 주세요.",
+                    },
+                }
+            )
+
+            self.assertEqual(HTTPStatus.OK, HTTPStatus(status))
+            submitted = json.loads(payload.decode("utf-8"))
+            self.assertFalse(submitted["accepted"])
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            self.assertEqual("idle", document["status"])
+            compile_result = document["compile_result"]
+            self.assertEqual("clarification_required", compile_result["status"])
+            self.assertEqual(
+                "공격 타이밍을 더 구체화해 주세요.",
+                compile_result["clarification_prompt"],
+            )
+            intervention = document["intervention"]
+            self.assertEqual("refused", intervention["tactical_posture"])
+            self.assertEqual(
+                "공격 타이밍을 더 구체화해 주세요.",
+                intervention["refusal_reason"],
+            )
 
     def test_micromachine_modulation_fails_closed_without_llm_configuration(self):
         session, _bot = build_dry_run_session()

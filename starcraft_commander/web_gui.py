@@ -38,6 +38,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -48,6 +49,12 @@ from typing import Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 
 from starcraft_commander.micromachine_bridge import require_micromachine_update_id
+from starcraft_commander.policy_modulation import (
+    POLICY_MODULATION_TTL_MAX_SECONDS,
+    POLICY_MODULATION_TTL_MIN_SECONDS,
+    TacticalScopeModulation,
+    reject_raw_policy_control_keys,
+)
 from starcraft_commander.runtime_deps import MissingLLMDependencyError
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
@@ -81,6 +88,78 @@ DEFAULT_LIVE_DIFFICULTY: Final[str] = "easy"
 _LOCAL_URL_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"https?://127\.0\.0\.1:\d+(?:/[^\s]*)?"
 )
+
+_MICROMACHINE_SCOPE_UNIT_CLASSES: Final[frozenset[str]] = frozenset(
+    {
+        "air",
+        "banshee",
+        "battlecruiser",
+        "bio",
+        "cyclone",
+        "ghost",
+        "hellbat",
+        "hellion",
+        "liberator",
+        "marine",
+        "marauder",
+        "mech",
+        "medivac",
+        "raven",
+        "reaper",
+        "scv",
+        "siege",
+        "siege_tank",
+        "thor",
+        "viking",
+        "widow_mine",
+        "worker",
+        "workers",
+    }
+)
+"""Bounded semantic unit classes accepted from the cockpit."""
+
+_MICROMACHINE_SCOPE_UNIT_CLASS_ALIASES: Final[Mapping[str, str]] = {
+    "siege tank": "siege_tank",
+    "tank": "siege_tank",
+    "widow mine": "widow_mine",
+    "worker": "workers",
+}
+"""Human-friendly unit-class aliases normalized before DSL validation."""
+
+_MICROMACHINE_TACTICAL_LOG_FILES: Final[tuple[str, ...]] = (
+    "micromachine.log",
+    "micromachine_combined.log",
+)
+"""Blackboard-local logs that may contain MicroMachine tactical decisions."""
+
+_MICROMACHINE_TACTICAL_LOG_TERMS: Final[tuple[str, ...]] = (
+    "policy",
+    "modulation",
+    "updateattacksquads",
+    "mainattacksquad",
+    "calctargets",
+    "target",
+    "scope",
+    "contain",
+    "harass",
+    "retreat",
+    "attack",
+    "reinforce",
+    "squad",
+    "refus",
+)
+"""Lowercase filters for tactical snippets shown in the cockpit."""
+
+_MICROMACHINE_MAX_LOG_READ_BYTES: Final[int] = 256 * 1024
+"""Upper bound for reading the tail of one MicroMachine log file."""
+
+_MICROMACHINE_PROVIDER_VECTOR_WRAPPER_KEYS: Final[tuple[str, ...]] = (
+    "modulation",
+    "policy_modulation",
+    "policy_modulation_vector",
+    "vector",
+)
+"""Provider wrapper keys whose nested vector must receive UI scope overrides."""
 
 
 def _api_key_env_var_for_provider(provider: str) -> str:
@@ -219,10 +298,233 @@ def _default_micromachine_blackboard_dir() -> str:
     )
 
 
+def _micromachine_compile_result_path(blackboard_dir: str) -> str:
+    return os.path.join(blackboard_dir, "latest_modulation_compile_result.json")
+
+
+def _write_micromachine_compile_result(
+    blackboard_dir: str,
+    payload: Mapping[str, object],
+) -> None:
+    os.makedirs(blackboard_dir, exist_ok=True)
+    path = _micromachine_compile_result_path(blackboard_dir)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".latest_modulation_compile_result.",
+        suffix=".tmp",
+        dir=blackboard_dir,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _read_micromachine_compile_result(blackboard_dir: str) -> dict[str, object] | None:
+    path = _micromachine_compile_result_path(blackboard_dir)
+    root_real = os.path.realpath(blackboard_dir)
+    path_real = os.path.realpath(path)
+    if not path_real.startswith(root_real + os.sep) or not os.path.isfile(path_real):
+        return None
+    try:
+        with open(path_real, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return dict(payload) if isinstance(payload, Mapping) else None
+
+
+def _latest_compile_result_payload(compile_document: object | None) -> dict[str, object] | None:
+    if not isinstance(compile_document, Mapping):
+        return None
+    payload = compile_document.get("compile_result")
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    return None
+
+
+def _extract_micromachine_semantic_scope(
+    document: Mapping[str, object],
+) -> tuple[dict[str, object] | None, int | None]:
+    reject_raw_policy_control_keys(document)
+    raw_scope = document.get("semantic_scope")
+    scope_payload: dict[str, object] = {}
+    if raw_scope is not None:
+        if not isinstance(raw_scope, Mapping):
+            raise ValueError("semantic_scope 필드는 JSON 객체여야 합니다.")
+        scope_payload.update(dict(raw_scope))
+    for field_name in (
+        "army_group",
+        "unit_classes",
+        "location_intent",
+        "duration_seconds",
+        "min_units",
+        "max_units",
+        "require_safety_margin",
+        "allow_partial_scope",
+    ):
+        if field_name in document:
+            scope_payload[field_name] = document[field_name]
+    ttl_seconds = scope_payload.pop("ttl_seconds", document.get("ttl_seconds", None))
+    normalized_scope = _normalize_micromachine_scope_payload(scope_payload)
+    normalized_ttl = (
+        None
+        if ttl_seconds in (None, "")
+        else _bounded_int(
+            "ttl_seconds",
+            ttl_seconds,
+            lower=POLICY_MODULATION_TTL_MIN_SECONDS,
+            upper=POLICY_MODULATION_TTL_MAX_SECONDS,
+        )
+    )
+    if not normalized_scope and normalized_ttl is None:
+        return None, None
+    return normalized_scope or None, normalized_ttl
+
+
+def _normalize_micromachine_scope_payload(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    if not payload:
+        return {}
+    unknown = set(payload) - {
+        "army_group",
+        "unit_classes",
+        "location_intent",
+        "duration_seconds",
+        "min_units",
+        "max_units",
+        "require_safety_margin",
+        "allow_partial_scope",
+    }
+    if unknown:
+        raise ValueError(
+            "semantic_scope contains unsupported fields: "
+            + ", ".join(sorted(str(key) for key in unknown))
+        )
+    normalized: dict[str, object] = {}
+    for key in ("army_group", "location_intent"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            normalized[key] = value.strip().lower()
+        elif value not in (None, ""):
+            raise ValueError(f"{key} must be a string.")
+    unit_classes = _normalize_micromachine_unit_classes(payload.get("unit_classes"))
+    if unit_classes:
+        normalized["unit_classes"] = unit_classes
+    for key in ("duration_seconds", "min_units", "max_units"):
+        value = payload.get(key)
+        if value in (None, ""):
+            continue
+        normalized[key] = _bounded_int(key, value, lower=0, upper=200_000)
+    value = payload.get("require_safety_margin")
+    if value not in (None, ""):
+        normalized["require_safety_margin"] = _bounded_float(
+            "require_safety_margin",
+            value,
+            lower=0.0,
+            upper=1.0,
+        )
+    value = payload.get("allow_partial_scope")
+    if value not in (None, ""):
+        if type(value) is not bool:
+            raise ValueError("allow_partial_scope must be a bool.")
+        normalized["allow_partial_scope"] = value
+    if not normalized:
+        return {}
+    scope = TacticalScopeModulation(**normalized).to_dict()
+    return {
+        key: value
+        for key, value in scope.items()
+        if not _is_empty_micromachine_scope_value(value)
+    }
+
+
+def _normalize_micromachine_unit_classes(value: object) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        raw_values = _split_micromachine_unit_class_text(value)
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        raw_values = list(value)
+    else:
+        raise ValueError("unit_classes must be a string or string list.")
+    normalized: list[str] = []
+    for raw_value in raw_values:
+        if not isinstance(raw_value, str):
+            raise ValueError("unit_classes must contain only strings.")
+        unit_class = raw_value.strip().lower().replace("-", "_").replace(" ", "_")
+        unit_class = str(_MICROMACHINE_SCOPE_UNIT_CLASS_ALIASES.get(unit_class, unit_class))
+        if not unit_class:
+            continue
+        if unit_class not in _MICROMACHINE_SCOPE_UNIT_CLASSES:
+            raise ValueError(f"unsupported semantic unit class: {unit_class}")
+        if unit_class not in normalized:
+            normalized.append(unit_class)
+    return normalized
+
+
+def _split_micromachine_unit_class_text(value: str) -> list[str]:
+    text = value.strip()
+    for alias, canonical in _MICROMACHINE_SCOPE_UNIT_CLASS_ALIASES.items():
+        if " " not in alias:
+            continue
+        text = re.sub(
+            rf"(?<!\w){re.escape(alias)}(?!\w)",
+            canonical,
+            text,
+            flags=re.IGNORECASE,
+        )
+    return [part for part in re.split(r"[\s,]+", text) if part]
+
+
+def _is_empty_micromachine_scope_value(value: object) -> bool:
+    if value in ("", None, [], ()):
+        return True
+    return type(value) is int and value == 0
+
+
+def _bounded_int(
+    field_name: str,
+    value: object,
+    *,
+    lower: int,
+    upper: int,
+) -> int:
+    if type(value) is bool or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer.")
+    if value < lower or value > upper:
+        raise ValueError(f"{field_name} must be between {lower} and {upper}.")
+    return value
+
+
+def _bounded_float(
+    field_name: str,
+    value: object,
+    *,
+    lower: float,
+    upper: float,
+) -> float:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a number.")
+    numeric = float(value)
+    if numeric < lower or numeric > upper:
+        raise ValueError(f"{field_name} must be between {lower} and {upper}.")
+    return numeric
+
+
 def _micromachine_status_payload(
     dashboard: Mapping[str, object],
     *,
     telemetry: object | None = None,
+    blackboard_dir: str = "",
+    compile_result: object | None = None,
 ) -> dict[str, object]:
     """Promote latest blackboard state into the same top-level UI contract."""
 
@@ -234,6 +536,7 @@ def _micromachine_status_payload(
         else None
     )
     consumption_status = _micromachine_consumption_status(latest, telemetry)
+    update_id = str(latest.get("update_id", "") or "") if latest else ""
     return {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
@@ -242,8 +545,13 @@ def _micromachine_status_payload(
             latest,
             telemetry,
             consumption_status=consumption_status,
+            log_snippets=_micromachine_recent_tactical_log_snippets(
+                blackboard_dir,
+                update_id=update_id,
+            ),
+            compile_result=compile_result,
         ),
-        "compile_result": None,
+        "compile_result": dict(compile_result) if isinstance(compile_result, Mapping) else None,
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
     }
@@ -277,6 +585,8 @@ def _micromachine_intervention_summary(
     telemetry: object | None,
     *,
     consumption_status: str,
+    compile_result: object | None = None,
+    log_snippets: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     """Return a compact UI contract proving whether DSL reached MicroMachine."""
 
@@ -299,6 +609,7 @@ def _micromachine_intervention_summary(
     vector = update.get("vector", {}) if update else {}
     if not isinstance(vector, Mapping):
         vector = {}
+    compile_payload = dict(compile_result) if isinstance(compile_result, Mapping) else {}
     telemetry_frame = telemetry_document.get("frame")
     if type(telemetry_frame) is not int:
         telemetry_frame = None
@@ -324,7 +635,289 @@ def _micromachine_intervention_summary(
             for manager, payload in managers.items()
             if isinstance(payload, Mapping)
         },
+        "consumed_axes_by_manager": _micromachine_consumed_axes_by_manager(managers),
+        "tactical_scope": _micromachine_tactical_scope(vector, managers),
+        "tactical_posture": _micromachine_tactical_posture(
+            vector,
+            managers,
+            compile_payload,
+        ),
+        "target_priority": _micromachine_target_priority(vector, managers),
+        "refusal_reason": _micromachine_refusal_reason(compile_payload),
+        "log_snippets": [dict(item) for item in log_snippets],
     }
+
+
+def _provider_output_is_terminal(output: Mapping[str, object]) -> bool:
+    return _terminal_micromachine_provider_output(output) is not None
+
+
+def _terminal_micromachine_provider_output(
+    output: Mapping[str, object],
+) -> dict[str, object] | None:
+    status = str(output.get("status", "") or "").strip().lower()
+    if status in {"clarification_required", "refused"}:
+        return dict(output)
+    for key in _MICROMACHINE_PROVIDER_VECTOR_WRAPPER_KEYS:
+        value = output.get(key)
+        if not isinstance(value, Mapping):
+            continue
+        nested_status = str(value.get("status", "") or "").strip().lower()
+        if nested_status in {"clarification_required", "refused"}:
+            terminal = dict(value)
+            for metadata_key in ("source", "refusal_reason", "clarification_prompt"):
+                if metadata_key in output and metadata_key not in terminal:
+                    terminal[metadata_key] = output[metadata_key]
+            return terminal
+    return None
+
+
+def _merge_micromachine_semantic_scope_into_provider_output(
+    output: Mapping[str, object],
+    *,
+    semantic_scope: Mapping[str, object],
+    ttl_seconds: int | None,
+) -> dict[str, object]:
+    merged = dict(output)
+    wrapper_key = next(
+        (
+            key
+            for key in _MICROMACHINE_PROVIDER_VECTOR_WRAPPER_KEYS
+            if isinstance(merged.get(key), Mapping)
+        ),
+        "",
+    )
+    target = (
+        dict(merged[wrapper_key])  # type: ignore[index]
+        if wrapper_key
+        else merged
+    )
+    if semantic_scope:
+        existing_scope = target.get("scope", {})
+        scope_payload = dict(existing_scope) if isinstance(existing_scope, Mapping) else {}
+        scope_payload.update(semantic_scope)
+        target["scope"] = scope_payload
+    if ttl_seconds is not None:
+        target["ttl_seconds"] = ttl_seconds
+        if wrapper_key:
+            merged["ttl_seconds"] = ttl_seconds
+    if wrapper_key:
+        merged[wrapper_key] = target
+    return merged
+
+
+def _micromachine_consumed_axes_by_manager(
+    managers: Mapping[str, object],
+) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for manager, payload in managers.items():
+        if not isinstance(payload, Mapping):
+            continue
+        axes = _axis_list(payload.get("consumed_axes"))
+        if axes:
+            result[str(manager)] = axes
+    return result
+
+
+def _micromachine_tactical_scope(
+    vector: Mapping[str, object],
+    managers: Mapping[str, object],
+) -> dict[str, object]:
+    scope = vector.get("scope", {})
+    if not isinstance(scope, Mapping):
+        scope = {}
+    requested = {
+        key: value
+        for key, value in {
+            "army_group": scope.get("army_group"),
+            "unit_classes": _string_list(scope.get("unit_classes", ())),
+            "location_intent": scope.get("location_intent"),
+            "duration_seconds": scope.get("duration_seconds"),
+            "min_units": scope.get("min_units"),
+            "max_units": scope.get("max_units"),
+            "require_safety_margin": scope.get("require_safety_margin"),
+            "allow_partial_scope": scope.get("allow_partial_scope"),
+        }.items()
+        if not _is_empty_micromachine_scope_value(value)
+    }
+    squad = managers.get("Squad", {})
+    telemetry: dict[str, object] = {}
+    if isinstance(squad, Mapping):
+        telemetry = {
+            key: value
+            for key, value in {
+                "army_group": squad.get("scope_army_group"),
+                "location_intent": squad.get("scope_location_intent"),
+                "min_units": squad.get("scope_min_units"),
+            }.items()
+            if value not in ("", None, 0)
+        }
+    return {"requested": requested, "telemetry": telemetry}
+
+
+def _micromachine_tactical_posture(
+    vector: Mapping[str, object],
+    managers: Mapping[str, object],
+    compile_result: Mapping[str, object],
+) -> str:
+    if _micromachine_refusal_reason(compile_result):
+        return "refused"
+    combat = _mapping_child(vector, "combat")
+    squad = _mapping_child(vector, "squad")
+    emergency = _mapping_child(vector, "emergency")
+    combat_manager = _mapping_child(managers, "CombatCommander")
+    squad_manager = _mapping_child(managers, "Squad")
+    if (
+        _truthy(emergency.get("force_retreat"))
+        or _truthy(emergency.get("cancel_attacks"))
+        or _truthy(combat_manager.get("force_retreat"))
+    ):
+        return "retreat"
+    contain_bias = max(
+        _number(squad.get("contain_bias")),
+        _number(squad_manager.get("contain_bias")),
+    )
+    if contain_bias > 0.05:
+        return "contain"
+    harass_bias = max(
+        _number(squad.get("harassment_bias")),
+        _number(combat.get("harassment_bias")),
+        _number(squad_manager.get("target_worker_line_bias")),
+    )
+    if harass_bias > 0.1:
+        return "harass"
+    aggression = max(
+        _number(combat.get("aggression")),
+        _number(combat_manager.get("aggression")),
+    )
+    attack_timing = max(
+        _number(combat.get("attack_timing_bias")),
+        _number(combat_manager.get("attack_timing_bias")),
+    )
+    commitment = max(
+        _number(combat.get("commitment_level")),
+        _number(combat_manager.get("commitment_level")),
+    )
+    if aggression > 0.15 or attack_timing > 0.05 or commitment > 0.05:
+        return "pressure"
+    defend_bias = max(
+        _number(combat.get("defend_bias")),
+        _number(combat_manager.get("defend_bias")),
+        _number(squad.get("defense_bias")),
+    )
+    if _truthy(emergency.get("hold_position")) or defend_bias > max(0.15, aggression):
+        return "hold"
+    return "balanced"
+
+
+def _micromachine_target_priority(
+    vector: Mapping[str, object],
+    managers: Mapping[str, object],
+) -> dict[str, object]:
+    combat = _mapping_child(vector, "combat")
+    requested = combat.get("target_priority_biases", {})
+    requested_biases = (
+        {str(key): value for key, value in requested.items()}
+        if isinstance(requested, Mapping)
+        else {}
+    )
+    squad = _mapping_child(managers, "Squad")
+    telemetry_biases = {
+        "worker_line": squad.get("target_worker_line_bias"),
+        "townhall": squad.get("target_townhall_bias"),
+        "production": squad.get("target_production_bias"),
+        "army": squad.get("target_army_bias"),
+    }
+    telemetry_biases = {
+        key: value
+        for key, value in telemetry_biases.items()
+        if isinstance(value, (int, float)) and type(value) is not bool and value != 0
+    }
+    scored: dict[str, float] = {}
+    for key, value in requested_biases.items():
+        scored[key] = _number(value)
+    for key, value in telemetry_biases.items():
+        scored[key] = max(scored.get(key, 0.0), _number(value))
+    selected = max(scored, key=scored.get) if scored else ""
+    return {
+        "requested_biases": requested_biases,
+        "telemetry_biases": telemetry_biases,
+        "selected_target_class": selected,
+    }
+
+
+def _micromachine_refusal_reason(compile_result: Mapping[str, object]) -> str:
+    reason = compile_result.get("refusal_reason")
+    if isinstance(reason, str) and reason.strip():
+        return reason.strip()
+    prompt = compile_result.get("clarification_prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt.strip()
+    return ""
+
+
+def _micromachine_recent_tactical_log_snippets(
+    blackboard_dir: str,
+    *,
+    update_id: str = "",
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    if not blackboard_dir:
+        return []
+    root = os.path.abspath(blackboard_dir)
+    root_real = os.path.realpath(root)
+    if not os.path.isdir(root_real):
+        return []
+    update_token = update_id.strip().lower()
+    snippets: list[dict[str, str]] = []
+    for filename in _MICROMACHINE_TACTICAL_LOG_FILES:
+        path = os.path.abspath(os.path.join(root, filename))
+        path_real = os.path.realpath(path)
+        if not path_real.startswith(root_real + os.sep) or not os.path.isfile(path_real):
+            continue
+        try:
+            size = os.path.getsize(path_real)
+            with open(path_real, "rb") as handle:
+                if size > _MICROMACHINE_MAX_LOG_READ_BYTES:
+                    handle.seek(size - _MICROMACHINE_MAX_LOG_READ_BYTES)
+                text = handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            cleaned = _redact_sensitive_text(
+                line.strip(),
+                normalize_whitespace=True,
+                max_chars=500,
+            )
+            if not cleaned:
+                continue
+            lowered = cleaned.lower()
+            if update_token and update_token in lowered:
+                snippets.append({"source": filename, "line": cleaned})
+            elif any(term in lowered for term in _MICROMACHINE_TACTICAL_LOG_TERMS):
+                snippets.append({"source": filename, "line": cleaned})
+    return snippets[-limit:]
+
+
+def _axis_list(values: object) -> list[str]:
+    if isinstance(values, str):
+        return [axis.strip() for axis in values.split(",") if axis.strip()]
+    return _string_list(values)
+
+
+def _mapping_child(mapping: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = mapping.get(key, {})
+    return value if isinstance(value, Mapping) else {}
+
+
+def _number(value: object) -> float:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+def _truthy(value: object) -> bool:
+    return value is True or str(value).strip().lower() == "true"
 
 
 def _telemetry_to_mapping(telemetry: object | None) -> dict[str, object]:
@@ -439,9 +1032,43 @@ class _MicroMachineModulationRequest:
     text: str
     blackboard_dir: str
     provider_output: Mapping[str, object] | None
+    semantic_scope: Mapping[str, object] | None
+    ttl_seconds: int | None
     current_frame: int | None
     update_id: str | None
     future: concurrent.futures.Future[Mapping[str, object]]
+
+
+class _SemanticScopePolicyModulationProvider:
+    """Merge UI semantic scope into a bounded provider output."""
+
+    def __init__(
+        self,
+        base_provider: object,
+        *,
+        semantic_scope: Mapping[str, object] | None = None,
+        ttl_seconds: int | None = None,
+    ) -> None:
+        self.base_provider = base_provider
+        self.semantic_scope = dict(semantic_scope or {})
+        self.ttl_seconds = ttl_seconds
+        self.source = getattr(base_provider, "source", None)
+
+    def propose_policy_modulation(self, request: object) -> Mapping[str, object]:
+        method = getattr(self.base_provider, "propose_policy_modulation", None)
+        if not callable(method):
+            raise RuntimeError("base policy modulation provider is not callable.")
+        output = method(request)
+        if not isinstance(output, Mapping):
+            return output
+        terminal_output = _terminal_micromachine_provider_output(output)
+        if terminal_output is not None:
+            return terminal_output
+        return _merge_micromachine_semantic_scope_into_provider_output(
+            output,
+            semantic_scope=self.semantic_scope,
+            ttl_seconds=self.ttl_seconds,
+        )
 
 
 @runtime_checkable
@@ -797,6 +1424,8 @@ class SessionLoopBridge:
         *,
         blackboard_dir: str = "",
         provider_output: Mapping[str, object] | None = None,
+        semantic_scope: Mapping[str, object] | None = None,
+        ttl_seconds: int | None = None,
         current_frame: int | None = None,
         update_id: str | None = None,
     ) -> Mapping[str, object]:
@@ -818,6 +1447,8 @@ class SessionLoopBridge:
             text=cleaned,
             blackboard_dir=blackboard_dir,
             provider_output=provider_output,
+            semantic_scope=semantic_scope,
+            ttl_seconds=ttl_seconds,
             current_frame=current_frame,
             update_id=update_id,
             future=future,
@@ -831,6 +1462,8 @@ class SessionLoopBridge:
         *,
         blackboard_dir: str = "",
         provider_output: Mapping[str, object] | None = None,
+        semantic_scope: Mapping[str, object] | None = None,
+        ttl_seconds: int | None = None,
         current_frame: int | None = None,
         update_id: str | None = None,
     ) -> Mapping[str, object]:
@@ -849,6 +1482,12 @@ class SessionLoopBridge:
             if provider_output is not None
             else KeywordPolicyModulationProvider()
         )
+        if semantic_scope or ttl_seconds is not None:
+            provider = _SemanticScopePolicyModulationProvider(
+                provider,
+                semantic_scope=semantic_scope,
+                ttl_seconds=ttl_seconds,
+            )
         result = MicroMachineLiveTextSession(
             MicroMachineFilesystemBlackboard(root),
             provider,
@@ -860,13 +1499,36 @@ class SessionLoopBridge:
         )
         payload = result.to_dict()
         payload["blackboard_dir"] = root
+        update_for_compile = payload.get("update")
+        compile_document: dict[str, object] = {
+            "command_text": text,
+            "status": str(payload.get("status", "") or ""),
+            "current_frame": payload.get("current_frame"),
+            "compile_result": payload.get("compile_result"),
+            "update_id": (
+                str(update_for_compile.get("update_id", "") or "")
+                if isinstance(update_for_compile, Mapping)
+                else ""
+            ),
+            "written_at_unix": time.time(),
+        }
+        _write_micromachine_compile_result(
+            root,
+            _redact_json_ready(compile_document),
+        )
         dashboard = payload.get("dashboard", {})
         telemetry = dashboard.get("telemetry") if isinstance(dashboard, Mapping) else None
         update = payload.get("update")
+        update_id_for_logs = str(update.get("update_id", "") or "") if isinstance(update, Mapping) else ""
         payload["intervention"] = _micromachine_intervention_summary(
             update if isinstance(update, Mapping) else None,
             telemetry,
             consumption_status=str(payload.get("consumption_status", "") or ""),
+            compile_result=payload.get("compile_result"),
+            log_snippets=_micromachine_recent_tactical_log_snippets(
+                root,
+                update_id=update_id_for_logs,
+            ),
         )
         return payload
 
@@ -886,10 +1548,17 @@ class SessionLoopBridge:
             current_frame=frame,
             bridge_status=PolicyModulationBridgeStatus.CONNECTED,
         )
+        compile_document = _read_micromachine_compile_result(root)
+        compile_result = _latest_compile_result_payload(compile_document)
         return {
             "enabled": True,
             "blackboard_dir": root,
-            **_micromachine_status_payload(snapshot.to_dict(), telemetry=telemetry),
+            **_micromachine_status_payload(
+                snapshot.to_dict(),
+                telemetry=telemetry,
+                blackboard_dir=root,
+                compile_result=compile_result,
+            ),
         }
 
     def _run_loop(self) -> None:
@@ -935,6 +1604,8 @@ class SessionLoopBridge:
                 request.text,
                 blackboard_dir=request.blackboard_dir,
                 provider_output=request.provider_output,
+                semantic_scope=request.semantic_scope,
+                ttl_seconds=request.ttl_seconds,
                 current_frame=request.current_frame,
                 update_id=request.update_id,
             )
@@ -1413,9 +2084,13 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     display: block; margin: 8px 0 4px; color: var(--muted);
     font-size: 0.78rem; font-weight: 900;
   }
-  #micromachine-panel input {
+  #micromachine-panel input, #micromachine-panel select {
     width: 100%; padding: 10px 11px; border: 1px solid rgba(96, 112, 128, 0.28);
     border-radius: 12px; background: rgba(255, 255, 255, 0.92); color: #071225;
+  }
+  .micro-scope-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+    margin-top: 8px;
   }
   #micromachine-panel button {
     width: 100%; margin-top: 10px; padding: 11px 12px; border: none; border-radius: 14px;
@@ -1466,6 +2141,11 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     background: rgba(0, 0, 0, 0.28); color: var(--ink); font-size: 0.72rem;
     white-space: pre-wrap; overflow-wrap: anywhere;
   }
+  #micromachine-log-snippets {
+    margin: 0; padding-left: 16px; color: var(--ink); font-size: 0.74rem;
+    line-height: 1.45; max-height: 180px; overflow: auto;
+  }
+  #micromachine-log-snippets li { margin-bottom: 6px; overflow-wrap: anywhere; }
   #log {
     flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px;
     background:
@@ -1595,6 +2275,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     #command-panel { height: 68vh; min-height: 0; max-height: 68vh; }
     #state-panel { max-height: none; }
     .dashboard-grid { grid-template-columns: 1fr 1fr; }
+    .micro-scope-grid { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 620px) {
     .space-background {
@@ -1608,6 +2289,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .star-depth-far { opacity: 0.24; }
     .star-depth-near { opacity: 0.28; }
     .dashboard-grid { grid-template-columns: 1fr; }
+    .micro-scope-grid, .micro-intervention-grid { grid-template-columns: 1fr; }
     #command-form { flex-direction: column; }
     .message { max-width: 94%; }
   }
@@ -1720,6 +2402,53 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         <input id="micromachine-blackboard-dir" type="text" value="__MICROMACHINE_BLACKBOARD_DIR__">
         <label for="micromachine-command-input" data-i18n="microMachineCommandLabel">MicroMachine에 주입할 텍스트 의도</label>
         <input id="micromachine-command-input" type="text" autocomplete="off" placeholder="예: 탱크 중심으로 안전하게 버티고, 무리한 진출은 막아">
+        <div class="micro-scope-grid" aria-label="MicroMachine semantic scope controls">
+          <div>
+            <label for="micromachine-army-group" data-i18n="microMachineArmyGroup">Semantic army group</label>
+            <select id="micromachine-army-group">
+              <option value="">auto</option>
+              <option value="main">main</option>
+              <option value="harass">harass</option>
+              <option value="defense">defense</option>
+              <option value="scout">scout</option>
+              <option value="air">air</option>
+              <option value="bio">bio</option>
+              <option value="mech">mech</option>
+              <option value="siege">siege</option>
+              <option value="workers">workers</option>
+            </select>
+          </div>
+          <div>
+            <label for="micromachine-location-intent" data-i18n="microMachineLocationIntent">Location intent</label>
+            <select id="micromachine-location-intent">
+              <option value="">auto</option>
+              <option value="home">home</option>
+              <option value="natural">natural</option>
+              <option value="enemy_main">enemy_main</option>
+              <option value="enemy_natural">enemy_natural</option>
+              <option value="enemy_third">enemy_third</option>
+              <option value="watchtower">watchtower</option>
+              <option value="ramp">ramp</option>
+              <option value="last_seen_enemy_army">last_seen_enemy_army</option>
+            </select>
+          </div>
+          <div>
+            <label for="micromachine-unit-classes" data-i18n="microMachineUnitClasses">Unit classes</label>
+            <input id="micromachine-unit-classes" type="text" autocomplete="off" placeholder="marine, siege_tank, medivac">
+          </div>
+          <div>
+            <label for="micromachine-safety-margin" data-i18n="microMachineSafetyMargin">Safety margin</label>
+            <input id="micromachine-safety-margin" type="number" min="0" max="1" step="0.05" placeholder="0.15">
+          </div>
+          <div>
+            <label for="micromachine-duration-seconds" data-i18n="microMachineDuration">Scope duration seconds</label>
+            <input id="micromachine-duration-seconds" type="number" min="0" max="900" step="1" placeholder="120">
+          </div>
+          <div>
+            <label for="micromachine-ttl-seconds" data-i18n="microMachineTtl">TTL seconds</label>
+            <input id="micromachine-ttl-seconds" type="number" min="1" max="900" step="1" placeholder="180">
+          </div>
+        </div>
         <button type="submit" data-i18n="microMachineSend">MicroMachine live modulation 전송</button>
       </form>
       <div id="micromachine-status" aria-live="polite">MicroMachine live text injection 대기 중입니다.</div>
@@ -1752,6 +2481,30 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
           <div class="wide-card">
             <dt data-i18n="microMachineManagers">Manager evidence</dt>
             <dd id="micromachine-managers">-</dd>
+          </div>
+          <div>
+            <dt data-i18n="microMachinePosture">Tactical posture</dt>
+            <dd id="micromachine-posture">-</dd>
+          </div>
+          <div>
+            <dt data-i18n="microMachineScope">Semantic scope</dt>
+            <dd id="micromachine-scope">-</dd>
+          </div>
+          <div class="wide-card">
+            <dt data-i18n="microMachineConsumedAxes">Consumed axes by manager</dt>
+            <dd id="micromachine-consumed-axes">-</dd>
+          </div>
+          <div class="wide-card">
+            <dt data-i18n="microMachineTargetPriority">Target priority</dt>
+            <dd id="micromachine-target-priority">-</dd>
+          </div>
+          <div class="wide-card">
+            <dt data-i18n="microMachineRefusalReason">Refusal / clarification</dt>
+            <dd id="micromachine-refusal">-</dd>
+          </div>
+          <div class="wide-card">
+            <dt data-i18n="microMachineTacticalLogs">Recent tactical logs</dt>
+            <dd><ul id="micromachine-log-snippets"></ul></dd>
           </div>
         </dl>
         <details class="micro-json-panel">
@@ -1934,6 +2687,12 @@ var I18N = {
     microMachineHint: "여기에 전략 의도를 입력하면 LLM/DSL modulation으로 컴파일되어 MicroMachine blackboard에 안전한 정책 bias로 전달됩니다. SC2 화면/키보드 자동화나 raw unit 명령은 쓰지 않습니다.",
     microMachineBlackboardLabel: "Blackboard directory",
     microMachineCommandLabel: "MicroMachine에 주입할 텍스트 의도",
+    microMachineArmyGroup: "Semantic army group",
+    microMachineLocationIntent: "Location intent",
+    microMachineUnitClasses: "Unit classes",
+    microMachineSafetyMargin: "Safety margin",
+    microMachineDuration: "Scope duration seconds",
+    microMachineTtl: "TTL seconds",
     microMachineSend: "MicroMachine live modulation 전송",
     microMachineSending: "MicroMachine live modulation 전송 중...",
     microMachinePublished: "게시됨",
@@ -1946,6 +2705,12 @@ var I18N = {
     microMachineDomains: "Bias domain",
     microMachineGoal: "컴파일된 DSL goal",
     microMachineManagers: "Manager 증거",
+    microMachinePosture: "전술 posture",
+    microMachineScope: "Semantic scope",
+    microMachineConsumedAxes: "Manager별 consumed axes",
+    microMachineTargetPriority: "Target priority",
+    microMachineRefusalReason: "거부 / 추가 확인",
+    microMachineTacticalLogs: "최근 MicroMachine 전술 로그",
     microMachineRawEvidence: "Raw modulation / telemetry 증거",
     microMachineRefused: "거부됨",
     microMachineClarification: "추가 확인 필요",
@@ -2047,6 +2812,12 @@ var I18N = {
     microMachineHint: "Type a strategic intent here to compile it into LLM/DSL modulation and publish safe policy bias to the MicroMachine blackboard. It does not automate the SC2 screen/keyboard or send raw unit commands.",
     microMachineBlackboardLabel: "Blackboard directory",
     microMachineCommandLabel: "Text intent to inject into MicroMachine",
+    microMachineArmyGroup: "Semantic army group",
+    microMachineLocationIntent: "Location intent",
+    microMachineUnitClasses: "Unit classes",
+    microMachineSafetyMargin: "Safety margin",
+    microMachineDuration: "Scope duration seconds",
+    microMachineTtl: "TTL seconds",
     microMachineSend: "Send MicroMachine live modulation",
     microMachineSending: "Sending MicroMachine live modulation...",
     microMachinePublished: "Published",
@@ -2059,6 +2830,12 @@ var I18N = {
     microMachineDomains: "Bias domains",
     microMachineGoal: "Compiled DSL goal",
     microMachineManagers: "Manager evidence",
+    microMachinePosture: "Tactical posture",
+    microMachineScope: "Semantic scope",
+    microMachineConsumedAxes: "Consumed axes by manager",
+    microMachineTargetPriority: "Target priority",
+    microMachineRefusalReason: "Refusal / clarification",
+    microMachineTacticalLogs: "Recent MicroMachine tactical logs",
     microMachineRawEvidence: "Raw modulation / telemetry evidence",
     microMachineRefused: "Refused",
     microMachineClarification: "Clarification needed",
@@ -2160,6 +2937,12 @@ var I18N = {
     microMachineHint: "在这里输入战略意图，系统会编译为 LLM/DSL modulation，并把安全的 policy bias 写入 MicroMachine blackboard。不会自动操作 SC2 画面/键盘，也不会发送 raw unit 命令。",
     microMachineBlackboardLabel: "Blackboard directory",
     microMachineCommandLabel: "要注入 MicroMachine 的文本意图",
+    microMachineArmyGroup: "Semantic army group",
+    microMachineLocationIntent: "Location intent",
+    microMachineUnitClasses: "Unit classes",
+    microMachineSafetyMargin: "Safety margin",
+    microMachineDuration: "Scope duration seconds",
+    microMachineTtl: "TTL seconds",
     microMachineSend: "发送 MicroMachine live modulation",
     microMachineSending: "正在发送 MicroMachine live modulation...",
     microMachinePublished: "已发布",
@@ -2172,6 +2955,12 @@ var I18N = {
     microMachineDomains: "Bias domain",
     microMachineGoal: "已编译 DSL goal",
     microMachineManagers: "Manager evidence",
+    microMachinePosture: "Tactical posture",
+    microMachineScope: "Semantic scope",
+    microMachineConsumedAxes: "Consumed axes by manager",
+    microMachineTargetPriority: "Target priority",
+    microMachineRefusalReason: "Refusal / clarification",
+    microMachineTacticalLogs: "Recent MicroMachine tactical logs",
     microMachineRawEvidence: "Raw modulation / telemetry evidence",
     microMachineRefused: "已拒绝",
     microMachineClarification: "需要进一步确认",
@@ -3513,6 +4302,69 @@ function summarizeMicroMachineManagers(managers) {
   return parts.length ? parts.join(" | ") : "-";
 }
 
+function formatMicroMachineScope(scope) {
+  if (!scope || typeof scope !== "object") { return "-"; }
+  var requested = scope.requested || {};
+  var telemetry = scope.telemetry || {};
+  var parts = [];
+  Object.keys(requested).forEach(function (key) {
+    var value = requested[key];
+    if (Array.isArray(value)) { value = value.join(", "); }
+    parts.push("requested." + key + "=" + value);
+  });
+  Object.keys(telemetry).forEach(function (key) {
+    parts.push("telemetry." + key + "=" + telemetry[key]);
+  });
+  return parts.length ? parts.join(" | ") : "-";
+}
+
+function formatMicroMachineAxesByManager(axesByManager) {
+  if (!axesByManager || typeof axesByManager !== "object") { return "-"; }
+  var parts = [];
+  Object.keys(axesByManager).forEach(function (manager) {
+    var axes = axesByManager[manager];
+    if (Array.isArray(axes) && axes.length) {
+      parts.push(manager + ": " + axes.join(", "));
+    }
+  });
+  return parts.length ? parts.join(" | ") : "-";
+}
+
+function formatMicroMachineTargetPriority(priority) {
+  if (!priority || typeof priority !== "object") { return "-"; }
+  var parts = [];
+  if (priority.selected_target_class) {
+    parts.push("selected=" + priority.selected_target_class);
+  }
+  ["requested_biases", "telemetry_biases"].forEach(function (key) {
+    var payload = priority[key];
+    if (!payload || typeof payload !== "object") { return; }
+    var items = Object.keys(payload).map(function (name) {
+      return name + "=" + payload[name];
+    });
+    if (items.length) { parts.push(key + ": " + items.join(", ")); }
+  });
+  return parts.length ? parts.join(" | ") : "-";
+}
+
+function renderMicroMachineLogSnippets(snippets) {
+  var list = document.getElementById("micromachine-log-snippets");
+  if (!list) { return; }
+  list.textContent = "";
+  if (!Array.isArray(snippets) || !snippets.length) {
+    var empty = document.createElement("li");
+    empty.textContent = "-";
+    list.appendChild(empty);
+    return;
+  }
+  snippets.forEach(function (snippet) {
+    var item = document.createElement("li");
+    var source = snippet && snippet.source ? "[" + snippet.source + "] " : "";
+    item.textContent = source + ((snippet && snippet.line) || "");
+    list.appendChild(item);
+  });
+}
+
 function updateMicroMachineBadge(intervention, status) {
   var badge = document.getElementById("micromachine-applied-badge");
   if (!badge) { return; }
@@ -3544,13 +4396,20 @@ function renderMicroMachineIntervention(data) {
   }
   setMicroMachineText("micromachine-goal", goalParts.join(" | "));
   setMicroMachineText("micromachine-managers", summarizeMicroMachineManagers(intervention.manager_snapshot));
+  setMicroMachineText("micromachine-posture", intervention.tactical_posture);
+  setMicroMachineText("micromachine-scope", formatMicroMachineScope(intervention.tactical_scope));
+  setMicroMachineText("micromachine-consumed-axes", formatMicroMachineAxesByManager(intervention.consumed_axes_by_manager));
+  setMicroMachineText("micromachine-target-priority", formatMicroMachineTargetPriority(intervention.target_priority));
+  setMicroMachineText("micromachine-refusal", intervention.refusal_reason);
+  renderMicroMachineLogSnippets(intervention.log_snippets);
   updateMicroMachineBadge(intervention, data && data.consumption_status);
   var raw = document.getElementById("micromachine-raw-evidence");
   if (raw) {
     raw.textContent = JSON.stringify({
       intervention: intervention,
       update: data && data.update,
-      telemetry: data && data.dashboard && data.dashboard.telemetry
+      telemetry: data && data.dashboard && data.dashboard.telemetry,
+      tactical_logs: intervention.log_snippets
     }, null, 2);
   }
 }
@@ -3603,6 +4462,40 @@ function pollMicroMachineStatus() {
     });
 }
 
+function optionalMicroMachineField(id) {
+  var node = document.getElementById(id);
+  return node ? node.value.trim() : "";
+}
+
+function optionalMicroMachineNumber(id) {
+  var value = optionalMicroMachineField(id);
+  if (!value) { return null; }
+  var parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildMicroMachineSemanticScopePayload() {
+  var scope = {};
+  var armyGroup = optionalMicroMachineField("micromachine-army-group");
+  var locationIntent = optionalMicroMachineField("micromachine-location-intent");
+  var unitClassText = optionalMicroMachineField("micromachine-unit-classes");
+  var durationSeconds = optionalMicroMachineNumber("micromachine-duration-seconds");
+  var safetyMargin = optionalMicroMachineNumber("micromachine-safety-margin");
+  if (armyGroup) { scope.army_group = armyGroup; }
+  if (locationIntent) { scope.location_intent = locationIntent; }
+  if (unitClassText) {
+    unitClassText = unitClassText
+      .replace(/siege tank/ig, "siege_tank")
+      .replace(/widow mine/ig, "widow_mine");
+    scope.unit_classes = unitClassText.split(/[\s,]+/).map(function (item) {
+      return item.trim().toLowerCase().replace(/-/g, "_");
+    }).filter(Boolean);
+  }
+  if (durationSeconds !== null) { scope.duration_seconds = Math.floor(durationSeconds); }
+  if (safetyMargin !== null) { scope.require_safety_margin = safetyMargin; }
+  return scope;
+}
+
 var microMachineForm = document.getElementById("micromachine-form");
 if (microMachineForm) {
   microMachineForm.addEventListener("submit", function (event) {
@@ -3611,14 +4504,23 @@ if (microMachineForm) {
     var blackboardInput = document.getElementById("micromachine-blackboard-dir");
     var text = commandInput.value.trim();
     if (!text) { return; }
+    var payload = {
+      text: text,
+      blackboard_dir: blackboardInput.value.trim()
+    };
+    var semanticScope = buildMicroMachineSemanticScopePayload();
+    if (Object.keys(semanticScope).length) {
+      payload.semantic_scope = semanticScope;
+    }
+    var ttlSeconds = optionalMicroMachineNumber("micromachine-ttl-seconds");
+    if (ttlSeconds !== null) {
+      payload.ttl_seconds = Math.floor(ttlSeconds);
+    }
     document.getElementById("micromachine-status").textContent = t("microMachineSending");
     fetch("/api/micromachine/modulate" + authQuery, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: text,
-        blackboard_dir: blackboardInput.value.trim()
-      })
+      body: JSON.stringify(payload)
     })
       .then(parseJsonResponse)
       .then(function (data) {
@@ -4124,6 +5026,14 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"accepted": False, "error": "MicroMachine 요청 본문은 JSON 객체여야 합니다."},
             )
             return
+        try:
+            semantic_scope, ttl_seconds = _extract_micromachine_semantic_scope(document)
+        except ValueError as error:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": str(error)},
+            )
+            return
         text = document.get("text")
         if not isinstance(text, str) or not text.strip():
             self._send_json(
@@ -4158,6 +5068,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     text.strip(),
                     blackboard_dir=str(document.get("blackboard_dir", "") or ""),
                     provider_output=provider_output,
+                    semantic_scope=semantic_scope,
+                    ttl_seconds=ttl_seconds,
                     current_frame=current_frame,
                     update_id=update_id,
                 )

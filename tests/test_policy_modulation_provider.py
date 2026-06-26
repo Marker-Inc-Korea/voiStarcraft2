@@ -178,6 +178,25 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (
             {"goal": "unsafe", "raw_action": "attack_move"},
+            {"goal": "unsafe", "rawCommand": "attack"},
+            {"goal": "unsafe", "directCommand": "move"},
+            {"goal": "unsafe", "directKey": "a"},
+            {"goal": "unsafe", "directKeys": ["a"]},
+            {"goal": "unsafe", "directSC2Command": "attack"},
+            {"goal": "unsafe", "sc2Command": "attack"},
+            {"goal": "unsafe", "keyboardKey": "a"},
+            {"goal": "unsafe", "keyDown": "a"},
+            {"goal": "unsafe", "keyUp": "a"},
+            {"goal": "unsafe", "keyboardShortcut": "control+a"},
+            {"goal": "unsafe", "sendKey": "a"},
+            {"goal": "unsafe", "rawKey": "a"},
+            {"goal": "unsafe", "attackMove": "enemy natural"},
+            {"goal": "unsafe", "S2ClientAPI": "attack"},
+            {"goal": "unsafe", "BotAIMethod": "do"},
+            {"goal": "unsafe", "S2.Client.API": "attack"},
+            {"goal": "unsafe", "S2/Client/API": "attack"},
+            {"goal": "unsafe", "Bot.AI.Method": "do"},
+            {"goal": "unsafe", "attack.move": "enemy natural"},
             {"goal": "unsafe", "representation": {"python_sc2.do": "attack"}},
             {"goal": "unsafe", "constraints": [{"key": "unit_tag", "value": 1}]},
         ):
@@ -211,6 +230,61 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         )
         self.assertEqual(PolicyModulationCompileStatus.REFUSED, refusal.status)
         self.assertIn("missing", refusal.refusal_reason)
+
+    def test_surfaces_wrapped_clarification_and_refusal_without_crashing(self) -> None:
+        clarification = compile_policy_modulation_provider_output(
+            {
+                "source": "ui",
+                "modulation": {
+                    "status": "clarification_required",
+                    "clarification_prompt": "공격 타이밍을 더 구체화해 주세요.",
+                },
+            }
+        )
+        self.assertEqual(
+            PolicyModulationCompileStatus.CLARIFICATION_REQUIRED,
+            clarification.status,
+        )
+        self.assertEqual(PolicyModulationSource.UI, clarification.source)
+        self.assertEqual(
+            "공격 타이밍을 더 구체화해 주세요.",
+            clarification.clarification_prompt,
+        )
+        self.assertIsNone(clarification.vector)
+
+        refusal = compile_policy_modulation_provider_output(
+            {
+                "policy_modulation": {
+                    "status": "refused",
+                    "refusal_reason": "raw control request refused",
+                },
+            }
+        )
+        self.assertEqual(PolicyModulationCompileStatus.REFUSED, refusal.status)
+        self.assertEqual("raw control request refused", refusal.refusal_reason)
+        self.assertIsNone(refusal.vector)
+
+    def test_wrapped_terminal_status_wins_over_outer_envelope_status(self) -> None:
+        for outer_status in ("compiled", "ok"):
+            with self.subTest(outer_status=outer_status):
+                result = compile_policy_modulation_provider_output(
+                    {
+                        "status": outer_status,
+                        "modulation": {
+                            "status": "clarification_required",
+                            "clarification_prompt": "공격 타이밍을 더 구체화해 주세요.",
+                        },
+                    }
+                )
+                self.assertEqual(
+                    PolicyModulationCompileStatus.CLARIFICATION_REQUIRED,
+                    result.status,
+                )
+                self.assertEqual(
+                    "공격 타이밍을 더 구체화해 주세요.",
+                    result.clarification_prompt,
+                )
+                self.assertIsNone(result.vector)
 
     def test_compiles_from_provider_interface(self) -> None:
         provider = StaticModulationProvider(
