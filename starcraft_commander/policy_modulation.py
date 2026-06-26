@@ -334,6 +334,11 @@ class CombatModulation:
     engage_threshold_delta: float = 0.0
     retreat_threshold_delta: float = 0.0
     attack_timing_bias: float = 0.0
+    commitment_level: float = 0.0
+    pressure_window_frames: int = 0
+    attack_condition_override: str = "normal"
+    retreat_patience_bias: float = 0.0
+    rally_before_attack_bias: float = 0.0
     harassment_bias: float = 0.0
     defend_bias: float = 0.0
     preserve_army_bias: float = 0.0
@@ -351,6 +356,9 @@ class CombatModulation:
                 "engage_threshold_delta",
                 "retreat_threshold_delta",
                 "attack_timing_bias",
+                "commitment_level",
+                "retreat_patience_bias",
+                "rally_before_attack_bias",
                 "harassment_bias",
                 "defend_bias",
                 "preserve_army_bias",
@@ -365,6 +373,25 @@ class CombatModulation:
             "target_priority_biases",
             _coerce_biases(self.target_priority_biases),
         )
+        object.__setattr__(
+            self,
+            "pressure_window_frames",
+            _coerce_bounded_int(
+                self.pressure_window_frames,
+                field_name="pressure_window_frames",
+                lower=0,
+                upper=120_000,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "attack_condition_override",
+            _require_choice(
+                "attack_condition_override",
+                self.attack_condition_override,
+                {"never", "normal", "earlier_if_safe", "force_when_threshold_met"},
+            ),
+        )
 
     def to_dict(self) -> dict[str, object]:
         payload = _float_fields_to_dict(
@@ -374,6 +401,9 @@ class CombatModulation:
                 "engage_threshold_delta",
                 "retreat_threshold_delta",
                 "attack_timing_bias",
+                "commitment_level",
+                "retreat_patience_bias",
+                "rally_before_attack_bias",
                 "harassment_bias",
                 "defend_bias",
                 "preserve_army_bias",
@@ -383,6 +413,8 @@ class CombatModulation:
                 "flank_bias",
             ),
         )
+        payload["pressure_window_frames"] = self.pressure_window_frames
+        payload["attack_condition_override"] = self.attack_condition_override
         payload["target_priority_biases"] = self.target_priority_biases.to_dict()
         return payload
 
@@ -442,8 +474,10 @@ class SquadModulation:
     regroup_bias: float = 0.0
     drop_bias: float = 0.0
     split_army_bias: float = 0.0
+    flank_bias: float = 0.0
     reinforce_bias: float = 0.0
     contain_bias: float = 0.0
+    proxy_pressure_bias: float = 0.0
     squad_role_biases: WeightedBiases = field(default_factory=WeightedBiases)
 
     def __post_init__(self) -> None:
@@ -456,8 +490,10 @@ class SquadModulation:
                 "regroup_bias",
                 "drop_bias",
                 "split_army_bias",
+                "flank_bias",
                 "reinforce_bias",
                 "contain_bias",
+                "proxy_pressure_bias",
             ),
         )
         object.__setattr__(
@@ -474,12 +510,122 @@ class SquadModulation:
                 "regroup_bias",
                 "drop_bias",
                 "split_army_bias",
+                "flank_bias",
                 "reinforce_bias",
                 "contain_bias",
+                "proxy_pressure_bias",
             ),
         )
         payload["squad_role_biases"] = self.squad_role_biases.to_dict()
         return payload
+
+
+@dataclass(frozen=True)
+class TacticalScopeModulation:
+    """Semantic unit-selection-like scope resolved by the bot, never by tags."""
+
+    army_group: str = ""
+    unit_classes: tuple[str, ...] = ()
+    location_intent: str = ""
+    duration_seconds: int = 0
+    min_units: int = 0
+    max_units: int = 0
+    require_safety_margin: float = 0.0
+    allow_partial_scope: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "army_group",
+            _optional_choice(
+                "army_group",
+                self.army_group,
+                {
+                    "main",
+                    "harass",
+                    "defense",
+                    "scout",
+                    "air",
+                    "bio",
+                    "mech",
+                    "siege",
+                    "workers",
+                },
+            ),
+        )
+        object.__setattr__(
+            self,
+            "unit_classes",
+            _validate_string_tuple("unit_classes", self.unit_classes),
+        )
+        object.__setattr__(
+            self,
+            "location_intent",
+            _optional_choice(
+                "location_intent",
+                self.location_intent,
+                {
+                    "home",
+                    "natural",
+                    "enemy_main",
+                    "enemy_natural",
+                    "enemy_third",
+                    "third",
+                    "watchtower",
+                    "ramp",
+                    "last_seen_enemy_army",
+                },
+            ),
+        )
+        object.__setattr__(
+            self,
+            "duration_seconds",
+            _coerce_bounded_int(
+                self.duration_seconds,
+                field_name="duration_seconds",
+                lower=0,
+                upper=POLICY_MODULATION_TTL_MAX_SECONDS,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "min_units",
+            _coerce_bounded_int(self.min_units, field_name="min_units", lower=0, upper=200),
+        )
+        object.__setattr__(
+            self,
+            "max_units",
+            _coerce_bounded_int(self.max_units, field_name="max_units", lower=0, upper=200),
+        )
+        if self.max_units and self.min_units and self.max_units < self.min_units:
+            raise ValueError("max_units must be greater than or equal to min_units.")
+        object.__setattr__(
+            self,
+            "require_safety_margin",
+            _coerce_unit_interval(
+                self.require_safety_margin,
+                field_name="require_safety_margin",
+                lower=0.0,
+                upper=1.0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "allow_partial_scope",
+            _coerce_bool(self.allow_partial_scope, "allow_partial_scope"),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "army_group": self.army_group,
+            "unit_classes": list(self.unit_classes),
+            "location_intent": self.location_intent,
+            "duration_seconds": self.duration_seconds,
+            "min_units": self.min_units,
+            "max_units": self.max_units,
+            "require_safety_margin": self.require_safety_margin,
+            "allow_partial_scope": self.allow_partial_scope,
+        }
 
 
 @dataclass(frozen=True)
@@ -559,6 +705,7 @@ class PolicyModulationVector:
     combat: CombatModulation = field(default_factory=CombatModulation)
     scouting: ScoutingModulation = field(default_factory=ScoutingModulation)
     squad: SquadModulation = field(default_factory=SquadModulation)
+    scope: TacticalScopeModulation = field(default_factory=TacticalScopeModulation)
     emergency: EmergencyModulation = field(default_factory=EmergencyModulation)
     constraints: tuple[PolicySafetyConstraint, ...] = ()
     tags: tuple[str, ...] = ()
@@ -599,6 +746,9 @@ class PolicyModulationVector:
         )
         object.__setattr__(self, "squad", _coerce_domain(self.squad, SquadModulation))
         object.__setattr__(
+            self, "scope", _coerce_domain(self.scope, TacticalScopeModulation)
+        )
+        object.__setattr__(
             self, "emergency", _coerce_domain(self.emergency, EmergencyModulation)
         )
         object.__setattr__(
@@ -632,6 +782,7 @@ class PolicyModulationVector:
             combat=_domain_from_mapping(mapping, "combat", CombatModulation),
             scouting=_domain_from_mapping(mapping, "scouting", ScoutingModulation),
             squad=_domain_from_mapping(mapping, "squad", SquadModulation),
+            scope=_domain_from_mapping(mapping, "scope", TacticalScopeModulation),
             emergency=_domain_from_mapping(mapping, "emergency", EmergencyModulation),
             constraints=_constraints_from_mapping(mapping.get("constraints", ())),
             tags=_string_tuple_from_mapping(mapping.get("tags", ()), "tags"),
@@ -654,6 +805,7 @@ class PolicyModulationVector:
             "combat": self.combat.to_dict(),
             "scouting": self.scouting.to_dict(),
             "squad": self.squad.to_dict(),
+            "scope": self.scope.to_dict(),
             "emergency": self.emergency.to_dict(),
             "constraints": [constraint.to_dict() for constraint in self.constraints],
             "tags": list(self.tags),
@@ -793,6 +945,20 @@ def _coerce_bool(value: object, field_name: str) -> bool:
     return value
 
 
+def _coerce_bounded_int(
+    value: object,
+    *,
+    field_name: str,
+    lower: int,
+    upper: int,
+) -> int:
+    if type(value) is bool or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer.")
+    if not lower <= value <= upper:
+        raise ValueError(f"{field_name} must be between {lower} and {upper}.")
+    return value
+
+
 def _require_text(field_name: str, value: object) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string.")
@@ -806,6 +972,12 @@ def _require_choice(field_name: str, value: object, choices: set[str]) -> str:
             f"{field_name} must be one of: {', '.join(sorted(choices))}."
         )
     return text
+
+
+def _optional_choice(field_name: str, value: object, choices: set[str]) -> str:
+    if value in (None, ""):
+        return ""
+    return _require_choice(field_name, value, choices)
 
 
 def _validate_string_tuple(name: str, values: object) -> tuple[str, ...]:

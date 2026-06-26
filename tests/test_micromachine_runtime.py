@@ -38,6 +38,7 @@ from starcraft_commander.policy_modulation import (
     ScoutingModulation,
     SquadModulation,
     StrategyModulation,
+    TacticalScopeModulation,
     TechModulation,
     WeightedBiases,
 )
@@ -65,11 +66,21 @@ def _vector(ttl_seconds: int = 30) -> PolicyModulationVector:
         combat=CombatModulation(
             defend_bias=0.8,
             aggression=-0.2,
+            commitment_level=0.4,
+            pressure_window_frames=2400,
+            attack_condition_override="earlier_if_safe",
             siege_position_bias=0.7,
             target_priority_biases=WeightedBiases({"BANELING": 0.9}),
         ),
         scouting=ScoutingModulation(scan_priority=0.35),
-        squad=SquadModulation(reinforce_bias=0.4),
+        squad=SquadModulation(reinforce_bias=0.4, flank_bias=0.25),
+        scope=TacticalScopeModulation(
+            army_group="main",
+            unit_classes=("marine", "siege_tank"),
+            location_intent="enemy_natural",
+            min_units=6,
+            require_safety_margin=0.25,
+        ),
         emergency=EmergencyModulation(force_retreat=True, prioritize_repair=True),
     )
 
@@ -100,8 +111,23 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         self.assertEqual("micromachine_aggressive_pressure", aggressive.goal)
         self.assertGreater(aggressive.combat.aggression, 0.5)
         self.assertLess(aggressive.combat.defend_bias, defensive.combat.defend_bias)
+        self.assertGreater(aggressive.combat.attack_timing_bias, 0)
+        self.assertGreater(aggressive.combat.commitment_level, 0)
+        self.assertEqual("earlier_if_safe", aggressive.combat.attack_condition_override)
+        self.assertGreater(aggressive.combat.retreat_patience_bias, 0)
+        self.assertGreater(aggressive.combat.rally_before_attack_bias, 0)
+        self.assertGreater(
+            aggressive.combat.target_priority_biases.to_dict()["worker_line"],
+            0,
+        )
         self.assertGreater(aggressive.scouting.risk_tolerance, 0)
         self.assertFalse(aggressive.scouting.require_fresh_enemy_observation)
+        self.assertGreater(aggressive.squad.contain_bias, 0)
+        self.assertGreater(aggressive.squad.reinforce_bias, 0)
+        self.assertEqual("main", aggressive.scope.army_group)
+        self.assertEqual("enemy_natural", aggressive.scope.location_intent)
+        self.assertGreaterEqual(aggressive.scope.min_units, 1)
+        self.assertGreater(aggressive.scope.require_safety_margin, 0)
         self.assertIn("bounded_intervention", aggressive.tags)
 
         for profile in (defensive, aggressive):
@@ -161,12 +187,20 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             self.assertEqual("defensive_tank_hold", document["vector"]["goal"])
             kv = latest_kv.read_text()
             self.assertIn("combat.defend_bias=0.8", kv)
+            self.assertIn("combat.commitment_level=0.4", kv)
+            self.assertIn("combat.pressure_window_frames=2400", kv)
+            self.assertIn("combat.attack_condition_override=earlier_if_safe", kv)
             self.assertIn("combat.siege_position_bias=0.7", kv)
             self.assertIn("combat.target_priority_biases.BANELING=0.9", kv)
             self.assertIn("tech.unit_biases.TERRAN_SIEGETANK=0.6", kv)
             self.assertIn("production.addon_biases.TECHLAB=0.5", kv)
             self.assertIn("scouting.scan_priority=0.35", kv)
             self.assertIn("squad.reinforce_bias=0.4", kv)
+            self.assertIn("squad.flank_bias=0.25", kv)
+            self.assertIn("scope.army_group=main", kv)
+            self.assertIn("scope.unit_classes=marine,siege_tank", kv)
+            self.assertIn("scope.location_intent=enemy_natural", kv)
+            self.assertIn("scope.require_safety_margin=0.25", kv)
             self.assertIn("emergency.force_retreat=true", kv)
             self.assertIn("emergency.prioritize_repair=true", kv)
             self.assertEqual(1, len(archive.read_text().splitlines()))
@@ -433,7 +467,10 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
         self.assertIn("economy.gas_worker_target_bias=0.45\n", text)
         self.assertIn("combat.aggression=-0.2\n", text)
         self.assertIn("combat.target_priority_biases.BANELING=0.9\n", text)
-        self.assertIn("manager_bias_domains=strategy,economy,tech,production,combat,scouting,squad,emergency\n", text)
+        self.assertIn(
+            "manager_bias_domains=strategy,economy,tech,production,combat,scouting,squad,scope,emergency\n",
+            text,
+        )
 
     def test_flatten_update_rejects_injected_kv_keys(self) -> None:
         update = MicroMachineBlackboardUpdate(
