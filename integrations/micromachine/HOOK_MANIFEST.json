@@ -17,19 +17,20 @@
     "economy.mule_priority",
     "production.addon_biases.*",
     "production.production_facility_biases.*",
-    "production.production_continuity_bias",
     "production.tech_switch_urgency",
-    "combat.attack_timing_bias",
+    "combat.pressure_window_frames",
     "combat.siege_position_bias",
     "combat.kite_bias",
     "combat.flank_bias",
-    "combat.target_priority_biases.*",
-    "scouting.scout_cadence_bias",
-    "scouting.scan_priority",
-    "scouting.hidden_tech_scout_bias",
+    "squad.flank_bias",
     "squad.split_army_bias",
-    "squad.reinforce_bias",
-    "squad.contain_bias",
+    "squad.proxy_pressure_bias",
+    "scope.army_group",
+    "scope.unit_classes",
+    "scope.duration_seconds",
+    "scope.max_units",
+    "scope.require_safety_margin",
+    "scope.allow_partial_scope",
     "emergency.prioritize_repair",
     "emergency.stop_expansion"
   ],
@@ -49,6 +50,7 @@
       "keys": [
         "production.max_tech_deviation",
         "production.allow_build_order_rewrite",
+        "production.production_continuity_bias",
         "tech.unit_biases.TERRAN_SIEGETANK",
         "economy.expand_bias",
         "economy.worker_production_bias"
@@ -65,6 +67,12 @@
         "combat.aggression",
         "combat.defend_bias",
         "combat.preserve_army_bias",
+        "combat.attack_timing_bias",
+        "combat.commitment_level",
+        "combat.attack_condition_override",
+        "combat.retreat_patience_bias",
+        "combat.rally_before_attack_bias",
+        "scope.min_units",
         "emergency.cancel_attacks",
         "emergency.force_retreat"
       ],
@@ -79,6 +87,9 @@
       "keys": [
         "scouting.scout_priority",
         "scouting.risk_tolerance",
+        "scouting.scout_cadence_bias",
+        "scouting.scan_priority",
+        "scouting.hidden_tech_scout_bias",
         "scouting.require_fresh_enemy_observation"
       ],
       "intended_effect": "Bias scout risk and information freshness while ScoutManager keeps movement control."
@@ -124,6 +135,21 @@
         "squad.drop_bias"
       ],
       "intended_effect": "Bias role allocation/regroup behavior while Squad executes its existing micro managers."
+    },
+    {
+      "domain": "scope",
+      "source_path": "src/Squad.cpp",
+      "header_path": "src/Squad.h",
+      "function": "Squad::calcTargets(bool visibilityFilter)",
+      "secondary_function": "CombatCommander::updateAttackSquads()",
+      "keys": [
+        "scope.location_intent",
+        "scope.min_units",
+        "squad.contain_bias",
+        "squad.reinforce_bias",
+        "combat.target_priority_biases.*"
+      ],
+      "intended_effect": "Bias semantic attack scope, reinforce radius, contain position, and target ordering without raw unit tags."
     }
   ]
 }

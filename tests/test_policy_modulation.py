@@ -15,6 +15,7 @@ from starcraft_commander.policy_modulation import (
     ScoutingModulation,
     SquadModulation,
     StrategyModulation,
+    TacticalScopeModulation,
     TechModulation,
     WeightedBiases,
     reject_raw_policy_control_keys,
@@ -80,6 +81,11 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 engage_threshold_delta=0.15,
                 retreat_threshold_delta=0.2,
                 attack_timing_bias=-0.35,
+                commitment_level=0.25,
+                pressure_window_frames=4200,
+                attack_condition_override="earlier_if_safe",
+                retreat_patience_bias=0.3,
+                rally_before_attack_bias=0.55,
                 defend_bias=0.8,
                 combat_sim_confidence_margin=0.1,
                 siege_position_bias=0.75,
@@ -101,8 +107,19 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 defense_bias=0.7,
                 regroup_bias=0.5,
                 split_army_bias=-0.15,
+                flank_bias=0.2,
                 reinforce_bias=0.35,
                 contain_bias=0.25,
+                proxy_pressure_bias=0.1,
+            ),
+            scope=TacticalScopeModulation(
+                army_group="main",
+                unit_classes=("marine", "siege_tank"),
+                location_intent="enemy_natural",
+                duration_seconds=180,
+                min_units=6,
+                max_units=18,
+                require_safety_margin=0.35,
             ),
             emergency=EmergencyModulation(
                 cancel_attacks=True,
@@ -130,9 +147,15 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual(0.4, document["economy"]["gas_worker_target_bias"])
         self.assertEqual(0.5, document["production"]["addon_biases"]["TechLab"])
         self.assertEqual(0.15, document["combat"]["engage_threshold_delta"])
+        self.assertEqual(4200, document["combat"]["pressure_window_frames"])
+        self.assertEqual("earlier_if_safe", document["combat"]["attack_condition_override"])
         self.assertEqual(0.75, document["combat"]["siege_position_bias"])
         self.assertEqual(0.5, document["scouting"]["scan_priority"])
+        self.assertEqual(0.2, document["squad"]["flank_bias"])
         self.assertEqual(0.35, document["squad"]["reinforce_bias"])
+        self.assertEqual("main", document["scope"]["army_group"])
+        self.assertEqual(["marine", "siege_tank"], document["scope"]["unit_classes"])
+        self.assertEqual("enemy_natural", document["scope"]["location_intent"])
         self.assertTrue(document["emergency"]["cancel_attacks"])
         self.assertTrue(document["emergency"]["prioritize_repair"])
         self.assertEqual("no_attack_before", document["constraints"][0]["key"])
@@ -153,11 +176,19 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 "combat": {
                     "aggression": 0.4,
                     "harassment_bias": 0.25,
+                    "commitment_level": 0.55,
+                    "attack_condition_override": "force_when_threshold_met",
                     "target_priority_biases": {"Baneling": 0.5},
                 },
                 "squad": {
                     "squad_role_biases": {"harass": 0.5, "main_army": 0.2},
                     "contain_bias": 0.4,
+                },
+                "scope": {
+                    "army_group": "harass",
+                    "unit_classes": ["reaper"],
+                    "location_intent": "enemy_main",
+                    "min_units": 1,
                 },
                 "constraints": [{"key": "require_scouting_before_attack"}],
                 "tags": ["representation_modulation"],
@@ -168,9 +199,18 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual(PolicyOverrideLevel.BIAS, vector.override_level)
         self.assertEqual({"proxy_cyclone": 0.5}, vector.strategy.preferred_builds.to_dict())
         self.assertEqual(0.4, vector.combat.aggression)
+        self.assertEqual(0.55, vector.combat.commitment_level)
+        self.assertEqual("force_when_threshold_met", vector.combat.attack_condition_override)
         self.assertEqual({"Baneling": 0.5}, vector.combat.target_priority_biases.to_dict())
         self.assertEqual(0.4, vector.squad.contain_bias)
+        self.assertEqual("harass", vector.scope.army_group)
+        self.assertEqual(("reaper",), vector.scope.unit_classes)
         self.assertEqual("require_scouting_before_attack", vector.constraints[0].key)
+
+    def test_tactical_scope_accepts_issue_third_location_wording(self) -> None:
+        scope = TacticalScopeModulation(location_intent="third")
+
+        self.assertEqual("third", scope.location_intent)
 
     def test_rejects_raw_runtime_control_keys_at_any_depth(self) -> None:
         with self.assertRaisesRegex(ValueError, "raw runtime control"):

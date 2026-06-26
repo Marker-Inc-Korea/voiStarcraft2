@@ -36,7 +36,15 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         hooks = manifest["manager_hooks"]
         domains = {hook["domain"] for hook in hooks}
         self.assertEqual(
-            {"production", "combat", "scouting", "economy", "combat_analysis", "squad"},
+            {
+                "production",
+                "combat",
+                "scouting",
+                "economy",
+                "combat_analysis",
+                "squad",
+                "scope",
+            },
             domains,
         )
         required_sources = {
@@ -55,10 +63,13 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertTrue(hook["intended_effect"])
         pending_keys = manifest["python_blackboard_emitted_but_not_consumed_by_current_cpp_patch"]
         self.assertIn("production.addon_biases.*", pending_keys)
-        self.assertIn("combat.target_priority_biases.*", pending_keys)
-        self.assertIn("scouting.scan_priority", pending_keys)
-        self.assertIn("squad.reinforce_bias", pending_keys)
+        self.assertIn("combat.pressure_window_frames", pending_keys)
+        self.assertIn("squad.flank_bias", pending_keys)
+        self.assertIn("scope.army_group", pending_keys)
         self.assertIn("emergency.prioritize_repair", pending_keys)
+        self.assertNotIn("combat.target_priority_biases.*", pending_keys)
+        self.assertNotIn("scouting.scan_priority", pending_keys)
+        self.assertNotIn("squad.reinforce_bias", pending_keys)
 
     def test_cpp_blackboard_header_is_header_only_and_uses_stdlib(self) -> None:
         header = (KIT_DIR / "voi_policy_blackboard.hpp").read_text()
@@ -136,7 +147,18 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "m_managersInitialized",
             "getVoiPolicyBool(\"emergency.force_retreat\", false)",
             "getVoiPolicyBool(\"emergency.cancel_attacks\", false)",
+            "getVoiPolicyFloat(\"combat.commitment_level\", 0.0f)",
+            "getVoiPolicyString(\"combat.attack_condition_override\", \"normal\")",
+            "getVoiPolicyFloat(\"combat.retreat_patience_bias\", 0.0f)",
+            "voiRetreatPatienceBias * 0.20f",
+            "getVoiPolicyFloat(\"squad.contain_bias\", 0.0f)",
+            "getVoiPolicyFloat(\"squad.reinforce_bias\", 0.0f)",
+            "getVoiPolicyInt(\"scope.min_units\", 0)",
+            "getVoiPolicyString(\"scope.location_intent\", \"\")",
             "voiEngageMarginDelta",
+            "voiTargetPriorityScore",
+            "combat.target_priority_biases.worker_line",
+            "consumed_axes",
             "BaseLocation * closestStartBase = nullptr",
             "adoptAsPlayerStartLocation(Players::Self, selfDepot)",
             "closeToResourceCenter",
@@ -342,7 +364,22 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "policy_active",
             "CombatCommander",
             "ScoutManager",
+            "Squad",
             "bounded_intervention",
+            "combat.attack_timing_bias",
+            "combat.commitment_level",
+            "combat.attack_condition_override",
+            "combat.retreat_patience_bias",
+            "combat.rally_before_attack_bias",
+            "squad.contain_bias",
+            "squad.reinforce_bias",
+            "scope.location_intent",
+            "combat.target_priority_biases.*",
+            "target_worker_line_bias",
+            "target_townhall_bias",
+            "target_army_bias",
+            "missing deep CombatCommander consumed axis",
+            "missing deep Squad consumed axis",
             "aggressive_update_id = sys.argv[3]",
             "defensive_update_id = sys.argv[4]",
             "smoke-defensive-hold",

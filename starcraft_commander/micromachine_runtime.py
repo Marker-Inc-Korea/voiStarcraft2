@@ -38,6 +38,7 @@ from starcraft_commander.policy_modulation import (
     ScoutingModulation,
     SquadModulation,
     StrategyModulation,
+    TacticalScopeModulation,
     TechModulation,
     WeightedBiases,
     reject_raw_policy_control_keys,
@@ -203,9 +204,21 @@ def build_aggressive_pressure_profile(
             aggression=0.55,
             engage_threshold_delta=-0.15,
             retreat_threshold_delta=-0.1,
+            attack_timing_bias=0.2,
+            commitment_level=0.25,
+            attack_condition_override="earlier_if_safe",
+            retreat_patience_bias=0.15,
+            rally_before_attack_bias=0.1,
             harassment_bias=0.35,
             defend_bias=0.15,
             combat_sim_confidence_margin=-0.1,
+            target_priority_biases=WeightedBiases(
+                {
+                    "worker_line": 0.35,
+                    "townhall": 0.25,
+                    "army": 0.15,
+                }
+            ),
         ),
         scouting=ScoutingModulation(
             scout_priority=0.7,
@@ -216,6 +229,14 @@ def build_aggressive_pressure_profile(
             main_army_bias=0.45,
             harassment_bias=0.45,
             defense_bias=-0.2,
+            reinforce_bias=0.25,
+            contain_bias=0.25,
+        ),
+        scope=TacticalScopeModulation(
+            army_group="main",
+            location_intent="enemy_natural",
+            min_units=2,
+            require_safety_margin=0.1,
         ),
         tags=("micromachine", "aggressive_pressure", "bounded_intervention"),
         rationale="Bias MicroMachine toward pressure while leaving tactical execution autonomous.",
@@ -791,6 +812,7 @@ def flatten_blackboard_update(update: MicroMachineBlackboardUpdate) -> str:
         "combat",
         "scouting",
         "squad",
+        "scope",
         "emergency",
     ):
         value = vector.get(domain, {})

@@ -58,11 +58,18 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 "tech": {"unit_biases": {"SiegeTank": 0.6}},
                 "addon_biases": {"TechLab": 0.45},
                 "combat": {"defend_bias": 0.8, "aggression": -0.2},
+                "commitment_level": 0.35,
+                "pressure_window_frames": 3300,
+                "attack_condition_override": "earlier_if_safe",
                 "siege_position_bias": 0.7,
                 "target_priority_biases": {"Baneling": 0.9},
                 "scouting": {"require_fresh_enemy_observation": True},
                 "scan_priority": 0.4,
+                "army_group": "main",
+                "unit_classes": ["marine", "siege_tank"],
+                "location_intent": "enemy_natural",
                 "contain_bias": 0.3,
+                "squad_flank_bias": 0.2,
                 "prioritize_repair": True,
                 "tags": ["korean_order", "micro_machine"],
             }
@@ -81,10 +88,17 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual({"SiegeTank": 0.6}, result.vector.tech.unit_biases.to_dict())
         self.assertEqual({"TechLab": 0.45}, result.vector.production.addon_biases.to_dict())
         self.assertEqual(0.8, result.vector.combat.defend_bias)
+        self.assertEqual(0.35, result.vector.combat.commitment_level)
+        self.assertEqual(3300, result.vector.combat.pressure_window_frames)
+        self.assertEqual("earlier_if_safe", result.vector.combat.attack_condition_override)
         self.assertEqual(0.7, result.vector.combat.siege_position_bias)
         self.assertEqual({"Baneling": 0.9}, result.vector.combat.target_priority_biases.to_dict())
         self.assertEqual(0.4, result.vector.scouting.scan_priority)
         self.assertEqual(0.3, result.vector.squad.contain_bias)
+        self.assertEqual(0.2, result.vector.squad.flank_bias)
+        self.assertEqual("main", result.vector.scope.army_group)
+        self.assertEqual(("marine", "siege_tank"), result.vector.scope.unit_classes)
+        self.assertEqual("enemy_natural", result.vector.scope.location_intent)
         self.assertTrue(result.vector.emergency.prioritize_repair)
 
     def test_compiles_neural_representation_axes_to_same_contract(self) -> None:
@@ -103,10 +117,13 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     "production.addon_biases.TechLab": 0.4,
                     "combat.defend_bias": 0.8,
                     "combat.aggression": -0.2,
+                    "combat.commitment_level": 0.4,
                     "combat.target_priority_biases.Baneling": 0.7,
                     "scouting.require_fresh_enemy_observation": True,
                     "scouting.hidden_tech_scout_bias": 0.5,
                     "squad.reinforce_bias": 0.4,
+                    "scope.army_group": "siege",
+                    "scope.location_intent": "enemy_natural",
                 },
             }
         )
@@ -122,9 +139,26 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual({"SiegeTank": 0.6}, vector.tech.unit_biases.to_dict())
         self.assertEqual({"TechLab": 0.4}, vector.production.addon_biases.to_dict())
         self.assertEqual(0.8, vector.combat.defend_bias)
+        self.assertEqual(0.4, vector.combat.commitment_level)
         self.assertEqual({"Baneling": 0.7}, vector.combat.target_priority_biases.to_dict())
         self.assertEqual(0.5, vector.scouting.hidden_tech_scout_bias)
         self.assertEqual(0.4, vector.squad.reinforce_bias)
+        self.assertEqual("siege", vector.scope.army_group)
+        self.assertEqual("enemy_natural", vector.scope.location_intent)
+
+    def test_compiles_issue_third_scope_wording(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "goal": "pressure_third",
+                "location_intent": "third",
+                "combat": {"attack_condition_override": "earlier_if_safe"},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("third", result.vector.scope.location_intent)
 
     def test_flat_aliases_survive_later_domain_objects(self) -> None:
         result = compile_policy_modulation_provider_output(

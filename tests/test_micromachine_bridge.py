@@ -26,6 +26,7 @@ from starcraft_commander.policy_modulation import (
     PolicyOverrideLevel,
     PolicySafetyConstraint,
     StrategyModulation,
+    TacticalScopeModulation,
     TechModulation,
     WeightedBiases,
 )
@@ -83,7 +84,15 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
 
         domains = {hook.domain for hook in MICROMACHINE_MANAGER_HOOKS}
         self.assertEqual(
-            {"strategy", "production", "combat", "squad", "scouting", "economy"},
+            {
+                "strategy",
+                "production",
+                "combat",
+                "squad",
+                "scope",
+                "scouting",
+                "economy",
+            },
             domains,
         )
 
@@ -105,6 +114,28 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
             document["active_constraints"][0]["key"],
         )
         json.dumps(document, ensure_ascii=False)
+
+    def test_manager_bias_domains_ignore_neutral_defaults(self) -> None:
+        neutral = MicroMachineBlackboardUpdate(
+            update_id="mod-neutral",
+            vector=PolicyModulationVector(goal="observe"),
+            issued_at_frame=1000,
+        )
+
+        self.assertEqual((), neutral.manager_bias_domains)
+        self.assertEqual([], neutral.to_dict()["manager_bias_domains"])
+
+        tactical = MicroMachineBlackboardUpdate(
+            update_id="mod-tactical",
+            vector=PolicyModulationVector(
+                goal="pressure_third",
+                combat=CombatModulation(attack_condition_override="earlier_if_safe"),
+                scope=TacticalScopeModulation(location_intent="third"),
+            ),
+            issued_at_frame=1000,
+        )
+
+        self.assertEqual(("combat", "scope"), tactical.manager_bias_domains)
 
     def test_blackboard_update_rejects_json_unsafe_update_id(self) -> None:
         with self.assertRaisesRegex(ValueError, "update_id"):

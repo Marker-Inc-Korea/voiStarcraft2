@@ -793,6 +793,61 @@ if not combat or combat.get("active") is not True:
     raise SystemExit(f"missing CombatCommander activity evidence: {managers!r}")
 if combat.get("bounded_intervention") is not True or combat.get("aggression", 0) <= 0:
     raise SystemExit(f"missing aggressive CombatCommander modulation evidence: {combat!r}")
+combat_consumed_axes = {
+    axis.strip()
+    for axis in str(combat.get("consumed_axes", "")).split(",")
+    if axis.strip()
+}
+for axis in (
+    "combat.attack_timing_bias",
+    "combat.commitment_level",
+    "combat.attack_condition_override",
+    "combat.retreat_patience_bias",
+    "combat.rally_before_attack_bias",
+    "scope.min_units",
+):
+    if axis not in combat_consumed_axes:
+        raise SystemExit(f"missing deep CombatCommander consumed axis {axis}: {combat!r}")
+if float(combat.get("attack_timing_bias", 0)) <= 0:
+    raise SystemExit(f"missing attack timing bias evidence: {combat!r}")
+if float(combat.get("commitment_level", 0)) <= 0:
+    raise SystemExit(f"missing commitment level evidence: {combat!r}")
+if combat.get("attack_condition_override") != "earlier_if_safe":
+    raise SystemExit(f"missing attack condition override evidence: {combat!r}")
+if float(combat.get("retreat_patience_bias", 0)) <= 0:
+    raise SystemExit(f"missing retreat patience evidence: {combat!r}")
+if float(combat.get("rally_before_attack_bias", 0)) <= 0:
+    raise SystemExit(f"missing rally-before-attack evidence: {combat!r}")
+squad = managers.get("Squad")
+if not squad or squad.get("active") is not True:
+    raise SystemExit(f"missing Squad activity evidence: {managers!r}")
+if squad.get("bounded_intervention") is not True:
+    raise SystemExit(f"missing Squad bounded intervention evidence: {squad!r}")
+squad_consumed_axes = {
+    axis.strip()
+    for axis in str(squad.get("consumed_axes", "")).split(",")
+    if axis.strip()
+}
+for axis in (
+    "squad.contain_bias",
+    "squad.reinforce_bias",
+    "scope.location_intent",
+    "scope.min_units",
+    "combat.target_priority_biases.*",
+):
+    if axis not in squad_consumed_axes:
+        raise SystemExit(f"missing deep Squad consumed axis {axis}: {squad!r}")
+if float(squad.get("contain_bias", 0)) <= 0:
+    raise SystemExit(f"missing contain bias evidence: {squad!r}")
+if float(squad.get("reinforce_bias", 0)) <= 0:
+    raise SystemExit(f"missing reinforce bias evidence: {squad!r}")
+if squad.get("scope_location_intent") != "enemy_natural":
+    raise SystemExit(f"missing semantic scope location evidence: {squad!r}")
+if int(squad.get("scope_min_units", 0)) < 1:
+    raise SystemExit(f"missing semantic scope unit threshold evidence: {squad!r}")
+for key in ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"):
+    if float(squad.get(key, 0)) <= 0:
+        raise SystemExit(f"missing target priority evidence {key}: {squad!r}")
 scout = managers.get("ScoutManager")
 if not scout or scout.get("active") is not True:
     raise SystemExit(f"missing ScoutManager activity evidence: {managers!r}")

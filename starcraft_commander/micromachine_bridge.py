@@ -271,6 +271,7 @@ class MicroMachineBlackboardUpdate:
                 "combat",
                 "scouting",
                 "squad",
+                "scope",
                 "emergency",
             )
             if _domain_has_signal(getattr(self.vector, domain))
@@ -461,16 +462,30 @@ def _domain_has_signal(domain: object) -> bool:
     if not callable(to_dict):
         return False
     payload = to_dict()
-    for value in payload.values():
-        if isinstance(value, bool) and value:
-            return True
-        if isinstance(value, (int, float)) and value != 0:
-            return True
-        if isinstance(value, (list, tuple, dict)) and value:
-            return True
-        if isinstance(value, str) and value not in {"", "balanced"}:
+    try:
+        default_payload = type(domain)().to_dict()
+    except Exception:  # noqa: BLE001 - unknown domain-like objects use fallback semantics.
+        default_payload = {}
+    for key, value in payload.items():
+        if key in default_payload:
+            if value != default_payload[key]:
+                return True
+            continue
+        if _value_has_signal(value):
             return True
     return False
+
+
+def _value_has_signal(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, (list, tuple, dict)):
+        return bool(value)
+    if isinstance(value, str):
+        return value not in {"", "balanced"}
+    return value is not None
 
 
 def _validate_manager_payloads(
@@ -607,6 +622,15 @@ MICROMACHINE_MANAGER_HOOKS: Final[tuple[MicroMachineManagerHook, ...]] = (
         manager="Squad / SquadOrder",
         hook="role allocation and regroup bias",
         responsibility="Biases main army, defense, harassment, drops, and regrouping.",
+    ),
+    MicroMachineManagerHook(
+        domain="scope",
+        manager="CombatCommander / Squad",
+        hook="semantic unit-scope resolution",
+        responsibility=(
+            "Carries unit-selection-like intent as semantic group, unit class, "
+            "location, and duration constraints without raw unit tags."
+        ),
     ),
     MicroMachineManagerHook(
         domain="scouting",

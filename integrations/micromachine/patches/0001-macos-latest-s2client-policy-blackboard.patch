@@ -2283,10 +2283,10 @@ index 99878ac..0f889c4 100644
 \ No newline at end of file
 +}
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index a8d5f3a..bf39767 100644
+index a8d5f3a..fd43e24 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
-@@ -1,3879 +1,3895 @@
+@@ -1,3879 +1,3955 @@
 -#include "CombatCommander.h"
 -#include "Util.h"
 -#include "CCBot.h"
@@ -6170,6 +6170,7 @@ index a8d5f3a..bf39767 100644
 +#include "CombatCommander.h"
 +#include "Util.h"
 +#include "CCBot.h"
++#include <algorithm>
 +#include <list>
 +
 +const size_t IdlePriority = 0;
@@ -6500,9 +6501,21 @@ index a8d5f3a..bf39767 100644
 +	}
 +	const float defendBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("combat.defend_bias", 0.0f));
 +	const float aggression = m_bot.Commander().getVoiPolicyFloat("combat.aggression", 0.0f);
++	const float attackTimingBias = m_bot.Commander().getVoiPolicyFloat("combat.attack_timing_bias", 0.0f);
++	const float commitmentLevel = m_bot.Commander().getVoiPolicyFloat("combat.commitment_level", 0.0f);
++	const std::string attackOverride = m_bot.Commander().getVoiPolicyString("combat.attack_condition_override", "normal");
++	if (attackOverride == "never")
++	{
++		return false;
++	}
 +	if (defendBias >= 0.9f && aggression <= 0.0f)
 +	{
 +		return false;
++	}
++	if ((attackOverride == "earlier_if_safe" || attackOverride == "force_when_threshold_met")
++		&& aggression + attackTimingBias + commitmentLevel > 0.5f)
++	{
++		return true;
 +	}
 +	return true;
 +}
@@ -7366,6 +7379,8 @@ index a8d5f3a..bf39767 100644
 +		}
 +	}
 +
++	const float reinforceBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("squad.reinforce_bias", 0.0f));
++	const float reinforceRadius = 25.0f + reinforceBias * 20.0f;
 +	if (mainAttackSquad.isSuiciding())
 +	{
 +		SquadOrder retreatOrder(SquadOrderTypes::Retreat, m_bot.GetStartLocation(), 25, "Retreat");
@@ -7373,7 +7388,7 @@ index a8d5f3a..bf39767 100644
 +	}
 +	else
 +	{
-+		SquadOrder sendBackupsOrder(SquadOrderTypes::Attack, mainAttackSquad.calcCenter(), 25, "Send backups");
++		SquadOrder sendBackupsOrder(SquadOrderTypes::Attack, mainAttackSquad.calcCenter(), reinforceRadius, "Send backups");
 +		backupSquad.setSquadOrder(sendBackupsOrder);
 +	}
 +}
@@ -7821,20 +7836,64 @@ index a8d5f3a..bf39767 100644
 +		|| m_bot.Commander().getVoiPolicyBool("emergency.cancel_attacks", false);
 +	const float voiDefendBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("combat.defend_bias", 0.0f));
 +	const float voiAggression = m_bot.Commander().getVoiPolicyFloat("combat.aggression", 0.0f);
-+	const float voiEngageMarginDelta = std::max(-0.35f, std::min(0.55f, voiDefendBias * 0.35f - voiAggression * 0.25f));
++	const float voiAttackTimingBias = m_bot.Commander().getVoiPolicyFloat("combat.attack_timing_bias", 0.0f);
++	const float voiCommitmentLevel = m_bot.Commander().getVoiPolicyFloat("combat.commitment_level", 0.0f);
++	const float voiRallyBeforeAttackBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("combat.rally_before_attack_bias", 0.0f));
++	const float voiRetreatPatienceBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("combat.retreat_patience_bias", 0.0f));
++	const float voiContainBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("squad.contain_bias", 0.0f));
++	const std::string voiAttackOverride = m_bot.Commander().getVoiPolicyString("combat.attack_condition_override", "normal");
++	const std::string voiLocationIntent = m_bot.Commander().getVoiPolicyString("scope.location_intent", "");
++	const int voiScopeMinUnits = std::max(0, m_bot.Commander().getVoiPolicyInt("scope.min_units", 0));
++	const bool voiScopeThresholdMet = voiScopeMinUnits == 0 || static_cast<int>(mainAttackSquad.getUnits().size()) >= voiScopeMinUnits;
++	const float voiEngageMarginDelta = std::max(
++		-0.35f,
++		std::min(
++			0.55f,
++			voiDefendBias * 0.35f
++				- voiAggression * 0.25f
++				- std::max(0.0f, voiCommitmentLevel) * 0.15f
++				- voiRetreatPatienceBias * 0.20f));
++	if (voiContainBias > 0.0f || voiLocationIntent == "enemy_natural")
++	{
++		const BaseLocation * enemyNatural = m_bot.Bases().getPlayerNat(Players::Enemy);
++		if (enemyNatural)
++		{
++			const CCPosition naturalPosition = enemyNatural->getDepotPosition();
++			const CCPosition enemyBasePressure = GetClosestEnemyBaseLocation();
++			const float containWeight = std::max(0.0f, std::min(1.0f, voiContainBias));
++			orderPosition = naturalPosition * (0.65f + 0.35f * containWeight) + enemyBasePressure * (0.35f - 0.35f * containWeight);
++		}
++	}
 +
 +	if (voiForceRetreat)
 +	{
 +		retreat = true;
 +		retreatReason = "VOI force retreat";
 +	}
++	if (!retreat && voiAttackOverride == "never")
++	{
++		retreat = true;
++		retreatReason = "VOI attack condition override never";
++	}
 +
 +	// Do not attack before 5 minutes unless we have a proxy strategy or the enemy has more bases than us
-+	if (!retreat && !proxyStrategy && m_bot.GetCurrentFrame() < 22.4f * 60 * (5 + voiDefendBias))
++	const float voiAttackDelayMinutes = std::max(
++		2.0f,
++		5.0f
++			+ voiDefendBias
++			+ voiRallyBeforeAttackBias
++			- std::max(0.0f, voiAggression) * 0.75f
++			- std::max(0.0f, voiAttackTimingBias) * 2.0f
++			- std::max(0.0f, voiCommitmentLevel) * 1.5f);
++	if (!retreat && !proxyStrategy && m_bot.GetCurrentFrame() < 22.4f * 60 * voiAttackDelayMinutes)
 +	{
 +		int allyBases = m_bot.Bases().getBaseCount(Players::Self);
 +		int enemyBases = m_bot.Bases().getBaseCount(Players::Enemy);
-+		if (allyBases >= enemyBases)
++		const bool voiMayAttackEarly =
++			voiScopeThresholdMet
++			&& (voiAttackOverride == "force_when_threshold_met"
++				|| (voiAttackOverride == "earlier_if_safe" && voiAggression + voiAttackTimingBias + voiCommitmentLevel > 0.6f));
++		if (allyBases >= enemyBases && !voiMayAttackEarly)
 +		{
 +			retreat = true;
 +			retreatReason = "Don't attack yet";
@@ -7984,7 +8043,8 @@ index a8d5f3a..bf39767 100644
 +		ss << "MainAttackSquad new order = " << orderStatus << " (" << orderPosition.x << ", " << orderPosition.y << ") " << (retreat ? retreatReason : "");
 +		Util::Log(__FUNCTION__, ss.str(), m_bot);
 +	}
-+	const SquadOrder mainAttackOrder(SquadOrderTypes::Attack, orderPosition, MainAttackOrderRadius, orderStatus);
++	const float voiAttackRadius = std::max(18.0f, MainAttackOrderRadius - voiContainBias * 12.0f);
++	const SquadOrder mainAttackOrder(SquadOrderTypes::Attack, orderPosition, voiAttackRadius, orderStatus);
 +	mainAttackSquad.setSquadOrder(mainAttackOrder);
 +
 +    /*if (mainAttackSquad.needsToRetreat())
@@ -10167,7 +10227,7 @@ index 9110e7e..49fbd0c 100644
              {
                  m_dist[(int)nextTile.x][(int)nextTile.y] = m_dist[(int)tile.x][(int)tile.y] + 1;
 diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
-index 045faab..5c373bf 100644
+index 045faab..502ac2e 100644
 --- a/src/GameCommander.cpp
 +++ b/src/GameCommander.cpp
 @@ -2,18 +2,45 @@
@@ -10225,7 +10285,7 @@ index 045faab..5c373bf 100644
  	m_bot.StartProfiling("0.10.2   m_productionManager.onFrame");
  	m_productionManager.onFrame(executeMacro);
  	m_bot.StopProfiling("0.10.2   m_productionManager.onFrame");
-@@ -34,6 +63,96 @@ void GameCommander::onFrame(bool executeMacro)
+@@ -34,6 +63,141 @@ void GameCommander::onFrame(bool executeMacro)
  	m_bot.StartProfiling("0.10.4   m_combatCommander.onFrame");
      m_combatCommander.onFrame(m_combatUnits);
  	m_bot.StopProfiling("0.10.4   m_combatCommander.onFrame");
@@ -10263,6 +10323,9 @@ index 045faab..5c373bf 100644
 +    }
 +
 +    const std::string updateId = voiJsonEscape(m_voiPolicyBlackboard.getString("update_id", ""));
++    const std::string attackConditionOverride = voiJsonEscape(m_voiPolicyBlackboard.getString("combat.attack_condition_override", "normal"));
++    const std::string scopeArmyGroup = voiJsonEscape(m_voiPolicyBlackboard.getString("scope.army_group", ""));
++    const std::string scopeLocationIntent = voiJsonEscape(m_voiPolicyBlackboard.getString("scope.location_intent", ""));
 +    std::ostringstream payload;
 +    payload
 +        << "{"
@@ -10276,6 +10339,14 @@ index 045faab..5c373bf 100644
 +        << "\"update_id\":\"" << updateId << "\","
 +        << "\"combat_defend_bias\":" << m_voiPolicyBlackboard.getFloat("combat.defend_bias", 0.0f) << ","
 +        << "\"combat_aggression\":" << m_voiPolicyBlackboard.getFloat("combat.aggression", 0.0f) << ","
++        << "\"combat_attack_timing_bias\":" << m_voiPolicyBlackboard.getFloat("combat.attack_timing_bias", 0.0f) << ","
++        << "\"combat_commitment_level\":" << m_voiPolicyBlackboard.getFloat("combat.commitment_level", 0.0f) << ","
++        << "\"combat_attack_condition_override\":\"" << attackConditionOverride << "\","
++        << "\"combat_pressure_window_frames\":" << m_voiPolicyBlackboard.getInt("combat.pressure_window_frames", 0) << ","
++        << "\"squad_contain_bias\":" << m_voiPolicyBlackboard.getFloat("squad.contain_bias", 0.0f) << ","
++        << "\"squad_flank_bias\":" << m_voiPolicyBlackboard.getFloat("squad.flank_bias", 0.0f) << ","
++        << "\"scope_army_group\":\"" << scopeArmyGroup << "\","
++        << "\"scope_location_intent\":\"" << scopeLocationIntent << "\","
 +        << "\"emergency_force_retreat\":" << (m_voiPolicyBlackboard.getBool("emergency.force_retreat", false) ? "true" : "false") << ","
 +        << "\"emergency_cancel_attacks\":" << (m_voiPolicyBlackboard.getBool("emergency.cancel_attacks", false) ? "true" : "false") << ","
 +        << "\"scouting_scout_priority\":" << m_voiPolicyBlackboard.getFloat("scouting.scout_priority", 0.0f) << ","
@@ -10287,8 +10358,38 @@ index 045faab..5c373bf 100644
 +        << "\"combat_unit_count\":" << m_combatUnits.size() << ","
 +        << "\"defend_bias\":" << m_voiPolicyBlackboard.getFloat("combat.defend_bias", 0.0f) << ","
 +        << "\"aggression\":" << m_voiPolicyBlackboard.getFloat("combat.aggression", 0.0f) << ","
++        << "\"attack_timing_bias\":" << m_voiPolicyBlackboard.getFloat("combat.attack_timing_bias", 0.0f) << ","
++        << "\"commitment_level\":" << m_voiPolicyBlackboard.getFloat("combat.commitment_level", 0.0f) << ","
++        << "\"attack_condition_override\":\"" << attackConditionOverride << "\","
++        << "\"pressure_window_frames\":" << m_voiPolicyBlackboard.getInt("combat.pressure_window_frames", 0) << ","
++        << "\"retreat_patience_bias\":" << m_voiPolicyBlackboard.getFloat("combat.retreat_patience_bias", 0.0f) << ","
++        << "\"rally_before_attack_bias\":" << m_voiPolicyBlackboard.getFloat("combat.rally_before_attack_bias", 0.0f) << ","
 +        << "\"force_retreat\":" << (m_voiPolicyBlackboard.getBool("emergency.force_retreat", false) ? "true" : "false") << ","
-+        << "\"bounded_intervention\":" << (m_voiPolicyActive && (m_voiPolicyBlackboard.getFloat("combat.defend_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.aggression", 0.0f) != 0.0f || m_voiPolicyBlackboard.getBool("emergency.force_retreat", false)) ? "true" : "false")
++        << "\"bounded_intervention\":" << (m_voiPolicyActive && (m_voiPolicyBlackboard.getFloat("combat.defend_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.aggression", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.attack_timing_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.commitment_level", 0.0f) != 0.0f || attackConditionOverride != "normal" || m_voiPolicyBlackboard.getBool("emergency.force_retreat", false)) ? "true" : "false") << ","
++        << "\"consumed_axes\":\"combat.aggression,combat.defend_bias,combat.attack_timing_bias,combat.commitment_level,combat.attack_condition_override,combat.retreat_patience_bias,combat.rally_before_attack_bias,scope.min_units\""
++        << "},"
++        << "\"Squad\":{"
++        << "\"active\":true,"
++        << "\"contain_bias\":" << m_voiPolicyBlackboard.getFloat("squad.contain_bias", 0.0f) << ","
++        << "\"flank_bias\":" << m_voiPolicyBlackboard.getFloat("squad.flank_bias", 0.0f) << ","
++        << "\"split_army_bias\":" << m_voiPolicyBlackboard.getFloat("squad.split_army_bias", 0.0f) << ","
++        << "\"reinforce_bias\":" << m_voiPolicyBlackboard.getFloat("squad.reinforce_bias", 0.0f) << ","
++        << "\"proxy_pressure_bias\":" << m_voiPolicyBlackboard.getFloat("squad.proxy_pressure_bias", 0.0f) << ","
++        << "\"scope_army_group\":\"" << scopeArmyGroup << "\","
++        << "\"scope_location_intent\":\"" << scopeLocationIntent << "\","
++        << "\"scope_min_units\":" << m_voiPolicyBlackboard.getInt("scope.min_units", 0) << ","
++        << "\"target_worker_line_bias\":" << m_voiPolicyBlackboard.getFloat("combat.target_priority_biases.worker_line", 0.0f) << ","
++        << "\"target_townhall_bias\":" << m_voiPolicyBlackboard.getFloat("combat.target_priority_biases.townhall", 0.0f) << ","
++        << "\"target_production_bias\":" << m_voiPolicyBlackboard.getFloat("combat.target_priority_biases.production", 0.0f) << ","
++        << "\"target_army_bias\":" << m_voiPolicyBlackboard.getFloat("combat.target_priority_biases.army", 0.0f) << ","
++        << "\"bounded_intervention\":" << (m_voiPolicyActive && (m_voiPolicyBlackboard.getFloat("squad.contain_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("squad.reinforce_bias", 0.0f) != 0.0f || !scopeLocationIntent.empty() || m_voiPolicyBlackboard.getFloat("combat.target_priority_biases.worker_line", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.target_priority_biases.townhall", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.target_priority_biases.production", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.target_priority_biases.army", 0.0f) != 0.0f) ? "true" : "false") << ","
++        << "\"consumed_axes\":\"squad.contain_bias,squad.reinforce_bias,scope.location_intent,scope.min_units,combat.target_priority_biases.*\""
++        << "},"
++        << "\"ProductionManager\":{"
++        << "\"active\":true,"
++        << "\"production_continuity_bias\":" << m_voiPolicyBlackboard.getFloat("production.production_continuity_bias", 0.0f) << ","
++        << "\"tech_switch_urgency\":" << m_voiPolicyBlackboard.getFloat("production.tech_switch_urgency", 0.0f) << ","
++        << "\"bounded_intervention\":" << (m_voiPolicyActive && (m_voiPolicyBlackboard.getFloat("production.production_continuity_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("production.tech_switch_urgency", 0.0f) != 0.0f) ? "true" : "false")
 +        << "},"
 +        << "\"ScoutManager\":{"
 +        << "\"active\":true,"
@@ -10298,8 +10399,12 @@ index 045faab..5c373bf 100644
 +        << "\"under_attack\":" << (m_scoutManager.isScoutUnderAttack() ? "true" : "false") << ","
 +        << "\"scout_priority\":" << m_voiPolicyBlackboard.getFloat("scouting.scout_priority", 0.0f) << ","
 +        << "\"risk_tolerance\":" << m_voiPolicyBlackboard.getFloat("scouting.risk_tolerance", 0.0f) << ","
++        << "\"scout_cadence_bias\":" << m_voiPolicyBlackboard.getFloat("scouting.scout_cadence_bias", 0.0f) << ","
++        << "\"scan_priority\":" << m_voiPolicyBlackboard.getFloat("scouting.scan_priority", 0.0f) << ","
++        << "\"hidden_tech_scout_bias\":" << m_voiPolicyBlackboard.getFloat("scouting.hidden_tech_scout_bias", 0.0f) << ","
 +        << "\"require_fresh_enemy_observation\":" << (m_voiPolicyBlackboard.getBool("scouting.require_fresh_enemy_observation", false) ? "true" : "false") << ","
-+        << "\"bounded_intervention\":" << (m_voiPolicyActive && (m_voiPolicyBlackboard.getFloat("scouting.scout_priority", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.risk_tolerance", 0.0f) != 0.0f || m_voiPolicyBlackboard.getBool("scouting.require_fresh_enemy_observation", false)) ? "true" : "false")
++        << "\"bounded_intervention\":" << (m_voiPolicyActive && (m_voiPolicyBlackboard.getFloat("scouting.scout_priority", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.risk_tolerance", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.scout_cadence_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.scan_priority", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.hidden_tech_scout_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getBool("scouting.require_fresh_enemy_observation", false)) ? "true" : "false") << ","
++        << "\"consumed_axes\":\"scouting.scout_priority,scouting.risk_tolerance,scouting.scout_cadence_bias,scouting.scan_priority,scouting.hidden_tech_scout_bias,scouting.require_fresh_enemy_observation\""
 +        << "}"
 +        << "},"
 +        << "\"active_modulation_ids\":[";
@@ -10322,7 +10427,7 @@ index 045faab..5c373bf 100644
  }
  
  ProductionManager& GameCommander::Production()
-@@ -46,6 +165,26 @@ CombatCommander& GameCommander::Combat()
+@@ -46,6 +210,31 @@ CombatCommander& GameCommander::Combat()
  	return m_combatCommander;
  }
  
@@ -10334,6 +10439,11 @@ index 045faab..5c373bf 100644
 +float GameCommander::getVoiPolicyFloat(const std::string & key, float fallback) const
 +{
 +	return m_voiPolicyActive ? m_voiPolicyBlackboard.getFloat(key, fallback) : fallback;
++}
++
++int GameCommander::getVoiPolicyInt(const std::string & key, int fallback) const
++{
++	return m_voiPolicyActive ? m_voiPolicyBlackboard.getInt(key, fallback) : fallback;
 +}
 +
 +bool GameCommander::getVoiPolicyBool(const std::string & key, bool fallback) const
@@ -10349,7 +10459,7 @@ index 045faab..5c373bf 100644
  // assigns units to various managers
  void GameCommander::handleUnitAssignments()
  {
-@@ -98,8 +237,9 @@ void GameCommander::setScoutUnits()
+@@ -98,8 +287,9 @@ void GameCommander::setScoutUnits()
      if (m_scoutUnits.empty())
      {
          const BaseLocation * enemyBaseLocation = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
@@ -10360,7 +10470,7 @@ index 045faab..5c373bf 100644
  			return;
  
          // We need to find the enemy base to do something
-@@ -125,6 +265,15 @@ void GameCommander::setScoutUnits()
+@@ -125,6 +315,15 @@ void GameCommander::setScoutUnits()
  
  bool GameCommander::shouldSendInitialScout()
  {
@@ -10376,7 +10486,7 @@ index 045faab..5c373bf 100644
      return m_bot.Strategy().scoutConditionIsMet();
  }
  
-@@ -230,4 +379,4 @@ void GameCommander::GiveDelayedSmarAbilityOrders()
+@@ -230,4 +429,4 @@ void GameCommander::GiveDelayedSmarAbilityOrders()
  			Micro::SmartAbility(command.first.getUnitPtr(), command.second.first, command.second.second, m_bot);
  		}
  	}
@@ -10384,7 +10494,7 @@ index 045faab..5c373bf 100644
 \ No newline at end of file
 +}
 diff --git a/src/GameCommander.h b/src/GameCommander.h
-index d2d36db..9327e8f 100644
+index d2d36db..4131e9e 100644
 --- a/src/GameCommander.h
 +++ b/src/GameCommander.h
 @@ -5,6 +5,7 @@
@@ -10409,12 +10519,13 @@ index d2d36db..9327e8f 100644
  
  public:
  
-@@ -39,6 +44,10 @@ public:
+@@ -39,6 +44,11 @@ public:
  
  	ProductionManager& Production();
  	CombatCommander& Combat();
 +	bool isVoiPolicyActive() const;
 +	float getVoiPolicyFloat(const std::string & key, float fallback = 0.0f) const;
++	int getVoiPolicyInt(const std::string & key, int fallback = 0) const;
 +	bool getVoiPolicyBool(const std::string & key, bool fallback = false) const;
 +	std::string getVoiPolicyString(const std::string & key, const std::string & fallback = "") const;
  
@@ -10493,7 +10604,7 @@ index 4f74df0..7b2cbef 100644
 \ No newline at end of file
 +}
 diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
-index 3859fdb..69a5ec6 100644
+index 3859fdb..1b85e27 100644
 --- a/src/ProductionManager.cpp
 +++ b/src/ProductionManager.cpp
 @@ -182,6 +182,7 @@ void ProductionManager::onFrame(bool executeMacro)
@@ -10706,7 +10817,7 @@ index 3859fdb..69a5ec6 100644
  	{
  		m_queue.queueAsHighestPriority(supplyProviderType, false);
  	}
-@@ -1527,6 +1608,89 @@ bool ProductionManager::isImportantProductionBuildingIdle(bool underConstruction
+@@ -1527,6 +1608,96 @@ bool ProductionManager::isImportantProductionBuildingIdle(bool underConstruction
  	return getIdleImportantProductionBuildingTypes(underConstructionConsideredIdle, constructingAddonConsideredIdle).size() > 0;
  }
  
@@ -10716,11 +10827,18 @@ index 3859fdb..69a5ec6 100644
 +	{
 +		return;
 +	}
-+	if (m_bot.GetCurrentFrame() < 4032)
++	const float continuityBias = m_bot.Commander().getVoiPolicyFloat("production.production_continuity_bias", 0.0f);
++	if (continuityBias <= -0.75f)
 +	{
 +		return;
 +	}
-+	if (m_bot.GetCurrentFrame() - m_lastBarracksContinuityFrame < 112)
++	const int startFrame = std::max(2016, static_cast<int>(4032 - std::max(0.0f, continuityBias) * 1344));
++	const int continuityCooldown = std::max(56, static_cast<int>(112 - std::max(0.0f, continuityBias) * 56 + std::max(0.0f, -continuityBias) * 112));
++	if (m_bot.GetCurrentFrame() < startFrame)
++	{
++		return;
++	}
++	if (m_bot.GetCurrentFrame() - m_lastBarracksContinuityFrame < continuityCooldown)
 +	{
 +		return;
 +	}
@@ -10796,7 +10914,7 @@ index 3859fdb..69a5ec6 100644
  std::vector<sc2::UNIT_TYPEID> ProductionManager::getIdleImportantProductionBuildingTypes(bool underConstructionConsideredIdle, bool constructingAddonConsideredIdle)
  {
  	std::vector<sc2::UNIT_TYPEID> idleImportantProductionBuildingTypes;
-@@ -2609,8 +2773,9 @@ Unit ProductionManager::getClosestUnitToPosition(const std::vector<Unit> & units
+@@ -2609,8 +2780,9 @@ Unit ProductionManager::getClosestUnitToPosition(const std::vector<Unit> & units
  void ProductionManager::createSkipQueue(MetaType type, CCPosition location)
  {
  	Unit producer = getProducer(type, false, location, true, false);
@@ -10808,7 +10926,7 @@ index 3859fdb..69a5ec6 100644
  	bool includeAddonTiles;
  	switch ((sc2::UNIT_TYPEID)type.getUnitType().getAPIUnitType())
  	{
-@@ -2623,7 +2788,7 @@ void ProductionManager::createSkipQueue(MetaType type, CCPosition location)
+@@ -2623,7 +2795,7 @@ void ProductionManager::createSkipQueue(MetaType type, CCPosition location)
  			includeAddonTiles = false;
  	}
  	auto boItem = MM::BuildOrderItem(type, 0, true);
@@ -10817,7 +10935,7 @@ index 3859fdb..69a5ec6 100644
  }
  
  // this function will check to see if all preconditions are met and then create a unit
-@@ -2651,6 +2816,10 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+@@ -2651,6 +2823,10 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
  		}
  		else
  		{
@@ -10828,7 +10946,7 @@ index 3859fdb..69a5ec6 100644
  			Building b(item.type.getUnitType(), desidredPosition);
  			if (item.type.getUnitType().isAddon())
  			{
-@@ -2683,6 +2852,10 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+@@ -2683,6 +2859,10 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
  	else if (item.type.isUnit())
  	{
  		producer.train(item.type.getUnitType());
@@ -10839,7 +10957,7 @@ index 3859fdb..69a5ec6 100644
  		result = true;
  	}
  	else if (item.type.isUpgrade())
-@@ -3092,7 +3265,9 @@ Unit ProductionManager::meetsReservedResourcesWithCancelUnit(const MetaType & ty
+@@ -3092,7 +3272,9 @@ Unit ProductionManager::meetsReservedResourcesWithCancelUnit(const MetaType & ty
  bool ProductionManager::canMakeAtArrival(const Building & b, const Unit & worker, int additionalReservedMineral, int additionalReservedGas)
  {
  	if (!worker.isValid())
@@ -10849,7 +10967,7 @@ index 3859fdb..69a5ec6 100644
  
  	const int workerCount = m_bot.Workers().getWorkerData().getWorkerJobCount(WorkerJobs::Minerals);
  	if (workerCount <= 3)//25% or less of the starting workers are mining. Do not consider the mineral gain rate as it is inconsistant and untrustable.
-@@ -3117,7 +3292,9 @@ bool ProductionManager::canMakeAtArrival(const Building & b, const Unit & worker
+@@ -3117,7 +3299,9 @@ bool ProductionManager::canMakeAtArrival(const Building & b, const Unit & worker
  	auto mineralGain = travelFrame * mineralRate;
  	auto gasGain = travelFrame * gasRate;
  
@@ -10860,7 +10978,7 @@ index 3859fdb..69a5ec6 100644
  	{
  		return true;
  	}
-@@ -3128,23 +3305,30 @@ bool ProductionManager::ValidateBuildingTiming(Building & b) const
+@@ -3128,23 +3312,30 @@ bool ProductionManager::ValidateBuildingTiming(Building & b) const
  {
  	if (b.type.isRefinery())
  	{
@@ -10897,7 +11015,7 @@ index 3859fdb..69a5ec6 100644
  
  		auto depotGeyserDifferenceX = base->getDepotTilePosition().x - nextRefinery.x;
  		auto depotGeyserDifferenceY = base->getDepotTilePosition().y - nextRefinery.y;
-@@ -3208,6 +3392,20 @@ void ProductionManager::drawProductionInformation()
+@@ -3208,6 +3399,20 @@ void ProductionManager::drawProductionInformation()
  	ss << "Gas Worker Target:" << m_bot.Workers().getGasWorkersTarget() << "\n";
  	ss << "Mineral income:   " << m_bot.Observation()->GetScore().score_details.collection_rate_minerals << "\n";
  	ss << "Gas income:       " << m_bot.Observation()->GetScore().score_details.collection_rate_vespene << "\n";
@@ -11011,7 +11129,7 @@ index f841b7c..bd66f02 100644
 \ No newline at end of file
 +}
 diff --git a/src/ScoutManager.cpp b/src/ScoutManager.cpp
-index 217b38c..f137786 100644
+index 217b38c..ed2fd6c 100644
 --- a/src/ScoutManager.cpp
 +++ b/src/ScoutManager.cpp
 @@ -35,6 +35,21 @@ void ScoutManager::setWorkerScout(const Unit & unit)
@@ -11036,32 +11154,43 @@ index 217b38c..f137786 100644
  void ScoutManager::drawScoutInformation()
  {
  #ifdef PUBLIC_RELEASE
-@@ -57,11 +72,14 @@ void ScoutManager::moveScouts()
+@@ -57,11 +72,25 @@ void ScoutManager::moveScouts()
      if (!workerScout.isValid()) { return; }
  
      CCHealth scoutHP = workerScout.getHitPoints() + workerScout.getShields();
 +    const float scoutPriority = m_bot.Commander().getVoiPolicyFloat("scouting.scout_priority", 0.0f);
 +    const float riskTolerance = m_bot.Commander().getVoiPolicyFloat("scouting.risk_tolerance", 0.0f);
-+    const float harassDistance = 12.0f + std::max(0.0f, riskTolerance) * 4.0f;
++    const float scoutCadenceBias = m_bot.Commander().getVoiPolicyFloat("scouting.scout_cadence_bias", 0.0f);
++    const float scanPriority = m_bot.Commander().getVoiPolicyFloat("scouting.scan_priority", 0.0f);
++    const float hiddenTechScoutBias = m_bot.Commander().getVoiPolicyFloat("scouting.hidden_tech_scout_bias", 0.0f);
++    if (scoutPriority <= -0.75f && scoutCadenceBias <= -0.5f)
++    {
++        m_scoutStatus = "VOI scouting cadence suppressed";
++        return;
++    }
++    const float effectiveRiskTolerance = riskTolerance + std::max(0.0f, hiddenTechScoutBias) * 0.2f;
++    const float harassDistance = 12.0f + std::max(0.0f, effectiveRiskTolerance) * 4.0f + std::max(0.0f, scanPriority) * 2.0f;
  
      // get the enemy base location, if we have one
      const BaseLocation * enemyBaseLocation = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
  
 -    int scoutDistanceThreshold = 20;
-+    int scoutDistanceThreshold = 20 + static_cast<int>(std::max(0.0f, scoutPriority) * 10.0f);
++    int scoutDistanceThreshold = 20
++        + static_cast<int>(std::max(0.0f, scoutPriority) * 10.0f)
++        + static_cast<int>(std::max(0.0f, hiddenTechScoutBias) * 8.0f);
  
      // if we know where the enemy region is and where our scout is
      if (enemyBaseLocation)
-@@ -71,7 +89,7 @@ void ScoutManager::moveScouts()
+@@ -71,7 +100,7 @@ void ScoutManager::moveScouts()
  
          // we only care if the scout is under attack within the enemy region
          // this ignores if their scout worker attacks it on the way to their base
 -        if (scoutHP < m_previousScoutHP)
-+        if (scoutHP < m_previousScoutHP && riskTolerance < 0.65f)
++        if (scoutHP < m_previousScoutHP && effectiveRiskTolerance < 0.65f)
          {
              m_scoutUnderAttack = true;
          }
-@@ -91,7 +109,7 @@ void ScoutManager::moveScouts()
+@@ -91,7 +120,7 @@ void ScoutManager::moveScouts()
              if (!m_scoutUnderAttack)
              {
                  // if there is a worker nearby, harass it
@@ -11070,15 +11199,15 @@ index 217b38c..f137786 100644
                  {
                      m_scoutStatus = "Harass enemy worker";
  					Micro::SmartAttackUnit(m_scoutUnit.getUnitPtr(), closestEnemyWorkerUnit.getUnitPtr(), m_bot);
-@@ -106,8 +124,16 @@ void ScoutManager::moveScouts()
+@@ -106,8 +135,16 @@ void ScoutManager::moveScouts()
              // if the worker scout is under attack
              else
              {
 -                m_scoutStatus = "Under attack inside, fleeing";
 -                m_scoutUnit.move(getFleePosition());
-+                if (riskTolerance > 0.35f)
++                if (effectiveRiskTolerance > 0.35f)
 +                {
-+                    m_scoutStatus = "Under attack inside, risk-tolerant scouting";
++                    m_scoutStatus = hiddenTechScoutBias > 0.35f ? "Under attack inside, hidden-tech scouting" : "Under attack inside, risk-tolerant scouting";
 +                    m_scoutUnit.move(enemyBaseLocation->getPosition());
 +                }
 +                else
@@ -11089,7 +11218,7 @@ index 217b38c..f137786 100644
              }
          }
          // if the scout is not in the enemy region
-@@ -188,4 +214,4 @@ CCPosition ScoutManager::getFleePosition() const
+@@ -188,4 +225,4 @@ CCPosition ScoutManager::getFleePosition() const
  {
      // TODO: make this follow the perimeter of the enemy base again, but for now just use home base as flee direction
      return Util::GetPosition(m_bot.Bases().getClosestBasePosition(m_scoutUnit.getUnitPtr()));
@@ -11110,6 +11239,89 @@ index 065de5f..f04ebb2 100644
 +    bool isScoutUnderAttack() const;
 +    const std::string & getScoutStatus() const;
 +};
+diff --git a/src/Squad.cpp b/src/Squad.cpp
+index f2dc8f4..1170c5f 100644
+--- a/src/Squad.cpp
++++ b/src/Squad.cpp
+@@ -2,6 +2,43 @@
+ #include "CCBot.h"
+ #include "Util.h"
+ 
++#include <algorithm>
++
++namespace
++{
++float voiTargetPriorityScore(const Unit & enemyUnit, CCBot & bot)
++{
++	const UnitType & type = enemyUnit.getType();
++	float score = 0.0f;
++	if (type.isWorker())
++	{
++		score += bot.Commander().getVoiPolicyFloat("combat.target_priority_biases.worker_line", 0.0f);
++	}
++	if (type.isResourceDepot())
++	{
++		score += bot.Commander().getVoiPolicyFloat("combat.target_priority_biases.townhall", 0.0f);
++	}
++	if (type.isBuilding() && !type.isResourceDepot())
++	{
++		score += bot.Commander().getVoiPolicyFloat("combat.target_priority_biases.production", 0.0f);
++		score += bot.Commander().getVoiPolicyFloat("combat.target_priority_biases.tech", 0.0f);
++	}
++	if (type.isCombatUnit())
++	{
++		score += bot.Commander().getVoiPolicyFloat("combat.target_priority_biases.army", 0.0f);
++	}
++	if (type.isDetector())
++	{
++		score += bot.Commander().getVoiPolicyFloat("combat.target_priority_biases.detector", 0.0f);
++	}
++	if (enemyUnit.isFlying())
++	{
++		score += bot.Commander().getVoiPolicyFloat("combat.target_priority_biases.air_threat", 0.0f);
++	}
++	return score;
++}
++}
++
+ Squad::Squad(CCBot & bot)
+     : m_bot(bot)
+ 	, m_regroupStartFrame(0)
+@@ -187,7 +224,14 @@ std::vector<Unit> Squad::calcTargets(bool visibilityFilter)
+ #endif
+ 		}
+ 	}
+-    
++
++	if (m_bot.Commander().isVoiPolicyActive() && targets.size() > 1)
++	{
++		std::stable_sort(targets.begin(), targets.end(), [this](const Unit & lhs, const Unit & rhs) {
++			return voiTargetPriorityScore(lhs, m_bot) > voiTargetPriorityScore(rhs, m_bot);
++		});
++	}
++
+     return targets;
+ }
+ 
+@@ -297,6 +341,11 @@ bool Squad::needsToRetreat()
+ 	//We believe we can beat a slightly more powerful army with our good micro, but if we are backing, make sure to have a bigger army
+ 	//than what was previously seen
+ 	float targetsModifier = m_order.getType() == SquadOrderTypes::Retreat ? 1.2f : 0.9f;
++	const float commitmentLevel = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("combat.commitment_level", 0.0f));
++	const float retreatPatienceBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("combat.retreat_patience_bias", 0.0f));
++	const float containBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("squad.contain_bias", 0.0f));
++	const float retreatSlack = commitmentLevel * 0.25f + retreatPatienceBias * 0.20f + containBias * 0.10f;
++	targetsModifier = std::max(0.65f, targetsModifier - retreatSlack);
+ 	bool shouldBack = meleePower + rangedPower < targetsPower * targetsModifier;
+ 
+ 	float meleeSpeed = m_meleeManager.getAverageSquadSpeed() * m_meleeManager.getUnits().size();
+@@ -585,4 +634,4 @@ void Squad::giveBackWorkers()
+ const std::string & Squad::getName() const
+ {
+     return m_name;
+-}
+\ No newline at end of file
++}
 diff --git a/src/TechTree.cpp b/src/TechTree.cpp
 index 4a213cd..6853a05 100644
 --- a/src/TechTree.cpp
@@ -14662,3 +14874,136 @@ index a13ae41..ea19f66 100644
 +    std::cout << "VOI MicroMachine coordinator loop ended after updates=" << voiUpdateCount << std::endl;
 +    return 0;
 +}
+diff --git a/src/voi_policy_blackboard.hpp b/src/voi_policy_blackboard.hpp
+new file mode 100644
+index 0000000..a166b63
+--- /dev/null
++++ b/src/voi_policy_blackboard.hpp
+@@ -0,0 +1,127 @@
++#pragma once
++
++#include <algorithm>
++#include <cctype>
++#include <cstdint>
++#include <fstream>
++#include <sstream>
++#include <string>
++#include <unordered_map>
++
++namespace voi {
++
++class PolicyBlackboard {
++public:
++    bool loadFromFile(const std::string& path) {
++        std::ifstream input(path);
++        if (!input.good()) {
++            m_values.clear();
++            m_lastError = "blackboard file not readable: " + path;
++            return false;
++        }
++
++        std::unordered_map<std::string, std::string> parsed;
++        std::string line;
++        while (std::getline(input, line)) {
++            const auto separator = line.find('=');
++            if (separator == std::string::npos) {
++                continue;
++            }
++            auto key = trim(line.substr(0, separator));
++            auto value = trim(line.substr(separator + 1));
++            if (!key.empty()) {
++                parsed[key] = value;
++            }
++        }
++
++        m_values.swap(parsed);
++        m_lastError.clear();
++        return true;
++    }
++
++    bool empty() const {
++        return m_values.empty();
++    }
++
++    bool has(const std::string& key) const {
++        return m_values.find(key) != m_values.end();
++    }
++
++    std::string getString(const std::string& key, const std::string& fallback = "") const {
++        const auto found = m_values.find(key);
++        return found == m_values.end() ? fallback : found->second;
++    }
++
++    float getFloat(const std::string& key, float fallback = 0.0f) const {
++        const auto found = m_values.find(key);
++        if (found == m_values.end() || found->second.empty()) {
++            return fallback;
++        }
++        try {
++            return std::stof(found->second);
++        } catch (...) {
++            return fallback;
++        }
++    }
++
++    int getInt(const std::string& key, int fallback = 0) const {
++        const auto found = m_values.find(key);
++        if (found == m_values.end() || found->second.empty()) {
++            return fallback;
++        }
++        try {
++            return std::stoi(found->second);
++        } catch (...) {
++            return fallback;
++        }
++    }
++
++    bool getBool(const std::string& key, bool fallback = false) const {
++        auto value = lower(getString(key));
++        if (value == "true" || value == "1" || value == "yes") {
++            return true;
++        }
++        if (value == "false" || value == "0" || value == "no") {
++            return false;
++        }
++        return fallback;
++    }
++
++    bool isExpired(std::uint32_t currentFrame) const {
++        const int expiresAt = getInt("expires_at_frame", -1);
++        return expiresAt >= 0 && currentFrame > static_cast<std::uint32_t>(expiresAt);
++    }
++
++    bool isProtocolCompatible() const {
++        return getString("protocol_version") == "voi-mm-bridge/v1";
++    }
++
++    const std::string& lastError() const {
++        return m_lastError;
++    }
++
++private:
++    static std::string trim(const std::string& value) {
++        auto begin = value.begin();
++        while (begin != value.end() && std::isspace(static_cast<unsigned char>(*begin))) {
++            ++begin;
++        }
++        auto end = value.end();
++        while (end != begin && std::isspace(static_cast<unsigned char>(*(end - 1)))) {
++            --end;
++        }
++        return std::string(begin, end);
++    }
++
++    static std::string lower(std::string value) {
++        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
++            return static_cast<char>(std::tolower(c));
++        });
++        return value;
++    }
++
++    std::unordered_map<std::string, std::string> m_values;
++    std::string m_lastError;
++};
++
++}  // namespace voi
