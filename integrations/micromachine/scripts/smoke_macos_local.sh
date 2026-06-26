@@ -13,6 +13,8 @@ SC2_ATTACH_TIMEOUT_MS="${SC2_ATTACH_TIMEOUT_MS:-120000}"
 SC2_USE_RUNTIME_DIR_ARGS="${SC2_USE_RUNTIME_DIR_ARGS:-0}"
 SC2_TEMP_DIR="${SC2_TEMP_DIR:-/private/tmp/voi-sc2-temp-micromachine}"
 SC2_ROOT_ALIAS="${SC2_ROOT_ALIAS:-/private/tmp/voi-sc2-root}"
+SC2_POST_CLEAN_SETTLE_SECONDS="${SC2_POST_CLEAN_SETTLE_SECONDS:-5}"
+VOI_SC2_CREATEGAME_MAP_DATA="${VOI_SC2_CREATEGAME_MAP_DATA:-1}"
 if [[ -z "${SC2_CLEAN_PORTS_BEFORE_LAUNCH+x}" ]]; then
   if [[ -n "${VOI_SC2_CONNECT_PORT:-}" ]]; then
     SC2_CLEAN_PORTS_BEFORE_LAUNCH=0
@@ -75,6 +77,10 @@ prepare_sc2_runtime_root() {
 
 resolve_map_file() {
   local map_file="$1"
+  if [[ "${SC2_MAP_AS_PROVIDED:-0}" == "1" ]]; then
+    printf '%s\n' "${map_file}"
+    return
+  fi
   if [[ "${map_file}" == /* ]]; then
     printf '%s\n' "${map_file}"
     return
@@ -107,7 +113,14 @@ MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
 MIN_TELEMETRY_FRAME="${MIN_TELEMETRY_FRAME:-5200}"
 AGGRESSIVE_PROFILE_FRAME="${AGGRESSIVE_PROFILE_FRAME:-2600}"
 SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-600}"
+SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-3}"
+SMOKE_RETRY_SETTLE_SECONDS="${SMOKE_RETRY_SETTLE_SECONDS:-15}"
+SMOKE_ATTEMPT_INDEX="${SMOKE_ATTEMPT_INDEX:-}"
 BOT_LOG="${BLACKBOARD_DIR}/micromachine.log"
+CLASSIFIER_BOT_LOG="${BLACKBOARD_DIR}/micromachine_combined.log"
+MICROMACHINE_DATA_DIR="${MICROMACHINE_DATA_DIR:-${MICROMACHINE_DIR}/bin/data}"
+RUNTIME_LOG_MARKER="${BLACKBOARD_DIR}/runtime_log_start.marker"
+RUNTIME_LOG_BASELINE="${BLACKBOARD_DIR}/runtime_log_baseline.tsv"
 SC2_NET_ADDRESS="${SC2_NET_ADDRESS:-127.0.0.1}"
 SC2_PORTS=(${SC2_PORTS:-8167 8168})
 BOT_PID=""
@@ -116,6 +129,186 @@ DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-smoke-defensive-hold}"
 AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-smoke-aggressive-pressure}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
 NO_START_UNITS_FRAME="${NO_START_UNITS_FRAME:-1200}"
+
+if [[ -z "${SMOKE_ATTEMPT_INDEX}" && "${SMOKE_MAX_ATTEMPTS}" -gt 1 ]]; then
+  mkdir -p "${BLACKBOARD_DIR}"
+  for (( attempt = 1; attempt <= SMOKE_MAX_ATTEMPTS; attempt++ )); do
+    attempt_dir="${BLACKBOARD_DIR}/attempt-${attempt}"
+    echo "Starting MicroMachine smoke attempt ${attempt}/${SMOKE_MAX_ATTEMPTS}: ${attempt_dir}"
+    if SMOKE_ATTEMPT_INDEX="${attempt}" SMOKE_MAX_ATTEMPTS=1 BLACKBOARD_DIR="${attempt_dir}" "${BASH_SOURCE[0]}"; then
+      if [[ -f "${attempt_dir}/latest_telemetry.json" ]]; then
+        cp -p "${attempt_dir}/latest_telemetry.json" "${BLACKBOARD_DIR}/latest_telemetry.json"
+      fi
+      if [[ -f "${attempt_dir}/telemetry.jsonl" ]]; then
+        cp -p "${attempt_dir}/telemetry.jsonl" "${BLACKBOARD_DIR}/telemetry.jsonl"
+      fi
+      if [[ -f "${attempt_dir}/micromachine_combined.log" ]]; then
+        cp -p "${attempt_dir}/micromachine_combined.log" "${BLACKBOARD_DIR}/micromachine_combined.log"
+      fi
+      python3 - <<'PY' "${BLACKBOARD_DIR}" "${attempt}" "${SMOKE_MAX_ATTEMPTS}"
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+selected_attempt = int(sys.argv[2])
+max_attempts = int(sys.argv[3])
+attempts = []
+for index in range(1, selected_attempt + 1):
+    attempt_dir = root / f"attempt-{index}"
+    telemetry_path = attempt_dir / "latest_telemetry.json"
+    latest_frame = 0
+    if telemetry_path.exists():
+        try:
+            latest_frame = int(json.loads(telemetry_path.read_text()).get("frame") or 0)
+        except Exception:
+            latest_frame = 0
+    attempts.append(
+        {
+            "attempt": index,
+            "status": "passed" if index == selected_attempt else "retryable_startup_failure",
+            "latest_frame": latest_frame,
+            "dir": str(attempt_dir),
+        }
+    )
+(root / "smoke_attempts.json").write_text(
+    json.dumps(
+        {
+            "status": "passed",
+            "ok": True,
+            "selected_attempt": selected_attempt,
+            "max_attempts": max_attempts,
+            "attempts": attempts,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n"
+)
+PY
+      echo "MicroMachine smoke passed on attempt ${attempt}/${SMOKE_MAX_ATTEMPTS}; blackboard: ${BLACKBOARD_DIR}"
+      exit 0
+    fi
+
+    if python3 - <<'PY' "${attempt_dir}" "${NO_START_UNITS_FRAME}"
+import json
+import sys
+from pathlib import Path
+
+attempt_dir = Path(sys.argv[1])
+startup_frame_threshold = int(sys.argv[2])
+telemetry_path = attempt_dir / "latest_telemetry.json"
+latest_frame = 0
+if telemetry_path.exists():
+    try:
+        latest_frame = int(json.loads(telemetry_path.read_text()).get("frame") or 0)
+    except Exception:
+        latest_frame = 0
+
+log_paths = [
+    attempt_dir / "micromachine.log",
+    attempt_dir / "micromachine_combined.log",
+]
+log_text = "\n".join(path.read_text(errors="replace") for path in log_paths if path.exists())
+non_retryable_terms = (
+    "Failed to place Barracks",
+    "Failed to place Refinery",
+    "Cancel building TERRAN_SUPPLYDEPOT :",
+    "Cancel building TERRAN_BARRACKS :",
+    "Cancel building TERRAN_REFINERY :",
+    "bootstrap_no_start_units",
+)
+if any(term in log_text for term in non_retryable_terms):
+    raise SystemExit(0)
+macro_terms = (
+    "build command type=TERRAN_SUPPLYDEPOT",
+    "build command type=TERRAN_BARRACKS",
+    "build command type=TERRAN_REFINERY",
+    "create unit item=Marine result=1",
+    "create unit item=Reaper result=1",
+)
+if latest_frame >= startup_frame_threshold or any(term in log_text for term in macro_terms):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+    then
+      python3 - <<'PY' "${BLACKBOARD_DIR}" "${SMOKE_MAX_ATTEMPTS}" "${attempt}" "non_retryable_failure"
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+max_attempts = int(sys.argv[2])
+stopped_at = int(sys.argv[3])
+reason = sys.argv[4]
+attempts = []
+for index in range(1, max_attempts + 1):
+    attempt_dir = root / f"attempt-{index}"
+    telemetry_path = attempt_dir / "latest_telemetry.json"
+    latest_frame = 0
+    if telemetry_path.exists():
+        try:
+            latest_frame = int(json.loads(telemetry_path.read_text()).get("frame") or 0)
+        except Exception:
+            latest_frame = 0
+    status = "not_run" if index > stopped_at else "failed"
+    attempts.append({"attempt": index, "status": status, "latest_frame": latest_frame, "dir": str(attempt_dir)})
+(root / "smoke_attempts.json").write_text(
+    json.dumps(
+        {
+            "status": "failed",
+            "ok": False,
+            "max_attempts": max_attempts,
+            "stopped_at_attempt": stopped_at,
+            "stop_reason": reason,
+            "attempts": attempts,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n"
+)
+PY
+      echo "MicroMachine smoke stopped after non-retryable attempt ${attempt}; summary: ${BLACKBOARD_DIR}/smoke_attempts.json" >&2
+      exit 1
+    fi
+
+    if (( attempt < SMOKE_MAX_ATTEMPTS )); then
+      echo "MicroMachine smoke retrying after retryable frame-0 startup failure; settling ${SMOKE_RETRY_SETTLE_SECONDS}s before attempt $((attempt + 1))/${SMOKE_MAX_ATTEMPTS}." >&2
+      sleep "${SMOKE_RETRY_SETTLE_SECONDS}"
+    fi
+  done
+
+  python3 - <<'PY' "${BLACKBOARD_DIR}" "${SMOKE_MAX_ATTEMPTS}"
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+max_attempts = int(sys.argv[2])
+attempts = []
+for index in range(1, max_attempts + 1):
+    attempt_dir = root / f"attempt-{index}"
+    telemetry_path = attempt_dir / "latest_telemetry.json"
+    latest_frame = 0
+    if telemetry_path.exists():
+        try:
+            latest_frame = int(json.loads(telemetry_path.read_text()).get("frame") or 0)
+        except Exception:
+            latest_frame = 0
+    attempts.append({"attempt": index, "status": "failed", "latest_frame": latest_frame, "dir": str(attempt_dir)})
+(root / "smoke_attempts.json").write_text(
+    json.dumps(
+        {"status": "failed", "ok": False, "max_attempts": max_attempts, "attempts": attempts},
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n"
+)
+PY
+  echo "MicroMachine smoke failed after ${SMOKE_MAX_ATTEMPTS} attempts; summary: ${BLACKBOARD_DIR}/smoke_attempts.json" >&2
+  exit 1
+fi
 
 REQUIRED_MACRO_EVIDENCE=(
   "build command type=TERRAN_SUPPLYDEPOT"
@@ -144,7 +337,7 @@ sc2_port_pids() {
 }
 
 clean_sc2_ports_before_launch() {
-  [[ "${SC2_CLEAN_PORTS_BEFORE_LAUNCH}" == "1" ]] || return
+  [[ "${SC2_CLEAN_PORTS_BEFORE_LAUNCH}" == "1" ]] || return 0
   local port
   for port in "${SC2_PORTS[@]}"; do
     while IFS= read -r pid; do
@@ -152,6 +345,12 @@ clean_sc2_ports_before_launch() {
       kill "${pid}" 2>/dev/null || true
     done < <(sc2_port_pids "${port}")
   done
+}
+
+settle_after_sc2_port_cleanup() {
+  [[ "${SC2_CLEAN_PORTS_BEFORE_LAUNCH}" == "1" ]] || return 0
+  [[ "${SC2_POST_CLEAN_SETTLE_SECONDS}" != "0" ]] || return 0
+  sleep "${SC2_POST_CLEAN_SETTLE_SECONDS}"
 }
 
 capture_preexisting_sc2_port_pids() {
@@ -188,7 +387,80 @@ trap cleanup_runtime EXIT
 
 has_log_term() {
   local term="$1"
-  [[ -f "${BOT_LOG}" ]] && grep -Fq "${term}" "${BOT_LOG}"
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    stream_current_run_log "${log_file}" | grep -Fq "${term}" && return 0
+  done < <(candidate_bot_logs)
+  return 1
+}
+
+latest_runtime_log() {
+  [[ -d "${MICROMACHINE_DATA_DIR}" && -f "${RUNTIME_LOG_MARKER}" ]] || return 0
+  find "${MICROMACHINE_DATA_DIR}" -maxdepth 1 -type f -name '*.log' -newer "${RUNTIME_LOG_MARKER}" -print 2>/dev/null | sort | tail -n 1
+}
+
+file_size_bytes() {
+  local file="$1"
+  stat -f '%z' "${file}" 2>/dev/null || wc -c < "${file}"
+}
+
+record_runtime_log_baseline() {
+  : > "${RUNTIME_LOG_BASELINE}"
+  [[ -d "${MICROMACHINE_DATA_DIR}" ]] || return 0
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    printf '%s\t%s\n' "${log_file}" "$(file_size_bytes "${log_file}")" >> "${RUNTIME_LOG_BASELINE}"
+  done < <(find "${MICROMACHINE_DATA_DIR}" -maxdepth 1 -type f -name '*.log' -print 2>/dev/null | sort)
+}
+
+runtime_log_start_offset() {
+  local log_file="$1"
+  [[ -f "${RUNTIME_LOG_BASELINE}" ]] || {
+    printf '0\n'
+    return 0
+  }
+  awk -v target="${log_file}" -F '\t' '$1 == target { found = 1; print $2 } END { if (!found) print 0 }' "${RUNTIME_LOG_BASELINE}"
+}
+
+stream_current_run_log() {
+  local log_file="$1"
+  if [[ "${log_file}" == "${BOT_LOG}" ]]; then
+    cat "${log_file}"
+    return 0
+  fi
+  local offset
+  offset="$(runtime_log_start_offset "${log_file}")"
+  if [[ "${offset}" =~ ^[0-9]+$ && "${offset}" -gt 0 ]]; then
+    tail -c +"$((offset + 1))" "${log_file}"
+  else
+    cat "${log_file}"
+  fi
+}
+
+candidate_bot_logs() {
+  [[ -f "${BOT_LOG}" ]] && printf '%s\n' "${BOT_LOG}"
+  local runtime_log
+  runtime_log="$(latest_runtime_log || true)"
+  if [[ -n "${runtime_log}" && -f "${runtime_log}" ]]; then
+    printf '%s\n' "${runtime_log}"
+  fi
+}
+
+print_bot_logs() {
+  rm -f "${CLASSIFIER_BOT_LOG}"
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    {
+      printf '%s\n' "--- ${log_file} ---"
+      stream_current_run_log "${log_file}"
+    } >> "${CLASSIFIER_BOT_LOG}"
+    echo "--- ${log_file} ---" >&2
+    stream_current_run_log "${log_file}" | tail -200 >&2 || true
+  done < <(candidate_bot_logs)
+  [[ -f "${CLASSIFIER_BOT_LOG}" ]] || touch "${CLASSIFIER_BOT_LOG}"
 }
 
 has_forbidden_macro_failure() {
@@ -222,31 +494,39 @@ has_post_barracks_unit_evidence() {
 }
 
 has_positive_gas_income() {
-  [[ -f "${BOT_LOG}" ]] || return 1
-  awk '
-    /Gas income:/ {
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^[0-9]+$/ && $i > 0) {
-          found = 1
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    awk '
+      /Gas income:/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^[0-9]+$/ && $i > 0) {
+            found = 1
+          }
         }
       }
-    }
-    END { exit(found ? 0 : 1) }
-  ' "${BOT_LOG}"
+      END { exit(found ? 0 : 1) }
+    ' < <(stream_current_run_log "${log_file}") && return 0
+  done < <(candidate_bot_logs)
+  return 1
 }
 
 has_positive_mineral_income() {
-  [[ -f "${BOT_LOG}" ]] || return 1
-  awk '
-    /Mineral income:/ {
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^[0-9]+$/ && $i > 0) {
-          found = 1
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    awk '
+      /Mineral income:/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^[0-9]+$/ && $i > 0) {
+            found = 1
+          }
         }
       }
-    }
-    END { exit(found ? 0 : 1) }
-  ' "${BOT_LOG}"
+      END { exit(found ? 0 : 1) }
+    ' < <(stream_current_run_log "${log_file}") && return 0
+  done < <(candidate_bot_logs)
+  return 1
 }
 
 print_missing_macro_evidence() {
@@ -349,9 +629,12 @@ elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" && "${SC2_USE_RUNTIME_DIR_ARGS}" == "1" ]];
 fi
 
 mkdir -p "${BLACKBOARD_DIR}"
-rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}"
+rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}" "${CLASSIFIER_BOT_LOG}" "${RUNTIME_LOG_BASELINE}"
+touch "${RUNTIME_LOG_MARKER}"
+record_runtime_log_baseline
 publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
 clean_sc2_ports_before_launch
+settle_after_sc2_port_cleanup
 capture_preexisting_sc2_port_pids
 
 python3 - <<'PY' "${MICROMACHINE_DIR}/bin/BotConfig.txt" "${MAP_FILE}"
@@ -363,7 +646,7 @@ path = Path(sys.argv[1])
 map_file = sys.argv[2]
 config = json.loads(path.read_text())
 config["SC2API"]["PlayAsHuman"] = False
-config["SC2API"]["ForceStepMode"] = True
+config["SC2API"]["ForceStepMode"] = bool(int(__import__("os").environ.get("SMOKE_FORCE_STEP_MODE", "0")))
 config["SC2API"]["MapFile"] = map_file
 config["SC2API"]["PlayVsItSelf"] = bool(int(__import__("os").environ.get("SMOKE_PLAY_VS_SELF", "0")))
 config["SC2API"]["EnemyDifficulty"] = int(__import__("os").environ.get("SMOKE_ENEMY_DIFFICULTY", "1"))
@@ -384,6 +667,7 @@ PY
   cd "${MICROMACHINE_DIR}/bin"
   VOI_MICROMACHINE_BLACKBOARD_DIR="${BLACKBOARD_DIR}" \
     VOI_SC2_EXTRA_ARGS="${VOI_SC2_EXTRA_ARGS:-}" \
+    VOI_SC2_CREATEGAME_MAP_DATA="${VOI_SC2_CREATEGAME_MAP_DATA}" \
     VOI_SC2_BOOTSTRAP_SELF_UNITS="${VOI_SC2_BOOTSTRAP_SELF_UNITS:-${VOI_SC2_CONNECT_PORT:+1}}" \
     "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine" \
     -e "${SC2_EXECUTABLE}" \
@@ -395,7 +679,7 @@ deadline=$((SECONDS + SMOKE_TIMEOUT_SECONDS))
 while kill -0 "${BOT_PID}" 2>/dev/null; do
   if has_forbidden_macro_failure; then
     cleanup_runtime
-    tail -200 "${BOT_LOG}" >&2 || true
+    print_bot_logs
     exit 1
   fi
 
@@ -404,7 +688,7 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
     if has_no_start_units_bootstrap_blocker; then
       cleanup_runtime
       print_no_start_units_bootstrap_blocker
-      tail -200 "${BOT_LOG}" >&2 || true
+      print_bot_logs
       exit 1
     fi
     if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${AGGRESSIVE_PROFILE_FRAME}" ]] && has_required_macro_evidence; then
@@ -444,21 +728,21 @@ PY
     cleanup_runtime
     echo "MicroMachine smoke timed out after ${SMOKE_TIMEOUT_SECONDS}s" >&2
     print_missing_macro_evidence
-    tail -200 "${BOT_LOG}" >&2 || true
+    print_bot_logs
     exit 1
   fi
   sleep 2
 done
 
 if has_forbidden_macro_failure; then
-  tail -200 "${BOT_LOG}" >&2 || true
+  print_bot_logs
   exit 1
 fi
 
 if [[ ! -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]]; then
   wait "${BOT_PID}" 2>/dev/null || true
   echo "MicroMachine did not emit telemetry" >&2
-  tail -200 "${BOT_LOG}" >&2 || true
+  print_bot_logs
   exit 1
 fi
 
@@ -468,9 +752,11 @@ if ! has_required_macro_evidence; then
     print_no_start_units_bootstrap_blocker
   fi
   print_missing_macro_evidence
-  tail -200 "${BOT_LOG}" >&2 || true
+  print_bot_logs
   exit 1
 fi
+
+print_bot_logs >/dev/null 2>&1
 
 python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${BOT_LOG}" "${DEFENSIVE_UPDATE_ID}" "${AGGRESSIVE_UPDATE_ID}"
 import json

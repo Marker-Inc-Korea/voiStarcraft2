@@ -13,6 +13,7 @@ SC2_ATTACH_TIMEOUT_MS="${SC2_ATTACH_TIMEOUT_MS:-120000}"
 SC2_USE_RUNTIME_DIR_ARGS="${SC2_USE_RUNTIME_DIR_ARGS:-0}"
 SC2_TEMP_DIR="${SC2_TEMP_DIR:-/private/tmp/voi-sc2-temp-micromachine}"
 SC2_ROOT_ALIAS="${SC2_ROOT_ALIAS:-/private/tmp/voi-sc2-root}"
+SC2_POST_CLEAN_SETTLE_SECONDS="${SC2_POST_CLEAN_SETTLE_SECONDS:-5}"
 if [[ -z "${SC2_CLEAN_PORTS_BEFORE_LAUNCH+x}" ]]; then
   if [[ -n "${VOI_SC2_CONNECT_PORT:-}" ]]; then
     SC2_CLEAN_PORTS_BEFORE_LAUNCH=0
@@ -109,7 +110,7 @@ SOAK_TARGET_FRAME="${SOAK_TARGET_FRAME:-12000}"
 SOAK_TIMEOUT_SECONDS="${SOAK_TIMEOUT_SECONDS:-1200}"
 SOAK_TELEMETRY_STALL_SECONDS="${SOAK_TELEMETRY_STALL_SECONDS:-90}"
 SOAK_PRODUCTION_DEADLOCK_FRAME="${SOAK_PRODUCTION_DEADLOCK_FRAME:-9000}"
-SOAK_PRODUCTION_STALL_FRAMES="${SOAK_PRODUCTION_STALL_FRAMES:-8000}"
+SOAK_PRODUCTION_STALL_FRAMES="${SOAK_PRODUCTION_STALL_FRAMES:-6000}"
 SOAK_INCOME_STALL_FRAMES="${SOAK_INCOME_STALL_FRAMES:-2000}"
 SOAK_BOOTSTRAP_NO_START_UNITS_FRAME="${SOAK_BOOTSTRAP_NO_START_UNITS_FRAME:-1200}"
 SOAK_MAX_PLACEMENT_FAILURES="${SOAK_MAX_PLACEMENT_FAILURES:-3}"
@@ -119,8 +120,10 @@ SOAK_BOOTSTRAP_GRACE_SECONDS="${SOAK_BOOTSTRAP_GRACE_SECONDS:-120}"
 SOAK_PROFILE_REFRESH_FRAMES="${SOAK_PROFILE_REFRESH_FRAMES:-7000}"
 SOAK_AGGRESSIVE_MIN_FRAME="${SOAK_AGGRESSIVE_MIN_FRAME:-13000}"
 SOAK_PROFILE_SEQUENCE="${SOAK_PROFILE_SEQUENCE:-default_defensive_to_aggressive}"
-SOAK_MAX_ATTEMPTS="${SOAK_MAX_ATTEMPTS:-2}"
-SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-micromachine_crash micromachine_process_stopped sc2_disconnect telemetry_missing telemetry_stall repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing}"
+SOAK_MAX_ATTEMPTS="${SOAK_MAX_ATTEMPTS:-3}"
+SOAK_RETRY_SETTLE_SECONDS="${SOAK_RETRY_SETTLE_SECONDS:-15}"
+SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-bootstrap_no_start_units repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing}"
+VOI_SC2_CREATEGAME_MAP_DATA="${VOI_SC2_CREATEGAME_MAP_DATA:-1}"
 SOAK_ATTEMPT_INDEX="${SOAK_ATTEMPT_INDEX:-}"
 SOAK_RUN_ID="${SOAK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 SOAK_ARTIFACT_ROOT="${SOAK_ARTIFACT_ROOT:-/private/tmp/voi-mm-soak}"
@@ -128,6 +131,10 @@ SOAK_ARTIFACT_ROOT="${SOAK_ARTIFACT_ROOT:-/private/tmp/voi-mm-soak}"
 SOAK_RUN_DIR="${SOAK_RUN_DIR:-${SOAK_ARTIFACT_ROOT}/${SOAK_RUN_ID}}"
 BLACKBOARD_DIR="${BLACKBOARD_DIR:-${SOAK_RUN_DIR}}"
 BOT_LOG="${BLACKBOARD_DIR}/micromachine.log"
+CLASSIFIER_BOT_LOG="${BLACKBOARD_DIR}/micromachine_combined.log"
+MICROMACHINE_DATA_DIR="${MICROMACHINE_DATA_DIR:-${MICROMACHINE_DIR}/bin/data}"
+RUNTIME_LOG_MARKER="${BLACKBOARD_DIR}/runtime_log_start.marker"
+RUNTIME_LOG_BASELINE="${BLACKBOARD_DIR}/runtime_log_baseline.tsv"
 SOAK_REPORT="${BLACKBOARD_DIR}/soak_report.json"
 SOAK_LIVE_REPORT="${BLACKBOARD_DIR}/soak_live_report.json"
 # Final classifier requires CombatCommander and ScoutManager bounded_intervention evidence.
@@ -186,6 +193,23 @@ payload["attempt_summary"] = {
     "latest_frame": payload.get("latest_frame"),
     "failures": payload.get("failures", []),
 }
+attempts = []
+for index in range(1, attempt + 1):
+    report_path = root / f"attempt-{index}" / "soak_report.json"
+    if not report_path.exists():
+        attempts.append({"attempt": index, "status": "missing_report"})
+        continue
+    report = json.loads(report_path.read_text())
+    attempts.append(
+        {
+            "attempt": index,
+            "status": report.get("status"),
+            "latest_frame": report.get("latest_frame"),
+            "failures": report.get("failures", []),
+            "report": str(report_path),
+        }
+    )
+payload["attempts"] = attempts
 target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 PY
       echo "MicroMachine soak passed on attempt ${attempt}/${SOAK_MAX_ATTEMPTS}; report: ${SOAK_REPORT}"
@@ -205,7 +229,17 @@ codes = {
     for failure in report.get("failures", [])
     if isinstance(failure, dict)
 }
-raise SystemExit(0 if codes & non_retryable else 1)
+retryable_startup_codes = {
+    "micromachine_crash",
+    "micromachine_process_stopped",
+    "telemetry_missing",
+}
+latest_frame = int(report.get("latest_frame") or 0)
+if codes & non_retryable:
+    raise SystemExit(0)
+if latest_frame == 0 and codes and codes <= retryable_startup_codes:
+    raise SystemExit(1)
+raise SystemExit(0)
 PY
       then
         python3 - <<'PY' "${SOAK_RUN_DIR}" "${SOAK_REPORT}" "${SOAK_MAX_ATTEMPTS}" "${attempt}" "non_retryable_failure"
@@ -256,6 +290,10 @@ PY
         echo "MicroMachine soak stopped after non-retryable attempt ${attempt}; report: ${SOAK_REPORT}" >&2
         exit 1
       fi
+    fi
+    if (( attempt < SOAK_MAX_ATTEMPTS )); then
+      echo "MicroMachine soak retrying after retryable startup failure; settling ${SOAK_RETRY_SETTLE_SECONDS}s before attempt $((attempt + 1))/${SOAK_MAX_ATTEMPTS}." >&2
+      sleep "${SOAK_RETRY_SETTLE_SECONDS}"
     fi
   done
 
@@ -336,7 +374,83 @@ trap cleanup_runtime EXIT
 
 has_log_term() {
   local term="$1"
-  [[ -f "${BOT_LOG}" ]] && grep -Fq "${term}" "${BOT_LOG}"
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    stream_current_run_log "${log_file}" | grep -Fq "${term}" && return 0
+  done < <(candidate_bot_logs)
+  return 1
+}
+
+latest_runtime_log() {
+  [[ -d "${MICROMACHINE_DATA_DIR}" && -f "${RUNTIME_LOG_MARKER}" ]] || return 0
+  find "${MICROMACHINE_DATA_DIR}" -maxdepth 1 -type f -name '*.log' -newer "${RUNTIME_LOG_MARKER}" -print 2>/dev/null | sort | tail -n 1
+}
+
+file_size_bytes() {
+  local file="$1"
+  stat -f '%z' "${file}" 2>/dev/null || wc -c < "${file}"
+}
+
+record_runtime_log_baseline() {
+  : > "${RUNTIME_LOG_BASELINE}"
+  [[ -d "${MICROMACHINE_DATA_DIR}" ]] || return 0
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    printf '%s\t%s\n' "${log_file}" "$(file_size_bytes "${log_file}")" >> "${RUNTIME_LOG_BASELINE}"
+  done < <(find "${MICROMACHINE_DATA_DIR}" -maxdepth 1 -type f -name '*.log' -print 2>/dev/null | sort)
+}
+
+runtime_log_start_offset() {
+  local log_file="$1"
+  [[ -f "${RUNTIME_LOG_BASELINE}" ]] || {
+    printf '0\n'
+    return 0
+  }
+  awk -v target="${log_file}" -F '\t' '$1 == target { found = 1; print $2 } END { if (!found) print 0 }' "${RUNTIME_LOG_BASELINE}"
+}
+
+stream_current_run_log() {
+  local log_file="$1"
+  if [[ "${log_file}" == "${BOT_LOG}" ]]; then
+    cat "${log_file}"
+    return 0
+  fi
+  local offset
+  offset="$(runtime_log_start_offset "${log_file}")"
+  if [[ "${offset}" =~ ^[0-9]+$ && "${offset}" -gt 0 ]]; then
+    tail -c +"$((offset + 1))" "${log_file}"
+  else
+    cat "${log_file}"
+  fi
+}
+
+candidate_bot_logs() {
+  [[ -f "${BOT_LOG}" ]] && printf '%s\n' "${BOT_LOG}"
+  local runtime_log
+  runtime_log="$(latest_runtime_log || true)"
+  if [[ -n "${runtime_log}" && -f "${runtime_log}" ]]; then
+    printf '%s\n' "${runtime_log}"
+  fi
+}
+
+refresh_classifier_log() {
+  rm -f "${CLASSIFIER_BOT_LOG}"
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    {
+      printf '%s\n' "--- ${log_file} ---"
+      stream_current_run_log "${log_file}"
+    } >> "${CLASSIFIER_BOT_LOG}"
+  done < <(candidate_bot_logs)
+  [[ -f "${CLASSIFIER_BOT_LOG}" ]] || touch "${CLASSIFIER_BOT_LOG}"
+}
+
+print_bot_logs() {
+  refresh_classifier_log
+  tail -200 "${CLASSIFIER_BOT_LOG}" >&2 || true
 }
 
 has_post_barracks_unit_evidence() {
@@ -348,31 +462,39 @@ has_post_barracks_unit_evidence() {
 }
 
 has_positive_gas_income() {
-  [[ -f "${BOT_LOG}" ]] || return 1
-  awk '
-    /Gas income:/ {
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^[0-9]+$/ && $i > 0) {
-          found = 1
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    awk '
+      /Gas income:/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^[0-9]+$/ && $i > 0) {
+            found = 1
+          }
         }
       }
-    }
-    END { exit(found ? 0 : 1) }
-  ' "${BOT_LOG}"
+      END { exit(found ? 0 : 1) }
+    ' < <(stream_current_run_log "${log_file}") && return 0
+  done < <(candidate_bot_logs)
+  return 1
 }
 
 has_positive_mineral_income() {
-  [[ -f "${BOT_LOG}" ]] || return 1
-  awk '
-    /Mineral income:/ {
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^[0-9]+$/ && $i > 0) {
-          found = 1
+  local log_file
+  while IFS= read -r log_file; do
+    [[ -n "${log_file}" && -f "${log_file}" ]] || continue
+    awk '
+      /Mineral income:/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^[0-9]+$/ && $i > 0) {
+            found = 1
+          }
         }
       }
-    }
-    END { exit(found ? 0 : 1) }
-  ' "${BOT_LOG}"
+      END { exit(found ? 0 : 1) }
+    ' < <(stream_current_run_log "${log_file}") && return 0
+  done < <(candidate_bot_logs)
+  return 1
 }
 
 has_required_macro_evidence() {
@@ -519,7 +641,7 @@ sc2_port_pids() {
 }
 
 clean_sc2_ports_before_launch() {
-  [[ "${SC2_CLEAN_PORTS_BEFORE_LAUNCH}" == "1" ]] || return
+  [[ "${SC2_CLEAN_PORTS_BEFORE_LAUNCH}" == "1" ]] || return 0
   local port
   for port in "${SC2_PORTS[@]}"; do
     while IFS= read -r pid; do
@@ -527,6 +649,12 @@ clean_sc2_ports_before_launch() {
       kill "${pid}" 2>/dev/null || true
     done < <(sc2_port_pids "${port}")
   done
+}
+
+settle_after_sc2_port_cleanup() {
+  [[ "${SC2_CLEAN_PORTS_BEFORE_LAUNCH}" == "1" ]] || return 0
+  [[ "${SC2_POST_CLEAN_SETTLE_SECONDS}" != "0" ]] || return 0
+  sleep "${SC2_POST_CLEAN_SETTLE_SECONDS}"
 }
 
 capture_preexisting_sc2_port_pids() {
@@ -545,6 +673,7 @@ classify_soak() {
   local mode="$1"
   local report_path="$2"
   local extra_args=()
+  refresh_classifier_log
   if [[ "${mode}" == "live" ]]; then
     extra_args+=(--allow-incomplete)
   fi
@@ -560,7 +689,7 @@ classify_soak() {
   local command=(
     python3 -m starcraft_commander.micromachine_soak
     --blackboard-dir "${BLACKBOARD_DIR}" \
-    --bot-log "${BOT_LOG}" \
+    --bot-log "${CLASSIFIER_BOT_LOG}" \
     --artifact-dir "${BLACKBOARD_DIR}" \
     --report "${report_path}" \
     --target-frame "${SOAK_TARGET_FRAME}" \
@@ -588,7 +717,7 @@ fail_from_live_classifier() {
   cleanup_runtime
   BOT_PID=""
   classify_soak "final" "${SOAK_REPORT}" >/dev/null || true
-  tail -200 "${BOT_LOG}" >&2 || true
+  print_bot_logs
   exit 1
 }
 
@@ -609,11 +738,17 @@ rm -f \
   "${BLACKBOARD_DIR}/latest_modulation.kv" \
   "${BLACKBOARD_DIR}/modulation_updates.jsonl" \
   "${BOT_LOG}" \
+  "${CLASSIFIER_BOT_LOG}" \
+  "${RUNTIME_LOG_MARKER}" \
+  "${RUNTIME_LOG_BASELINE}" \
   "${SOAK_REPORT}" \
   "${SOAK_LIVE_REPORT}"
 
+touch "${RUNTIME_LOG_MARKER}"
+record_runtime_log_baseline
 publish_due_profiles "0"
 clean_sc2_ports_before_launch
+settle_after_sc2_port_cleanup
 capture_preexisting_sc2_port_pids
 
 python3 - <<'PY' "${MICROMACHINE_DIR}/bin/BotConfig.txt" "${MAP_FILE}"
@@ -626,7 +761,7 @@ path = Path(sys.argv[1])
 map_file = sys.argv[2]
 config = json.loads(path.read_text())
 config["SC2API"]["PlayAsHuman"] = False
-config["SC2API"]["ForceStepMode"] = True
+config["SC2API"]["ForceStepMode"] = bool(int(os.environ.get("SOAK_FORCE_STEP_MODE", "0")))
 config["SC2API"]["MapFile"] = map_file
 config["SC2API"]["PlayVsItSelf"] = bool(int(os.environ.get("SOAK_PLAY_VS_SELF", "0")))
 enemy_difficulty = int(os.environ.get("SOAK_ENEMY_DIFFICULTY", "1"))
@@ -653,6 +788,7 @@ PY
   cd "${MICROMACHINE_DIR}/bin"
   VOI_MICROMACHINE_BLACKBOARD_DIR="${BLACKBOARD_DIR}" \
     VOI_SC2_EXTRA_ARGS="${VOI_SC2_EXTRA_ARGS:-}" \
+    VOI_SC2_CREATEGAME_MAP_DATA="${VOI_SC2_CREATEGAME_MAP_DATA}" \
     VOI_SC2_BOOTSTRAP_SELF_UNITS="${VOI_SC2_BOOTSTRAP_SELF_UNITS:-${VOI_SC2_CONNECT_PORT:+1}}" \
     "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine" \
     -e "${SC2_EXECUTABLE}" \
@@ -692,7 +828,7 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
     cleanup_runtime
     BOT_PID=""
     classify_soak "final" "${SOAK_REPORT}" >/dev/null || true
-    tail -200 "${BOT_LOG}" >&2 || true
+    print_bot_logs
     exit 1
   fi
   sleep "${SOAK_POLL_SECONDS}"
@@ -731,5 +867,5 @@ PY
 fi
 
 echo "MicroMachine soak failed; report: ${SOAK_REPORT}" >&2
-tail -200 "${BOT_LOG}" >&2 || true
+print_bot_logs
 exit 1

@@ -106,6 +106,14 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
         )
         json.dumps(document, ensure_ascii=False)
 
+    def test_blackboard_update_rejects_json_unsafe_update_id(self) -> None:
+        with self.assertRaisesRegex(ValueError, "update_id"):
+            MicroMachineBlackboardUpdate(
+                update_id='bad"id',
+                vector=_defensive_vector(),
+                issued_at_frame=1000,
+            )
+
     def test_blackboard_update_round_trips_from_mapping(self) -> None:
         update = MicroMachineBlackboardUpdate(
             update_id="mod-002",

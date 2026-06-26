@@ -16,6 +16,7 @@ Verified upstream:
 | `voi_policy_blackboard.hpp` | Header-only C++17 reader for `latest_modulation.kv`. |
 | `patches/0001-macos-latest-s2client-policy-blackboard.patch` | Verified patch bundle for current `s2client-api`, libvoxelbot linking, and the voi blackboard hook. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
+| `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
 | `scripts/soak_macos_local.sh` | Long-run local StarCraft II soak gate with deterministic artifacts and production sign-off classifiers. |
 | `scripts/soak_matrix_macos_local.sh` | Map/race/difficulty matrix runner that aggregates per-case soak reports. |
@@ -89,6 +90,43 @@ checksums, config/header checksums, binary path, and binary checksum. Matrix
 production signoff consumes that identity and blocks `unrecorded` or mismatched
 builds.
 
+## Bootstrap Probe Gate
+
+`scripts/probe_macos_local.sh` runs the patched `s2client-api`
+`voi_bootstrap_probe` binary without MicroMachine. It exists to separate a
+StarCraft II CreateGame/JoinGame contract failure from a MicroMachine manager or
+DSL failure. The probe launches SC2 through the same macOS LaunchServices-aware
+s2client path, starts a Terran participant against a low-difficulty computer,
+and writes `PROBE_OUTPUT` JSON.
+
+The probe passes only when the first bootstrap window shows all of the
+following:
+
+- `ok=true`
+- `self_count > 0`
+- `self_worker_count > 0`
+- `resource_depot_count > 0`
+
+If the SC2 API connects but the participant has only neutral units, the probe
+fails closed with `bootstrap_no_start_units`. That failure means MicroMachine
+cannot initialize managers, cannot consume live DSL modulation, and must not be
+treated as production-ready even if TCP connection and `WaitJoinGame` succeeded.
+Set `VOI_SC2_CREATEGAME_MAP_DATA=1` to force the patched `s2client-api`
+CreateGame request to attach `.SC2Map` bytes in `local_map.map_data` while
+preserving `local_map.map_path`. This is a diagnostic compatibility path for
+Base97364 hosts where path-only local maps join successfully but expose no own
+starting units through raw observations.
+
+Typical local command after `scripts/build_macos_local.sh`:
+
+```bash
+SC2_CLEAN_PORTS_BEFORE_LAUNCH=1 \
+VOI_SC2_CREATEGAME_MAP_DATA=1 \
+SC2_ATTACH_TIMEOUT_MS=120000 \
+PROBE_MAX_FRAME=1200 \
+integrations/micromachine/scripts/probe_macos_local.sh
+```
+
 ## Local Smoke Test Gate
 
 This repository can test the Python sidecar, file transport, key flattening,
@@ -111,6 +149,16 @@ such as `create unit item=Marine result=1`, a `build command
 type=TERRAN_REFINERY`, and positive mineral and gas income after the Refinery completes. It
 fails immediately on known false positive signatures such as `Failed to place
 Barracks`, `Failed to place Refinery`, or exact building cancellation lines.
+The macOS direct-launch production default is realtime coordinator mode
+(`SMOKE_FORCE_STEP_MODE=0`). Set `SMOKE_FORCE_STEP_MODE=1` only when
+diagnosing forced-step behavior; on Base97364 this mode can exit at frame 0
+before MicroMachine emits macro or scout evidence.
+The smoke wrapper also has a bounded startup retry (`SMOKE_MAX_ATTEMPTS=3`,
+`SMOKE_RETRY_SETTLE_SECONDS=15`) for direct-launch setup flakes before
+`NO_START_UNITS_FRAME`. This does not hide bot-quality failures: once telemetry
+reaches the startup threshold, once any opening macro command appears, or once
+the logs show deterministic macro/bootstrap failures, the smoke stops
+immediately and writes `smoke_attempts.json` with the failed attempt details.
 
 ## Verified macOS Runtime
 
@@ -133,6 +181,9 @@ Launcher contract:
 | `SC2_ROOT_ALIAS` | `/private/tmp/voi-sc2-root` | Symlink alias for the local StarCraft II install; avoids whitespace splitting in `VOI_SC2_EXTRA_ARGS`. |
 | `SC2_TEMP_DIR` | `/private/tmp/voi-sc2-temp-micromachine` | SC2 temp directory passed through `VOI_SC2_EXTRA_ARGS` only when `SC2_USE_RUNTIME_DIR_ARGS=1`. |
 | `SC2_CLEAN_PORTS_BEFORE_LAUNCH` | `1` | Kills stale processes bound to the configured SC2 API ports before launch, preventing false passes against an old SC2 session. |
+| `SC2_POST_CLEAN_SETTLE_SECONDS` | `5` | Wait after stale SC2 port cleanup before relaunching; this avoids Base97364 teardown/relaunch races in repeated local smoke/probe/soak runs. |
+| `SMOKE_MAX_ATTEMPTS` | `3` | Bounded retry count for direct-launch smoke startup flakes before `NO_START_UNITS_FRAME`; every attempt keeps its own `attempt-N/` blackboard. Runtime progress past the startup threshold, macro failures, and bootstrap-no-start-units failures are not retry-masked. |
+| `SMOKE_RETRY_SETTLE_SECONDS` | `15` | Parent retry-loop wait before relaunching smoke after a retryable frame-0 startup failure. |
 | `SC2_BATTLENET_EXECUTABLE` | `/Applications/Battle.net.app/Contents/MacOS/Battle.net` | Explicit `SC2_LAUNCH_MODE=battlenet` diagnostic launcher only; clean-start production smoke should use direct Base launch. |
 | `SC2_BATTLENET_GAME` | `s2_kokr` | Battle.net game selector passed through `VOI_SC2_EXTRA_ARGS` when `SC2_LAUNCH_MODE=battlenet` is forced. |
 
@@ -153,18 +204,34 @@ because clean-start testing showed it can launch only the Battle.net shell
 without opening the requested SC2 API port; it remains available only as an
 explicit diagnostic mode.
 
-Latest host re-check on 2026-06-24: the Python/blackboard contracts still
-pass, direct Base97364 opens the SC2 API listener, and patched MicroMachine
-reaches `WaitJoinGame finished successfully.` The remaining production blocker
-is no longer "cannot connect"; it is `bootstrap_no_start_units`: `CreateGame`
-joins and map info loads, but telemetry stays at `CCBot.bootstrap_waiting` with
-`self_count=0` and `resource_depot_count=0`. The same symptom reproduced with a
-temporary `s2client-api` `bot_simple` probe on the active host, so the current
-blocker is in the Base97364/local-map CreateGame start-unit contract rather
-than the MicroMachine DSL/blackboard layer. Treat the 2026-06-21 artifacts
-below as historical evidence only until current smoke/soak regenerates
-`latest_telemetry.json`, GameCommander/CombatCommander/ScoutManager telemetry,
-and macro evidence on the active SC2 install.
+Latest host re-check on 2026-06-25: the Python/blackboard contracts still
+pass, direct Base97364 opens the SC2 API listener, and the patched
+`s2client-api` bootstrap probe passes with `VOI_SC2_CREATEGAME_MAP_DATA=1`
+(`self_count=9`, `self_worker_count=8`, `resource_depot_count=1`). The
+patched MicroMachine production smoke also passed on the active Base97364 host
+with realtime coordinator mode (`SMOKE_FORCE_STEP_MODE=0`, now the default):
+`/private/tmp/voi-mm-smoke-issue-67-final` selected attempt 1/3,
+`latest_telemetry.json` reached frame 5299, `CombatCommander` consumed the
+aggressive modulation profile, `ScoutManager` had a live worker scout, and the
+runtime logs showed SupplyDepot, Barracks, Refinery, Marine, mineral income,
+and gas income evidence. Forced-step mode remains available as an explicit
+diagnostic (`SMOKE_FORCE_STEP_MODE=1`), but it is not the production default on
+this macOS direct-launch path because Base97364 can end the coordinator loop at
+frame 0 before macro evidence is emitted.
+
+The 12000-frame production soak gate also passed on Acropolis/Base97364 with
+the same real MicroMachine binary and no mock runtime:
+`/private/tmp/voi-mm-soak/issue-67-gasfix-acropolis-12000/soak_report.json`
+selected attempt 1/3 and passed at frame 12060. The selected attempt had
+`macro_evidence_ok=true`,
+`manager_intervention_ok=true`, `target_reached=true`, no classifier failures,
+and active defensive modulation
+`soak-defensive_hold-refresh-7054`. The soak classifier consumes
+`micromachine_combined.log`, which merges the wrapper log with the latest
+MicroMachine runtime data log. The wrappers record each runtime log's pre-run
+byte size in `runtime_log_baseline.tsv`, so production/macro evidence is
+evaluated only from bytes appended by the current attempt rather than stale
+historical bot-play logs.
 
 Observed smoke evidence:
 
@@ -232,6 +299,7 @@ to stale modulation.
 Example:
 
 ```bash
+VOI_SC2_CREATEGAME_MAP_DATA=1 \
 SOAK_ENEMY_RACE=Zerg \
 SOAK_ENEMY_DIFFICULTY=1 \
 SOAK_TARGET_FRAME=12000 \
@@ -246,17 +314,19 @@ Configurable thresholds:
 | `SOAK_ENEMY_RACE` | `Zerg` | Built-in AI enemy race: `Terran`, `Protoss`, `Zerg`, or `Random`. |
 | `SOAK_ENEMY_DIFFICULTY` | `1` | Built-in AI difficulty from 1 to 10. |
 | `SOAK_TARGET_FRAME` | `12000` | Required latest telemetry frame for pass. |
+| `SOAK_FORCE_STEP_MODE` | `0` | Realtime coordinator mode is the production default for macOS direct Base launch; set to `1` only for forced-step diagnostics. |
 | `SOAK_TIMEOUT_SECONDS` | `1200` | Wall-clock budget before timeout failure. |
 | `SOAK_TELEMETRY_STALL_SECONDS` | `90` | Fails if telemetry stops updating before target. |
 | `SOAK_PRODUCTION_DEADLOCK_FRAME` | `9000` | Fails if opening production evidence is still missing. |
-| `SOAK_PRODUCTION_STALL_FRAMES` | `8000` | Fails if no later production log evidence appears within this frame window after target. |
-| `SOAK_INCOME_STALL_FRAMES` | `2000` | Fails if recent mineral/gas income evidence is missing near the target frame. |
+| `SOAK_PRODUCTION_STALL_FRAMES` | `6000` | Fails if no later production log evidence appears within this frame window after target. |
+| `SOAK_INCOME_STALL_FRAMES` | `2000` | Fails if recent mineral/gas income evidence is missing near the target frame, unless recent worker-combat evidence proves the bot is actively defending instead of idle. |
 | `SOAK_MAX_PLACEMENT_FAILURES` | `3` | Fails repeated placement/path/cancel loops. |
 | `SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES` | `128` | Fails if telemetry does not consume the latest modulation refresh after this frame grace window. |
 | `SOAK_PROFILE_SEQUENCE` | `default_defensive_to_aggressive` | Profile schedule: one profile key, the default schedule, or comma-separated `profile@frame` entries. |
 | `SOAK_AGGRESSIVE_MIN_FRAME` | `13000` | Keeps the 12000-frame production gate in defensive hold, then permits aggressive-pressure modulation for longer soaks. |
-| `SOAK_MAX_ATTEMPTS` | `2` | Bounded retry count for map/start-location flakes; every attempt keeps its own artifact directory. |
-| `SOAK_NON_RETRYABLE_FAILURE_CODES` | classifier terminal failures | Failure codes that stop retry immediately instead of hiding deterministic bot/runtime failures behind a later pass. |
+| `SOAK_MAX_ATTEMPTS` | `3` | Bounded retry count for frame-0 direct-launch startup flakes; every attempt keeps its own artifact directory. Runtime crashes, stalls, disconnects, and deterministic play-quality failures after frames progress are not retry-masked. |
+| `SOAK_RETRY_SETTLE_SECONDS` | `15` | Parent retry-loop wait before relaunching after a retryable frame-0 startup failure. |
+| `SOAK_NON_RETRYABLE_FAILURE_CODES` | deterministic play-quality failures | Failure codes that stop retry immediately instead of hiding deterministic bot/runtime failures behind a later pass. Only frame-0 startup failures limited to `micromachine_crash`, `micromachine_process_stopped`, and `telemetry_missing` are retryable by default. |
 | `SOAK_ARTIFACT_ROOT` | `/private/tmp/voi-mm-soak` | Parent for run archives. |
 | `SOAK_RUN_DIR` | `${SOAK_ARTIFACT_ROOT}/${SOAK_RUN_ID}` | Exact deterministic artifact directory when supplied by CI/user. |
 

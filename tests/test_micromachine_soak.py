@@ -11,6 +11,7 @@ from starcraft_commander.micromachine_soak import (
     MicroMachineSoakConfig,
     MicroMachineSoakObservation,
     classify_micromachine_soak,
+    count_placement_failures,
     has_required_macro_evidence,
     missing_macro_evidence,
 )
@@ -32,6 +33,7 @@ MACRO_LOG = "\n".join(
         "Mineral income:       512",
         "Gas income:       67",
         "6100: create | create unit item=Marine result=1",
+        "11280: enforceBarracksProductionContinuity | continuity accepted unit training order=Marine",
     )
 )
 
@@ -91,7 +93,7 @@ class MicroMachineSoakConfigTest(unittest.TestCase):
 
         self.assertEqual(12_000, config.target_frame)
         self.assertEqual(9_000, config.production_deadlock_frame)
-        self.assertEqual(8_000, config.production_stall_frames)
+        self.assertEqual(6_000, config.production_stall_frames)
         self.assertEqual(2_000, config.income_stall_frames)
         self.assertEqual(1_200, config.bootstrap_no_start_units_frame)
         self.assertEqual(128, config.modulation_consumption_grace_frames)
@@ -101,6 +103,8 @@ class MicroMachineSoakConfigTest(unittest.TestCase):
             MicroMachineSoakConfig(target_frame=0)
         with self.assertRaisesRegex(ValueError, "max_placement_failures"):
             MicroMachineSoakConfig(max_placement_failures=-1)
+        with self.assertRaisesRegex(ValueError, "max_placement_failures"):
+            MicroMachineSoakConfig(max_placement_failures=0)
         with self.assertRaisesRegex(ValueError, "income_stall_frames"):
             MicroMachineSoakConfig(income_stall_frames=0)
         with self.assertRaisesRegex(ValueError, "bootstrap_no_start_units_frame"):
@@ -174,6 +178,43 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                     "repeated_placement_failures",
                 },
             )
+
+    def test_dedupes_identical_framed_placement_failures_only(self) -> None:
+        log_text = "\n".join(
+            (
+                "9396: manageBuildOrderQueue | Failed to place TERRAN_SUPPLYDEPOT during initial build order. Skipping.",
+                "9396: manageBuildOrderQueue | Failed to place TERRAN_SUPPLYDEPOT during initial build order. Skipping.",
+                "9728: manageBuildOrderQueue | Failed to place TERRAN_SUPPLYDEPOT during initial build order. Skipping.",
+                "Failed to place Barracks",
+                "Failed to place Barracks",
+            )
+        )
+
+        self.assertEqual(4, count_placement_failures(log_text))
+
+    def test_rejects_placement_failures_at_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_text = "\n".join(
+                (
+                    MACRO_LOG,
+                    "7749: manageBuildOrderQueue | Failed to place TERRAN_SUPPLYDEPOT during initial build order. Skipping.",
+                    "8094: manageBuildOrderQueue | Failed to place TERRAN_SUPPLYDEPOT during initial build order. Skipping.",
+                    "9101: manageBuildOrderQueue | Failed to place TERRAN_SUPPLYDEPOT during initial build order. Skipping.",
+                )
+            )
+            self._write_runtime(root, log_text=log_text, telemetry=_telemetry(12_100))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                    bot_running=False,
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, max_placement_failures=3),
+            )
+
+            self.assert_failure_codes(report, {"repeated_placement_failures"})
 
     def test_detects_telemetry_stall_and_no_production_deadlock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -330,6 +371,65 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 },
             )
 
+    def test_waits_for_modulation_consumption_grace_during_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(0, policy_active=False)
+            telemetry["active_modulation_ids"] = []
+            self._write_runtime(
+                root,
+                log_text="Connected to 127.0.0.1:8167\nWaitJoinGame finished successfully.",
+                telemetry=telemetry,
+                modulation={
+                    **_modulation(update_id="soak-defensive-hold"),
+                    "issued_at_frame": 0,
+                },
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                    bot_running=True,
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    modulation_consumption_grace_frames=128,
+                ),
+            )
+
+            self.assertNotIn("stale_modulation", {failure.code for failure in report.failures})
+            self.assertFalse(report.ok)
+
+    def test_detects_unconsumed_modulation_after_consumption_grace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(129, policy_active=False)
+            telemetry["active_modulation_ids"] = []
+            self._write_runtime(
+                root,
+                log_text="Connected to 127.0.0.1:8167\nWaitJoinGame finished successfully.",
+                telemetry=telemetry,
+                modulation={
+                    **_modulation(update_id="soak-defensive-hold"),
+                    "issued_at_frame": 0,
+                },
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                    bot_running=True,
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    modulation_consumption_grace_frames=128,
+                ),
+            )
+
+            self.assert_failure_codes(report, {"stale_modulation"})
+
     def test_detects_income_stall_near_target_frame(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -352,6 +452,45 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 ["recent positive mineral income"],
                 income_stall[0].evidence["missing"],
             )
+
+    def test_income_stall_allows_recent_harvest_telemetry_when_score_rate_is_zero(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale_income_log = MACRO_LOG.replace(
+                "11200: drawProductionInformation", "6048: drawProductionInformation"
+            )
+            telemetry = _telemetry(12_500)
+            telemetry["economy"] = {
+                "minerals": 0,
+                "vespene": 0,
+                "mineral_income": 0,
+                "vespene_income": 0,
+                "self_worker_count": 9,
+                "idle_worker_count": 0,
+                "harvest_gather_order_count": 8,
+                "harvest_return_order_count": 1,
+                "sample_worker_orders": [
+                    {
+                        "ability": 3666,
+                        "target_type": 666,
+                        "target_mineral_contents": 1100,
+                        "target_dist_sq": 2,
+                    }
+                ],
+            }
+            self._write_runtime(root, log_text=stale_income_log, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, income_stall_frames=2_000),
+            )
+
+            self.assertNotIn("income_stall", {failure.code for failure in report.failures})
 
     def test_detects_recent_gas_stall_when_target_is_inline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -406,6 +545,32 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
 
             self.assertTrue(report.ok, report.to_dict())
 
+    def test_income_stall_allows_recent_worker_combat_even_with_gas_demand(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            combat_log = "\n".join(
+                (
+                    MACRO_LOG,
+                    "11449: drawProductionInformation | Production Information",
+                    "Gas Worker Target:3",
+                    "Mineral income:       0",
+                    "Gas income:       0",
+                    "Worker jobs M/G/B/C/I/S/N:0/0/0/8/5/0/-17",
+                    "11949: monitorUnitActions | Actions (total, APM, last frame): 3300, 695, 4",
+                )
+            )
+            self._write_runtime(root, log_text=combat_log, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, income_stall_frames=2_000),
+            )
+
+            self.assertNotIn("income_stall", {failure.code for failure in report.failures})
+
     def test_production_stall_allows_recent_combat_activity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -428,6 +593,68 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             )
 
             self.assertNotIn("production_stall", {failure.code for failure in report.failures})
+
+    def test_detects_target_frame_with_stale_unit_production_as_false_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale_opening_log = MACRO_LOG.replace(
+                "4590: create | create unit item=Marine result=1", ""
+            ).replace("6100: create | create unit item=Marine result=1", "").replace(
+                "11280: enforceBarracksProductionContinuity | continuity accepted unit training order=Marine",
+                "",
+            )
+            stale_unit_log = "\n".join(
+                (
+                    stale_opening_log,
+                    "2081: create | create unit item=Marine result=1",
+                    "8070: drawProductionInformation | Production Information",
+                    "Barracks                     [-160] (B)",
+                    "Stimpack                     [-170] (B)",
+                    "Free Mineral:     2250",
+                    "Free Gas:         656",
+                    "Gas income:       179",
+                    "8641: updateAttackSquads | Cancel offensive (-70.13%, 1 ally supply vs 0 enemy supply)",
+                    "12350: drawProductionInformation | Production Information",
+                    "Barracks                     [-160] (B)",
+                    "Stimpack                     [-170] (B)",
+                )
+            )
+            self._write_runtime(root, log_text=stale_unit_log, telemetry=_telemetry(12_350))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, production_stall_frames=8_000),
+            )
+
+            self.assert_failure_codes(report, {"unit_production_stall"})
+
+    def test_rejects_continuity_train_attempt_as_unit_production_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_text = "\n".join(
+                (
+                    MACRO_LOG.replace(
+                        "11280: enforceBarracksProductionContinuity | continuity accepted unit training order=Marine",
+                        "",
+                    ),
+                    "11280: enforceBarracksProductionContinuity | continuity train command item=Marine",
+                )
+            )
+            self._write_runtime(root, log_text=log_text, telemetry=_telemetry(12_100))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                    bot_running=False,
+                ),
+                MicroMachineSoakConfig(target_frame=12_000, production_stall_frames=100),
+            )
+
+            self.assert_failure_codes(report, {"unit_production_stall"})
 
     def test_detects_latest_modulation_refresh_not_consumed_by_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

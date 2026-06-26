@@ -34,6 +34,7 @@ PLACEMENT_FAILURE_TERMS: Final[tuple[str, ...]] = (
     "Cancel building TERRAN_BARRACKS :",
     "Cancel building TERRAN_REFINERY :",
 )
+LOG_FRAME_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d+):\s*(.*)$")
 DISCONNECT_TERMS: Final[tuple[str, ...]] = (
     "Connection closed",
     "Connection reset",
@@ -47,6 +48,11 @@ PRODUCTION_TERMS: Final[tuple[str, ...]] = (
     "build command type=",
     "create unit item=",
     "create upgrade item=",
+    "accepted unit training order=",
+)
+UNIT_PRODUCTION_TERMS: Final[tuple[str, ...]] = (
+    "create unit item=",
+    "accepted unit training order=",
 )
 
 
@@ -58,7 +64,7 @@ class MicroMachineSoakConfig:
     timeout_seconds: int = 1_200
     telemetry_stall_seconds: int = 90
     production_deadlock_frame: int = 9_000
-    production_stall_frames: int = 8_000
+    production_stall_frames: int = 6_000
     income_stall_frames: int = 2_000
     bootstrap_no_start_units_frame: int = 1_200
     max_placement_failures: int = 3
@@ -79,8 +85,7 @@ class MicroMachineSoakConfig:
             "modulation_consumption_grace_frames",
             self.modulation_consumption_grace_frames,
         )
-        if type(self.max_placement_failures) is bool or self.max_placement_failures < 0:
-            raise ValueError("max_placement_failures must be a non-negative integer.")
+        _require_positive("max_placement_failures", self.max_placement_failures)
         object.__setattr__(
             self,
             "expected_profile_tags",
@@ -286,8 +291,8 @@ def classify_micromachine_soak(
     if no_start_units_failure is not None:
         failures.append(no_start_units_failure)
 
-    placement_failure_count = sum(log_text.count(term) for term in PLACEMENT_FAILURE_TERMS)
-    if placement_failure_count > resolved_config.max_placement_failures:
+    placement_failure_count = count_placement_failures(log_text)
+    if placement_failure_count >= resolved_config.max_placement_failures:
         failures.append(
             MicroMachineSoakFailure(
                 code="repeated_placement_failures",
@@ -339,8 +344,30 @@ def classify_micromachine_soak(
             )
         )
 
+    last_unit_production_frame = _last_log_frame_for_terms(log_text, UNIT_PRODUCTION_TERMS)
+    if (
+        latest_frame >= resolved_config.target_frame
+        and (
+            last_unit_production_frame is None
+            or latest_frame - last_unit_production_frame > resolved_config.production_stall_frames
+        )
+    ):
+        failures.append(
+            MicroMachineSoakFailure(
+                code="unit_production_stall",
+                message="No recent unit-production evidence appeared near the target frame.",
+                evidence={
+                    "latest_frame": latest_frame,
+                    "last_unit_production_frame": last_unit_production_frame,
+                    "production_stall_frames": resolved_config.production_stall_frames,
+                },
+            )
+        )
+
     recent_income_missing = _missing_recent_positive_income(
         log_text,
+        telemetry,
+        telemetry_archive,
         latest_frame,
         resolved_config.income_stall_frames,
     )
@@ -408,6 +435,26 @@ def has_required_macro_evidence(log_text: str) -> bool:
     if not any(term in log_text for term in DEFAULT_POST_BARRACKS_UNIT_TERMS):
         return False
     return _has_positive_gas_income(log_text) and _has_positive_mineral_income(log_text)
+
+
+def count_placement_failures(log_text: str) -> int:
+    """Count framed placement failures once while preserving unframed repeats."""
+
+    count = 0
+    framed_seen: set[tuple[str, str, str]] = set()
+    for line in log_text.splitlines():
+        for term in PLACEMENT_FAILURE_TERMS:
+            if term not in line:
+                continue
+            match = LOG_FRAME_PREFIX_RE.match(line)
+            if match is None:
+                count += line.count(term)
+                continue
+            key = (match.group(1), term, match.group(2).strip())
+            if key not in framed_seen:
+                framed_seen.add(key)
+                count += 1
+    return count
 
 
 def missing_macro_evidence(log_text: str) -> list[str]:
@@ -682,13 +729,21 @@ def _has_positive_mineral_income(log_text: str) -> bool:
 
 def _missing_recent_positive_income(
     log_text: str,
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
     latest_frame: int,
     income_stall_frames: int,
 ) -> list[str]:
     min_frame = max(0, latest_frame - income_stall_frames)
+    if _has_recent_worker_combat(log_text, min_frame):
+        return []
     missing: list[str] = []
-    if not _has_recent_worker_combat(log_text, min_frame) and not _has_recent_positive_income(
+    if not _has_recent_positive_income(
         log_text, "Mineral income:", min_frame
+    ) and not _has_recent_mining_activity(
+        latest_telemetry,
+        telemetry_archive,
+        min_frame,
     ):
         missing.append("recent positive mineral income")
     if _has_recent_positive_gas_demand(log_text, min_frame) and not _has_recent_positive_income(
@@ -696,6 +751,34 @@ def _missing_recent_positive_income(
     ):
         missing.append("recent positive gas income")
     return missing
+
+
+def _has_recent_mining_activity(
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+    min_frame: int,
+) -> bool:
+    """Accept SC2 economy telemetry when score collection_rate is unavailable.
+
+    Some latest-client/map combinations keep score_details.collection_rate_minerals
+    at zero even while workers hold HARVEST_GATHER orders on real mineral fields.
+    This is only used as an income fallback: it requires recent frame telemetry,
+    self workers, and active mineral harvest orders or returns.
+    """
+
+    for entry in [*telemetry_archive, latest_telemetry]:
+        if _int_value(entry.get("frame")) < min_frame:
+            continue
+        economy = entry.get("economy")
+        if not isinstance(economy, Mapping):
+            continue
+        if _int_value(economy.get("self_worker_count")) <= 0:
+            continue
+        if _int_value(economy.get("harvest_gather_order_count")) > 0:
+            return True
+        if _int_value(economy.get("harvest_return_order_count")) > 0:
+            return True
+    return False
 
 
 def _has_recent_positive_income(log_text: str, label: str, min_frame: int) -> bool:
@@ -817,23 +900,32 @@ def _classify_stale_modulation(
     )
     managers = telemetry_for_policy.get("managers")
     commander = managers.get("GameCommander") if isinstance(managers, Mapping) else None
-    if isinstance(commander, Mapping) and commander.get("policy_active") is False:
-        return MicroMachineSoakFailure(
-            code="stale_modulation",
-            message="GameCommander reports inactive policy modulation.",
-            evidence={"latest_frame": latest_frame},
-        )
     active_ids = telemetry_for_policy.get("active_modulation_ids")
-    if latest_frame > 0 and isinstance(active_ids, list) and not active_ids:
-        return MicroMachineSoakFailure(
-            code="stale_modulation",
-            message="Telemetry has no active modulation ids.",
-            evidence={"latest_frame": latest_frame},
-        )
     latest_update = _latest_modulation_update(observation)
     latest_update_id = latest_update.get("update_id")
     issued_at_frame = _int_value(latest_update.get("issued_at_frame"))
     expires_at_frame = _int_value(latest_update.get("expires_at_frame"))
+    consumption_due = latest_frame >= issued_at_frame + config.modulation_consumption_grace_frames
+    if isinstance(commander, Mapping) and commander.get("policy_active") is False and consumption_due:
+        return MicroMachineSoakFailure(
+            code="stale_modulation",
+            message="GameCommander reports inactive policy modulation.",
+            evidence={
+                "latest_frame": latest_frame,
+                "issued_at_frame": issued_at_frame,
+                "modulation_consumption_grace_frames": config.modulation_consumption_grace_frames,
+            },
+        )
+    if isinstance(active_ids, list) and not active_ids and consumption_due:
+        return MicroMachineSoakFailure(
+            code="stale_modulation",
+            message="Telemetry has no active modulation ids.",
+            evidence={
+                "latest_frame": latest_frame,
+                "issued_at_frame": issued_at_frame,
+                "modulation_consumption_grace_frames": config.modulation_consumption_grace_frames,
+            },
+        )
     if latest_frame >= config.target_frame and not latest_update:
         return MicroMachineSoakFailure(
             code="stale_modulation",
@@ -847,7 +939,7 @@ def _classify_stale_modulation(
     if (
         isinstance(latest_update_id, str)
         and latest_update_id
-        and latest_frame >= issued_at_frame + config.modulation_consumption_grace_frames
+        and consumption_due
     ):
         active_id_values = active_ids if isinstance(active_ids, list) else []
         commander_update_id = (
