@@ -1,0 +1,230 @@
+{
+  "integration": "voiStarcraft2 Suvorov backend evaluation",
+  "issue": 73,
+  "upstream_repository": "https://github.com/alkurbatov/suvorov-bot",
+  "verified_upstream_commit": "08a295d71f545d04b047a70ac4e1d7413afed2a4",
+  "verified_submodules": {
+    "contrib/cpp-sc2": "96d15bab61ec58f58df98af33bfca9199f176cc0",
+    "contrib/cpp-sc2/protocol": "db142363be5e4da522879b8b43db69c6313bcd57"
+  },
+  "candidate_status": "conditional_secondary_backend_candidate",
+  "production_decision": "do_not_replace_micromachine",
+  "decision_reason": "Suvorov builds and runs a full local SC2 game, and its public code exposes multi-race strategy seams. It lacks the MicroMachine-grade blackboard, telemetry, tactical manager depth, and same-environment strength evidence required for default production adoption.",
+  "bounded_modulation_contract": {
+    "reusable_python_contracts": [
+      "PolicyModulationVector",
+      "PolicyModulationProviderInterface",
+      "raw-control rejection",
+      "semantic tactical scope",
+      "fail-closed evidence gates"
+    ],
+    "required_new_adapter": "SuvorovModulationBackend or generic StrongBotModulationBackend",
+    "forbidden_controls": [
+      "raw SC2 action control",
+      "unit_tag targeting from providers",
+      "direct attack_move commands",
+      "python-sc2 method exposure",
+      "s2client-api method exposure"
+    ]
+  },
+  "build_evidence": {
+    "configure_command": "cmake -S /private/tmp/voi-suvorov-probe/suvorov-bot -B /private/tmp/voi-suvorov-probe/suvorov-bot/build -DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+    "build_command": "cmake --build /private/tmp/voi-suvorov-probe/suvorov-bot/build --parallel",
+    "build_result": "passed",
+    "binary": "/private/tmp/voi-suvorov-probe/suvorov-bot/build/bin/Suvorov",
+    "binary_file_result": "Mach-O 64-bit executable arm64",
+    "target_sc2_version": "5.0.10",
+    "cmake_policy_compatibility_required": true
+  },
+  "runtime_evidence": {
+    "host_sc2_root": "/Users/jinminseong/Desktop/StarCraft2/StarCraft II",
+    "host_sc2_executable": "/Users/jinminseong/Desktop/StarCraft2/StarCraft II/Versions/Base97364/SC2.app/Contents/MacOS/SC2",
+    "map": "AcropolisLE.SC2Map",
+    "first_direct_launch_result": "failed_with_ClientConnectionError_on_path_with_spaces_and_10000ms_timeout",
+    "no_space_alias": "/private/tmp/voi-sc2-root",
+    "alias_launch_result": "passed_full_game_to_Game_over",
+    "observed_race": "Terran",
+    "opponent": "CheatInsane Random Rush",
+    "terminal_frame": 8548,
+    "result": "loss",
+    "runtime_stdout_terms": [
+      "Connected to 127.0.0.1:8167",
+      "WaitJoinGame finished successfully."
+    ],
+    "history_log": "/private/tmp/voi-suvorov-probe/suvorov-bot/history.log",
+    "history_log_terms": [
+      "TERRAN_COMMANDCENTER",
+      "Started building a SupplyDepot",
+      "Started building a Barracks",
+      "Started building a Refinery",
+      "Started building a OrbitalCommand",
+      "TERRAN_MULE",
+      "strategy.marine_push: Schedule Marine training",
+      "strategy: TERRAN_MARINE added to attack group",
+      "dispatcher: Game over!",
+      "plugin.diagnosis: Replay saved"
+    ]
+  },
+  "known_blockers": [
+    {
+      "id": "no_bounded_blackboard",
+      "severity": "high",
+      "description": "Upstream Suvorov has no filesystem blackboard or sidecar protocol equivalent to MicroMachine latest_modulation.kv/latest_telemetry.json."
+    },
+    {
+      "id": "no_policy_consumption_telemetry",
+      "severity": "high",
+      "description": "Upstream logs prove bot activity but do not expose policy_active, active_modulation_ids, consumed axes, manager snapshots, macro evidence counters, or explicit failure reasons."
+    },
+    {
+      "id": "race_selection_not_cli_controlled",
+      "severity": "medium",
+      "description": "Non-ladder main.cpp hardcodes CreateParticipant(sc2::Race::Random), so per-race smoke requires a source patch or ladder harness that can select race."
+    },
+    {
+      "id": "combat_depth_is_attack_limit_based",
+      "severity": "medium",
+      "description": "The base Strategy sends all combat units to the enemy start when m_units.size() reaches m_attack_limit. It lacks MicroMachine-style squad roles, combat simulation, target-priority hooks, and fine tactical managers."
+    },
+    {
+      "id": "same_environment_strength_unproven",
+      "severity": "medium",
+      "description": "The local Acropolis run completed but lost to CheatInsane Rush at frame 8548. This is insufficient to claim stronger baseline performance than MicroMachine."
+    }
+  ],
+  "central_polling_hook": {
+    "source_path": "src/Dispatcher.cpp",
+    "function": "Dispatcher::OnStep()",
+    "anchor": "before plugin OnStep loop or before Builder::OnStep",
+    "reason": "Dispatcher owns the per-frame lifecycle and can load a bounded blackboard once before Strategy, economy, production, and plugin decisions consume it."
+  },
+  "manager_hooks": [
+    {
+      "domain": "strategy",
+      "source_path": "src/Dispatcher.cpp",
+      "function": "Dispatcher::OnGameStart()",
+      "keys": [
+        "strategy.posture",
+        "strategy.preferred_opening",
+        "strategy.avoid_openings",
+        "strategy.timing_biases.*"
+      ],
+      "intended_effect": "Bias race-specific strategy plugin selection without changing SC2 actions directly."
+    },
+    {
+      "domain": "production",
+      "source_path": "src/Builder.cpp",
+      "function": "Builder::OnStep()",
+      "secondary_function": "Builder::ScheduleObligatoryOrder / ScheduleOptionalOrder",
+      "keys": [
+        "production.max_tech_deviation",
+        "production.production_continuity_bias",
+        "production.queue_priority_biases.*",
+        "tech.unit_biases.*",
+        "tech.upgrade_biases.*"
+      ],
+      "intended_effect": "Bias obligatory and optional order queue priority while Builder keeps validating resources, tech, food, and placement."
+    },
+    {
+      "domain": "economy",
+      "source_path": "src/plugins/Miner.cpp",
+      "function": "Miner::OnStep()",
+      "secondary_function": "SecureMineralsIncome / SecureVespeneIncome / CallDownMULE",
+      "keys": [
+        "economy.worker_production_bias",
+        "economy.gas_priority",
+        "economy.mineral_saturation_bias",
+        "economy.mule_priority"
+      ],
+      "intended_effect": "Bias worker, gas, saturation, and MULE priorities without provider-side worker selection."
+    },
+    {
+      "domain": "economy",
+      "source_path": "src/Hub.cpp",
+      "function": "Hub::AssignBuildTask / AssignRefineryConstruction / AssignVespeneHarvester",
+      "keys": [
+        "economy.expand_bias",
+        "economy.expansion_safety_bias",
+        "economy.gas_worker_target_bias",
+        "emergency.evacuate_workers"
+      ],
+      "intended_effect": "Bias expansion and resource-worker policy while Hub remains authoritative for worker assignment."
+    },
+    {
+      "domain": "combat",
+      "source_path": "src/strategies/Strategy.cpp",
+      "function": "Strategy::OnStep()",
+      "keys": [
+        "combat.aggression",
+        "combat.defend_bias",
+        "combat.attack_timing_bias",
+        "combat.commitment_level",
+        "combat.preserve_army_bias",
+        "scope.min_units",
+        "emergency.force_retreat",
+        "emergency.cancel_attacks"
+      ],
+      "intended_effect": "Bias the attack-limit threshold and all-in/hold decision while Strategy keeps owning attack execution."
+    },
+    {
+      "domain": "combat_scope",
+      "source_path": "src/strategies/Strategy.cpp",
+      "function": "Strategy::OnUnitCreated()",
+      "keys": [
+        "scope.unit_classes",
+        "scope.army_group",
+        "scope.location_intent",
+        "combat.target_priority_biases.*"
+      ],
+      "intended_effect": "Filter or weight which combat units enter the next attack group; requires new telemetry because upstream currently stores only one m_units group."
+    },
+    {
+      "domain": "supply",
+      "source_path": "src/plugins/QuarterMaster.cpp",
+      "function": "QuarterMaster::OnStep()",
+      "keys": [
+        "economy.supply_buffer_bias",
+        "production.production_continuity_bias"
+      ],
+      "intended_effect": "Bias proactive supply scheduling while QuarterMaster remains responsible for deadlock prevention."
+    },
+    {
+      "domain": "protoss_macro",
+      "source_path": "src/plugins/WarpSmith.cpp",
+      "function": "WarpSmith::OnStep()",
+      "keys": [
+        "economy.chrono_priority",
+        "tech.upgrade_biases.*",
+        "production.warpgate_bias"
+      ],
+      "intended_effect": "Bias Chrono Boost and warp-gate support if the current race is Protoss."
+    }
+  ],
+  "race_support_source_mapping": [
+    {
+      "race": "Terran",
+      "strategy": "MarinePush",
+      "runtime_observed": true,
+      "source_path": "src/strategies/terran/MarinePush.cpp"
+    },
+    {
+      "race": "Protoss",
+      "strategy": "ChargelotPush",
+      "runtime_observed": false,
+      "source_path": "src/strategies/protoss/ChargelotPush.cpp"
+    },
+    {
+      "race": "Zerg",
+      "strategy": "ZerglingFlood",
+      "runtime_observed": false,
+      "source_path": "src/strategies/zerg/ZerglingFlood.cpp"
+    }
+  ],
+  "minimum_follow_up_before_backend_adoption": [
+    "Add race-selectable local harness or ladder-compatible race matrix.",
+    "Add Suvorov blackboard reader that consumes the same bounded PolicyModulationVector fields.",
+    "Emit latest_telemetry.json with policy_active, active_modulation_ids, consumed axes, frame, race, macro evidence, and failure reasons.",
+    "Run Terran, Protoss, and Zerg smoke on the same map/opponent matrix.",
+    "Run comparative MicroMachine vs Suvorov matrix before changing the default backend."
+  ]
+}
