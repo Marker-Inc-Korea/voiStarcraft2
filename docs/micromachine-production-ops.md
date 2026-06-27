@@ -268,6 +268,19 @@ classifier records expected profile tags in `soak_report.json` and fails with
 `strategy_profile_missing` if `modulation_updates.jsonl` does not prove the
 scheduled profiles were published.
 
+Tactical-effect evidence can be required independently from profile publishing:
+
+```bash
+SOAK_EXPECTED_TACTICAL_EFFECTS="pressure contain target_priority" \
+integrations/micromachine/scripts/soak_macos_local.sh
+```
+
+When this variable is non-empty, the final classifier requires behavior-level
+MicroMachine telemetry/log evidence, not just published or consumed blackboard
+axes. Missing evidence fails with `tactical_effect_missing`; leaving the
+variable empty keeps the soak optional for environments where tactical evidence
+is only diagnostic.
+
 Verified local matrix evidence:
 
 | Run | Evidence |

@@ -49,6 +49,10 @@ from typing import Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 
 from starcraft_commander.micromachine_bridge import require_micromachine_update_id
+from starcraft_commander.micromachine_tactical_evidence import (
+    classify_micromachine_tactical_evidence,
+    normalize_tactical_effect_tags,
+)
 from starcraft_commander.policy_modulation import (
     POLICY_MODULATION_TTL_MAX_SECONDS,
     POLICY_MODULATION_TTL_MIN_SECONDS,
@@ -152,6 +156,9 @@ _MICROMACHINE_TACTICAL_LOG_TERMS: Final[tuple[str, ...]] = (
 
 _MICROMACHINE_MAX_LOG_READ_BYTES: Final[int] = 256 * 1024
 """Upper bound for reading the tail of one MicroMachine log file."""
+
+_MICROMACHINE_LOG_FRAME_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d+):")
+"""Frame prefix parser for MicroMachine tactical log snippets."""
 
 _MICROMACHINE_PROVIDER_VECTOR_WRAPPER_KEYS: Final[tuple[str, ...]] = (
     "modulation",
@@ -537,6 +544,12 @@ def _micromachine_status_payload(
     )
     consumption_status = _micromachine_consumption_status(latest, telemetry)
     update_id = str(latest.get("update_id", "") or "") if latest else ""
+    evidence_log_snippets = _micromachine_recent_tactical_log_snippets(
+        blackboard_dir,
+        update_id=update_id,
+        limit=None,
+    )
+    log_snippets = evidence_log_snippets[-8:]
     return {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
@@ -545,10 +558,8 @@ def _micromachine_status_payload(
             latest,
             telemetry,
             consumption_status=consumption_status,
-            log_snippets=_micromachine_recent_tactical_log_snippets(
-                blackboard_dir,
-                update_id=update_id,
-            ),
+            log_snippets=log_snippets,
+            evidence_log_snippets=evidence_log_snippets,
             compile_result=compile_result,
         ),
         "compile_result": dict(compile_result) if isinstance(compile_result, Mapping) else None,
@@ -587,6 +598,7 @@ def _micromachine_intervention_summary(
     consumption_status: str,
     compile_result: object | None = None,
     log_snippets: Sequence[Mapping[str, object]] = (),
+    evidence_log_snippets: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     """Return a compact UI contract proving whether DSL reached MicroMachine."""
 
@@ -610,12 +622,41 @@ def _micromachine_intervention_summary(
     if not isinstance(vector, Mapping):
         vector = {}
     compile_payload = dict(compile_result) if isinstance(compile_result, Mapping) else {}
+    refusal_reason = _micromachine_refusal_reason(compile_payload)
     telemetry_frame = telemetry_document.get("frame")
     if type(telemetry_frame) is not int:
         telemetry_frame = None
     issued_at_frame = update.get("issued_at_frame") if update else None
     if type(issued_at_frame) is not int:
         issued_at_frame = None
+    evidence_can_be_current = consumption_status == "consumed" and update_is_active
+    evidence_telemetry = (
+        _micromachine_current_update_telemetry(
+            telemetry_document,
+            update_id=update_id,
+            telemetry_frame=telemetry_frame,
+        )
+        if evidence_can_be_current
+        else ({"frame": telemetry_frame, "managers": {}} if telemetry_frame is not None else {})
+    )
+    tactical_log_text = (
+        _micromachine_scoped_tactical_log_text(
+            evidence_log_snippets if evidence_log_snippets is not None else log_snippets,
+            update_id=update_id,
+            issued_at_frame=issued_at_frame,
+            telemetry_frame=telemetry_frame,
+        )
+        if evidence_can_be_current
+        else ""
+    )
+    tactical_evidence = classify_micromachine_tactical_evidence(
+        latest_telemetry=evidence_telemetry,
+        telemetry_archive=(),
+        log_text=tactical_log_text,
+        expected_effects=_micromachine_expected_tactical_effects(vector),
+        source_paths=_micromachine_log_snippet_sources(log_snippets),
+        refusal_reasons=(refusal_reason,) if refusal_reason else (),
+    ).to_dict()
     return {
         "applied": consumption_status == "consumed",
         "policy_active": policy_active,
@@ -643,7 +684,8 @@ def _micromachine_intervention_summary(
             compile_payload,
         ),
         "target_priority": _micromachine_target_priority(vector, managers),
-        "refusal_reason": _micromachine_refusal_reason(compile_payload),
+        "tactical_evidence": tactical_evidence,
+        "refusal_reason": refusal_reason,
         "log_snippets": [dict(item) for item in log_snippets],
     }
 
@@ -846,6 +888,163 @@ def _micromachine_target_priority(
     }
 
 
+def _micromachine_expected_tactical_effects(
+    vector: Mapping[str, object],
+) -> tuple[str, ...]:
+    candidates: list[str] = []
+    tags = vector.get("tags")
+    if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes)):
+        candidates.extend(str(tag) for tag in tags if tag is not None)
+    goal = vector.get("goal")
+    if isinstance(goal, str):
+        lowered = goal.lower()
+        for marker, effect in (
+            ("contain", "contain"),
+            ("harass", "harass"),
+            ("worker", "target_priority"),
+            ("target", "target_priority"),
+            ("scout", "scout"),
+            ("map control", "scout"),
+            ("hold", "hold"),
+            ("defend", "hold"),
+            ("retreat", "hold"),
+            ("attack", "pressure"),
+            ("pressure", "pressure"),
+        ):
+            if marker in lowered:
+                candidates.append(effect)
+    posture = _micromachine_tactical_posture(vector, {}, {})
+    if posture in {"pressure", "hold", "contain", "harass"}:
+        candidates.append(posture)
+    target_biases = _mapping_child(_mapping_child(vector, "combat"), "target_priority_biases")
+    if target_biases:
+        candidates.append("target_priority")
+    scouting = _mapping_child(vector, "scouting")
+    if any(_number(value) > 0 for value in scouting.values()):
+        candidates.append("scout")
+    return normalize_tactical_effect_tags(candidates)
+
+
+def _micromachine_log_snippet_sources(
+    log_snippets: Sequence[Mapping[str, object]],
+) -> dict[str, str]:
+    sources: list[str] = []
+    for snippet in log_snippets:
+        source = snippet.get("source") if isinstance(snippet, Mapping) else None
+        if isinstance(source, str) and source and source not in sources:
+            sources.append(source)
+    return {"log_snippets": ", ".join(sources)} if sources else {}
+
+
+def _micromachine_scoped_tactical_log_text(
+    log_snippets: Sequence[Mapping[str, object]],
+    *,
+    update_id: str,
+    issued_at_frame: int | None,
+    telemetry_frame: int | None,
+) -> str:
+    update_token = update_id.strip().lower()
+    if not update_token:
+        return ""
+    lines: list[str] = []
+    for snippet in log_snippets:
+        line = str(snippet.get("line", "") or "") if isinstance(snippet, Mapping) else ""
+        if not line.strip():
+            continue
+        frame = _micromachine_log_frame(line)
+        if _micromachine_log_has_update_id(line, update_id=update_id):
+            if frame is None or _micromachine_log_frame_in_current_window(
+                frame,
+                issued_at_frame=issued_at_frame,
+                telemetry_frame=telemetry_frame,
+            ):
+                lines.append(line)
+            continue
+        if _micromachine_log_frame_in_current_window(
+            frame,
+            issued_at_frame=issued_at_frame,
+            telemetry_frame=telemetry_frame,
+        ):
+            lines.append(line)
+            continue
+    return "\n".join(lines)
+
+
+def _micromachine_log_frame_in_current_window(
+    frame: int | None,
+    *,
+    issued_at_frame: int | None,
+    telemetry_frame: int | None,
+) -> bool:
+    return (
+        issued_at_frame is not None
+        and telemetry_frame is not None
+        and frame is not None
+        and issued_at_frame < frame <= telemetry_frame
+    )
+
+
+def _micromachine_log_has_update_id(line: str, *, update_id: str) -> bool:
+    token = update_id.strip()
+    if not token:
+        return False
+    escaped = re.escape(token)
+    key_pattern = r"(?:update_id|policy_update_id|active_update_id|last_update_id)"
+    patterns = (
+        rf"\b{key_pattern}\s*=\s*[\"']?{escaped}(?=[\"'\s,;)\]]|$)",
+        rf"[\"']{key_pattern}[\"']\s*:\s*[\"']{escaped}[\"']",
+    )
+    return any(re.search(pattern, line) for pattern in patterns)
+
+
+def _micromachine_current_update_telemetry(
+    telemetry_document: Mapping[str, object],
+    *,
+    update_id: str,
+    telemetry_frame: int | None,
+) -> dict[str, object]:
+    if not update_id:
+        return {"frame": telemetry_frame, "managers": {}} if telemetry_frame is not None else {}
+    managers = telemetry_document.get("managers")
+    scoped_managers: dict[str, object] = {}
+    if isinstance(managers, Mapping):
+        for manager, payload in managers.items():
+            if not isinstance(payload, Mapping):
+                continue
+            if _micromachine_manager_matches_update(payload, update_id=update_id):
+                scoped_managers[str(manager)] = dict(payload)
+    return {
+        "frame": telemetry_frame,
+        "active_modulation_ids": _string_list(
+            telemetry_document.get("active_modulation_ids", ())
+        ),
+        "managers": scoped_managers,
+    }
+
+
+def _micromachine_manager_matches_update(
+    payload: Mapping[str, object],
+    *,
+    update_id: str,
+) -> bool:
+    for key in ("update_id", "policy_update_id", "active_update_id", "last_update_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value == update_id:
+            return True
+    active_ids = payload.get("active_modulation_ids")
+    return update_id in _string_list(active_ids)
+
+
+def _micromachine_log_frame(line: str) -> int | None:
+    match = _MICROMACHINE_LOG_FRAME_RE.match(line)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def _micromachine_refusal_reason(compile_result: Mapping[str, object]) -> str:
     reason = compile_result.get("refusal_reason")
     if isinstance(reason, str) and reason.strip():
@@ -860,7 +1059,7 @@ def _micromachine_recent_tactical_log_snippets(
     blackboard_dir: str,
     *,
     update_id: str = "",
-    limit: int = 8,
+    limit: int | None = 8,
 ) -> list[dict[str, str]]:
     if not blackboard_dir:
         return []
@@ -879,11 +1078,18 @@ def _micromachine_recent_tactical_log_snippets(
             size = os.path.getsize(path_real)
             with open(path_real, "rb") as handle:
                 if size > _MICROMACHINE_MAX_LOG_READ_BYTES:
-                    handle.seek(size - _MICROMACHINE_MAX_LOG_READ_BYTES)
-                text = handle.read().decode("utf-8", errors="replace")
+                    start = size - _MICROMACHINE_MAX_LOG_READ_BYTES
+                    handle.seek(start - 1)
+                    previous = handle.read(1)
+                    text = handle.read().decode("utf-8", errors="replace")
+                    lines = text.splitlines()
+                    if previous != b"\n" and lines:
+                        lines = lines[1:]
+                else:
+                    lines = handle.read().decode("utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for line in text.splitlines():
+        for line in lines:
             cleaned = _redact_sensitive_text(
                 line.strip(),
                 normalize_whitespace=True,
@@ -896,7 +1102,7 @@ def _micromachine_recent_tactical_log_snippets(
                 snippets.append({"source": filename, "line": cleaned})
             elif any(term in lowered for term in _MICROMACHINE_TACTICAL_LOG_TERMS):
                 snippets.append({"source": filename, "line": cleaned})
-    return snippets[-limit:]
+    return snippets if limit is None else snippets[-limit:]
 
 
 def _axis_list(values: object) -> list[str]:
@@ -2499,6 +2705,10 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
             <dd id="micromachine-target-priority">-</dd>
           </div>
           <div class="wide-card">
+            <dt data-i18n="microMachineTacticalEvidence">Tactical effect evidence</dt>
+            <dd id="micromachine-tactical-evidence">-</dd>
+          </div>
+          <div class="wide-card">
             <dt data-i18n="microMachineRefusalReason">Refusal / clarification</dt>
             <dd id="micromachine-refusal">-</dd>
           </div>
@@ -2834,6 +3044,7 @@ var I18N = {
     microMachineScope: "Semantic scope",
     microMachineConsumedAxes: "Consumed axes by manager",
     microMachineTargetPriority: "Target priority",
+    microMachineTacticalEvidence: "Tactical effect evidence",
     microMachineRefusalReason: "Refusal / clarification",
     microMachineTacticalLogs: "Recent MicroMachine tactical logs",
     microMachineRawEvidence: "Raw modulation / telemetry evidence",
@@ -2959,6 +3170,7 @@ var I18N = {
     microMachineScope: "Semantic scope",
     microMachineConsumedAxes: "Consumed axes by manager",
     microMachineTargetPriority: "Target priority",
+    microMachineTacticalEvidence: "Tactical effect evidence",
     microMachineRefusalReason: "Refusal / clarification",
     microMachineTacticalLogs: "Recent MicroMachine tactical logs",
     microMachineRawEvidence: "Raw modulation / telemetry evidence",
@@ -4347,6 +4559,28 @@ function formatMicroMachineTargetPriority(priority) {
   return parts.length ? parts.join(" | ") : "-";
 }
 
+function formatMicroMachineTacticalEvidence(evidence) {
+  if (!evidence || typeof evidence !== "object") { return "-"; }
+  var parts = [];
+  if (evidence.status) { parts.push("status=" + evidence.status); }
+  if (Array.isArray(evidence.observed_effects) && evidence.observed_effects.length) {
+    parts.push("observed=" + evidence.observed_effects.join(", "));
+  }
+  if (Array.isArray(evidence.expected_effects) && evidence.expected_effects.length) {
+    parts.push("expected=" + evidence.expected_effects.join(", "));
+  }
+  if (Array.isArray(evidence.missing_effects) && evidence.missing_effects.length) {
+    parts.push("missing=" + evidence.missing_effects.join(", "));
+  }
+  if (Array.isArray(evidence.unsupported_effects) && evidence.unsupported_effects.length) {
+    parts.push("unsupported=" + evidence.unsupported_effects.join(", "));
+  }
+  if (Array.isArray(evidence.refusal_reasons) && evidence.refusal_reasons.length) {
+    parts.push("refused=" + evidence.refusal_reasons[0]);
+  }
+  return parts.length ? parts.join(" | ") : "-";
+}
+
 function renderMicroMachineLogSnippets(snippets) {
   var list = document.getElementById("micromachine-log-snippets");
   if (!list) { return; }
@@ -4400,6 +4634,7 @@ function renderMicroMachineIntervention(data) {
   setMicroMachineText("micromachine-scope", formatMicroMachineScope(intervention.tactical_scope));
   setMicroMachineText("micromachine-consumed-axes", formatMicroMachineAxesByManager(intervention.consumed_axes_by_manager));
   setMicroMachineText("micromachine-target-priority", formatMicroMachineTargetPriority(intervention.target_priority));
+  setMicroMachineText("micromachine-tactical-evidence", formatMicroMachineTacticalEvidence(intervention.tactical_evidence));
   setMicroMachineText("micromachine-refusal", intervention.refusal_reason);
   renderMicroMachineLogSnippets(intervention.log_snippets);
   updateMicroMachineBadge(intervention, data && data.consumption_status);

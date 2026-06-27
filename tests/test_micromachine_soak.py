@@ -753,6 +753,67 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             ][0]
             self.assertEqual(["tech_transition"], missing.evidence["missing"])
 
+    def test_requires_expected_tactical_effect_evidence_at_target_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_effect_missing"})
+            failure = [
+                item for item in report.failures if item.code == "tactical_effect_missing"
+            ][0]
+            self.assertEqual(["pressure"], failure.evidence["missing_effects"])
+            self.assertEqual("missing", failure.evidence["status"])
+
+    def test_passes_expected_tactical_effect_when_behavior_log_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            managers["Squad"] = {
+                "active": True,
+                "contain_bias": 0.35,
+                "scope_location_intent": "enemy_natural",
+                "selected_target_class": "worker_line",
+                "consumed_axes": "squad.contain_bias,combat.target_priority_biases.*",
+            }
+            log_text = "\n".join(
+                (
+                    MACRO_LOG,
+                    "12450: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+                    "12455: calcTargets | target worker_line selected by policy modulation",
+                )
+            )
+            self._write_runtime(root, log_text=log_text, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure", "contain", "target_priority"),
+                ),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+            assert report.tactical_evidence is not None
+            self.assertEqual("passed", report.tactical_evidence.status)
+            self.assertEqual((), report.tactical_evidence.missing_effects)
+
     def test_cli_report_serialization_is_stable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

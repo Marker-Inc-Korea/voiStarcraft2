@@ -122,7 +122,7 @@ SOAK_AGGRESSIVE_MIN_FRAME="${SOAK_AGGRESSIVE_MIN_FRAME:-13000}"
 SOAK_PROFILE_SEQUENCE="${SOAK_PROFILE_SEQUENCE:-default_defensive_to_aggressive}"
 SOAK_MAX_ATTEMPTS="${SOAK_MAX_ATTEMPTS:-3}"
 SOAK_RETRY_SETTLE_SECONDS="${SOAK_RETRY_SETTLE_SECONDS:-15}"
-SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-bootstrap_no_start_units repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing}"
+SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-bootstrap_no_start_units repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing tactical_effect_missing}"
 VOI_SC2_CREATEGAME_MAP_DATA="${VOI_SC2_CREATEGAME_MAP_DATA:-1}"
 SOAK_ATTEMPT_INDEX="${SOAK_ATTEMPT_INDEX:-}"
 SOAK_RUN_ID="${SOAK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -155,6 +155,7 @@ PROFILE_SCHEDULE_KEYS=()
 PROFILE_SCHEDULE_FRAMES=()
 PROFILE_SCHEDULE_PUBLISHED=()
 SOAK_EXPECTED_PROFILE_TAGS=""
+SOAK_EXPECTED_TACTICAL_EFFECTS="${SOAK_EXPECTED_TACTICAL_EFFECTS:-}"
 
 if [[ -z "${SOAK_ATTEMPT_INDEX}" && "${SOAK_MAX_ATTEMPTS}" -gt 1 ]]; then
   mkdir -p "${SOAK_RUN_DIR}"
@@ -701,7 +702,8 @@ classify_soak() {
     --bootstrap-no-start-units-frame "${SOAK_BOOTSTRAP_NO_START_UNITS_FRAME}" \
     --max-placement-failures "${SOAK_MAX_PLACEMENT_FAILURES}" \
     --modulation-consumption-grace-frames "${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES}" \
-    --expected-profile-tags "${SOAK_EXPECTED_PROFILE_TAGS}"
+    --expected-profile-tags "${SOAK_EXPECTED_PROFILE_TAGS}" \
+    --expected-tactical-effects "${SOAK_EXPECTED_TACTICAL_EFFECTS}"
   )
   if (( ${#extra_args[@]} > 0 )); then
     command+=("${extra_args[@]}")
