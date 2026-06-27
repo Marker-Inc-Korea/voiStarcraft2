@@ -719,7 +719,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
             telemetry = {
                 "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
-                "frame": 45,
+                "frame": 46,
                 "bot_name": "MicroMachine",
                 "race": "Terran",
                 "managers": {
@@ -768,8 +768,226 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "worker_line",
                 intervention["target_priority"]["selected_target_class"],
             )
+            tactical_evidence = intervention["tactical_evidence"]
+            self.assertEqual("passed", tactical_evidence["status"])
+            self.assertIn("contain", tactical_evidence["observed_effects"])
+            self.assertIn("target_priority", tactical_evidence["observed_effects"])
+            self.assertEqual([], tactical_evidence["missing_effects"])
             self.assertTrue(intervention["log_snippets"])
             self.assertIn("calcTargets", intervention["log_snippets"][-1]["line"])
+
+    def test_micromachine_tactical_evidence_ignores_stale_unscoped_behavior(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "이제 새로 contain 해",
+                    "blackboard_dir": directory,
+                    "current_frame": 100,
+                    "update_id": "web-new-scope-1",
+                    "provider_output": {
+                        "goal": "contain enemy natural",
+                        "combat": {"aggression": 0.45},
+                        "squad": {"contain_bias": 0.35},
+                        "scope": {"location_intent": "enemy_natural"},
+                    },
+                }
+            )
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 105,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CombatCommander": {
+                        "active": True,
+                        "policy_active": True,
+                        "update_id": "web-new-scope-1",
+                        "consumed_axes": "combat.aggression",
+                    },
+                    "Squad": {
+                        "active": True,
+                        "main_attack_order": "Attack enemy natural",
+                        "selected_target_class": "worker_line",
+                    },
+                },
+                "active_modulation_ids": ["web-new-scope-1"],
+                "last_failure": None,
+            }
+            with open(f"{directory}/latest_telemetry.json", "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+            with open(f"{directory}/micromachine.log", "w", encoding="utf-8") as handle:
+                handle.write(
+                    "45: updateAttackSquads | MainAttackSquad new order = Attack enemy natural\n"
+                    "46: calcTargets | target worker_line selected by policy modulation\n"
+                )
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            tactical_evidence = document["intervention"]["tactical_evidence"]
+            self.assertEqual("consumed", document["consumption_status"])
+            self.assertNotEqual("passed", tactical_evidence["status"])
+            self.assertIn("contain", tactical_evidence["missing_effects"])
+            self.assertEqual([], tactical_evidence["observed_effects"])
+
+    def test_micromachine_tactical_evidence_ignores_future_frame_stale_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "지금부터 압박해",
+                    "blackboard_dir": directory,
+                    "current_frame": 100,
+                    "update_id": "new",
+                    "provider_output": {
+                        "goal": "attack pressure",
+                        "combat": {"aggression": 0.45},
+                    },
+                }
+            )
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 105,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CombatCommander": {
+                        "active": True,
+                        "policy_active": True,
+                        "update_id": "new",
+                        "consumed_axes": "combat.aggression",
+                    },
+                },
+                "active_modulation_ids": ["new"],
+                "last_failure": None,
+            }
+            with open(f"{directory}/latest_telemetry.json", "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+            with open(f"{directory}/micromachine.log", "w", encoding="utf-8") as handle:
+                handle.write(
+                    "10000: update_id=new updateAttackSquads | MainAttackSquad new order = Attack enemy natural\n"
+                    "10001: update_id=new calcTargets | target worker_line selected by policy modulation\n"
+                )
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            tactical_evidence = document["intervention"]["tactical_evidence"]
+            self.assertEqual("consumed", document["consumption_status"])
+            self.assertNotEqual("passed", tactical_evidence["status"])
+            self.assertIn("pressure", tactical_evidence["missing_effects"])
+            self.assertEqual([], tactical_evidence["observed_effects"])
+
+    def test_micromachine_tactical_evidence_uses_more_than_display_log_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "지금 압박해",
+                    "blackboard_dir": directory,
+                    "current_frame": 100,
+                    "update_id": "web-noisy-log-1",
+                    "provider_output": {
+                        "goal": "attack pressure",
+                        "combat": {"aggression": 0.45},
+                    },
+                }
+            )
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 120,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CombatCommander": {
+                        "active": True,
+                        "policy_active": True,
+                        "update_id": "web-noisy-log-1",
+                        "consumed_axes": "combat.aggression",
+                    },
+                },
+                "active_modulation_ids": ["web-noisy-log-1"],
+                "last_failure": None,
+            }
+            with open(f"{directory}/latest_telemetry.json", "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+            noise = "\n".join(
+                f"{frame}: policy heartbeat modulation noise"
+                for frame in range(102, 242)
+            )
+            with open(f"{directory}/micromachine.log", "w", encoding="utf-8") as handle:
+                handle.write(
+                    "101: updateAttackSquads | MainAttackSquad new order = Attack enemy natural\n"
+                    f"{noise}\n"
+                )
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            tactical_evidence = document["intervention"]["tactical_evidence"]
+            self.assertEqual("passed", tactical_evidence["status"])
+            self.assertIn("pressure", tactical_evidence["observed_effects"])
+            self.assertNotIn(
+                "Attack enemy natural",
+                json.dumps(document["intervention"]["log_snippets"]),
+            )
+
+    def test_micromachine_tactical_evidence_ignores_partial_tail_stale_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "지금 압박해",
+                    "blackboard_dir": directory,
+                    "current_frame": 100,
+                    "update_id": "new",
+                    "provider_output": {
+                        "goal": "attack pressure",
+                        "combat": {"aggression": 0.45},
+                    },
+                }
+            )
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 105,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CombatCommander": {
+                        "active": True,
+                        "policy_active": True,
+                        "update_id": "new",
+                        "consumed_axes": "combat.aggression",
+                    },
+                },
+                "active_modulation_ids": ["new"],
+                "last_failure": None,
+            }
+            with open(f"{directory}/latest_telemetry.json", "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+            line_prefix = b"10000: "
+            line_rest = (
+                b"update_id=new updateAttackSquads | "
+                b"MainAttackSquad new order = Attack enemy natural\n"
+            )
+            tail_padding = b"x" * (
+                web_gui._MICROMACHINE_MAX_LOG_READ_BYTES - len(line_rest)
+            )
+            with open(f"{directory}/micromachine.log", "wb") as handle:
+                handle.write(b"safe old prefix\n")
+                handle.write(line_prefix)
+                handle.write(line_rest)
+                handle.write(tail_padding)
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            tactical_evidence = document["intervention"]["tactical_evidence"]
+            self.assertEqual("consumed", document["consumption_status"])
+            self.assertNotEqual("passed", tactical_evidence["status"])
+            self.assertIn("pressure", tactical_evidence["missing_effects"])
+            self.assertEqual([], tactical_evidence["observed_effects"])
 
     def test_micromachine_status_does_not_read_symlinked_tactical_logs(self):
         if not hasattr(os, "symlink"):
@@ -836,6 +1054,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "공격 타이밍을 더 구체화해 주세요.",
                 intervention["refusal_reason"],
             )
+            self.assertEqual("refused", intervention["tactical_evidence"]["status"])
+            self.assertTrue(intervention["tactical_evidence"]["refusal_reasons"])
 
     def test_micromachine_modulation_fails_closed_without_llm_configuration(self):
         session, _bot = build_dry_run_session()
@@ -944,6 +1164,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
         self.assertIn('value="/tmp/voi-mm-custom&amp;safe"', page)
+        self.assertIn("micromachine-tactical-evidence", page)
 
     def test_report_command_yields_read_only_event_with_korean_narration(self):
         status, _content_type, payload = self.post_command("상황 보고해줘")

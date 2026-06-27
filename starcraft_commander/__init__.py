@@ -201,6 +201,18 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "classify_micromachine_soak": "starcraft_commander.micromachine_soak",
     "has_required_macro_evidence": "starcraft_commander.micromachine_soak",
     "missing_macro_evidence": "starcraft_commander.micromachine_soak",
+    "MicroMachineTacticalEffect": (
+        "starcraft_commander.micromachine_tactical_evidence"
+    ),
+    "MicroMachineTacticalEvidence": (
+        "starcraft_commander.micromachine_tactical_evidence"
+    ),
+    "classify_micromachine_tactical_evidence": (
+        "starcraft_commander.micromachine_tactical_evidence"
+    ),
+    "normalize_tactical_effect_tags": (
+        "starcraft_commander.micromachine_tactical_evidence"
+    ),
     "MicroMachineBuildIdentityConfig": "starcraft_commander.micromachine_build_identity",
     "build_micromachine_build_identity": "starcraft_commander.micromachine_build_identity",
     "read_build_identity": "starcraft_commander.micromachine_build_identity",

@@ -15,6 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Mapping, Sequence
 
+from starcraft_commander.micromachine_tactical_evidence import (
+    MicroMachineTacticalEvidence,
+    classify_micromachine_tactical_evidence,
+)
+
 
 DEFAULT_REQUIRED_MACRO_TERMS: Final[tuple[str, ...]] = (
     "build command type=TERRAN_SUPPLYDEPOT",
@@ -72,6 +77,7 @@ class MicroMachineSoakConfig:
     require_macro_evidence: bool = True
     require_manager_intervention: bool = True
     expected_profile_tags: tuple[str, ...] = ()
+    expected_tactical_effects: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_positive("target_frame", self.target_frame)
@@ -91,6 +97,11 @@ class MicroMachineSoakConfig:
             "expected_profile_tags",
             _string_tuple("expected_profile_tags", self.expected_profile_tags),
         )
+        object.__setattr__(
+            self,
+            "expected_tactical_effects",
+            _string_tuple("expected_tactical_effects", self.expected_tactical_effects),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -106,6 +117,7 @@ class MicroMachineSoakConfig:
             "require_macro_evidence": self.require_macro_evidence,
             "require_manager_intervention": self.require_manager_intervention,
             "expected_profile_tags": list(self.expected_profile_tags),
+            "expected_tactical_effects": list(self.expected_tactical_effects),
         }
 
 
@@ -178,6 +190,7 @@ class MicroMachineSoakReport:
     target_reached: bool
     macro_evidence_ok: bool
     manager_intervention_ok: bool
+    tactical_evidence: MicroMachineTacticalEvidence | None = None
     failures: tuple[MicroMachineSoakFailure, ...] = ()
     artifact_manifest: dict[str, str] = field(default_factory=dict)
 
@@ -195,6 +208,9 @@ class MicroMachineSoakReport:
             "target_reached": self.target_reached,
             "macro_evidence_ok": self.macro_evidence_ok,
             "manager_intervention_ok": self.manager_intervention_ok,
+            "tactical_evidence": (
+                self.tactical_evidence.to_dict() if self.tactical_evidence else None
+            ),
             "failures": [failure.to_dict() for failure in self.failures],
             "artifact_manifest": self.artifact_manifest,
         }
@@ -229,6 +245,17 @@ def classify_micromachine_soak(
     telemetry_archive = _read_jsonl_mappings(observation.telemetry_archive_path)
     latest_frame = _latest_frame(telemetry, telemetry_archive)
     log_text = _read_text(observation.bot_log)
+    tactical_evidence = classify_micromachine_tactical_evidence(
+        latest_telemetry=telemetry,
+        telemetry_archive=telemetry_archive,
+        log_text=log_text,
+        expected_effects=resolved_config.expected_tactical_effects,
+        source_paths={
+            "latest_telemetry": observation.latest_telemetry_path,
+            "telemetry_archive": observation.telemetry_archive_path,
+            "bot_log": observation.bot_log,
+        },
+    )
     failures: list[MicroMachineSoakFailure] = []
 
     if observation.bot_exit_code not in (None, 0) and latest_frame < resolved_config.target_frame:
@@ -411,6 +438,18 @@ def classify_micromachine_soak(
     )
     if profile_failure is not None:
         failures.append(profile_failure)
+    if (
+        resolved_config.expected_tactical_effects
+        and latest_frame >= resolved_config.target_frame
+        and not tactical_evidence.ok
+    ):
+        failures.append(
+            MicroMachineSoakFailure(
+                code="tactical_effect_missing",
+                message="Expected tactical-effect evidence was not observed by the target frame.",
+                evidence=tactical_evidence.to_dict(),
+            )
+        )
 
     target_reached = latest_frame >= resolved_config.target_frame
     status = "passed" if target_reached and macro_evidence_ok and manager_intervention_ok and not failures else "failed"
@@ -422,6 +461,7 @@ def classify_micromachine_soak(
         target_reached=target_reached,
         macro_evidence_ok=macro_evidence_ok,
         manager_intervention_ok=manager_intervention_ok,
+        tactical_evidence=tactical_evidence,
         failures=tuple(failures),
         artifact_manifest=build_artifact_manifest(observation),
     )
@@ -543,6 +583,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Return success while the run is still below target if no terminal failures exist.",
     )
     parser.add_argument("--expected-profile-tags", default="")
+    parser.add_argument("--expected-tactical-effects", default="")
     args = parser.parse_args(argv)
 
     config = MicroMachineSoakConfig(
@@ -557,6 +598,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         modulation_consumption_grace_frames=args.modulation_consumption_grace_frames,
         expected_profile_tags=tuple(
             item for item in args.expected_profile_tags.split() if item
+        ),
+        expected_tactical_effects=tuple(
+            item for item in args.expected_tactical_effects.split() if item
         ),
     )
     observation = MicroMachineSoakObservation(
