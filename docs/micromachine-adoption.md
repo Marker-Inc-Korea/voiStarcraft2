@@ -27,6 +27,7 @@ base and architecture reference, but it is not the strong-bot candidate.
 | Candidate | Role | Adoption result |
 | --- | --- | --- |
 | MicroMachine | Public C++ Terran bot with historical SC2AI, AI Arena, and ProBots wins. | Adopt as the non-neural strong-bot reference and modulation target. |
+| Suvorov | Public C++ rule-based bot with source-level Terran, Protoss, and Zerg strategy branches. | Keep as a conditional secondary-backend candidate only; issue #73 found local build/full-game viability but no production blackboard, telemetry, or strength evidence that justifies replacing MicroMachine. See [suvorov-backend-evaluation.md](suvorov-backend-evaluation.md). |
 | Deimos | Current high-ELO AI Arena Protoss bot built with `ares-sc2`. | Do not adopt directly; bot logic is not public. Use only as evidence that `ares-sc2` is a strong modern pattern. |
 | Eris | Long-running high-ELO reactive Zerg bot. | Do not adopt directly; bot logic is not public. Use its reactive strategy description as design inspiration. |
 | SharpenedEdge | Scripted Protoss bot using Sharpy/python-sc2. | Do not adopt directly; bot zip is not public. Use Sharpy concepts only as reference. |
