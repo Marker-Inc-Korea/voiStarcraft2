@@ -50,6 +50,23 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 {failure["code"] for failure in report["failures"]},
             )
 
+    def test_missing_git_provenance_marks_build_identity_not_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True, git_provenance=False)
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                "missing_micromachine_git_provenance",
+                {failure["code"] for failure in report["failures"]},
+            )
+            self.assertIn(
+                "missing_s2client_git_provenance",
+                {failure["code"] for failure in report["failures"]},
+            )
+
     def test_patch_checksum_changes_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,6 +109,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         root: Path,
         *,
         binary: bool,
+        git_provenance: bool = True,
     ) -> MicroMachineBuildIdentityConfig:
         micromachine_dir = root / "MicroMachine"
         s2client_dir = root / "s2client-api"
@@ -102,6 +120,11 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         s2client_dir.mkdir()
         if binary:
             binary_path.write_text("fake binary\n")
+        micromachine_commit = "missing"
+        s2client_commit = "missing"
+        if git_provenance:
+            micromachine_commit = self.init_git_repo(micromachine_dir)
+            s2client_commit = self.init_git_repo(s2client_dir)
         micromachine_patch = root / "micromachine.patch"
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
@@ -119,12 +142,46 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_dir=micromachine_dir,
             s2client_dir=s2client_dir,
             micromachine_build_dir=build_dir,
+            micromachine_commit=micromachine_commit,
+            s2client_commit=s2client_commit,
             micromachine_patch=micromachine_patch,
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,
             map_pool=map_pool,
             blackboard_header=blackboard_header,
         )
+
+    def init_git_repo(self, path: Path) -> str:
+        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True)
+        (path / "README.md").write_text("fixture\n")
+        subprocess.run(
+            ["git", "-C", str(path), "add", "README.md"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(path),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        completed = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout.strip()
 
 
 if __name__ == "__main__":

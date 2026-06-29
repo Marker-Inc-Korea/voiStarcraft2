@@ -257,6 +257,28 @@ class EconomyModulation:
 
 
 @dataclass(frozen=True)
+class WorkerModulation:
+    """Worker command-safety modulation for MicroMachine worker seams."""
+
+    repeat_order_guard_frames: int = 24
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "repeat_order_guard_frames",
+            _coerce_bounded_int(
+                self.repeat_order_guard_frames,
+                field_name="repeat_order_guard_frames",
+                lower=4,
+                upper=96,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, int]:
+        return {"repeat_order_guard_frames": self.repeat_order_guard_frames}
+
+
+@dataclass(frozen=True)
 class TechModulation:
     """Tech, upgrade, and unit-composition preferences."""
 
@@ -731,6 +753,7 @@ class PolicyModulationVector:
     ttl_seconds: int = 120
     strategy: StrategyModulation = field(default_factory=StrategyModulation)
     economy: EconomyModulation = field(default_factory=EconomyModulation)
+    workers: WorkerModulation = field(default_factory=WorkerModulation)
     tech: TechModulation = field(default_factory=TechModulation)
     production: ProductionModulation = field(default_factory=ProductionModulation)
     combat: CombatModulation = field(default_factory=CombatModulation)
@@ -767,6 +790,7 @@ class PolicyModulationVector:
             )
         object.__setattr__(self, "strategy", _coerce_domain(self.strategy, StrategyModulation))
         object.__setattr__(self, "economy", _coerce_domain(self.economy, EconomyModulation))
+        object.__setattr__(self, "workers", _coerce_domain(self.workers, WorkerModulation))
         object.__setattr__(self, "tech", _coerce_domain(self.tech, TechModulation))
         object.__setattr__(
             self, "production", _coerce_domain(self.production, ProductionModulation)
@@ -808,6 +832,7 @@ class PolicyModulationVector:
             ttl_seconds=_int_from_mapping(mapping, "ttl_seconds", 120),
             strategy=_domain_from_mapping(mapping, "strategy", StrategyModulation),
             economy=_domain_from_mapping(mapping, "economy", EconomyModulation),
+            workers=_domain_from_mapping(mapping, "workers", WorkerModulation),
             tech=_domain_from_mapping(mapping, "tech", TechModulation),
             production=_domain_from_mapping(mapping, "production", ProductionModulation),
             combat=_domain_from_mapping(mapping, "combat", CombatModulation),
@@ -831,6 +856,7 @@ class PolicyModulationVector:
             "ttl_seconds": self.ttl_seconds,
             "strategy": self.strategy.to_dict(),
             "economy": self.economy.to_dict(),
+            "workers": self.workers.to_dict(),
             "tech": self.tech.to_dict(),
             "production": self.production.to_dict(),
             "combat": self.combat.to_dict(),

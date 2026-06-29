@@ -11,8 +11,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from starcraft_commander.micromachine_runtime import (
 from starcraft_commander.policy_modulation import (
     PolicyModulationSource,
     PolicyOverrideLevel,
+    WorkerModulation,
 )
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileResult,
@@ -91,28 +93,113 @@ class KeywordPolicyModulationProvider:
         request: PolicyModulationProviderRequest,
     ) -> Mapping[str, object]:
         text = request.command_text.lower()
+        if _is_non_tactical_chatter(text):
+            return {
+                "source": self.source.value,
+                "status": "clarification_required",
+                "clarification_prompt": (
+                    "안녕하세요. 이 입력은 MicroMachine 전술 의도가 아니라서 "
+                    "blackboard에 publish하지 않았습니다. 예: '마린으로 정찰하고 "
+                    "적을 발견하면 안전할 때 압박해'처럼 전술 목표를 말해 주세요."
+                ),
+            }
         if any(token in text for token in ("?", "뭐", "어떻게")):
             return {
                 "source": self.source.value,
                 "status": "clarification_required",
                 "clarification_prompt": "구체적인 전략 방향을 말해 주세요.",
             }
-        if any(token in text for token in ("공격", "러시", "pressure", "attack")):
+        if any(
+            token in text
+            for token in (
+                "공격",
+                "러시",
+                "압박",
+                "견제",
+                "탐색",
+                "정찰",
+                "적발견",
+                "적 발견",
+                "마린",
+                "해병",
+                "pressure",
+                "attack",
+                "harass",
+                "scout",
+                "marine",
+                "enemy",
+            )
+        ):
+            immediate_attack = any(
+                token in text
+                for token in (
+                    "바로",
+                    "즉시",
+                    "발견시",
+                    "발견 시",
+                    "보이면",
+                    "asap",
+                    "immediate",
+                    "right away",
+                )
+            )
             return {
                 "source": self.source.value,
                 "goal": request.command_text,
                 "override_level": "bias",
-                "confidence": 0.62,
-                "ttl_seconds": 120,
+                "confidence": 0.76,
+                "ttl_seconds": 600,
                 "posture": "pressure",
                 "combat": {
-                    "aggression": 0.45,
-                    "engage_threshold_delta": -0.1,
-                    "defend_bias": -0.15,
+                    "aggression": 0.7,
+                    "engage_threshold_delta": -0.2,
+                    "retreat_threshold_delta": -0.1,
+                    "attack_timing_bias": 0.65,
+                    "commitment_level": 0.55,
+                    "attack_condition_override": "force_when_threshold_met",
+                    "retreat_patience_bias": 0.45,
+                    "rally_before_attack_bias": 0.0,
+                    "harassment_bias": 0.35,
+                    "defend_bias": -0.25,
+                    "combat_sim_confidence_margin": -0.2,
+                    "target_priority_biases": {
+                        "army": 0.35,
+                        "worker_line": 0.3,
+                        "townhall": 0.25,
+                        "production": 0.15,
+                    },
                 },
-                "scouting": {"risk_tolerance": 0.3, "scout_priority": 0.35},
-                "squad": {"main_army_bias": 0.35, "harassment_bias": 0.25},
-                "tags": ["keyword_provider", "live_text"],
+                "production": {
+                    "production_continuity_bias": 0.65,
+                },
+                "workers": {"repeat_order_guard_frames": 32},
+                "scouting": {
+                    "risk_tolerance": 0.45,
+                    "scout_priority": 0.7,
+                    "require_fresh_enemy_observation": False,
+                },
+                "squad": {
+                    "main_army_bias": 0.6,
+                    "harassment_bias": 0.4,
+                    "defense_bias": -0.2,
+                    "reinforce_bias": 0.3,
+                    "contain_bias": 0.35,
+                },
+                "scope": {
+                    "army_group": "main",
+                    "location_intent": "enemy_natural",
+                    "unit_classes": ["marine", "marauder", "medivac", "siege_tank"],
+                    "min_units": 1 if immediate_attack else 2,
+                    "require_safety_margin": 0.05,
+                    "allow_partial_scope": True,
+                },
+                "tags": [
+                    "keyword_provider",
+                    "live_text",
+                    "aggressive_pressure",
+                    "scouting_map_control",
+                    "target_priority",
+                ],
             }
         if any(token in text for token in ("수비", "버텨", "hold", "defend", "탱크")):
             return {
@@ -123,6 +210,7 @@ class KeywordPolicyModulationProvider:
                 "ttl_seconds": 120,
                 "posture": "defensive",
                 "economy": {"gas_priority": 0.25, "repair_priority": 0.25},
+                "workers": {"repeat_order_guard_frames": 32},
                 "combat": {
                     "aggression": -0.25,
                     "defend_bias": 0.65,
@@ -139,6 +227,7 @@ class KeywordPolicyModulationProvider:
             "confidence": 0.5,
             "ttl_seconds": 120,
             "posture": "balanced",
+            "workers": {"repeat_order_guard_frames": 32},
             "tags": ["keyword_provider", "live_text"],
         }
 
@@ -244,7 +333,9 @@ class MicroMachineLiveTextSession:
             allowed_override_levels=tuple(allowed_override_levels),
             tags=tuple(tags),
         )
-        compile_result = compile_policy_modulation_from_provider(self.provider, request)
+        compile_result = _ensure_live_worker_repeat_order_guard(
+            compile_policy_modulation_from_provider(self.provider, request)
+        )
         if not compile_result.ok or compile_result.vector is None:
             failure_recorded = self._record_provider_failure_if_needed(
                 frame,
@@ -322,9 +413,12 @@ class MicroMachineLiveTextSession:
     def _resolve_current_frame(self, current_frame: int | None) -> int:
         if current_frame is not None:
             return _non_negative_int("current_frame", current_frame)
-        telemetry = self._safe_read_latest_telemetry()
-        if telemetry is not None:
-            return telemetry.frame
+        for attempt in range(3):
+            telemetry = self._safe_read_latest_telemetry()
+            if telemetry is not None:
+                return telemetry.frame
+            if attempt < 2:
+                time.sleep(0.05)
         return 0
 
     def _record_provider_failure_if_needed(
@@ -428,6 +522,80 @@ def _provider_from_args(args: argparse.Namespace) -> PolicyModulationProviderInt
             raise ValueError("--provider-output-json must be a JSON object.")
         return StaticJsonPolicyModulationProvider(payload)
     return KeywordPolicyModulationProvider()
+
+
+def _ensure_live_worker_repeat_order_guard(
+    compile_result: PolicyModulationCompileResult,
+) -> PolicyModulationCompileResult:
+    """Keep live text updates from re-enabling the SCV repeated-order loop."""
+
+    if not compile_result.ok or compile_result.vector is None:
+        return compile_result
+    guard_frames = compile_result.vector.workers.repeat_order_guard_frames
+    if guard_frames >= 32:
+        return compile_result
+    vector = replace(
+        compile_result.vector,
+        workers=WorkerModulation(repeat_order_guard_frames=32),
+    )
+    return PolicyModulationCompileResult(
+        status=compile_result.status,
+        source=compile_result.source,
+        vector=vector,
+        warnings=(
+            *compile_result.warnings,
+            f"live_worker_repeat_order_guard_frames_clamped={guard_frames}->32",
+        ),
+    )
+
+
+def _is_non_tactical_chatter(text: str) -> bool:
+    compact = "".join(str(text).strip().lower().split())
+    if not compact:
+        return True
+    tactical_markers = (
+        "공격",
+        "러시",
+        "압박",
+        "견제",
+        "수비",
+        "버텨",
+        "탱크",
+        "정찰",
+        "탐색",
+        "마린",
+        "해병",
+        "멀티",
+        "확장",
+        "가스",
+        "일꾼",
+        "scout",
+        "attack",
+        "pressure",
+        "harass",
+        "defend",
+        "hold",
+        "tank",
+        "marine",
+        "enemy",
+    )
+    if any(marker in compact for marker in tactical_markers):
+        return False
+    return compact in {
+        "안녕",
+        "안녕하세요",
+        "ㅎㅇ",
+        "하이",
+        "hello",
+        "hi",
+        "hey",
+        "테스트",
+        "test",
+        "고마워",
+        "감사",
+        "thanks",
+        "thankyou",
+    }
 
 
 def _telemetry_game_state(

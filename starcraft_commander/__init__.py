@@ -118,6 +118,7 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "StrategyModulation": "starcraft_commander.policy_modulation",
     "TechModulation": "starcraft_commander.policy_modulation",
     "WeightedBiases": "starcraft_commander.policy_modulation",
+    "WorkerModulation": "starcraft_commander.policy_modulation",
     "PolicyModulationCompileResult": "starcraft_commander.policy_modulation_provider",
     "PolicyModulationCompileStatus": "starcraft_commander.policy_modulation_provider",
     "PolicyModulationProviderInterface": "starcraft_commander.policy_modulation_provider",

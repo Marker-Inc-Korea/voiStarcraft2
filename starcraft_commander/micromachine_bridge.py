@@ -266,6 +266,7 @@ class MicroMachineBlackboardUpdate:
             for domain in (
                 "strategy",
                 "economy",
+                "workers",
                 "tech",
                 "production",
                 "combat",
@@ -643,6 +644,15 @@ MICROMACHINE_MANAGER_HOOKS: Final[tuple[MicroMachineManagerHook, ...]] = (
         manager="WorkerManager",
         hook="economy, repair, and emergency worker bias",
         responsibility="Biases expansion, worker production, repair, and worker pull.",
+    ),
+    MicroMachineManagerHook(
+        domain="workers",
+        manager="WorkerManager",
+        hook="repeat worker order guard",
+        responsibility=(
+            "Suppresses repeated identical worker commands within a bounded frame "
+            "window without issuing replacement unit orders."
+        ),
     ),
     MicroMachineManagerHook(
         domain="combat",

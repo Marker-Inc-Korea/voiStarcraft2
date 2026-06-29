@@ -41,6 +41,7 @@ from starcraft_commander.policy_modulation import (
     TacticalScopeModulation,
     TechModulation,
     WeightedBiases,
+    WorkerModulation,
 )
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileStatus,
@@ -61,6 +62,7 @@ def _vector(ttl_seconds: int = 30) -> PolicyModulationVector:
             gas_worker_target_bias=0.45,
             repair_priority=0.3,
         ),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
         tech=TechModulation(unit_biases=WeightedBiases({"TERRAN_SIEGETANK": 0.6})),
         production=ProductionModulation(addon_biases=WeightedBiases({"TECHLAB": 0.5})),
         combat=CombatModulation(
@@ -106,6 +108,7 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         self.assertGreater(defensive.scouting.scout_priority, 0)
         self.assertLess(defensive.scouting.risk_tolerance, 0)
         self.assertTrue(defensive.scouting.require_fresh_enemy_observation)
+        self.assertEqual(32, defensive.workers.repeat_order_guard_frames)
         self.assertIn("bounded_intervention", defensive.tags)
 
         self.assertEqual("micromachine_aggressive_pressure", aggressive.goal)
@@ -126,6 +129,7 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         self.assertGreater(aggressive.squad.reinforce_bias, 0)
         self.assertEqual("main", aggressive.scope.army_group)
         self.assertEqual("enemy_natural", aggressive.scope.location_intent)
+        self.assertEqual(32, aggressive.workers.repeat_order_guard_frames)
         self.assertGreaterEqual(aggressive.scope.min_units, 1)
         self.assertGreater(aggressive.scope.require_safety_margin, 0)
         self.assertIn("bounded_intervention", aggressive.tags)
@@ -465,10 +469,11 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
         self.assertIn("strategy.posture=defensive\n", text)
         self.assertIn("strategy.timing_biases.tank_timing=0.4\n", text)
         self.assertIn("economy.gas_worker_target_bias=0.45\n", text)
+        self.assertIn("workers.repeat_order_guard_frames=32\n", text)
         self.assertIn("combat.aggression=-0.2\n", text)
         self.assertIn("combat.target_priority_biases.BANELING=0.9\n", text)
         self.assertIn(
-            "manager_bias_domains=strategy,economy,tech,production,combat,scouting,squad,scope,emergency\n",
+            "manager_bias_domains=strategy,economy,workers,tech,production,combat,scouting,squad,scope,emergency\n",
             text,
         )
 

@@ -145,7 +145,37 @@ an eleventh canonical intent. New simulation details are acceptable only when
 they improve text-command UX validation without crossing into real game-control
 integration.
 
-## Live SC2 Architecture
+## MicroMachine Cockpit Architecture
+
+The production-oriented SC2 bot-control target is patched MicroMachine, not
+the legacy python-sc2 commander. The web GUI's default chat and browser voice
+input compile human intent into bounded policy modulation DSL and publish it to
+a MicroMachine blackboard. MicroMachine remains the autonomous player; the UI,
+LLM, replay, or future neural provider may only modulate manager-level policy
+axes.
+
+```text
+Korean text or browser voice
+  -> Web GUI MicroMachine mode in the unified Commander Chat
+  -> bounded provider compiler / keyword provider / future LLM provider
+  -> PolicyModulationVector
+  -> MicroMachineModulationBackend
+  -> blackboard files consumed by patched MicroMachine C++ managers
+  -> telemetry + tactical logs
+  -> web DSL intervention dashboard
+```
+
+This path does not call python-sc2, s2client-api, raw unit tags, keyboard hooks,
+mouse automation, OCR, or screen scraping. The old `/api/command` route is
+available only when the user explicitly selects **Legacy python-sc2 commander**
+mode. Runtime launch/status is mode-aware: the same cockpit calls
+`/api/runtime/start` and `/api/runtime/status`; MicroMachine mode starts the
+patched MicroMachine smoke/live script with the selected blackboard directory,
+while legacy mode starts the older python-sc2 demo only after a key has been
+saved.
+mode in the web UI.
+
+## Legacy Live SC2 Architecture
 
 The real StarCraft II runtime lives in `starcraft_commander/`. It reuses the
 Phase 0 Korean interpreter and the typed Intent DSL unchanged, then replaces
@@ -154,7 +184,7 @@ against resolved BotAI observations and issue semantic python-sc2 orders.
 Module docstrings are the source of truth for each seam; see
 [contracts.md](contracts.md) for the contract summary.
 
-### Live Runtime Flow
+### Legacy Runtime Flow
 
 ```text
 Korean text or push-to-talk voice
@@ -189,13 +219,14 @@ python-sc2, faster-whisper, or sounddevice.
 | Action planner + runtime executor | `starcraft_commander/sc2_executor.py` | Intent DSL to semantic plan mapping, strict target alias validation (unknown targets rejected with the supported list), lifecycle-aware async execution, structured `MissingBotCapability` errors, per-action audit (`audit['observations']`, `audit['action_reports']`). | Real python-sc2 calls or Korean narration. |
 | State resolver | `starcraft_commander/state_resolver.py` | Never-raise duck-typed resolution of BotAI observations into `SC2CommanderState`; degraded fields recorded as `observation_notes`. | Feasibility decisions or order issuance. |
 | Map resolver | `starcraft_commander/map_resolver.py` | Core semantic map targets plus best-effort extras resolved to `MapPoint` coordinates, including discovered `enemy_front`; auditable `MapGeometryInference` from starts, base clusters, ramps, minerals, and geysers with confidence/visibility/source metadata; explicit unavailable entries with reasons; unknown names rejected with available alternatives. | Pathing, combat targeting heuristics, or build placement legality. |
-| BotAI adapter | `starcraft_commander/python_sc2_adapter.py` | The eight semantic action methods translated into duck-typed BotAI operations; `SC2ActionReport` requested-vs-issued counts; no lifecycle method names. python-sc2 lazy-imported only inside functions. | Lifecycle hooks, plan ordering, or narration. |
+| BotAI adapter | `starcraft_commander/python_sc2_adapter.py` | The eight semantic action methods translated into duck-typed BotAI operations; `SC2ActionReport` requested-vs-issued counts; no lifecycle method names. python-sc2 lazy-imported only inside functions. This is legacy commander plumbing, not MicroMachine. | Lifecycle hooks, plan ordering, or narration. |
 | Live feasibility validator | `starcraft_commander/feasibility.py` | Conservative gating of typed payloads against `SC2CommanderState`: resources, supply, tech prerequisites, producers, workers; unknown or incomplete state rejects mutating commands; only `SUMMARIZE_STATE` survives incomplete observation. | Mutating state or issuing orders. |
 | Korean narrator | `starcraft_commander/narrator.py` | `SC2NarrationResponse` rendering of execution results, rejections, and state summaries; honest `partially_executed`/`blocked` statuses; disclosure of unenforced constraints. | Choosing intents or validating feasibility. |
 | Live pipeline | `starcraft_commander/live_pipeline.py` | `SC2CommandSession` composition, compound-command splitting, `SC2CommandOutcome` per part with stage artifacts only for stages that ran. | Stage-specific logic or game-loop scheduling. |
 | Voice input | `starcraft_commander/voice_input.py` | Microphone capture and Whisper transcription seams producing plain text for the unchanged interpreter; lazy optional dependencies with actionable `MissingVoiceDependencyError`. | Command interpretation or execution. |
 | Dependency guards | `starcraft_commander/runtime_deps.py` | `is_*_available()` probes and `require_*()` guards with bilingual install hints for python-sc2 (burnysc2), faster-whisper, and sounddevice. | Any game or audio logic. |
-| Demo entrypoint | `starcraft_commander/demo_sc2.py` | `python -m starcraft_commander.demo_sc2`: `--dry-run` scripted fake-BotAI mode (testable), live local-custom-game mode, `--voice` push-to-talk with a transcription confidence gate. | New intents or autonomous play. |
+| Web GUI | `starcraft_commander/web_gui.py` | Local cockpit with default MicroMachine DSL mode, explicit legacy python-sc2 commander mode, token-protected network binding, chat/voice routing, mode-aware runtime start/status, MicroMachine status, and DSL evidence dashboard. | Raw game control, MicroMachine C++ gameplay, or hidden mode switching. |
+| Demo entrypoint | `starcraft_commander/demo_sc2.py` | `python -m starcraft_commander.demo_sc2`: `--dry-run` scripted fake-BotAI mode (testable), legacy live local-custom-game mode, `--voice` push-to-talk with a transcription confidence gate. | New intents or autonomous play. |
 
 ### Live Safety Invariants
 
@@ -213,4 +244,6 @@ The Phase 0 safety rules carry over unchanged to the live runtime:
 3. Unknown game state rejects mutating commands: a missing runtime or
    incomplete observation (`observation_notes` non-empty) is grounds for
    conservative rejection rather than optimistic guessing.
-4. No mouse or screen automation anywhere; only semantic python-sc2 API calls.
+4. No mouse or screen automation anywhere. Legacy commander mode uses only
+   semantic python-sc2 API calls; MicroMachine cockpit mode uses only bounded
+   policy modulation files and telemetry.

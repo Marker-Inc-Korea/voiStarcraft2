@@ -55,6 +55,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     "worker_production_bias": 0.4,
                     "gas_worker_target_bias": 0.5,
                 },
+                "repeat_order_guard_frames": 32,
                 "tech": {"unit_biases": {"SiegeTank": 0.6}},
                 "addon_biases": {"TechLab": 0.45},
                 "combat": {"defend_bias": 0.8, "aggression": -0.2},
@@ -85,6 +86,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual({"tank_push": 0.35}, result.vector.strategy.timing_biases.to_dict())
         self.assertEqual(0.7, result.vector.economy.expand_bias)
         self.assertEqual(0.5, result.vector.economy.gas_worker_target_bias)
+        self.assertEqual(32, result.vector.workers.repeat_order_guard_frames)
         self.assertEqual({"SiegeTank": 0.6}, result.vector.tech.unit_biases.to_dict())
         self.assertEqual({"TechLab": 0.45}, result.vector.production.addon_biases.to_dict())
         self.assertEqual(0.8, result.vector.combat.defend_bias)
@@ -113,6 +115,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     "strategy.posture": "defensive",
                     "economy.expand_bias": 0.7,
                     "economy.expansion_safety_bias": 0.5,
+                    "workers.repeat_order_guard_frames": 48,
                     "tech.unit_biases.SiegeTank": 0.6,
                     "production.addon_biases.TechLab": 0.4,
                     "combat.defend_bias": 0.8,
@@ -136,6 +139,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual("defensive", vector.strategy.posture)
         self.assertEqual(0.7, vector.economy.expand_bias)
         self.assertEqual(0.5, vector.economy.expansion_safety_bias)
+        self.assertEqual(48, vector.workers.repeat_order_guard_frames)
         self.assertEqual({"SiegeTank": 0.6}, vector.tech.unit_biases.to_dict())
         self.assertEqual({"TechLab": 0.4}, vector.production.addon_biases.to_dict())
         self.assertEqual(0.8, vector.combat.defend_bias)

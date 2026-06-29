@@ -70,7 +70,15 @@ def build_micromachine_build_identity(
     binary_exists = config.binary_path.exists()
     binary_sha256 = _sha256_file(config.binary_path) if binary_exists else None
     failures: list[dict[str, object]] = []
-    if observed_micro not in (None, config.micromachine_commit):
+    if observed_micro is None:
+        failures.append(
+            {
+                "code": "missing_micromachine_git_provenance",
+                "expected": config.micromachine_commit,
+                "path": str(config.micromachine_dir),
+            }
+        )
+    elif observed_micro != config.micromachine_commit:
         failures.append(
             {
                 "code": "micromachine_commit_mismatch",
@@ -78,7 +86,15 @@ def build_micromachine_build_identity(
                 "actual": observed_micro,
             }
         )
-    if observed_s2 not in (None, config.s2client_commit):
+    if observed_s2 is None:
+        failures.append(
+            {
+                "code": "missing_s2client_git_provenance",
+                "expected": config.s2client_commit,
+                "path": str(config.s2client_dir),
+            }
+        )
+    elif observed_s2 != config.s2client_commit:
         failures.append(
             {
                 "code": "s2client_commit_mismatch",
