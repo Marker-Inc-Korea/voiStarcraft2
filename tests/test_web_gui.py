@@ -256,7 +256,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "中文",
             "LLM 필수",
             "LLM 키 상태 확인 실패",
-            "StarCraft II 자동 연결 대기 중입니다.",
+            "MicroMachine 런타임 대기 중입니다.",
             "🚀 시작 메뉴얼",
             "startup-guide-entry",
             "renderStartupGuide",
@@ -270,7 +270,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "messageExpand",
             "window.location.assign(status.url)",
             "live-open-button",
-            "live-refresh-button",
+            "runtime-start-button",
+            "runtime-refresh-button",
             "llm-provider-choice",
             "llm-model-select",
             "handleProviderChoiceChange",
@@ -280,22 +281,34 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "gpt-5.4-mini",
             "gemini-3.5-flash",
             "grok-4.3",
-            "/api/live/status",
+            "/api/runtime/status",
+            "/api/runtime/start",
             "parseJsonResponse",
             "micromachine-panel",
-            "MicroMachine live text injection",
-            "MicroMachine에 주입할 텍스트 의도",
-            "MicroMachine live modulation 전송",
+            "명령 라우팅 모드",
+            "MicroMachine policy cockpit",
+            "Legacy python-sc2 commander",
+            "legacy-mode-warning",
+            "COMMAND_MODE_MICROMACHINE",
+            "COMMAND_MODE_LEGACY_COMMANDER",
+            "setCommandMode",
+            "submitMicroMachineModulation",
+            "buildMicroMachineModulationPayload",
+            "<details id=\"micromachine-panel\" class=\"collapsible-panel\">",
+            "MicroMachine runtime / DSL evidence",
+            "고급 직접 publish 테스트 텍스트",
+            "고급 직접 publish 전송",
             "Semantic army group",
             "Location intent",
             "Unit classes",
             "Safety margin",
             "Scope duration seconds",
             "TTL seconds",
-            "LLM/DSL modulation",
+            "MicroMachine DSL publish",
             "micromachine-intervention-dashboard",
             "DSL intervention dashboard",
             "Consumed axes by manager",
+            "Attack gate",
             "Recent tactical logs",
             "Raw modulation / telemetry evidence",
             "renderMicroMachineStatus",
@@ -332,7 +345,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual("web-live-1", document["update"]["update_id"])
             self.assertEqual(directory, document["blackboard_dir"])
             with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
-                self.assertIn("combat.defend_bias=0.7", handle.read())
+                kv_text = handle.read()
+                self.assertIn("combat.defend_bias=0.7", kv_text)
+                self.assertIn("workers.repeat_order_guard_frames=32", kv_text)
 
     def test_micromachine_modulation_endpoint_compiles_plain_gui_text(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -611,7 +626,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             intervention = document["intervention"]
             self.assertFalse(intervention["applied"])
             self.assertEqual("web-status-1", intervention["latest_update_id"])
-            self.assertEqual(["combat"], intervention["manager_bias_domains"])
+            self.assertEqual(["workers", "combat"], intervention["manager_bias_domains"])
             self.assertEqual("수비", intervention["goal"])
 
     def test_micromachine_status_requires_post_publish_telemetry_before_consumed(self):
@@ -728,6 +743,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "policy_active": True,
                         "update_id": "web-tactical-1",
                         "aggression": 0.45,
+                        "main_attack_order_status": "Attack",
+                        "main_attack_order_reason": "VOI force threshold met",
+                        "main_attack_unit_count": 2,
+                        "main_attack_scope_min_units": 2,
+                        "main_attack_scope_threshold_met": True,
+                        "main_attack_simulation_won": True,
                         "consumed_axes": "combat.aggression,combat.target_priority_biases.*",
                     },
                     "Squad": {
@@ -739,6 +760,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "target_worker_line_bias": 0.4,
                         "target_townhall_bias": 0.25,
                         "consumed_axes": "squad.contain_bias,scope.location_intent",
+                    },
+                    "WorkerManager": {
+                        "active": True,
+                        "repeat_order_guard_active": True,
+                        "repeat_order_guard_frames": 24,
+                        "repeat_order_suppressed_count": 7,
+                        "consumed_axes": "workers.repeat_order_guard_frames",
                     },
                 },
                 "active_modulation_ids": ["web-tactical-1"],
@@ -763,11 +791,28 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 ["combat.aggression", "combat.target_priority_biases.*"],
                 intervention["consumed_axes_by_manager"]["CombatCommander"],
             )
+            self.assertEqual(
+                ["workers.repeat_order_guard_frames"],
+                intervention["consumed_axes_by_manager"]["WorkerManager"],
+            )
+            self.assertEqual(
+                7,
+                intervention["manager_snapshot"]["WorkerManager"][
+                    "repeat_order_suppressed_count"
+                ],
+            )
             self.assertEqual("main", intervention["tactical_scope"]["requested"]["army_group"])
             self.assertEqual(
                 "worker_line",
                 intervention["target_priority"]["selected_target_class"],
             )
+            self.assertEqual("Attack", intervention["attack_gate"]["status"])
+            self.assertEqual(
+                "VOI force threshold met",
+                intervention["attack_gate"]["reason"],
+            )
+            self.assertEqual(2, intervention["attack_gate"]["unit_count"])
+            self.assertTrue(intervention["attack_gate"]["scope_threshold_met"])
             tactical_evidence = intervention["tactical_evidence"]
             self.assertEqual("passed", tactical_evidence["status"])
             self.assertIn("contain", tactical_evidence["observed_effects"])
@@ -1057,7 +1102,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual("refused", intervention["tactical_evidence"]["status"])
             self.assertTrue(intervention["tactical_evidence"]["refusal_reasons"])
 
-    def test_micromachine_modulation_fails_closed_without_llm_configuration(self):
+    def test_micromachine_modulation_accepts_keyword_provider_without_llm_configuration(self):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)
         bridge.start()
@@ -1065,23 +1110,59 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         server = WebGuiServer(bridge=bridge, port=0)
         server.start()
         self.addCleanup(server.stop)
-        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
-        try:
-            body = json.dumps({"text": "탱크로 수비해"}).encode("utf-8")
-            connection.request(
-                "POST",
-                "/api/micromachine/modulate",
-                body=body,
-                headers={"Content-Type": "application/json"},
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=5
             )
-            response = connection.getresponse()
-            payload = json.loads(response.read().decode("utf-8"))
-        finally:
-            connection.close()
+            try:
+                body = json.dumps(
+                    {
+                        "text": "탱크로 수비해",
+                        "blackboard_dir": directory,
+                        "current_frame": 21,
+                        "update_id": "keyword-no-llm",
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
 
-        self.assertEqual(HTTPStatus.CONFLICT, HTTPStatus(response.status))
-        self.assertFalse(payload["accepted"])
-        self.assertIn("LLM 키", payload["error"])
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
+            self.assertTrue(payload["accepted"])
+            self.assertEqual("keyword-no-llm", payload["update"]["update_id"])
+            self.assertEqual(directory, payload["blackboard_dir"])
+
+    def test_micromachine_modulation_does_not_publish_plain_greeting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, content_type, payload = self.post_micromachine_modulation(
+                {
+                    "text": "안녕",
+                    "blackboard_dir": directory,
+                    "current_frame": 21,
+                    "update_id": "web-hello-noop",
+                }
+            )
+
+            self.assertEqual(HTTPStatus.OK, HTTPStatus(status))
+            self.assertIn("application/json", content_type)
+            document = json.loads(payload.decode("utf-8"))
+            self.assertFalse(document["accepted"], document)
+            self.assertFalse(document["ok"], document)
+            self.assertEqual("clarification_required", document["status"])
+            self.assertEqual("not_published", document["consumption_status"])
+            self.assertIsNone(document["update"])
+            self.assertIn(
+                "전술 의도",
+                document["compile_result"]["clarification_prompt"],
+            )
+            self.assertFalse(os.path.exists(f"{directory}/latest_modulation.kv"))
 
     def test_micromachine_modulation_requests_are_serialized_on_bridge_queue(self):
         active_count = 0
@@ -1165,6 +1246,132 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
         self.assertIn('value="/tmp/voi-mm-custom&amp;safe"', page)
         self.assertIn("micromachine-tactical-evidence", page)
+
+    def test_runtime_start_routes_micromachine_mode_to_launcher(self):
+        class FakeMicroMachineLauncher:
+            def __init__(self):
+                self.started_blackboards = []
+
+            def start(self, blackboard_dir=""):
+                self.started_blackboards.append(blackboard_dir)
+                return {
+                    "enabled": True,
+                    "mode": "micromachine",
+                    "status": "starting",
+                    "blackboard_dir": blackboard_dir,
+                    "pid": 1234,
+                }
+
+            def snapshot(self, blackboard_dir=""):
+                return {
+                    "enabled": True,
+                    "mode": "micromachine",
+                    "status": "connected",
+                    "blackboard_dir": blackboard_dir,
+                    "telemetry_present": True,
+                    "telemetry_frame": 42,
+                }
+
+        launcher = FakeMicroMachineLauncher()
+        self.server._http.micromachine_launcher = launcher
+
+        body = json.dumps(
+            {"mode": "micromachine", "blackboard_dir": "/tmp/voi-mm-runtime-test"}
+        ).encode("utf-8")
+        status, content_type, payload = self.request(
+            "POST",
+            "/api/runtime/start",
+            body=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+        self.assertIn("application/json", content_type)
+        document = json.loads(payload.decode("utf-8"))
+        self.assertTrue(document["accepted"], document)
+        self.assertEqual(document["status"], "starting")
+        self.assertEqual(launcher.started_blackboards, ["/tmp/voi-mm-runtime-test"])
+
+        status, _content_type, payload = self.request(
+            "GET",
+            "/api/runtime/status?mode=micromachine&blackboard_dir=/tmp/voi-mm-runtime-test",
+        )
+        self.assertEqual(HTTPStatus.OK, HTTPStatus(status))
+        document = json.loads(payload.decode("utf-8"))
+        self.assertEqual(document["status"], "connected")
+        self.assertEqual(document["telemetry_frame"], 42)
+
+    def test_micromachine_launcher_default_script_is_repo_relative_not_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = web_gui._MicroMachineLaunchManager(cwd=directory)
+
+            self.assertTrue(
+                launcher._script_path.endswith(  # noqa: SLF001 - private launch seam.
+                    "integrations/micromachine/scripts/smoke_macos_local.sh"
+                )
+            )
+            self.assertTrue(
+                launcher._script_path.startswith(web_gui._REPO_ROOT)  # noqa: SLF001
+            )
+            self.assertFalse(launcher._script_path.startswith(directory))  # noqa: SLF001
+
+    def test_micromachine_launcher_blocks_blackboard_switch_while_running(self):
+        class FakeRunningProcess:
+            pid = 12345
+            returncode = None
+
+            def poll(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as old_dir, tempfile.TemporaryDirectory() as new_dir:
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            launcher._blackboard_dir = old_dir  # noqa: SLF001 - private launch seam.
+            launcher._process = FakeRunningProcess()  # noqa: SLF001
+
+            payload = launcher.start(new_dir)
+
+            self.assertEqual("blocked", payload["status"])
+            self.assertFalse(payload["accepted"])
+            self.assertEqual(old_dir, payload["blackboard_dir"])
+            self.assertEqual(new_dir, payload["requested_blackboard_dir"])
+            self.assertIn("different blackboard_dir", payload["error"])
+
+    def test_micromachine_launcher_does_not_mark_stale_telemetry_connected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(
+                os.path.join(directory, "latest_telemetry.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    {
+                        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                        "frame": 99,
+                    },
+                    handle,
+                )
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+
+            payload = launcher.snapshot(directory)
+
+            self.assertEqual("idle", payload["status"])
+            self.assertTrue(payload["telemetry_present"])
+            self.assertEqual(99, payload["telemetry_frame"])
+
+    def test_runtime_start_legacy_mode_is_blocked_until_key_is_saved(self):
+        body = json.dumps({"mode": "legacy_commander"}).encode("utf-8")
+        status, content_type, payload = self.request(
+            "POST",
+            "/api/runtime/start",
+            body=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(HTTPStatus.CONFLICT, HTTPStatus(status))
+        self.assertIn("application/json", content_type)
+        document = json.loads(payload.decode("utf-8"))
+        self.assertFalse(document["accepted"], document)
+        self.assertEqual(document["mode"], "legacy_commander")
+        self.assertEqual(document["status"], "blocked")
+        self.assertTrue(contains_hangul(document["error"]))
 
     def test_report_command_yields_read_only_event_with_korean_narration(self):
         status, _content_type, payload = self.post_command("상황 보고해줘")
@@ -2175,6 +2382,434 @@ assert(logBox.textContent.includes("두 번째 응답입니다."));
             )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_micromachine_commander_chat_submit_clears_pending_after_publish(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("<script>") + len("<script>")
+        script_end = page.index("</script>", script_start)
+        app_script = page[script_start:script_end]
+        app_script = app_script[
+            : app_script.index('var providerOptions = document.getElementById("llm-provider-options")')
+        ]
+        harness = r"""
+class FakeText {
+  constructor(text) {
+    this.textContent = text;
+    this.parentNode = null;
+  }
+}
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.parentNode = null;
+    this.attributes = {};
+    this.listeners = {};
+    this.style = {};
+    this.className = "";
+    this.id = "";
+    this.value = "";
+    this.checked = false;
+    this.disabled = false;
+    this.placeholder = "";
+    this._textContent = "";
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+    this.classList = {
+      add: function () {},
+      remove: function () {},
+      toggle: function () {}
+    };
+  }
+
+  appendChild(child) {
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+
+  insertBefore(child, reference) {
+    child.parentNode = this;
+    var index = this.children.indexOf(reference);
+    if (index < 0) {
+      this.children.push(child);
+    } else {
+      this.children.splice(index, 0, child);
+    }
+    return child;
+  }
+
+  removeChild(child) {
+    var index = this.children.indexOf(child);
+    if (index >= 0) {
+      this.children.splice(index, 1);
+      child.parentNode = null;
+    }
+    return child;
+  }
+
+  remove() {
+    if (this.parentNode) {
+      this.parentNode.removeChild(this);
+    }
+  }
+
+  addEventListener(name, handler) {
+    this.listeners[name] = handler;
+  }
+
+  dispatchEvent(event) {
+    if (this.listeners[event.type]) {
+      this.listeners[event.type](event);
+    }
+  }
+
+  focus() {}
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+    if (name === "id") {
+      this.id = String(value);
+    }
+    if (name === "class") {
+      this.className = String(value);
+    }
+  }
+
+  getAttribute(name) {
+    if (name === "id") {
+      return this.id;
+    }
+    if (name === "class") {
+      return this.className;
+    }
+    return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+  }
+
+  closest() {
+    return null;
+  }
+
+  get firstChild() {
+    return this.children[0] || null;
+  }
+
+  get firstElementChild() {
+    return this.children.find(function (child) { return child instanceof FakeElement; }) || null;
+  }
+
+  get lastChild() {
+    return this.children[this.children.length - 1] || null;
+  }
+
+  get childNodes() {
+    return this.children;
+  }
+
+  get textContent() {
+    return this._textContent + this.children.map(function (child) { return child.textContent || ""; }).join("");
+  }
+
+  set textContent(value) {
+    this._textContent = String(value);
+    this.children = [];
+  }
+
+  set innerHTML(value) {
+    this._textContent = "";
+    this.children = [];
+  }
+
+  get innerHTML() {
+    return "";
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  querySelectorAll(selector) {
+    if (selector.indexOf(">") >= 0) {
+      return [];
+    }
+    var matches = [];
+    function hasClass(node, className) {
+      return (" " + (node.className || "") + " ").indexOf(" " + className + " ") >= 0;
+    }
+    function isMatch(node) {
+      if (!(node instanceof FakeElement)) {
+        return false;
+      }
+      if (selector.charAt(0) === ".") {
+        return hasClass(node, selector.slice(1));
+      }
+      if (selector.charAt(0) === "#") {
+        return node.id === selector.slice(1);
+      }
+      return node.tagName.toLowerCase() === selector.toLowerCase();
+    }
+    function visit(node) {
+      node.children.forEach(function (child) {
+        if (isMatch(child)) {
+          matches.push(child);
+        }
+        if (child instanceof FakeElement) {
+          visit(child);
+        }
+      });
+    }
+    visit(this);
+    return matches;
+  }
+}
+
+function element(id, tagName) {
+  var node = new FakeElement(tagName || "div");
+  node.id = id;
+  return node;
+}
+
+var logBox = element("log");
+var nodes = {
+  "assistant-pending-status": element("assistant-pending-status", "p"),
+  "command-form": element("command-form", "form"),
+  "command-input": element("command-input", "input"),
+  "send-button": element("send-button", "button"),
+  "voice-button": element("voice-button", "button"),
+  "llm-form": element("llm-form", "form"),
+  "llm-api-key": element("llm-api-key", "input"),
+  "llm-status": element("llm-status"),
+  "llm-status-label": element("llm-status-label"),
+  "llm-status-message": element("llm-status-message"),
+  "llm-model-select": element("llm-model-select", "select"),
+  "live-status": element("live-status"),
+  "live-open-button": element("live-open-button", "button"),
+  "runtime-start-button": element("runtime-start-button", "button"),
+  "runtime-refresh-button": element("runtime-refresh-button", "button"),
+  "runtime-mode-summary": element("runtime-mode-summary"),
+  "legacy-mode-warning": element("legacy-mode-warning"),
+  "micromachine-form": element("micromachine-form", "form"),
+  "micromachine-command-input": element("micromachine-command-input", "textarea"),
+  "micromachine-blackboard-dir": element("micromachine-blackboard-dir", "input"),
+  "micromachine-army-group": element("micromachine-army-group", "input"),
+  "micromachine-location-intent": element("micromachine-location-intent", "input"),
+  "micromachine-unit-classes": element("micromachine-unit-classes", "input"),
+  "micromachine-safety-margin": element("micromachine-safety-margin", "input"),
+  "micromachine-duration-seconds": element("micromachine-duration-seconds", "input"),
+  "micromachine-ttl-seconds": element("micromachine-ttl-seconds", "input"),
+  "micromachine-status": element("micromachine-status"),
+  "micromachine-applied-badge": element("micromachine-applied-badge"),
+  "micromachine-latest-update": element("micromachine-latest-update"),
+  "micromachine-active-ids": element("micromachine-active-ids"),
+  "micromachine-frame": element("micromachine-frame"),
+  "micromachine-domains": element("micromachine-domains"),
+  "micromachine-goal": element("micromachine-goal"),
+  "micromachine-managers": element("micromachine-managers"),
+  "micromachine-posture": element("micromachine-posture"),
+  "micromachine-scope": element("micromachine-scope"),
+  "micromachine-consumed-axes": element("micromachine-consumed-axes"),
+  "micromachine-target-priority": element("micromachine-target-priority"),
+  "micromachine-attack-gate": element("micromachine-attack-gate"),
+  "micromachine-tactical-evidence": element("micromachine-tactical-evidence"),
+  "micromachine-refusal": element("micromachine-refusal"),
+  "micromachine-log-snippets": element("micromachine-log-snippets", "ul"),
+  "micromachine-raw-evidence": element("micromachine-raw-evidence", "pre")
+};
+nodes["log"] = logBox;
+nodes["llm-model-select"].value = "gpt-test";
+nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-js-test";
+nodes["micromachine-ttl-seconds"].value = "600";
+
+var providerRadios = [
+  { value: "openai", checked: true, addEventListener: function () {} },
+  { value: "anthropic", checked: false, addEventListener: function () {} },
+  { value: "gemini", checked: false, addEventListener: function () {} },
+  { value: "grok", checked: false, addEventListener: function () {} }
+];
+var commandModeRadios = [
+  { value: "micromachine", checked: true, addEventListener: function (name, handler) { this.listener = handler; } },
+  { value: "legacy_commander", checked: false, addEventListener: function (name, handler) { this.listener = handler; } }
+];
+
+var document = {
+  documentElement: new FakeElement("html"),
+  createElement: function (tagName) { return new FakeElement(tagName); },
+  createTextNode: function (text) { return new FakeText(text); },
+  getElementById: function (id) {
+    if (nodes[id]) { return nodes[id]; }
+    var found = null;
+    function visit(node) {
+      if (found || !(node instanceof FakeElement)) { return; }
+      if (node.id === id) {
+        found = node;
+        return;
+      }
+      node.children.forEach(visit);
+    }
+    Object.keys(nodes).forEach(function (key) { visit(nodes[key]); });
+    return found;
+  },
+  querySelectorAll: function (selector) {
+    if (selector === "input[name='llm-provider-choice']") { return providerRadios; }
+    if (selector === "input[name='command-mode']") { return commandModeRadios; }
+    if (selector === "[data-command]") { return []; }
+    if (selector === "[data-lang-button]") { return []; }
+    return Object.keys(nodes).reduce(function (matches, key) {
+      return matches.concat(nodes[key].querySelectorAll(selector));
+    }, []);
+  },
+  querySelector: function (selector) {
+    if (selector === "input[name='llm-provider-choice']:checked") {
+      return providerRadios.find(function (radio) { return radio.checked; }) || null;
+    }
+    if (selector === "input[name='command-mode']:checked") {
+      return commandModeRadios.find(function (radio) { return radio.checked; }) || null;
+    }
+    return this.querySelectorAll(selector)[0] || null;
+  }
+};
+var timeoutCallbacks = [];
+var window = {
+  location: { search: "" },
+  setTimeout: function (callback) {
+    timeoutCallbacks.push(callback);
+    return timeoutCallbacks.length - 1;
+  },
+  clearTimeout: function (id) {
+    timeoutCallbacks[id] = function () {};
+  },
+  open: function () {},
+  SpeechRecognition: null,
+  webkitSpeechRecognition: null
+};
+var console = {
+  warn: function () {},
+  error: function (message) { global.__consoleError = message; }
+};
+var setInterval = function () {};
+var URLSearchParams = global.URLSearchParams;
+var requests = [];
+function deferred() {
+  var resolve;
+  var reject;
+  var promise = new Promise(function (resolveFn, rejectFn) {
+    resolve = resolveFn;
+    reject = rejectFn;
+  });
+  return { promise: promise, resolve: resolve, reject: reject };
+}
+function response(status, data) {
+  return {
+    ok: status >= 200 && status < 300,
+    status: status,
+    text: function () { return Promise.resolve(JSON.stringify(data)); }
+  };
+}
+var fetch = function (url, options) {
+  var item = { url: url, options: options || {}, deferred: deferred() };
+  requests.push(item);
+  return item.deferred.promise;
+};
+function flushPromises() {
+  return new Promise(function (resolve) { setImmediate(resolve); });
+}
+"""
+        scenario = r"""
+const assert = require("assert");
+(async function () {
+  nodes["command-input"].value = "enemy natural 압박하고 탱크는 안전하게";
+  nodes["command-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  assert.strictEqual(requests.length, 1);
+  assert.strictEqual(requests[0].url, "/api/micromachine/modulate");
+  var firstBody = JSON.parse(requests[0].options.body);
+  assert.strictEqual(firstBody.text, "enemy natural 압박하고 탱크는 안전하게");
+  assert.strictEqual(firstBody.blackboard_dir, "/tmp/voi-mm-js-test");
+  assert.strictEqual(firstBody.ttl_seconds, 600);
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
+
+  renderMicroMachineStatus = function () {
+    throw new Error("dashboard boom");
+  };
+  requests[0].deferred.resolve(response(202, {
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "pending_telemetry",
+    intervention: {
+      latest_update_id: "unit-update-1",
+      tactical_posture: "pressure",
+      manager_bias_domains: ["combat", "squad"]
+    },
+    dashboard: {
+      active_updates: [
+        { update_id: "unit-update-1", manager_bias_domains: ["combat", "squad"] }
+      ]
+    }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
+  assert(logBox.textContent.includes("MicroMachine DSL modulation"));
+  assert(logBox.textContent.includes("pending_telemetry"));
+  assert(nodes["micromachine-status"].textContent.includes("dashboard render failed"));
+  assert.strictEqual(nodes["command-input"].value, "");
+
+  renderMicroMachineStatus = function () {};
+  nodes["command-input"].value = "실패 케이스도 pending 남기지 마";
+  nodes["command-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  assert.strictEqual(requests.length, 2);
+  assert.strictEqual(pendingCommandCount(), 1);
+  requests[1].deferred.resolve(response(500, { error: "backend down" }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
+  assert(logBox.textContent.includes("backend down"));
+
+  nodes["command-input"].value = "응답이 없어도 pending은 풀어";
+  nodes["command-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  assert.strictEqual(requests.length, 3);
+  assert.strictEqual(pendingCommandCount(), 1);
+  timeoutCallbacks[timeoutCallbacks.length - 1]();
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
+  assert(logBox.textContent.includes("pending을 해제했습니다"));
+})().catch(function (error) {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(app_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_chat_panel_is_bounded_and_log_scrolls_internally(self):
         page = render_web_gui_page()
         for fragment in (
@@ -3073,7 +3708,8 @@ assert.strictEqual(nodes["llm-status-message"].textContent, "LLM 키 설정 중.
 
 renderLlmSettings({ configured: false, provider: "openai", model: "gpt-5.5" });
 assert.strictEqual(nodes["llm-model-select"].value, "gpt-5.5");
-assert.strictEqual(nodes["send-button"].disabled, true);
+assert.strictEqual(nodes["send-button"].disabled, false);
+assert(nodes["command-input"].placeholder.includes("MicroMachine"));
 
 renderLlmSettings({ configured: true, provider: "openai", model: "gpt-test" });
 assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "success");
@@ -3147,14 +3783,22 @@ var nodes = {
   "llm-model-select": element("llm-model-select"),
   "live-status": element("live-status"),
   "live-open-button": element("live-open-button"),
+  "runtime-start-button": element("runtime-start-button"),
+  "runtime-refresh-button": element("runtime-refresh-button"),
+  "micromachine-blackboard-dir": element("micromachine-blackboard-dir"),
   "log": element("log")
 };
 nodes["llm-model-select"].value = "gpt-test";
+nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-js-test";
 var radios = [
   { value: "openai", checked: true, addEventListener: function () {} },
   { value: "anthropic", checked: false, addEventListener: function () {} },
   { value: "gemini", checked: false, addEventListener: function () {} },
   { value: "grok", checked: false, addEventListener: function () {} }
+];
+var commandModeRadios = [
+  { value: "micromachine", checked: true, addEventListener: function () {} },
+  { value: "legacy_commander", checked: false, addEventListener: function () {} }
 ];
 var document = {
   documentElement: { setAttribute: function () {} },
@@ -3162,6 +3806,7 @@ var document = {
   getElementById: function (id) { return nodes[id] || null; },
   querySelectorAll: function (selector) {
     if (selector === "input[name='llm-provider-choice']") { return radios; }
+    if (selector === "input[name='command-mode']") { return commandModeRadios; }
     if (selector === "[data-command]") { return []; }
     return [];
   },
@@ -3172,6 +3817,9 @@ var document = {
     var valueMatch = selector.match(/input\[name='llm-provider-choice'\]\[value='([^']+)'\]/);
     if (valueMatch) {
       return radios.find(function (radio) { return radio.value === valueMatch[1]; }) || null;
+    }
+    if (selector === "input[name='command-mode']:checked") {
+      return commandModeRadios.find(function (radio) { return radio.checked; }) || null;
     }
     return null;
   }
@@ -3235,10 +3883,11 @@ const assert = require("assert");
     model: "gpt-test"
   }));
   await flushPromises();
-  assert.strictEqual(requests[1].url, "/api/live/status");
+  assert(requests[1].url.indexOf("/api/runtime/status?mode=micromachine") === 0);
   requests[1].deferred.resolve(response(200, {
     enabled: true,
     status: "idle",
+    mode: "micromachine",
     url: "",
     error: ""
   }));
@@ -3249,7 +3898,7 @@ const assert = require("assert");
   assert(!nodes["llm-status-message"].textContent.includes("unit-test-success-input"));
   assert.strictEqual(nodes["llm-api-key"].value, "");
   assert.strictEqual(nodes["send-button"].disabled, false);
-  assert(nodes["live-status"].textContent.includes("StarCraft II 연결 시작 중"));
+  assert(nodes["live-status"].textContent.includes("MicroMachine 런타임 대기 중"));
 
   submitKey("unit-test-failed-input");
   assert.strictEqual(nodes["llm-status"].getAttribute("data-llm-state"), "setting");
@@ -3400,7 +4049,8 @@ class WebGuiMainTest(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertTrue(contains_hangul(output))
         self.assertIn("--dry-run", output)
-        self.assertIn("demo_sc2 --gui", output)
+        self.assertIn("MicroMachine", output)
+        self.assertIn("legacy commander mode", output)
 
     def test_main_dry_run_serves_until_interrupt_then_cleans_up(self):
         stdout = io.StringIO()

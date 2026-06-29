@@ -44,6 +44,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "combat_analysis",
                 "squad",
                 "scope",
+                "workers",
             },
             domains,
         )
@@ -54,6 +55,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "src/WorkerManager.cpp",
             "src/CombatAnalyzer.cpp",
             "src/Squad.cpp",
+            "src/GameCommander.cpp",
         }
         self.assertEqual(required_sources, {hook["source_path"] for hook in hooks})
         for hook in hooks:
@@ -142,6 +144,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "#include \"voi_policy_blackboard.hpp\"",
             "void GameCommander::updateVoiPolicyBlackboard()",
             "void GameCommander::writeVoiTelemetry() const",
+            "bool GameCommander::shouldSuppressRepeatedWorkerCommand",
             "bool CCBot::isInitialObservationReady() const",
             "void CCBot::initializeManagers()",
             "m_managersInitialized",
@@ -156,6 +159,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "getVoiPolicyInt(\"scope.min_units\", 0)",
             "getVoiPolicyString(\"scope.location_intent\", \"\")",
             "voiEngageMarginDelta",
+            "but it must not bypass the combat simulation safety gate.",
+            "voiRelaunchMargin",
             "voiTargetPriorityScore",
             "combat.target_priority_biases.worker_line",
             "consumed_axes",
@@ -178,6 +183,17 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "Supply provider recovery queued after supply block.",
             "m_queue.queueAsHighestPriority(supplyProviderType, false)",
             "Path to completed refinery is not safe; assigning gas worker with refinery fallback.",
+            "handleNonBunkerGasWorkers",
+            "alreadyReturningToDepot",
+            "alreadyGasHarvestOrder",
+            "isInsideGeyser(worker)",
+            "worker.rightClick(geyser)",
+            "\\\"WorkerManager\\\":{",
+            "repeat_order_guard_active",
+            "repeat_order_suppressed_count",
+            "workers.repeat_order_guard_frames",
+            "m_bot->Commander().shouldSuppressRepeatedWorkerCommand(m_unit, sc2::ABILITY_ID::SMART",
+            "bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, sc2::ABILITY_ID::MOVE",
             "VOI_SC2_EXTRA_ARGS",
             "ScopedVoiEnvironmentStripper",
             "VOI_MICROMACHINE_BLACKBOARD_DIR",
@@ -190,6 +206,22 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, patch)
         self.assertTrue((KIT_DIR / "voi_policy_blackboard.hpp").is_file())
         self.assertNotIn("-\t\t\t\t\t\t\t++neighborsBaseLocation[bl];", patch)
+        self.assertIn(
+            "return lhs.x < rhs.x || (lhs.x == rhs.x && lhs.y < rhs.y);",
+            patch,
+        )
+        self.assertIn(
+            "-\t\treturn lhs.x < rhs.x || lhs.x == rhs.y && lhs.y < rhs.y;",
+            patch,
+        )
+        self.assertNotIn(
+            " \t\treturn lhs.x < rhs.x || lhs.x == rhs.y && lhs.y < rhs.y;",
+            patch,
+        )
+        self.assertNotIn(
+            "+\t\treturn lhs.x < rhs.x || lhs.x == rhs.y && lhs.y < rhs.y;",
+            patch,
+        )
         for term in (
             "extern char **environ",
             "#include <sys/wait.h>",
@@ -276,12 +308,19 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "safe_clean_git_checkout",
             "MICROMACHINE_ALLOW_DESTRUCTIVE_CLEAN",
             "Refusing to ${action} override checkout outside",
+            "is_valid_git_checkout",
+            "prepare_git_checkout",
+            ".invalid.$(date +%Y%m%d%H%M%S).$$",
+            "Invalid ${repo_name} git checkout; moving aside",
             "submodule update --init --recursive",
             "apply --check --ignore-space-change --whitespace=nowarn",
             "cmake --build",
             "MICROMACHINE_BUILD_IDENTITY_REPORT",
             "starcraft_commander.micromachine_build_identity",
             "voi_build_identity.json",
+            "BLACKBOARD_HEADER_FILE",
+            "voi_policy_blackboard.hpp",
+            'cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"',
         ):
             with self.subTest(term=term):
                 self.assertIn(term, build_script)
@@ -312,6 +351,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         for term in (
             "VOI_MICROMACHINE_BLACKBOARD_DIR",
+            "--live-hold",
+            "--blackboard-dir",
+            "--max-attempts",
             "build_defensive_hold_profile",
             "build_aggressive_pressure_profile",
             "latest_modulation.kv",
@@ -342,6 +384,19 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SMOKE_MAX_ATTEMPTS",
             "SMOKE_RETRY_SETTLE_SECONDS",
             "SMOKE_ATTEMPT_INDEX",
+            "SMOKE_KEEP_RUNNING_AFTER_PASS",
+            "SMOKE_MANUAL_LIVE_MODE",
+            "SMOKE_AUTO_AGGRESSIVE_PROFILE",
+            "SMOKE_REQUIRE_BUILD_IDENTITY",
+            "MICROMACHINE_BUILD_IDENTITY_REPORT",
+            "verify_build_identity",
+            "stale build identity",
+            'SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-1}"',
+            "has_live_hold_preflight_evidence",
+            "MicroMachine manual live hold preflight passed",
+            "MicroMachine live hold preflight did not pass",
+            "MicroMachine manual live hold active",
+            "automatic aggressive smoke profile is disabled",
             "smoke_attempts.json",
             "MicroMachine smoke retrying after retryable frame-0 startup failure",
             "startup_frame_threshold",
@@ -365,10 +420,17 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "CombatCommander",
             "ScoutManager",
             "Squad",
+            "WorkerManager",
             "bounded_intervention",
+            "repeat_order_guard_active",
+            "repeat_order_suppressed_count",
+            "workers.repeat_order_guard_frames",
             "combat.attack_timing_bias",
             "combat.commitment_level",
             "combat.attack_condition_override",
+            "main_attack_order_status",
+            "main_attack_scope_threshold_met",
+            "main_attack_simulation_won",
             "combat.retreat_patience_bias",
             "combat.rally_before_attack_bias",
             "squad.contain_bias",
@@ -380,6 +442,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "target_army_bias",
             "missing deep CombatCommander consumed axis",
             "missing deep Squad consumed axis",
+            "worker repeat-order guard did not suppress any repeated order",
             "aggressive_update_id = sys.argv[3]",
             "defensive_update_id = sys.argv[4]",
             "smoke-defensive-hold",

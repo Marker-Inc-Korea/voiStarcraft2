@@ -78,16 +78,25 @@ WEB_GUI_TOKEN_HEADER: Final[str] = "X-voiStarcraft2-Token"
 DEFAULT_WEB_GUI_PORT: Final[int] = 8350
 """Default web GUI port; ``0`` requests an ephemeral port (used by tests)."""
 
+_REPO_ROOT: Final[str] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+"""Repository root resolved from this module, independent of process cwd."""
+
 DEFAULT_SC2_INSTALL_PATH: Final[str] = (
     "/Users/jinminseong/Desktop/StarCraft2/StarCraft II"
 )
 """Default local StarCraft II install path used by auto live launch."""
 
 DEFAULT_LIVE_MAP: Final[str] = "AcropolisLE"
-"""Default map for auto-launched live smoke sessions."""
+"""Default map for opt-in legacy python-sc2 auto-launch sessions."""
 
 DEFAULT_LIVE_DIFFICULTY: Final[str] = "easy"
-"""Default computer difficulty for auto-launched live smoke sessions."""
+"""Default difficulty for opt-in legacy python-sc2 auto-launch sessions."""
+
+COMMAND_MODE_MICROMACHINE: Final[str] = "micromachine"
+"""Default cockpit mode: publish text/voice intent to MicroMachine DSL blackboard."""
+
+COMMAND_MODE_LEGACY_COMMANDER: Final[str] = "legacy_commander"
+"""Compatibility mode: route chat through the legacy python-sc2 commander."""
 
 _LOCAL_URL_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"https?://127\.0\.0\.1:\d+(?:/[^\s]*)?"
@@ -297,6 +306,16 @@ def _clean_blackboard_dir(value: str, fallback: str) -> str:
     if not cleaned:
         raise ValueError("MicroMachine blackboard_dir must be configured.")
     return cleaned
+
+
+def _normalize_runtime_mode(value: str) -> str:
+    """Return the only two runtime modes accepted by the local cockpit."""
+
+    return (
+        COMMAND_MODE_LEGACY_COMMANDER
+        if str(value).strip() == COMMAND_MODE_LEGACY_COMMANDER
+        else COMMAND_MODE_MICROMACHINE
+    )
 
 
 def _default_micromachine_blackboard_dir() -> str:
@@ -684,6 +703,7 @@ def _micromachine_intervention_summary(
             compile_payload,
         ),
         "target_priority": _micromachine_target_priority(vector, managers),
+        "attack_gate": _micromachine_attack_gate(vector, managers),
         "tactical_evidence": tactical_evidence,
         "refusal_reason": refusal_reason,
         "log_snippets": [dict(item) for item in log_snippets],
@@ -885,6 +905,47 @@ def _micromachine_target_priority(
         "requested_biases": requested_biases,
         "telemetry_biases": telemetry_biases,
         "selected_target_class": selected,
+    }
+
+
+def _micromachine_attack_gate(
+    vector: Mapping[str, object],
+    managers: Mapping[str, object],
+) -> dict[str, object]:
+    """Explain the final MicroMachine attack gate in UI-safe terms."""
+
+    combat = _mapping_child(managers, "CombatCommander")
+    squad = _mapping_child(managers, "Squad")
+    scope = _mapping_child(vector, "scope")
+    combat_vector = _mapping_child(vector, "combat")
+    status = str(combat.get("main_attack_order_status", "") or "")
+    reason = str(combat.get("main_attack_order_reason", "") or "")
+    unit_count = _int_or_none(
+        combat.get("main_attack_unit_count", combat.get("combat_unit_count"))
+    )
+    min_units = _int_or_none(
+        combat.get(
+            "main_attack_scope_min_units",
+            squad.get("scope_min_units", scope.get("min_units")),
+        )
+    )
+    threshold_met = _bool_or_none(combat.get("main_attack_scope_threshold_met"))
+    if threshold_met is None and unit_count is not None and min_units is not None:
+        threshold_met = min_units <= 0 or unit_count >= min_units
+    if not reason:
+        if unit_count is not None and min_units is not None and unit_count < min_units:
+            reason = f"waiting_for_min_units:{unit_count}/{min_units}"
+        elif str(combat_vector.get("attack_condition_override", "") or "") == "never":
+            reason = "attack_condition_override_never"
+    return {
+        "status": status,
+        "reason": reason,
+        "unit_count": unit_count,
+        "min_units": min_units,
+        "scope_threshold_met": threshold_met,
+        "simulation_won": _bool_or_none(combat.get("main_attack_simulation_won")),
+        "order_x": _number_or_none(combat.get("main_attack_order_x")),
+        "order_y": _number_or_none(combat.get("main_attack_order_y")),
     }
 
 
@@ -1122,6 +1183,32 @@ def _number(value: object) -> float:
     return float(value)
 
 
+def _number_or_none(value: object) -> float | None:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _int_or_none(value: object) -> int | None:
+    if type(value) is bool:
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _bool_or_none(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    return None
+
+
 def _truthy(value: object) -> bool:
     return value is True or str(value).strip().lower() == "true"
 
@@ -1229,6 +1316,16 @@ _STOP_SENTINEL: Final[object] = object()
 
 _MICROMACHINE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
 """Maximum HTTP wait for one queued MicroMachine modulation submission."""
+
+_MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH: Final[str] = (
+    "integrations/micromachine/scripts/smoke_macos_local.sh"
+)
+"""Repo-local MicroMachine smoke/live launcher used by the web cockpit."""
+
+_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV: Final[str] = (
+    "VOI_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS"
+)
+"""Optional env override for UI-triggered MicroMachine smoke retries."""
 
 
 @dataclass(frozen=True)
@@ -1344,7 +1441,7 @@ class _SimpleHistory:
 
 
 class _LiveLaunchManager:
-    """Start one local live SC2 process and expose safe startup metadata."""
+    """Start one legacy python-sc2 live process and expose safe metadata."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -1354,18 +1451,52 @@ class _LiveLaunchManager:
         self._error = ""
         self._last_line = ""
         self._redactions: tuple[str, ...] = ()
+        self._provider = ""
+        self._api_key = ""
+        self._model = ""
 
-    def start(self, provider: str, api_key: str, model: str) -> dict[str, object]:
-        """Start the live demo process once, passing the key only via env."""
+    def configure(self, provider: str, api_key: str, model: str) -> None:
+        """Store process-local launch credentials for an explicit UI start."""
 
         with self._lock:
+            self._provider = provider.strip().lower()
+            self._api_key = api_key.strip()
+            self._model = model.strip()
+            self._redactions = (self._api_key,) if self._api_key else ()
+            if self._status == "blocked":
+                self._status = "idle"
+                self._error = ""
+
+    def start(
+        self,
+        provider: str = "",
+        api_key: str = "",
+        model: str = "",
+    ) -> dict[str, object]:
+        """Start the legacy live demo process once, passing the key only via env."""
+
+        with self._lock:
+            if provider or api_key or model:
+                self._provider = provider.strip().lower()
+                self._api_key = api_key.strip()
+                self._model = model.strip()
+                self._redactions = (self._api_key,) if self._api_key else ()
+            provider = self._provider
+            api_key = self._api_key
+            model = self._model
+            if not provider or not api_key:
+                self._status = "blocked"
+                self._error = (
+                    "Legacy python-sc2 실행에는 먼저 LLM 키 설정이 필요합니다."
+                )
+                self._last_line = ""
+                return self._snapshot_unlocked()
             if self._process is not None and self._process.poll() is None:
                 return self._snapshot_unlocked()
             self._status = "starting"
             self._url = ""
             self._error = ""
             self._last_line = ""
-            self._redactions = (api_key.strip(),) if api_key.strip() else ()
             env = os.environ.copy()
             env["SC2PATH"] = env.get("SC2PATH", DEFAULT_SC2_INSTALL_PATH)
             env[_api_key_env_var_for_provider(provider)] = api_key
@@ -1468,6 +1599,197 @@ class _LiveLaunchManager:
             if not self._url and self._process is process:
                 self._status = "failed"
                 self._error = self._last_line or "live process exited before GUI URL"
+
+
+class _MicroMachineLaunchManager:
+    """Start the patched MicroMachine runtime script and expose cockpit status."""
+
+    def __init__(self, script_path: str = "", cwd: str = "") -> None:
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen[str] | None = None
+        self._status = "idle"
+        self._error = ""
+        self._last_line = ""
+        self._blackboard_dir = _default_micromachine_blackboard_dir()
+        self._launch_wall_time = 0.0
+        self._cwd = cwd.strip() or _REPO_ROOT
+        candidate_script = script_path.strip()
+        if candidate_script and not os.path.isabs(candidate_script):
+            candidate_script = os.path.join(self._cwd, candidate_script)
+        self._script_path = candidate_script or os.path.join(
+            _REPO_ROOT,
+            _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH,
+        )
+
+    def start(self, blackboard_dir: str = "") -> dict[str, object]:
+        """Launch MicroMachine smoke/live runtime for the selected blackboard."""
+
+        root = _clean_blackboard_dir(blackboard_dir, self._blackboard_dir)
+        with self._lock:
+            self._refresh_unlocked()
+            if self._process is not None and self._process.poll() is None:
+                if os.path.realpath(root) != os.path.realpath(self._blackboard_dir):
+                    payload = self._snapshot_unlocked()
+                    payload["status"] = "blocked"
+                    payload["accepted"] = False
+                    payload["requested_blackboard_dir"] = root
+                    payload["error"] = (
+                        "MicroMachine runtime is already running with a different "
+                        f"blackboard_dir: {self._blackboard_dir}"
+                    )
+                    return payload
+                return self._snapshot_unlocked()
+            self._blackboard_dir = root
+            self._status = "starting"
+            self._error = ""
+            self._last_line = ""
+            if not os.path.isfile(self._script_path):
+                self._status = "failed"
+                self._error = (
+                    "MicroMachine launcher script not found: "
+                    f"{self._script_path}"
+                )
+                return self._snapshot_unlocked()
+            env = os.environ.copy()
+            env["BLACKBOARD_DIR"] = root
+            env.setdefault("SC2_ROOT", DEFAULT_SC2_INSTALL_PATH)
+            env.setdefault("SMOKE_KEEP_RUNNING_AFTER_PASS", "1")
+            max_attempts = env.get(_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV, "1")
+            env.setdefault("SMOKE_MAX_ATTEMPTS", max_attempts)
+            argv = [
+                "bash",
+                self._script_path,
+                "--live-hold",
+                "--blackboard-dir",
+                root,
+                "--max-attempts",
+                max_attempts,
+            ]
+            try:
+                self._launch_wall_time = time.time()
+                self._process = subprocess.Popen(
+                    argv,
+                    cwd=self._cwd,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+            except OSError as error:
+                self._status = "failed"
+                self._error = _redact_sensitive_text(
+                    error,
+                    normalize_whitespace=True,
+                )
+                self._process = None
+                self._launch_wall_time = 0.0
+                return self._snapshot_unlocked()
+            threading.Thread(
+                target=self._read_output,
+                args=(self._process,),
+                name="voiStarcraft2-micromachine-launch-reader",
+                daemon=True,
+            ).start()
+            return self._snapshot_unlocked()
+
+    def snapshot(self, blackboard_dir: str = "") -> dict[str, object]:
+        """Return safe MicroMachine runtime metadata and telemetry presence."""
+
+        root = _clean_blackboard_dir(blackboard_dir, self._blackboard_dir)
+        with self._lock:
+            if self._process is None or self._process.poll() is not None:
+                self._blackboard_dir = root
+            self._refresh_unlocked()
+            return self._snapshot_unlocked()
+
+    def _read_output(self, process: subprocess.Popen[str]) -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            clean = _redact_sensitive_text(
+                line.strip(),
+                normalize_whitespace=True,
+            )
+            if not clean:
+                continue
+            with self._lock:
+                if self._process is not process:
+                    continue
+                self._last_line = clean
+                if self._status == "starting":
+                    self._status = "running"
+                if "MicroMachine smoke passed" in clean:
+                    self._status = "passed"
+                elif self._latest_telemetry_frame_unlocked() is not None:
+                    self._status = "connected"
+        process.wait()
+        with self._lock:
+            if self._process is not process:
+                return
+            if process.returncode == 0:
+                self._status = "passed"
+                self._error = ""
+            else:
+                self._status = "failed"
+                self._error = self._last_line or f"process exited {process.returncode}"
+
+    def _refresh_unlocked(self) -> None:
+        process = self._process
+        telemetry_frame = self._latest_telemetry_frame_unlocked()
+        if process is not None and process.poll() is None:
+            if telemetry_frame is not None and self._status in {"starting", "running"}:
+                self._status = "connected"
+            return
+        if process is not None and process.poll() is not None:
+            if process.returncode == 0:
+                self._status = "passed"
+                self._error = ""
+            elif self._status not in {"failed", "passed"}:
+                self._status = "failed"
+                self._error = self._last_line or f"process exited {process.returncode}"
+            return
+
+    def _snapshot_unlocked(self) -> dict[str, object]:
+        process = self._process
+        telemetry_frame = self._latest_telemetry_frame_unlocked()
+        return {
+            "enabled": True,
+            "mode": COMMAND_MODE_MICROMACHINE,
+            "status": self._status,
+            "pid": process.pid if process is not None and process.poll() is None else None,
+            "blackboard_dir": self._blackboard_dir,
+            "script_path": self._script_path,
+            "last_line": self._last_line,
+            "error": self._error,
+            "telemetry_present": telemetry_frame is not None,
+            "telemetry_frame": telemetry_frame,
+        }
+
+    def _latest_telemetry_frame_unlocked(self) -> int | None:
+        path = os.path.join(self._blackboard_dir, "latest_telemetry.json")
+        root_real = os.path.realpath(self._blackboard_dir)
+        path_real = os.path.realpath(path)
+        if not path_real.startswith(root_real + os.sep) or not os.path.isfile(path_real):
+            return None
+        try:
+            with open(path_real, encoding="utf-8") as handle:
+                document = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(document, Mapping):
+            return None
+        if document.get("protocol_version") != "voi-mm-bridge/v1":
+            return None
+        process = self._process
+        if process is not None and process.poll() is None and self._launch_wall_time:
+            try:
+                if os.path.getmtime(path_real) + 1.0 < self._launch_wall_time:
+                    return None
+            except OSError:
+                return None
+        frame = document.get("frame")
+        return frame if type(frame) is int else None
 
 
 class SessionLoopBridge:
@@ -1635,8 +1957,6 @@ class SessionLoopBridge:
         current_frame: int | None = None,
         update_id: str | None = None,
     ) -> Mapping[str, object]:
-        if not bool(self.llm_settings_snapshot().get("configured")):
-            raise MissingLLMDependencyError(LLM_REQUIRED_COMMAND_ERROR)
         if not isinstance(text, str):
             raise TypeError("MicroMachine command text must be a string.")
         cleaned = text.strip()
@@ -2119,11 +2439,12 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     body { background: Canvas; color: CanvasText; }
     .space-background, .space-background::before, .space-background::after, .star-depth { display: none; }
     .language-switcher button, .connection-pill, #command-panel, #state-panel,
-    .metric-card, .collapsible-panel, .message, #log, #command-form {
+    .metric-card, .collapsible-panel, .message, #log, #command-form,
+    .runtime-mode-panel, .mode-option {
       forced-color-adjust: auto; background: Canvas; color: CanvasText;
       border-color: CanvasText; box-shadow: none; backdrop-filter: none;
     }
-    #send-button, #voice-button, #llm-panel button {
+    #send-button, #voice-button, #llm-panel button, .runtime-actions button {
       background: ButtonFace; color: ButtonText; border: 1px solid ButtonText;
     }
   }
@@ -2182,6 +2503,44 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .quick-commands button {
     border: 1px solid rgba(77, 238, 234, 0.3); background: rgba(255, 255, 255, 0.08); color: var(--ink);
     border-radius: 999px; padding: 8px 10px; font-weight: 800; cursor: pointer;
+  }
+  .runtime-mode-panel {
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+    background: rgba(2, 6, 23, 0.42);
+  }
+  .runtime-mode-title {
+    display: flex; justify-content: space-between; gap: 10px; margin: 0 0 10px;
+    color: var(--muted); font-size: 0.78rem; font-weight: 900;
+  }
+  #runtime-mode-summary {
+    color: var(--accent); overflow-wrap: anywhere;
+  }
+  .mode-options {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+  }
+  .mode-option {
+    display: flex; gap: 10px; align-items: flex-start; padding: 11px 12px;
+    border: 1px solid var(--line); border-radius: 16px;
+    background: rgba(255, 255, 255, 0.07); cursor: pointer;
+  }
+  .mode-option input { margin-top: 3px; accent-color: var(--accent); }
+  .mode-label { display: block; color: var(--ink); font-weight: 900; font-size: 0.85rem; }
+  .mode-description { display: block; margin-top: 3px; color: var(--muted); font-size: 0.76rem; line-height: 1.35; }
+  .legacy-mode-warning {
+    display: none; margin: 9px 0 0; padding: 9px 10px;
+    border: 1px solid rgba(245, 158, 11, 0.34); border-radius: 13px;
+    background: rgba(245, 158, 11, 0.12); color: #facc15;
+    font-size: 0.78rem; font-weight: 800; line-height: 1.45;
+  }
+  #live-status {
+    margin: 10px 0 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 14px;
+    background: rgba(255, 255, 255, 0.08); color: var(--ink); font-size: 0.8rem; line-height: 1.45;
+  }
+  #live-status a { color: var(--accent); font-weight: 900; }
+  .runtime-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .runtime-actions button {
+    flex: 1; margin-top: 0 !important; padding: 9px 10px !important;
+    background: rgba(255, 255, 255, 0.9) !important; color: #071225 !important;
   }
   #state-panel {
     min-width: 0; min-height: 0; max-height: calc(100vh - 150px); overflow-y: auto;
@@ -2276,16 +2635,6 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .llm-status-setting .llm-status-label { background: rgba(245, 158, 11, 0.22); color: #fbbf24; }
   .llm-status-success .llm-status-label { background: rgba(34, 197, 94, 0.18); color: #4ade80; }
   .llm-status-failed .llm-status-label { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
-  #live-status {
-    margin: 10px 0 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 14px;
-    background: rgba(255, 255, 255, 0.08); color: var(--ink); font-size: 0.8rem; line-height: 1.45;
-  }
-  #live-status a { color: var(--accent); font-weight: 900; }
-  .live-actions { display: flex; gap: 8px; margin-top: 8px; }
-  .live-actions button {
-    flex: 1; margin-top: 0 !important; padding: 9px 10px !important;
-    background: rgba(255, 255, 255, 0.9) !important; color: #071225 !important;
-  }
   #micromachine-panel label {
     display: block; margin: 8px 0 4px; color: var(--muted);
     font-size: 0.78rem; font-weight: 900;
@@ -2494,7 +2843,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .space-background::after { inset: 36% -38% -12% 8%; width: 128vw; height: 128vw; opacity: 0.36; }
     .star-depth-far { opacity: 0.24; }
     .star-depth-near { opacity: 0.28; }
-    .dashboard-grid { grid-template-columns: 1fr; }
+    .dashboard-grid, .mode-options { grid-template-columns: 1fr; }
     .micro-scope-grid, .micro-intervention-grid { grid-template-columns: 1fr; }
     #command-form { flex-direction: column; }
     .message { max-width: 94%; }
@@ -2534,6 +2883,35 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         <button type="button" data-command="건물 위치 지정 가능?" data-i18n="quickPosition">위치 질문</button>
       </div>
     </div>
+    <section class="runtime-mode-panel" aria-label="Command runtime mode">
+      <p class="runtime-mode-title">
+        <span data-i18n="runtimeModeTitle">명령 라우팅 모드</span>
+        <span id="runtime-mode-summary" data-i18n="runtimeModeMicroSummary">MicroMachine DSL blackboard가 기본입니다.</span>
+      </p>
+      <div class="mode-options">
+        <label class="mode-option">
+          <input type="radio" name="command-mode" value="micromachine" checked>
+          <span>
+            <span class="mode-label" data-i18n="microModeLabel">MicroMachine policy cockpit</span>
+            <span class="mode-description" data-i18n="microModeDescription">채팅/음성이 deep DSL로 컴파일되어 MicroMachine blackboard에 publish됩니다. LLM 키 없이 keyword provider도 동작합니다.</span>
+          </span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="command-mode" value="legacy_commander">
+          <span>
+            <span class="mode-label" data-i18n="legacyModeLabel">Legacy python-sc2 commander</span>
+            <span class="mode-description" data-i18n="legacyModeDescription">이전 데모 호환 모드입니다. MicroMachine이 아니며, LLM 키가 있어야 /api/command로 전송됩니다.</span>
+          </span>
+        </label>
+      </div>
+      <p id="legacy-mode-warning" class="legacy-mode-warning" data-i18n="legacyModeWarning">Legacy mode는 MicroMachine이 아닙니다. SC2 실행/명령이 python-sc2 demo 경로로 가므로 MicroMachine QA와 혼동하지 마세요.</p>
+      <div id="live-status" data-i18n="runtimeIdleMicro">MicroMachine 런타임 대기 중입니다. 선택 모드 실행을 누르면 SC2/MicroMachine smoke session을 시작합니다.</div>
+      <div class="runtime-actions">
+        <button id="runtime-start-button" type="button" data-i18n="runtimeStartButton">선택 모드 실행</button>
+        <button id="live-open-button" type="button" data-i18n="runtimeOpenButton" disabled>Live GUI 열기</button>
+        <button id="runtime-refresh-button" type="button" data-i18n="runtimeRefreshButton">런타임 상태 확인</button>
+      </div>
+    </section>
     <div id="log" aria-live="polite" role="log"></div>
     <form id="command-form">
       <input id="command-input" type="text" autocomplete="off" autofocus
@@ -2594,20 +2972,15 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         <span id="llm-status-label" class="llm-status-label">상태 확인</span>
         <span id="llm-status-message" class="llm-status-message">LLM 키 상태를 확인 중입니다.</span>
       </p>
-      <div id="live-status" data-i18n="liveIdle">StarCraft II 자동 연결 대기 중입니다.</div>
-      <div class="live-actions">
-        <button id="live-open-button" type="button" data-i18n="liveOpenButton" disabled>Live GUI 열기</button>
-        <button id="live-refresh-button" type="button" data-i18n="liveRefreshButton">연결 상태 확인</button>
-      </div>
     </details>
-    <details id="micromachine-panel" class="collapsible-panel" open>
-      <summary><span data-i18n="microMachineTitle">MicroMachine live text injection</span></summary>
-      <p class="hint" data-i18n="microMachineHint">여기에 전략 의도를 입력하면 LLM/DSL modulation으로 컴파일되어 MicroMachine blackboard에 안전한 정책 bias로 전달됩니다. SC2 화면/키보드 자동화나 raw unit 명령은 쓰지 않습니다.</p>
+    <details id="micromachine-panel" class="collapsible-panel">
+      <summary><span data-i18n="microMachineTitle">MicroMachine runtime / DSL evidence</span></summary>
+      <p class="hint" data-i18n="microMachineHint">기본 입력은 왼쪽 커맨더 채팅/음성입니다. 이 패널은 그 입력이 publish될 blackboard, semantic scope, telemetry 소비 증거를 확인하는 runtime/debug control입니다. SC2 화면/키보드 자동화나 raw unit 명령은 쓰지 않습니다.</p>
       <form id="micromachine-form">
         <label for="micromachine-blackboard-dir" data-i18n="microMachineBlackboardLabel">Blackboard directory</label>
         <input id="micromachine-blackboard-dir" type="text" value="__MICROMACHINE_BLACKBOARD_DIR__">
-        <label for="micromachine-command-input" data-i18n="microMachineCommandLabel">MicroMachine에 주입할 텍스트 의도</label>
-        <input id="micromachine-command-input" type="text" autocomplete="off" placeholder="예: 탱크 중심으로 안전하게 버티고, 무리한 진출은 막아">
+        <label for="micromachine-command-input" data-i18n="microMachineCommandLabel">고급 직접 publish 테스트 텍스트</label>
+        <input id="micromachine-command-input" type="text" autocomplete="off" placeholder="보통은 왼쪽 커맨더 채팅에 입력하세요. 예: 탱크 중심으로 안전하게 버텨">
         <div class="micro-scope-grid" aria-label="MicroMachine semantic scope controls">
           <div>
             <label for="micromachine-army-group" data-i18n="microMachineArmyGroup">Semantic army group</label>
@@ -2652,12 +3025,12 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
           </div>
           <div>
             <label for="micromachine-ttl-seconds" data-i18n="microMachineTtl">TTL seconds</label>
-            <input id="micromachine-ttl-seconds" type="number" min="1" max="900" step="1" placeholder="180">
+            <input id="micromachine-ttl-seconds" type="number" min="1" max="900" step="1" value="600" placeholder="600">
           </div>
         </div>
-        <button type="submit" data-i18n="microMachineSend">MicroMachine live modulation 전송</button>
+        <button type="submit" data-i18n="microMachineSend">고급 직접 publish 전송</button>
       </form>
-      <div id="micromachine-status" aria-live="polite">MicroMachine live text injection 대기 중입니다.</div>
+      <div id="micromachine-status" aria-live="polite">왼쪽 커맨더 채팅 또는 고급 직접 publish 입력을 기다리는 중입니다.</div>
       <section id="micromachine-intervention-dashboard" aria-live="polite">
         <div class="micro-intervention-header">
           <strong data-i18n="microMachineDashboardTitle">DSL intervention dashboard</strong>
@@ -2705,6 +3078,10 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
             <dd id="micromachine-target-priority">-</dd>
           </div>
           <div class="wide-card">
+            <dt data-i18n="microMachineAttackGate">Attack gate</dt>
+            <dd id="micromachine-attack-gate">-</dd>
+          </div>
+          <div class="wide-card">
             <dt data-i18n="microMachineTacticalEvidence">Tactical effect evidence</dt>
             <dd id="micromachine-tactical-evidence">-</dd>
           </div>
@@ -2742,6 +3119,7 @@ var MAX_CHAT_EVENTS = 36;
 var COMPACT_AFTER_EVENTS = 28;
 var COMPACT_KEEP_EVENTS = 24;
 var MAX_MESSAGE_PREVIEW_CHARS = 280;
+var MICROMACHINE_CHAT_TIMEOUT_MS = 12000;
 var trimmedChatEvents = 0;
 var recentEvents = [];
 var archivedChatEvents = [];
@@ -2763,6 +3141,9 @@ var briefingAdviceToggleEnabled = false;
 var recognition = null;
 var isRecording = false;
 var liveGuiUrl = "";
+var COMMAND_MODE_MICROMACHINE = "__COMMAND_MODE_MICROMACHINE__";
+var COMMAND_MODE_LEGACY_COMMANDER = "__COMMAND_MODE_LEGACY_COMMANDER__";
+var activeCommandMode = COMMAND_MODE_MICROMACHINE;
 var LLM_MODELS = {
   openai: [
     { value: "gpt-5.5", label: "GPT-5.5" },
@@ -2820,6 +3201,26 @@ var I18N = {
     connectionReady: "SC2 연결됨",
     chatTitle: "커맨더 채팅",
     chatSubtitle: "명령, 질문, 상태 확인을 한 창에서 처리합니다.",
+    runtimeModeTitle: "명령 라우팅 모드",
+    runtimeModeMicroSummary: "MicroMachine DSL blackboard가 기본입니다.",
+    runtimeModeLegacySummary: "Legacy python-sc2 commander compatibility mode입니다.",
+    microModeLabel: "MicroMachine policy cockpit",
+    microModeDescription: "채팅/음성이 deep DSL로 컴파일되어 MicroMachine blackboard에 publish됩니다. LLM 키 없이 keyword provider도 동작합니다.",
+    legacyModeLabel: "Legacy python-sc2 commander",
+    legacyModeDescription: "이전 데모 호환 모드입니다. MicroMachine이 아니며, LLM 키가 있어야 /api/command로 전송됩니다.",
+    legacyModeWarning: "Legacy mode는 MicroMachine이 아닙니다. SC2 실행/명령이 python-sc2 demo 경로로 가므로 MicroMachine QA와 혼동하지 마세요.",
+    runtimeIdleMicro: "MicroMachine 런타임 대기 중입니다. 선택 모드 실행을 누르면 SC2/MicroMachine smoke session을 시작합니다.",
+    runtimeIdleLegacy: "Legacy python-sc2 런타임 대기 중입니다. 키 설정 후 선택 모드 실행을 누르면 legacy demo를 시작합니다.",
+    runtimeStartButton: "선택 모드 실행",
+    runtimeOpenButton: "Live GUI 열기",
+    runtimeRefreshButton: "런타임 상태 확인",
+    runtimeStarting: "선택한 런타임 시작 중",
+    runtimeRunning: "선택한 런타임 실행 중",
+    runtimeConnected: "MicroMachine telemetry 연결됨",
+    runtimePassed: "MicroMachine smoke 통과",
+    runtimeReady: "Legacy live GUI 준비됨",
+    runtimeBlocked: "런타임 시작 보류",
+    runtimeFailed: "런타임 시작 실패",
     quickStatus: "상태확인",
     quickScout: "정찰보내",
     quickScv: "SCV 생산",
@@ -2887,24 +3288,25 @@ var I18N = {
     llmChecking: "LLM 키 상태를 확인 중입니다.",
     llmCheckingFailed: "LLM 키 상태 확인 실패",
     llmSaving: "LLM 키 설정 중...",
-    liveStarting: "StarCraft II 연결 시작 중...",
-    liveReady: "StarCraft II 연결 준비됨",
-    liveFailed: "StarCraft II 자동 연결 실패",
-    liveIdle: "StarCraft II 자동 연결 대기 중입니다.",
+    liveStarting: "선택한 런타임 시작 중...",
+    liveReady: "선택한 런타임 준비됨",
+    liveFailed: "런타임 시작 실패",
+    liveIdle: "선택한 런타임 대기 중입니다.",
+    legacyLiveDisabled: "선택한 런타임이 아직 시작되지 않았습니다.",
     liveOpenButton: "Live GUI 열기",
-    liveRefreshButton: "연결 상태 확인",
-    microMachineTitle: "MicroMachine live text injection",
-    microMachineHint: "여기에 전략 의도를 입력하면 LLM/DSL modulation으로 컴파일되어 MicroMachine blackboard에 안전한 정책 bias로 전달됩니다. SC2 화면/키보드 자동화나 raw unit 명령은 쓰지 않습니다.",
+    liveRefreshButton: "런타임 상태 확인",
+    microMachineTitle: "MicroMachine runtime / DSL evidence",
+    microMachineHint: "기본 입력은 왼쪽 커맨더 채팅/음성입니다. 이 패널은 그 입력이 publish될 blackboard, semantic scope, telemetry 소비 증거를 확인하는 runtime/debug control입니다. SC2 화면/키보드 자동화나 raw unit 명령은 쓰지 않습니다.",
     microMachineBlackboardLabel: "Blackboard directory",
-    microMachineCommandLabel: "MicroMachine에 주입할 텍스트 의도",
+    microMachineCommandLabel: "고급 직접 publish 테스트 텍스트",
     microMachineArmyGroup: "Semantic army group",
     microMachineLocationIntent: "Location intent",
     microMachineUnitClasses: "Unit classes",
     microMachineSafetyMargin: "Safety margin",
     microMachineDuration: "Scope duration seconds",
     microMachineTtl: "TTL seconds",
-    microMachineSend: "MicroMachine live modulation 전송",
-    microMachineSending: "MicroMachine live modulation 전송 중...",
+    microMachineSend: "고급 직접 publish 전송",
+    microMachineSending: "MicroMachine DSL publish 전송 중...",
     microMachinePublished: "게시됨",
     microMachineConsumed: "소비 확인",
     microMachinePending: "텔레메트리 대기",
@@ -2919,6 +3321,8 @@ var I18N = {
     microMachineScope: "Semantic scope",
     microMachineConsumedAxes: "Manager별 consumed axes",
     microMachineTargetPriority: "Target priority",
+    microMachineAttackGate: "공격 게이트",
+    microMachineTacticalEvidence: "전술 효과 증거",
     microMachineRefusalReason: "거부 / 추가 확인",
     microMachineTacticalLogs: "최근 MicroMachine 전술 로그",
     microMachineRawEvidence: "Raw modulation / telemetry 증거",
@@ -2926,16 +3330,23 @@ var I18N = {
     microMachineClarification: "추가 확인 필요",
     microMachineFailed: "게시 실패",
     llmReady: "LLM 키 설정됨",
-    llmMissing: "LLM 필수: API 키를 먼저 설정해야 명령을 보낼 수 있습니다.",
+    llmMissing: "LLM 필수: Legacy commander 명령은 API 키를 먼저 설정해야 보낼 수 있습니다.",
+    llmOptionalMicro: "MicroMachine mode: LLM 키 없이 keyword DSL provider로 publish 가능합니다. 실제 LLM provider는 키 설정 후 사용됩니다.",
     llmEnterKey: "API 키를 입력하세요.",
     llmSaveFailed: "LLM 키 설정 요청에 실패했습니다.",
     userLabel: "사용자",
     commanderLabel: "커맨더",
+    commandPlaceholderMicro: "MicroMachine 의도를 입력하세요. 예: enemy natural 압박 / 탱크는 수비적으로 / worker line harass",
+    commandPlaceholderLegacy: "Legacy python-sc2 명령. 예: 보급고 지어 / 정찰보내",
     commandPlaceholderReady: "대화하듯 입력하세요. 예: 보급고 지어 / 정찰보내",
     commandPlaceholderLocked: "LLM 키 설정 후 명령 입력이 활성화됩니다.",
     commandRejected: "LLM 키가 설정되지 않아 명령을 보내지 않았습니다.",
+    microMachineChatPublished: "MicroMachine DSL modulation을 blackboard에 publish했습니다.",
+    microMachineChatQueued: "MicroMachine telemetry 소비 대기 중입니다.",
+    microMachineChatRefused: "MicroMachine DSL 요청이 거부되거나 추가 확인이 필요합니다.",
+    microMachineChatFailed: "MicroMachine DSL publish 실패",
     saveLlm: "로컬 키 설정",
-    startupGuide: "🚀 시작 메뉴얼\\n1. 오른쪽 LLM 설정에서 모델사를 고르고 모델을 선택하세요.\\n2. API 키를 붙여넣고 로컬 키 설정을 누르세요. 키는 이 로컬 프로세스 메모리에만 저장됩니다.\\n3. 설정 성공 후 StarCraft II 자동 연결이 시작되고, 준비되면 이 탭이 실제 Live GUI로 전환됩니다.\\n4. 먼저 상태 알려줘 / 일꾼 계속 찍어 / 보급고 지어 처럼 입력해 보세요.\\n🎙️ 음성 버튼을 켜면 말한 내용이 채팅 입력으로 들어갑니다."
+    startupGuide: "🚀 시작 메뉴얼\\n1. 기본 모드는 MicroMachine policy cockpit입니다. 채팅/음성 입력은 deep DSL로 컴파일되어 blackboard에 publish됩니다.\\n2. 우측 MicroMachine 패널에서 blackboard directory와 semantic scope를 확인하거나 조정하세요.\\n3. LLM 키가 없어도 keyword provider로 smoke QA가 가능하고, 키를 설정하면 LLM provider를 같은 DSL 경로에 붙일 수 있습니다.\\n4. Legacy python-sc2 commander는 호환 모드로 직접 선택한 경우에만 /api/command를 사용합니다.\\n🎙️ 음성 버튼을 켜면 말한 내용이 현재 선택된 모드로 전송됩니다."
   },
   en: {
     eyebrow: "Live RTS Command Center",
@@ -2945,6 +3356,26 @@ var I18N = {
     connectionReady: "SC2 connected",
     chatTitle: "Commander Chat",
     chatSubtitle: "Orders, questions, and status reports in one cockpit.",
+    runtimeModeTitle: "Command routing mode",
+    runtimeModeMicroSummary: "MicroMachine DSL blackboard is the default.",
+    runtimeModeLegacySummary: "Legacy python-sc2 commander compatibility mode.",
+    microModeLabel: "MicroMachine policy cockpit",
+    microModeDescription: "Chat/voice is compiled into deep DSL and published to the MicroMachine blackboard. The keyword provider works without an LLM key.",
+    legacyModeLabel: "Legacy python-sc2 commander",
+    legacyModeDescription: "Compatibility mode for the older demo path. It is not MicroMachine and requires an LLM key before posting to /api/command.",
+    legacyModeWarning: "Legacy mode is not MicroMachine. SC2 launch/commands go through the python-sc2 demo path, so do not use it as MicroMachine QA evidence.",
+    runtimeIdleMicro: "MicroMachine runtime is idle. Click Launch selected runtime to start the SC2/MicroMachine smoke session.",
+    runtimeIdleLegacy: "Legacy python-sc2 runtime is idle. Configure a key, then click Launch selected runtime to start the legacy demo.",
+    runtimeStartButton: "Launch selected runtime",
+    runtimeOpenButton: "Open Live GUI",
+    runtimeRefreshButton: "Check runtime status",
+    runtimeStarting: "Starting selected runtime",
+    runtimeRunning: "Selected runtime is running",
+    runtimeConnected: "MicroMachine telemetry connected",
+    runtimePassed: "MicroMachine smoke passed",
+    runtimeReady: "Legacy live GUI ready",
+    runtimeBlocked: "Runtime start blocked",
+    runtimeFailed: "Runtime start failed",
     quickStatus: "Status",
     quickScout: "Scout",
     quickScv: "Train SCV",
@@ -3012,24 +3443,25 @@ var I18N = {
     llmChecking: "Checking LLM key status.",
     llmCheckingFailed: "Failed to check LLM key status",
     llmSaving: "Configuring LLM key...",
-    liveStarting: "Starting StarCraft II connection...",
-    liveReady: "StarCraft II connection ready",
-    liveFailed: "Failed to auto-connect StarCraft II",
-    liveIdle: "Waiting to auto-connect StarCraft II.",
+    liveStarting: "Starting selected runtime...",
+    liveReady: "Selected runtime ready",
+    liveFailed: "Runtime start failed",
+    liveIdle: "Selected runtime is idle.",
+    legacyLiveDisabled: "Selected runtime has not started yet.",
     liveOpenButton: "Open Live GUI",
     liveRefreshButton: "Check Status",
-    microMachineTitle: "MicroMachine live text injection",
-    microMachineHint: "Type a strategic intent here to compile it into LLM/DSL modulation and publish safe policy bias to the MicroMachine blackboard. It does not automate the SC2 screen/keyboard or send raw unit commands.",
+    microMachineTitle: "MicroMachine runtime / DSL evidence",
+    microMachineHint: "Primary input is the Commander Chat/voice box on the left. This panel controls the blackboard, semantic scope, and telemetry evidence used by that route. It does not automate the SC2 screen/keyboard or send raw unit commands.",
     microMachineBlackboardLabel: "Blackboard directory",
-    microMachineCommandLabel: "Text intent to inject into MicroMachine",
+    microMachineCommandLabel: "Advanced direct publish test text",
     microMachineArmyGroup: "Semantic army group",
     microMachineLocationIntent: "Location intent",
     microMachineUnitClasses: "Unit classes",
     microMachineSafetyMargin: "Safety margin",
     microMachineDuration: "Scope duration seconds",
     microMachineTtl: "TTL seconds",
-    microMachineSend: "Send MicroMachine live modulation",
-    microMachineSending: "Sending MicroMachine live modulation...",
+    microMachineSend: "Send advanced direct publish",
+    microMachineSending: "Sending MicroMachine DSL publish...",
     microMachinePublished: "Published",
     microMachineConsumed: "Consumed",
     microMachinePending: "Waiting for telemetry",
@@ -3044,6 +3476,7 @@ var I18N = {
     microMachineScope: "Semantic scope",
     microMachineConsumedAxes: "Consumed axes by manager",
     microMachineTargetPriority: "Target priority",
+    microMachineAttackGate: "Attack gate",
     microMachineTacticalEvidence: "Tactical effect evidence",
     microMachineRefusalReason: "Refusal / clarification",
     microMachineTacticalLogs: "Recent MicroMachine tactical logs",
@@ -3052,16 +3485,23 @@ var I18N = {
     microMachineClarification: "Clarification needed",
     microMachineFailed: "Publish failed",
     llmReady: "LLM key configured",
-    llmMissing: "LLM required: configure an API key before sending commands.",
+    llmMissing: "LLM required: legacy commander commands need an API key first.",
+    llmOptionalMicro: "MicroMachine mode: keyword DSL publishing works without an LLM key. Configure a key to attach a real LLM provider to the same DSL path.",
     llmEnterKey: "Enter an API key.",
     llmSaveFailed: "Failed to configure the LLM key.",
     userLabel: "User",
     commanderLabel: "Commander",
+    commandPlaceholderMicro: "Enter MicroMachine intent. Example: pressure enemy natural / defensive tanks / worker-line harass",
+    commandPlaceholderLegacy: "Legacy python-sc2 command. Example: build a supply depot / send scout",
     commandPlaceholderReady: "Type naturally. Example: build a supply depot / send scout",
     commandPlaceholderLocked: "Command input unlocks after LLM key setup.",
     commandRejected: "Command not sent because the LLM key is not configured.",
+    microMachineChatPublished: "Published MicroMachine DSL modulation to the blackboard.",
+    microMachineChatQueued: "Waiting for MicroMachine telemetry consumption.",
+    microMachineChatRefused: "MicroMachine DSL request was refused or needs clarification.",
+    microMachineChatFailed: "MicroMachine DSL publish failed",
     saveLlm: "Save Local Key",
-    startupGuide: "🚀 Startup guide\\n1. Choose a provider and model in LLM Settings.\\n2. Paste your API key and press Save Local Key. The key stays only in this local process memory.\\n3. After success, StarCraft II auto-connect starts and this tab switches to the real Live GUI when ready.\\n4. Try: status, keep training SCVs, build a supply depot.\\n🎙️ Turn on voice to place recognized speech into the chat input."
+    startupGuide: "🚀 Startup guide\\n1. The default mode is the MicroMachine policy cockpit. Chat/voice input is compiled into deep DSL and published to the blackboard.\\n2. Use the MicroMachine panel to confirm or adjust the blackboard directory and semantic scope.\\n3. Keyword-provider smoke QA works without an LLM key; setting a key attaches an LLM provider to the same DSL route.\\n4. Legacy python-sc2 commander uses /api/command only when explicitly selected.\\n🎙️ Voice sends recognized speech through the currently selected mode."
   },
   zh: {
     eyebrow: "实时 RTS 指挥中心",
@@ -3071,6 +3511,26 @@ var I18N = {
     connectionReady: "SC2 已连接",
     chatTitle: "指挥官聊天",
     chatSubtitle: "命令、问题和状态报告集中在一个驾驶舱。",
+    runtimeModeTitle: "命令路由模式",
+    runtimeModeMicroSummary: "默认使用 MicroMachine DSL blackboard。",
+    runtimeModeLegacySummary: "Legacy python-sc2 commander 兼容模式。",
+    microModeLabel: "MicroMachine policy cockpit",
+    microModeDescription: "聊天/语音会编译成 deep DSL 并发布到 MicroMachine blackboard。没有 LLM key 时 keyword provider 也可运行。",
+    legacyModeLabel: "Legacy python-sc2 commander",
+    legacyModeDescription: "旧 demo 路径的兼容模式。它不是 MicroMachine，并且需要 LLM key 才会发送到 /api/command。",
+    legacyModeWarning: "Legacy mode 不是 MicroMachine。SC2 启动/命令会走 python-sc2 demo 路径，不要把它当作 MicroMachine QA 证据。",
+    runtimeIdleMicro: "MicroMachine runtime 正在等待。点击启动所选 runtime 会启动 SC2/MicroMachine smoke session。",
+    runtimeIdleLegacy: "Legacy python-sc2 runtime 正在等待。先设置 key，再点击启动所选 runtime。",
+    runtimeStartButton: "启动所选 runtime",
+    runtimeOpenButton: "打开 Live GUI",
+    runtimeRefreshButton: "检查 runtime 状态",
+    runtimeStarting: "正在启动所选 runtime",
+    runtimeRunning: "所选 runtime 正在运行",
+    runtimeConnected: "MicroMachine telemetry 已连接",
+    runtimePassed: "MicroMachine smoke 已通过",
+    runtimeReady: "Legacy live GUI 已就绪",
+    runtimeBlocked: "runtime 启动被阻止",
+    runtimeFailed: "runtime 启动失败",
     quickStatus: "状态",
     quickScout: "侦察",
     quickScv: "生产 SCV",
@@ -3138,24 +3598,25 @@ var I18N = {
     llmChecking: "正在检查 LLM key 状态。",
     llmCheckingFailed: "LLM key 状态检查失败",
     llmSaving: "正在设置 LLM key...",
-    liveStarting: "正在启动 StarCraft II 连接...",
-    liveReady: "StarCraft II 连接已就绪",
-    liveFailed: "StarCraft II 自动连接失败",
-    liveIdle: "正在等待自动连接 StarCraft II。",
+    liveStarting: "正在启动所选 runtime...",
+    liveReady: "所选 runtime 已就绪",
+    liveFailed: "runtime 启动失败",
+    liveIdle: "所选 runtime 正在等待。",
+    legacyLiveDisabled: "所选 runtime 尚未启动。",
     liveOpenButton: "打开 Live GUI",
     liveRefreshButton: "检查状态",
-    microMachineTitle: "MicroMachine live text injection",
-    microMachineHint: "在这里输入战略意图，系统会编译为 LLM/DSL modulation，并把安全的 policy bias 写入 MicroMachine blackboard。不会自动操作 SC2 画面/键盘，也不会发送 raw unit 命令。",
+    microMachineTitle: "MicroMachine runtime / DSL evidence",
+    microMachineHint: "默认输入是左侧 Commander Chat/语音框。此面板用于控制该路径使用的 blackboard、semantic scope 与 telemetry 证据。不会自动操作 SC2 画面/键盘，也不会发送 raw unit 命令。",
     microMachineBlackboardLabel: "Blackboard directory",
-    microMachineCommandLabel: "要注入 MicroMachine 的文本意图",
+    microMachineCommandLabel: "高级直接 publish 测试文本",
     microMachineArmyGroup: "Semantic army group",
     microMachineLocationIntent: "Location intent",
     microMachineUnitClasses: "Unit classes",
     microMachineSafetyMargin: "Safety margin",
     microMachineDuration: "Scope duration seconds",
     microMachineTtl: "TTL seconds",
-    microMachineSend: "发送 MicroMachine live modulation",
-    microMachineSending: "正在发送 MicroMachine live modulation...",
+    microMachineSend: "发送高级直接 publish",
+    microMachineSending: "正在发送 MicroMachine DSL publish...",
     microMachinePublished: "已发布",
     microMachineConsumed: "已消费",
     microMachinePending: "等待 telemetry",
@@ -3170,6 +3631,7 @@ var I18N = {
     microMachineScope: "Semantic scope",
     microMachineConsumedAxes: "Consumed axes by manager",
     microMachineTargetPriority: "Target priority",
+    microMachineAttackGate: "Attack gate",
     microMachineTacticalEvidence: "Tactical effect evidence",
     microMachineRefusalReason: "Refusal / clarification",
     microMachineTacticalLogs: "Recent MicroMachine tactical logs",
@@ -3178,16 +3640,23 @@ var I18N = {
     microMachineClarification: "需要进一步确认",
     microMachineFailed: "发布失败",
     llmReady: "LLM key 已设置",
-    llmMissing: "必须先设置 LLM API key 才能发送命令。",
+    llmMissing: "Legacy commander 命令必须先设置 LLM API key。",
+    llmOptionalMicro: "MicroMachine mode：没有 LLM key 也可以用 keyword DSL provider 发布。设置 key 后可把真实 LLM provider 接到同一路径。",
     llmEnterKey: "请输入 API key。",
     llmSaveFailed: "LLM key 设置请求失败。",
     userLabel: "用户",
     commanderLabel: "指挥官",
+    commandPlaceholderMicro: "输入 MicroMachine 意图。例如：pressure enemy natural / defensive tanks / worker-line harass",
+    commandPlaceholderLegacy: "Legacy python-sc2 命令。例如：建造补给站 / 派出侦察",
     commandPlaceholderReady: "自然输入命令。例如：建造补给站 / 派出侦察",
     commandPlaceholderLocked: "设置 LLM key 后才能输入命令。",
     commandRejected: "LLM key 未设置，命令未发送。",
+    microMachineChatPublished: "已把 MicroMachine DSL modulation 发布到 blackboard。",
+    microMachineChatQueued: "正在等待 MicroMachine telemetry 消费。",
+    microMachineChatRefused: "MicroMachine DSL 请求被拒绝或需要进一步确认。",
+    microMachineChatFailed: "MicroMachine DSL 发布失败",
     saveLlm: "保存本地 Key",
-    startupGuide: "🚀 启动指南\\n1. 在 LLM 设置中选择供应商和模型。\\n2. 粘贴 API key，然后点击保存本地 Key。Key 只保存在本地进程内存中。\\n3. 设置成功后会开始自动连接 StarCraft II，准备好后此标签页会切换到真实 Live GUI。\\n4. 可以先输入：查看状态 / 持续生产 SCV / 建造补给站。\\n🎙️ 开启语音后，识别到的话会进入聊天输入框。"
+    startupGuide: "🚀 启动指南\\n1. 默认模式是 MicroMachine policy cockpit。聊天/语音会编译成 deep DSL 并发布到 blackboard。\\n2. 在 MicroMachine 面板确认或调整 blackboard directory 与 semantic scope。\\n3. 没有 LLM key 也能用 keyword provider 做 smoke QA；设置 key 后可接入真实 LLM provider。\\n4. Legacy python-sc2 commander 只有显式选择时才使用 /api/command。\\n🎙️ 语音会通过当前选择的模式发送。"
   }
 };
 
@@ -3195,14 +3664,57 @@ function t(key) {
   return (I18N[currentLang] && I18N[currentLang][key]) || I18N.ko[key] || key;
 }
 
-function setCommandEnabled(enabled) {
+function isMicroMachineCommandMode() {
+  return activeCommandMode === COMMAND_MODE_MICROMACHINE;
+}
+
+function selectedCommandMode() {
+  var selected = document.querySelector("input[name='command-mode']:checked");
+  return selected && selected.value === COMMAND_MODE_LEGACY_COMMANDER
+    ? COMMAND_MODE_LEGACY_COMMANDER
+    : COMMAND_MODE_MICROMACHINE;
+}
+
+function setCommandMode(mode) {
+  activeCommandMode = mode === COMMAND_MODE_LEGACY_COMMANDER
+    ? COMMAND_MODE_LEGACY_COMMANDER
+    : COMMAND_MODE_MICROMACHINE;
+  Array.prototype.forEach.call(document.querySelectorAll("input[name='command-mode']"), function (input) {
+    input.checked = input.value === activeCommandMode;
+  });
+  var summary = document.getElementById("runtime-mode-summary");
+  if (summary) {
+    var key = isMicroMachineCommandMode() ? "runtimeModeMicroSummary" : "runtimeModeLegacySummary";
+    summary.setAttribute("data-i18n", key);
+    summary.textContent = t(key);
+  }
+  var warning = document.getElementById("legacy-mode-warning");
+  if (warning) {
+    warning.style.display = isMicroMachineCommandMode() ? "none" : "block";
+  }
+  if (!llmConfigured) {
+    setLlmStatus(
+      "missing",
+      "llmRequiredLabel",
+      isMicroMachineCommandMode() ? t("llmOptionalMicro") : t("llmMissing")
+    );
+  }
+  setCommandEnabled(llmConfigured);
+}
+
+function setCommandEnabled(legacyEnabled) {
   var input = document.getElementById("command-input");
   var button = document.getElementById("send-button");
   var voiceButton = document.getElementById("voice-button");
+  var enabled = isMicroMachineCommandMode() || !!legacyEnabled;
   input.disabled = !enabled;
   button.disabled = !enabled;
   voiceButton.disabled = !enabled;
-  input.placeholder = enabled ? t("commandPlaceholderReady") : t("commandPlaceholderLocked");
+  if (isMicroMachineCommandMode()) {
+    input.placeholder = t("commandPlaceholderMicro");
+  } else {
+    input.placeholder = enabled ? t("commandPlaceholderLegacy") : t("commandPlaceholderLocked");
+  }
 }
 
 function applyLanguage(lang) {
@@ -3214,7 +3726,7 @@ function applyLanguage(lang) {
   Array.prototype.forEach.call(document.querySelectorAll("[data-lang-button]"), function (button) {
     button.classList.toggle("active", button.getAttribute("data-lang-button") === currentLang);
   });
-  setCommandEnabled(llmConfigured);
+  setCommandMode(activeCommandMode);
   renderStartupGuide();
   refreshExpandableLabels();
   refreshPendingLabels();
@@ -3251,7 +3763,7 @@ function appendCompactText(parent, text, className) {
 
 function readableCommanderNarration(text) {
   var normalized = text === undefined || text === null ? "" : String(text);
-  normalized = normalized.replace(/^\[(executed|partially_executed|blocked|clarification|read_only)\]\s*/i, "");
+  normalized = normalized.replace(/^\\[(executed|partially_executed|blocked|clarification|read_only)\\]\\s*/i, "");
   if (normalized.indexOf("no_safe_placement") >= 0) {
     return "건설 위치를 찾지 못했습니다.\\n보이는 지형 안에서 지을 수 있는 칸을 찾지 못했어요.\\n다시 말해 주세요: 본진에 보급고 지어 / 본진 앞에 보급고 지어 / 본진 입구에 보급고 지어";
   }
@@ -3262,9 +3774,9 @@ function readableCommanderNarration(text) {
     return "정제소는 가스 간헐천 위에만 지을 수 있습니다.\\n위치를 더 구체적으로 말해 주세요: 본진 가스 / 앞마당 가스";
   }
   return normalized
-    .replace(/명령을 실행하지 못했습니다\. 이유:\s*/g, "")
-    .replace(/실행하지 않았습니다\. 이유:\s*/g, "")
-    .replace(/\. 대안:\s*/g, ".\\n다음 행동: ");
+    .replace(/명령을 실행하지 못했습니다\\. 이유:\\s*/g, "")
+    .replace(/실행하지 않았습니다\\. 이유:\\s*/g, "")
+    .replace(/\\. 대안:\\s*/g, ".\\n다음 행동: ");
 }
 
 function expandedMessageLabel(length) {
@@ -4323,7 +4835,11 @@ function renderLlmSettings(data) {
     );
     return;
   }
-  setLlmStatus("missing", "llmRequiredLabel", t("llmMissing"));
+  setLlmStatus(
+    "missing",
+    "llmRequiredLabel",
+    isMicroMachineCommandMode() ? t("llmOptionalMicro") : t("llmMissing")
+  );
 }
 
 function pollLlmSettings() {
@@ -4409,54 +4925,113 @@ function renderModelSelect(provider, selectedModel) {
   modelSelect.value = models.some(function (model) { return model.value === wanted; }) ? wanted : models[0].value;
 }
 
-function handleLiveStart(status) {
-  if (!status || !status.enabled) { return; }
-  if (status.status === "ready" && status.url) {
-    setLiveStatusLink(t("liveReady"), status.url);
-    window.location.assign(status.url);
+function runtimeStatusQuery() {
+  var mode = selectedCommandMode();
+  var query = "?mode=" + encodeURIComponent(mode);
+  if (mode === COMMAND_MODE_MICROMACHINE) {
+    query += "&blackboard_dir=" + encodeURIComponent(optionalMicroMachineField("micromachine-blackboard-dir"));
+  }
+  return query + authJoin;
+}
+
+function runtimeStartPayload() {
+  var mode = selectedCommandMode();
+  var payload = { mode: mode };
+  if (mode === COMMAND_MODE_MICROMACHINE) {
+    payload.blackboard_dir = optionalMicroMachineField("micromachine-blackboard-dir");
+  }
+  return payload;
+}
+
+function handleLiveStart(status, options) {
+  handleRuntimeStatus(status, options || {});
+}
+
+function handleRuntimeStatus(status, options) {
+  var mode = (status && status.mode) || selectedCommandMode();
+  if (!status || !status.enabled) {
+    setLiveStatusText(t(mode === COMMAND_MODE_MICROMACHINE ? "runtimeIdleMicro" : "runtimeIdleLegacy"));
+    return;
+  }
+  if ((status.status === "ready" || status.status === "passed") && status.url) {
+    setLiveStatusLink(t("runtimeReady"), status.url);
+    if (options && options.autoOpen) { window.location.assign(status.url); }
+    return;
+  }
+  if (status.status === "ready" && mode === COMMAND_MODE_LEGACY_COMMANDER) {
+    setLiveStatusText(t("runtimeReady") + formatLivePid(status));
+    return;
+  }
+  if (status.status === "passed") {
+    setLiveStatusText(t("runtimePassed") + formatRuntimeDetails(status));
+    return;
+  }
+  if (status.status === "connected") {
+    setLiveStatusText(t("runtimeConnected") + formatRuntimeDetails(status));
+    if (status.pid && (!options || options.poll !== false)) { pollLiveStatus(0); }
+    return;
+  }
+  if (status.status === "blocked") {
+    setLiveStatusText(t("runtimeBlocked") + ": " + (status.error || status.last_line || "blocked"));
     return;
   }
   if (status.status === "failed") {
-    setLiveStatusText(t("liveFailed") + ": " + (status.error || status.last_line || "unknown error"));
+    setLiveStatusText(t("runtimeFailed") + ": " + (status.error || status.last_line || "unknown error"));
     return;
   }
-  setLiveStatusText(t("liveStarting") + " (" + (status.status || "starting") + formatLivePid(status) + ")");
-  pollLiveStatus(0);
+  if (status.status === "idle") {
+    setLiveStatusText(t(mode === COMMAND_MODE_MICROMACHINE ? "runtimeIdleMicro" : "runtimeIdleLegacy"));
+    return;
+  }
+  var label = status.status === "running" ? t("runtimeRunning") : t("runtimeStarting");
+  setLiveStatusText(label + " (" + (status.status || "starting") + formatRuntimeDetails(status) + ")");
+  if (!options || options.poll !== false) { pollLiveStatus(0); }
 }
 
 function pollLiveStatus(attempt) {
   if (attempt > 90) {
-    setLiveStatusText(t("liveFailed") + ": timeout waiting for live GUI URL");
+    setLiveStatusText(t("runtimeFailed") + ": timeout waiting for selected runtime");
     return;
   }
   window.setTimeout(function () {
-    fetch("/api/live/status" + authQuery)
+    fetch("/api/runtime/status" + runtimeStatusQuery())
       .then(parseJsonResponse)
       .then(function (status) {
-        if (status.status === "ready" && status.url) {
-          setLiveStatusLink(t("liveReady"), status.url);
-          window.location.assign(status.url);
+        handleRuntimeStatus(status, { poll: false });
+        if (
+          ["starting", "running"].indexOf(status.status) !== -1 ||
+          (status.status === "connected" && status.pid)
+        ) {
+          pollLiveStatus(attempt + 1);
           return;
         }
-        if (status.status === "failed") {
-          setLiveStatusText(t("liveFailed") + ": " + (status.error || status.last_line || "unknown error"));
-          return;
-        }
-        setLiveStatusText(t("liveStarting") + " (" + status.status + formatLivePid(status) + ")");
-        pollLiveStatus(attempt + 1);
       })
       .catch(function (error) {
-        setLiveStatusText(t("liveFailed") + ": " + error.message);
+        setLiveStatusText(t("runtimeFailed") + ": " + error.message);
       });
   }, 1000);
 }
 
 function refreshLiveConnectionFlow() {
-  fetch("/api/live/status" + authQuery)
+  fetch("/api/runtime/status" + runtimeStatusQuery())
     .then(parseJsonResponse)
-    .then(handleLiveStart)
+    .then(function (status) { handleRuntimeStatus(status, { poll: false }); })
     .catch(function (error) {
-      setLiveStatusText(t("liveFailed") + ": " + error.message);
+      setLiveStatusText(t("runtimeFailed") + ": " + error.message);
+    });
+}
+
+function startSelectedRuntime() {
+  var payload = runtimeStartPayload();
+  setLiveStatusText(t("runtimeStarting") + " (" + payload.mode + ")");
+  fetch("/api/runtime/start" + authQuery, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }).then(parseJsonResponse)
+    .then(function (status) { handleRuntimeStatus(status); })
+    .catch(function (error) {
+      setLiveStatusText(t("runtimeFailed") + ": " + error.message);
     });
 }
 
@@ -4486,6 +5061,17 @@ function formatLivePid(status) {
   return status && status.pid ? ", pid " + status.pid : "";
 }
 
+function formatRuntimeDetails(status) {
+  if (!status) { return ""; }
+  var parts = [];
+  if (status.pid) { parts.push("pid " + status.pid); }
+  if (status.telemetry_frame || status.telemetry_frame === 0) {
+    parts.push("frame " + status.telemetry_frame);
+  }
+  if (status.blackboard_dir) { parts.push("blackboard " + status.blackboard_dir); }
+  return parts.length ? " (" + parts.join(", ") + ")" : formatLivePid(status);
+}
+
 function setMicroMachineText(id, value) {
   var node = document.getElementById(id);
   if (!node) { return; }
@@ -4505,7 +5091,9 @@ function summarizeMicroMachineManagers(managers) {
   var parts = [];
   Object.keys(managers).forEach(function (manager) {
     var payload = managers[manager] || {};
-    if (payload.policy_active === true) {
+    if (manager === "WorkerManager" && payload.repeat_order_guard_active === true) {
+      parts.push(manager + ": repeat blocked " + (payload.repeat_order_suppressed_count || 0));
+    } else if (payload.policy_active === true) {
       parts.push(manager + ": policy_active");
     } else if (payload.active === true) {
       parts.push(manager + ": active");
@@ -4556,6 +5144,30 @@ function formatMicroMachineTargetPriority(priority) {
     });
     if (items.length) { parts.push(key + ": " + items.join(", ")); }
   });
+  return parts.length ? parts.join(" | ") : "-";
+}
+
+function formatMicroMachineAttackGate(gate) {
+  if (!gate || typeof gate !== "object") { return "-"; }
+  var parts = [];
+  if (gate.status) { parts.push("status=" + gate.status); }
+  if (gate.reason) { parts.push("reason=" + gate.reason); }
+  if (gate.unit_count !== null && gate.unit_count !== undefined) {
+    var unitText = "units=" + gate.unit_count;
+    if (gate.min_units !== null && gate.min_units !== undefined) {
+      unitText += "/" + gate.min_units;
+    }
+    parts.push(unitText);
+  }
+  if (gate.scope_threshold_met !== null && gate.scope_threshold_met !== undefined) {
+    parts.push("threshold_met=" + gate.scope_threshold_met);
+  }
+  if (gate.simulation_won !== null && gate.simulation_won !== undefined) {
+    parts.push("simulation_won=" + gate.simulation_won);
+  }
+  if (gate.order_x !== null && gate.order_x !== undefined && gate.order_y !== null && gate.order_y !== undefined) {
+    parts.push("order=(" + gate.order_x + ", " + gate.order_y + ")");
+  }
   return parts.length ? parts.join(" | ") : "-";
 }
 
@@ -4634,6 +5246,7 @@ function renderMicroMachineIntervention(data) {
   setMicroMachineText("micromachine-scope", formatMicroMachineScope(intervention.tactical_scope));
   setMicroMachineText("micromachine-consumed-axes", formatMicroMachineAxesByManager(intervention.consumed_axes_by_manager));
   setMicroMachineText("micromachine-target-priority", formatMicroMachineTargetPriority(intervention.target_priority));
+  setMicroMachineText("micromachine-attack-gate", formatMicroMachineAttackGate(intervention.attack_gate));
   setMicroMachineText("micromachine-tactical-evidence", formatMicroMachineTacticalEvidence(intervention.tactical_evidence));
   setMicroMachineText("micromachine-refusal", intervention.refusal_reason);
   renderMicroMachineLogSnippets(intervention.log_snippets);
@@ -4681,6 +5294,20 @@ function renderMicroMachineStatus(data) {
   renderMicroMachineIntervention(data);
 }
 
+function safeRenderMicroMachineStatus(data) {
+  try {
+    renderMicroMachineStatus(data);
+  } catch (error) {
+    var node = document.getElementById("micromachine-status");
+    if (node) {
+      node.textContent = t("microMachineFailed") + ": dashboard render failed: " + error.message;
+    }
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("MicroMachine dashboard render failed", error);
+    }
+  }
+}
+
 function pollMicroMachineStatus() {
   var input = document.getElementById("micromachine-blackboard-dir");
   var suffix = authQuery;
@@ -4722,7 +5349,7 @@ function buildMicroMachineSemanticScopePayload() {
     unitClassText = unitClassText
       .replace(/siege tank/ig, "siege_tank")
       .replace(/widow mine/ig, "widow_mine");
-    scope.unit_classes = unitClassText.split(/[\s,]+/).map(function (item) {
+    scope.unit_classes = unitClassText.split(/[\\s,]+/).map(function (item) {
       return item.trim().toLowerCase().replace(/-/g, "_");
     }).filter(Boolean);
   }
@@ -4731,40 +5358,174 @@ function buildMicroMachineSemanticScopePayload() {
   return scope;
 }
 
+function buildMicroMachineModulationPayload(text) {
+  var blackboardInput = document.getElementById("micromachine-blackboard-dir");
+  var payload = {
+    text: text,
+    blackboard_dir: blackboardInput ? blackboardInput.value.trim() : ""
+  };
+  var semanticScope = buildMicroMachineSemanticScopePayload();
+  if (Object.keys(semanticScope).length) {
+    payload.semantic_scope = semanticScope;
+  }
+  var ttlSeconds = optionalMicroMachineNumber("micromachine-ttl-seconds");
+  if (ttlSeconds !== null) {
+    payload.ttl_seconds = Math.floor(ttlSeconds);
+  }
+  return payload;
+}
+
+function microMachineChatNarration(data) {
+  var intervention = (data && data.intervention) || {};
+  var compileResult = (data && data.compile_result) || {};
+  var vector = compileResult.vector || {};
+  var parts = [];
+  if (compileResult.refusal_reason || compileResult.clarification_prompt || data && data.accepted === false) {
+    parts.push("MicroMachine blackboard에 publish하지 않았습니다.");
+    if (compileResult.refusal_reason) { parts.push(compileResult.refusal_reason); }
+    if (compileResult.clarification_prompt) { parts.push(compileResult.clarification_prompt); }
+  } else {
+    parts.push(t("microMachineChatPublished"));
+    parts.push("해석: " + (intervention.goal || vector.goal || (data && data.command_text) || "전술 의도"));
+    parts.push("개입 방식: raw 유닛 클릭이 아니라 MicroMachine manager bias를 조정했습니다.");
+    if (data && data.consumption_status && data.consumption_status !== "consumed") {
+      parts.push(t("microMachineChatQueued") + " (" + data.consumption_status + ")");
+    }
+    if (data && data.consumption_status === "consumed") {
+      parts.push("MicroMachine telemetry가 이 update 소비를 확인했습니다.");
+    }
+  }
+  if (intervention.latest_update_id) { parts.push("update_id=" + intervention.latest_update_id); }
+  if (intervention.tactical_posture) { parts.push("posture=" + intervention.tactical_posture); }
+  if (Array.isArray(intervention.manager_bias_domains) && intervention.manager_bias_domains.length) {
+    parts.push("domains=" + intervention.manager_bias_domains.join(", "));
+  }
+  var gateText = formatMicroMachineAttackGate(intervention.attack_gate);
+  if (gateText !== "-") {
+    parts.push("attack_gate=" + gateText);
+  }
+  if (intervention.refusal_reason && parts.indexOf(intervention.refusal_reason) < 0) {
+    parts.push(intervention.refusal_reason);
+  }
+  return parts.join("\\n");
+}
+
+function appendMicroMachineChatResult(text, data) {
+  var removed = removePendingForCommand(text);
+  var accepted = data && data.accepted !== false && data.ok !== false;
+  appendLog({
+    command_text: text,
+    status: accepted ? "partially_executed" : "clarification",
+    narration: microMachineChatNarration(data || {})
+  });
+  if (!removed) {
+    updateAssistantPendingState();
+  }
+}
+
+function appendMicroMachineChatFailure(text, error) {
+  var removed = removePendingForCommand(text);
+  appendLog({
+    command_text: text,
+    status: "blocked",
+    narration: t("microMachineChatFailed") + ": " + error.message
+  });
+  if (!removed) {
+    updateAssistantPendingState();
+  }
+}
+
+function safelyAppendMicroMachineChatResult(text, data) {
+  try {
+    appendMicroMachineChatResult(text, data);
+  } catch (error) {
+    removePendingForCommand(text);
+    updateAssistantPendingState();
+    var node = document.getElementById("micromachine-status");
+    if (node) {
+      node.textContent = t("microMachineFailed") + ": chat render failed: " + error.message;
+    }
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("MicroMachine chat render failed", error);
+    }
+  }
+}
+
+function safelyAppendMicroMachineChatFailure(text, error) {
+  try {
+    appendMicroMachineChatFailure(text, error);
+  } catch (renderError) {
+    removePendingForCommand(text);
+    updateAssistantPendingState();
+    var node = document.getElementById("micromachine-status");
+    if (node) {
+      node.textContent = t("microMachineFailed") + ": chat failure render failed: " + renderError.message;
+    }
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("MicroMachine failure chat render failed", renderError);
+    }
+  }
+}
+
+function microMachineTimeoutError() {
+  return new Error(
+    "MicroMachine publish 응답이 " + Math.round(MICROMACHINE_CHAT_TIMEOUT_MS / 1000) +
+    "초 안에 돌아오지 않았습니다. pending을 해제했습니다. 런타임/브라우저 탭을 새로고침하고 다시 시도해 주세요."
+  );
+}
+
+function submitMicroMachineModulation(payload, options) {
+  options = options || {};
+  var statusNode = document.getElementById("micromachine-status");
+  if (statusNode) { statusNode.textContent = t("microMachineSending"); }
+  var timedOut = false;
+  var timeoutId = null;
+  if (options.appendChat && options.timeoutMs !== 0 && window.setTimeout) {
+    timeoutId = window.setTimeout(function () {
+      timedOut = true;
+      safelyAppendMicroMachineChatFailure(payload.text || "", microMachineTimeoutError());
+    }, options.timeoutMs || MICROMACHINE_CHAT_TIMEOUT_MS);
+  }
+  function clearSubmitTimeout() {
+    if (timeoutId !== null && window.clearTimeout) {
+      window.clearTimeout(timeoutId);
+    }
+    timeoutId = null;
+  }
+  return fetch("/api/micromachine/modulate" + authQuery, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  })
+    .then(parseJsonResponse)
+    .then(function (data) {
+      clearSubmitTimeout();
+      if (options.appendChat && !timedOut) { safelyAppendMicroMachineChatResult(payload.text || "", data); }
+      safeRenderMicroMachineStatus(data);
+      if (options.clearInput && data.ok) { options.clearInput.value = ""; }
+      return data;
+    })
+    .catch(function (error) {
+      clearSubmitTimeout();
+      if (statusNode) {
+        statusNode.textContent = t("microMachineFailed") + ": " + error.message;
+      }
+      if (options.appendChat && !timedOut) { safelyAppendMicroMachineChatFailure(payload.text || "", error); }
+      throw error;
+    });
+}
+
 var microMachineForm = document.getElementById("micromachine-form");
 if (microMachineForm) {
   microMachineForm.addEventListener("submit", function (event) {
     event.preventDefault();
     var commandInput = document.getElementById("micromachine-command-input");
-    var blackboardInput = document.getElementById("micromachine-blackboard-dir");
     var text = commandInput.value.trim();
     if (!text) { return; }
-    var payload = {
-      text: text,
-      blackboard_dir: blackboardInput.value.trim()
-    };
-    var semanticScope = buildMicroMachineSemanticScopePayload();
-    if (Object.keys(semanticScope).length) {
-      payload.semantic_scope = semanticScope;
-    }
-    var ttlSeconds = optionalMicroMachineNumber("micromachine-ttl-seconds");
-    if (ttlSeconds !== null) {
-      payload.ttl_seconds = Math.floor(ttlSeconds);
-    }
-    document.getElementById("micromachine-status").textContent = t("microMachineSending");
-    fetch("/api/micromachine/modulate" + authQuery, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    })
-      .then(parseJsonResponse)
-      .then(function (data) {
-        renderMicroMachineStatus(data);
-        if (data.ok) { commandInput.value = ""; }
-      })
-      .catch(function (error) {
-        document.getElementById("micromachine-status").textContent = t("microMachineFailed") + ": " + error.message;
-      });
+    submitMicroMachineModulation(
+      buildMicroMachineModulationPayload(text),
+      { clearInput: commandInput }
+    ).catch(function () {});
   });
 }
 
@@ -4773,6 +5534,17 @@ document.getElementById("command-form").addEventListener("submit", function (eve
   var input = document.getElementById("command-input");
   var text = input.value.trim();
   if (!text) { return; }
+  setCommandMode(selectedCommandMode());
+  if (isMicroMachineCommandMode()) {
+    appendPendingCommand(text);
+    submitMicroMachineModulation(
+      buildMicroMachineModulationPayload(text),
+      { appendChat: true, timeoutMs: MICROMACHINE_CHAT_TIMEOUT_MS }
+    ).catch(function () {});
+    input.value = "";
+    input.focus();
+    return;
+  }
   if (!llmConfigured) {
     setLlmStatus("missing", "llmRequiredLabel", t("commandRejected"));
     return;
@@ -4792,6 +5564,13 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-command]"), functi
     var input = document.getElementById("command-input");
     input.value = button.getAttribute("data-command") || "";
     input.focus();
+  });
+});
+
+Array.prototype.forEach.call(document.querySelectorAll("input[name='command-mode']"), function (input) {
+  input.addEventListener("change", function () {
+    setCommandMode(input.value);
+    refreshLiveConnectionFlow();
   });
 });
 
@@ -4874,7 +5653,12 @@ document.getElementById("live-open-button").addEventListener("click", function (
   if (liveGuiUrl) { window.open(liveGuiUrl, "_blank", "noopener"); }
 });
 
-document.getElementById("live-refresh-button").addEventListener("click", function () {
+document.getElementById("runtime-start-button").addEventListener("click", function () {
+  setCommandMode(selectedCommandMode());
+  startSelectedRuntime();
+});
+
+document.getElementById("runtime-refresh-button").addEventListener("click", function () {
   refreshLiveConnectionFlow();
 });
 
@@ -4935,6 +5719,7 @@ setupVoiceInput();
 pollHistory();
 pollState();
 pollLlmSettings();
+refreshLiveConnectionFlow();
 pollMicroMachineStatus();
 </script>
 </body>
@@ -4957,6 +5742,8 @@ def render_web_gui_page(micromachine_blackboard_dir: str = "") -> str:
         _WEB_GUI_PAGE_TEMPLATE
         .replace("__TITLE__", WEB_GUI_PAGE_TITLE)
         .replace("__POLL_MS__", str(WEB_GUI_POLL_INTERVAL_MS))
+        .replace("__COMMAND_MODE_MICROMACHINE__", COMMAND_MODE_MICROMACHINE)
+        .replace("__COMMAND_MODE_LEGACY_COMMANDER__", COMMAND_MODE_LEGACY_COMMANDER)
         .replace("__COLOR_EXECUTED__", WEB_GUI_STATUS_COLORS["executed"])
         .replace("__COLOR_PARTIAL__", WEB_GUI_STATUS_COLORS["partially_executed"])
         .replace("__COLOR_BLOCKED__", WEB_GUI_STATUS_COLORS["blocked"])
@@ -5029,6 +5816,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/live/status":
             self._handle_live_status()
             return
+        if path == "/api/runtime/status":
+            self._handle_runtime_status()
+            return
         if path == "/api/micromachine/status":
             self._handle_micromachine_status()
             return
@@ -5045,6 +5835,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/llm":
             self._handle_llm_configure()
+            return
+        if path == "/api/runtime/start":
+            self._handle_runtime_start()
             return
         if path == "/api/micromachine/modulate":
             self._handle_micromachine_modulate()
@@ -5198,10 +5991,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             self._send_json(status, payload)
             return
         response = dict(snapshot)
+        launcher = getattr(self.server, "live_launcher", None)  # type: ignore[attr-defined]
+        if launcher is not None:
+            launcher.configure(provider, api_key, model)
         if bool(getattr(self.server, "auto_launch_live", False)):  # type: ignore[attr-defined]
-            launcher = getattr(self.server, "live_launcher", None)  # type: ignore[attr-defined]
             if launcher is not None:
-                response["live_start"] = launcher.start(provider, api_key, model)
+                response["live_start"] = launcher.start()
         self._send_json(HTTPStatus.OK, response)
 
     def _handle_live_status(self) -> None:
@@ -5213,6 +6008,129 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         self._send_json(HTTPStatus.OK, launcher.snapshot())
+
+    def _handle_runtime_status(self) -> None:
+        params = parse_qs(urlsplit(self.path).query)
+        mode = _normalize_runtime_mode(params.get("mode", [""])[0] or "")
+        if mode == COMMAND_MODE_LEGACY_COMMANDER:
+            launcher = getattr(self.server, "live_launcher", None)  # type: ignore[attr-defined]
+            if launcher is None:
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "enabled": False,
+                        "mode": mode,
+                        "status": "disabled",
+                        "url": "",
+                        "error": "",
+                    },
+                )
+                return
+            payload = dict(launcher.snapshot())
+            payload["mode"] = mode
+            self._send_json(HTTPStatus.OK, payload)
+            return
+        launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
+        if launcher is None:
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "enabled": False,
+                    "mode": mode,
+                    "status": "disabled",
+                    "error": "MicroMachine launcher is disabled.",
+                },
+            )
+            return
+        blackboard_dir = params.get("blackboard_dir", [""])[0] or ""
+        try:
+            self._send_json(
+                HTTPStatus.OK,
+                launcher.snapshot(blackboard_dir=blackboard_dir),
+            )
+        except Exception as error:  # noqa: BLE001 - surfaced honestly.
+            self._send_internal_error(error)
+
+    def _handle_runtime_start(self) -> None:
+        body = self._read_request_body()
+        if body is None:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "runtime start JSON 본문을 읽을 수 없습니다."},
+            )
+            return
+        try:
+            document = json.loads(body.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "runtime start 본문이 올바른 JSON이 아닙니다."},
+            )
+            return
+        if not isinstance(document, Mapping):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "runtime start 본문은 JSON 객체여야 합니다."},
+            )
+            return
+        mode = _normalize_runtime_mode(str(document.get("mode", "") or ""))
+        if mode == COMMAND_MODE_LEGACY_COMMANDER:
+            launcher = getattr(self.server, "live_launcher", None)  # type: ignore[attr-defined]
+            if launcher is None:
+                self._send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {
+                        "accepted": False,
+                        "enabled": False,
+                        "mode": mode,
+                        "status": "disabled",
+                        "error": "Legacy launcher is disabled.",
+                    },
+                )
+                return
+            payload = dict(launcher.start())
+            payload["accepted"] = payload.get("status") != "blocked"
+            payload["mode"] = mode
+            status = (
+                HTTPStatus.CONFLICT
+                if payload.get("status") == "blocked"
+                else HTTPStatus.ACCEPTED
+            )
+            self._send_json(status, payload)
+            return
+        launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
+        if launcher is None:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "accepted": False,
+                    "enabled": False,
+                    "mode": mode,
+                    "status": "disabled",
+                    "error": "MicroMachine launcher is disabled.",
+                },
+            )
+            return
+        try:
+            payload = dict(
+                launcher.start(
+                    blackboard_dir=str(document.get("blackboard_dir", "") or ""),
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - surfaced honestly.
+            self._send_internal_error(error)
+            return
+        payload["accepted"] = payload.get("status") not in {
+            "blocked",
+            "failed",
+            "disabled",
+        }
+        status = (
+            HTTPStatus.CONFLICT
+            if payload.get("status") == "blocked"
+            else HTTPStatus.ACCEPTED
+        )
+        self._send_json(status, payload)
 
     def _handle_micromachine_status(self) -> None:
         status_fn = getattr(self._bridge, "micromachine_status", None)
@@ -5370,7 +6288,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     f"지원하지 않는 경로입니다: {urlsplit(self.path).path}. "
                     "사용 가능한 경로: GET /, GET /api/state, "
                     "GET /api/history?after=N, GET/POST /api/llm, "
-                    "POST /api/command, GET /api/micromachine/status, "
+                    "POST /api/command, GET /api/runtime/status, "
+                    "POST /api/runtime/start, GET /api/micromachine/status, "
                     "POST /api/micromachine/modulate."
                 )
             },
@@ -5468,7 +6387,8 @@ class WebGuiServer:
         self._host = cleaned_host
         self._auth_token = cleaned_token
         self._auto_launch_live = bool(auto_launch_live)
-        self._live_launcher = _LiveLaunchManager() if self._auto_launch_live else None
+        self._live_launcher = _LiveLaunchManager()
+        self._micromachine_launcher = _MicroMachineLaunchManager()
         self._lifecycle_lock = threading.Lock()
         self._http: _BridgedThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -5520,6 +6440,7 @@ class WebGuiServer:
             )
             self._http.auto_launch_live = self._auto_launch_live  # type: ignore[attr-defined]
             self._http.live_launcher = self._live_launcher  # type: ignore[attr-defined]
+            self._http.micromachine_launcher = self._micromachine_launcher  # type: ignore[attr-defined]
             self._thread = threading.Thread(
                 target=self._http.serve_forever,
                 kwargs={"poll_interval": 0.1},
@@ -5557,7 +6478,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         description=(
             "voiStarcraft2 커맨더 로컬 웹 GUI. "
             "--dry-run은 내장 가짜 BotAI로 전체 파이프라인을 실행합니다. "
-            "실제 게임 연결은 python -m starcraft_commander.demo_sc2 --gui를 사용하세요."
+            "MicroMachine 조작은 blackboard live session/soak 경로를 사용하고, "
+            "python-sc2 demo는 legacy compatibility mode입니다."
         ),
     )
     parser.add_argument(
@@ -5584,6 +6506,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default="",
         help="auth token required when exposing the web GUI beyond localhost",
     )
+    parser.add_argument(
+        "--auto-launch-legacy-live",
+        action="store_true",
+        help=(
+            "after LLM setup, auto-start the legacy python-sc2 demo live GUI. "
+            "Disabled by default so it is not confused with MicroMachine."
+        ),
+    )
     return parser
 
 
@@ -5606,8 +6536,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             "대안: 가짜 봇으로 체험하려면 "
             "'python -m starcraft_commander.web_gui --dry-run', "
-            "실제 StarCraft II에 연결하려면 "
-            "'python -m starcraft_commander.demo_sc2 --gui'를 사용하세요."
+            "MicroMachine은 integrations/micromachine scripts와 "
+            "blackboard live session을 사용하세요. "
+            "이전 python-sc2 demo는 legacy commander mode로만 사용하세요."
         )
         return 2
 
@@ -5628,7 +6559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         port=args.port,
         host=args.host,
         auth_token=args.token,
-        auto_launch_live=True,
+        auto_launch_live=args.auto_launch_legacy_live,
     )
     bridge.start()
     try:

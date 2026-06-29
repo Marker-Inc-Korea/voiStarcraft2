@@ -121,7 +121,7 @@ python3 -m starcraft_commander.demo_sc2 --map AcropolisLE --difficulty easy
   iteration, not instantly at the prompt.
 - Exit command input with `종료`, `quit`, or EOF; the game keeps running.
 
-For local browser control:
+For local browser control of the legacy python-sc2 commander:
 
 ```bash
 SC2PATH="/Users/jinminseong/Desktop/StarCraft2/StarCraft II" \
@@ -140,6 +140,14 @@ python3 -m starcraft_commander.demo_sc2 \
 - Defaults: `--llm-provider openai`, `--llm-model gpt-4.1-mini`.
 - Use windowed/borderless StarCraft II or a second monitor so the browser
   remains usable while the game is running.
+- This path is **not** MicroMachine QA evidence. In the web page, the
+  **Legacy python-sc2 commander** mode is the route that posts to
+  `/api/command`; the default MicroMachine cockpit posts text/voice intent to
+  `/api/micromachine/modulate` and a MicroMachine blackboard instead. The same
+  web page has a mode-aware **선택 모드 실행** control: in MicroMachine mode it
+  calls `/api/runtime/start` and runs the patched MicroMachine smoke/live script
+  with the current blackboard directory; in legacy mode it starts the older
+  python-sc2 demo only after a key has been saved.
 
 ### Expected behavior (smoke-test acceptance)
 
@@ -228,7 +236,7 @@ executing, so the failure is safe — just re-record.
 
 Be aware of exactly how small this MVP is:
 
-- **Live mode has only one local smoke environment so far.** The current
+- **Legacy python-sc2 live mode has only one local smoke environment so far.** The current
   verified setup is macOS + `/Users/jinminseong/Desktop/StarCraft2/StarCraft II`
   + `AcropolisLE`; other OSes, maps, and ladder scenarios can still expose
   python-sc2 or map-derivation edge cases.

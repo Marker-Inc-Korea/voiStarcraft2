@@ -13,6 +13,7 @@ MICROMACHINE_BUILD_IDENTITY_REPORT="${MICROMACHINE_BUILD_IDENTITY_REPORT:-${MICR
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-macos-latest-s2client-policy-blackboard.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
+BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 
 canonical_checkout_path() {
   local path="$1"
@@ -61,13 +62,38 @@ safe_clean_git_checkout() {
   git -C "${checkout_dir}" clean -fdx
 }
 
+is_valid_git_checkout() {
+  local checkout_dir="$1"
+  [[ -d "${checkout_dir}/.git" ]] && git -C "${checkout_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+prepare_git_checkout() {
+  local checkout_dir="$1"
+  local expected_root="$2"
+  local repo_url="$3"
+  local repo_name="$4"
+  require_disposable_checkout_mutation "${checkout_dir}" "${expected_root}" "repair"
+
+  if [[ -e "${checkout_dir}" && ! -d "${checkout_dir}/.git" ]]; then
+    local quarantine_dir="${checkout_dir}.invalid.$(date +%Y%m%d%H%M%S).$$"
+    echo "Invalid ${repo_name} checkout without .git; moving aside: ${quarantine_dir}" >&2
+    mv "${checkout_dir}" "${quarantine_dir}"
+  elif [[ -d "${checkout_dir}/.git" ]] && ! is_valid_git_checkout "${checkout_dir}"; then
+    local quarantine_dir="${checkout_dir}.invalid.$(date +%Y%m%d%H%M%S).$$"
+    echo "Invalid ${repo_name} git checkout; moving aside: ${quarantine_dir}" >&2
+    mv "${checkout_dir}" "${quarantine_dir}"
+  fi
+
+  if [[ ! -d "${checkout_dir}/.git" ]]; then
+    git clone "${repo_url}" "${checkout_dir}"
+  fi
+}
+
 mkdir -p "${ROOT_DIR}"
 require_disposable_checkout_mutation "${S2CLIENT_DIR}" "${ROOT_DIR}" "mutate"
 require_disposable_checkout_mutation "${MICROMACHINE_DIR}" "${ROOT_DIR}" "mutate"
 
-if [[ ! -d "${S2CLIENT_DIR}/.git" ]]; then
-  git clone https://github.com/Blizzard/s2client-api "${S2CLIENT_DIR}"
-fi
+prepare_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}" https://github.com/Blizzard/s2client-api s2client-api
 git -C "${S2CLIENT_DIR}" fetch --tags
 git -C "${S2CLIENT_DIR}" checkout "${S2CLIENT_COMMIT}"
 git -C "${S2CLIENT_DIR}" reset --hard "${S2CLIENT_COMMIT}"
@@ -80,9 +106,7 @@ cmake -S "${S2CLIENT_DIR}" -B "${S2CLIENT_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
 
-if [[ ! -d "${MICROMACHINE_DIR}/.git" ]]; then
-  git clone https://github.com/RaphaelRoyerRivard/MicroMachine "${MICROMACHINE_DIR}"
-fi
+prepare_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}" https://github.com/RaphaelRoyerRivard/MicroMachine MicroMachine
 git -C "${MICROMACHINE_DIR}" fetch --tags
 git -C "${MICROMACHINE_DIR}" checkout "${MICROMACHINE_COMMIT}"
 git -C "${MICROMACHINE_DIR}" reset --hard "${MICROMACHINE_COMMIT}"
@@ -90,6 +114,7 @@ safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
 git -C "${MICROMACHINE_DIR}" submodule update --init --recursive
 git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
+cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \

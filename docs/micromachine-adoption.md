@@ -232,6 +232,16 @@ compiles provider output through the same DSL safety gate, publishes through
 `MicroMachineModulationBackend`, and reports whether telemetry shows the update
 id in `active_modulation_ids`.
 
+To launch a local runtime for manual QA, keep the patched MicroMachine smoke
+runtime alive after pass and reuse the same blackboard directory:
+
+```bash
+integrations/micromachine/scripts/smoke_macos_local.sh \
+  --live-hold \
+  --blackboard-dir /private/tmp/voi-mm-live \
+  --max-attempts 1
+```
+
 ```bash
 python -m starcraft_commander.micromachine_live_session \
   --blackboard-dir /private/tmp/voi-mm-live \
@@ -245,6 +255,28 @@ If `--provider-output-json` or `--provider-output-file` is omitted, the CLI uses
 a deterministic keyword provider for smoke testing. Production LLM adapters
 should implement `PolicyModulationProviderInterface` and return bounded
 semantic JSON; they still cannot publish raw SC2 actions directly.
+
+### Web Cockpit Routing
+
+`starcraft_commander.web_gui` treats MicroMachine as the default command route.
+The top chat box and browser voice input publish to
+`POST /api/micromachine/modulate`, using the same blackboard directory and
+semantic scope controls as the advanced MicroMachine panel. The UI renders the
+compile result, latest update id, manager bias domains, tactical posture,
+target priority, consumed axes, and recent tactical log snippets so a user can
+verify whether the DSL reached patched MicroMachine.
+
+The old `POST /api/command` route remains available only behind the explicit
+**Legacy python-sc2 commander** mode. That mode is for compatibility testing of
+the older `demo_sc2` commander and is not MicroMachine evidence. Runtime launch
+is integrated into the same cockpit: the **Launch selected runtime** button
+posts to `/api/runtime/start`, and `/api/runtime/status` reports whichever mode
+is selected. MicroMachine mode launches
+`integrations/micromachine/scripts/smoke_macos_local.sh` with the current
+blackboard directory; legacy mode launches the older python-sc2 demo only after
+an LLM key has been saved. The standalone web GUI keeps key-save-time legacy
+auto-launch disabled by default; it can be re-enabled only with
+`--auto-launch-legacy-live`.
 
 For in-game SC2 chat, the supported boundary is
 `MicroMachineChatModulationBridge` in

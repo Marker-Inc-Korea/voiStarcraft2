@@ -1,10 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --live-hold)
+      export SMOKE_KEEP_RUNNING_AFTER_PASS=1
+      export SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-1}"
+      export SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-1}"
+      export SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-0}"
+      ;;
+    --blackboard-dir)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "MicroMachine smoke rejected: --blackboard-dir requires a value." >&2
+        exit 2
+      fi
+      export BLACKBOARD_DIR="$2"
+      shift
+      ;;
+    --max-attempts)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "MicroMachine smoke rejected: --max-attempts requires a value." >&2
+        exit 2
+      fi
+      export SMOKE_MAX_ATTEMPTS="$2"
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      echo "MicroMachine smoke rejected: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 MICROMACHINE_DIR="${MICROMACHINE_DIR:-/private/tmp/voi-micromachine-runtime/MicroMachine}"
+ROOT_DIR="${ROOT_DIR:-$(dirname "${MICROMACHINE_DIR}")}"
+S2CLIENT_DIR="${S2CLIENT_DIR:-${ROOT_DIR}/s2client-api}"
 MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
+MICROMACHINE_BUILD_IDENTITY_REPORT="${MICROMACHINE_BUILD_IDENTITY_REPORT:-${MICROMACHINE_BUILD_DIR}/voi_build_identity.json}"
+SMOKE_REQUIRE_BUILD_IDENTITY="${SMOKE_REQUIRE_BUILD_IDENTITY:-1}"
 SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
 SC2_LAUNCH_MODE="${SC2_LAUNCH_MODE:-auto}"
 SC2_BATTLENET_EXECUTABLE="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
@@ -107,6 +147,56 @@ prepare_launch_contract() {
   MAP_FILE="$(resolve_map_file "${MAP_FILE}")"
 }
 
+verify_build_identity() {
+  if [[ "${SMOKE_REQUIRE_BUILD_IDENTITY}" != "1" ]]; then
+    return
+  fi
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${MICROMACHINE_BUILD_IDENTITY_REPORT}" "${MICROMACHINE_DIR}" "${S2CLIENT_DIR}" "${MICROMACHINE_BUILD_DIR}"
+import json
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_build_identity import (
+    MicroMachineBuildIdentityConfig,
+    build_micromachine_build_identity,
+)
+
+report_path = Path(sys.argv[1])
+if not report_path.exists():
+    raise SystemExit(
+        "MicroMachine smoke rejected: missing build identity report. "
+        f"Run integrations/micromachine/scripts/build_macos_local.sh first: {report_path}"
+    )
+try:
+    recorded = json.loads(report_path.read_text())
+except Exception as exc:  # noqa: BLE001 - shell-facing validation error.
+    raise SystemExit(f"MicroMachine smoke rejected: invalid build identity report: {exc}") from exc
+current = build_micromachine_build_identity(
+    MicroMachineBuildIdentityConfig(
+        micromachine_dir=Path(sys.argv[2]),
+        s2client_dir=Path(sys.argv[3]),
+        micromachine_build_dir=Path(sys.argv[4]),
+    )
+)
+if recorded.get("ok") is not True:
+    raise SystemExit(
+        "MicroMachine smoke rejected: recorded build identity is not ok: "
+        f"{recorded.get('failures')}"
+    )
+if current.get("ok") is not True:
+    raise SystemExit(
+        "MicroMachine smoke rejected: current build identity is not ok: "
+        f"{current.get('failures')}"
+    )
+if recorded.get("identity") != current.get("identity"):
+    raise SystemExit(
+        "MicroMachine smoke rejected: stale build identity. "
+        f"recorded={recorded.get('identity')} current={current.get('identity')}. "
+        "Re-run integrations/micromachine/scripts/build_macos_local.sh."
+    )
+PY
+}
+
 SC2_EXECUTABLE="${SC2_EXECUTABLE:-$(resolve_sc2_executable)}"
 BLACKBOARD_DIR="${BLACKBOARD_DIR:-/private/tmp/voi-mm-smoke}"
 MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
@@ -128,6 +218,8 @@ PREEXISTING_SC2_PORT_PIDS=""
 DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-smoke-defensive-hold}"
 AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-smoke-aggressive-pressure}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
+SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-1}"
+SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-0}"
 NO_START_UNITS_FRAME="${NO_START_UNITS_FRAME:-1200}"
 
 if [[ -z "${SMOKE_ATTEMPT_INDEX}" && "${SMOKE_MAX_ATTEMPTS}" -gt 1 ]]; then
@@ -615,12 +707,54 @@ raise SystemExit(1)
 PY
 }
 
+has_live_hold_preflight_evidence() {
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json"
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text())
+except Exception:
+    raise SystemExit(1)
+if payload.get("protocol_version") != "voi-mm-bridge/v1":
+    raise SystemExit(1)
+managers = payload.get("managers", {})
+commander = managers.get("GameCommander", {})
+workers = managers.get("WorkerManager", {})
+if commander.get("policy_active") is not True:
+    raise SystemExit(1)
+if workers.get("active") is not True:
+    raise SystemExit(1)
+if workers.get("repeat_order_guard_active") is not True:
+    raise SystemExit(1)
+if int(workers.get("repeat_order_guard_frames", 0)) != 32:
+    raise SystemExit(1)
+consumed_axes = {
+    axis.strip()
+    for axis in str(workers.get("consumed_axes", "")).split(",")
+    if axis.strip()
+}
+if "workers.repeat_order_guard_frames" not in consumed_axes:
+    raise SystemExit(1)
+if int(workers.get("repeat_order_suppressed_count", 0)) <= 0:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+print_missing_live_hold_preflight() {
+  echo "MicroMachine live hold preflight did not pass: expected worker repeat-order guard frame=32 with actual suppression evidence." >&2
+}
+
 print_no_start_units_bootstrap_blocker() {
   echo "MicroMachine bootstrap_no_start_units: SC2 API joined and map info loaded, but the participant has no starting self units or resource depot." >&2
   cat "${BLACKBOARD_DIR}/latest_telemetry.json" >&2 || true
 }
 
 prepare_launch_contract
+verify_build_identity
 SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
 if [[ "${SC2_EXECUTABLE}" == "${SC2_BATTLENET_EXECUTABLE}" && -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
   VOI_SC2_EXTRA_ARGS="--game=${SC2_BATTLENET_GAME} --gamepath=${SC2_RUNTIME_ROOT}/"
@@ -691,7 +825,17 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
       print_bot_logs
       exit 1
     fi
-    if [[ "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${AGGRESSIVE_PROFILE_FRAME}" ]] && has_required_macro_evidence; then
+    if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${NO_START_UNITS_FRAME}" ]] && has_required_macro_evidence && has_live_hold_preflight_evidence; then
+      print_bot_logs >/dev/null 2>&1
+      echo "MicroMachine manual live hold preflight passed; keeping runtime alive for manual DSL commands."
+      echo "MicroMachine manual live hold active; automatic aggressive smoke profile is disabled."
+      while kill -0 "${BOT_PID}" 2>/dev/null; do
+        sleep 2
+      done
+      wait "${BOT_PID}" 2>/dev/null || true
+      exit 0
+    fi
+    if [[ "${SMOKE_AUTO_AGGRESSIVE_PROFILE}" == "1" && "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${AGGRESSIVE_PROFILE_FRAME}" ]] && has_required_macro_evidence; then
       publish_profile "aggressive_pressure" "${AGGRESSIVE_UPDATE_ID}" "${current_telemetry_frame}"
       AGGRESSIVE_PROFILE_PUBLISHED=1
     fi
@@ -718,7 +862,9 @@ raise SystemExit(1)
 PY
     then
       if has_required_macro_evidence; then
-        cleanup_runtime
+        if [[ "${SMOKE_KEEP_RUNNING_AFTER_PASS:-0}" != "1" ]]; then
+          cleanup_runtime
+        fi
         break
       fi
     fi
@@ -727,6 +873,9 @@ PY
   if (( SECONDS >= deadline )); then
     cleanup_runtime
     echo "MicroMachine smoke timed out after ${SMOKE_TIMEOUT_SECONDS}s" >&2
+    if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]] && has_required_macro_evidence; then
+      print_missing_live_hold_preflight
+    fi
     print_missing_macro_evidence
     print_bot_logs
     exit 1
@@ -814,6 +963,14 @@ if float(combat.get("commitment_level", 0)) <= 0:
     raise SystemExit(f"missing commitment level evidence: {combat!r}")
 if combat.get("attack_condition_override") != "earlier_if_safe":
     raise SystemExit(f"missing attack condition override evidence: {combat!r}")
+if combat.get("main_attack_order_status") != "Attack":
+    raise SystemExit(f"missing aggressive attack order evidence: {combat!r}")
+if combat.get("main_attack_scope_threshold_met") is not True:
+    raise SystemExit(f"missing attack scope threshold evidence: {combat!r}")
+if combat.get("main_attack_simulation_won") is not True:
+    raise SystemExit(f"missing attack simulation safety evidence: {combat!r}")
+if int(combat.get("main_attack_unit_count", 0)) < int(combat.get("main_attack_scope_min_units", 1)):
+    raise SystemExit(f"attack order did not satisfy scope units: {combat!r}")
 if float(combat.get("retreat_patience_bias", 0)) <= 0:
     raise SystemExit(f"missing retreat patience evidence: {combat!r}")
 if float(combat.get("rally_before_attack_bias", 0)) <= 0:
@@ -848,6 +1005,22 @@ if int(squad.get("scope_min_units", 0)) < 1:
 for key in ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"):
     if float(squad.get(key, 0)) <= 0:
         raise SystemExit(f"missing target priority evidence {key}: {squad!r}")
+workers = managers.get("WorkerManager")
+if not workers or workers.get("active") is not True:
+    raise SystemExit(f"missing WorkerManager activity evidence: {managers!r}")
+if workers.get("repeat_order_guard_active") is not True:
+    raise SystemExit(f"worker repeat-order guard is not active: {workers!r}")
+if int(workers.get("repeat_order_guard_frames", 0)) != 32:
+    raise SystemExit(f"worker repeat-order guard window did not come from the active blackboard profile: {workers!r}")
+worker_consumed_axes = {
+    axis.strip()
+    for axis in str(workers.get("consumed_axes", "")).split(",")
+    if axis.strip()
+}
+if "workers.repeat_order_guard_frames" not in worker_consumed_axes:
+    raise SystemExit(f"missing WorkerManager consumed axis evidence: {workers!r}")
+if int(workers.get("repeat_order_suppressed_count", 0)) <= 0:
+    raise SystemExit(f"worker repeat-order guard did not suppress any repeated order: {workers!r}")
 scout = managers.get("ScoutManager")
 if not scout or scout.get("active") is not True:
     raise SystemExit(f"missing ScoutManager activity evidence: {managers!r}")
@@ -877,3 +1050,10 @@ for expected in (defensive_update_id, aggressive_update_id):
         raise SystemExit(f"stale modulation or missing profile transition: {expected} not in {archive}")
 print(json.dumps(payload, sort_keys=True))
 PY
+
+if [[ "${SMOKE_KEEP_RUNNING_AFTER_PASS:-0}" == "1" ]]; then
+  echo "MicroMachine smoke live hold active; keeping runtime alive after pass criteria."
+  while kill -0 "${BOT_PID}" 2>/dev/null; do
+    sleep 2
+  done
+fi

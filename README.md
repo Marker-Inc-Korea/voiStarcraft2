@@ -12,10 +12,11 @@ planned as semantic actions, and executed through game API boundaries.
 | Area | Status |
 | --- | --- |
 | Dry-run SC2 pipeline | Implemented and tested. Runs without StarCraft II. |
-| Live SC2 mode | Implemented and locally connected through python-sc2. |
+| Legacy live SC2 commander | Implemented and locally connected through python-sc2. This is compatibility mode, not MicroMachine. |
+| MicroMachine policy cockpit | Implemented as the default web text/voice route. It publishes bounded deep DSL modulation to the MicroMachine blackboard. |
 | Voice input | Implemented behind optional `[voice]` dependencies. |
-| LLM command interpreter | Required for live SC2 mode; uses `[llm]` dependencies. OpenAI/GPT is the default; Anthropic is still supported. |
-| Web GUI | Implemented as a localhost-first stdlib server with token-protected network mode. |
+| LLM command interpreter | Required for legacy python-sc2 live commands; optional for MicroMachine keyword-provider smoke. OpenAI/GPT is the default; Anthropic is still supported. |
+| Web GUI | Implemented as a localhost-first stdlib server with token-protected network mode. Default chat/voice mode is MicroMachine; legacy commander is explicit opt-in. |
 | Event memory | Implemented and used by state reports and GUI history. |
 | Standing orders | Implemented for continuous SCV production and supply-block prevention. |
 | Brood War / BWAPI | Semantic executor boundary implemented; real BWAPI adapter still requires a BWAPI machine. |
@@ -128,18 +129,77 @@ python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm --script "SCV 계속 
 
 ### Web GUI
 
-Starts a browser UI with command input, state, and history. For local computer
-control, keep the default localhost binding and run StarCraft II in windowed or
-borderless-window mode so the browser GUI can stay visible beside the game:
+Starts a browser cockpit with command input, voice input, MicroMachine DSL
+status, state, and history. The top chat/voice input defaults to
+**MicroMachine policy cockpit** mode:
+
+```text
+text / voice
+  -> bounded MicroMachine DSL compiler
+  -> MicroMachine blackboard directory
+  -> patched MicroMachine C++ managers
+  -> telemetry / tactical logs shown in the dashboard
+```
+
+This default path does not call python-sc2 and does not emulate the SC2 screen,
+keyboard, or mouse. It can publish smoke-test modulation through the built-in
+keyword provider without an LLM key. If an LLM key is configured, the same
+bounded DSL route can be used by an LLM provider.
+
+Standalone local UI:
+
+```bash
+python3 -m starcraft_commander.web_gui --dry-run
+python3 -m starcraft_commander.web_gui --dry-run --port 0
+```
+
+In that page, the **Commander Chat** and browser voice button are the unified
+input surface. Select **MicroMachine policy cockpit** or
+**Legacy python-sc2 commander**, then use **선택 모드 실행** to start the selected
+runtime from the same cockpit. In MicroMachine mode this calls
+`POST /api/runtime/start` and launches
+`integrations/micromachine/scripts/smoke_macos_local.sh` with the current
+blackboard directory, so StarCraft II and patched MicroMachine can be started
+from the UI when the local SC2/MicroMachine build prerequisites are present.
+
+CLI QA can keep that same MicroMachine runtime alive after the manual live
+preflight verifies worker guard telemetry:
+
+```bash
+integrations/micromachine/scripts/smoke_macos_local.sh \
+  --live-hold \
+  --blackboard-dir /private/tmp/voi-mm-live \
+  --max-attempts 1
+```
+
+Then publish a live text intervention into the same blackboard:
+
+```bash
+python3 -m starcraft_commander.micromachine_live_session \
+  --blackboard-dir /private/tmp/voi-mm-live \
+  --command "공격적으로 마린 탐색해서 적발견시 바로 공격해" \
+  --update-id manual-live-attack-now \
+  --pretty
+```
+
+The right-side **MicroMachine runtime / DSL evidence** panel is a collapsed
+advanced/debug panel. It controls the blackboard directory and optional
+semantic scope used by the top chat/voice input, and it shows telemetry evidence
+that patched MicroMachine consumed the published DSL. The left Commander Chat
+remains the primary input surface.
+
+Legacy python-sc2 GUI remains available only as an explicit compatibility mode:
 
 ```bash
 python3 -m starcraft_commander.demo_sc2 --dry-run --gui
 python3 -m starcraft_commander.demo_sc2 --dry-run --gui 0
 ```
 
-`--gui 0` asks the OS for an available port.
+`--gui 0` asks the OS for an available port. In the page, select
+**Legacy python-sc2 commander** only when intentionally testing the old
+`/api/command` route. It is not MicroMachine QA evidence.
 
-For actual local play:
+For actual local play through the legacy python-sc2 commander:
 
 ```bash
 SC2PATH="/Users/jinminseong/Desktop/StarCraft2/StarCraft II" \
@@ -154,9 +214,18 @@ the game; use windowed/borderless mode or a second monitor for stable local
 GUI control. Live mode now fails before StarCraft II starts unless the selected
 provider key is already available through `OPENAI_API_KEY` or
 `ANTHROPIC_API_KEY`. The web GUI's **LLM 설정** panel can rotate the key for the
-running local process, but it cannot bypass startup preflight. Keys are kept
-only in process memory and are never written to repo files or returned by
-`/api/llm`.
+running local process, but it cannot bypass startup preflight for the legacy
+python-sc2 path. Keys are kept only in process memory and are never written to
+repo files or returned by `/api/llm`.
+
+The standalone web GUI no longer auto-starts the legacy python-sc2 live GUI
+after LLM setup, because that looked like a MicroMachine launch. The explicit
+**선택 모드 실행** button is the supported launch path for both modes. If you
+explicitly need key-save-time legacy auto-launch for compatibility testing:
+
+```bash
+python3 -m starcraft_commander.web_gui --dry-run --auto-launch-legacy-live
+```
 
 For phone/tablet companion control on the same Wi-Fi:
 
@@ -254,6 +323,15 @@ The executable inventory lives in [docs/intent-inventory.md](docs/intent-invento
 ## Architecture
 
 ```text
+Default MicroMachine cockpit:
+Korean text / voice
+  -> bounded MicroMachine DSL compiler/provider
+  -> PolicyModulationVector
+  -> MicroMachine blackboard backend
+  -> patched MicroMachine C++ managers
+  -> telemetry / tactical logs / dashboard
+
+Legacy python-sc2 commander mode:
 Korean text / voice
   -> LLM-mandatory interpreter
   -> deprecated offline rules only when explicitly using --no-llm
@@ -282,7 +360,13 @@ Important modules:
 - `starcraft_commander/python_sc2_adapter.py` — semantic actions to BotAI calls.
 - `starcraft_commander/event_memory.py` — bounded thread-safe command history.
 - `starcraft_commander/standing_orders.py` — per-frame code policies, never LLM.
-- `starcraft_commander/web_gui.py` — localhost-first stdlib web UI.
+- `starcraft_commander/web_gui.py` — localhost-first stdlib web UI; default
+  chat/voice route is MicroMachine DSL, legacy python-sc2 commander is opt-in,
+  and `/api/runtime/start|status` launch/status the selected runtime.
+- `starcraft_commander/micromachine_live_session.py` — text/LLM/UI provider
+  sidecar that publishes bounded modulation to MicroMachine.
+- `starcraft_commander/micromachine_runtime.py` — MicroMachine blackboard
+  backend and telemetry contract.
 - `starcraft_commander/llm_interpreter.py` — schema-gated OpenAI/Anthropic interpreter.
 - `broodwar_commander/bw_executor.py` — BWAPI-style semantic plans and executor.
 
@@ -303,6 +387,11 @@ Detailed design docs:
 - Rejections include Korean reason and alternative.
 - The LLM can only produce schema-validated canonical intents.
 - The LLM is called per user utterance, never per game frame.
+- MicroMachine cockpit input publishes only bounded DSL modulation; no raw
+  unit tags, python-sc2 calls, s2client-api calls, keyboard hooks, OCR, or
+  mouse automation are fallback paths.
+- Legacy python-sc2 commander mode is visibly opt-in and must not be treated as
+  MicroMachine production evidence.
 - Web GUI binds to `127.0.0.1` by default; network companion mode requires a token.
 
 ## Development

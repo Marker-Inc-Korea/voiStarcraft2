@@ -41,6 +41,7 @@ from starcraft_commander.policy_modulation import (
     TacticalScopeModulation,
     TechModulation,
     WeightedBiases,
+    WorkerModulation,
     reject_raw_policy_control_keys,
 )
 from starcraft_commander.policy_modulation_provider import (
@@ -174,6 +175,7 @@ def build_defensive_hold_profile(
             require_fresh_enemy_observation=True,
         ),
         squad=SquadModulation(defense_bias=0.65, regroup_bias=0.45),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
         emergency=EmergencyModulation(hold_position=True),
         constraints=(
             PolicySafetyConstraint(
@@ -220,6 +222,8 @@ def build_aggressive_pressure_profile(
                 }
             ),
         ),
+        production=ProductionModulation(production_continuity_bias=0.55),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
         scouting=ScoutingModulation(
             scout_priority=0.7,
             risk_tolerance=0.45,
@@ -269,6 +273,7 @@ def build_economic_expansion_profile(
             expansion_safety_bias=0.25,
         ),
         production=ProductionModulation(production_continuity_bias=0.35),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
         combat=CombatModulation(defend_bias=0.55, aggression=-0.15),
         scouting=ScoutingModulation(scout_priority=0.45, risk_tolerance=-0.05),
         squad=SquadModulation(defense_bias=0.35, regroup_bias=0.25),
@@ -292,6 +297,7 @@ def build_scouting_map_control_profile(
         ttl_seconds=ttl_seconds,
         strategy=StrategyModulation(posture="balanced", strategic_tags=("map_control",)),
         combat=CombatModulation(aggression=0.15, defend_bias=0.35, harassment_bias=0.25),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
         scouting=ScoutingModulation(
             scout_priority=0.9,
             risk_tolerance=0.25,
@@ -329,10 +335,12 @@ def build_tech_transition_profile(
             tech_path_tags=("factory_transition",),
         ),
         production=ProductionModulation(
+            production_continuity_bias=0.55,
             addon_biases=WeightedBiases({"TECHLAB": 0.45}),
             max_tech_deviation=0.35,
             tech_switch_urgency=0.4,
         ),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
         combat=CombatModulation(defend_bias=0.35, preserve_army_bias=0.35),
         tags=("micromachine", "tech_transition", "bounded_intervention"),
         rationale="Bias tech and production managers toward a safe mid-game transition.",
@@ -354,6 +362,7 @@ def build_emergency_recovery_profile(
         confidence=0.88,
         ttl_seconds=ttl_seconds,
         economy=EconomyModulation(repair_priority=0.85, supply_buffer_bias=0.4),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
         combat=CombatModulation(
             aggression=-0.75,
             retreat_threshold_delta=0.35,
@@ -807,6 +816,7 @@ def flatten_blackboard_update(update: MicroMachineBlackboardUpdate) -> str:
     for domain in (
         "strategy",
         "economy",
+        "workers",
         "tech",
         "production",
         "combat",

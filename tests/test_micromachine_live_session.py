@@ -56,7 +56,87 @@ class FailingPublishBlackboard(MicroMachineInMemoryBlackboard):
         raise OSError("blackboard directory unavailable")
 
 
+class EventuallyReadableTelemetryBlackboard(MicroMachineInMemoryBlackboard):
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_count = 0
+
+    def read_latest_telemetry(self) -> MicroMachineTelemetry | None:
+        self.read_count += 1
+        if self.read_count == 1:
+            return None
+        return MicroMachineTelemetry(frame=321)
+
+
 class MicroMachineLiveTextSessionTest(unittest.TestCase):
+    def test_keyword_provider_does_not_publish_plain_greeting(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text("안녕", current_frame=7, update_id="hello-noop")
+
+        self.assertFalse(result.ok, result.to_dict())
+        self.assertEqual(LiveModulationStatus.CLARIFICATION_REQUIRED, result.status)
+        self.assertIsNone(result.update)
+        self.assertIsNone(backend.latest_update)
+        self.assertEqual(
+            LiveModulationConsumptionStatus.NOT_PUBLISHED,
+            result.consumption_status,
+        )
+        self.assertEqual(
+            PolicyModulationCompileStatus.CLARIFICATION_REQUIRED,
+            result.compile_result.status,
+        )
+        self.assertIn("전술 의도", result.compile_result.clarification_prompt)
+
+    def test_keyword_provider_maps_attack_intent_to_offensive_gate_biases(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "공격적으로 마린 탐색해서 적발견시 바로 공격해",
+            current_frame=100,
+            update_id="attack-now",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("force_when_threshold_met", vector.combat.attack_condition_override)
+        self.assertGreaterEqual(vector.combat.attack_timing_bias, 0.6)
+        self.assertGreaterEqual(vector.combat.commitment_level, 0.5)
+        self.assertGreaterEqual(vector.combat.retreat_patience_bias, 0.4)
+        self.assertGreaterEqual(vector.squad.main_army_bias, 0.5)
+        self.assertGreaterEqual(vector.squad.contain_bias, 0.3)
+        self.assertEqual("main", vector.scope.army_group)
+        self.assertEqual("enemy_natural", vector.scope.location_intent)
+        self.assertEqual(1, vector.scope.min_units)
+        self.assertGreaterEqual(vector.ttl_seconds, 600)
+        self.assertGreaterEqual(vector.production.production_continuity_bias, 0.6)
+        self.assertEqual(32, vector.workers.repeat_order_guard_frames)
+        self.assertIn("workers", result.update.manager_bias_domains)
+        self.assertIn("worker_line", vector.combat.target_priority_biases.to_dict())
+        self.assertIn("aggressive_pressure", vector.tags)
+
+    def test_retries_transient_telemetry_read_before_issuing_live_update(self) -> None:
+        backend = EventuallyReadableTelemetryBlackboard()
+        session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {"goal": "공격적으로 압박해", "combat": {"aggression": 0.5}}
+            ),
+        )
+
+        result = session.submit_text("공격적으로 압박해", update_id="frame-race")
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual(321, result.current_frame)
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        self.assertEqual(321, result.update.issued_at_frame)
+        self.assertGreaterEqual(backend.read_count, 2)
+
     def test_text_provider_output_publishes_modulation_update(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         backend.ingest_telemetry(MicroMachineTelemetry(frame=42))
@@ -87,6 +167,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         assert result.update is not None
         self.assertEqual("live-42", result.update.update_id)
         self.assertEqual(42, result.update.issued_at_frame)
+        self.assertEqual(32, result.update.vector.workers.repeat_order_guard_frames)
+        self.assertIn("workers", result.update.manager_bias_domains)
         self.assertEqual(
             42 + 90 * MICROMACHINE_GAME_LOOPS_PER_SECOND,
             result.update.expires_at_frame,
@@ -435,6 +517,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         assert result.update is not None
         self.assertLess(result.update.vector.combat.aggression, 0)
         self.assertGreater(result.update.vector.combat.defend_bias, 0)
+        self.assertEqual(32, result.update.vector.workers.repeat_order_guard_frames)
+        self.assertIn("workers", result.update.manager_bias_domains)
 
     def test_cli_writes_result_and_filesystem_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

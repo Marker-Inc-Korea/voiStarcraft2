@@ -18,6 +18,7 @@ from starcraft_commander.policy_modulation import (
     TacticalScopeModulation,
     TechModulation,
     WeightedBiases,
+    WorkerModulation,
     reject_raw_policy_control_keys,
 )
 
@@ -61,6 +62,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 expansion_safety_bias=0.65,
                 mule_priority=0.2,
             ),
+            workers=WorkerModulation(repeat_order_guard_frames=32),
             tech=TechModulation(
                 structure_biases=WeightedBiases({"Starport": 0.4}),
                 unit_biases=WeightedBiases({"SiegeTank": 0.6, "Marine": 0.2}),
@@ -145,6 +147,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual("defensive", document["strategy"]["posture"])
         self.assertEqual(0.45, document["strategy"]["timing_biases"]["tank_timing"])
         self.assertEqual(0.4, document["economy"]["gas_worker_target_bias"])
+        self.assertEqual(32, document["workers"]["repeat_order_guard_frames"])
         self.assertEqual(0.5, document["production"]["addon_biases"]["TechLab"])
         self.assertEqual(0.15, document["combat"]["engage_threshold_delta"])
         self.assertEqual(4200, document["combat"]["pressure_window_frames"])
@@ -184,6 +187,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
                     "squad_role_biases": {"harass": 0.5, "main_army": 0.2},
                     "contain_bias": 0.4,
                 },
+                "workers": {"repeat_order_guard_frames": 48},
                 "scope": {
                     "army_group": "harass",
                     "unit_classes": ["reaper"],
@@ -203,6 +207,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual("force_when_threshold_met", vector.combat.attack_condition_override)
         self.assertEqual({"Baneling": 0.5}, vector.combat.target_priority_biases.to_dict())
         self.assertEqual(0.4, vector.squad.contain_bias)
+        self.assertEqual(48, vector.workers.repeat_order_guard_frames)
         self.assertEqual("harass", vector.scope.army_group)
         self.assertEqual(("reaper",), vector.scope.unit_classes)
         self.assertEqual("require_scouting_before_attack", vector.constraints[0].key)
@@ -283,6 +288,10 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 override_level=PolicyOverrideLevel.EMERGENCY,
                 ttl_seconds=120,
             )
+        with self.assertRaisesRegex(ValueError, "repeat_order_guard_frames"):
+            WorkerModulation(repeat_order_guard_frames=3)
+        with self.assertRaisesRegex(ValueError, "repeat_order_guard_frames"):
+            WorkerModulation(repeat_order_guard_frames=97)
 
     def test_rejects_unknown_enums_and_invalid_booleans(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported policy override"):

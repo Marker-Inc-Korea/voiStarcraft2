@@ -109,6 +109,17 @@
       "intended_effect": "Bias repair/gas/worker-defense policies without directly selecting workers."
     },
     {
+      "domain": "workers",
+      "source_path": "src/GameCommander.cpp",
+      "header_path": "src/GameCommander.h",
+      "function": "GameCommander::shouldSuppressRepeatedWorkerCommand(...)",
+      "secondary_function": "Unit/Micro command wrapper calls",
+      "keys": [
+        "workers.repeat_order_guard_frames"
+      ],
+      "intended_effect": "Suppress repeated identical worker orders inside a bounded frame window without issuing replacement raw unit commands."
+    },
+    {
       "domain": "combat_analysis",
       "source_path": "src/CombatAnalyzer.cpp",
       "header_path": "src/CombatAnalyzer.h",

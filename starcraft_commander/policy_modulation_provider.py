@@ -297,6 +297,8 @@ _DOMAIN_ALIASES = {
     "supply_buffer_bias": ("economy", "supply_buffer_bias"),
     "expansion_safety_bias": ("economy", "expansion_safety_bias"),
     "mule_priority": ("economy", "mule_priority"),
+    "repeat_order_guard_frames": ("workers", "repeat_order_guard_frames"),
+    "worker_repeat_order_guard_frames": ("workers", "repeat_order_guard_frames"),
     "structure_biases": ("tech", "structure_biases"),
     "unit_biases": ("tech", "unit_biases"),
     "upgrade_biases": ("tech", "upgrade_biases"),
@@ -369,6 +371,7 @@ _DOMAIN_ALIASES = {
 _DOMAIN_KEYS = {
     "strategy",
     "economy",
+    "workers",
     "tech",
     "production",
     "combat",
