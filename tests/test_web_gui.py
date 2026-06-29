@@ -738,10 +738,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "bot_name": "MicroMachine",
                 "race": "Terran",
                 "managers": {
+                    "GameCommander": {
+                        "policy_active": True,
+                        "update_id": "web-tactical-1",
+                    },
                     "CombatCommander": {
                         "active": True,
                         "policy_active": True,
-                        "update_id": "web-tactical-1",
                         "aggression": 0.45,
                         "main_attack_order_status": "Attack",
                         "main_attack_order_reason": "VOI force threshold met",
@@ -764,7 +767,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "WorkerManager": {
                         "active": True,
                         "repeat_order_guard_active": True,
-                        "repeat_order_guard_frames": 24,
+                        "repeat_order_guard_frames": 32,
                         "repeat_order_suppressed_count": 7,
                         "consumed_axes": "workers.repeat_order_guard_frames",
                     },

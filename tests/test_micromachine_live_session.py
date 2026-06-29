@@ -119,6 +119,51 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertIn("worker_line", vector.combat.target_priority_biases.to_dict())
         self.assertIn("aggressive_pressure", vector.tags)
 
+    def test_live_provider_cannot_weaken_worker_repeat_order_guard(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "공격적으로 압박해",
+                    "combat": {"aggression": 0.5},
+                    "workers": {"repeat_order_guard_frames": 4},
+                }
+            ),
+        )
+
+        result = session.submit_text("공격적으로 압박해", current_frame=100)
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        self.assertEqual(32, result.update.vector.workers.repeat_order_guard_frames)
+        self.assertIn("workers", result.update.manager_bias_domains)
+        self.assertIn(
+            "live_worker_repeat_order_guard_frames_clamped=4->32",
+            result.compile_result.warnings,
+        )
+
+    def test_live_provider_can_strengthen_worker_repeat_order_guard(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "수비적으로 버텨",
+                    "combat": {"defend_bias": 0.5},
+                    "workers": {"repeat_order_guard_frames": 48},
+                }
+            ),
+        )
+
+        result = session.submit_text("수비적으로 버텨", current_frame=100)
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        self.assertEqual(48, result.update.vector.workers.repeat_order_guard_frames)
+
     def test_retries_transient_telemetry_read_before_issuing_live_update(self) -> None:
         backend = EventuallyReadableTelemetryBlackboard()
         session = MicroMachineLiveTextSession(

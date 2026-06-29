@@ -1067,13 +1067,21 @@ def _micromachine_current_update_telemetry(
     if not update_id:
         return {"frame": telemetry_frame, "managers": {}} if telemetry_frame is not None else {}
     managers = telemetry_document.get("managers")
+    manager_payloads: dict[str, object] = {}
     scoped_managers: dict[str, object] = {}
     if isinstance(managers, Mapping):
         for manager, payload in managers.items():
             if not isinstance(payload, Mapping):
                 continue
+            manager_payloads[str(manager)] = dict(payload)
             if _micromachine_manager_matches_update(payload, update_id=update_id):
                 scoped_managers[str(manager)] = dict(payload)
+    game_commander = manager_payloads.get("GameCommander")
+    if isinstance(game_commander, Mapping) and _micromachine_manager_matches_update(
+        game_commander,
+        update_id=update_id,
+    ):
+        scoped_managers = manager_payloads
     return {
         "frame": telemetry_frame,
         "active_modulation_ids": _string_list(

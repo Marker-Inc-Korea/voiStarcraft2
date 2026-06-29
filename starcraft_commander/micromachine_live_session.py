@@ -531,8 +531,8 @@ def _ensure_live_worker_repeat_order_guard(
 
     if not compile_result.ok or compile_result.vector is None:
         return compile_result
-    default_guard = WorkerModulation().repeat_order_guard_frames
-    if compile_result.vector.workers.repeat_order_guard_frames != default_guard:
+    guard_frames = compile_result.vector.workers.repeat_order_guard_frames
+    if guard_frames >= 32:
         return compile_result
     vector = replace(
         compile_result.vector,
@@ -544,7 +544,7 @@ def _ensure_live_worker_repeat_order_guard(
         vector=vector,
         warnings=(
             *compile_result.warnings,
-            "live_worker_repeat_order_guard_frames=32",
+            f"live_worker_repeat_order_guard_frames_clamped={guard_frames}->32",
         ),
     )
 
