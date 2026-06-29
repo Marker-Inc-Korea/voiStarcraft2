@@ -878,6 +878,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertNotEqual("passed", tactical_evidence["status"])
             self.assertIn("contain", tactical_evidence["missing_effects"])
             self.assertEqual([], tactical_evidence["observed_effects"])
+            self.assertNotIn("Squad", document["intervention"]["manager_snapshot"])
+            self.assertEqual(
+                "",
+                document["intervention"]["target_priority"]["selected_target_class"],
+            )
+            self.assertEqual("", document["intervention"]["attack_gate"]["status"])
 
     def test_micromachine_tactical_evidence_ignores_future_frame_stale_logs(self):
         with tempfile.TemporaryDirectory() as directory:

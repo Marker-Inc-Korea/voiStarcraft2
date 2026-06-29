@@ -676,6 +676,9 @@ def _micromachine_intervention_summary(
         source_paths=_micromachine_log_snippet_sources(log_snippets),
         refusal_reasons=(refusal_reason,) if refusal_reason else (),
     ).to_dict()
+    dashboard_managers = evidence_telemetry.get("managers", {})
+    if not isinstance(dashboard_managers, Mapping):
+        dashboard_managers = {}
     return {
         "applied": consumption_status == "consumed",
         "policy_active": policy_active,
@@ -692,18 +695,20 @@ def _micromachine_intervention_summary(
         "source": str(vector.get("source", "") or ""),
         "manager_snapshot": {
             str(manager): dict(payload)
-            for manager, payload in managers.items()
+            for manager, payload in dashboard_managers.items()
             if isinstance(payload, Mapping)
         },
-        "consumed_axes_by_manager": _micromachine_consumed_axes_by_manager(managers),
-        "tactical_scope": _micromachine_tactical_scope(vector, managers),
+        "consumed_axes_by_manager": _micromachine_consumed_axes_by_manager(
+            dashboard_managers
+        ),
+        "tactical_scope": _micromachine_tactical_scope(vector, dashboard_managers),
         "tactical_posture": _micromachine_tactical_posture(
             vector,
-            managers,
+            dashboard_managers,
             compile_payload,
         ),
-        "target_priority": _micromachine_target_priority(vector, managers),
-        "attack_gate": _micromachine_attack_gate(vector, managers),
+        "target_priority": _micromachine_target_priority(vector, dashboard_managers),
+        "attack_gate": _micromachine_attack_gate(vector, dashboard_managers),
         "tactical_evidence": tactical_evidence,
         "refusal_reason": refusal_reason,
         "log_snippets": [dict(item) for item in log_snippets],
