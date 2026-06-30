@@ -1020,6 +1020,46 @@ if int(squad.get("scope_min_units", 0)) < 1:
 for key in ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"):
     if float(squad.get(key, 0)) <= 0:
         raise SystemExit(f"missing target priority evidence {key}: {squad!r}")
+production = managers.get("ProductionManager")
+if not production or production.get("active") is not True:
+    raise SystemExit(f"missing ProductionManager activity evidence: {managers!r}")
+if production.get("bounded_intervention") is not True:
+    raise SystemExit(f"missing ProductionManager bounded intervention evidence: {production!r}")
+if production.get("policy_update_id") != aggressive_update_id:
+    raise SystemExit(f"ProductionManager did not consume latest aggressive update: {production!r}")
+if production.get("strategy_doctrine") != "bio_pressure":
+    raise SystemExit(f"ProductionManager did not consume bio_pressure doctrine: {production!r}")
+if production.get("last_doctrine") != "bio_pressure":
+    raise SystemExit(f"ProductionManager latest doctrine mismatch: {production!r}")
+if production.get("last_doctrine_update_id") != aggressive_update_id:
+    raise SystemExit(f"ProductionManager doctrine action came from stale update: {production!r}")
+if production.get("last_doctrine_fresh") is not True:
+    raise SystemExit(f"ProductionManager doctrine action is not fresh: {production!r}")
+if str(production.get("last_doctrine_action", "") or "") in ("", "none"):
+    raise SystemExit(f"ProductionManager did not queue a doctrine action: {production!r}")
+if str(production.get("last_doctrine_queue_item", "") or "") in ("", "none"):
+    raise SystemExit(f"ProductionManager doctrine action did not queue an item: {production!r}")
+if int(production.get("last_doctrine_frame", 0)) <= 0:
+    raise SystemExit(f"ProductionManager doctrine action frame is missing: {production!r}")
+if float(production.get("composition_bias_bio", 0)) <= 0:
+    raise SystemExit(f"ProductionManager missing bio composition bias evidence: {production!r}")
+if float(production.get("queue_bias_marine", 0)) <= 0:
+    raise SystemExit(f"ProductionManager missing Marine queue bias evidence: {production!r}")
+production_consumed_axes = {
+    axis.strip()
+    for axis in str(production.get("consumed_axes", "")).split(",")
+    if axis.strip()
+}
+for axis in (
+    "strategy.doctrine",
+    "production.queue_biases.*",
+    "production.composition_biases.*",
+    "production.production_facility_biases.*",
+    "production.tech_switch_urgency",
+    "tech.unit_biases.*",
+):
+    if axis not in production_consumed_axes:
+        raise SystemExit(f"missing ProductionManager consumed axis {axis}: {production!r}")
 workers = managers.get("WorkerManager")
 if not workers or workers.get("active") is not True:
     raise SystemExit(f"missing WorkerManager activity evidence: {managers!r}")

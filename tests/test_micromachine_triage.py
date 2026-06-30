@@ -140,6 +140,17 @@ class MicroMachineTriageTest(unittest.TestCase):
                         "update_id": "dsl-rush-001",
                     },
                     "CombatCommander": {"bounded_intervention": True},
+                    "ProductionManager": {
+                        "bounded_intervention": True,
+                        "policy_update_id": "dsl-rush-001",
+                        "strategy_doctrine": "bio_pressure",
+                        "last_doctrine": "bio_pressure",
+                        "last_doctrine_action": "marine_pressure",
+                        "last_doctrine_queue_item": "Marine",
+                        "last_doctrine_update_id": "dsl-rush-001",
+                        "last_doctrine_frame": 8_500,
+                        "last_doctrine_fresh": True,
+                    },
                     "ScoutManager": {"bounded_intervention": True},
                     "WorkerManager": {
                         "active": True,

@@ -10299,16 +10299,17 @@ index 9110e7e..49fbd0c 100644
              {
                  m_dist[(int)nextTile.x][(int)nextTile.y] = m_dist[(int)tile.x][(int)tile.y] + 1;
 diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
-index 045faab..1fa4a8f 100644
+index 045faab..d69164d 100644
 --- a/src/GameCommander.cpp
 +++ b/src/GameCommander.cpp
-@@ -2,18 +2,111 @@
+@@ -2,18 +2,112 @@
  #include "CCBot.h"
  #include "Util.h"
  
 +#include <cstdlib>
 +#include <cmath>
 +#include <fstream>
++#include <algorithm>
 +#include <iostream>
 +#include <sstream>
 +
@@ -10414,7 +10415,7 @@ index 045faab..1fa4a8f 100644
      m_productionManager.onStart();
      m_scoutManager.onStart();
      m_combatCommander.onStart();
-@@ -25,6 +118,8 @@ void GameCommander::onFrame(bool executeMacro)
+@@ -25,6 +119,8 @@ void GameCommander::onFrame(bool executeMacro)
      handleUnitAssignments();
  	m_bot.StopProfiling("0.10.1   handleUnitAssignments");
  
@@ -10423,7 +10424,7 @@ index 045faab..1fa4a8f 100644
  	m_bot.StartProfiling("0.10.2   m_productionManager.onFrame");
  	m_productionManager.onFrame(executeMacro);
  	m_bot.StopProfiling("0.10.2   m_productionManager.onFrame");
-@@ -34,6 +129,234 @@ void GameCommander::onFrame(bool executeMacro)
+@@ -34,6 +130,234 @@ void GameCommander::onFrame(bool executeMacro)
  	m_bot.StartProfiling("0.10.4   m_combatCommander.onFrame");
      m_combatCommander.onFrame(m_combatUnits);
  	m_bot.StopProfiling("0.10.4   m_combatCommander.onFrame");
@@ -10658,7 +10659,7 @@ index 045faab..1fa4a8f 100644
  }
  
  ProductionManager& GameCommander::Production()
-@@ -46,6 +369,173 @@ CombatCommander& GameCommander::Combat()
+@@ -46,6 +370,173 @@ CombatCommander& GameCommander::Combat()
  	return m_combatCommander;
  }
  
@@ -10832,7 +10833,7 @@ index 045faab..1fa4a8f 100644
  // assigns units to various managers
  void GameCommander::handleUnitAssignments()
  {
-@@ -98,8 +588,9 @@ void GameCommander::setScoutUnits()
+@@ -98,8 +589,9 @@ void GameCommander::setScoutUnits()
      if (m_scoutUnits.empty())
      {
          const BaseLocation * enemyBaseLocation = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
@@ -10843,7 +10844,7 @@ index 045faab..1fa4a8f 100644
  			return;
  
          // We need to find the enemy base to do something
-@@ -125,6 +616,15 @@ void GameCommander::setScoutUnits()
+@@ -125,6 +617,15 @@ void GameCommander::setScoutUnits()
  
  bool GameCommander::shouldSendInitialScout()
  {
@@ -10859,7 +10860,7 @@ index 045faab..1fa4a8f 100644
      return m_bot.Strategy().scoutConditionIsMet();
  }
  
-@@ -230,4 +730,4 @@ void GameCommander::GiveDelayedSmarAbilityOrders()
+@@ -230,4 +731,4 @@ void GameCommander::GiveDelayedSmarAbilityOrders()
  			Micro::SmartAbility(command.first.getUnitPtr(), command.second.first, command.second.second, m_bot);
  		}
  	}
@@ -13794,10 +13795,10 @@ index e68c228..bb1b2a2 100644
  	CCPositionType DistSq(const Unit & unit, const Unit & unit2);
      CCPositionType DistSq(const CCPosition & p1, const CCPosition & p2);
 diff --git a/src/WorkerData.cpp b/src/WorkerData.cpp
-index d0a078d..13f6442 100644
+index d0a078d..cf6d79d 100644
 --- a/src/WorkerData.cpp
 +++ b/src/WorkerData.cpp
-@@ -1,863 +1,1122 @@
+@@ -1,863 +1,1138 @@
 -#include "WorkerData.h"
 -#include "Util.h"
 -#include "CCBot.h"
@@ -14777,6 +14778,8 @@ index d0a078d..13f6442 100644
 +    m_proxyWorkers.erase(unit);
 +	m_workerMineralMap.erase(unit);
 +	m_workerLastSeenFrame.erase(unit.getTag());
++	m_pendingMineralAssignmentTarget.erase(unit.getTag());
++	m_pendingMineralAssignmentFrame.erase(unit.getTag());
 +
 +	for (auto & building : m_workerRepairing)
 +	{
@@ -14946,16 +14949,30 @@ index d0a078d..13f6442 100644
 +							|| order.ability_id == sc2::ABILITY_ID::HARVEST_GATHER
 +							|| order.ability_id == sc2::ABILITY_ID::HARVEST_RETURN);
 +				}
-+				if (!alreadyHarvestingTarget)
++				const uint32_t currentFrame = m_bot.GetCurrentFrame();
++				const auto pendingTarget = m_pendingMineralAssignmentTarget.find(worker.getTag());
++				const auto pendingFrame = m_pendingMineralAssignmentFrame.find(worker.getTag());
++				const bool recentlyAssignedSameMineral = pendingTarget != m_pendingMineralAssignmentTarget.end()
++					&& pendingFrame != m_pendingMineralAssignmentFrame.end()
++					&& pendingTarget->second == mineralToMine.getTag()
++					&& currentFrame >= pendingFrame->second
++					&& currentFrame - pendingFrame->second < 96;
++				if (!alreadyHarvestingTarget && !recentlyAssignedSameMineral)
 +				{
 +					m_bot.Commander().setVoiWorkerCommandReason(worker, "mineral_assignment");
 +					worker.rightClick(mineralToMine);
++					m_pendingMineralAssignmentTarget[worker.getTag()] = mineralToMine.getTag();
++					m_pendingMineralAssignmentFrame[worker.getTag()] = currentFrame;
 +				}
 +
 +				if (!worker.getType().isMule())
 +				{
 +					m_workerMineralMap[worker] = mineralToMine;
-+					m_mineralWorkersMap[mineralToMine].push_back(worker.getTag());
++					auto & assignedWorkers = m_mineralWorkersMap[mineralToMine];
++					if (std::find(assignedWorkers.begin(), assignedWorkers.end(), worker.getTag()) == assignedWorkers.end())
++					{
++						assignedWorkers.push_back(worker.getTag());
++					}
 +				}
 +			}
 +			else
@@ -15785,10 +15802,10 @@ index d0a078d..13f6442 100644
 +	return Unit();
 +}
 diff --git a/src/WorkerData.h b/src/WorkerData.h
-index c645489..f667450 100644
+index c645489..1df33d7 100644
 --- a/src/WorkerData.h
 +++ b/src/WorkerData.h
-@@ -24,8 +24,11 @@ class WorkerData
+@@ -24,8 +24,13 @@ class WorkerData
      std::map<Unit, int>     m_workerJobMap;
      std::map<Unit, int>     m_refineryWorkerCount;
      std::map<Unit, int>     m_depotWorkerCount;
@@ -15798,10 +15815,12 @@ index c645489..f667450 100644
 +	std::map<sc2::Tag, sc2::Tag> m_workerRefineryTagMap;
 +	std::map<sc2::Tag, std::set<sc2::Tag>> m_refineryWorkerTags;
 +	std::map<sc2::Tag, uint32_t> m_workerLastSeenFrame;
++	std::map<sc2::Tag, sc2::Tag> m_pendingMineralAssignmentTarget;
++	std::map<sc2::Tag, uint32_t> m_pendingMineralAssignmentFrame;
      std::map<Unit, std::set<Unit>> m_workerRepairing;
  	std::map<const BaseLocation*, std::list<Unit>> m_repairStationWorkers;
      std::map<Unit, Unit>    m_workerRepairTarget;
-@@ -53,6 +56,7 @@ public:
+@@ -53,6 +58,7 @@ public:
      size_t  getNumWorkers() const;
      int     getWorkerJobCount(int job) const;
      int     getNumAssignedWorkers(const Unit & unit);
@@ -15809,7 +15828,7 @@ index c645489..f667450 100644
  	std::vector<Unit> getAssignedWorkersRefinery(const Unit & unit);
      int     getWorkerJob(const Unit & unit) const;
  	bool	isReturningCargo(const Unit & unit) const;
-@@ -81,4 +85,4 @@ public:
+@@ -81,4 +87,4 @@ public:
      const std::set<Unit> getWorkerRepairingThatTargetC(const Unit & unit) const;
      void WorkerStoppedRepairing(const Unit & unit);
  	Unit updateWorkerDepot(const Unit & worker, const Unit & mineral);

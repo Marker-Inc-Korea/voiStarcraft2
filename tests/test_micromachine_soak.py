@@ -673,6 +673,37 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
 
             self.assert_failure_codes(report, {"manager_intervention_missing"})
 
+    def test_rejects_archived_production_action_from_previous_update(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archived = _telemetry(8_000, update_id="previous-update")
+            latest = _telemetry(12_500, update_id="current-update")
+            managers = latest["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["last_doctrine_action"] = "none"
+            production["last_doctrine_queue_item"] = "none"
+            production["last_doctrine_frame"] = 0
+            production["last_doctrine_update_id"] = "current-update"
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=latest,
+                telemetry_archive=[archived, latest],
+                modulation=_modulation(update_id="current-update"),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"manager_intervention_missing"})
+
     def test_rejects_production_doctrine_mismatch_false_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1035,10 +1066,16 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             update_id = "soak-aggressive-pressure-11500"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["last_doctrine_frame"] = 11_600
             self._write_runtime(
                 root,
                 log_text=MACRO_LOG,
-                telemetry=_telemetry(12_500, update_id=update_id),
+                telemetry=telemetry,
                 modulation={
                     **_modulation(update_id=update_id),
                     "issued_at_frame": 11_500,
