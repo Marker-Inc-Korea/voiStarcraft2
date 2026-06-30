@@ -191,6 +191,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "\\\"WorkerManager\\\":{",
             "repeat_order_guard_active",
             "repeat_order_suppressed_count",
+            "self_position_command_block_count",
+            "root_cause_status",
+            "root_cause_reason",
+            "setVoiWorkerCommandReason",
+            "consumeVoiWorkerCommandReason",
+            "const bool idleSpotIsUseful = Util::DistSq(worker.getPosition(), idlePos) > 1.0f",
+            "const bool depotFallbackIsUseful = Util::DistSq(worker.getPosition(), base->getDepotPosition()) > 1.0f",
+            "m_lastVoiScoutMoveFrame",
+            "m_lastVoiScoutMoveTarget",
+            "already ordered",
             "workers.repeat_order_guard_frames",
             "m_bot->Commander().shouldSuppressRepeatedWorkerCommand(m_unit, sc2::ABILITY_ID::SMART",
             "bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, sc2::ABILITY_ID::MOVE",
@@ -221,6 +231,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn(
             "+\t\treturn lhs.x < rhs.x || lhs.x == rhs.y && lhs.y < rhs.y;",
             patch,
+        )
+        self.assertNotIn(
+            "m_lastVoiScoutMoveReason == reason",
+            patch,
+            "Scout duplicate prevention must be target-based, not reason-dependent.",
         )
         for term in (
             "extern char **environ",
@@ -424,6 +439,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "bounded_intervention",
             "repeat_order_guard_active",
             "repeat_order_suppressed_count",
+            "self_position_command_block_count",
+            "root_cause_status",
+            "root_cause_reason",
             "workers.repeat_order_guard_frames",
             "combat.attack_timing_bias",
             "combat.commitment_level",
@@ -442,7 +460,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "target_army_bias",
             "missing deep CombatCommander consumed axis",
             "missing deep Squad consumed axis",
-            "worker repeat-order guard did not suppress any repeated order",
+            "worker self-position command root-cause blocks were observed",
             "aggressive_update_id = sys.argv[3]",
             "defensive_update_id = sys.argv[4]",
             "smoke-defensive-hold",
@@ -471,6 +489,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "MicroMachine reached SC2 API but did not execute the required macro opening",
             "bootstrap_no_start_units",
             "NO_START_UNITS_FRAME",
+            "missing worker root-cause status telemetry",
+            "missing_worker_root_cause_reason",
+            "worker root-cause archive violation",
+            "archived_scout_duplicate_worker_move",
             "except json.JSONDecodeError",
         ):
             with self.subTest(term=term):

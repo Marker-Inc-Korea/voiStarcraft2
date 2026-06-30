@@ -141,6 +141,15 @@ class MicroMachineTriageTest(unittest.TestCase):
                     },
                     "CombatCommander": {"bounded_intervention": True},
                     "ScoutManager": {"bounded_intervention": True},
+                    "WorkerManager": {
+                        "active": True,
+                        "repeat_order_guard_active": True,
+                        "repeat_order_guard_frames": 32,
+                        "repeat_order_suppressed_count": 0,
+                        "self_position_command_block_count": 0,
+                        "root_cause_status": "none",
+                        "root_cause_reason": "none",
+                    },
                 },
             }
             modulation = {

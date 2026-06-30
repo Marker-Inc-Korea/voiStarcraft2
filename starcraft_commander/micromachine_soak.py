@@ -73,6 +73,7 @@ class MicroMachineSoakConfig:
     income_stall_frames: int = 2_000
     bootstrap_no_start_units_frame: int = 1_200
     max_placement_failures: int = 3
+    max_worker_self_position_blocks: int = 0
     modulation_consumption_grace_frames: int = 128
     require_macro_evidence: bool = True
     require_manager_intervention: bool = True
@@ -92,6 +93,12 @@ class MicroMachineSoakConfig:
             self.modulation_consumption_grace_frames,
         )
         _require_positive("max_placement_failures", self.max_placement_failures)
+        if (
+            type(self.max_worker_self_position_blocks) is bool
+            or not isinstance(self.max_worker_self_position_blocks, int)
+            or self.max_worker_self_position_blocks < 0
+        ):
+            raise ValueError("max_worker_self_position_blocks must be a non-negative integer.")
         object.__setattr__(
             self,
             "expected_profile_tags",
@@ -113,6 +120,7 @@ class MicroMachineSoakConfig:
             "income_stall_frames": self.income_stall_frames,
             "bootstrap_no_start_units_frame": self.bootstrap_no_start_units_frame,
             "max_placement_failures": self.max_placement_failures,
+            "max_worker_self_position_blocks": self.max_worker_self_position_blocks,
             "modulation_consumption_grace_frames": self.modulation_consumption_grace_frames,
             "require_macro_evidence": self.require_macro_evidence,
             "require_manager_intervention": self.require_manager_intervention,
@@ -317,6 +325,28 @@ def classify_micromachine_soak(
     )
     if no_start_units_failure is not None:
         failures.append(no_start_units_failure)
+
+    worker_root_cause_contract_failure = _classify_worker_root_cause_telemetry_contract(
+        telemetry,
+        telemetry_archive,
+    )
+    if worker_root_cause_contract_failure is not None:
+        failures.append(worker_root_cause_contract_failure)
+
+    worker_self_position_failure = _classify_worker_self_position_blocks(
+        telemetry,
+        telemetry_archive,
+        resolved_config.max_worker_self_position_blocks,
+    )
+    if worker_self_position_failure is not None:
+        failures.append(worker_self_position_failure)
+
+    scout_duplicate_worker_move_failure = _classify_scout_duplicate_worker_move(
+        telemetry,
+        telemetry_archive,
+    )
+    if scout_duplicate_worker_move_failure is not None:
+        failures.append(scout_duplicate_worker_move_failure)
 
     placement_failure_count = count_placement_failures(log_text)
     if placement_failure_count >= resolved_config.max_placement_failures:
@@ -574,6 +604,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=defaults.max_placement_failures,
     )
+    parser.add_argument(
+        "--max-worker-self-position-blocks",
+        type=int,
+        default=defaults.max_worker_self_position_blocks,
+    )
     parser.add_argument("--bot-exit-code", type=int)
     parser.add_argument("--bot-stopped", action="store_true")
     parser.add_argument("--termination-reason")
@@ -595,6 +630,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         income_stall_frames=args.income_stall_frames,
         bootstrap_no_start_units_frame=args.bootstrap_no_start_units_frame,
         max_placement_failures=args.max_placement_failures,
+        max_worker_self_position_blocks=args.max_worker_self_position_blocks,
         modulation_consumption_grace_frames=args.modulation_consumption_grace_frames,
         expected_profile_tags=tuple(
             item for item in args.expected_profile_tags.split() if item
@@ -719,6 +755,153 @@ def _classify_bootstrap_no_start_units(
                     "enemy_start_location_count": enemy_start_locations,
                 },
             )
+    return None
+
+
+def _classify_worker_root_cause_telemetry_contract(
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+) -> MicroMachineSoakFailure | None:
+    required_fields = (
+        "repeat_order_suppressed_count",
+        "self_position_command_block_count",
+        "root_cause_status",
+        "root_cause_reason",
+    )
+    telemetry_entries = [entry for entry in (*telemetry_archive, latest_telemetry) if entry]
+    for telemetry in telemetry_entries:
+        managers = telemetry.get("managers")
+        if not isinstance(managers, Mapping):
+            return MicroMachineSoakFailure(
+                code="worker_root_cause_telemetry_missing",
+                message=(
+                    "Telemetry has no managers block; soak cannot prove worker "
+                    "self-position and duplicate worker move bugs are absent."
+                ),
+                evidence={
+                    "frame": _int_value(telemetry.get("frame")),
+                    "missing_fields": ["managers.WorkerManager"],
+                },
+            )
+        workers = managers.get("WorkerManager")
+        if not isinstance(workers, Mapping):
+            return MicroMachineSoakFailure(
+                code="worker_root_cause_telemetry_missing",
+                message=(
+                    "Telemetry has no WorkerManager root-cause contract; soak cannot "
+                    "prove self-position and duplicate worker move bugs are absent."
+                ),
+                evidence={
+                    "frame": _int_value(telemetry.get("frame")),
+                    "missing_fields": ["WorkerManager"],
+                    "managers": sorted(str(key) for key in managers),
+                },
+            )
+        missing = [field for field in required_fields if field not in workers]
+        if missing:
+            return MicroMachineSoakFailure(
+                code="worker_root_cause_telemetry_missing",
+                message=(
+                    "WorkerManager root-cause telemetry is incomplete; soak cannot "
+                    "prove self-position and duplicate worker move bugs are absent."
+                ),
+                evidence={
+                    "frame": _int_value(telemetry.get("frame")),
+                    "missing_fields": missing,
+                    "workers": dict(workers),
+                },
+            )
+    return None
+
+
+def _classify_worker_self_position_blocks(
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+    max_allowed: int,
+) -> MicroMachineSoakFailure | None:
+    worst_count = 0
+    worst_evidence: dict[str, object] = {}
+    for telemetry in (*telemetry_archive, latest_telemetry):
+        managers = telemetry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        workers = managers.get("WorkerManager")
+        if not isinstance(workers, Mapping):
+            continue
+        count = _int_value(workers.get("self_position_command_block_count"))
+        root_cause_status = workers.get("root_cause_status")
+        if count <= worst_count and root_cause_status != "self_position_move_blocked":
+            continue
+        worst_count = max(worst_count, count)
+        worst_evidence = {
+            "frame": _int_value(telemetry.get("frame")),
+            "self_position_command_block_count": count,
+            "max_worker_self_position_blocks": max_allowed,
+            "root_cause_status": root_cause_status,
+            "root_cause_reason": workers.get("root_cause_reason"),
+            "worker_tag": workers.get("last_self_position_worker_tag"),
+            "ability": workers.get("last_self_position_ability"),
+            "target_kind": workers.get("last_self_position_target_kind"),
+            "target_x": workers.get("last_self_position_target_x"),
+            "target_y": workers.get("last_self_position_target_y"),
+            "distance_sq": workers.get("last_self_position_distance_sq"),
+            "current_order_ability": workers.get("last_worker_current_order_ability"),
+            "current_order_target_tag": workers.get("last_worker_current_order_target_tag"),
+        }
+
+    if worst_count > max_allowed or worst_evidence.get("root_cause_status") == "self_position_move_blocked":
+        return MicroMachineSoakFailure(
+            code="worker_self_position_command",
+            message=(
+                "WorkerManager generated a move/smart command to the worker's own "
+                "position; this is a root-cause bug, not a successful repeat guard."
+            ),
+            evidence=worst_evidence,
+        )
+    return None
+
+
+def _classify_scout_duplicate_worker_move(
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+) -> MicroMachineSoakFailure | None:
+    worst_evidence: dict[str, object] = {}
+    for telemetry in (*telemetry_archive, latest_telemetry):
+        managers = telemetry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        workers = managers.get("WorkerManager")
+        if not isinstance(workers, Mapping):
+            continue
+        if workers.get("root_cause_status") != "duplicate_command_safety_blocked":
+            continue
+        root_cause_reason = workers.get("root_cause_reason")
+        if not isinstance(root_cause_reason, str) or not root_cause_reason.startswith("scout_"):
+            continue
+        worst_evidence = {
+            "frame": _int_value(telemetry.get("frame")),
+            "root_cause_status": workers.get("root_cause_status"),
+            "root_cause_reason": root_cause_reason,
+            "repeat_order_suppressed_count": _int_value(
+                workers.get("repeat_order_suppressed_count")
+            ),
+            "worker_tag": workers.get("last_repeat_order_worker_tag"),
+            "ability": workers.get("last_repeat_order_ability"),
+            "target_kind": workers.get("last_repeat_order_target_kind"),
+            "target_x": workers.get("last_repeat_order_target_x"),
+            "target_y": workers.get("last_repeat_order_target_y"),
+        }
+
+    if worst_evidence:
+        return MicroMachineSoakFailure(
+            code="scout_duplicate_worker_move_command",
+            message=(
+                "ScoutManager generated repeated worker move commands that were only "
+                "stopped by the WorkerManager safety guard; fix the ScoutManager "
+                "decision path instead of relying on suppression."
+            ),
+            evidence=worst_evidence,
+        )
     return None
 
 
