@@ -15,7 +15,7 @@ import re
 import uuid
 from copy import deepcopy
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
 
@@ -30,6 +30,7 @@ from starcraft_commander.policy_modulation import (
     CombatModulation,
     EconomyModulation,
     EmergencyModulation,
+    MICROMACHINE_DOCTRINES,
     PolicyModulationSource,
     PolicyModulationVector,
     PolicyOverrideLevel,
@@ -62,12 +63,37 @@ LATEST_TELEMETRY_JSON_NAME: Final[str] = "latest_telemetry.json"
 TELEMETRY_ARCHIVE_JSONL_NAME: Final[str] = "telemetry.jsonl"
 MICROMACHINE_STRATEGY_PROFILE_VERSION: Final[int] = 1
 MICROMACHINE_STRATEGY_PROFILE_KEYS: Final[tuple[str, ...]] = (
+    "marine_rush",
+    "bio_pressure",
+    "tank_defensive_hold",
+    "siege_contain",
+    "mech_transition",
+    "drop_harassment",
+    "worker_line_harassment",
+    "scouting_map_control",
+    "expand_macro",
+    "anti_air_response",
+    "defensive_counterattack",
+    "contain_enemy_natural",
     "defensive_hold",
     "economic_expansion",
     "aggressive_pressure",
-    "scouting_map_control",
     "tech_transition",
     "emergency_recovery",
+)
+MICROMACHINE_DOCTRINE_PROFILE_KEYS: Final[tuple[str, ...]] = (
+    "marine_rush",
+    "bio_pressure",
+    "tank_defensive_hold",
+    "siege_contain",
+    "mech_transition",
+    "drop_harassment",
+    "worker_line_harassment",
+    "scouting_map_control",
+    "expand_macro",
+    "anti_air_response",
+    "defensive_counterattack",
+    "contain_enemy_natural",
 )
 _KV_KEY_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
@@ -161,6 +187,7 @@ def build_defensive_hold_profile(
         override_level=PolicyOverrideLevel.CONSTRAINT,
         confidence=0.85,
         ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(posture="defensive", doctrine="tank_defensive_hold"),
         combat=CombatModulation(
             aggression=-0.35,
             engage_threshold_delta=0.2,
@@ -202,6 +229,11 @@ def build_aggressive_pressure_profile(
         override_level=PolicyOverrideLevel.BIAS,
         confidence=0.82,
         ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(
+            posture="pressure",
+            doctrine="bio_pressure",
+            preferred_builds=WeightedBiases({"bio_pressure": 0.55}),
+        ),
         combat=CombatModulation(
             aggression=0.55,
             engage_threshold_delta=-0.15,
@@ -262,6 +294,7 @@ def build_economic_expansion_profile(
         ttl_seconds=ttl_seconds,
         strategy=StrategyModulation(
             posture="economic",
+            doctrine="expand_macro",
             timing_biases=WeightedBiases({"third_base_timing": 0.35}),
         ),
         economy=EconomyModulation(
@@ -295,7 +328,11 @@ def build_scouting_map_control_profile(
         override_level=PolicyOverrideLevel.BIAS,
         confidence=0.8,
         ttl_seconds=ttl_seconds,
-        strategy=StrategyModulation(posture="balanced", strategic_tags=("map_control",)),
+        strategy=StrategyModulation(
+            posture="balanced",
+            doctrine="scouting_map_control",
+            strategic_tags=("map_control",),
+        ),
         combat=CombatModulation(aggression=0.15, defend_bias=0.35, harassment_bias=0.25),
         workers=WorkerModulation(repeat_order_guard_frames=32),
         scouting=ScoutingModulation(
@@ -325,6 +362,7 @@ def build_tech_transition_profile(
         ttl_seconds=ttl_seconds,
         strategy=StrategyModulation(
             posture="balanced",
+            doctrine="mech_transition",
             transition_biases=WeightedBiases({"bio_to_factory": 0.45}),
         ),
         economy=EconomyModulation(gas_priority=0.55, gas_worker_target_bias=0.35),
@@ -389,6 +427,499 @@ def build_emergency_recovery_profile(
     )
 
 
+def build_marine_rush_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a doctrine profile that keeps early bio pressure Marine-focused."""
+
+    return PolicyModulationVector(
+        goal="micromachine_marine_rush",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=0.82,
+        ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(
+            posture="pressure",
+            doctrine="marine_rush",
+            preferred_builds=WeightedBiases({"marine_rush": 0.8}),
+            timing_biases=WeightedBiases({"early_barracks_pressure": 0.7}),
+        ),
+        economy=EconomyModulation(worker_production_bias=0.25, supply_buffer_bias=0.35),
+        tech=TechModulation(
+            unit_biases=WeightedBiases({"TERRAN_MARINE": 0.85, "TERRAN_REAPER": 0.2}),
+            upgrade_biases=WeightedBiases({"STIMPACK": 0.25}),
+            tech_path_tags=("bio", "low_tech_pressure"),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases({"TERRAN_MARINE": 0.85, "TERRAN_BARRACKS": 0.55}),
+            composition_biases=WeightedBiases({"bio": 0.75, "marine": 0.9}),
+            production_facility_biases=WeightedBiases({"TERRAN_BARRACKS": 0.65}),
+            production_continuity_bias=0.75,
+            tech_switch_urgency=-0.35,
+        ),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
+        combat=CombatModulation(
+            aggression=0.72,
+            attack_timing_bias=0.65,
+            commitment_level=0.55,
+            attack_condition_override="force_when_threshold_met",
+            retreat_patience_bias=0.25,
+            target_priority_biases=WeightedBiases({"army": 0.35, "worker_line": 0.25}),
+        ),
+        scouting=ScoutingModulation(scout_priority=0.65, risk_tolerance=0.35),
+        squad=SquadModulation(main_army_bias=0.7, reinforce_bias=0.35),
+        scope=TacticalScopeModulation(
+            army_group="bio",
+            unit_classes=("marine", "reaper"),
+            location_intent="enemy_natural",
+            min_units=2,
+            require_safety_margin=0.05,
+        ),
+        tags=("micromachine", "marine_rush", "bounded_intervention"),
+        rationale="Bias existing MicroMachine opening toward early Marine pressure.",
+    )
+
+
+def build_bio_pressure_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a bio pressure profile with Marine/Marauder/Medivac support."""
+
+    return replace(
+        build_aggressive_pressure_profile(ttl_seconds=ttl_seconds, source=source),
+        goal="micromachine_bio_pressure",
+        strategy=StrategyModulation(
+            posture="pressure",
+            doctrine="bio_pressure",
+            preferred_builds=WeightedBiases({"bio_pressure": 0.7}),
+        ),
+        tech=TechModulation(
+            unit_biases=WeightedBiases(
+                {
+                    "TERRAN_MARINE": 0.65,
+                    "TERRAN_MARAUDER": 0.45,
+                    "TERRAN_MEDIVAC": 0.35,
+                }
+            ),
+            upgrade_biases=WeightedBiases({"STIMPACK": 0.55, "COMBATSHIELD": 0.35}),
+            tech_path_tags=("bio", "medivac_support"),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases(
+                {
+                    "TERRAN_MARINE": 0.55,
+                    "TERRAN_MARAUDER": 0.35,
+                    "TERRAN_MEDIVAC": 0.25,
+                }
+            ),
+            composition_biases=WeightedBiases({"bio": 0.75, "medivac_support": 0.25}),
+            production_facility_biases=WeightedBiases(
+                {"TERRAN_BARRACKS": 0.55, "TERRAN_STARPORT": 0.25}
+            ),
+            addon_biases=WeightedBiases({"BARRACKS_TECHLAB": 0.3, "BARRACKS_REACTOR": 0.35}),
+            production_continuity_bias=0.55,
+            tech_switch_urgency=0.1,
+        ),
+        tags=("micromachine", "bio_pressure", "bounded_intervention"),
+    )
+
+
+def build_tank_defensive_hold_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a defensive hold profile that biases Factory/TechLab/Tank paths."""
+
+    return replace(
+        build_defensive_hold_profile(ttl_seconds=ttl_seconds, source=source),
+        goal="micromachine_tank_defensive_hold",
+        strategy=StrategyModulation(
+            posture="defensive",
+            doctrine="tank_defensive_hold",
+            preferred_builds=WeightedBiases({"two_base_tank_hold": 0.75}),
+            transition_biases=WeightedBiases({"bio_to_factory": 0.45}),
+        ),
+        economy=EconomyModulation(gas_priority=0.65, repair_priority=0.35),
+        tech=TechModulation(
+            structure_biases=WeightedBiases({"TERRAN_FACTORY": 0.6}),
+            unit_biases=WeightedBiases({"TERRAN_SIEGETANK": 0.85, "TERRAN_MARINE": 0.15}),
+            upgrade_biases=WeightedBiases({"TERRANVEHICLEWEAPONSLEVEL1": 0.25}),
+            tech_path_tags=("factory", "siege"),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases(
+                {
+                    "TERRAN_FACTORY": 0.65,
+                    "FACTORY_TECHLAB": 0.65,
+                    "TERRAN_SIEGETANK": 0.85,
+                }
+            ),
+            composition_biases=WeightedBiases({"siege": 0.75, "mech": 0.55}),
+            addon_biases=WeightedBiases({"FACTORY_TECHLAB": 0.7}),
+            production_facility_biases=WeightedBiases({"TERRAN_FACTORY": 0.65}),
+            production_continuity_bias=-0.25,
+            tech_switch_urgency=0.65,
+            allow_build_order_rewrite=True,
+        ),
+        combat=CombatModulation(
+            aggression=-0.25,
+            defend_bias=0.85,
+            preserve_army_bias=0.7,
+            siege_position_bias=0.8,
+            target_priority_biases=WeightedBiases({"army": 0.35}),
+        ),
+        tags=("micromachine", "tank_defensive_hold", "bounded_intervention"),
+    )
+
+
+def build_siege_contain_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a siege contain profile that transitions into controlled pressure."""
+
+    base = build_tank_defensive_hold_profile(ttl_seconds=ttl_seconds, source=source)
+    return replace(
+        base,
+        goal="micromachine_siege_contain",
+        strategy=StrategyModulation(
+            posture="pressure",
+            doctrine="siege_contain",
+            preferred_builds=WeightedBiases({"two_base_tank_push": 0.75}),
+            timing_biases=WeightedBiases({"tank_push": 0.65}),
+            transition_biases=WeightedBiases({"bio_to_factory": 0.55}),
+        ),
+        combat=CombatModulation(
+            aggression=0.35,
+            attack_timing_bias=0.45,
+            commitment_level=0.5,
+            attack_condition_override="earlier_if_safe",
+            retreat_patience_bias=0.45,
+            siege_position_bias=0.8,
+            target_priority_biases=WeightedBiases({"townhall": 0.35, "production": 0.35}),
+        ),
+        squad=SquadModulation(main_army_bias=0.55, contain_bias=0.75, reinforce_bias=0.45),
+        scope=TacticalScopeModulation(
+            army_group="siege",
+            unit_classes=("marine", "siege_tank"),
+            location_intent="enemy_natural",
+            min_units=4,
+            require_safety_margin=0.15,
+        ),
+        tags=("micromachine", "siege_contain", "bounded_intervention"),
+    )
+
+
+def build_mech_transition_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a mech transition profile that de-emphasizes Marine continuity."""
+
+    base = build_tech_transition_profile(ttl_seconds=ttl_seconds, source=source)
+    return replace(
+        base,
+        goal="micromachine_mech_transition",
+        strategy=StrategyModulation(
+            posture="balanced",
+            doctrine="mech_transition",
+            transition_biases=WeightedBiases({"bio_to_mech": 0.8}),
+        ),
+        tech=TechModulation(
+            structure_biases=WeightedBiases({"TERRAN_FACTORY": 0.75, "TERRAN_ARMORY": 0.25}),
+            unit_biases=WeightedBiases(
+                {
+                    "TERRAN_HELLION": 0.45,
+                    "TERRAN_CYCLONE": 0.35,
+                    "TERRAN_SIEGETANK": 0.65,
+                    "TERRAN_THOR": 0.2,
+                }
+            ),
+            upgrade_biases=WeightedBiases({"TERRANVEHICLEWEAPONSLEVEL1": 0.4}),
+            tech_path_tags=("mech", "factory"),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases(
+                {
+                    "TERRAN_FACTORY": 0.75,
+                    "FACTORY_TECHLAB": 0.55,
+                    "TERRAN_HELLION": 0.35,
+                    "TERRAN_SIEGETANK": 0.6,
+                }
+            ),
+            composition_biases=WeightedBiases({"mech": 0.85, "bio": -0.45}),
+            addon_biases=WeightedBiases({"FACTORY_TECHLAB": 0.55, "FACTORY_REACTOR": 0.25}),
+            production_facility_biases=WeightedBiases({"TERRAN_FACTORY": 0.75}),
+            production_continuity_bias=-0.55,
+            tech_switch_urgency=0.85,
+            allow_build_order_rewrite=True,
+        ),
+        tags=("micromachine", "mech_transition", "bounded_intervention"),
+    )
+
+
+def build_drop_harassment_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a profile that biases Medivac/drop harassment support."""
+
+    return PolicyModulationVector(
+        goal="micromachine_drop_harassment",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=0.8,
+        ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(
+            posture="pressure",
+            doctrine="drop_harassment",
+            preferred_builds=WeightedBiases({"medivac_drop": 0.75}),
+        ),
+        economy=EconomyModulation(gas_priority=0.45),
+        tech=TechModulation(
+            structure_biases=WeightedBiases({"TERRAN_STARPORT": 0.65}),
+            unit_biases=WeightedBiases({"TERRAN_MEDIVAC": 0.8, "TERRAN_MARINE": 0.45}),
+            upgrade_biases=WeightedBiases({"STIMPACK": 0.35}),
+            tech_path_tags=("bio", "drop"),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases(
+                {"TERRAN_STARPORT": 0.65, "TERRAN_MEDIVAC": 0.85, "TERRAN_MARINE": 0.35}
+            ),
+            composition_biases=WeightedBiases({"drop": 0.85, "bio": 0.45}),
+            addon_biases=WeightedBiases({"STARPORT_REACTOR": 0.45}),
+            production_facility_biases=WeightedBiases({"TERRAN_STARPORT": 0.65}),
+            production_continuity_bias=0.15,
+            tech_switch_urgency=0.55,
+            allow_build_order_rewrite=True,
+        ),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
+        combat=CombatModulation(
+            aggression=0.45,
+            harassment_bias=0.8,
+            commitment_level=0.35,
+            retreat_patience_bias=0.5,
+            target_priority_biases=WeightedBiases({"worker_line": 0.8, "production": 0.25}),
+        ),
+        scouting=ScoutingModulation(scout_priority=0.6, risk_tolerance=0.4),
+        squad=SquadModulation(harassment_bias=0.75, drop_bias=0.85, split_army_bias=0.45),
+        scope=TacticalScopeModulation(
+            army_group="harass",
+            unit_classes=("marine", "medivac"),
+            location_intent="enemy_main",
+            min_units=2,
+            allow_partial_scope=True,
+        ),
+        tags=("micromachine", "drop_harassment", "bounded_intervention"),
+        rationale="Bias MicroMachine toward drop-capable harassment without direct transport commands.",
+    )
+
+
+def build_worker_line_harassment_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a profile that prioritizes worker-line pressure through bot managers."""
+
+    base = build_drop_harassment_profile(ttl_seconds=ttl_seconds, source=source)
+    return replace(
+        base,
+        goal="micromachine_worker_line_harassment",
+        strategy=StrategyModulation(
+            posture="pressure",
+            doctrine="worker_line_harassment",
+            preferred_builds=WeightedBiases({"worker_line_harass": 0.8}),
+        ),
+        tech=TechModulation(
+            structure_biases=WeightedBiases({"TERRAN_FACTORY": 0.35, "TERRAN_STARPORT": 0.35}),
+            unit_biases=WeightedBiases(
+                {"TERRAN_REAPER": 0.35, "TERRAN_HELLION": 0.55, "TERRAN_MEDIVAC": 0.35}
+            ),
+            tech_path_tags=("harass", "mobility"),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases(
+                {"TERRAN_REAPER": 0.35, "TERRAN_HELLION": 0.55, "TERRAN_MEDIVAC": 0.35}
+            ),
+            composition_biases=WeightedBiases({"harass": 0.85, "worker_line": 0.85}),
+            production_facility_biases=WeightedBiases(
+                {"TERRAN_FACTORY": 0.35, "TERRAN_STARPORT": 0.35}
+            ),
+            production_continuity_bias=0.05,
+            tech_switch_urgency=0.45,
+        ),
+        combat=CombatModulation(
+            aggression=0.5,
+            harassment_bias=0.85,
+            retreat_patience_bias=0.55,
+            target_priority_biases=WeightedBiases({"worker_line": 0.95, "townhall": 0.15}),
+        ),
+        squad=SquadModulation(harassment_bias=0.85, split_army_bias=0.4, drop_bias=0.35),
+        tags=("micromachine", "worker_line_harassment", "bounded_intervention"),
+    )
+
+
+def build_expand_macro_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return an expansion-first macro profile."""
+
+    return replace(
+        build_economic_expansion_profile(ttl_seconds=ttl_seconds, source=source),
+        goal="micromachine_expand_macro",
+        strategy=StrategyModulation(
+            posture="economic",
+            doctrine="expand_macro",
+            preferred_builds=WeightedBiases({"safe_expand": 0.75}),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases({"TERRAN_COMMANDCENTER": 0.75, "TERRAN_SCV": 0.55}),
+            composition_biases=WeightedBiases({"macro": 0.85}),
+            production_continuity_bias=0.2,
+            tech_switch_urgency=-0.2,
+        ),
+        tags=("micromachine", "expand_macro", "bounded_intervention"),
+    )
+
+
+def build_anti_air_response_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return an anti-air response profile using MicroMachine's Viking/turret paths."""
+
+    return PolicyModulationVector(
+        goal="micromachine_anti_air_response",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=0.78,
+        ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(
+            posture="defensive",
+            doctrine="anti_air_response",
+            preferred_builds=WeightedBiases({"anti_air_response": 0.75}),
+        ),
+        economy=EconomyModulation(gas_priority=0.55, repair_priority=0.25),
+        tech=TechModulation(
+            structure_biases=WeightedBiases(
+                {"TERRAN_STARPORT": 0.55, "TERRAN_ENGINEERINGBAY": 0.35}
+            ),
+            unit_biases=WeightedBiases({"TERRAN_VIKINGFIGHTER": 0.85, "TERRAN_MARINE": 0.25}),
+            upgrade_biases=WeightedBiases({"HISECAUTOTRACKING": 0.4}),
+            tech_path_tags=("anti_air",),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases(
+                {
+                    "TERRAN_STARPORT": 0.55,
+                    "TERRAN_VIKINGFIGHTER": 0.85,
+                    "TERRAN_MISSILETURRET": 0.35,
+                }
+            ),
+            composition_biases=WeightedBiases({"anti_air": 0.9}),
+            production_facility_biases=WeightedBiases({"TERRAN_STARPORT": 0.55}),
+            production_continuity_bias=-0.1,
+            tech_switch_urgency=0.65,
+            allow_build_order_rewrite=True,
+        ),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
+        combat=CombatModulation(
+            defend_bias=0.65,
+            preserve_army_bias=0.45,
+            target_priority_biases=WeightedBiases({"air_threat": 0.95, "detector": 0.3}),
+        ),
+        scouting=ScoutingModulation(scan_priority=0.55, hidden_tech_scout_bias=0.55),
+        squad=SquadModulation(defense_bias=0.45, main_army_bias=0.25),
+        scope=TacticalScopeModulation(army_group="air", unit_classes=("viking", "marine")),
+        tags=("micromachine", "anti_air_response", "bounded_intervention"),
+        rationale="Bias MicroMachine toward anti-air production and target priority.",
+    )
+
+
+def build_defensive_counterattack_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a profile that holds first and counterattacks when safe."""
+
+    return PolicyModulationVector(
+        goal="micromachine_defensive_counterattack",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=0.8,
+        ttl_seconds=ttl_seconds,
+        strategy=StrategyModulation(
+            posture="defensive",
+            doctrine="defensive_counterattack",
+            timing_biases=WeightedBiases({"counterattack_after_hold": 0.7}),
+        ),
+        economy=EconomyModulation(repair_priority=0.4, supply_buffer_bias=0.25),
+        tech=TechModulation(
+            unit_biases=WeightedBiases({"TERRAN_MARINE": 0.35, "TERRAN_SIEGETANK": 0.35}),
+            tech_path_tags=("counterattack",),
+        ),
+        production=ProductionModulation(
+            queue_biases=WeightedBiases({"TERRAN_MARINE": 0.35, "TERRAN_SIEGETANK": 0.35}),
+            composition_biases=WeightedBiases({"defense": 0.6, "counterattack": 0.55}),
+            production_continuity_bias=0.25,
+            tech_switch_urgency=0.25,
+        ),
+        workers=WorkerModulation(repeat_order_guard_frames=32),
+        combat=CombatModulation(
+            aggression=0.25,
+            defend_bias=0.65,
+            preserve_army_bias=0.55,
+            attack_timing_bias=0.35,
+            attack_condition_override="earlier_if_safe",
+            commitment_level=0.3,
+        ),
+        scouting=ScoutingModulation(require_fresh_enemy_observation=True, scout_priority=0.45),
+        squad=SquadModulation(defense_bias=0.55, regroup_bias=0.45, main_army_bias=0.35),
+        tags=("micromachine", "defensive_counterattack", "bounded_intervention"),
+        rationale="Bias MicroMachine to defend first and pressure only after safe evidence.",
+    )
+
+
+def build_contain_enemy_natural_profile(
+    *,
+    ttl_seconds: int = 600,
+    source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+) -> PolicyModulationVector:
+    """Return a profile that biases contain pressure at enemy natural."""
+
+    return replace(
+        build_siege_contain_profile(ttl_seconds=ttl_seconds, source=source),
+        goal="micromachine_contain_enemy_natural",
+        strategy=StrategyModulation(
+            posture="pressure",
+            doctrine="contain_enemy_natural",
+            preferred_builds=WeightedBiases({"enemy_natural_contain": 0.85}),
+        ),
+        squad=SquadModulation(main_army_bias=0.55, contain_bias=0.85, reinforce_bias=0.55),
+        scope=TacticalScopeModulation(
+            army_group="main",
+            unit_classes=("marine", "marauder", "siege_tank"),
+            location_intent="enemy_natural",
+            min_units=4,
+            require_safety_margin=0.12,
+        ),
+        tags=("micromachine", "contain_enemy_natural", "bounded_intervention"),
+    )
+
+
 def build_micromachine_strategy_profile(
     profile_key: str,
     *,
@@ -398,10 +929,21 @@ def build_micromachine_strategy_profile(
     """Build one named MicroMachine strategy profile."""
 
     builders = {
+        "marine_rush": build_marine_rush_profile,
+        "bio_pressure": build_bio_pressure_profile,
+        "tank_defensive_hold": build_tank_defensive_hold_profile,
+        "siege_contain": build_siege_contain_profile,
+        "mech_transition": build_mech_transition_profile,
+        "drop_harassment": build_drop_harassment_profile,
+        "worker_line_harassment": build_worker_line_harassment_profile,
+        "scouting_map_control": build_scouting_map_control_profile,
+        "expand_macro": build_expand_macro_profile,
+        "anti_air_response": build_anti_air_response_profile,
+        "defensive_counterattack": build_defensive_counterattack_profile,
+        "contain_enemy_natural": build_contain_enemy_natural_profile,
         "defensive_hold": build_defensive_hold_profile,
         "economic_expansion": build_economic_expansion_profile,
         "aggressive_pressure": build_aggressive_pressure_profile,
-        "scouting_map_control": build_scouting_map_control_profile,
         "tech_transition": build_tech_transition_profile,
         "emergency_recovery": build_emergency_recovery_profile,
     }
@@ -418,6 +960,54 @@ def micromachine_strategy_profile_catalog() -> dict[str, dict[str, object]]:
     return {
         "schema_version": MICROMACHINE_STRATEGY_PROFILE_VERSION,
         "profiles": {
+            "marine_rush": {
+                "managers": ["StrategyManager", "ProductionManager", "CombatCommander"],
+                "expected_tags": ["marine_rush", "bounded_intervention"],
+            },
+            "bio_pressure": {
+                "managers": ["StrategyManager", "ProductionManager", "CombatCommander", "Squad"],
+                "expected_tags": ["bio_pressure", "bounded_intervention"],
+            },
+            "tank_defensive_hold": {
+                "managers": ["ProductionManager", "CombatCommander", "Squad"],
+                "expected_tags": ["tank_defensive_hold", "bounded_intervention"],
+            },
+            "siege_contain": {
+                "managers": ["ProductionManager", "CombatCommander", "Squad"],
+                "expected_tags": ["siege_contain", "bounded_intervention"],
+            },
+            "mech_transition": {
+                "managers": ["ProductionManager", "StrategyManager", "CombatCommander"],
+                "expected_tags": ["mech_transition", "bounded_intervention"],
+            },
+            "drop_harassment": {
+                "managers": ["ProductionManager", "ScoutManager", "Squad"],
+                "expected_tags": ["drop_harassment", "bounded_intervention"],
+            },
+            "worker_line_harassment": {
+                "managers": ["ProductionManager", "ScoutManager", "Squad"],
+                "expected_tags": ["worker_line_harassment", "bounded_intervention"],
+            },
+            "scouting_map_control": {
+                "managers": ["ScoutManager", "CombatCommander", "Squad"],
+                "expected_tags": ["scouting_map_control", "bounded_intervention"],
+            },
+            "expand_macro": {
+                "managers": ["WorkerManager", "ProductionManager", "CombatCommander"],
+                "expected_tags": ["expand_macro", "bounded_intervention"],
+            },
+            "anti_air_response": {
+                "managers": ["ProductionManager", "CombatCommander", "ScoutManager"],
+                "expected_tags": ["anti_air_response", "bounded_intervention"],
+            },
+            "defensive_counterattack": {
+                "managers": ["CombatCommander", "Squad", "ScoutManager"],
+                "expected_tags": ["defensive_counterattack", "bounded_intervention"],
+            },
+            "contain_enemy_natural": {
+                "managers": ["CombatCommander", "Squad", "ProductionManager"],
+                "expected_tags": ["contain_enemy_natural", "bounded_intervention"],
+            },
             "defensive_hold": {
                 "managers": ["CombatCommander", "ScoutManager", "Squad"],
                 "expected_tags": ["defensive_hold", "bounded_intervention"],
@@ -429,10 +1019,6 @@ def micromachine_strategy_profile_catalog() -> dict[str, dict[str, object]]:
             "aggressive_pressure": {
                 "managers": ["CombatCommander", "ScoutManager", "Squad"],
                 "expected_tags": ["aggressive_pressure", "bounded_intervention"],
-            },
-            "scouting_map_control": {
-                "managers": ["ScoutManager", "CombatCommander", "Squad"],
-                "expected_tags": ["scouting_map_control", "bounded_intervention"],
             },
             "tech_transition": {
                 "managers": ["ProductionManager", "WorkerManager", "CombatCommander"],

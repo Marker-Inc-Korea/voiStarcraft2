@@ -53,6 +53,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 "confidence": 0.84,
                 "ttl": 180,
                 "posture": "defensive",
+                "doctrine": "tank_defensive_hold",
                 "timing_biases": {"tank_push": 0.35},
                 "economy": {
                     "expand_bias": 0.7,
@@ -87,6 +88,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual(PolicyModulationSource.LLM, result.vector.source)
         self.assertEqual(PolicyOverrideLevel.CONSTRAINT, result.vector.override_level)
         self.assertEqual("defensive", result.vector.strategy.posture)
+        self.assertEqual("tank_defensive_hold", result.vector.strategy.doctrine)
         self.assertEqual({"tank_push": 0.35}, result.vector.strategy.timing_biases.to_dict())
         self.assertEqual(0.7, result.vector.economy.expand_bias)
         self.assertEqual(0.5, result.vector.economy.gas_worker_target_bias)
@@ -153,6 +155,39 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual(0.4, vector.squad.reinforce_bias)
         self.assertEqual("siege", vector.scope.army_group)
         self.assertEqual("enemy_natural", vector.scope.location_intent)
+
+    def test_compiles_wrapped_doctrine_alias_to_strategy_domain(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "policy_modulation": {
+                    "goal": "switch_to_drop_play",
+                    "strategy_doctrine": "drop_harassment",
+                    "posture": "pressure",
+                    "production": {
+                        "queue_biases": {
+                            "TERRAN_STARPORT": 0.65,
+                            "TERRAN_MEDIVAC": 0.8,
+                        },
+                        "production_facility_biases": {"TERRAN_STARPORT": 0.65},
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("drop_harassment", result.vector.strategy.doctrine)
+        self.assertEqual("pressure", result.vector.strategy.posture)
+        self.assertEqual(
+            {"TERRAN_STARPORT": 0.65, "TERRAN_MEDIVAC": 0.8},
+            result.vector.production.queue_biases.to_dict(),
+        )
+        self.assertEqual(
+            {"TERRAN_STARPORT": 0.65},
+            result.vector.production.production_facility_biases.to_dict(),
+        )
 
     def test_compiles_issue_third_scope_wording(self) -> None:
         result = compile_policy_modulation_provider_output(
