@@ -699,6 +699,7 @@ def _micromachine_intervention_summary(
             for manager, payload in dashboard_managers.items()
             if isinstance(payload, Mapping)
         },
+        "strategy_mode": _micromachine_strategy_mode(vector, dashboard_managers),
         "consumed_axes_by_manager": _micromachine_consumed_axes_by_manager(
             dashboard_managers
         ),
@@ -785,6 +786,24 @@ def _micromachine_consumed_axes_by_manager(
         if axes:
             result[str(manager)] = axes
     return result
+
+
+def _micromachine_strategy_mode(
+    vector: Mapping[str, object],
+    managers: Mapping[str, object],
+) -> str:
+    production = managers.get("ProductionManager")
+    if isinstance(production, Mapping):
+        for key in ("strategy_doctrine", "last_doctrine"):
+            value = production.get(key)
+            if isinstance(value, str) and value.strip() and value != "none":
+                return value.strip()
+    strategy = vector.get("strategy")
+    if isinstance(strategy, Mapping):
+        value = strategy.get("doctrine")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _micromachine_tactical_scope(
@@ -3139,6 +3158,10 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
             <dt data-i18n="microMachineGoal">Compiled DSL goal</dt>
             <dd id="micromachine-goal">-</dd>
           </div>
+          <div>
+            <dt data-i18n="microMachineStrategyMode">Strategy mode / play style</dt>
+            <dd id="micromachine-strategy-mode">-</dd>
+          </div>
           <div class="wide-card">
             <dt data-i18n="microMachineManagers">Manager evidence</dt>
             <dd id="micromachine-managers">-</dd>
@@ -3398,6 +3421,7 @@ var I18N = {
     microMachineFrame: "Telemetry frame",
     microMachineDomains: "Bias domain",
     microMachineGoal: "컴파일된 DSL goal",
+    microMachineStrategyMode: "전략 모드 / 플레이 스타일",
     microMachineManagers: "Manager 증거",
     microMachinePosture: "전술 posture",
     microMachineScope: "Semantic scope",
@@ -3553,6 +3577,7 @@ var I18N = {
     microMachineFrame: "Telemetry frame",
     microMachineDomains: "Bias domains",
     microMachineGoal: "Compiled DSL goal",
+    microMachineStrategyMode: "Strategy mode / play style",
     microMachineManagers: "Manager evidence",
     microMachinePosture: "Tactical posture",
     microMachineScope: "Semantic scope",
@@ -3708,6 +3733,7 @@ var I18N = {
     microMachineFrame: "Telemetry frame",
     microMachineDomains: "Bias domain",
     microMachineGoal: "已编译 DSL goal",
+    microMachineStrategyMode: "Strategy mode / play style",
     microMachineManagers: "Manager evidence",
     microMachinePosture: "Tactical posture",
     microMachineScope: "Semantic scope",
@@ -5179,6 +5205,13 @@ function summarizeMicroMachineManagers(managers) {
         ", self-position " + (payload.self_position_command_block_count || 0) +
         " (" + (payload.root_cause_status || "none") + ")"
       );
+    } else if (manager === "ProductionManager" && payload.last_doctrine_action) {
+      parts.push(
+        manager + ": " + (payload.strategy_doctrine || payload.last_doctrine || "unknown") +
+        " action=" + payload.last_doctrine_action +
+        " item=" + (payload.last_doctrine_queue_item || "none") +
+        " evidence=" + (payload.last_doctrine_evidence || "missing")
+      );
     } else if (payload.policy_active === true) {
       parts.push(manager + ": policy_active");
     } else if (payload.active === true) {
@@ -5327,6 +5360,7 @@ function renderMicroMachineIntervention(data) {
     goalParts.push("confidence=" + intervention.confidence);
   }
   setMicroMachineText("micromachine-goal", goalParts.join(" | "));
+  setMicroMachineText("micromachine-strategy-mode", intervention.strategy_mode);
   setMicroMachineText("micromachine-managers", summarizeMicroMachineManagers(intervention.manager_snapshot));
   setMicroMachineText("micromachine-posture", intervention.tactical_posture);
   setMicroMachineText("micromachine-scope", formatMicroMachineScope(intervention.tactical_scope));

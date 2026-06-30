@@ -187,7 +187,7 @@ def build_defensive_hold_profile(
         override_level=PolicyOverrideLevel.CONSTRAINT,
         confidence=0.85,
         ttl_seconds=ttl_seconds,
-        strategy=StrategyModulation(posture="defensive", doctrine="tank_defensive_hold"),
+        strategy=StrategyModulation(posture="defensive", doctrine=""),
         combat=CombatModulation(
             aggression=-0.35,
             engage_threshold_delta=0.2,
@@ -514,13 +514,14 @@ def build_bio_pressure_profile(
                     "TERRAN_MARINE": 0.55,
                     "TERRAN_MARAUDER": 0.35,
                     "TERRAN_MEDIVAC": 0.25,
+                    "BARRACKS_TECHLAB": 0.45,
                 }
             ),
             composition_biases=WeightedBiases({"bio": 0.75, "medivac_support": 0.25}),
             production_facility_biases=WeightedBiases(
                 {"TERRAN_BARRACKS": 0.55, "TERRAN_STARPORT": 0.25}
             ),
-            addon_biases=WeightedBiases({"BARRACKS_TECHLAB": 0.3, "BARRACKS_REACTOR": 0.35}),
+            addon_biases=WeightedBiases({"BARRACKS_TECHLAB": 0.45, "BARRACKS_REACTOR": 0.35}),
             production_continuity_bias=0.55,
             tech_switch_urgency=0.1,
         ),
@@ -661,6 +662,17 @@ def build_mech_transition_profile(
             tech_switch_urgency=0.85,
             allow_build_order_rewrite=True,
         ),
+        combat=CombatModulation(
+            defend_bias=0.35,
+            preserve_army_bias=0.35,
+            target_priority_biases=WeightedBiases({"army": 0.35}),
+        ),
+        squad=SquadModulation(
+            main_army_bias=0.35,
+            defense_bias=0.25,
+            regroup_bias=0.3,
+            reinforce_bias=0.25,
+        ),
         tags=("micromachine", "mech_transition", "bounded_intervention"),
     )
 
@@ -692,11 +704,18 @@ def build_drop_harassment_profile(
         ),
         production=ProductionModulation(
             queue_biases=WeightedBiases(
-                {"TERRAN_STARPORT": 0.65, "TERRAN_MEDIVAC": 0.85, "TERRAN_MARINE": 0.35}
+                {
+                    "TERRAN_FACTORY": 0.45,
+                    "TERRAN_STARPORT": 0.65,
+                    "TERRAN_MEDIVAC": 0.85,
+                    "TERRAN_MARINE": 0.35,
+                }
             ),
             composition_biases=WeightedBiases({"drop": 0.85, "bio": 0.45}),
             addon_biases=WeightedBiases({"STARPORT_REACTOR": 0.45}),
-            production_facility_biases=WeightedBiases({"TERRAN_STARPORT": 0.65}),
+            production_facility_biases=WeightedBiases(
+                {"TERRAN_FACTORY": 0.45, "TERRAN_STARPORT": 0.65}
+            ),
             production_continuity_bias=0.15,
             tech_switch_urgency=0.55,
             allow_build_order_rewrite=True,

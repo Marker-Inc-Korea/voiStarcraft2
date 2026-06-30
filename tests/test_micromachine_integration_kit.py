@@ -17,6 +17,7 @@ PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
 SMOKE_SCRIPT = KIT_DIR / "scripts" / "smoke_macos_local.sh"
 SOAK_SCRIPT = KIT_DIR / "scripts" / "soak_macos_local.sh"
 SOAK_MATRIX_SCRIPT = KIT_DIR / "scripts" / "soak_matrix_macos_local.sh"
+STRATEGY_MATRIX_SCRIPT = KIT_DIR / "scripts" / "strategy_matrix_macos_local.sh"
 LOCAL_SOAK_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "micromachine-local-soak.yml"
 DEFAULT_MICROMACHINE_DIR = "/private/tmp/voi-micromachine-runtime/MicroMachine"
 DEFAULT_MICROMACHINE_BUILD_DIR = f"{DEFAULT_MICROMACHINE_DIR}/build-latest-api"
@@ -177,8 +178,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "voi doctrine action=",
             "last_doctrine_action",
             "last_doctrine_queue_item",
+            "last_doctrine_evidence",
             "last_doctrine_update_id",
             "last_doctrine_fresh",
+            "recordVoiDoctrineConsumptionIfRepresented",
+            "Only queueVoiDoctrineItem() records consumption",
             "policy_update_id",
             "strategy.doctrine,production.queue_biases.*,production.composition_biases.*",
             "getVoiPolicyInt(\"scope.min_units\", 0)",
@@ -306,6 +310,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         smoke_script = SMOKE_SCRIPT.read_text()
         soak_script = SOAK_SCRIPT.read_text()
         soak_matrix_script = SOAK_MATRIX_SCRIPT.read_text()
+        strategy_matrix_script = STRATEGY_MATRIX_SCRIPT.read_text()
 
         self.assertIn(
             'ROOT_DIR="${ROOT_DIR:-/private/tmp/voi-micromachine-runtime}"',
@@ -528,6 +533,20 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, smoke_script)
         self.assertNotIn(") || true", smoke_script)
         self.assertIn('payload.get("frame", 0) < min_frame', smoke_script)
+        for term in (
+            'MATRIX_RUN_ID="${MATRIX_RUN_ID:-$(date +%Y%m%d%H%M%S)-$$}"',
+            'MATRIX_RUN_ROOT="${BLACKBOARD_ROOT}/runs/${MATRIX_RUN_ID}"',
+            'summary="${MATRIX_RUN_ROOT}/strategy_matrix_summary.jsonl"',
+            'run_dir="${MATRIX_RUN_ROOT}/${profile}"',
+            "expected_contracts",
+            "load_latest_or_archive",
+            "summary_evidence_source",
+            "latest_doctrine_action",
+            "last_doctrine_evidence",
+            "worker_trace_status",
+        ):
+            with self.subTest(strategy_matrix_contract=term):
+                self.assertIn(term, strategy_matrix_script)
 
         for term in (
             "VOI_MICROMACHINE_BLACKBOARD_DIR",
@@ -581,6 +600,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SOAK_EXPECTED_TACTICAL_EFFECTS",
             "--expected-tactical-effects",
             "tactical_effect_missing",
+            "SOAK_EXPECTED_STRATEGY_DOCTRINE",
+            "SOAK_EXPECTED_PRODUCTION_ACTIONS",
+            "SOAK_EXPECTED_PRODUCTION_ITEMS",
+            "expected_strategy_contract",
+            "--expected-strategy-doctrine",
+            "--expected-production-actions",
+            "--expected-production-items",
+            "bio_marauder_techlab bio_marauder_support starport_transition medivac_drop_support",
             "SOAK_AGGRESSIVE_MIN_FRAME",
             "SOAK_MAX_ATTEMPTS",
             "SOAK_RETRY_SETTLE_SECONDS",

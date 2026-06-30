@@ -156,6 +156,9 @@ PROFILE_SCHEDULE_FRAMES=()
 PROFILE_SCHEDULE_PUBLISHED=()
 SOAK_EXPECTED_PROFILE_TAGS=""
 SOAK_EXPECTED_TACTICAL_EFFECTS="${SOAK_EXPECTED_TACTICAL_EFFECTS:-}"
+SOAK_EXPECTED_STRATEGY_DOCTRINE="${SOAK_EXPECTED_STRATEGY_DOCTRINE:-}"
+SOAK_EXPECTED_PRODUCTION_ACTIONS="${SOAK_EXPECTED_PRODUCTION_ACTIONS:-}"
+SOAK_EXPECTED_PRODUCTION_ITEMS="${SOAK_EXPECTED_PRODUCTION_ITEMS:-}"
 
 if [[ -z "${SOAK_ATTEMPT_INDEX}" && "${SOAK_MAX_ATTEMPTS}" -gt 1 ]]; then
   mkdir -p "${SOAK_RUN_DIR}"
@@ -534,6 +537,36 @@ backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_i
 PY
 }
 
+expected_strategy_contract() {
+  local profile="$1"
+  case "${profile}" in
+    aggressive_pressure|bio_pressure)
+      printf '%s\t%s\t%s\n' "bio_pressure" "bio_marauder_techlab bio_marauder_support starport_transition medivac_drop_support" "BarracksTechLab Marauder Starport Medivac"
+      ;;
+    marine_rush)
+      printf '%s\t%s\t%s\n' "marine_rush" "marine_pressure bio_facility" "Marine Barracks"
+      ;;
+    tank_defensive_hold|siege_contain|contain_enemy_natural)
+      printf '%s\t%s\t%s\n' "${profile}" "factory_transition factory_techlab siege_tank_composition" "Factory FactoryTechLab SiegeTank"
+      ;;
+    mech_transition|tech_transition)
+      printf '%s\t%s\t%s\n' "mech_transition" "factory_transition factory_techlab hellion_harassment cyclone_mech siege_tank_composition thor_mech" "Factory FactoryTechLab Hellion Cyclone SiegeTank Thor"
+      ;;
+    drop_harassment|worker_line_harassment)
+      printf '%s\t%s\t%s\n' "${profile}" "starport_transition drop_reactor medivac_drop_support factory_transition hellion_harassment reaper_harassment" "Starport StarportReactor Medivac Factory Hellion Reaper"
+      ;;
+    expand_macro|economic_expansion)
+      printf '%s\t%s\t%s\n' "expand_macro" "expand_macro" "CommandCenter"
+      ;;
+    anti_air_response)
+      printf '%s\t%s\t%s\n' "anti_air_response" "starport_transition anti_air_detection_support anti_air_viking" "Starport EngineeringBay Viking"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 parse_profile_schedule() {
   local sequence="$1"
   PROFILE_SCHEDULE_KEYS=()
@@ -595,6 +628,18 @@ PY
     exit 2
   fi
   SOAK_EXPECTED_PROFILE_TAGS="${expected[*]}"
+  local expected_index contract_doctrine contract_actions contract_items
+  for (( expected_index = ${#PROFILE_SCHEDULE_KEYS[@]} - 1; expected_index >= 0; expected_index-- )); do
+    if (( PROFILE_SCHEDULE_FRAMES[$expected_index] > SOAK_TARGET_FRAME )); then
+      continue
+    fi
+    if IFS=$'\t' read -r contract_doctrine contract_actions contract_items < <(expected_strategy_contract "${PROFILE_SCHEDULE_KEYS[$expected_index]}"); then
+      SOAK_EXPECTED_STRATEGY_DOCTRINE="${SOAK_EXPECTED_STRATEGY_DOCTRINE:-${contract_doctrine}}"
+      SOAK_EXPECTED_PRODUCTION_ACTIONS="${SOAK_EXPECTED_PRODUCTION_ACTIONS:-${contract_actions}}"
+      SOAK_EXPECTED_PRODUCTION_ITEMS="${SOAK_EXPECTED_PRODUCTION_ITEMS:-${contract_items}}"
+      break
+    fi
+  done
 }
 
 publish_due_profiles() {
@@ -703,7 +748,10 @@ classify_soak() {
     --max-placement-failures "${SOAK_MAX_PLACEMENT_FAILURES}" \
     --modulation-consumption-grace-frames "${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES}" \
     --expected-profile-tags "${SOAK_EXPECTED_PROFILE_TAGS}" \
-    --expected-tactical-effects "${SOAK_EXPECTED_TACTICAL_EFFECTS}"
+    --expected-tactical-effects "${SOAK_EXPECTED_TACTICAL_EFFECTS}" \
+    --expected-strategy-doctrine "${SOAK_EXPECTED_STRATEGY_DOCTRINE}" \
+    --expected-production-actions "${SOAK_EXPECTED_PRODUCTION_ACTIONS}" \
+    --expected-production-items "${SOAK_EXPECTED_PRODUCTION_ITEMS}"
   )
   if (( ${#extra_args[@]} > 0 )); then
     command+=("${extra_args[@]}")
