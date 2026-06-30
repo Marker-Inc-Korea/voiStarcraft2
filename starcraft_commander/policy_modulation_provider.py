@@ -35,6 +35,7 @@ POLICY_MODULATION_PROVIDER_SOURCES: frozenset[PolicyModulationSource] = frozense
     {
         PolicyModulationSource.HUMAN,
         PolicyModulationSource.LLM,
+        PolicyModulationSource.SMOKE_KEYWORD,
         PolicyModulationSource.UI,
         PolicyModulationSource.REPLAY_IMITATION,
         PolicyModulationSource.NEURAL_REPRESENTATION,

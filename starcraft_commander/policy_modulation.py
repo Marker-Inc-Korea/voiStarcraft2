@@ -32,6 +32,7 @@ class PolicyModulationSource(str, Enum):
 
     HUMAN = "human"
     LLM = "llm"
+    SMOKE_KEYWORD = "smoke_keyword"
     UI = "ui"
     REPLAY_IMITATION = "replay_imitation"
     NEURAL_REPRESENTATION = "neural_representation"

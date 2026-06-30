@@ -15,7 +15,7 @@ planned as semantic actions, and executed through game API boundaries.
 | Legacy live SC2 commander | Implemented and locally connected through python-sc2. This is compatibility mode, not MicroMachine. |
 | MicroMachine policy cockpit | Implemented as the default web text/voice route. It publishes bounded deep DSL modulation to the MicroMachine blackboard. |
 | Voice input | Implemented behind optional `[voice]` dependencies. |
-| LLM command interpreter | Required for legacy python-sc2 live commands; optional for MicroMachine keyword-provider smoke. OpenAI/GPT is the default; Anthropic is still supported. |
+| LLM command interpreter | Required for legacy python-sc2 live commands and production MicroMachine free-form text modulation. OpenAI/GPT is the default; Anthropic is still supported. |
 | Web GUI | Implemented as a localhost-first stdlib server with token-protected network mode. Default chat/voice mode is MicroMachine; legacy commander is explicit opt-in. |
 | Event memory | Implemented and used by state reports and GUI history. |
 | Standing orders | Implemented for continuous SCV production and supply-block prevention. |
@@ -142,9 +142,9 @@ text / voice
 ```
 
 This default path does not call python-sc2 and does not emulate the SC2 screen,
-keyboard, or mouse. It can publish smoke-test modulation through the built-in
-keyword provider without an LLM key. If an LLM key is configured, the same
-bounded DSL route can be used by an LLM provider.
+keyboard, or mouse. Production free-form MicroMachine modulation requires a
+configured LLM forced-tool provider. The built-in keyword provider is explicit
+smoke/test-only and is labeled `source=smoke_keyword`, never `source=llm`.
 
 Standalone local UI:
 

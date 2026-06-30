@@ -251,10 +251,11 @@ python -m starcraft_commander.micromachine_live_session \
   --pretty
 ```
 
-If `--provider-output-json` or `--provider-output-file` is omitted, the CLI uses
-a deterministic keyword provider for smoke testing. Production LLM adapters
-should implement `PolicyModulationProviderInterface` and return bounded
-semantic JSON; they still cannot publish raw SC2 actions directly.
+If `--provider-output-json` or `--provider-output-file` is omitted, the CLI
+fails closed unless `--allow-smoke-keyword-provider` is explicitly set.
+Production free-form text must use an LLM-generated structured DSL output.
+The deterministic keyword provider is smoke/test-only and cannot claim
+`source=llm`; no provider can publish raw SC2 actions directly.
 
 ### Web Cockpit Routing
 

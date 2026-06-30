@@ -62,6 +62,13 @@ class LiveModulationConsumptionStatus(str, Enum):
     CONSUMED = "consumed"
 
 
+LLM_ONLY_PROVIDER_REQUIRED_REASON = (
+    "LLM provider unavailable: MicroMachine production free-form text modulation "
+    "requires an LLM-generated structured DSL output. Keyword/rule fallback is "
+    "allowed only when explicit smoke mode is requested."
+)
+
+
 class StaticJsonPolicyModulationProvider:
     """Provider adapter for externally generated bounded JSON payloads."""
 
@@ -72,21 +79,26 @@ class StaticJsonPolicyModulationProvider:
         output: Mapping[str, object],
         *,
         source: PolicyModulationSource | str = PolicyModulationSource.LLM,
+        force_source: bool = False,
     ) -> None:
         self.output = dict(output)
         self.source = _coerce_source(source)
+        self.force_source = _coerce_bool(force_source, "force_source")
 
     def propose_policy_modulation(
         self,
         request: PolicyModulationProviderRequest,
     ) -> Mapping[str, object]:
-        return dict(self.output)
+        output = dict(self.output)
+        if self.force_source:
+            return _force_provider_output_source(output, self.source)
+        return output
 
 
 class KeywordPolicyModulationProvider:
-    """Deterministic local provider for smoke tests and no-SDK operation."""
+    """Deterministic local provider for explicit smoke tests only."""
 
-    source = PolicyModulationSource.LLM
+    source = PolicyModulationSource.SMOKE_KEYWORD
 
     def propose_policy_modulation(
         self,
@@ -232,6 +244,25 @@ class KeywordPolicyModulationProvider:
         }
 
 
+class UnavailableLLMPolicyModulationProvider:
+    """Fail-closed provider used when production LLM modulation is unavailable."""
+
+    source = PolicyModulationSource.LLM
+
+    def __init__(self, reason: str = LLM_ONLY_PROVIDER_REQUIRED_REASON) -> None:
+        self.reason = _require_text("reason", reason)
+
+    def propose_policy_modulation(
+        self,
+        request: PolicyModulationProviderRequest,
+    ) -> Mapping[str, object]:
+        return {
+            "source": self.source.value,
+            "status": "refused",
+            "refusal_reason": self.reason,
+        }
+
+
 @dataclass(frozen=True)
 class LiveTextModulationResult:
     """JSON-ready result for one text-to-modulation submission."""
@@ -279,6 +310,7 @@ class LiveTextModulationResult:
             "ok": self.ok,
             "command_text": self.command_text,
             "status": self.status.value,
+            "provider_source": self.compile_result.source.value,
             "current_frame": self.current_frame,
             "compile_result": self.compile_result.to_dict(),
             "update": self.update.to_dict() if self.update else None,
@@ -460,12 +492,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider-output-json",
         default=None,
-        help="Bounded provider JSON object. If omitted, a deterministic keyword provider is used.",
+        help=(
+            "Bounded provider JSON object produced by an LLM/tool path. "
+            "If omitted, publish fails unless --allow-smoke-keyword-provider is set."
+        ),
     )
     parser.add_argument(
         "--provider-output-file",
         default=None,
         help="Path to a bounded provider JSON object. Overrides --provider-output-json.",
+    )
+    parser.add_argument(
+        "--allow-smoke-keyword-provider",
+        action="store_true",
+        help=(
+            "Explicitly allow deterministic keyword modulation for smoke tests. "
+            "Never use this as the production free-form text path."
+        ),
     )
     parser.add_argument(
         "--pretty",
@@ -521,7 +564,9 @@ def _provider_from_args(args: argparse.Namespace) -> PolicyModulationProviderInt
         if not isinstance(payload, Mapping):
             raise ValueError("--provider-output-json must be a JSON object.")
         return StaticJsonPolicyModulationProvider(payload)
-    return KeywordPolicyModulationProvider()
+    if args.allow_smoke_keyword_provider:
+        return KeywordPolicyModulationProvider()
+    return UnavailableLLMPolicyModulationProvider()
 
 
 def _ensure_live_worker_repeat_order_guard(
@@ -547,6 +592,28 @@ def _ensure_live_worker_repeat_order_guard(
             f"live_worker_repeat_order_guard_frames_clamped={guard_frames}->32",
         ),
     )
+
+
+def _force_provider_output_source(
+    output: Mapping[str, object],
+    source: PolicyModulationSource,
+) -> Mapping[str, object]:
+    """Force source metadata for untrusted static provider output."""
+
+    forced = dict(output)
+    forced["source"] = source.value
+    for key in (
+        "modulation",
+        "policy_modulation",
+        "policy_modulation_vector",
+        "vector",
+    ):
+        value = forced.get(key)
+        if isinstance(value, Mapping):
+            nested = dict(value)
+            nested["source"] = source.value
+            forced[key] = nested
+    return forced
 
 
 def _is_non_tactical_chatter(text: str) -> bool:

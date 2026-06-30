@@ -23,6 +23,7 @@ from starcraft_commander.llm_interpreter import (
     LLMComboPlan,
     LLMComboPlanStep,
     LLM_INTENT_TOOL_NAME,
+    LLM_POLICY_MODULATION_TOOL_NAME,
     LLM_INTERPRETATION_FAILURE_CODE,
     LLM_PROMPT_INJECTION_GUARD,
     LLM_UNAVAILABLE_FAILURE_CODE,
@@ -35,6 +36,9 @@ from starcraft_commander.llm_interpreter import (
     build_intent_tool_definition,
     build_intent_tool_input_schema,
     build_llm_system_prompt,
+    build_policy_modulation_system_prompt,
+    build_policy_modulation_tool_definition,
+    build_policy_modulation_tool_input_schema,
 )
 from starcraft_commander.runtime_deps import ANTHROPIC_MODULE_NAME
 from toycraft_commander.failure import build_parsing_failure_report
@@ -417,6 +421,72 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual(call["tools"][0]["type"], "function")
         self.assertEqual(call["messages"][0]["role"], "system")
         self.assertEqual(call["messages"][1]["content"], FREE_FORM_DEFEND_UTTERANCE)
+
+    def test_policy_modulation_call_uses_forced_micromachine_tool(self) -> None:
+        interpreter, fake_client = _make_llm_interpreter(
+            _tool_response(
+                {
+                    "status": "compiled",
+                    "modulation": {
+                        "goal": "마린으로 enemy natural 압박",
+                        "override_level": "bias",
+                        "combat": {"aggression": 0.5},
+                    }
+                }
+            )
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="마린으로 enemy natural 압박",
+                game_state={"frame": 44},
+                commander_context={"bridge_status": "connected"},
+                allowed_override_levels=("bias",),
+                tags=("web_gui",),
+            )
+        )
+
+        self.assertEqual("llm", output["source"])
+        self.assertEqual("llm", output["modulation"]["source"])
+        self.assertEqual("마린으로 enemy natural 압박", output["modulation"]["goal"])
+        call = fake_client.calls[0]
+        self.assertEqual(
+            call["tool_choice"],
+            {"type": "tool", "name": LLM_POLICY_MODULATION_TOOL_NAME},
+        )
+        self.assertEqual(call["tools"][0]["name"], LLM_POLICY_MODULATION_TOOL_NAME)
+        self.assertEqual(call["system"], interpreter.policy_modulation_system_prompt)
+        self.assertIn("game_state", call["messages"][0]["content"])
+
+    def test_policy_modulation_malformed_forced_tool_output_refuses(self) -> None:
+        for tool_input in (
+            {},
+            {"status": "compiled"},
+            {"status": "compiled", "modulation": {}},
+            {"status": "compiled", "modulation": {"goal": "무언가 해줘"}},
+        ):
+            with self.subTest(tool_input=tool_input):
+                interpreter, _fake_client = _make_llm_interpreter(
+                    _tool_response(tool_input)
+                )
+
+                output = interpreter.propose_policy_modulation(
+                    types.SimpleNamespace(command_text="무언가 해줘")
+                )
+
+                self.assertEqual("llm", output["source"])
+                self.assertEqual("refused", output["status"])
+                self.assertIn("missing", output["refusal_reason"])
+
+    def test_policy_modulation_tool_schema_is_exposed(self) -> None:
+        definition = build_policy_modulation_tool_definition()
+        schema = build_policy_modulation_tool_input_schema()
+
+        self.assertEqual(LLM_POLICY_MODULATION_TOOL_NAME, definition["name"])
+        self.assertEqual(schema, definition["input_schema"])
+        self.assertIn("status", schema["required"])
+        self.assertIn("combat", schema["properties"]["modulation"]["properties"])
+        self.assertIn("raw", build_policy_modulation_system_prompt().lower())
 
     def test_runtime_context_is_attached_to_intent_and_combo_calls(self) -> None:
         context = {

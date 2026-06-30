@@ -30,6 +30,10 @@ class StaticModulationProvider:
 class PolicyModulationProviderCompilerTest(unittest.TestCase):
     def test_declares_provider_sources_for_llm_ui_replay_and_neural(self) -> None:
         self.assertIn(PolicyModulationSource.LLM, POLICY_MODULATION_PROVIDER_SOURCES)
+        self.assertIn(
+            PolicyModulationSource.SMOKE_KEYWORD,
+            POLICY_MODULATION_PROVIDER_SOURCES,
+        )
         self.assertIn(PolicyModulationSource.UI, POLICY_MODULATION_PROVIDER_SOURCES)
         self.assertIn(
             PolicyModulationSource.REPLAY_IMITATION,
