@@ -281,6 +281,8 @@ _TOP_LEVEL_ALIASES = {
 
 _DOMAIN_ALIASES = {
     "posture": ("strategy", "posture"),
+    "doctrine": ("strategy", "doctrine"),
+    "strategy_doctrine": ("strategy", "doctrine"),
     "preferred_builds": ("strategy", "preferred_builds"),
     "avoided_builds": ("strategy", "avoided_builds"),
     "timing_biases": ("strategy", "timing_biases"),

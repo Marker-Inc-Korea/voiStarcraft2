@@ -15,9 +15,6 @@
     "economy.mineral_saturation_bias",
     "economy.expansion_safety_bias",
     "economy.mule_priority",
-    "production.addon_biases.*",
-    "production.production_facility_biases.*",
-    "production.tech_switch_urgency",
     "combat.pressure_window_frames",
     "combat.siege_position_bias",
     "combat.kite_bias",
@@ -48,14 +45,21 @@
       "function": "ProductionManager::onFrame(bool executeMacro)",
       "secondary_function": "ProductionManager::manageBuildOrderQueue()",
       "keys": [
+        "strategy.doctrine",
+        "production.queue_biases.*",
+        "production.composition_biases.*",
+        "production.addon_biases.*",
+        "production.production_facility_biases.*",
         "production.max_tech_deviation",
         "production.allow_build_order_rewrite",
         "production.production_continuity_bias",
-        "tech.unit_biases.TERRAN_SIEGETANK",
+        "production.tech_switch_urgency",
+        "tech.structure_biases.*",
+        "tech.unit_biases.*",
         "economy.expand_bias",
         "economy.worker_production_bias"
       ],
-      "intended_effect": "Bias queue priority and tech deviation while preserving MicroMachine build execution."
+      "intended_effect": "Bias doctrine-specific queue, facility, addon, unit, expansion, and continuity choices while preserving MicroMachine build execution."
     },
     {
       "domain": "combat",

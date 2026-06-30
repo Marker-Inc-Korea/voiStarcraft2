@@ -649,16 +649,16 @@ import sys
 
 from starcraft_commander.micromachine_runtime import (
     MicroMachineFilesystemBlackboard,
-    build_aggressive_pressure_profile,
-    build_defensive_hold_profile,
+    build_bio_pressure_profile,
+    build_tank_defensive_hold_profile,
 )
 
 directory, profile_name, update_id, frame_text = sys.argv[1:5]
 backend = MicroMachineFilesystemBlackboard(directory)
 if profile_name == "defensive_hold":
-    vector = build_defensive_hold_profile()
+    vector = build_tank_defensive_hold_profile()
 elif profile_name == "aggressive_pressure":
-    vector = build_aggressive_pressure_profile()
+    vector = build_bio_pressure_profile()
 else:
     raise SystemExit(f"unknown MicroMachine profile: {profile_name}")
 backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_id)
@@ -1036,6 +1036,8 @@ if "workers.repeat_order_guard_frames" not in worker_consumed_axes:
     raise SystemExit(f"missing WorkerManager consumed axis evidence: {workers!r}")
 if "repeat_order_suppressed_count" not in workers:
     raise SystemExit(f"missing worker repeat-order safety telemetry: {workers!r}")
+if int(workers.get("repeat_order_suppressed_count", 0)) != 0:
+    raise SystemExit(f"worker repeat-order safety guard had to suppress commands; root cause remains active: {workers!r}")
 if "self_position_command_block_count" not in workers:
     raise SystemExit(f"missing worker self-position root-cause telemetry: {workers!r}")
 if "root_cause_status" not in workers:

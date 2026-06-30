@@ -7,6 +7,7 @@ from starcraft_commander.policy_modulation import (
     CombatModulation,
     EconomyModulation,
     EmergencyModulation,
+    MICROMACHINE_DOCTRINES,
     PolicyModulationSource,
     PolicyModulationVector,
     PolicyOverrideLevel,
@@ -145,6 +146,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual("llm", document["source"])
         self.assertEqual("constraint", document["override_level"])
         self.assertEqual("defensive", document["strategy"]["posture"])
+        self.assertEqual("", document["strategy"]["doctrine"])
         self.assertEqual(0.45, document["strategy"]["timing_biases"]["tank_timing"])
         self.assertEqual(0.4, document["economy"]["gas_worker_target_bias"])
         self.assertEqual(32, document["workers"]["repeat_order_guard_frames"])
@@ -296,8 +298,27 @@ class PolicyModulationVectorTest(unittest.TestCase):
     def test_rejects_unknown_enums_and_invalid_booleans(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported policy override"):
             PolicyModulationVector(goal="bad", override_level="takeover")
+        with self.assertRaisesRegex(ValueError, "doctrine"):
+            StrategyModulation(doctrine="raw_attack_move")
         with self.assertRaisesRegex(TypeError, "allow_build_order_rewrite"):
             ProductionModulation(allow_build_order_rewrite="yes")
+
+    def test_micromachine_doctrine_labels_are_bounded_and_serialized(self) -> None:
+        self.assertIn("mech_transition", MICROMACHINE_DOCTRINES)
+
+        vector = PolicyModulationVector(
+            goal="transition_to_mech",
+            strategy=StrategyModulation(
+                posture="balanced",
+                doctrine="mech_transition",
+            ),
+        )
+
+        self.assertEqual("mech_transition", vector.strategy.doctrine)
+        self.assertEqual(
+            "mech_transition",
+            vector.to_dict()["strategy"]["doctrine"],
+        )
 
 
 if __name__ == "__main__":

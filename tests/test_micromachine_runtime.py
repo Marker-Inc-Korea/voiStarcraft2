@@ -14,6 +14,7 @@ from starcraft_commander.micromachine_bridge import (
 from starcraft_commander.micromachine_runtime import (
     LATEST_UPDATE_JSON_NAME,
     LATEST_UPDATE_KV_NAME,
+    MICROMACHINE_DOCTRINE_PROFILE_KEYS,
     MicroMachineBackendPublishResult,
     MicroMachineFilesystemBlackboard,
     MicroMachineInMemoryBlackboard,
@@ -162,6 +163,57 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         emergency = build_micromachine_strategy_profile("emergency_recovery", ttl_seconds=600)
         self.assertLessEqual(emergency.ttl_seconds, 60)
 
+    def test_doctrine_profiles_have_distinct_production_vectors(self) -> None:
+        doctrine_vectors = {
+            key: build_micromachine_strategy_profile(key)
+            for key in MICROMACHINE_DOCTRINE_PROFILE_KEYS
+        }
+
+        for key, vector in doctrine_vectors.items():
+            with self.subTest(profile=key):
+                self.assertEqual(key, vector.strategy.doctrine)
+                self.assertIn(key, vector.tags)
+                self.assertIn("bounded_intervention", vector.tags)
+
+        marine = doctrine_vectors["marine_rush"]
+        mech = doctrine_vectors["mech_transition"]
+        drop = doctrine_vectors["drop_harassment"]
+        macro = doctrine_vectors["expand_macro"]
+        anti_air = doctrine_vectors["anti_air_response"]
+
+        self.assertGreater(
+            marine.production.queue_biases.to_dict()["TERRAN_MARINE"],
+            mech.production.queue_biases.to_dict().get("TERRAN_MARINE", -1.0),
+        )
+        self.assertGreater(
+            mech.production.queue_biases.to_dict()["TERRAN_FACTORY"],
+            marine.production.queue_biases.to_dict().get("TERRAN_FACTORY", -1.0),
+        )
+        self.assertGreater(
+            mech.tech.unit_biases.to_dict()["TERRAN_SIEGETANK"],
+            marine.tech.unit_biases.to_dict().get("TERRAN_SIEGETANK", -1.0),
+        )
+        self.assertGreater(
+            drop.production.queue_biases.to_dict()["TERRAN_STARPORT"],
+            marine.production.queue_biases.to_dict().get("TERRAN_STARPORT", -1.0),
+        )
+        self.assertGreater(
+            drop.production.queue_biases.to_dict()["TERRAN_MEDIVAC"],
+            marine.production.queue_biases.to_dict().get("TERRAN_MEDIVAC", -1.0),
+        )
+        self.assertGreater(
+            macro.production.queue_biases.to_dict()["TERRAN_COMMANDCENTER"],
+            marine.production.queue_biases.to_dict().get("TERRAN_COMMANDCENTER", -1.0),
+        )
+        self.assertGreater(
+            anti_air.production.queue_biases.to_dict()["TERRAN_VIKINGFIGHTER"],
+            marine.production.queue_biases.to_dict().get("TERRAN_VIKINGFIGHTER", -1.0),
+        )
+        self.assertLess(
+            mech.production.production_continuity_bias,
+            marine.production.production_continuity_bias,
+        )
+
     def test_unknown_strategy_profile_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown MicroMachine strategy profile"):
             build_micromachine_strategy_profile("raw_action")
@@ -191,6 +243,7 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             self.assertEqual("defensive_tank_hold", document["vector"]["goal"])
             kv = latest_kv.read_text()
             self.assertIn("combat.defend_bias=0.8", kv)
+            self.assertIn("strategy.doctrine=", kv)
             self.assertIn("combat.commitment_level=0.4", kv)
             self.assertIn("combat.pressure_window_frames=2400", kv)
             self.assertIn("combat.attack_condition_override=earlier_if_safe", kv)

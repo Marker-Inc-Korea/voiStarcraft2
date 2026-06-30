@@ -50,6 +50,25 @@ POLICY_MODULATION_TTL_MIN_SECONDS: Final[int] = 1
 POLICY_MODULATION_TTL_MAX_SECONDS: Final[int] = 900
 """Maximum TTL is bounded so stale human/model intent cannot linger forever."""
 
+MICROMACHINE_DOCTRINES: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "marine_rush",
+        "bio_pressure",
+        "tank_defensive_hold",
+        "siege_contain",
+        "mech_transition",
+        "drop_harassment",
+        "worker_line_harassment",
+        "scouting_map_control",
+        "expand_macro",
+        "anti_air_response",
+        "defensive_counterattack",
+        "contain_enemy_natural",
+    }
+)
+"""Supported semantic doctrine labels for MicroMachine manager-level bias."""
+
 POLICY_MODULATION_RAW_CONTROL_KEYS: Final[frozenset[str]] = frozenset(
     {
         "api_call",
@@ -177,6 +196,7 @@ class StrategyModulation:
     """Build and posture preferences for `StrategyManager`-style seams."""
 
     posture: str = "balanced"
+    doctrine: str = ""
     preferred_builds: WeightedBiases = field(default_factory=WeightedBiases)
     avoided_builds: WeightedBiases = field(default_factory=WeightedBiases)
     timing_biases: WeightedBiases = field(default_factory=WeightedBiases)
@@ -189,6 +209,11 @@ class StrategyModulation:
             self.posture,
             {"economic", "defensive", "balanced", "pressure", "all_in"},
         ))
+        object.__setattr__(
+            self,
+            "doctrine",
+            _optional_choice("doctrine", self.doctrine, MICROMACHINE_DOCTRINES),
+        )
         object.__setattr__(self, "preferred_builds", _coerce_biases(self.preferred_builds))
         object.__setattr__(self, "avoided_builds", _coerce_biases(self.avoided_builds))
         object.__setattr__(self, "timing_biases", _coerce_biases(self.timing_biases))
@@ -202,6 +227,7 @@ class StrategyModulation:
     def to_dict(self) -> dict[str, object]:
         return {
             "posture": self.posture,
+            "doctrine": self.doctrine,
             "preferred_builds": self.preferred_builds.to_dict(),
             "avoided_builds": self.avoided_builds.to_dict(),
             "timing_biases": self.timing_biases.to_dict(),

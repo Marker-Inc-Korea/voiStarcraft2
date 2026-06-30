@@ -64,11 +64,15 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertTrue(hook["function"])
                 self.assertTrue(hook["intended_effect"])
         pending_keys = manifest["python_blackboard_emitted_but_not_consumed_by_current_cpp_patch"]
-        self.assertIn("production.addon_biases.*", pending_keys)
         self.assertIn("combat.pressure_window_frames", pending_keys)
         self.assertIn("squad.flank_bias", pending_keys)
         self.assertIn("scope.army_group", pending_keys)
         self.assertIn("emergency.prioritize_repair", pending_keys)
+        self.assertNotIn("strategy.doctrine", pending_keys)
+        self.assertNotIn("production.queue_biases.*", pending_keys)
+        self.assertNotIn("production.addon_biases.*", pending_keys)
+        self.assertNotIn("production.production_facility_biases.*", pending_keys)
+        self.assertNotIn("production.tech_switch_urgency", pending_keys)
         self.assertNotIn("combat.target_priority_biases.*", pending_keys)
         self.assertNotIn("scouting.scan_priority", pending_keys)
         self.assertNotIn("squad.reinforce_bias", pending_keys)
@@ -156,6 +160,27 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "voiRetreatPatienceBias * 0.20f",
             "getVoiPolicyFloat(\"squad.contain_bias\", 0.0f)",
             "getVoiPolicyFloat(\"squad.reinforce_bias\", 0.0f)",
+            "getVoiPolicyString(\"strategy.doctrine\", \"\")",
+            "applyVoiDoctrineProductionBias",
+            "queueVoiDoctrineItem",
+            "production.queue_biases.TERRAN_FACTORY",
+            "production.queue_biases.TERRAN_STARPORT",
+            "production.queue_biases.TERRAN_SIEGETANK",
+            "production.composition_biases.bio",
+            "production.composition_biases.mech",
+            "production.composition_biases.siege",
+            "production.composition_biases.drop",
+            "production.composition_biases.anti_air",
+            "production.production_facility_biases.TERRAN_FACTORY",
+            "tech.unit_biases.TERRAN_SIEGETANK",
+            "tech.structure_biases.TERRAN_FACTORY",
+            "voi doctrine action=",
+            "last_doctrine_action",
+            "last_doctrine_queue_item",
+            "last_doctrine_update_id",
+            "last_doctrine_fresh",
+            "policy_update_id",
+            "strategy.doctrine,production.queue_biases.*,production.composition_biases.*",
             "getVoiPolicyInt(\"scope.min_units\", 0)",
             "getVoiPolicyString(\"scope.location_intent\", \"\")",
             "voiEngageMarginDelta",
@@ -196,6 +221,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "root_cause_reason",
             "setVoiWorkerCommandReason",
             "consumeVoiWorkerCommandReason",
+            "Root fix for repeated SCV mineral commands",
+            "currentJob->second == WorkerJobs::Minerals",
+            "currentDepot->second.getTag() == jobUnit.getTag()",
             "const bool idleSpotIsUseful = Util::DistSq(worker.getPosition(), idlePos) > 1.0f",
             "const bool depotFallbackIsUseful = Util::DistSq(worker.getPosition(), base->getDepotPosition()) > 1.0f",
             "m_lastVoiScoutMoveFrame",
@@ -369,8 +397,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--live-hold",
             "--blackboard-dir",
             "--max-attempts",
-            "build_defensive_hold_profile",
-            "build_aggressive_pressure_profile",
+            "build_tank_defensive_hold_profile",
+            "build_bio_pressure_profile",
             "latest_modulation.kv",
             "telemetry.jsonl",
             "AcropolisLE.SC2Map",
@@ -461,6 +489,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "missing deep CombatCommander consumed axis",
             "missing deep Squad consumed axis",
             "worker self-position command root-cause blocks were observed",
+            "worker repeat-order safety guard had to suppress commands; root cause remains active",
             "aggressive_update_id = sys.argv[3]",
             "defensive_update_id = sys.argv[4]",
             "smoke-defensive-hold",

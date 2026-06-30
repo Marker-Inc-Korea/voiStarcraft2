@@ -61,6 +61,24 @@ def _telemetry(
                 "bounded_intervention": True,
                 "aggression": 0.55,
             },
+            "ProductionManager": {
+                "active": True,
+                "bounded_intervention": True,
+                "policy_update_id": update_id,
+                "strategy_doctrine": "bio_pressure",
+                "queue_bias_marine": 0.55,
+                "last_doctrine": "bio_pressure",
+                "last_doctrine_action": "marine_pressure",
+                "last_doctrine_queue_item": "Marine",
+                "last_doctrine_update_id": update_id,
+                "last_doctrine_frame": 6_200,
+                "last_doctrine_fresh": True,
+                "consumed_axes": (
+                    "strategy.doctrine,production.queue_biases.*,"
+                    "production.composition_biases.*,"
+                    "production.production_facility_biases.*,tech.unit_biases.*"
+                ),
+            },
             "ScoutManager": {
                 "active": True,
                 "bounded_intervention": True,
@@ -582,6 +600,122 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                     "stale_modulation",
                 },
             )
+
+    def test_detects_missing_production_manager_consumption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            managers.pop("ProductionManager")
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"manager_intervention_missing"})
+
+    def test_rejects_production_axis_only_false_pass_without_queue_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["bounded_intervention"] = True
+            production["strategy_doctrine"] = "mech_transition"
+            production["last_doctrine_action"] = "none"
+            production["last_doctrine_queue_item"] = "none"
+            production["last_doctrine_frame"] = 0
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"manager_intervention_missing"})
+
+    def test_rejects_stale_production_doctrine_from_previous_update(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500, update_id="current-update")
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["policy_update_id"] = "current-update"
+            production["last_doctrine_update_id"] = "previous-update"
+            production["last_doctrine_fresh"] = True
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=telemetry,
+                modulation=_modulation(update_id="current-update"),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"manager_intervention_missing"})
+
+    def test_rejects_production_doctrine_mismatch_false_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["strategy_doctrine"] = "mech_transition"
+            production["last_doctrine"] = "bio_pressure"
+            production["last_doctrine_fresh"] = True
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"manager_intervention_missing"})
+
+    def test_rejects_non_fresh_production_doctrine_false_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["last_doctrine_fresh"] = False
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"manager_intervention_missing"})
 
     def test_waits_for_modulation_consumption_grace_during_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

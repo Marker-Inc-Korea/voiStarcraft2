@@ -33,6 +33,7 @@ from starcraft_commander.runtime_deps import (
     require_anthropic,
     require_openai,
 )
+from starcraft_commander.policy_modulation import MICROMACHINE_DOCTRINES
 from toycraft_commander.failure import build_parsing_failure_report
 from toycraft_commander.intents import (
     CANONICAL_INTENT_NAMES,
@@ -532,6 +533,11 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
                 "type": "string",
                 "enum": ["economic", "defensive", "balanced", "pressure", "all_in"],
             },
+            "doctrine": {
+                "type": "string",
+                "enum": sorted(MICROMACHINE_DOCTRINES),
+                "description": "Semantic doctrine label that the bot expands into bounded manager bias.",
+            },
             "preferred_builds": _bias_map_property("Preferred strategic builds."),
             "avoided_builds": _bias_map_property("Strategic builds to de-prioritize."),
             "timing_biases": _bias_map_property("Timing preferences, e.g. tank_push."),
@@ -850,7 +856,9 @@ def build_policy_modulation_system_prompt() -> str:
         "4. Preserve the user's doctrine: examples include marine rush, bio "
         "pressure, tank defensive hold, siege contain, mech transition, drop "
         "harassment, worker-line harassment, scouting map control, macro expand, "
-        "anti-air response, and defensive counterattack.\n"
+        "anti-air response, defensive counterattack, and contain enemy natural. "
+        "Set strategy.doctrine to the closest supported doctrine label when a "
+        "specific doctrine is present.\n"
         "5. Biases are bounded floats. Positive values increase preference, "
         "negative values reduce preference. Do not pretend that a bias directly "
         "clicks or commands a unit.\n"

@@ -447,7 +447,10 @@ def classify_micromachine_soak(
             failures.append(
                 MicroMachineSoakFailure(
                     code="manager_intervention_missing",
-                    message="CombatCommander and ScoutManager bounded intervention evidence is missing.",
+                    message=(
+                        "CombatCommander, ScoutManager, and ProductionManager bounded "
+                        "intervention evidence is missing."
+                    ),
                     evidence={"latest_frame": latest_frame},
                 )
             )
@@ -1097,6 +1100,7 @@ def _manager_intervention_ok(
 ) -> bool:
     entries = [*telemetry_archive, latest_telemetry]
     combat_seen = False
+    production_seen = False
     scout_seen = False
     active_policy_seen = False
     for entry in entries:
@@ -1109,10 +1113,40 @@ def _manager_intervention_ok(
         combat = managers.get("CombatCommander")
         if isinstance(combat, Mapping) and combat.get("bounded_intervention") is True:
             combat_seen = True
+        production = managers.get("ProductionManager")
+        if isinstance(production, Mapping) and _production_doctrine_action_seen(production):
+            production_seen = True
         scout = managers.get("ScoutManager")
         if isinstance(scout, Mapping) and scout.get("bounded_intervention") is True:
             scout_seen = True
-    return combat_seen and scout_seen and active_policy_seen
+    return combat_seen and production_seen and scout_seen and active_policy_seen
+
+
+def _production_doctrine_action_seen(production: Mapping[str, object]) -> bool:
+    """Return true only when ProductionManager actually changed its queue."""
+
+    if production.get("bounded_intervention") is not True:
+        return False
+    if production.get("last_doctrine_fresh") is not True:
+        return False
+    action = str(production.get("last_doctrine_action", "") or "")
+    item = str(production.get("last_doctrine_queue_item", "") or "")
+    frame = _int_value(production.get("last_doctrine_frame"))
+    policy_update_id = str(production.get("policy_update_id", "") or "")
+    last_update_id = str(production.get("last_doctrine_update_id", "") or "")
+    strategy_doctrine = str(production.get("strategy_doctrine", "") or "")
+    last_doctrine = str(production.get("last_doctrine", "") or "")
+    return bool(
+        action
+        and action != "none"
+        and item
+        and item != "none"
+        and frame > 0
+        and policy_update_id
+        and last_update_id == policy_update_id
+        and strategy_doctrine
+        and last_doctrine == strategy_doctrine
+    )
 
 
 def _classify_stale_modulation(
