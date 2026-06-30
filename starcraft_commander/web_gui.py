@@ -56,6 +56,7 @@ from starcraft_commander.micromachine_tactical_evidence import (
 from starcraft_commander.policy_modulation import (
     POLICY_MODULATION_TTL_MAX_SECONDS,
     POLICY_MODULATION_TTL_MIN_SECONDS,
+    PolicyModulationSource,
     TacticalScopeModulation,
     reject_raw_policy_control_keys,
 )
@@ -1348,6 +1349,7 @@ class _MicroMachineModulationRequest:
     text: str
     blackboard_dir: str
     provider_output: Mapping[str, object] | None
+    allow_smoke_keyword_provider: bool
     semantic_scope: Mapping[str, object] | None
     ttl_seconds: int | None
     current_frame: int | None
@@ -1385,6 +1387,64 @@ class _SemanticScopePolicyModulationProvider:
             semantic_scope=self.semantic_scope,
             ttl_seconds=self.ttl_seconds,
         )
+
+
+class _LocalLLMPolicyModulationProvider:
+    """Adapter from LocalLLMControl to the MicroMachine provider protocol."""
+
+    source = PolicyModulationSource.LLM
+
+    def __init__(self, llm_control: object | None) -> None:
+        self.llm_control = llm_control
+
+    def propose_policy_modulation(self, request: object) -> Mapping[str, object]:
+        control = self.llm_control
+        if control is None:
+            return _llm_policy_modulation_unavailable_output(
+                "LLM 설정이 없어 MicroMachine production 텍스트를 publish하지 않았습니다."
+            )
+        snapshot = getattr(control, "snapshot", None)
+        if callable(snapshot):
+            try:
+                document = dict(snapshot())
+            except Exception as error:  # noqa: BLE001 - fail-closed provider seam.
+                return _llm_policy_modulation_unavailable_output(
+                    f"LLM 설정 상태를 확인하지 못했습니다: {type(error).__name__}: {error}"
+                )
+            if not bool(document.get("configured")):
+                return _llm_policy_modulation_unavailable_output(
+                    "LLM 키가 설정되지 않아 MicroMachine production 텍스트를 publish하지 않았습니다."
+                )
+        available = getattr(control, "is_available", None)
+        if callable(available):
+            try:
+                if not bool(available()):
+                    return _llm_policy_modulation_unavailable_output(
+                        "LLM provider가 사용 가능하지 않아 MicroMachine production 텍스트를 publish하지 않았습니다."
+                    )
+            except Exception as error:  # noqa: BLE001 - fail-closed provider seam.
+                return _llm_policy_modulation_unavailable_output(
+                    f"LLM provider 확인에 실패했습니다: {type(error).__name__}: {error}"
+                )
+        propose = getattr(control, "propose_policy_modulation", None)
+        if not callable(propose):
+            return _llm_policy_modulation_unavailable_output(
+                "LLM control이 MicroMachine policy modulation provider를 지원하지 않습니다."
+            )
+        output = propose(request)
+        if not isinstance(output, Mapping):
+            return _llm_policy_modulation_unavailable_output(
+                "LLM provider가 JSON 객체가 아닌 응답을 반환했습니다."
+            )
+        return {**dict(output), "source": "llm"}
+
+
+def _llm_policy_modulation_unavailable_output(reason: str) -> Mapping[str, object]:
+    return {
+        "source": "llm",
+        "status": "refused",
+        "refusal_reason": reason,
+    }
 
 
 @runtime_checkable
@@ -1965,6 +2025,7 @@ class SessionLoopBridge:
         *,
         blackboard_dir: str = "",
         provider_output: Mapping[str, object] | None = None,
+        allow_smoke_keyword_provider: bool = False,
         semantic_scope: Mapping[str, object] | None = None,
         ttl_seconds: int | None = None,
         current_frame: int | None = None,
@@ -1986,6 +2047,7 @@ class SessionLoopBridge:
             text=cleaned,
             blackboard_dir=blackboard_dir,
             provider_output=provider_output,
+            allow_smoke_keyword_provider=allow_smoke_keyword_provider,
             semantic_scope=semantic_scope,
             ttl_seconds=ttl_seconds,
             current_frame=current_frame,
@@ -2001,6 +2063,7 @@ class SessionLoopBridge:
         *,
         blackboard_dir: str = "",
         provider_output: Mapping[str, object] | None = None,
+        allow_smoke_keyword_provider: bool = False,
         semantic_scope: Mapping[str, object] | None = None,
         ttl_seconds: int | None = None,
         current_frame: int | None = None,
@@ -2016,11 +2079,16 @@ class SessionLoopBridge:
         )
 
         root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
-        provider = (
-            StaticJsonPolicyModulationProvider(provider_output)
-            if provider_output is not None
-            else KeywordPolicyModulationProvider()
-        )
+        if provider_output is not None:
+            provider = StaticJsonPolicyModulationProvider(
+                provider_output,
+                source=PolicyModulationSource.UI,
+                force_source=True,
+            )
+        elif allow_smoke_keyword_provider:
+            provider = KeywordPolicyModulationProvider()
+        else:
+            provider = _LocalLLMPolicyModulationProvider(self._llm_control)
         if semantic_scope or ttl_seconds is not None:
             provider = _SemanticScopePolicyModulationProvider(
                 provider,
@@ -2143,6 +2211,7 @@ class SessionLoopBridge:
                 request.text,
                 blackboard_dir=request.blackboard_dir,
                 provider_output=request.provider_output,
+                allow_smoke_keyword_provider=request.allow_smoke_keyword_provider,
                 semantic_scope=request.semantic_scope,
                 ttl_seconds=request.ttl_seconds,
                 current_frame=request.current_frame,
@@ -2906,7 +2975,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
           <input type="radio" name="command-mode" value="micromachine" checked>
           <span>
             <span class="mode-label" data-i18n="microModeLabel">MicroMachine policy cockpit</span>
-            <span class="mode-description" data-i18n="microModeDescription">채팅/음성이 deep DSL로 컴파일되어 MicroMachine blackboard에 publish됩니다. LLM 키 없이 keyword provider도 동작합니다.</span>
+            <span class="mode-description" data-i18n="microModeDescription">채팅/음성은 LLM forced-tool deep DSL로 컴파일되어 MicroMachine blackboard에 publish됩니다. Smoke keyword는 명시 테스트 모드에서만 허용됩니다.</span>
           </span>
         </label>
         <label class="mode-option">
@@ -3218,7 +3287,7 @@ var I18N = {
     runtimeModeMicroSummary: "MicroMachine DSL blackboard가 기본입니다.",
     runtimeModeLegacySummary: "Legacy python-sc2 commander compatibility mode입니다.",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "채팅/음성이 deep DSL로 컴파일되어 MicroMachine blackboard에 publish됩니다. LLM 키 없이 keyword provider도 동작합니다.",
+    microModeDescription: "채팅/음성은 LLM forced-tool deep DSL로 컴파일되어 MicroMachine blackboard에 publish됩니다. Smoke keyword는 명시 테스트 모드에서만 허용됩니다.",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "이전 데모 호환 모드입니다. MicroMachine이 아니며, LLM 키가 있어야 /api/command로 전송됩니다.",
     legacyModeWarning: "Legacy mode는 MicroMachine이 아닙니다. SC2 실행/명령이 python-sc2 demo 경로로 가므로 MicroMachine QA와 혼동하지 마세요.",
@@ -3344,7 +3413,7 @@ var I18N = {
     microMachineFailed: "게시 실패",
     llmReady: "LLM 키 설정됨",
     llmMissing: "LLM 필수: Legacy commander 명령은 API 키를 먼저 설정해야 보낼 수 있습니다.",
-    llmOptionalMicro: "MicroMachine mode: LLM 키 없이 keyword DSL provider로 publish 가능합니다. 실제 LLM provider는 키 설정 후 사용됩니다.",
+    llmOptionalMicro: "MicroMachine mode: production 채팅/음성 publish에는 LLM 키가 필요합니다. Keyword DSL은 명시 smoke/test 모드에서만 허용됩니다.",
     llmEnterKey: "API 키를 입력하세요.",
     llmSaveFailed: "LLM 키 설정 요청에 실패했습니다.",
     userLabel: "사용자",
@@ -3359,7 +3428,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL 요청이 거부되거나 추가 확인이 필요합니다.",
     microMachineChatFailed: "MicroMachine DSL publish 실패",
     saveLlm: "로컬 키 설정",
-    startupGuide: "🚀 시작 메뉴얼\\n1. 기본 모드는 MicroMachine policy cockpit입니다. 채팅/음성 입력은 deep DSL로 컴파일되어 blackboard에 publish됩니다.\\n2. 우측 MicroMachine 패널에서 blackboard directory와 semantic scope를 확인하거나 조정하세요.\\n3. LLM 키가 없어도 keyword provider로 smoke QA가 가능하고, 키를 설정하면 LLM provider를 같은 DSL 경로에 붙일 수 있습니다.\\n4. Legacy python-sc2 commander는 호환 모드로 직접 선택한 경우에만 /api/command를 사용합니다.\\n🎙️ 음성 버튼을 켜면 말한 내용이 현재 선택된 모드로 전송됩니다."
+    startupGuide: "🚀 시작 메뉴얼\\n1. 기본 모드는 MicroMachine policy cockpit입니다. 채팅/음성 입력은 LLM forced-tool deep DSL로 컴파일되어 blackboard에 publish됩니다.\\n2. 우측 MicroMachine 패널에서 blackboard directory와 semantic scope를 확인하거나 조정하세요.\\n3. LLM 키가 없으면 production free-form publish는 fail-closed 됩니다. Keyword provider는 명시 smoke/test 모드에서만 허용됩니다.\\n4. Legacy python-sc2 commander는 호환 모드로 직접 선택한 경우에만 /api/command를 사용합니다.\\n🎙️ 음성 버튼을 켜면 말한 내용이 현재 선택된 모드로 전송됩니다."
   },
   en: {
     eyebrow: "Live RTS Command Center",
@@ -3373,7 +3442,7 @@ var I18N = {
     runtimeModeMicroSummary: "MicroMachine DSL blackboard is the default.",
     runtimeModeLegacySummary: "Legacy python-sc2 commander compatibility mode.",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "Chat/voice is compiled into deep DSL and published to the MicroMachine blackboard. The keyword provider works without an LLM key.",
+    microModeDescription: "Chat/voice is compiled by an LLM forced tool into deep DSL and published to the MicroMachine blackboard. Smoke keyword mode is explicit test-only.",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "Compatibility mode for the older demo path. It is not MicroMachine and requires an LLM key before posting to /api/command.",
     legacyModeWarning: "Legacy mode is not MicroMachine. SC2 launch/commands go through the python-sc2 demo path, so do not use it as MicroMachine QA evidence.",
@@ -3499,7 +3568,7 @@ var I18N = {
     microMachineFailed: "Publish failed",
     llmReady: "LLM key configured",
     llmMissing: "LLM required: legacy commander commands need an API key first.",
-    llmOptionalMicro: "MicroMachine mode: keyword DSL publishing works without an LLM key. Configure a key to attach a real LLM provider to the same DSL path.",
+    llmOptionalMicro: "MicroMachine mode: production chat/voice publishing requires an LLM key. Keyword DSL is explicit smoke/test-only.",
     llmEnterKey: "Enter an API key.",
     llmSaveFailed: "Failed to configure the LLM key.",
     userLabel: "User",
@@ -3514,7 +3583,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL request was refused or needs clarification.",
     microMachineChatFailed: "MicroMachine DSL publish failed",
     saveLlm: "Save Local Key",
-    startupGuide: "🚀 Startup guide\\n1. The default mode is the MicroMachine policy cockpit. Chat/voice input is compiled into deep DSL and published to the blackboard.\\n2. Use the MicroMachine panel to confirm or adjust the blackboard directory and semantic scope.\\n3. Keyword-provider smoke QA works without an LLM key; setting a key attaches an LLM provider to the same DSL route.\\n4. Legacy python-sc2 commander uses /api/command only when explicitly selected.\\n🎙️ Voice sends recognized speech through the currently selected mode."
+    startupGuide: "🚀 Startup guide\\n1. The default mode is the MicroMachine policy cockpit. Chat/voice input is compiled by an LLM forced tool into deep DSL and published to the blackboard.\\n2. Use the MicroMachine panel to confirm or adjust the blackboard directory and semantic scope.\\n3. Without an LLM key, production free-form publishing fails closed. Keyword provider is explicit smoke/test-only.\\n4. Legacy python-sc2 commander uses /api/command only when explicitly selected.\\n🎙️ Voice sends recognized speech through the currently selected mode."
   },
   zh: {
     eyebrow: "实时 RTS 指挥中心",
@@ -3528,7 +3597,7 @@ var I18N = {
     runtimeModeMicroSummary: "默认使用 MicroMachine DSL blackboard。",
     runtimeModeLegacySummary: "Legacy python-sc2 commander 兼容模式。",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "聊天/语音会编译成 deep DSL 并发布到 MicroMachine blackboard。没有 LLM key 时 keyword provider 也可运行。",
+    microModeDescription: "聊天/语音由 LLM forced tool 编译成 deep DSL 并发布到 MicroMachine blackboard。Smoke keyword 仅限显式测试模式。",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "旧 demo 路径的兼容模式。它不是 MicroMachine，并且需要 LLM key 才会发送到 /api/command。",
     legacyModeWarning: "Legacy mode 不是 MicroMachine。SC2 启动/命令会走 python-sc2 demo 路径，不要把它当作 MicroMachine QA 证据。",
@@ -3654,7 +3723,7 @@ var I18N = {
     microMachineFailed: "发布失败",
     llmReady: "LLM key 已设置",
     llmMissing: "Legacy commander 命令必须先设置 LLM API key。",
-    llmOptionalMicro: "MicroMachine mode：没有 LLM key 也可以用 keyword DSL provider 发布。设置 key 后可把真实 LLM provider 接到同一路径。",
+    llmOptionalMicro: "MicroMachine mode：production 聊天/语音发布需要 LLM key。Keyword DSL 仅限显式 smoke/test。",
     llmEnterKey: "请输入 API key。",
     llmSaveFailed: "LLM key 设置请求失败。",
     userLabel: "用户",
@@ -3669,7 +3738,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL 请求被拒绝或需要进一步确认。",
     microMachineChatFailed: "MicroMachine DSL 发布失败",
     saveLlm: "保存本地 Key",
-    startupGuide: "🚀 启动指南\\n1. 默认模式是 MicroMachine policy cockpit。聊天/语音会编译成 deep DSL 并发布到 blackboard。\\n2. 在 MicroMachine 面板确认或调整 blackboard directory 与 semantic scope。\\n3. 没有 LLM key 也能用 keyword provider 做 smoke QA；设置 key 后可接入真实 LLM provider。\\n4. Legacy python-sc2 commander 只有显式选择时才使用 /api/command。\\n🎙️ 语音会通过当前选择的模式发送。"
+    startupGuide: "🚀 启动指南\\n1. 默认模式是 MicroMachine policy cockpit。聊天/语音由 LLM forced tool 编译成 deep DSL 并发布到 blackboard。\\n2. 在 MicroMachine 面板确认或调整 blackboard directory 与 semantic scope。\\n3. 没有 LLM key 时 production free-form 发布会 fail-closed。Keyword provider 仅限显式 smoke/test。\\n4. Legacy python-sc2 commander 只有显式选择时才使用 /api/command。\\n🎙️ 语音会通过当前选择的模式发送。"
   }
 };
 
@@ -5405,6 +5474,11 @@ function microMachineChatNarration(data) {
     parts.push(t("microMachineChatPublished"));
     parts.push("해석: " + (intervention.goal || vector.goal || (data && data.command_text) || "전술 의도"));
     parts.push("개입 방식: raw 유닛 클릭이 아니라 MicroMachine manager bias를 조정했습니다.");
+    if (data && data.provider_source) {
+      parts.push("provider_source=" + data.provider_source);
+    } else if (compileResult.source) {
+      parts.push("provider_source=" + compileResult.source);
+    }
     if (data && data.consumption_status && data.consumption_status !== "consumed") {
       parts.push(t("microMachineChatQueued") + " (" + data.consumption_status + ")");
     }
@@ -6218,6 +6292,16 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"accepted": False, "error": "provider_output 필드는 JSON 객체여야 합니다."},
             )
             return
+        allow_smoke_keyword_provider = document.get("allow_smoke_keyword_provider", False)
+        if type(allow_smoke_keyword_provider) is not bool:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "accepted": False,
+                    "error": "allow_smoke_keyword_provider 필드는 boolean이어야 합니다.",
+                },
+            )
+            return
         current_frame = document.get("current_frame")
         if current_frame is not None and (
             type(current_frame) is bool or not isinstance(current_frame, int)
@@ -6238,6 +6322,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     text.strip(),
                     blackboard_dir=str(document.get("blackboard_dir", "") or ""),
                     provider_output=provider_output,
+                    allow_smoke_keyword_provider=allow_smoke_keyword_provider,
                     semantic_scope=semantic_scope,
                     ttl_seconds=ttl_seconds,
                     current_frame=current_frame,

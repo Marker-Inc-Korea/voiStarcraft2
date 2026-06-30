@@ -88,6 +88,7 @@ __all__ = [
     "LLM_FAILURE_CLARIFICATION_PROMPT",
     "LLM_COMBO_TOOL_NAME",
     "LLM_INTENT_TOOL_NAME",
+    "LLM_POLICY_MODULATION_TOOL_NAME",
     "LLM_INTERPRETATION_FAILURE_CODE",
     "LLM_PROMPT_INJECTION_GUARD",
     "LLM_UNAVAILABLE_CLARIFICATION_PROMPT",
@@ -99,6 +100,9 @@ __all__ = [
     "build_intent_tool_definition",
     "build_intent_tool_input_schema",
     "build_llm_system_prompt",
+    "build_policy_modulation_system_prompt",
+    "build_policy_modulation_tool_definition",
+    "build_policy_modulation_tool_input_schema",
 ]
 
 LLM_PROVIDER_ANTHROPIC: Final[str] = "anthropic"
@@ -163,6 +167,9 @@ LLM_INTENT_TOOL_NAME: Final[str] = "submit_commander_intent"
 
 LLM_COMBO_TOOL_NAME: Final[str] = "submit_commander_combo"
 """Name of the forced tool for multi-step combo command planning."""
+
+LLM_POLICY_MODULATION_TOOL_NAME: Final[str] = "submit_micromachine_policy_modulation"
+"""Name of the forced tool for MicroMachine policy modulation."""
 
 DEFAULT_COMBO_FAILURE_POLICY: Final[str] = "stop_on_step_failure"
 """Conservative ComboPlan policy used when a planner omits one."""
@@ -485,6 +492,269 @@ def build_combo_tool_definition() -> dict[str, object]:
     }
 
 
+def _unit_float_property(description: str) -> dict[str, object]:
+    return {
+        "type": "number",
+        "minimum": -1.0,
+        "maximum": 1.0,
+        "description": description,
+    }
+
+
+def _positive_float_property(description: str) -> dict[str, object]:
+    return {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "description": description,
+    }
+
+
+def _bias_map_property(description: str) -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": {
+            "type": "number",
+            "minimum": -1.0,
+            "maximum": 1.0,
+        },
+        "description": description,
+    }
+
+
+def build_policy_modulation_tool_input_schema() -> dict[str, object]:
+    """Build the forced-tool schema for MicroMachine policy modulation."""
+
+    strategy_schema = {
+        "type": "object",
+        "properties": {
+            "posture": {
+                "type": "string",
+                "enum": ["economic", "defensive", "balanced", "pressure", "all_in"],
+            },
+            "preferred_builds": _bias_map_property("Preferred strategic builds."),
+            "avoided_builds": _bias_map_property("Strategic builds to de-prioritize."),
+            "timing_biases": _bias_map_property("Timing preferences, e.g. tank_push."),
+            "transition_biases": _bias_map_property("Tech or doctrine transition biases."),
+            "strategic_tags": {"type": "array", "items": {"type": "string"}},
+        },
+        "additionalProperties": False,
+    }
+    economy_schema = {
+        "type": "object",
+        "properties": {
+            "expand_bias": _unit_float_property("Expansion preference."),
+            "worker_production_bias": _unit_float_property("Worker production preference."),
+            "gas_priority": _unit_float_property("Gas collection priority."),
+            "gas_worker_target_bias": _unit_float_property("Gas worker assignment bias."),
+            "mineral_saturation_bias": _unit_float_property("Mineral saturation bias."),
+            "repair_priority": _unit_float_property("Repair priority."),
+            "supply_buffer_bias": _unit_float_property("Supply buffer preference."),
+            "expansion_safety_bias": _unit_float_property("How safe expansions must be."),
+            "mule_priority": _unit_float_property("MULE/energy economy priority."),
+        },
+        "additionalProperties": False,
+    }
+    workers_schema = {
+        "type": "object",
+        "properties": {
+            "repeat_order_guard_frames": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 512,
+                "description": "Minimum frames before equivalent worker orders may repeat.",
+            },
+            "scout_worker_bias": _unit_float_property("Worker scouting preference."),
+            "pull_workers_for_defense_bias": _unit_float_property("Emergency worker defense bias."),
+            "repair_worker_bias": _unit_float_property("Repair worker assignment bias."),
+        },
+        "additionalProperties": False,
+    }
+    tech_schema = {
+        "type": "object",
+        "properties": {
+            "structure_biases": _bias_map_property("Structure tech biases."),
+            "unit_biases": _bias_map_property("Unit tech biases."),
+            "upgrade_biases": _bias_map_property("Upgrade biases."),
+            "tech_path_tags": {"type": "array", "items": {"type": "string"}},
+        },
+        "additionalProperties": False,
+    }
+    production_schema = {
+        "type": "object",
+        "properties": {
+            "queue_biases": _bias_map_property("Production queue item biases."),
+            "composition_biases": _bias_map_property("Desired army composition biases."),
+            "addon_biases": _bias_map_property("Terran add-on biases."),
+            "production_facility_biases": _bias_map_property("Facility construction biases."),
+            "max_tech_deviation": _positive_float_property("Allowed build-order deviation."),
+            "production_continuity_bias": _unit_float_property("Whether to keep current queue stable."),
+            "tech_switch_urgency": _unit_float_property("How urgently to switch tech."),
+            "allow_build_order_rewrite": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+    combat_schema = {
+        "type": "object",
+        "properties": {
+            "aggression": _unit_float_property("General attack pressure."),
+            "engage_threshold_delta": _unit_float_property("Lower/higher engage threshold."),
+            "retreat_threshold_delta": _unit_float_property("Lower/higher retreat threshold."),
+            "attack_timing_bias": _unit_float_property("How early to seek attacks."),
+            "commitment_level": _positive_float_property("How committed attacks should be."),
+            "pressure_window_frames": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20000,
+            },
+            "attack_condition_override": {
+                "type": "string",
+                "enum": ["", "earlier_if_safe", "force_when_threshold_met"],
+            },
+            "retreat_patience_bias": _unit_float_property("Retreat patience."),
+            "rally_before_attack_bias": _unit_float_property("Rally-before-attack preference."),
+            "harassment_bias": _unit_float_property("Small-force harassment bias."),
+            "defend_bias": _unit_float_property("Defensive combat bias."),
+            "preserve_army_bias": _unit_float_property("Army preservation bias."),
+            "combat_sim_confidence_margin": _unit_float_property("Combat sim safety margin delta."),
+            "siege_position_bias": _unit_float_property("Siege/positioning preference."),
+            "kite_bias": _unit_float_property("Kiting preference."),
+            "flank_bias": _unit_float_property("Flanking preference."),
+            "target_priority_biases": _bias_map_property("Target-class priority biases."),
+        },
+        "additionalProperties": False,
+    }
+    scouting_schema = {
+        "type": "object",
+        "properties": {
+            "risk_tolerance": _unit_float_property("Scout risk tolerance."),
+            "scout_priority": _unit_float_property("Scouting priority."),
+            "scout_cadence_bias": _unit_float_property("Scouting cadence bias."),
+            "scan_priority": _unit_float_property("Scan/comsat priority."),
+            "hidden_tech_scout_bias": _unit_float_property("Hidden tech detection bias."),
+            "target_biases": _bias_map_property("Scout target biases."),
+            "require_fresh_enemy_observation": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+    squad_schema = {
+        "type": "object",
+        "properties": {
+            "main_army_bias": _unit_float_property("Main army assignment bias."),
+            "harassment_bias": _unit_float_property("Harass squad assignment bias."),
+            "defense_bias": _unit_float_property("Defense squad assignment bias."),
+            "regroup_bias": _unit_float_property("Regrouping bias."),
+            "drop_bias": _unit_float_property("Drop harassment bias."),
+            "split_army_bias": _unit_float_property("Army split bias."),
+            "flank_bias": _unit_float_property("Squad flank bias."),
+            "reinforce_bias": _unit_float_property("Reinforcement bias."),
+            "contain_bias": _unit_float_property("Contain enemy base bias."),
+            "proxy_pressure_bias": _unit_float_property("Proxy pressure bias."),
+            "squad_role_biases": _bias_map_property("Named squad role biases."),
+        },
+        "additionalProperties": False,
+    }
+    scope_schema = {
+        "type": "object",
+        "properties": {
+            "army_group": {
+                "type": "string",
+                "enum": ["", "main", "harass", "defense", "scout", "air", "bio", "mech", "siege", "workers"],
+            },
+            "unit_classes": {"type": "array", "items": {"type": "string"}},
+            "location_intent": {
+                "type": "string",
+                "enum": [
+                    "",
+                    "home",
+                    "natural",
+                    "enemy_main",
+                    "enemy_natural",
+                    "enemy_third",
+                    "third",
+                    "watchtower",
+                    "ramp",
+                    "last_seen_enemy_army",
+                ],
+            },
+            "duration_seconds": {"type": "integer", "minimum": 0, "maximum": 900},
+            "min_units": {"type": "integer", "minimum": 0, "maximum": 200},
+            "max_units": {"type": "integer", "minimum": 0, "maximum": 200},
+            "require_safety_margin": _positive_float_property("Required safety margin."),
+            "allow_partial_scope": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+    emergency_schema = {
+        "type": "object",
+        "properties": {
+            "cancel_attacks": {"type": "boolean"},
+            "pull_workers_for_defense": {"type": "boolean"},
+            "evacuate_workers": {"type": "boolean"},
+            "force_retreat": {"type": "boolean"},
+            "hold_position": {"type": "boolean"},
+            "prioritize_repair": {"type": "boolean"},
+            "stop_expansion": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+    modulation_schema = {
+        "type": "object",
+        "properties": {
+            "goal": {"type": "string", "minLength": 1},
+            "source": {"type": "string", "enum": ["llm"]},
+            "override_level": {
+                "type": "string",
+                "enum": ["bias", "constraint", "directive", "emergency"],
+            },
+            "confidence": _positive_float_property("LLM confidence in the policy mapping."),
+            "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+            "strategy": strategy_schema,
+            "economy": economy_schema,
+            "workers": workers_schema,
+            "tech": tech_schema,
+            "production": production_schema,
+            "combat": combat_schema,
+            "scouting": scouting_schema,
+            "squad": squad_schema,
+            "scope": scope_schema,
+            "emergency": emergency_schema,
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "rationale": {"type": "string"},
+        },
+        "required": ["goal"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["compiled", "clarification_required", "refused"],
+            },
+            "clarification_prompt": {"type": "string"},
+            "refusal_reason": {"type": "string"},
+            "modulation": modulation_schema,
+        },
+        "required": ["status"],
+        "additionalProperties": False,
+    }
+
+
+def build_policy_modulation_tool_definition() -> dict[str, object]:
+    """Return the single forced tool definition for MicroMachine modulation."""
+
+    return {
+        "name": LLM_POLICY_MODULATION_TOOL_NAME,
+        "description": (
+            "Convert one Korean StarCraft II strategy utterance into bounded "
+            "MicroMachine manager-level policy modulation. Never output raw "
+            "unit tags, API calls, clicks, coordinates, or direct SC2 commands."
+        ),
+        "input_schema": build_policy_modulation_tool_input_schema(),
+    }
+
+
 def _render_field_spec(field: IntentFieldSchema) -> str:
     """Render one schema field with its allowed values for the prompt."""
 
@@ -556,6 +826,35 @@ def build_combo_system_prompt() -> str:
         "`정찰보내고 병영올려` -> [`정찰보내`, `병영올려`]; "
         "`상태 보고하고 지금 할거 알려줘` -> [`상태 보고하`, `다음 할 일 알려줘`].\n"
         f"5. {LLM_PROMPT_INJECTION_GUARD}"
+    )
+
+
+def build_policy_modulation_system_prompt() -> str:
+    """Render the system prompt for MicroMachine policy modulation."""
+
+    return (
+        "You convert exactly ONE Korean StarCraft II commander utterance into "
+        f"the {LLM_POLICY_MODULATION_TOOL_NAME} forced tool output. "
+        "한국어 전략 지시 한 문장을 MicroMachine용 정책 조정 JSON으로 변환합니다.\n"
+        "Hard rules / 엄격 규칙:\n"
+        "1. Output only manager-level policy modulation: strategy, economy, "
+        "workers, tech, production, combat, scouting, squad, semantic scope, "
+        "and emergency constraints. MicroMachine keeps tactical ownership.\n"
+        "2. Never output raw unit tags, coordinates, click targets, keyboard "
+        "input, API method names, attack-move commands, train-unit commands, "
+        "or direct SC2/s2client/python-sc2 controls. The deterministic compiler "
+        "will reject raw controls.\n"
+        "3. For normal tactical orders, return status compiled with a modulation "
+        "object whose source is llm. For greetings/questions with no executable "
+        "tactical intent, return clarification_required with a Korean prompt.\n"
+        "4. Preserve the user's doctrine: examples include marine rush, bio "
+        "pressure, tank defensive hold, siege contain, mech transition, drop "
+        "harassment, worker-line harassment, scouting map control, macro expand, "
+        "anti-air response, and defensive counterattack.\n"
+        "5. Biases are bounded floats. Positive values increase preference, "
+        "negative values reduce preference. Do not pretend that a bias directly "
+        "clicks or commands a unit.\n"
+        f"6. {LLM_PROMPT_INJECTION_GUARD}"
     )
 
 
@@ -726,6 +1025,16 @@ class LLMCommandInterpreter:
         object.__setattr__(self, "_tool_definition", build_intent_tool_definition())
         object.__setattr__(self, "_combo_system_prompt", build_combo_system_prompt())
         object.__setattr__(self, "_combo_tool_definition", build_combo_tool_definition())
+        object.__setattr__(
+            self,
+            "_policy_modulation_system_prompt",
+            build_policy_modulation_system_prompt(),
+        )
+        object.__setattr__(
+            self,
+            "_policy_modulation_tool_definition",
+            build_policy_modulation_tool_definition(),
+        )
 
     @property
     def system_prompt(self) -> str:
@@ -750,6 +1059,18 @@ class LLMCommandInterpreter:
         """Return the forced combo tool definition rendered at construction time."""
 
         return self._combo_tool_definition
+
+    @property
+    def policy_modulation_system_prompt(self) -> str:
+        """Return the MicroMachine modulation system prompt."""
+
+        return self._policy_modulation_system_prompt
+
+    @property
+    def policy_modulation_tool_definition(self) -> dict[str, object]:
+        """Return the MicroMachine forced tool definition."""
+
+        return self._policy_modulation_tool_definition
 
     def is_available(self) -> bool:
         """Return whether an interpretation call could actually be made."""
@@ -799,6 +1120,48 @@ class LLMCommandInterpreter:
             )
         except ValueError:
             return None
+
+    def propose_policy_modulation(self, request: object) -> Mapping[str, object]:
+        """Return bounded MicroMachine policy modulation provider output."""
+
+        command_text = _read_field(request, "command_text")
+        text = command_text if isinstance(command_text, str) else ""
+        if not text.strip():
+            return {
+                "source": "llm",
+                "status": "clarification_required",
+                "clarification_prompt": "전술 의도를 한국어로 구체적으로 말해 주세요.",
+            }
+        if not self.is_available():
+            return {
+                "source": "llm",
+                "status": "refused",
+                "refusal_reason": (
+                    "LLM provider unavailable: MicroMachine production text "
+                    "modulation requires a configured LLM provider."
+                ),
+            }
+        try:
+            response = self._create_policy_modulation_message(request)
+            tool_input = _extract_tool_input(response)
+        except Exception as error:  # noqa: BLE001 - provider boundary is fail-closed
+            return {
+                "source": "llm",
+                "status": "refused",
+                "refusal_reason": (
+                    "LLM policy modulation failed with "
+                    f"{type(error).__name__}: {error}"
+                ),
+            }
+        if tool_input is None:
+            return {
+                "source": "llm",
+                "status": "refused",
+                "refusal_reason": (
+                    "LLM policy modulation response had no forced-tool JSON input."
+                ),
+            }
+        return _normalize_policy_modulation_tool_output(tool_input, text)
 
     def interpret(self, command_text: str) -> CommandInterpretationResult:
         """Return a typed payload or a Korean clarification; never raises."""
@@ -972,6 +1335,47 @@ class LLMCommandInterpreter:
             messages=[{"role": "user", "content": self._contextual_user_content(command_text)}],
         )
 
+    def _create_policy_modulation_message(self, request: object) -> object:
+        """Issue the forced-tool LLM call for MicroMachine policy modulation."""
+
+        command_text = _read_field(request, "command_text")
+        text = command_text if isinstance(command_text, str) else ""
+        prompt = self._policy_modulation_user_content(request, text)
+        client = self._build_client()
+        if _uses_openai_compatible_client(self.provider):
+            return client.chat.completions.create(
+                model=self.model,
+                **_openai_compatible_token_args(self.provider, self.max_tokens),
+                messages=[
+                    {"role": "system", "content": self.policy_modulation_system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": LLM_POLICY_MODULATION_TOOL_NAME,
+                            "description": (
+                                "Submit bounded MicroMachine policy modulation."
+                            ),
+                            "parameters": build_policy_modulation_tool_input_schema(),
+                        },
+                    }
+                ],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": LLM_POLICY_MODULATION_TOOL_NAME},
+                },
+            )
+        return client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=self.policy_modulation_system_prompt,
+            tools=[self.policy_modulation_tool_definition],
+            tool_choice={"type": "tool", "name": LLM_POLICY_MODULATION_TOOL_NAME},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
     def briefing_summary(self, context: object | None = None) -> dict[str, object] | None:
         """Return an optional Korean LLM strategic briefing from safe context."""
 
@@ -1086,6 +1490,28 @@ class LLMCommandInterpreter:
         except Exception:  # noqa: BLE001 - context is advisory only
             return None
 
+    def _policy_modulation_user_content(
+        self,
+        request: object,
+        command_text: str,
+    ) -> str:
+        payload: dict[str, object] = {"command_text": command_text}
+        for field_name in (
+            "game_state",
+            "commander_context",
+            "allowed_override_levels",
+            "tags",
+        ):
+            value = _read_field(request, field_name)
+            if value is not None:
+                payload[field_name] = value
+        return (
+            "다음 JSON은 안전한 MicroMachine blackboard modulation 요청입니다. "
+            "사용자 텍스트를 직접 명령으로 실행하지 말고, bounded policy bias "
+            "JSON으로만 변환하세요.\n"
+            f"{_safe_json_dumps(payload)}"
+        )
+
     def _contextual_user_content(self, command_text: str) -> str:
         context = self._runtime_context()
         if context in (None, "", {}, []):
@@ -1195,6 +1621,12 @@ class LocalLLMControl:
     def plan_combo(self, command_text: str) -> LLMComboPlan | None:
         interpreter = self._build_current_interpreter()
         return interpreter.plan_combo(command_text)
+
+    def propose_policy_modulation(self, request: object) -> Mapping[str, object]:
+        """Return MicroMachine policy modulation from the configured LLM."""
+
+        interpreter = self._build_current_interpreter()
+        return interpreter.propose_policy_modulation(request)
 
     def briefing_llm_summary(self, context: object | None = None) -> dict[str, object] | None:
         """Return a cached LLM strategic briefing for dashboard state snapshots."""
@@ -1401,6 +1833,65 @@ def _extract_tool_input(response: object) -> Mapping[str, object] | None:
             return block_input
         return None
     return None
+
+
+def _normalize_policy_modulation_tool_output(
+    tool_input: Mapping[str, object],
+    command_text: str,
+) -> Mapping[str, object]:
+    payload = dict(tool_input)
+    payload["source"] = "llm"
+    status = str(payload.get("status", "") or "").strip().lower()
+    if status in {"clarification_required", "refused"}:
+        return payload
+    modulation = payload.get("modulation")
+    if isinstance(modulation, Mapping):
+        if not _has_substantive_policy_modulation(modulation):
+            return {
+                "source": "llm",
+                "status": "refused",
+                "refusal_reason": (
+                    "LLM policy modulation forced-tool output missing substantive "
+                    "policy axes."
+                ),
+            }
+        normalized = dict(modulation)
+        normalized["source"] = "llm"
+        normalized.setdefault("goal", command_text)
+        payload["modulation"] = normalized
+        return payload
+    return {
+        "source": "llm",
+        "status": "refused",
+        "refusal_reason": (
+            "LLM policy modulation forced-tool output missing modulation object."
+        ),
+    }
+
+
+def _has_substantive_policy_modulation(modulation: Mapping[str, object]) -> bool:
+    domain_keys = {
+        "strategy",
+        "economy",
+        "workers",
+        "tech",
+        "production",
+        "combat",
+        "scouting",
+        "squad",
+        "scope",
+        "emergency",
+        "constraints",
+    }
+    for key in domain_keys:
+        value = modulation.get(key)
+        if isinstance(value, Mapping) and any(
+            item not in (None, "", (), [], {}) for item in value.values()
+        ):
+            return True
+        if isinstance(value, (list, tuple)) and bool(value):
+            return True
+    return False
 
 
 def _parse_combo_plan_steps(

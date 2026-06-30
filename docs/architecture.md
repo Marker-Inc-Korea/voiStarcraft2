@@ -157,7 +157,8 @@ axes.
 ```text
 Korean text or browser voice
   -> Web GUI MicroMachine mode in the unified Commander Chat
-  -> bounded provider compiler / keyword provider / future LLM provider
+  -> LLM forced-tool provider / explicit smoke_keyword provider / future neural provider
+  -> bounded provider compiler
   -> PolicyModulationVector
   -> MicroMachineModulationBackend
   -> blackboard files consumed by patched MicroMachine C++ managers

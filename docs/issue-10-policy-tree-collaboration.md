@@ -97,11 +97,13 @@ runtime actions.
 `starcraft_commander.web_gui` is the default human cockpit for this sidecar.
 Top-level chat and browser voice input route to
 `POST /api/micromachine/modulate` unless the user explicitly switches to
-**Legacy python-sc2 commander** mode. The MicroMachine route can use the
-deterministic keyword provider without an LLM key for smoke QA, or an LLM/UI
-provider with the same bounded DSL contract. Legacy `/api/command` remains
-available only as an opt-in compatibility path and must not be used as
-MicroMachine production sign-off evidence.
+**Legacy python-sc2 commander** mode. The MicroMachine production route uses
+an LLM forced-tool provider that returns the same bounded DSL contract as other
+providers. The deterministic keyword provider is available only through an
+explicit smoke/test opt-in and is labeled `source=smoke_keyword`, never
+`source=llm`. Legacy `/api/command` remains available only as an opt-in
+compatibility path and must not be used as MicroMachine production sign-off
+evidence.
 
 Runtime startup is also cockpit-scoped. `/api/runtime/start` and
 `/api/runtime/status` use the selected mode: MicroMachine mode starts the

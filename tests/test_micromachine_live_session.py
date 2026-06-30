@@ -87,6 +87,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             PolicyModulationCompileStatus.CLARIFICATION_REQUIRED,
             result.compile_result.status,
         )
+        self.assertEqual("smoke_keyword", result.compile_result.source.value)
+        self.assertEqual("smoke_keyword", result.to_dict()["provider_source"])
         self.assertIn("전술 의도", result.compile_result.clarification_prompt)
 
     def test_keyword_provider_maps_attack_intent_to_offensive_gate_biases(self) -> None:
@@ -102,6 +104,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertTrue(result.ok, result.to_dict())
         self.assertIsNotNone(result.update)
         assert result.update is not None
+        self.assertEqual("smoke_keyword", result.update.vector.source.value)
+        self.assertEqual("smoke_keyword", result.to_dict()["provider_source"])
         vector = result.update.vector
         self.assertEqual("force_when_threshold_met", vector.combat.attack_condition_override)
         self.assertGreaterEqual(vector.combat.attack_timing_bias, 0.6)
@@ -564,6 +568,54 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertGreater(result.update.vector.combat.defend_bias, 0)
         self.assertEqual(32, result.update.vector.workers.repeat_order_guard_frames)
         self.assertIn("workers", result.update.manager_bias_domains)
+        self.assertEqual("smoke_keyword", result.update.vector.source.value)
+
+    def test_cli_without_provider_output_fails_closed_instead_of_keyword_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--blackboard-dir",
+                        directory,
+                        "--command",
+                        "탱크로 수비하면서 버텨",
+                        "--current-frame",
+                        "9",
+                    ]
+                )
+
+            self.assertEqual(2, exit_code)
+            result = json.loads(stdout.getvalue())
+            self.assertFalse(result["ok"], result)
+            self.assertEqual("refused", result["compile_result"]["status"])
+            self.assertEqual("llm", result["provider_source"])
+            self.assertIsNone(result["update"])
+            self.assertFalse((Path(directory) / LATEST_UPDATE_JSON_NAME).exists())
+
+    def test_cli_allows_keyword_provider_only_with_explicit_smoke_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--blackboard-dir",
+                        directory,
+                        "--command",
+                        "탱크로 수비하면서 버텨",
+                        "--current-frame",
+                        "9",
+                        "--allow-smoke-keyword-provider",
+                    ]
+                )
+
+            self.assertEqual(0, exit_code)
+            result = json.loads(stdout.getvalue())
+            self.assertTrue(result["ok"], result)
+            self.assertEqual("smoke_keyword", result["provider_source"])
+            self.assertTrue((Path(directory) / LATEST_UPDATE_JSON_NAME).exists())
 
     def test_cli_writes_result_and_filesystem_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

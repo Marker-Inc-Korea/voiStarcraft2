@@ -78,6 +78,48 @@ class FakeConfiguredLLMControl:
         return self.snapshot()
 
 
+class FakePolicyModulationLLMControl(FakeConfiguredLLMControl):
+    """Configured LLM control that emits MicroMachine policy modulation JSON."""
+
+    def is_available(self):
+        return True
+
+    def propose_policy_modulation(self, request):
+        if request.command_text.strip() in {"안녕", "안녕하세요", "hello", "hi"}:
+            return {
+                "status": "clarification_required",
+                "clarification_prompt": "전술 의도를 더 구체적으로 말해 주세요.",
+            }
+        if any(token in request.command_text for token in ("수비", "탱크", "버텨")):
+            return {
+                "source": "smoke_keyword",
+                "status": "compiled",
+                "modulation": {
+                    "goal": request.command_text,
+                    "override_level": "constraint",
+                    "confidence": 0.82,
+                    "ttl_seconds": 120,
+                    "strategy": {"posture": "defensive"},
+                    "combat": {"defend_bias": 0.65, "aggression": -0.2},
+                    "squad": {"defense_bias": 0.45},
+                    "tags": ["fake_llm_policy_modulation"],
+                }
+            }
+        return {
+            "source": "smoke_keyword",
+            "status": "compiled",
+            "modulation": {
+                "goal": request.command_text,
+                "override_level": "bias",
+                "confidence": 0.81,
+                "ttl_seconds": 120,
+                "strategy": {"posture": "pressure"},
+                "combat": {"aggression": 0.45},
+                "tags": ["fake_llm_policy_modulation"],
+            }
+        }
+
+
 class FakeFailingLLMControl:
     """LLM control test double that raises one setup failure."""
 
@@ -137,7 +179,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.session, self.bot = build_dry_run_session()
         self.bridge = SessionLoopBridge(
             session=self.session,
-            llm_control=FakeConfiguredLLMControl(),
+            llm_control=FakePolicyModulationLLMControl(),
         )
         self.bridge.start()
         self.addCleanup(self.bridge.stop)
@@ -1124,7 +1166,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual("refused", intervention["tactical_evidence"]["status"])
             self.assertTrue(intervention["tactical_evidence"]["refusal_reasons"])
 
-    def test_micromachine_modulation_accepts_keyword_provider_without_llm_configuration(self):
+    def test_micromachine_modulation_without_llm_fails_closed_no_keyword_fallback(self):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)
         bridge.start()
@@ -1142,7 +1184,49 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "text": "탱크로 수비해",
                         "blackboard_dir": directory,
                         "current_frame": 21,
-                        "update_id": "keyword-no-llm",
+                        "update_id": "no-llm-fail-closed",
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+            self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
+            self.assertFalse(payload["accepted"])
+            self.assertFalse(payload["ok"])
+            self.assertEqual("llm", payload["provider_source"])
+            self.assertEqual("refused", payload["compile_result"]["status"])
+            self.assertIn("LLM", payload["compile_result"]["refusal_reason"])
+            self.assertIsNone(payload["update"])
+            self.assertEqual(directory, payload["blackboard_dir"])
+
+    def test_micromachine_modulation_allows_keyword_only_with_explicit_smoke_flag(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=5
+            )
+            try:
+                body = json.dumps(
+                    {
+                        "text": "탱크로 수비해",
+                        "blackboard_dir": directory,
+                        "current_frame": 21,
+                        "update_id": "keyword-smoke",
+                        "allow_smoke_keyword_provider": True,
                     }
                 ).encode("utf-8")
                 connection.request(
@@ -1158,8 +1242,99 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
             self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
             self.assertTrue(payload["accepted"])
-            self.assertEqual("keyword-no-llm", payload["update"]["update_id"])
+            self.assertEqual("smoke_keyword", payload["provider_source"])
+            self.assertEqual("keyword-smoke", payload["update"]["update_id"])
             self.assertEqual(directory, payload["blackboard_dir"])
+
+    def test_micromachine_provider_output_cannot_spoof_llm_or_smoke_source(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=5
+            )
+            try:
+                body = json.dumps(
+                    {
+                        "text": "수비",
+                        "blackboard_dir": directory,
+                        "current_frame": 22,
+                        "update_id": "provider-output-ui-source",
+                        "provider_output": {
+                            "source": "smoke_keyword",
+                            "modulation": {
+                                "source": "smoke_keyword",
+                                "goal": "spoof source",
+                                "combat": {"defend_bias": 0.5},
+                            },
+                        },
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
+            self.assertTrue(payload["accepted"], payload)
+            self.assertEqual("ui", payload["provider_source"])
+            self.assertEqual("ui", payload["update"]["vector"]["source"])
+
+    def test_micromachine_modulation_uses_configured_llm_provider_for_free_text(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=FakePolicyModulationLLMControl(),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=5
+            )
+            try:
+                body = json.dumps(
+                    {
+                        "text": "공격적으로 마린 탐색해서 적발견시 바로 공격해",
+                        "blackboard_dir": directory,
+                        "current_frame": 31,
+                        "update_id": "llm-policy",
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
+            self.assertTrue(payload["accepted"], payload)
+            self.assertEqual("llm", payload["provider_source"])
+            self.assertEqual("llm-policy", payload["update"]["update_id"])
+            self.assertEqual("llm", payload["update"]["vector"]["source"])
+            self.assertEqual(
+                "fake_llm_policy_modulation",
+                payload["update"]["vector"]["tags"][0],
+            )
 
     def test_micromachine_modulation_does_not_publish_plain_greeting(self):
         with tempfile.TemporaryDirectory() as directory:
