@@ -738,14 +738,29 @@ consumed_axes = {
 }
 if "workers.repeat_order_guard_frames" not in consumed_axes:
     raise SystemExit(1)
-if int(workers.get("repeat_order_suppressed_count", 0)) <= 0:
+if "repeat_order_suppressed_count" not in workers:
+    raise SystemExit(1)
+if "self_position_command_block_count" not in workers:
+    raise SystemExit(1)
+if "root_cause_status" not in workers:
+    raise SystemExit(1)
+if "root_cause_reason" not in workers:
+    raise SystemExit(1)
+if int(workers.get("self_position_command_block_count", 0)) != 0:
+    raise SystemExit(1)
+if workers.get("root_cause_status") == "self_position_move_blocked":
+    raise SystemExit(1)
+if (
+    workers.get("root_cause_status") == "duplicate_command_safety_blocked"
+    and str(workers.get("root_cause_reason", "")).startswith("scout_")
+):
     raise SystemExit(1)
 raise SystemExit(0)
 PY
 }
 
 print_missing_live_hold_preflight() {
-  echo "MicroMachine live hold preflight did not pass: expected worker repeat-order guard frame=32 with actual suppression evidence." >&2
+  echo "MicroMachine live hold preflight did not pass: expected worker guard frame=32, zero self-position blocks, and no ScoutManager duplicate move safety blocks." >&2
 }
 
 print_no_start_units_bootstrap_blocker() {
@@ -1019,8 +1034,23 @@ worker_consumed_axes = {
 }
 if "workers.repeat_order_guard_frames" not in worker_consumed_axes:
     raise SystemExit(f"missing WorkerManager consumed axis evidence: {workers!r}")
-if int(workers.get("repeat_order_suppressed_count", 0)) <= 0:
-    raise SystemExit(f"worker repeat-order guard did not suppress any repeated order: {workers!r}")
+if "repeat_order_suppressed_count" not in workers:
+    raise SystemExit(f"missing worker repeat-order safety telemetry: {workers!r}")
+if "self_position_command_block_count" not in workers:
+    raise SystemExit(f"missing worker self-position root-cause telemetry: {workers!r}")
+if "root_cause_status" not in workers:
+    raise SystemExit(f"missing worker root-cause status telemetry: {workers!r}")
+if "root_cause_reason" not in workers:
+    raise SystemExit(f"missing worker root-cause reason telemetry: {workers!r}")
+if int(workers.get("self_position_command_block_count", 0)) != 0:
+    raise SystemExit(f"worker self-position command root-cause blocks were observed: {workers!r}")
+if workers.get("root_cause_status") == "self_position_move_blocked":
+    raise SystemExit(f"worker self-position command root cause is still active: {workers!r}")
+if (
+    workers.get("root_cause_status") == "duplicate_command_safety_blocked"
+    and str(workers.get("root_cause_reason", "")).startswith("scout_")
+):
+    raise SystemExit(f"ScoutManager still generates duplicate worker move commands: {workers!r}")
 scout = managers.get("ScoutManager")
 if not scout or scout.get("active") is not True:
     raise SystemExit(f"missing ScoutManager activity evidence: {managers!r}")
@@ -1034,6 +1064,7 @@ archive = telemetry.with_name("telemetry.jsonl")
 if not archive.exists():
     raise SystemExit(f"missing telemetry archive: {archive}")
 updates = []
+worker_archive_violation = None
 for line in archive.read_text().splitlines():
     if not line.strip():
         continue
@@ -1045,6 +1076,49 @@ for line in archive.read_text().splitlines():
     update_id = commander_entry.get("update_id")
     if update_id:
         updates.append(update_id)
+    worker_entry = entry.get("managers", {}).get("WorkerManager", {})
+    if not isinstance(worker_entry, dict):
+        continue
+    if "root_cause_status" not in worker_entry:
+        worker_archive_violation = {
+            "code": "missing_worker_root_cause_status",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+    if "root_cause_reason" not in worker_entry:
+        worker_archive_violation = {
+            "code": "missing_worker_root_cause_reason",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+    if int(worker_entry.get("self_position_command_block_count", 0)) != 0:
+        worker_archive_violation = {
+            "code": "archived_worker_self_position_command",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+    if worker_entry.get("root_cause_status") == "self_position_move_blocked":
+        worker_archive_violation = {
+            "code": "archived_worker_self_position_status",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+    if (
+        worker_entry.get("root_cause_status") == "duplicate_command_safety_blocked"
+        and str(worker_entry.get("root_cause_reason", "")).startswith("scout_")
+    ):
+        worker_archive_violation = {
+            "code": "archived_scout_duplicate_worker_move",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+if worker_archive_violation is not None:
+    raise SystemExit(f"worker root-cause archive violation: {worker_archive_violation!r}")
 for expected in (defensive_update_id, aggressive_update_id):
     if expected not in updates:
         raise SystemExit(f"stale modulation or missing profile transition: {expected} not in {archive}")

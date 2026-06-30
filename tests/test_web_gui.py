@@ -769,6 +769,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "repeat_order_guard_active": True,
                         "repeat_order_guard_frames": 32,
                         "repeat_order_suppressed_count": 7,
+                        "self_position_command_block_count": 0,
+                        "root_cause_status": "none",
+                        "root_cause_reason": "none",
                         "consumed_axes": "workers.repeat_order_guard_frames",
                     },
                 },
@@ -803,6 +806,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 intervention["manager_snapshot"]["WorkerManager"][
                     "repeat_order_suppressed_count"
                 ],
+            )
+            self.assertEqual(
+                0,
+                intervention["manager_snapshot"]["WorkerManager"][
+                    "self_position_command_block_count"
+                ],
+            )
+            self.assertEqual(
+                "none",
+                intervention["manager_snapshot"]["WorkerManager"]["root_cause_status"],
             )
             self.assertEqual("main", intervention["tactical_scope"]["requested"]["army_group"])
             self.assertEqual(

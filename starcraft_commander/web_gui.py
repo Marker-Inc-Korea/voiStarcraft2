@@ -5105,7 +5105,11 @@ function summarizeMicroMachineManagers(managers) {
   Object.keys(managers).forEach(function (manager) {
     var payload = managers[manager] || {};
     if (manager === "WorkerManager" && payload.repeat_order_guard_active === true) {
-      parts.push(manager + ": repeat blocked " + (payload.repeat_order_suppressed_count || 0));
+      parts.push(
+        manager + ": repeat blocked " + (payload.repeat_order_suppressed_count || 0) +
+        ", self-position " + (payload.self_position_command_block_count || 0) +
+        " (" + (payload.root_cause_status || "none") + ")"
+      );
     } else if (payload.policy_active === true) {
       parts.push(manager + ": policy_active");
     } else if (payload.active === true) {
