@@ -768,13 +768,35 @@ def _classify_worker_root_cause_telemetry_contract(
         "root_cause_status",
         "root_cause_reason",
     )
-    for telemetry in (*telemetry_archive, latest_telemetry):
+    telemetry_entries = [entry for entry in (*telemetry_archive, latest_telemetry) if entry]
+    for telemetry in telemetry_entries:
         managers = telemetry.get("managers")
         if not isinstance(managers, Mapping):
-            continue
+            return MicroMachineSoakFailure(
+                code="worker_root_cause_telemetry_missing",
+                message=(
+                    "Telemetry has no managers block; soak cannot prove worker "
+                    "self-position and duplicate worker move bugs are absent."
+                ),
+                evidence={
+                    "frame": _int_value(telemetry.get("frame")),
+                    "missing_fields": ["managers.WorkerManager"],
+                },
+            )
         workers = managers.get("WorkerManager")
         if not isinstance(workers, Mapping):
-            continue
+            return MicroMachineSoakFailure(
+                code="worker_root_cause_telemetry_missing",
+                message=(
+                    "Telemetry has no WorkerManager root-cause contract; soak cannot "
+                    "prove self-position and duplicate worker move bugs are absent."
+                ),
+                evidence={
+                    "frame": _int_value(telemetry.get("frame")),
+                    "missing_fields": ["WorkerManager"],
+                    "managers": sorted(str(key) for key in managers),
+                },
+            )
         missing = [field for field in required_fields if field not in workers]
         if missing:
             return MicroMachineSoakFailure(

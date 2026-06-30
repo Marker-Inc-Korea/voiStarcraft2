@@ -13518,7 +13518,7 @@ diff --git a/src/WorkerData.cpp b/src/WorkerData.cpp
 index d0a078d..a2857ec 100644
 --- a/src/WorkerData.cpp
 +++ b/src/WorkerData.cpp
-@@ -1,863 +1,1095 @@
+@@ -1,863 +1,1097 @@
 -#include "WorkerData.h"
 -#include "Util.h"
 -#include "CCBot.h"
@@ -15217,12 +15217,14 @@ index d0a078d..a2857ec 100644
 +				CCTilePosition mainPos = base->getDepotTilePosition();
 +				CCTilePosition ressourcesCenterPos = base->getTurretPosition();
 +				CCTilePosition idlePos = CCTilePosition(mainPos.x + (mainPos.x - ressourcesCenterPos.x), mainPos.y + (mainPos.y - ressourcesCenterPos.y));
-+				if (m_bot.Map().isValidTile(idlePos))
++				const bool idleSpotIsUseful = Util::DistSq(worker.getPosition(), idlePos) > 1.0f;
++				const bool depotFallbackIsUseful = Util::DistSq(worker.getPosition(), base->getDepotPosition()) > 1.0f;
++				if (m_bot.Map().isValidTile(idlePos) && idleSpotIsUseful)
 +				{
 +					m_bot.Commander().setVoiWorkerCommandReason(worker, "idle_recovery_idle_spot");
 +					worker.move(idlePos);
 +				}
-+				else if (m_bot.Map().isValidPosition(base->getDepotPosition()))
++				else if (m_bot.Map().isValidPosition(base->getDepotPosition()) && depotFallbackIsUseful)
 +				{
 +					m_bot.Commander().setVoiWorkerCommandReason(worker, "idle_recovery_depot_fallback");
 +					worker.move(base->getDepotPosition());

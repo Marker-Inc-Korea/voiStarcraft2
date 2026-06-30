@@ -66,6 +66,15 @@ def _telemetry(
                 "bounded_intervention": True,
                 "scout_priority": 0.7,
             },
+            "WorkerManager": {
+                "active": True,
+                "repeat_order_guard_active": True,
+                "repeat_order_guard_frames": 32,
+                "repeat_order_suppressed_count": 0,
+                "self_position_command_block_count": 0,
+                "root_cause_status": "none",
+                "root_cause_reason": "none",
+            },
         },
     }
 
@@ -353,6 +362,31 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 if item.code == "worker_root_cause_telemetry_missing"
             ][0]
             self.assertEqual(["root_cause_status"], failure.evidence["missing_fields"])
+
+    def test_detects_missing_worker_manager_root_cause_telemetry_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            managers.pop("WorkerManager")
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"worker_root_cause_telemetry_missing"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "worker_root_cause_telemetry_missing"
+            ][0]
+            self.assertEqual(["WorkerManager"], failure.evidence["missing_fields"])
 
     def test_detects_scout_duplicate_worker_move_root_cause(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

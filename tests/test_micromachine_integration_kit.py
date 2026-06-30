@@ -196,6 +196,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "root_cause_reason",
             "setVoiWorkerCommandReason",
             "consumeVoiWorkerCommandReason",
+            "const bool idleSpotIsUseful = Util::DistSq(worker.getPosition(), idlePos) > 1.0f",
+            "const bool depotFallbackIsUseful = Util::DistSq(worker.getPosition(), base->getDepotPosition()) > 1.0f",
             "m_lastVoiScoutMoveFrame",
             "m_lastVoiScoutMoveTarget",
             "already ordered",
