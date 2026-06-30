@@ -65,11 +65,13 @@ def _telemetry(
                 "active": True,
                 "bounded_intervention": True,
                 "policy_update_id": update_id,
+                "policy_issued_at_frame": 6_000,
                 "strategy_doctrine": "bio_pressure",
                 "queue_bias_marine": 0.55,
                 "last_doctrine": "bio_pressure",
                 "last_doctrine_action": "marine_pressure",
                 "last_doctrine_queue_item": "Marine",
+                "last_doctrine_evidence": "queued",
                 "last_doctrine_update_id": update_id,
                 "last_doctrine_frame": 6_200,
                 "last_doctrine_fresh": True,
@@ -92,6 +94,12 @@ def _telemetry(
                 "self_position_command_block_count": 0,
                 "root_cause_status": "none",
                 "root_cause_reason": "none",
+                "trace_contract_version": 1,
+                "trace_event_count": 12,
+                "last_trace_frame": frame,
+                "last_trace_status": "accepted_candidate",
+                "last_trace_reason": "mineral_assignment",
+                "last_trace_target_kind": "unit",
             },
         },
     }
@@ -329,6 +337,12 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 "last_worker_current_order_target_tag": 0,
                 "root_cause_status": "self_position_move_blocked",
                 "root_cause_reason": "idle_recovery_idle_spot",
+                "trace_contract_version": 1,
+                "trace_event_count": 18,
+                "last_trace_frame": 12_500,
+                "last_trace_status": "self_position_blocked",
+                "last_trace_reason": "idle_recovery_idle_spot",
+                "last_trace_target_kind": "unit_move_position",
             }
             self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
 
@@ -362,6 +376,12 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 "repeat_order_suppressed_count": 0,
                 "self_position_command_block_count": 0,
                 "root_cause_reason": "none",
+                "trace_contract_version": 1,
+                "trace_event_count": 12,
+                "last_trace_frame": 12_500,
+                "last_trace_status": "accepted_candidate",
+                "last_trace_reason": "mineral_assignment",
+                "last_trace_target_kind": "unit",
             }
             self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
 
@@ -380,6 +400,29 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 if item.code == "worker_root_cause_telemetry_missing"
             ][0]
             self.assertEqual(["root_cause_status"], failure.evidence["missing_fields"])
+
+    def test_detects_noop_worker_trace_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            workers = managers["WorkerManager"]
+            assert isinstance(workers, dict)
+            workers["trace_event_count"] = 0
+            workers["last_trace_frame"] = 0
+            workers["last_trace_status"] = "none"
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"worker_trace_contract_invalid"})
 
     def test_detects_missing_worker_manager_root_cause_telemetry_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -425,6 +468,12 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 "self_position_command_block_count": 0,
                 "root_cause_status": "duplicate_command_safety_blocked",
                 "root_cause_reason": "scout_enemy_region_known_move",
+                "trace_contract_version": 1,
+                "trace_event_count": 31,
+                "last_trace_frame": 12_500,
+                "last_trace_status": "duplicate_blocked",
+                "last_trace_reason": "scout_enemy_region_known_move",
+                "last_trace_target_kind": "unit_move_position",
             }
             self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
 
@@ -470,6 +519,12 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 "self_position_command_block_count": 0,
                 "root_cause_status": "duplicate_command_safety_blocked",
                 "root_cause_reason": "scout_under_attack_continue_enemy_base",
+                "trace_contract_version": 1,
+                "trace_event_count": 22,
+                "last_trace_frame": 8_000,
+                "last_trace_status": "duplicate_blocked",
+                "last_trace_reason": "scout_under_attack_continue_enemy_base",
+                "last_trace_target_kind": "unit_move_position",
             }
             latest_managers["WorkerManager"] = {
                 "active": True,
@@ -479,6 +534,12 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 "self_position_command_block_count": 0,
                 "root_cause_status": "none",
                 "root_cause_reason": "none",
+                "trace_contract_version": 1,
+                "trace_event_count": 24,
+                "last_trace_frame": 12_500,
+                "last_trace_status": "accepted_candidate",
+                "last_trace_reason": "mineral_assignment",
+                "last_trace_target_kind": "unit",
             }
             self._write_runtime(
                 root,
@@ -645,6 +706,27 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
 
             self.assert_failure_codes(report, {"manager_intervention_missing"})
 
+    def test_rejects_production_doctrine_without_direct_queue_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["last_doctrine_evidence"] = "intent_only"
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"manager_intervention_missing"})
+
     def test_rejects_stale_production_doctrine_from_previous_update(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -726,6 +808,152 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             )
 
             self.assert_failure_codes(report, {"manager_intervention_missing"})
+
+    def test_accepts_expected_non_marine_strategy_consumption(self) -> None:
+        cases = (
+            ("tank_defensive_hold", "factory_transition", "Factory"),
+            ("mech_transition", "factory_transition", "Factory"),
+            ("drop_harassment", "starport_transition", "Starport"),
+            ("expand_macro", "expand_macro", "CommandCenter"),
+        )
+        for doctrine, action, item in cases:
+            with self.subTest(doctrine=doctrine):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    telemetry = _telemetry(12_500, update_id=f"soak-{doctrine}")
+                    managers = telemetry["managers"]
+                    assert isinstance(managers, dict)
+                    production = managers["ProductionManager"]
+                    assert isinstance(production, dict)
+                    production["policy_update_id"] = f"soak-{doctrine}"
+                    production["strategy_doctrine"] = doctrine
+                    production["last_doctrine"] = doctrine
+                    production["last_doctrine_action"] = action
+                    production["last_doctrine_queue_item"] = item
+                    production["last_doctrine_update_id"] = f"soak-{doctrine}"
+                    self._write_runtime(
+                        root,
+                        log_text=MACRO_LOG,
+                        telemetry=telemetry,
+                        modulation=_modulation(update_id=f"soak-{doctrine}"),
+                    )
+
+                    report = classify_micromachine_soak(
+                        MicroMachineSoakObservation(
+                            blackboard_dir=root,
+                            bot_log=root / "micromachine.log",
+                        ),
+                        MicroMachineSoakConfig(
+                            target_frame=12_000,
+                            expected_strategy_doctrine=doctrine,
+                            expected_production_actions=(action,),
+                            expected_production_items=(item,),
+                        ),
+                    )
+
+                    self.assertTrue(report.ok, report.to_dict())
+
+    def test_rejects_expected_strategy_consumption_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="tank_defensive_hold",
+                    expected_production_actions=("factory_transition",),
+                    expected_production_items=("Factory",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"strategy_consumption_mismatch"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "strategy_consumption_mismatch"
+            ][0]
+            self.assertEqual(
+                "tank_defensive_hold",
+                failure.evidence["expected_strategy_doctrine"],
+            )
+            self.assertIn("bio_pressure", failure.evidence["observed_doctrines"])
+
+    def test_rejects_expected_strategy_from_stale_archive_when_latest_mismatches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archived = _telemetry(8_000, update_id="previous-update")
+            archived_managers = archived["managers"]
+            assert isinstance(archived_managers, dict)
+            archived_production = archived_managers["ProductionManager"]
+            assert isinstance(archived_production, dict)
+            archived_production["policy_update_id"] = "previous-update"
+            archived_production["policy_issued_at_frame"] = 7_500
+            archived_production["strategy_doctrine"] = "tank_defensive_hold"
+            archived_production["last_doctrine"] = "tank_defensive_hold"
+            archived_production["last_doctrine_action"] = "factory_transition"
+            archived_production["last_doctrine_queue_item"] = "Factory"
+            archived_production["last_doctrine_evidence"] = "queued"
+            archived_production["last_doctrine_update_id"] = "previous-update"
+            archived_production["last_doctrine_frame"] = 7_900
+
+            latest = _telemetry(12_500, update_id="current-update")
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=latest,
+                telemetry_archive=[archived, latest],
+                modulation=_modulation(update_id="current-update"),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="tank_defensive_hold",
+                    expected_production_actions=("factory_transition",),
+                    expected_production_items=("Factory",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"strategy_consumption_mismatch"})
+
+    def test_rejects_bio_pressure_marine_only_when_support_path_expected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=_telemetry(12_500))
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="bio_pressure",
+                    expected_production_actions=(
+                        "bio_marauder_techlab",
+                        "bio_marauder_support",
+                        "starport_transition",
+                        "medivac_drop_support",
+                    ),
+                    expected_production_items=(
+                        "BarracksTechLab",
+                        "Marauder",
+                        "Starport",
+                        "Medivac",
+                    ),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"strategy_consumption_mismatch"})
 
     def test_rejects_non_fresh_production_doctrine_false_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

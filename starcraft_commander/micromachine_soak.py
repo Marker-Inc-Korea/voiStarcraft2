@@ -59,6 +59,9 @@ UNIT_PRODUCTION_TERMS: Final[tuple[str, ...]] = (
     "create unit item=",
     "accepted unit training order=",
 )
+PRODUCTION_DOCTRINE_EVIDENCE_VALUES: Final[set[str]] = {
+    "queued",
+}
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,9 @@ class MicroMachineSoakConfig:
     require_manager_intervention: bool = True
     expected_profile_tags: tuple[str, ...] = ()
     expected_tactical_effects: tuple[str, ...] = ()
+    expected_strategy_doctrine: str = ""
+    expected_production_actions: tuple[str, ...] = ()
+    expected_production_items: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_positive("target_frame", self.target_frame)
@@ -109,6 +115,21 @@ class MicroMachineSoakConfig:
             "expected_tactical_effects",
             _string_tuple("expected_tactical_effects", self.expected_tactical_effects),
         )
+        object.__setattr__(
+            self,
+            "expected_strategy_doctrine",
+            _optional_string("expected_strategy_doctrine", self.expected_strategy_doctrine),
+        )
+        object.__setattr__(
+            self,
+            "expected_production_actions",
+            _string_tuple("expected_production_actions", self.expected_production_actions),
+        )
+        object.__setattr__(
+            self,
+            "expected_production_items",
+            _string_tuple("expected_production_items", self.expected_production_items),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -126,6 +147,9 @@ class MicroMachineSoakConfig:
             "require_manager_intervention": self.require_manager_intervention,
             "expected_profile_tags": list(self.expected_profile_tags),
             "expected_tactical_effects": list(self.expected_tactical_effects),
+            "expected_strategy_doctrine": self.expected_strategy_doctrine,
+            "expected_production_actions": list(self.expected_production_actions),
+            "expected_production_items": list(self.expected_production_items),
         }
 
 
@@ -490,6 +514,14 @@ def classify_micromachine_soak(
                 evidence=tactical_evidence.to_dict(),
             )
         )
+    strategy_consumption_failure = _classify_expected_strategy_consumption(
+        telemetry,
+        telemetry_archive,
+        latest_frame,
+        resolved_config,
+    )
+    if strategy_consumption_failure is not None:
+        failures.append(strategy_consumption_failure)
 
     target_reached = latest_frame >= resolved_config.target_frame
     status = "passed" if target_reached and macro_evidence_ok and manager_intervention_ok and not failures else "failed"
@@ -629,6 +661,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--expected-profile-tags", default="")
     parser.add_argument("--expected-tactical-effects", default="")
+    parser.add_argument("--expected-strategy-doctrine", default="")
+    parser.add_argument("--expected-production-actions", default="")
+    parser.add_argument("--expected-production-items", default="")
     args = parser.parse_args(argv)
 
     config = MicroMachineSoakConfig(
@@ -647,6 +682,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         expected_tactical_effects=tuple(
             item for item in args.expected_tactical_effects.split() if item
+        ),
+        expected_strategy_doctrine=args.expected_strategy_doctrine,
+        expected_production_actions=tuple(
+            item for item in args.expected_production_actions.split() if item
+        ),
+        expected_production_items=tuple(
+            item for item in args.expected_production_items.split() if item
         ),
     )
     observation = MicroMachineSoakObservation(
@@ -680,6 +722,12 @@ def _string_tuple(name: str, value: Sequence[str]) -> tuple[str, ...]:
             raise ValueError(f"{name}[{index}] must be a non-empty string.")
         result.append(item.strip())
     return tuple(result)
+
+
+def _optional_string(name: str, value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string.")
+    return value.strip()
 
 
 def _read_text(path: Path) -> str:
@@ -777,6 +825,12 @@ def _classify_worker_root_cause_telemetry_contract(
         "self_position_command_block_count",
         "root_cause_status",
         "root_cause_reason",
+        "trace_contract_version",
+        "trace_event_count",
+        "last_trace_frame",
+        "last_trace_status",
+        "last_trace_reason",
+        "last_trace_target_kind",
     )
     telemetry_entries = [entry for entry in (*telemetry_archive, latest_telemetry) if entry]
     for telemetry in telemetry_entries:
@@ -820,6 +874,35 @@ def _classify_worker_root_cause_telemetry_contract(
                     "missing_fields": missing,
                     "workers": dict(workers),
                 },
+            )
+        frame = _int_value(telemetry.get("frame"))
+        trace_contract_version = _int_value(workers.get("trace_contract_version"))
+        trace_event_count = _int_value(workers.get("trace_event_count"))
+        last_trace_frame = _int_value(workers.get("last_trace_frame"))
+        last_trace_status = str(workers.get("last_trace_status", "") or "")
+        last_trace_reason = str(workers.get("last_trace_reason", "") or "")
+        last_trace_target_kind = str(workers.get("last_trace_target_kind", "") or "")
+        if trace_contract_version != 1:
+            return MicroMachineSoakFailure(
+                code="worker_trace_contract_invalid",
+                message="WorkerManager trace contract version is invalid.",
+                evidence={"frame": frame, "workers": dict(workers)},
+            )
+        if frame >= 512 and (
+            trace_event_count <= 0
+            or last_trace_frame <= 0
+            or last_trace_frame > frame
+            or last_trace_status in ("", "none", "unknown")
+            or last_trace_reason in ("", "none", "unknown")
+            or last_trace_target_kind in ("", "none", "unknown")
+        ):
+            return MicroMachineSoakFailure(
+                code="worker_trace_contract_invalid",
+                message=(
+                    "WorkerManager trace fields exist but do not prove live worker "
+                    "command tracing."
+                ),
+                evidence={"frame": frame, "workers": dict(workers)},
             )
     return None
 
@@ -1157,6 +1240,7 @@ def _production_doctrine_action_seen(
         return False
     action = str(production.get("last_doctrine_action", "") or "")
     item = str(production.get("last_doctrine_queue_item", "") or "")
+    evidence = str(production.get("last_doctrine_evidence", "") or "")
     frame = _int_value(production.get("last_doctrine_frame"))
     policy_update_id = str(production.get("policy_update_id", "") or "")
     last_update_id = str(production.get("last_doctrine_update_id", "") or "")
@@ -1173,11 +1257,124 @@ def _production_doctrine_action_seen(
         and action != "none"
         and item
         and item != "none"
+        and evidence in PRODUCTION_DOCTRINE_EVIDENCE_VALUES
         and frame > 0
         and policy_update_id
         and last_update_id == policy_update_id
         and strategy_doctrine
         and last_doctrine == strategy_doctrine
+    )
+
+
+def _classify_expected_strategy_consumption(
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+    latest_frame: int,
+    config: MicroMachineSoakConfig,
+) -> MicroMachineSoakFailure | None:
+    expected_doctrine = config.expected_strategy_doctrine
+    expected_actions = set(config.expected_production_actions)
+    expected_items = set(config.expected_production_items)
+    if (
+        latest_frame < config.target_frame
+        or not expected_doctrine
+        and not expected_actions
+        and not expected_items
+    ):
+        return None
+
+    best: Mapping[str, object] | None = None
+    observed_actions: set[str] = set()
+    observed_items: set[str] = set()
+    observed_doctrines: set[str] = set()
+    latest_managers = latest_telemetry.get("managers")
+    latest_production = (
+        latest_managers.get("ProductionManager")
+        if isinstance(latest_managers, Mapping)
+        else None
+    )
+    expected_update_id = ""
+    min_doctrine_frame = 0
+    latest_strategy_doctrine = ""
+    if isinstance(latest_production, Mapping):
+        expected_update_id = str(latest_production.get("policy_update_id", "") or "")
+        min_doctrine_frame = _int_value(latest_production.get("policy_issued_at_frame"))
+        latest_strategy_doctrine = str(
+            latest_production.get("strategy_doctrine", "") or ""
+        )
+    if expected_doctrine and latest_strategy_doctrine != expected_doctrine:
+        return MicroMachineSoakFailure(
+            code="strategy_consumption_mismatch",
+            message=(
+                "Latest ProductionManager strategy doctrine does not match the "
+                "expected MicroMachine strategy."
+            ),
+            evidence={
+                "expected_strategy_doctrine": expected_doctrine,
+                "latest_strategy_doctrine": latest_strategy_doctrine,
+                "latest_policy_update_id": expected_update_id,
+                "observed_doctrines": (
+                    [latest_strategy_doctrine] if latest_strategy_doctrine else []
+                ),
+                "observed_actions": [],
+                "observed_items": [],
+            },
+        )
+    for entry in (*telemetry_archive, latest_telemetry):
+        managers = entry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        production = managers.get("ProductionManager")
+        if not isinstance(production, Mapping):
+            continue
+        doctrine = str(production.get("strategy_doctrine", "") or "")
+        last_doctrine = str(production.get("last_doctrine", "") or "")
+        action = str(production.get("last_doctrine_action", "") or "")
+        item = str(production.get("last_doctrine_queue_item", "") or "")
+        if doctrine:
+            observed_doctrines.add(doctrine)
+        if last_doctrine:
+            observed_doctrines.add(last_doctrine)
+        if action and action != "none":
+            observed_actions.add(action)
+        if item and item != "none":
+            observed_items.add(item)
+
+        doctrine_ok = not expected_doctrine or (
+            doctrine == expected_doctrine and last_doctrine == expected_doctrine
+        )
+        action_ok = not expected_actions or action in expected_actions
+        item_ok = not expected_items or item in expected_items
+        if (
+            doctrine_ok
+            and action_ok
+            and item_ok
+            and _production_doctrine_action_seen(
+                production,
+                expected_update_id=expected_update_id,
+                min_doctrine_frame=min_doctrine_frame,
+            )
+        ):
+            best = production
+            break
+
+    if best is not None:
+        return None
+
+    return MicroMachineSoakFailure(
+        code="strategy_consumption_mismatch",
+        message=(
+            "ProductionManager did not consume the expected MicroMachine strategy "
+            "mode/action/item evidence."
+        ),
+        evidence={
+            "expected_strategy_doctrine": expected_doctrine,
+            "expected_production_actions": sorted(expected_actions),
+            "expected_production_items": sorted(expected_items),
+            "observed_doctrines": sorted(observed_doctrines),
+            "observed_actions": sorted(observed_actions),
+            "observed_items": sorted(observed_items),
+        },
     )
 
 

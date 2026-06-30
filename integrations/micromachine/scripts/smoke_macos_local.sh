@@ -217,10 +217,82 @@ BOT_PID=""
 PREEXISTING_SC2_PORT_PIDS=""
 DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-smoke-defensive-hold}"
 AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-smoke-aggressive-pressure}"
+SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
 SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-1}"
 SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-0}"
 NO_START_UNITS_FRAME="${NO_START_UNITS_FRAME:-1200}"
+SMOKE_STRATEGY_PROFILE_NAME="${SMOKE_STRATEGY_PROFILE_NAME:-bio_pressure}"
+if [[ -z "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE:-}" ]]; then
+  if [[ "${SMOKE_STRATEGY_PROFILE_NAME}" == "bio_pressure" || "${SMOKE_STRATEGY_PROFILE_NAME}" == "marine_rush" || "${SMOKE_STRATEGY_PROFILE_NAME}" == "aggressive_pressure" ]]; then
+    SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE=1
+  else
+    SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE=0
+  fi
+fi
+
+expected_strategy_contract() {
+  local profile="$1"
+  case "${profile}" in
+    marine_rush)
+      printf '%s\t%s\t%s\n' "marine_rush" "marine_pressure bio_facility" "Marine Barracks"
+      ;;
+    bio_pressure|aggressive_pressure)
+      printf '%s\t%s\t%s\n' "bio_pressure" "bio_marauder_techlab bio_marauder_support starport_transition medivac_drop_support" "BarracksTechLab Marauder Starport Medivac"
+      ;;
+    tank_defensive_hold|siege_contain|contain_enemy_natural)
+      printf '%s\t%s\t%s\n' "${profile}" "factory_transition factory_techlab siege_tank_composition" "Factory FactoryTechLab SiegeTank"
+      ;;
+    mech_transition|tech_transition)
+      printf '%s\t%s\t%s\n' "mech_transition" "factory_transition factory_techlab hellion_harassment cyclone_mech siege_tank_composition thor_mech" "Factory FactoryTechLab Hellion Cyclone SiegeTank Thor"
+      ;;
+    drop_harassment|worker_line_harassment)
+      printf '%s\t%s\t%s\n' "${profile}" "starport_transition drop_reactor medivac_drop_support factory_transition hellion_harassment reaper_harassment" "Starport StarportReactor Medivac Factory Hellion Reaper"
+      ;;
+    expand_macro|economic_expansion)
+      printf '%s\t%s\t%s\n' "expand_macro" "expand_macro" "CommandCenter"
+      ;;
+    anti_air_response)
+      printf '%s\t%s\t%s\n' "anti_air_response" "starport_transition anti_air_detection_support anti_air_viking" "Starport EngineeringBay Viking"
+      ;;
+    *)
+      echo "MicroMachine smoke rejected: unsupported SMOKE_STRATEGY_PROFILE_NAME=${profile}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+IFS=$'\t' read -r SMOKE_EXPECTED_STRATEGY_DOCTRINE SMOKE_EXPECTED_PRODUCTION_ACTIONS SMOKE_EXPECTED_PRODUCTION_ITEMS < <(expected_strategy_contract "${SMOKE_STRATEGY_PROFILE_NAME}")
+if [[ -z "${SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE:-}" ]]; then
+  case "${SMOKE_STRATEGY_PROFILE_NAME}" in
+    bio_pressure|marine_rush|aggressive_pressure|drop_harassment|worker_line_harassment)
+      SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE=1
+      ;;
+    *)
+      SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE=0
+      ;;
+  esac
+fi
+if [[ -z "${SMOKE_REQUIRE_SCOUT_MODULATION_EVIDENCE:-}" ]]; then
+  case "${SMOKE_STRATEGY_PROFILE_NAME}" in
+    mech_transition|tech_transition)
+      SMOKE_REQUIRE_SCOUT_MODULATION_EVIDENCE=0
+      ;;
+    *)
+      SMOKE_REQUIRE_SCOUT_MODULATION_EVIDENCE=1
+      ;;
+  esac
+fi
+if [[ -z "${SMOKE_REQUIRE_SQUAD_MODULATION_EVIDENCE:-}" ]]; then
+  case "${SMOKE_STRATEGY_PROFILE_NAME}" in
+    expand_macro|economic_expansion)
+      SMOKE_REQUIRE_SQUAD_MODULATION_EVIDENCE=0
+      ;;
+    *)
+      SMOKE_REQUIRE_SQUAD_MODULATION_EVIDENCE=1
+      ;;
+  esac
+fi
 
 if [[ -z "${SMOKE_ATTEMPT_INDEX}" && "${SMOKE_MAX_ATTEMPTS}" -gt 1 ]]; then
   mkdir -p "${BLACKBOARD_DIR}"
@@ -644,25 +716,33 @@ publish_profile() {
   local update_id="$2"
   local frame="$3"
   # MicroMachineFilesystemBlackboard writes latest_modulation.kv for the C++ hook.
+  # Historical smoke contracts used build_tank_defensive_hold_profile and
+  # build_bio_pressure_profile directly; the strategy matrix now routes through
+  # build_micromachine_strategy_profile so every supported play style shares the
+  # same safe DSL compiler path.
   PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${BLACKBOARD_DIR}" "${profile}" "${update_id}" "${frame}"
 import sys
 
 from starcraft_commander.micromachine_runtime import (
     MicroMachineFilesystemBlackboard,
-    build_bio_pressure_profile,
-    build_tank_defensive_hold_profile,
+    build_micromachine_strategy_profile,
 )
 
 directory, profile_name, update_id, frame_text = sys.argv[1:5]
 backend = MicroMachineFilesystemBlackboard(directory)
-if profile_name == "defensive_hold":
-    vector = build_tank_defensive_hold_profile()
-elif profile_name == "aggressive_pressure":
-    vector = build_bio_pressure_profile()
-else:
-    raise SystemExit(f"unknown MicroMachine profile: {profile_name}")
+if profile_name == "aggressive_pressure":
+    profile_name = "bio_pressure"
+vector = build_micromachine_strategy_profile(profile_name)
 backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_id)
 PY
+}
+
+smoke_strategy_update_id() {
+  local profile="$1"
+  local frame="$2"
+  local safe_profile
+  safe_profile="${profile//[^A-Za-z0-9_.-]/-}"
+  printf 'smoke-%s-%s\n' "${safe_profile}" "${frame}"
 }
 
 telemetry_frame() {
@@ -740,6 +820,8 @@ if "workers.repeat_order_guard_frames" not in consumed_axes:
     raise SystemExit(1)
 if "repeat_order_suppressed_count" not in workers:
     raise SystemExit(1)
+if int(workers.get("repeat_order_suppressed_count", 0)) != 0:
+    raise SystemExit(1)
 if "self_position_command_block_count" not in workers:
     raise SystemExit(1)
 if "root_cause_status" not in workers:
@@ -760,7 +842,7 @@ PY
 }
 
 print_missing_live_hold_preflight() {
-  echo "MicroMachine live hold preflight did not pass: expected worker guard frame=32, zero self-position blocks, and no ScoutManager duplicate move safety blocks." >&2
+  echo "MicroMachine live hold preflight did not pass: expected worker guard frame=32, zero repeat-order suppressions, zero self-position blocks, and no ScoutManager duplicate move safety blocks." >&2
 }
 
 print_no_start_units_bootstrap_blocker() {
@@ -851,7 +933,13 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
       exit 0
     fi
     if [[ "${SMOKE_AUTO_AGGRESSIVE_PROFILE}" == "1" && "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 0 && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${AGGRESSIVE_PROFILE_FRAME}" ]] && has_required_macro_evidence; then
-      publish_profile "aggressive_pressure" "${AGGRESSIVE_UPDATE_ID}" "${current_telemetry_frame}"
+      if [[ "${SMOKE_STRATEGY_PROFILE_NAME}" == "bio_pressure" || "${SMOKE_STRATEGY_PROFILE_NAME}" == "marine_rush" || "${SMOKE_STRATEGY_PROFILE_NAME}" == "aggressive_pressure" ]]; then
+        SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}"
+      else
+        SMOKE_ACTIVE_STRATEGY_UPDATE_ID="$(smoke_strategy_update_id "${SMOKE_STRATEGY_PROFILE_NAME}" "${current_telemetry_frame}")"
+        AGGRESSIVE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
+      fi
+      publish_profile "${SMOKE_STRATEGY_PROFILE_NAME}" "${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}" "${current_telemetry_frame}"
       AGGRESSIVE_PROFILE_PUBLISHED=1
     fi
 
@@ -922,9 +1010,10 @@ fi
 
 print_bot_logs >/dev/null 2>&1
 
-python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${BOT_LOG}" "${DEFENSIVE_UPDATE_ID}" "${AGGRESSIVE_UPDATE_ID}"
+python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${BOT_LOG}" "${DEFENSIVE_UPDATE_ID}" "${AGGRESSIVE_UPDATE_ID}" "${SMOKE_EXPECTED_STRATEGY_DOCTRINE}" "${SMOKE_EXPECTED_PRODUCTION_ACTIONS}" "${SMOKE_EXPECTED_PRODUCTION_ITEMS}" "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE}" "${SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE}" "${SMOKE_REQUIRE_SCOUT_MODULATION_EVIDENCE}" "${SMOKE_REQUIRE_SQUAD_MODULATION_EVIDENCE}"
 import json
 import sys
+import time
 from pathlib import Path
 
 telemetry = Path(sys.argv[1])
@@ -932,7 +1021,25 @@ min_frame = int(sys.argv[2])
 bot_log = Path(sys.argv[3])
 defensive_update_id = sys.argv[4]
 aggressive_update_id = sys.argv[5]
-payload = json.loads(telemetry.read_text())
+expected_strategy_doctrine = sys.argv[6]
+expected_production_actions = {item for item in sys.argv[7].split() if item}
+expected_production_items = {item for item in sys.argv[8].split() if item}
+require_aggressive_combat = sys.argv[9] == "1"
+require_scout_movement = sys.argv[10] == "1"
+require_scout_modulation = sys.argv[11] == "1"
+require_squad_modulation = sys.argv[12] == "1"
+
+def load_json_retry(path):
+    last_error = None
+    for _ in range(8):
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise SystemExit(f"could not read stable JSON from {path}: {last_error}")
+
+payload = load_json_retry(telemetry)
 if payload.get("protocol_version") != "voi-mm-bridge/v1":
     raise SystemExit(f"unexpected telemetry protocol in {telemetry}: {payload!r}")
 if payload.get("frame", 0) < min_frame:
@@ -955,7 +1062,7 @@ managers = payload.get("managers", {})
 combat = managers.get("CombatCommander")
 if not combat or combat.get("active") is not True:
     raise SystemExit(f"missing CombatCommander activity evidence: {managers!r}")
-if combat.get("bounded_intervention") is not True or combat.get("aggression", 0) <= 0:
+if combat.get("bounded_intervention") is not True:
     raise SystemExit(f"missing aggressive CombatCommander modulation evidence: {combat!r}")
 combat_consumed_axes = {
     axis.strip()
@@ -966,60 +1073,69 @@ for axis in (
     "combat.attack_timing_bias",
     "combat.commitment_level",
     "combat.attack_condition_override",
-    "combat.retreat_patience_bias",
-    "combat.rally_before_attack_bias",
-    "scope.min_units",
 ):
     if axis not in combat_consumed_axes:
         raise SystemExit(f"missing deep CombatCommander consumed axis {axis}: {combat!r}")
-if float(combat.get("attack_timing_bias", 0)) <= 0:
-    raise SystemExit(f"missing attack timing bias evidence: {combat!r}")
-if float(combat.get("commitment_level", 0)) <= 0:
-    raise SystemExit(f"missing commitment level evidence: {combat!r}")
-if combat.get("attack_condition_override") != "earlier_if_safe":
-    raise SystemExit(f"missing attack condition override evidence: {combat!r}")
-if combat.get("main_attack_order_status") != "Attack":
-    raise SystemExit(f"missing aggressive attack order evidence: {combat!r}")
-if combat.get("main_attack_scope_threshold_met") is not True:
-    raise SystemExit(f"missing attack scope threshold evidence: {combat!r}")
-if combat.get("main_attack_simulation_won") is not True:
-    raise SystemExit(f"missing attack simulation safety evidence: {combat!r}")
-if int(combat.get("main_attack_unit_count", 0)) < int(combat.get("main_attack_scope_min_units", 1)):
-    raise SystemExit(f"attack order did not satisfy scope units: {combat!r}")
-if float(combat.get("retreat_patience_bias", 0)) <= 0:
-    raise SystemExit(f"missing retreat patience evidence: {combat!r}")
-if float(combat.get("rally_before_attack_bias", 0)) <= 0:
-    raise SystemExit(f"missing rally-before-attack evidence: {combat!r}")
+if require_aggressive_combat:
+    if combat.get("aggression", 0) <= 0:
+        raise SystemExit(f"missing positive aggression evidence: {combat!r}")
+    for axis in (
+        "combat.retreat_patience_bias",
+        "combat.rally_before_attack_bias",
+        "scope.min_units",
+    ):
+        if axis not in combat_consumed_axes:
+            raise SystemExit(f"missing deep CombatCommander consumed axis {axis}: {combat!r}")
+    if float(combat.get("attack_timing_bias", 0)) <= 0:
+        raise SystemExit(f"missing attack timing bias evidence: {combat!r}")
+    if float(combat.get("commitment_level", 0)) <= 0:
+        raise SystemExit(f"missing commitment level evidence: {combat!r}")
+    if combat.get("attack_condition_override") != "earlier_if_safe":
+        raise SystemExit(f"missing attack condition override evidence: {combat!r}")
+    if combat.get("main_attack_order_status") != "Attack":
+        raise SystemExit(f"missing aggressive attack order evidence: {combat!r}")
+    if combat.get("main_attack_scope_threshold_met") is not True:
+        raise SystemExit(f"missing attack scope threshold evidence: {combat!r}")
+    if combat.get("main_attack_simulation_won") is not True:
+        raise SystemExit(f"missing attack simulation safety evidence: {combat!r}")
+    if int(combat.get("main_attack_unit_count", 0)) < int(combat.get("main_attack_scope_min_units", 1)):
+        raise SystemExit(f"attack order did not satisfy scope units: {combat!r}")
+    if float(combat.get("retreat_patience_bias", 0)) <= 0:
+        raise SystemExit(f"missing retreat patience evidence: {combat!r}")
+    if float(combat.get("rally_before_attack_bias", 0)) <= 0:
+        raise SystemExit(f"missing rally-before-attack evidence: {combat!r}")
 squad = managers.get("Squad")
 if not squad or squad.get("active") is not True:
     raise SystemExit(f"missing Squad activity evidence: {managers!r}")
-if squad.get("bounded_intervention") is not True:
+if require_squad_modulation and squad.get("bounded_intervention") is not True:
     raise SystemExit(f"missing Squad bounded intervention evidence: {squad!r}")
 squad_consumed_axes = {
     axis.strip()
     for axis in str(squad.get("consumed_axes", "")).split(",")
     if axis.strip()
 }
-for axis in (
-    "squad.contain_bias",
-    "squad.reinforce_bias",
-    "scope.location_intent",
-    "scope.min_units",
-    "combat.target_priority_biases.*",
-):
-    if axis not in squad_consumed_axes:
-        raise SystemExit(f"missing deep Squad consumed axis {axis}: {squad!r}")
-if float(squad.get("contain_bias", 0)) <= 0:
-    raise SystemExit(f"missing contain bias evidence: {squad!r}")
-if float(squad.get("reinforce_bias", 0)) <= 0:
-    raise SystemExit(f"missing reinforce bias evidence: {squad!r}")
-if squad.get("scope_location_intent") != "enemy_natural":
-    raise SystemExit(f"missing semantic scope location evidence: {squad!r}")
-if int(squad.get("scope_min_units", 0)) < 1:
-    raise SystemExit(f"missing semantic scope unit threshold evidence: {squad!r}")
-for key in ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"):
-    if float(squad.get(key, 0)) <= 0:
-        raise SystemExit(f"missing target priority evidence {key}: {squad!r}")
+if require_squad_modulation or squad.get("bounded_intervention") is True:
+    for axis in (
+        "squad.contain_bias",
+        "squad.reinforce_bias",
+        "scope.location_intent",
+        "scope.min_units",
+        "combat.target_priority_biases.*",
+    ):
+        if axis not in squad_consumed_axes:
+            raise SystemExit(f"missing deep Squad consumed axis {axis}: {squad!r}")
+if require_aggressive_combat:
+    if float(squad.get("contain_bias", 0)) <= 0:
+        raise SystemExit(f"missing contain bias evidence: {squad!r}")
+    if float(squad.get("reinforce_bias", 0)) <= 0:
+        raise SystemExit(f"missing reinforce bias evidence: {squad!r}")
+    if squad.get("scope_location_intent") != "enemy_natural":
+        raise SystemExit(f"missing semantic scope location evidence: {squad!r}")
+    if int(squad.get("scope_min_units", 0)) < 1:
+        raise SystemExit(f"missing semantic scope unit threshold evidence: {squad!r}")
+    for key in ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"):
+        if float(squad.get(key, 0)) <= 0:
+            raise SystemExit(f"missing target priority evidence {key}: {squad!r}")
 production = managers.get("ProductionManager")
 if not production or production.get("active") is not True:
     raise SystemExit(f"missing ProductionManager activity evidence: {managers!r}")
@@ -1027,9 +1143,9 @@ if production.get("bounded_intervention") is not True:
     raise SystemExit(f"missing ProductionManager bounded intervention evidence: {production!r}")
 if production.get("policy_update_id") != aggressive_update_id:
     raise SystemExit(f"ProductionManager did not consume latest aggressive update: {production!r}")
-if production.get("strategy_doctrine") != "bio_pressure":
-    raise SystemExit(f"ProductionManager did not consume bio_pressure doctrine: {production!r}")
-if production.get("last_doctrine") != "bio_pressure":
+if production.get("strategy_doctrine") != expected_strategy_doctrine:
+    raise SystemExit(f"ProductionManager did not consume expected strategy doctrine {expected_strategy_doctrine}: {production!r}")
+if production.get("last_doctrine") != expected_strategy_doctrine:
     raise SystemExit(f"ProductionManager latest doctrine mismatch: {production!r}")
 if production.get("last_doctrine_update_id") != aggressive_update_id:
     raise SystemExit(f"ProductionManager doctrine action came from stale update: {production!r}")
@@ -1039,12 +1155,183 @@ if str(production.get("last_doctrine_action", "") or "") in ("", "none"):
     raise SystemExit(f"ProductionManager did not queue a doctrine action: {production!r}")
 if str(production.get("last_doctrine_queue_item", "") or "") in ("", "none"):
     raise SystemExit(f"ProductionManager doctrine action did not queue an item: {production!r}")
-if int(production.get("last_doctrine_frame", 0)) <= 0:
-    raise SystemExit(f"ProductionManager doctrine action frame is missing: {production!r}")
-if float(production.get("composition_bias_bio", 0)) <= 0:
-    raise SystemExit(f"ProductionManager missing bio composition bias evidence: {production!r}")
-if float(production.get("queue_bias_marine", 0)) <= 0:
-    raise SystemExit(f"ProductionManager missing Marine queue bias evidence: {production!r}")
+allowed_doctrine_evidence = {"queued"}
+if str(production.get("last_doctrine_evidence", "") or "") not in allowed_doctrine_evidence:
+    raise SystemExit(
+        "ProductionManager doctrine action lacks direct queued evidence: "
+        f"{production!r}"
+    )
+archive = telemetry.with_name("telemetry.jsonl")
+
+expected_action_item_pairs = {
+    "marine_rush": {("marine_pressure", "Marine"), ("bio_facility", "Barracks")},
+    "bio_pressure": {
+        ("bio_marauder_techlab", "BarracksTechLab"),
+        ("bio_marauder_support", "Marauder"),
+        ("starport_transition", "Starport"),
+        ("medivac_drop_support", "Medivac"),
+    },
+    "tank_defensive_hold": {
+        ("factory_transition", "Factory"),
+        ("factory_techlab", "FactoryTechLab"),
+        ("siege_tank_composition", "SiegeTank"),
+    },
+    "siege_contain": {
+        ("factory_transition", "Factory"),
+        ("factory_techlab", "FactoryTechLab"),
+        ("siege_tank_composition", "SiegeTank"),
+    },
+    "contain_enemy_natural": {
+        ("factory_transition", "Factory"),
+        ("factory_techlab", "FactoryTechLab"),
+        ("siege_tank_composition", "SiegeTank"),
+    },
+    "mech_transition": {
+        ("factory_transition", "Factory"),
+        ("factory_techlab", "FactoryTechLab"),
+        ("hellion_harassment", "Hellion"),
+        ("cyclone_mech", "Cyclone"),
+        ("siege_tank_composition", "SiegeTank"),
+        ("thor_mech", "Thor"),
+    },
+    "drop_harassment": {
+        ("starport_transition", "Starport"),
+        ("drop_reactor", "StarportReactor"),
+        ("medivac_drop_support", "Medivac"),
+        ("factory_transition", "Factory"),
+        ("hellion_harassment", "Hellion"),
+        ("reaper_harassment", "Reaper"),
+    },
+    "worker_line_harassment": {
+        ("starport_transition", "Starport"),
+        ("drop_reactor", "StarportReactor"),
+        ("medivac_drop_support", "Medivac"),
+        ("factory_transition", "Factory"),
+        ("hellion_harassment", "Hellion"),
+        ("reaper_harassment", "Reaper"),
+    },
+    "expand_macro": {("expand_macro", "CommandCenter")},
+    "anti_air_response": {
+        ("starport_transition", "Starport"),
+        ("anti_air_detection_support", "EngineeringBay"),
+        ("anti_air_viking", "Viking"),
+    },
+}
+expected_pairs = expected_action_item_pairs.get(expected_strategy_doctrine, set())
+
+def production_matches_expected(production_entry):
+    if not isinstance(production_entry, dict):
+        return False
+    doctrine_ok = production_entry.get("strategy_doctrine") == expected_strategy_doctrine and production_entry.get("last_doctrine") == expected_strategy_doctrine
+    update_ok = production_entry.get("policy_update_id") == aggressive_update_id and production_entry.get("last_doctrine_update_id") == aggressive_update_id
+    fresh_ok = production_entry.get("last_doctrine_fresh") is True
+    action = str(production_entry.get("last_doctrine_action", "") or "")
+    item = str(production_entry.get("last_doctrine_queue_item", "") or "")
+    evidence = str(production_entry.get("last_doctrine_evidence", "") or "")
+    frame = int(production_entry.get("last_doctrine_frame", 0) or 0)
+    issued_at_frame = int(production_entry.get("policy_issued_at_frame", 0) or 0)
+    action_ok = not expected_production_actions or action in expected_production_actions
+    item_ok = not expected_production_items or item in expected_production_items
+    pair_ok = not expected_pairs or (action, item) in expected_pairs
+    evidence_ok = evidence in allowed_doctrine_evidence
+    frame_ok = frame > 0 and (issued_at_frame <= 0 or frame >= issued_at_frame)
+    return doctrine_ok and update_ok and fresh_ok and action_ok and item_ok and pair_ok and evidence_ok and frame_ok and action not in ("", "none") and item not in ("", "none")
+
+def find_expected_production_entry():
+    entries = [payload]
+    if archive.exists():
+        for line in archive.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    observed_actions = set()
+    observed_items = set()
+    for entry in entries:
+        candidate = entry.get("managers", {}).get("ProductionManager", {})
+        if not isinstance(candidate, dict):
+            continue
+        action = str(candidate.get("last_doctrine_action", "") or "")
+        item = str(candidate.get("last_doctrine_queue_item", "") or "")
+        if action and action != "none":
+            observed_actions.add(action)
+        if item and item != "none":
+            observed_items.add(item)
+        if production_matches_expected(candidate):
+            return candidate, observed_actions, observed_items
+    return None, observed_actions, observed_items
+
+matching_production, observed_production_actions, observed_production_items = find_expected_production_entry()
+if matching_production is None:
+    raise SystemExit(
+        "ProductionManager did not emit expected strategy action/item evidence; "
+        f"expected_actions={sorted(expected_production_actions)}, "
+        f"expected_items={sorted(expected_production_items)}, "
+        f"observed_actions={sorted(observed_production_actions)}, "
+        f"observed_items={sorted(observed_production_items)}, latest={production!r}"
+    )
+if int(matching_production.get("last_doctrine_frame", 0)) <= 0:
+    raise SystemExit(f"ProductionManager doctrine action frame is missing: {matching_production!r}")
+positive_bias_expectations = {
+    "marine_rush": ("queue_bias_marine", "composition_bias_bio"),
+    "bio_pressure": ("queue_bias_medivac", "facility_bias_starport", "tech_unit_bias_medivac"),
+    "tank_defensive_hold": ("queue_bias_factory", "queue_bias_siege_tank", "composition_bias_siege"),
+    "siege_contain": ("queue_bias_factory", "queue_bias_siege_tank", "composition_bias_siege"),
+    "contain_enemy_natural": ("queue_bias_factory", "queue_bias_siege_tank", "composition_bias_siege"),
+    "mech_transition": ("queue_bias_factory", "composition_bias_mech", "queue_bias_siege_tank"),
+    "drop_harassment": ("queue_bias_starport", "queue_bias_medivac", "composition_bias_drop"),
+    "worker_line_harassment": ("composition_bias_harass", "composition_bias_worker_line"),
+    "expand_macro": ("queue_bias_command_center", "composition_bias_macro"),
+    "anti_air_response": ("queue_bias_starport", "queue_bias_viking", "composition_bias_anti_air"),
+}
+expected_bias_keys = positive_bias_expectations.get(expected_strategy_doctrine, ())
+if expected_bias_keys and not any(float(production.get(key, 0)) > 0 for key in expected_bias_keys):
+    raise SystemExit(
+        f"ProductionManager missing positive bias evidence for {expected_strategy_doctrine}: "
+        f"expected one of {expected_bias_keys}, production={production!r}"
+    )
+scout = managers.get("ScoutManager")
+if not scout or scout.get("active") is not True:
+    raise SystemExit(f"missing ScoutManager activity evidence: {managers!r}")
+
+def require_positive(payload, key, label):
+    if float(payload.get(key, 0) or 0) <= 0:
+        raise SystemExit(f"{label} missing positive {key}: {payload!r}")
+
+def require_negative(payload, key, label):
+    if float(payload.get(key, 0) or 0) >= 0:
+        raise SystemExit(f"{label} missing negative {key}: {payload!r}")
+
+if expected_strategy_doctrine in ("tank_defensive_hold", "siege_contain", "contain_enemy_natural"):
+    require_positive(combat, "defend_bias", "tank/siege combat contract")
+    require_negative(combat, "aggression", "tank/siege combat contract")
+    require_positive(production, "composition_bias_siege", "tank/siege production contract")
+    require_positive(production, "queue_bias_factory", "tank/siege production contract")
+    require_positive(production, "queue_bias_siege_tank", "tank/siege production contract")
+    require_positive(squad, "target_army_bias", "tank/siege squad target contract")
+elif expected_strategy_doctrine == "mech_transition":
+    require_positive(production, "queue_bias_factory", "mech production contract")
+    require_positive(production, "composition_bias_mech", "mech production contract")
+    require_positive(production, "tech_switch_urgency", "mech production contract")
+    require_positive(squad, "reinforce_bias", "mech squad contract")
+    require_positive(squad, "target_army_bias", "mech squad target contract")
+elif expected_strategy_doctrine in ("drop_harassment", "worker_line_harassment"):
+    require_positive(production, "queue_bias_factory", "drop production prerequisite contract")
+    require_positive(production, "queue_bias_starport", "drop production contract")
+    require_positive(production, "queue_bias_medivac", "drop production contract")
+    require_positive(production, "composition_bias_drop", "drop production contract")
+    require_positive(combat, "aggression", "drop combat contract")
+    require_positive(combat, "commitment_level", "drop combat contract")
+    require_positive(squad, "target_worker_line_bias", "drop squad target contract")
+    require_positive(scout, "scout_priority", "drop scout contract")
+elif expected_strategy_doctrine == "expand_macro":
+    require_positive(production, "queue_bias_command_center", "expand production contract")
+    require_positive(production, "composition_bias_macro", "expand production contract")
+    require_positive(production, "production_continuity_bias", "expand production contract")
+    require_positive(combat, "defend_bias", "expand combat safety contract")
+    require_negative(combat, "aggression", "expand combat safety contract")
 production_consumed_axes = {
     axis.strip()
     for axis in str(production.get("consumed_axes", "")).split(",")
@@ -1084,6 +1371,29 @@ if "root_cause_status" not in workers:
     raise SystemExit(f"missing worker root-cause status telemetry: {workers!r}")
 if "root_cause_reason" not in workers:
     raise SystemExit(f"missing worker root-cause reason telemetry: {workers!r}")
+for field in (
+    "trace_contract_version",
+    "trace_event_count",
+    "last_trace_frame",
+    "last_trace_status",
+    "last_trace_reason",
+    "last_trace_target_kind",
+):
+    if field not in workers:
+        raise SystemExit(f"missing bounded worker command trace field {field}: {workers!r}")
+if int(workers.get("trace_contract_version", 0)) != 1:
+    raise SystemExit(f"invalid worker trace contract version: {workers!r}")
+if int(workers.get("trace_event_count", 0)) <= 0:
+    raise SystemExit(f"worker trace did not observe any command candidates: {workers!r}")
+last_trace_frame = int(workers.get("last_trace_frame", 0) or 0)
+latest_payload_frame = int(payload.get("frame", 0) or 0)
+if last_trace_frame <= 0 or last_trace_frame > latest_payload_frame:
+    raise SystemExit(f"worker trace frame is invalid: {workers!r}")
+if latest_payload_frame - last_trace_frame > 4096:
+    raise SystemExit(f"worker trace is stale relative to latest telemetry: {workers!r}")
+for field in ("last_trace_status", "last_trace_reason", "last_trace_target_kind"):
+    if str(workers.get(field, "") or "") in ("", "none", "unknown"):
+        raise SystemExit(f"worker trace field {field} is not meaningful: {workers!r}")
 if int(workers.get("self_position_command_block_count", 0)) != 0:
     raise SystemExit(f"worker self-position command root-cause blocks were observed: {workers!r}")
 if workers.get("root_cause_status") == "self_position_move_blocked":
@@ -1096,13 +1406,22 @@ if (
 scout = managers.get("ScoutManager")
 if not scout or scout.get("active") is not True:
     raise SystemExit(f"missing ScoutManager activity evidence: {managers!r}")
-if scout.get("bounded_intervention") is not True:
+if require_scout_modulation and scout.get("bounded_intervention") is not True:
     raise SystemExit(f"missing ScoutManager modulation evidence: {scout!r}")
-if scout.get("has_worker_scout") is not True and int(scout.get("scout_unit_count", 0)) <= 0:
-    raise SystemExit(f"no scout movement evidence: {scout!r}")
-if scout.get("status") in (None, "", "None"):
-    raise SystemExit(f"no scout status evidence: {scout!r}")
-archive = telemetry.with_name("telemetry.jsonl")
+scout_consumed_axes = {
+    axis.strip()
+    for axis in str(scout.get("consumed_axes", "")).split(",")
+    if axis.strip()
+}
+if require_scout_modulation or scout.get("bounded_intervention") is True:
+    for axis in ("scouting.scout_priority", "scouting.risk_tolerance"):
+        if axis not in scout_consumed_axes:
+            raise SystemExit(f"missing ScoutManager consumed axis {axis}: {scout!r}")
+if require_scout_movement:
+    if scout.get("has_worker_scout") is not True and int(scout.get("scout_unit_count", 0)) <= 0:
+        raise SystemExit(f"no scout movement evidence: {scout!r}")
+    if scout.get("status") in (None, "", "None"):
+        raise SystemExit(f"no scout status evidence: {scout!r}")
 if not archive.exists():
     raise SystemExit(f"missing telemetry archive: {archive}")
 updates = []
@@ -1131,6 +1450,54 @@ for line in archive.read_text().splitlines():
     if "root_cause_reason" not in worker_entry:
         worker_archive_violation = {
             "code": "missing_worker_root_cause_reason",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+    for trace_field in (
+        "trace_contract_version",
+        "trace_event_count",
+        "last_trace_frame",
+        "last_trace_status",
+        "last_trace_reason",
+        "last_trace_target_kind",
+    ):
+        if trace_field not in worker_entry:
+            worker_archive_violation = {
+                "code": "missing_worker_trace_contract",
+                "field": trace_field,
+                "frame": entry.get("frame"),
+                "workers": worker_entry,
+            }
+            break
+    if worker_archive_violation is not None:
+        break
+    worker_entry_frame = int(entry.get("frame", 0) or 0)
+    worker_trace_frame = int(worker_entry.get("last_trace_frame", 0) or 0)
+    if int(worker_entry.get("trace_contract_version", 0)) != 1:
+        worker_archive_violation = {
+            "code": "invalid_worker_trace_contract",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+    if worker_entry_frame >= 512 and (
+        int(worker_entry.get("trace_event_count", 0)) <= 0
+        or worker_trace_frame <= 0
+        or worker_trace_frame > worker_entry_frame
+        or str(worker_entry.get("last_trace_status", "") or "") in ("", "none", "unknown")
+        or str(worker_entry.get("last_trace_reason", "") or "") in ("", "none", "unknown")
+        or str(worker_entry.get("last_trace_target_kind", "") or "") in ("", "none", "unknown")
+    ):
+        worker_archive_violation = {
+            "code": "invalid_worker_trace_evidence",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+    if int(worker_entry.get("repeat_order_suppressed_count", 0)) != 0:
+        worker_archive_violation = {
+            "code": "archived_worker_repeat_order_suppression",
             "frame": entry.get("frame"),
             "workers": worker_entry,
         }

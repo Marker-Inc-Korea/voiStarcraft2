@@ -104,6 +104,7 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         aggressive = build_aggressive_pressure_profile()
 
         self.assertEqual("micromachine_defensive_hold", defensive.goal)
+        self.assertEqual("", defensive.strategy.doctrine)
         self.assertLess(defensive.combat.aggression, 0)
         self.assertGreater(defensive.combat.defend_bias, 0.8)
         self.assertGreater(defensive.scouting.scout_priority, 0)
@@ -193,10 +194,13 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
             mech.tech.unit_biases.to_dict()["TERRAN_SIEGETANK"],
             marine.tech.unit_biases.to_dict().get("TERRAN_SIEGETANK", -1.0),
         )
+        self.assertGreater(mech.squad.reinforce_bias, 0)
+        self.assertGreater(mech.combat.target_priority_biases.to_dict()["army"], 0)
         self.assertGreater(
             drop.production.queue_biases.to_dict()["TERRAN_STARPORT"],
             marine.production.queue_biases.to_dict().get("TERRAN_STARPORT", -1.0),
         )
+        self.assertGreater(drop.production.queue_biases.to_dict()["TERRAN_FACTORY"], 0)
         self.assertGreater(
             drop.production.queue_biases.to_dict()["TERRAN_MEDIVAC"],
             marine.production.queue_biases.to_dict().get("TERRAN_MEDIVAC", -1.0),
