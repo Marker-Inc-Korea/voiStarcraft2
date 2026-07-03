@@ -3,21 +3,47 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BLACKBOARD_ROOT="${BLACKBOARD_ROOT:-/private/tmp/voi-mm-strategy-matrix}"
-PROFILES=(${SMOKE_STRATEGY_MATRIX_PROFILES:-bio_pressure tank_defensive_hold mech_transition drop_harassment expand_macro})
+PROFILES=(${SMOKE_STRATEGY_MATRIX_PROFILES:-bio_pressure tank_defensive_hold mech_transition drop_harassment scouting_map_control expand_macro})
 MIN_TELEMETRY_FRAME="${MIN_TELEMETRY_FRAME:-5200}"
 SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-1}"
 SMOKE_FORCE_STEP_MODE="${SMOKE_FORCE_STEP_MODE:-1}"
 MATRIX_RUN_ID="${MATRIX_RUN_ID:-$(date +%Y%m%d%H%M%S)-$$}"
 MATRIX_RUN_ROOT="${BLACKBOARD_ROOT}/runs/${MATRIX_RUN_ID}"
+MATRIX_RETAIN_RUNS="${MATRIX_RETAIN_RUNS:-3}"
 
 mkdir -p "${MATRIX_RUN_ROOT}"
+
+prune_old_matrix_runs() {
+  local runs_root="${BLACKBOARD_ROOT}/runs"
+  local retain="${MATRIX_RETAIN_RUNS}"
+  if [[ "${retain}" == "all" || "${retain}" == "0" ]]; then
+    return
+  fi
+  if ! [[ "${retain}" =~ ^[0-9]+$ ]]; then
+    echo "MicroMachine strategy matrix rejected MATRIX_RETAIN_RUNS=${retain}; use an integer, 0, or all." >&2
+    exit 2
+  fi
+  local all_runs
+  all_runs="$(find "${runs_root}" -mindepth 1 -maxdepth 1 -type d ! -name "${MATRIX_RUN_ID}" | sort)"
+  local total_count
+  total_count="$(printf '%s\n' "${all_runs}" | sed '/^$/d' | wc -l | tr -d ' ')"
+  local prune_count=$(( total_count - retain ))
+  if (( prune_count <= 0 )); then
+    return
+  fi
+  printf '%s\n' "${all_runs}" | sed '/^$/d' | head -n "${prune_count}" | while IFS= read -r old_run; do
+    rm -rf "${old_run}"
+  done
+}
+
+prune_old_matrix_runs
 
 summary="${MATRIX_RUN_ROOT}/strategy_matrix_summary.jsonl"
 : > "${summary}"
 
 for profile in "${PROFILES[@]}"; do
   case "${profile}" in
-    bio_pressure|marine_rush|tank_defensive_hold|siege_contain|contain_enemy_natural|mech_transition|drop_harassment|worker_line_harassment|expand_macro|anti_air_response)
+    bio_pressure|marine_rush|tank_defensive_hold|siege_contain|contain_enemy_natural|mech_transition|drop_harassment|worker_line_harassment|scouting_map_control|expand_macro|anti_air_response)
       ;;
     *)
       echo "MicroMachine strategy matrix rejected unsupported profile: ${profile}" >&2
@@ -84,10 +110,11 @@ expected_contracts = {
     "mech_transition": ({"mech_transition"}, {("factory_transition", "Factory"), ("factory_techlab", "FactoryTechLab"), ("hellion_harassment", "Hellion"), ("cyclone_mech", "Cyclone"), ("siege_tank_composition", "SiegeTank"), ("thor_mech", "Thor")}),
     "drop_harassment": ({"drop_harassment"}, {("starport_transition", "Starport"), ("drop_reactor", "StarportReactor"), ("medivac_drop_support", "Medivac"), ("factory_transition", "Factory"), ("hellion_harassment", "Hellion"), ("reaper_harassment", "Reaper")}),
     "worker_line_harassment": ({"worker_line_harassment"}, {("starport_transition", "Starport"), ("drop_reactor", "StarportReactor"), ("medivac_drop_support", "Medivac"), ("factory_transition", "Factory"), ("hellion_harassment", "Hellion"), ("reaper_harassment", "Reaper")}),
+    "scouting_map_control": ({"scouting_map_control"}, set()),
     "expand_macro": ({"expand_macro"}, {("expand_macro", "CommandCenter")}),
     "anti_air_response": ({"anti_air_response"}, {("starport_transition", "Starport"), ("anti_air_detection_support", "EngineeringBay"), ("anti_air_viking", "Viking")}),
 }
-allowed_evidence = {"queued"}
+allowed_evidence = {"queued", "queued_existing"}
 
 def production_entries():
     archive = root / "telemetry.jsonl"
@@ -150,12 +177,23 @@ summary.write_text(
             "last_doctrine_action": summary_production.get("last_doctrine_action"),
             "last_doctrine_queue_item": summary_production.get("last_doctrine_queue_item"),
             "last_doctrine_evidence": summary_production.get("last_doctrine_evidence"),
+            "actual_production_command_issued_count": summary_production.get("actual_production_command_issued_count"),
+            "last_actual_production_command": summary_production.get("last_actual_production_command"),
+            "last_actual_production_command_frame": summary_production.get("last_actual_production_command_frame"),
+            "combat_actual_command_issued_count": payload.get("managers", {}).get("CombatCommander", {}).get("actual_command_issued_count"),
+            "combat_last_issued_action": payload.get("managers", {}).get("CombatCommander", {}).get("last_issued_action"),
+            "scout_actual_command_issued_count": payload.get("managers", {}).get("ScoutManager", {}).get("actual_command_issued_count"),
+            "scout_last_actual_command": payload.get("managers", {}).get("ScoutManager", {}).get("last_actual_command"),
             "summary_evidence_source": "expected_archive_match" if summary_production is not production else "latest",
             "latest_doctrine_action": production.get("last_doctrine_action"),
             "latest_doctrine_queue_item": production.get("last_doctrine_queue_item"),
             "latest_doctrine_evidence": production.get("last_doctrine_evidence"),
+            "latest_actual_production_command": production.get("last_actual_production_command"),
             "worker_trace_status": workers.get("last_trace_status"),
             "worker_self_position_blocks": workers.get("self_position_command_block_count"),
+            "worker_repeat_order_suppressions": workers.get("repeat_order_suppressed_count"),
+            "worker_root_cause_status": workers.get("root_cause_status"),
+            "worker_root_cause_reason": workers.get("root_cause_reason"),
             "blackboard_dir": str(root),
         },
         sort_keys=True,

@@ -88,12 +88,14 @@ class FakePolicyModulationLLMControl(FakeConfiguredLLMControl):
         if request.command_text.strip() in {"안녕", "안녕하세요", "hello", "hi"}:
             return {
                 "status": "clarification_required",
+                "assistant_message": "전술 명령이 아니라 인사로 이해했어요. 원하는 전략을 말해 주세요.",
                 "clarification_prompt": "전술 의도를 더 구체적으로 말해 주세요.",
             }
         if any(token in request.command_text for token in ("수비", "탱크", "버텨")):
             return {
                 "source": "smoke_keyword",
                 "status": "compiled",
+                "assistant_message": "탱크 중심 수비로 해석해서 방어 성향과 병력 보존을 높였습니다.",
                 "modulation": {
                     "goal": request.command_text,
                     "override_level": "constraint",
@@ -108,6 +110,7 @@ class FakePolicyModulationLLMControl(FakeConfiguredLLMControl):
         return {
             "source": "smoke_keyword",
             "status": "compiled",
+            "assistant_message": "공격 압박 의도로 해석해서 전투 성향을 높였습니다.",
             "modulation": {
                 "goal": request.command_text,
                 "override_level": "bias",
@@ -118,6 +121,20 @@ class FakePolicyModulationLLMControl(FakeConfiguredLLMControl):
                 "tags": ["fake_llm_policy_modulation"],
             }
         }
+
+
+class BlockingPolicyModulationLLMControl(FakePolicyModulationLLMControl):
+    """LLM test double that blocks until the test releases forced-tool output."""
+
+    def __init__(self, *, started, release):
+        self.started = started
+        self.release = release
+
+    def propose_policy_modulation(self, request):
+        self.started.set()
+        if not self.release.wait(2):
+            raise TimeoutError("test LLM release event was not set")
+        return super().propose_policy_modulation(request)
 
 
 class FakeFailingLLMControl:
@@ -224,6 +241,33 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             headers={"Content-Type": "application/json"},
         )
 
+    def attach_fake_micromachine_runtime(self, directory):
+        class FakeAttachedMicroMachineLauncher:
+            def snapshot(self, blackboard_dir=""):
+                root = blackboard_dir or directory
+                telemetry_path = os.path.join(root, "latest_telemetry.json")
+                telemetry_frame = None
+                if os.path.exists(telemetry_path):
+                    with open(telemetry_path, encoding="utf-8") as handle:
+                        telemetry = json.load(handle)
+                    frame = telemetry.get("frame")
+                    if type(frame) is int:
+                        telemetry_frame = frame
+                return {
+                    "enabled": True,
+                    "mode": "micromachine",
+                    "status": "connected",
+                    "blackboard_dir": root,
+                    "pid": 4242,
+                    "runtime_attached": True,
+                    "telemetry_present": telemetry_frame is not None,
+                    "telemetry_current_for_process": telemetry_frame is not None,
+                    "telemetry_stale_or_detached": False,
+                    "telemetry_frame": telemetry_frame,
+                }
+
+        self.server._http.micromachine_launcher = FakeAttachedMicroMachineLauncher()
+
     def post_llm_config_with_control(self, llm_control, api_key="unit-test-sensitive"):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session, llm_control=llm_control)
@@ -306,6 +350,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "<details id=\"briefing-panel\" class=\"collapsible-panel\">",
             "MAX_CHAT_EVENTS = 36",
             "MAX_MESSAGE_PREVIEW_CHARS",
+            "MICROMACHINE_CHAT_TIMEOUT_MS = 35000",
             "archivedChatEvents",
             "appendCompactText",
             "renderArchivedChatDetails",
@@ -336,6 +381,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "setCommandMode",
             "submitMicroMachineModulation",
             "buildMicroMachineModulationPayload",
+            "async_publish: true",
+            "if (isMicroMachineCommandMode()) { return; }",
+            "microMachineStateDashboardDisabled",
+            "renderMicroMachineStatePlaceholder",
+            "if (isMicroMachineCommandMode()) {\n    renderMicroMachineStatePlaceholder();",
             "<details id=\"micromachine-panel\" class=\"collapsible-panel\">",
             "MicroMachine runtime / DSL evidence",
             "고급 직접 publish 테스트 텍스트",
@@ -391,6 +441,75 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 self.assertIn("combat.defend_bias=0.7", kv_text)
                 self.assertIn("workers.repeat_order_guard_frames=32", kv_text)
 
+    def test_micromachine_modulation_async_returns_before_slow_llm_finishes(self):
+        started = threading.Event()
+        release = threading.Event()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=BlockingPolicyModulationLLMControl(
+                started=started,
+                release=release,
+            ),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=1
+            )
+            try:
+                body = json.dumps(
+                    {
+                        "text": "탱크로 수비해",
+                        "blackboard_dir": directory,
+                        "current_frame": 21,
+                        "update_id": "async-slow-llm",
+                        "async_publish": True,
+                    }
+                ).encode("utf-8")
+                before = time.monotonic()
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                elapsed = time.monotonic() - before
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
+            self.assertTrue(payload["accepted"], payload)
+            self.assertTrue(payload["async_publish"], payload)
+            self.assertEqual("queued", payload["status"])
+            self.assertEqual("pending_compile", payload["consumption_status"])
+            self.assertEqual("async-slow-llm", payload["update_id"])
+            self.assertTrue(started.wait(1), "background LLM call did not start")
+
+            release.set()
+            deadline = time.monotonic() + 3
+            document = {}
+            while time.monotonic() < deadline:
+                document = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+                compile_result = document.get("compile_result") or {}
+                if compile_result.get("update_id") == "async-slow-llm":
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual("async-slow-llm", document["compile_result"]["update_id"])
+            self.assertEqual("compiled", document["compile_result"]["status"])
+            self.assertEqual("async-slow-llm", document["update"]["update_id"])
+
     def test_micromachine_modulation_endpoint_compiles_plain_gui_text(self):
         with tempfile.TemporaryDirectory() as directory:
             status, content_type, payload = self.post_micromachine_modulation(
@@ -439,7 +558,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertTrue(document["ok"], document)
             scope = document["compile_result"]["vector"]["scope"]
             self.assertEqual("main", scope["army_group"])
-            self.assertEqual(["marine", "siege_tank"], scope["unit_classes"])
+            self.assertEqual(["TERRAN_MARINE", "TERRAN_SIEGETANK"], scope["unit_classes"])
             self.assertEqual("enemy_natural", scope["location_intent"])
             self.assertEqual(120, scope["duration_seconds"])
             self.assertEqual(180, document["compile_result"]["vector"]["ttl_seconds"])
@@ -447,7 +566,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 kv = handle.read()
             self.assertIn("scope.army_group=main", kv)
             self.assertIn("scope.location_intent=enemy_natural", kv)
-            self.assertIn("scope.unit_classes=marine,siege_tank", kv)
+            self.assertIn("scope.unit_classes=TERRAN_MARINE,TERRAN_SIEGETANK", kv)
 
     def test_micromachine_modulation_preserves_strict_partial_scope_flag(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -486,8 +605,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
     def test_micromachine_modulation_accepts_string_unit_class_aliases(self):
         with tempfile.TemporaryDirectory() as directory:
             for raw_unit_classes, expected in (
-                ("siege_tank, workers", ["siege_tank", "workers"]),
-                ("siege tank worker", ["siege_tank", "workers"]),
+                ("siege_tank, workers", ["TERRAN_SIEGETANK", "TERRAN_SCV"]),
+                ("siege tank worker", ["TERRAN_SIEGETANK", "TERRAN_SCV"]),
             ):
                 with self.subTest(raw_unit_classes=raw_unit_classes):
                     status, _content_type, payload = self.post_micromachine_modulation(
@@ -697,6 +816,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             }
             with open(telemetry_path, "w", encoding="utf-8") as handle:
                 json.dump(telemetry, handle)
+            self.attach_fake_micromachine_runtime(directory)
 
             same_frame = self.get_json(
                 "/api/micromachine/status?blackboard_dir=" + directory
@@ -746,6 +866,121 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 later_frame["intervention"]["active_modulation_ids"],
             )
             self.assertEqual(11, later_frame["intervention"]["telemetry_frame"])
+
+    def test_micromachine_status_rejects_detached_stale_telemetry_false_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "지금 압박해",
+                    "blackboard_dir": directory,
+                    "current_frame": 1,
+                    "update_id": "detached-false-pass",
+                    "provider_output": {
+                        "goal": "pressure",
+                        "combat": {"aggression": 0.5},
+                    },
+                }
+            )
+            with open(
+                os.path.join(directory, "latest_telemetry.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    {
+                        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                        "frame": 99,
+                        "bot_name": "MicroMachine",
+                        "race": "Terran",
+                        "managers": {
+                            "CombatCommander": {
+                                "active": True,
+                                "policy_active": True,
+                                "update_id": "detached-false-pass",
+                                "consumed_axes": "combat.aggression",
+                            },
+                        },
+                        "active_modulation_ids": ["detached-false-pass"],
+                        "last_failure": None,
+                    },
+                    handle,
+                )
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            self.assertEqual("detached_telemetry", document["consumption_status"])
+            self.assertFalse(document["consumed"])
+            self.assertFalse(document["intervention"]["applied"])
+            self.assertFalse(document["intervention"]["policy_active"])
+            self.assertTrue(document["telemetry_stale_or_detached"])
+
+    def test_micromachine_status_scopes_latest_compile_result_to_active_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "지금 압박해",
+                    "blackboard_dir": directory,
+                    "current_frame": 30,
+                    "update_id": "active-a",
+                    "provider_output": {
+                        "goal": "pressure",
+                        "combat": {"aggression": 0.45},
+                    },
+                }
+            )
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 35,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "CombatCommander": {
+                        "active": True,
+                        "policy_active": True,
+                        "update_id": "active-a",
+                        "consumed_axes": "combat.aggression",
+                    },
+                },
+                "active_modulation_ids": ["active-a"],
+                "last_failure": None,
+            }
+            with open(f"{directory}/latest_telemetry.json", "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+            with open(
+                os.path.join(directory, "latest_modulation_compile_result.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    {
+                        "command_text": "bad latest request",
+                        "status": "publish_failed",
+                        "written_at_unix": time.time(),
+                        "update_id": "failed-b",
+                        "compile_result": {
+                            "status": "refused",
+                            "update_id": "failed-b",
+                            "refusal_reason": "provider auth failed",
+                        },
+                    },
+                    handle,
+                )
+            self.attach_fake_micromachine_runtime(directory)
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            self.assertEqual("active-a", document["update"]["update_id"])
+            self.assertEqual("failed-b", document["compile_result"]["update_id"])
+            self.assertEqual("consumed", document["consumption_status"])
+            self.assertEqual("", document["intervention"]["refusal_reason"])
+            self.assertNotEqual("refused", document["intervention"]["tactical_posture"])
+            self.assertFalse(
+                document["intervention"]["tactical_evidence"]["refusal_reasons"]
+            )
 
     def test_micromachine_status_exposes_tactical_dashboard_and_logs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -827,6 +1062,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "45: updateAttackSquads | MainAttackSquad new order = Attack enemy natural\n"
                     "46: calcTargets | target worker_line selected by policy modulation\n"
                 )
+            self.attach_fake_micromachine_runtime(directory)
 
             document = self.get_json(
                 "/api/micromachine/status?blackboard_dir=" + directory
@@ -923,6 +1159,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "45: updateAttackSquads | MainAttackSquad new order = Attack enemy natural\n"
                     "46: calcTargets | target worker_line selected by policy modulation\n"
                 )
+            self.attach_fake_micromachine_runtime(directory)
 
             document = self.get_json(
                 "/api/micromachine/status?blackboard_dir=" + directory
@@ -977,6 +1214,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "10000: update_id=new updateAttackSquads | MainAttackSquad new order = Attack enemy natural\n"
                     "10001: update_id=new calcTargets | target worker_line selected by policy modulation\n"
                 )
+            self.attach_fake_micromachine_runtime(directory)
 
             document = self.get_json(
                 "/api/micromachine/status?blackboard_dir=" + directory
@@ -1029,6 +1267,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "101: updateAttackSquads | MainAttackSquad new order = Attack enemy natural\n"
                     f"{noise}\n"
                 )
+            self.attach_fake_micromachine_runtime(directory)
 
             document = self.get_json(
                 "/api/micromachine/status?blackboard_dir=" + directory
@@ -1087,6 +1326,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 handle.write(line_prefix)
                 handle.write(line_rest)
                 handle.write(tail_padding)
+            self.attach_fake_micromachine_runtime(directory)
 
             document = self.get_json(
                 "/api/micromachine/status?blackboard_dir=" + directory
@@ -1165,6 +1405,37 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
             self.assertEqual("refused", intervention["tactical_evidence"]["status"])
             self.assertTrue(intervention["tactical_evidence"]["refusal_reasons"])
+
+    def test_micromachine_status_ignores_old_compile_refusal_as_current_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(
+                os.path.join(directory, "latest_modulation_compile_result.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    {
+                        "command_text": "old failure",
+                        "status": "refused",
+                        "written_at_unix": time.time() - 3600,
+                        "compile_result": {
+                            "status": "refused",
+                            "refusal_reason": "stale failure should not look current",
+                        },
+                    },
+                    handle,
+                )
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            self.assertEqual("idle", document["status"])
+            self.assertIsNone(document["compile_result"])
+            self.assertEqual("", document["intervention"]["refusal_reason"])
+            self.assertFalse(
+                document["intervention"]["tactical_evidence"]["refusal_reasons"]
+            )
 
     def test_micromachine_modulation_without_llm_fails_closed_no_keyword_fallback(self):
         session, _bot = build_dry_run_session()
@@ -1553,6 +1824,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual("idle", payload["status"])
             self.assertTrue(payload["telemetry_present"])
             self.assertEqual(99, payload["telemetry_frame"])
+            self.assertFalse(payload["runtime_attached"])
+            self.assertFalse(payload["telemetry_current_for_process"])
+            self.assertTrue(payload["telemetry_stale_or_detached"])
 
     def test_runtime_start_legacy_mode_is_blocked_until_key_is_saved(self):
         body = json.dumps({"mode": "legacy_commander"}).encode("utf-8")
@@ -2315,7 +2589,7 @@ function renderAdviceBriefing(events) {
     def test_space_background_has_responsive_and_accessibility_fallbacks(self):
         page = render_web_gui_page()
         for fragment in (
-            "@media (max-width: 980px)",
+            "@media (max-width: 1180px)",
             ".space-background::after { inset: 20% -20% -18% 24%; width: 105vw; height: 105vw; opacity: 0.48; }",
             ".star-depth { inset: -14vmax; }",
             "@media (max-width: 620px)",
@@ -2788,6 +3062,15 @@ var nodes = {
   "runtime-refresh-button": element("runtime-refresh-button", "button"),
   "runtime-mode-summary": element("runtime-mode-summary"),
   "legacy-mode-warning": element("legacy-mode-warning"),
+  "connection-status": element("connection-status"),
+  "state-minerals": element("state-minerals"),
+  "state-vespene": element("state-vespene"),
+  "state-supply": element("state-supply"),
+  "state-workers": element("state-workers"),
+  "state-army": element("state-army"),
+  "state-structures": element("state-structures"),
+  "state-availability": element("state-availability"),
+  "strategy-briefing": element("strategy-briefing"),
   "micromachine-form": element("micromachine-form", "form"),
   "micromachine-command-input": element("micromachine-command-input", "textarea"),
   "micromachine-blackboard-dir": element("micromachine-blackboard-dir", "input"),
@@ -2917,6 +3200,36 @@ function flushPromises() {
         scenario = r"""
 const assert = require("assert");
 (async function () {
+  pollState();
+  await flushPromises();
+  assert.strictEqual(requests.length, 0);
+  assert.strictEqual(nodes["state-minerals"].textContent, "-");
+  assert.strictEqual(nodes["state-vespene"].textContent, "-");
+  assert(nodes["state-availability"].textContent.includes("MicroMachine 모드"));
+
+  setCommandMode(COMMAND_MODE_LEGACY_COMMANDER);
+  assert.strictEqual(requests.length, 1);
+  assert.strictEqual(requests[0].url, "/api/state");
+  var legacyStateRequest = requests[0];
+  setCommandMode(COMMAND_MODE_MICROMACHINE);
+  legacyStateRequest.deferred.resolve(response(200, {
+    minerals: 400,
+    vespene: 0,
+    supply_used: 12,
+    supply_cap: 15,
+    availability: "legacy-state"
+  }));
+  await flushPromises();
+  assert.strictEqual(nodes["state-minerals"].textContent, "-");
+  assert.strictEqual(nodes["state-vespene"].textContent, "-");
+  assert(nodes["state-availability"].textContent.includes("MicroMachine 모드"));
+  requests = [];
+  setCommandMode(COMMAND_MODE_MICROMACHINE);
+  assert.strictEqual(requests.length, 0);
+  assert.strictEqual(buildMicroMachineModulationPayload("marine rush").response_language, "en");
+  assert.strictEqual(buildMicroMachineModulationPayload("마린 러쉬").response_language, "ko");
+  assert.strictEqual(buildMicroMachineModulationPayload("进攻").response_language, "zh");
+
   nodes["command-input"].value = "enemy natural 압박하고 탱크는 안전하게";
   nodes["command-form"].dispatchEvent({
     type: "submit",
@@ -2927,19 +3240,49 @@ const assert = require("assert");
   var firstBody = JSON.parse(requests[0].options.body);
   assert.strictEqual(firstBody.text, "enemy natural 압박하고 탱크는 안전하게");
   assert.strictEqual(firstBody.blackboard_dir, "/tmp/voi-mm-js-test");
+  assert.strictEqual(firstBody.async_publish, true);
+  assert.strictEqual(firstBody.ui_language, "ko");
+  assert.strictEqual(firstBody.response_language, "ko");
   assert.strictEqual(firstBody.ttl_seconds, 600);
   assert.strictEqual(pendingCommandCount(), 1);
   assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
 
+  var originalRenderMicroMachineStatus = renderMicroMachineStatus;
   renderMicroMachineStatus = function () {
     throw new Error("dashboard boom");
   };
   requests[0].deferred.resolve(response(202, {
     ok: true,
     accepted: true,
+    queued: true,
+    async_publish: true,
+    status: "queued",
+    update_id: "unit-update-1",
+    consumption_status: "pending_compile"
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
+  assert(!logBox.textContent.includes("백그라운드에서 시작"));
+  assert(nodes["micromachine-status"].textContent.includes("dashboard render failed"));
+
+  renderMicroMachineStatus = originalRenderMicroMachineStatus;
+  renderMicroMachineStatus({
+    ok: true,
+    accepted: true,
     status: "published",
-    consumption_status: "pending_telemetry",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      source: "llm",
+      update_id: "unit-update-1",
+      assistant_message: "LLM이 enemy natural 압박 의도를 해석했고 탱크는 안전하게 운용하도록 조정했습니다.",
+      vector: { goal: "enemy natural 압박", assistant_message: "unused duplicate" }
+    },
+    update: { update_id: "unit-update-1" },
     intervention: {
       latest_update_id: "unit-update-1",
       tactical_posture: "pressure",
@@ -2950,15 +3293,14 @@ const assert = require("assert");
         { update_id: "unit-update-1", manager_bias_domains: ["combat", "squad"] }
       ]
     }
-  }));
-  await flushPromises();
-  await flushPromises();
+  });
   assert.strictEqual(pendingCommandCount(), 0);
   assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
-  assert(logBox.textContent.includes("MicroMachine DSL modulation"));
-  assert(logBox.textContent.includes("pending_telemetry"));
-  assert(nodes["micromachine-status"].textContent.includes("dashboard render failed"));
+  assert(logBox.textContent.includes("LLM이 enemy natural 압박 의도를 해석했고"));
+  assert(!logBox.textContent.includes("MicroMachine DSL modulation을 blackboard에 publish했습니다."));
+  assert(!logBox.textContent.includes("provider_source=llm"));
+  assert(!logBox.textContent.includes("attack_gate="));
   assert.strictEqual(nodes["command-input"].value, "");
 
   renderMicroMachineStatus = function () {};
@@ -3010,10 +3352,13 @@ const assert = require("assert");
     def test_chat_panel_is_bounded_and_log_scrolls_internally(self):
         page = render_web_gui_page()
         for fragment in (
-            "main {\n    display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(330px, 0.75fr);\n    gap: 18px; align-items: stretch; min-height: 0;",
+            "main {\n    display: grid; grid-template-columns: minmax(540px, 1.32fr) minmax(420px, 0.88fr);\n    gap: 24px; align-items: start; min-height: 0;",
             "#command-panel {\n    min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;",
-            "height: clamp(420px, calc(100vh - 150px), 780px); max-height: calc(100vh - 150px);",
-            "#state-panel {\n    min-width: 0; min-height: 0; max-height: calc(100vh - 150px); overflow-y: auto;",
+            "height: clamp(560px, calc(100vh - 160px), 860px); max-height: calc(100vh - 160px);",
+            "#state-panel {\n    min-width: 0; min-height: 0; max-height: calc(100vh - 160px); overflow-y: auto;",
+            "display: flex; flex-direction: column; gap: 16px; scrollbar-gutter: stable;",
+            "#briefing-panel, #llm-panel, #micromachine-panel {",
+            "grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));",
             "#log {\n    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;",
             "#command-panel { height: 68vh; min-height: 0; max-height: 68vh; }",
         ):

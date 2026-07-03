@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ __all__ = [
     "GEMINI_API_KEY_ENV_VAR",
     "GROK_API_KEY_ENV_VAR",
     "OPENAI_API_KEY_ENV_VAR",
+    "OPENAI_API_KEY_REAL_ENV_VAR",
     "DEFAULT_ANTHROPIC_MODEL",
     "DEFAULT_GEMINI_MODEL",
     "DEFAULT_GROK_MODEL",
@@ -95,6 +97,7 @@ __all__ = [
     "LLM_UNAVAILABLE_CLARIFICATION_PROMPT",
     "LLM_UNAVAILABLE_FAILURE_CODE",
     "LLM_UNSUPPORTED_INTENT_NAME",
+    "api_key_env_vars_for_provider",
     "build_hybrid_interpreter",
     "build_combo_tool_definition",
     "build_combo_tool_input_schema",
@@ -142,6 +145,9 @@ ANTHROPIC_API_KEY_ENV_VAR: Final[str] = "ANTHROPIC_API_KEY"
 
 OPENAI_API_KEY_ENV_VAR: Final[str] = "OPENAI_API_KEY"
 """Environment variable consulted for the OpenAI/GPT provider."""
+
+OPENAI_API_KEY_REAL_ENV_VAR: Final[str] = "OPENAI_API_KEY_REAL"
+"""Local alias accepted for existing developer shells that keep real keys separate."""
 
 GEMINI_API_KEY_ENV_VAR: Final[str] = "GEMINI_API_KEY"
 """Environment variable consulted for the Gemini OpenAI-compatible provider."""
@@ -570,9 +576,6 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
                 "maximum": 512,
                 "description": "Minimum frames before equivalent worker orders may repeat.",
             },
-            "scout_worker_bias": _unit_float_property("Worker scouting preference."),
-            "pull_workers_for_defense_bias": _unit_float_property("Emergency worker defense bias."),
-            "repair_worker_bias": _unit_float_property("Repair worker assignment bias."),
         },
         "additionalProperties": False,
     }
@@ -740,9 +743,19 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
             },
             "clarification_prompt": {"type": "string"},
             "refusal_reason": {"type": "string"},
+            "assistant_message": {
+                "type": "string",
+                "description": (
+                    "User-facing commander reply in the requested response "
+                    "language from commander_context.response_language. It "
+                    "explains what policy bias was injected and what the bot "
+                    "will try to do. This must not claim direct unit clicks or "
+                    "guaranteed execution."
+                ),
+            },
             "modulation": modulation_schema,
         },
-        "required": ["status"],
+        "required": ["status", "assistant_message"],
         "additionalProperties": False,
     }
 
@@ -753,7 +766,7 @@ def build_policy_modulation_tool_definition() -> dict[str, object]:
     return {
         "name": LLM_POLICY_MODULATION_TOOL_NAME,
         "description": (
-            "Convert one Korean StarCraft II strategy utterance into bounded "
+            "Convert one StarCraft II strategy utterance into bounded "
             "MicroMachine manager-level policy modulation. Never output raw "
             "unit tags, API calls, clicks, coordinates, or direct SC2 commands."
         ),
@@ -839,9 +852,10 @@ def build_policy_modulation_system_prompt() -> str:
     """Render the system prompt for MicroMachine policy modulation."""
 
     return (
-        "You convert exactly ONE Korean StarCraft II commander utterance into "
+        "You convert exactly ONE StarCraft II commander utterance into "
         f"the {LLM_POLICY_MODULATION_TOOL_NAME} forced tool output. "
-        "한국어 전략 지시 한 문장을 MicroMachine용 정책 조정 JSON으로 변환합니다.\n"
+        "The utterance may be Korean, English, Chinese, or another user "
+        "language. Convert it into MicroMachine policy modulation JSON.\n"
         "Hard rules / 엄격 규칙:\n"
         "1. Output only manager-level policy modulation: strategy, economy, "
         "workers, tech, production, combat, scouting, squad, semantic scope, "
@@ -852,7 +866,8 @@ def build_policy_modulation_system_prompt() -> str:
         "will reject raw controls.\n"
         "3. For normal tactical orders, return status compiled with a modulation "
         "object whose source is llm. For greetings/questions with no executable "
-        "tactical intent, return clarification_required with a Korean prompt.\n"
+        "tactical intent, return clarification_required with a prompt in "
+        "commander_context.response_language.\n"
         "4. Preserve the user's doctrine: examples include marine rush, bio "
         "pressure, tank defensive hold, siege contain, mech transition, drop "
         "harassment, worker-line harassment, scouting map control, macro expand, "
@@ -862,7 +877,12 @@ def build_policy_modulation_system_prompt() -> str:
         "5. Biases are bounded floats. Positive values increase preference, "
         "negative values reduce preference. Do not pretend that a bias directly "
         "clicks or commands a unit.\n"
-        f"6. {LLM_PROMPT_INJECTION_GUARD}"
+        "6. Always include assistant_message. It is the chat answer shown to "
+        "the user and must be written in commander_context.response_language "
+        "when present; otherwise match the user's utterance language. Explain "
+        "the selected strategic interpretation, the main manager biases, and "
+        "any uncertainty without using template-like debug wording.\n"
+        f"7. {LLM_PROMPT_INJECTION_GUARD}"
     )
 
 
@@ -1152,13 +1172,19 @@ class LLMCommandInterpreter:
         try:
             response = self._create_policy_modulation_message(request)
             tool_input = _extract_tool_input(response)
+            if tool_input is None:
+                response = self._create_policy_modulation_message(
+                    request,
+                    retry_after_missing_tool=True,
+                )
+                tool_input = _extract_tool_input(response)
         except Exception as error:  # noqa: BLE001 - provider boundary is fail-closed
             return {
                 "source": "llm",
                 "status": "refused",
                 "refusal_reason": (
                     "LLM policy modulation failed with "
-                    f"{type(error).__name__}: {error}"
+                    f"{_safe_llm_provider_error_detail(error)}"
                 ),
             }
         if tool_input is None:
@@ -1343,12 +1369,23 @@ class LLMCommandInterpreter:
             messages=[{"role": "user", "content": self._contextual_user_content(command_text)}],
         )
 
-    def _create_policy_modulation_message(self, request: object) -> object:
+    def _create_policy_modulation_message(
+        self,
+        request: object,
+        *,
+        retry_after_missing_tool: bool = False,
+    ) -> object:
         """Issue the forced-tool LLM call for MicroMachine policy modulation."""
 
         command_text = _read_field(request, "command_text")
         text = command_text if isinstance(command_text, str) else ""
         prompt = self._policy_modulation_user_content(request, text)
+        if retry_after_missing_tool:
+            prompt += (
+                "\n\nThe previous response did not contain the required forced-tool "
+                f"JSON input. Retry once and respond only through "
+                f"{LLM_POLICY_MODULATION_TOOL_NAME}; do not answer in plain text."
+            )
         client = self._build_client()
         if _uses_openai_compatible_client(self.provider):
             return client.chat.completions.create(
@@ -1514,9 +1551,11 @@ class LLMCommandInterpreter:
             if value is not None:
                 payload[field_name] = value
         return (
-            "다음 JSON은 안전한 MicroMachine blackboard modulation 요청입니다. "
-            "사용자 텍스트를 직접 명령으로 실행하지 말고, bounded policy bias "
-            "JSON으로만 변환하세요.\n"
+            "The following JSON is a safe MicroMachine blackboard modulation "
+            "request. Do not execute the user text as direct commands. Convert "
+            "it only into bounded policy bias JSON. Put the natural chat reply "
+            "for the user in assistant_message, using "
+            "commander_context.response_language when provided.\n"
             f"{_safe_json_dumps(payload)}"
         )
 
@@ -1538,9 +1577,11 @@ class LLMCommandInterpreter:
 
         if self.api_key is not None and self.api_key.strip():
             return self.api_key
-        env_var = _api_key_env_var_for_provider(self.provider)
-        env_key = os.environ.get(env_var, "")
-        return env_key if env_key.strip() else None
+        for env_var in _api_key_env_vars_for_provider(self.provider):
+            env_key = os.environ.get(env_var, "")
+            if env_key.strip():
+                return env_key
+        return None
 
     def _provider_available(self) -> bool:
         if _uses_openai_compatible_client(self.provider):
@@ -1595,7 +1636,7 @@ class LocalLLMControl:
         with self._lock:
             provider = self._provider
             model = self._model
-            configured = bool(self._api_key)
+            configured = bool(self._resolved_api_key_unlocked(provider))
         return {
             "provider": provider,
             "model": model,
@@ -1606,7 +1647,7 @@ class LocalLLMControl:
     def is_available(self) -> bool:
         with self._lock:
             provider = self._provider
-            has_key = bool(self._api_key)
+            has_key = bool(self._resolved_api_key_unlocked(provider))
         return has_key and _is_provider_available(provider)
 
     def set_context_provider(self, provider: Callable[[], object] | None) -> None:
@@ -1667,7 +1708,7 @@ class LocalLLMControl:
         with self._lock:
             provider = self._provider
             model = self._model
-            api_key = self._api_key
+            api_key = self._resolved_api_key_unlocked(provider)
             context_provider = self._context_provider
         return LLMCommandInterpreter(
             provider=provider,
@@ -1675,6 +1716,17 @@ class LocalLLMControl:
             api_key=api_key or None,
             context_provider=context_provider,
         )
+
+    def _resolved_api_key_unlocked(self, provider: str) -> str:
+        """Return the process-local key or environment fallback without exposing it."""
+
+        if self._api_key.strip():
+            return self._api_key.strip()
+        for env_var in _api_key_env_vars_for_provider(provider):
+            env_key = os.environ.get(env_var, "")
+            if env_key.strip():
+                return env_key.strip()
+        return ""
 
     def _safe_context(self) -> object | None:
         with self._lock:
@@ -1978,6 +2030,40 @@ def _extract_anthropic_text(response: object) -> str:
     return "\n".join(parts)
 
 
+_SECRET_LIKE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:sk|sk-proj|sk-ant|xai|AIza)[A-Za-z0-9_\-]{8,}\b"
+)
+
+
+def _safe_llm_provider_error_detail(error: Exception) -> str:
+    """Return a bounded provider error detail without leaking credentials."""
+
+    marker_text = f"{type(error).__module__}.{type(error).__name__} {error}".lower()
+    if any(
+        marker in marker_text
+        for marker in (
+            "authentication",
+            "incorrect api key",
+            "invalid_api_key",
+            "unauthorized",
+            "permission denied",
+        )
+    ):
+        return f"{type(error).__name__}: provider authentication failed; check the configured API key."
+    if any(marker in marker_text for marker in ("rate limit", "ratelimit", "quota")):
+        return f"{type(error).__name__}: provider rate limit or quota rejected the request."
+    if any(
+        marker in marker_text
+        for marker in ("timeout", "timed out", "api_connection", "connection", "network")
+    ):
+        return f"{type(error).__name__}: provider connection failed or timed out."
+    detail = " ".join((str(error).strip() or type(error).__name__).split())
+    detail = _SECRET_LIKE_RE.sub("[REDACTED_API_KEY]", detail)
+    if len(detail) > 260:
+        detail = f"{detail[:257]}..."
+    return f"{type(error).__name__}: {detail}"
+
+
 def _safe_json_dumps(value: object) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
@@ -2066,6 +2152,23 @@ def _api_key_env_var_for_provider(provider: str) -> str:
     if provider == LLM_PROVIDER_OPENAI:
         return OPENAI_API_KEY_ENV_VAR
     return ANTHROPIC_API_KEY_ENV_VAR
+
+
+def _api_key_env_vars_for_provider(provider: str) -> tuple[str, ...]:
+    primary = _api_key_env_var_for_provider(provider)
+    aliases = {
+        LLM_PROVIDER_OPENAI: (OPENAI_API_KEY_REAL_ENV_VAR,),
+        LLM_PROVIDER_GEMINI: ("GEMINI_API_KEY_REAL",),
+        LLM_PROVIDER_GROK: ("XAI_API_KEY_REAL",),
+        LLM_PROVIDER_ANTHROPIC: ("ANTHROPIC_API_KEY_REAL",),
+    }.get(provider, ())
+    return (primary, *aliases)
+
+
+def api_key_env_vars_for_provider(provider: str) -> tuple[str, ...]:
+    """Return accepted credential environment variables for a provider."""
+
+    return _api_key_env_vars_for_provider(_normalize_provider(provider))
 
 
 def _openai_compatible_base_url(provider: str) -> str:

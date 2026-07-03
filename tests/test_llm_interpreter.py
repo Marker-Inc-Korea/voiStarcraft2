@@ -19,6 +19,7 @@ from starcraft_commander.llm_interpreter import (
     DEFAULT_LLM_MAX_TOKENS,
     DEFAULT_LLM_MODEL,
     HybridCommandInterpreter,
+    LocalLLMControl,
     LLM_COMBO_TOOL_NAME,
     LLMComboPlan,
     LLMComboPlanStep,
@@ -29,6 +30,8 @@ from starcraft_commander.llm_interpreter import (
     LLM_UNAVAILABLE_FAILURE_CODE,
     LLM_UNSUPPORTED_INTENT_NAME,
     LLMCommandInterpreter,
+    OPENAI_API_KEY_ENV_VAR,
+    OPENAI_API_KEY_REAL_ENV_VAR,
     build_hybrid_interpreter,
     build_combo_system_prompt,
     build_combo_tool_definition,
@@ -40,7 +43,7 @@ from starcraft_commander.llm_interpreter import (
     build_policy_modulation_tool_definition,
     build_policy_modulation_tool_input_schema,
 )
-from starcraft_commander.runtime_deps import ANTHROPIC_MODULE_NAME
+from starcraft_commander.runtime_deps import ANTHROPIC_MODULE_NAME, OPENAI_MODULE_NAME
 from toycraft_commander.failure import build_parsing_failure_report
 from toycraft_commander.intents import (
     CANONICAL_INTENT_NAMES,
@@ -234,7 +237,10 @@ def _assert_actionable_korean_reverse_question(
 def _without_api_key():
     """Patch the environment so no Anthropic API key is resolvable."""
 
-    return mock.patch.dict(os.environ, {ANTHROPIC_API_KEY_ENV_VAR: ""})
+    return mock.patch.dict(
+        os.environ,
+        {ANTHROPIC_API_KEY_ENV_VAR: "", "ANTHROPIC_API_KEY_REAL": ""},
+    )
 
 
 def _with_api_key():
@@ -254,6 +260,13 @@ def _fake_anthropic_module():
 
     fake_module = types.ModuleType(ANTHROPIC_MODULE_NAME)
     return mock.patch.dict(sys.modules, {ANTHROPIC_MODULE_NAME: fake_module})
+
+
+def _fake_openai_module():
+    """Patch sys.modules so the openai package appears installed."""
+
+    fake_module = types.ModuleType(OPENAI_MODULE_NAME)
+    return mock.patch.dict(sys.modules, {OPENAI_MODULE_NAME: fake_module})
 
 
 class ToolSchemaGenerationTest(unittest.TestCase):
@@ -427,6 +440,7 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             _tool_response(
                 {
                     "status": "compiled",
+                    "assistant_message": "마린 압박 의도로 해석했고 공격 성향을 올릴게요.",
                     "modulation": {
                         "goal": "마린으로 enemy natural 압박",
                         "override_level": "bias",
@@ -440,13 +454,21 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             types.SimpleNamespace(
                 command_text="마린으로 enemy natural 압박",
                 game_state={"frame": 44},
-                commander_context={"bridge_status": "connected"},
+                commander_context={
+                    "bridge_status": "connected",
+                    "response_language": "Korean",
+                    "response_language_code": "ko",
+                },
                 allowed_override_levels=("bias",),
                 tags=("web_gui",),
             )
         )
 
         self.assertEqual("llm", output["source"])
+        self.assertEqual(
+            "마린 압박 의도로 해석했고 공격 성향을 올릴게요.",
+            output["assistant_message"],
+        )
         self.assertEqual("llm", output["modulation"]["source"])
         self.assertEqual("마린으로 enemy natural 압박", output["modulation"]["goal"])
         call = fake_client.calls[0]
@@ -457,6 +479,8 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual(call["tools"][0]["name"], LLM_POLICY_MODULATION_TOOL_NAME)
         self.assertEqual(call["system"], interpreter.policy_modulation_system_prompt)
         self.assertIn("game_state", call["messages"][0]["content"])
+        self.assertIn("response_language", call["messages"][0]["content"])
+        self.assertIn("Korean", call["messages"][0]["content"])
 
     def test_policy_modulation_malformed_forced_tool_output_refuses(self) -> None:
         for tool_input in (
@@ -478,6 +502,58 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                 self.assertEqual("refused", output["status"])
                 self.assertIn("missing", output["refusal_reason"])
 
+    def test_policy_modulation_retries_once_when_forced_tool_is_missing(self) -> None:
+        interpreter, fake_client = _make_llm_interpreter(
+            FakeMessage([FakeTextBlock("마린 압박 의도로 처리하겠습니다.")]),
+            _tool_response(
+                {
+                    "status": "compiled",
+                    "assistant_message": "마린 압박 의도로 해석했고 공격 성향을 높였습니다.",
+                    "modulation": {
+                        "goal": "마린 러쉬",
+                        "override_level": "bias",
+                        "production": {"queue_biases": {"marine": 0.8}},
+                        "combat": {"aggression": 0.7},
+                    },
+                }
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(command_text="마린 러쉬 진행해")
+        )
+
+        self.assertEqual("llm", output["source"])
+        self.assertEqual(
+            "마린 압박 의도로 해석했고 공격 성향을 높였습니다.",
+            output["assistant_message"],
+        )
+        self.assertEqual("마린 러쉬", output["modulation"]["goal"])
+        self.assertEqual(2, len(fake_client.calls))
+        self.assertIn(
+            "Retry once",
+            fake_client.calls[1]["messages"][0]["content"],
+        )
+
+    def test_policy_modulation_provider_error_redacts_api_key(self) -> None:
+        interpreter, _fake_client = _make_llm_interpreter(
+            RuntimeError(
+                "Incorrect API key provided: sk-proj-secret-live-key. "
+                "You can find your API key at https://example.test"
+            )
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(command_text="마린 러쉬 진행해")
+        )
+
+        self.assertEqual("llm", output["source"])
+        self.assertEqual("refused", output["status"])
+        reason = output["refusal_reason"]
+        self.assertIn("provider authentication failed", reason)
+        self.assertNotIn("sk-proj-secret-live-key", reason)
+        self.assertNotIn("Incorrect API key provided", reason)
+
     def test_policy_modulation_tool_schema_is_exposed(self) -> None:
         definition = build_policy_modulation_tool_definition()
         schema = build_policy_modulation_tool_input_schema()
@@ -485,8 +561,12 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual(LLM_POLICY_MODULATION_TOOL_NAME, definition["name"])
         self.assertEqual(schema, definition["input_schema"])
         self.assertIn("status", schema["required"])
+        self.assertIn("assistant_message", schema["required"])
+        self.assertIn("assistant_message", schema["properties"])
         self.assertIn("combat", schema["properties"]["modulation"]["properties"])
         self.assertIn("raw", build_policy_modulation_system_prompt().lower())
+        self.assertIn("response_language", build_policy_modulation_system_prompt())
+        self.assertNotIn("assistant_message in Korean", build_policy_modulation_system_prompt())
 
     def test_runtime_context_is_attached_to_intent_and_combo_calls(self) -> None:
         context = {
@@ -1067,6 +1147,31 @@ class LLMAvailabilityTest(unittest.TestCase):
         interpreter = LLMCommandInterpreter(api_key="explicit-key")
         with _fake_anthropic_module(), _without_api_key():
             self.assertTrue(interpreter.is_available())
+
+    def test_openai_real_env_alias_counts_as_available_key(self) -> None:
+        interpreter = LLMCommandInterpreter(provider="openai", model="gpt-5.5")
+        with _fake_openai_module(), mock.patch.dict(
+            os.environ,
+            {
+                OPENAI_API_KEY_ENV_VAR: "",
+                OPENAI_API_KEY_REAL_ENV_VAR: "real-env-key",
+            },
+        ):
+            self.assertTrue(interpreter.is_available())
+
+    def test_local_llm_control_reports_openai_env_alias_as_configured(self) -> None:
+        control = LocalLLMControl(provider="openai", model="gpt-5.5")
+        with _fake_openai_module(), mock.patch.dict(
+            os.environ,
+            {
+                OPENAI_API_KEY_ENV_VAR: "",
+                OPENAI_API_KEY_REAL_ENV_VAR: "real-env-key",
+            },
+        ):
+            snapshot = control.snapshot()
+            self.assertTrue(snapshot["configured"])
+            self.assertTrue(snapshot["key_present"])
+            self.assertTrue(control.is_available())
 
     def test_injected_client_factory_is_always_available(self) -> None:
         interpreter = LLMCommandInterpreter(client_factory=FakeAnthropicClient)

@@ -53,14 +53,11 @@ from typing import Final
 from starcraft_commander.event_memory import CommanderEventMemory
 from starcraft_commander.live_pipeline import SC2CommandOutcome, SC2CommandSession
 from starcraft_commander.llm_interpreter import (
-    ANTHROPIC_API_KEY_ENV_VAR,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_OPENAI_MODEL,
-    GEMINI_API_KEY_ENV_VAR,
-    GROK_API_KEY_ENV_VAR,
     HybridCommandInterpreter,
     LocalLLMControl,
-    OPENAI_API_KEY_ENV_VAR,
+    api_key_env_vars_for_provider,
 )
 from starcraft_commander.python_sc2_adapter import PythonSC2BotAdapter
 from starcraft_commander.runtime_deps import (
@@ -327,32 +324,33 @@ def build_local_llm_control(provider: str, model: str) -> LocalLLMControl:
     normalized = provider.strip().lower()
     if normalized in {"openai", "gpt", "chatgpt"}:
         require_openai()
-        env_var = OPENAI_API_KEY_ENV_VAR
         normalized = "openai"
     elif normalized == "anthropic":
         require_anthropic()
-        env_var = ANTHROPIC_API_KEY_ENV_VAR
     elif normalized in {"gemini", "google", "google-gemini"}:
         require_openai()
-        env_var = GEMINI_API_KEY_ENV_VAR
         normalized = "gemini"
     elif normalized in {"grok", "xai", "x-ai", "x.ai"}:
         require_openai()
-        env_var = GROK_API_KEY_ENV_VAR
         normalized = "grok"
     else:
         raise MissingLLMDependencyError(
             "LLM provider must be openai, anthropic, gemini, or grok."
         )
-    api_key = os.environ.get(env_var, "").strip()
+    env_vars = api_key_env_vars_for_provider(normalized)
+    api_key = next(
+        (os.environ.get(env_var, "").strip() for env_var in env_vars if os.environ.get(env_var, "").strip()),
+        "",
+    )
     if not api_key:
+        env_var_label = " or ".join(env_vars)
         raise MissingLLMDependencyError(
-            f"{env_var} is not set. Live StarCraft II control now requires "
+            f"{env_var_label} is not set. Live StarCraft II control now requires "
             "a configured LLM before the game starts. Export a valid key first: "
-            f"export {env_var}=... "
-            f"{env_var} 환경 변수가 설정되어 있지 않습니다. 이제 실제 StarCraft II "
+            f"export {env_vars[0]}=... "
+            f"{env_var_label} 환경 변수가 설정되어 있지 않습니다. 이제 실제 StarCraft II "
             "제어는 LLM 연결이 먼저 필요합니다. 실행 전에 유효한 키를 설정하세요: "
-            f"export {env_var}=..."
+            f"export {env_vars[0]}=..."
         )
     control = LocalLLMControl(provider=normalized, model=model)
     control.configure(normalized, api_key, model)

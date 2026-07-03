@@ -4,7 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 MICROMACHINE_DIR="${MICROMACHINE_DIR:-/private/tmp/voi-micromachine-runtime/MicroMachine}"
+ROOT_DIR="${ROOT_DIR:-$(dirname "${MICROMACHINE_DIR}")}"
+S2CLIENT_DIR="${S2CLIENT_DIR:-${ROOT_DIR}/s2client-api}"
 MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
+MICROMACHINE_BUILD_IDENTITY_REPORT="${MICROMACHINE_BUILD_IDENTITY_REPORT:-${MICROMACHINE_BUILD_DIR}/voi_build_identity.json}"
+SOAK_REQUIRE_BUILD_IDENTITY="${SOAK_REQUIRE_BUILD_IDENTITY:-1}"
 SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
 SC2_LAUNCH_MODE="${SC2_LAUNCH_MODE:-auto}"
 SC2_BATTLENET_EXECUTABLE="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
@@ -102,6 +106,56 @@ prepare_launch_contract() {
   MAP_FILE="$(resolve_map_file "${MAP_FILE}")"
 }
 
+verify_build_identity() {
+  if [[ "${SOAK_REQUIRE_BUILD_IDENTITY}" != "1" ]]; then
+    return
+  fi
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${MICROMACHINE_BUILD_IDENTITY_REPORT}" "${MICROMACHINE_DIR}" "${S2CLIENT_DIR}" "${MICROMACHINE_BUILD_DIR}"
+import json
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_build_identity import (
+    MicroMachineBuildIdentityConfig,
+    build_micromachine_build_identity,
+)
+
+report_path = Path(sys.argv[1])
+if not report_path.exists():
+    raise SystemExit(
+        "MicroMachine soak rejected: missing build identity report. "
+        f"Run integrations/micromachine/scripts/build_macos_local.sh first: {report_path}"
+    )
+try:
+    recorded = json.loads(report_path.read_text())
+except Exception as exc:  # noqa: BLE001 - shell-facing validation error.
+    raise SystemExit(f"MicroMachine soak rejected: invalid build identity report: {exc}") from exc
+current = build_micromachine_build_identity(
+    MicroMachineBuildIdentityConfig(
+        micromachine_dir=Path(sys.argv[2]),
+        s2client_dir=Path(sys.argv[3]),
+        micromachine_build_dir=Path(sys.argv[4]),
+    )
+)
+if recorded.get("ok") is not True:
+    raise SystemExit(
+        "MicroMachine soak rejected: recorded build identity is not ok: "
+        f"{recorded.get('failures')}"
+    )
+if current.get("ok") is not True:
+    raise SystemExit(
+        "MicroMachine soak rejected: current build identity is not ok: "
+        f"{current.get('failures')}"
+    )
+if recorded.get("identity") != current.get("identity"):
+    raise SystemExit(
+        "MicroMachine soak rejected: stale build identity. "
+        f"recorded={recorded.get('identity')} current={current.get('identity')}. "
+        "Re-run integrations/micromachine/scripts/build_macos_local.sh."
+    )
+PY
+}
+
 SC2_EXECUTABLE="${SC2_EXECUTABLE:-$(resolve_sc2_executable)}"
 MAP_FILE="${MAP_FILE:-AcropolisLE.SC2Map}"
 SOAK_ENEMY_RACE="${SOAK_ENEMY_RACE:-Zerg}"
@@ -118,11 +172,13 @@ SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES="${SOAK_MODULATION_CONSUMPTION_GRACE_FR
 SOAK_POLL_SECONDS="${SOAK_POLL_SECONDS:-2}"
 SOAK_BOOTSTRAP_GRACE_SECONDS="${SOAK_BOOTSTRAP_GRACE_SECONDS:-120}"
 SOAK_PROFILE_REFRESH_FRAMES="${SOAK_PROFILE_REFRESH_FRAMES:-7000}"
-SOAK_AGGRESSIVE_MIN_FRAME="${SOAK_AGGRESSIVE_MIN_FRAME:-13000}"
+SOAK_AGGRESSIVE_MIN_FRAME="${SOAK_AGGRESSIVE_MIN_FRAME:-6000}"
 SOAK_PROFILE_SEQUENCE="${SOAK_PROFILE_SEQUENCE:-default_defensive_to_aggressive}"
 SOAK_MAX_ATTEMPTS="${SOAK_MAX_ATTEMPTS:-3}"
 SOAK_RETRY_SETTLE_SECONDS="${SOAK_RETRY_SETTLE_SECONDS:-15}"
-SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-bootstrap_no_start_units repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing tactical_effect_missing}"
+# strategy_actual_command_missing includes expected_actual_production_items in the classifier report.
+SOAK_MAX_WORKER_REPEAT_ORDER_SUPPRESSIONS="${SOAK_MAX_WORKER_REPEAT_ORDER_SUPPRESSIONS:-0}"
+SOAK_NON_RETRYABLE_FAILURE_CODES="${SOAK_NON_RETRYABLE_FAILURE_CODES:-bootstrap_no_start_units repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing tactical_effect_missing tactical_actual_command_missing strategy_actual_command_missing worker_repeat_order_suppression worker_self_position_command scout_duplicate_worker_move_command}"
 VOI_SC2_CREATEGAME_MAP_DATA="${VOI_SC2_CREATEGAME_MAP_DATA:-1}"
 SOAK_ATTEMPT_INDEX="${SOAK_ATTEMPT_INDEX:-}"
 SOAK_RUN_ID="${SOAK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -555,6 +611,9 @@ expected_strategy_contract() {
     drop_harassment|worker_line_harassment)
       printf '%s\t%s\t%s\n' "${profile}" "starport_transition drop_reactor medivac_drop_support factory_transition hellion_harassment reaper_harassment" "Starport StarportReactor Medivac Factory Hellion Reaper"
       ;;
+    scouting_map_control)
+      printf '%s\t%s\t%s\n' "scouting_map_control" "" ""
+      ;;
     expand_macro|economic_expansion)
       printf '%s\t%s\t%s\n' "expand_macro" "expand_macro" "CommandCenter"
       ;;
@@ -563,6 +622,39 @@ expected_strategy_contract() {
       ;;
     *)
       return 1
+      ;;
+  esac
+}
+
+expected_tactical_contract() {
+  local profile="$1"
+  case "${profile}" in
+    marine_rush|bio_pressure|aggressive_pressure)
+      printf '%s\n' "pressure scout target_priority"
+      ;;
+    tank_defensive_hold|defensive_hold)
+      printf '%s\n' "hold scout"
+      ;;
+    siege_contain|contain_enemy_natural)
+      printf '%s\n' "pressure contain target_priority"
+      ;;
+    drop_harassment|worker_line_harassment)
+      printf '%s\n' "pressure harass scout target_priority"
+      ;;
+    scouting_map_control)
+      printf '%s\n' "scout"
+      ;;
+    expand_macro|economic_expansion)
+      printf '%s\n' "hold"
+      ;;
+    mech_transition|tech_transition)
+      printf '%s\n' "hold target_priority"
+      ;;
+    anti_air_response)
+      printf '%s\n' "hold scout target_priority"
+      ;;
+    *)
+      printf '%s\n' ""
       ;;
   esac
 }
@@ -637,6 +729,7 @@ PY
       SOAK_EXPECTED_STRATEGY_DOCTRINE="${SOAK_EXPECTED_STRATEGY_DOCTRINE:-${contract_doctrine}}"
       SOAK_EXPECTED_PRODUCTION_ACTIONS="${SOAK_EXPECTED_PRODUCTION_ACTIONS:-${contract_actions}}"
       SOAK_EXPECTED_PRODUCTION_ITEMS="${SOAK_EXPECTED_PRODUCTION_ITEMS:-${contract_items}}"
+      SOAK_EXPECTED_TACTICAL_EFFECTS="${SOAK_EXPECTED_TACTICAL_EFFECTS:-$(expected_tactical_contract "${PROFILE_SCHEDULE_KEYS[$expected_index]}")}"
       break
     fi
   done
@@ -746,6 +839,7 @@ classify_soak() {
     --income-stall-frames "${SOAK_INCOME_STALL_FRAMES}" \
     --bootstrap-no-start-units-frame "${SOAK_BOOTSTRAP_NO_START_UNITS_FRAME}" \
     --max-placement-failures "${SOAK_MAX_PLACEMENT_FAILURES}" \
+    --max-worker-repeat-order-suppressions "${SOAK_MAX_WORKER_REPEAT_ORDER_SUPPRESSIONS}" \
     --modulation-consumption-grace-frames "${SOAK_MODULATION_CONSUMPTION_GRACE_FRAMES}" \
     --expected-profile-tags "${SOAK_EXPECTED_PROFILE_TAGS}" \
     --expected-tactical-effects "${SOAK_EXPECTED_TACTICAL_EFFECTS}" \
@@ -773,6 +867,7 @@ fail_from_live_classifier() {
 
 parse_profile_schedule "${SOAK_PROFILE_SEQUENCE}"
 prepare_launch_contract
+verify_build_identity
 SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
 if [[ "${SC2_EXECUTABLE}" == "${SC2_BATTLENET_EXECUTABLE}" && -z "${VOI_SC2_EXTRA_ARGS:-}" ]]; then
   VOI_SC2_EXTRA_ARGS="--game=${SC2_BATTLENET_GAME} --gamepath=${SC2_RUNTIME_ROOT}/"

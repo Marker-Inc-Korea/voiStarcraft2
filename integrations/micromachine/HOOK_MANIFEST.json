@@ -15,20 +15,27 @@
     "economy.mineral_saturation_bias",
     "economy.expansion_safety_bias",
     "economy.mule_priority",
+    "economy.worker_production_bias",
+    "economy.repair_priority",
+    "economy.gas_priority",
+    "production.max_tech_deviation",
+    "production.allow_build_order_rewrite",
     "combat.pressure_window_frames",
     "combat.siege_position_bias",
     "combat.kite_bias",
     "combat.flank_bias",
+    "combat.combat_sim_confidence_margin",
+    "combat.engage_threshold_delta",
+    "combat.retreat_threshold_delta",
     "squad.flank_bias",
     "squad.split_army_bias",
     "squad.proxy_pressure_bias",
-    "scope.army_group",
-    "scope.unit_classes",
     "scope.duration_seconds",
-    "scope.max_units",
     "scope.require_safety_margin",
     "scope.allow_partial_scope",
     "emergency.prioritize_repair",
+    "emergency.pull_workers_for_defense",
+    "emergency.evacuate_workers",
     "emergency.stop_expansion"
   ],
   "central_polling_hook": {
@@ -44,20 +51,27 @@
       "header_path": "src/ProductionManager.h",
       "function": "ProductionManager::onFrame(bool executeMacro)",
       "secondary_function": "ProductionManager::manageBuildOrderQueue()",
+      "status": "verified_consumed_with_actual_command_telemetry",
       "keys": [
         "strategy.doctrine",
         "production.queue_biases.*",
         "production.composition_biases.*",
         "production.addon_biases.*",
         "production.production_facility_biases.*",
-        "production.max_tech_deviation",
-        "production.allow_build_order_rewrite",
         "production.production_continuity_bias",
         "production.tech_switch_urgency",
         "tech.structure_biases.*",
         "tech.unit_biases.*",
         "economy.expand_bias",
-        "economy.worker_production_bias"
+        "economy.supply_buffer_bias"
+      ],
+      "telemetry_fields": [
+        "last_doctrine_action",
+        "last_doctrine_queue_item",
+        "last_doctrine_evidence",
+        "actual_production_command_issued_count",
+        "last_actual_production_command",
+        "last_actual_production_command_frame"
       ],
       "intended_effect": "Bias doctrine-specific queue, facility, addon, unit, expansion, and continuity choices while preserving MicroMachine build execution."
     },
@@ -77,10 +91,15 @@
         "combat.retreat_patience_bias",
         "combat.rally_before_attack_bias",
         "scope.min_units",
+        "scope.max_units",
+        "scope.army_group",
+        "scope.unit_classes",
+        "scouting.scout_priority",
+        "squad.squad_role_biases.marine_scout",
         "emergency.cancel_attacks",
         "emergency.force_retreat"
       ],
-      "intended_effect": "Bias attack/hold/retreat posture without issuing direct unit orders."
+      "intended_effect": "Bias attack/hold/retreat posture and explicit scout-scope assignment without issuing direct unit orders."
     },
     {
       "domain": "scouting",
@@ -104,6 +123,7 @@
       "header_path": "src/WorkerManager.h",
       "function": "WorkerManager::onFrame(bool executeMacro)",
       "secondary_function": "WorkerManager::handleRepairWorkers()",
+      "status": "pending_cpp_hook_not_counted_as_consumed",
       "keys": [
         "economy.repair_priority",
         "economy.gas_priority",
@@ -129,6 +149,7 @@
       "header_path": "src/CombatAnalyzer.h",
       "function": "CombatAnalyzer::onFrame()",
       "secondary_function": "CombatAnalyzer::lowPriorityChecks()",
+      "status": "pending_cpp_hook_not_counted_as_consumed",
       "keys": [
         "combat.combat_sim_confidence_margin",
         "combat.engage_threshold_delta",
@@ -147,7 +168,8 @@
         "squad.harassment_bias",
         "squad.defense_bias",
         "squad.regroup_bias",
-        "squad.drop_bias"
+        "squad.drop_bias",
+        "squad.squad_role_biases.*"
       ],
       "intended_effect": "Bias role allocation/regroup behavior while Squad executes its existing micro managers."
     },
@@ -160,6 +182,9 @@
       "keys": [
         "scope.location_intent",
         "scope.min_units",
+        "scope.max_units",
+        "scope.army_group",
+        "scope.unit_classes",
         "squad.contain_bias",
         "squad.reinforce_bias",
         "combat.target_priority_biases.*"

@@ -93,8 +93,8 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual(0.7, result.vector.economy.expand_bias)
         self.assertEqual(0.5, result.vector.economy.gas_worker_target_bias)
         self.assertEqual(32, result.vector.workers.repeat_order_guard_frames)
-        self.assertEqual({"SiegeTank": 0.6}, result.vector.tech.unit_biases.to_dict())
-        self.assertEqual({"TechLab": 0.45}, result.vector.production.addon_biases.to_dict())
+        self.assertEqual({"TERRAN_SIEGETANK": 0.6}, result.vector.tech.unit_biases.to_dict())
+        self.assertEqual({"BARRACKS_TECHLAB": 0.45}, result.vector.production.addon_biases.to_dict())
         self.assertEqual(0.8, result.vector.combat.defend_bias)
         self.assertEqual(0.35, result.vector.combat.commitment_level)
         self.assertEqual(3300, result.vector.combat.pressure_window_frames)
@@ -105,7 +105,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual(0.3, result.vector.squad.contain_bias)
         self.assertEqual(0.2, result.vector.squad.flank_bias)
         self.assertEqual("main", result.vector.scope.army_group)
-        self.assertEqual(("marine", "siege_tank"), result.vector.scope.unit_classes)
+        self.assertEqual(("TERRAN_MARINE", "TERRAN_SIEGETANK"), result.vector.scope.unit_classes)
         self.assertEqual("enemy_natural", result.vector.scope.location_intent)
         self.assertTrue(result.vector.emergency.prioritize_repair)
 
@@ -146,8 +146,8 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual(0.7, vector.economy.expand_bias)
         self.assertEqual(0.5, vector.economy.expansion_safety_bias)
         self.assertEqual(48, vector.workers.repeat_order_guard_frames)
-        self.assertEqual({"SiegeTank": 0.6}, vector.tech.unit_biases.to_dict())
-        self.assertEqual({"TechLab": 0.4}, vector.production.addon_biases.to_dict())
+        self.assertEqual({"TERRAN_SIEGETANK": 0.6}, vector.tech.unit_biases.to_dict())
+        self.assertEqual({"BARRACKS_TECHLAB": 0.4}, vector.production.addon_biases.to_dict())
         self.assertEqual(0.8, vector.combat.defend_bias)
         self.assertEqual(0.4, vector.combat.commitment_level)
         self.assertEqual({"Baneling": 0.7}, vector.combat.target_priority_biases.to_dict())
@@ -217,6 +217,136 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         assert result.vector is not None
         self.assertEqual(0.5, result.vector.economy.gas_worker_target_bias)
         self.assertEqual(0.7, result.vector.economy.expand_bias)
+
+    def test_compiles_llm_worker_aliases_from_nested_workers_domain(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "marine scout pressure",
+                "workers": {
+                    "scout_worker_bias": 0.7,
+                    "repair_worker_bias": 0.4,
+                    "pull_workers_for_defense_bias": 0.6,
+                    "scv_production_bias": 0.5,
+                },
+                "combat": {"aggression": 0.4},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual(0.7, result.vector.scouting.scout_priority)
+        self.assertEqual(0.4, result.vector.economy.repair_priority)
+        self.assertEqual(0.5, result.vector.economy.worker_production_bias)
+        self.assertTrue(result.vector.emergency.pull_workers_for_defense)
+        self.assertIn(
+            "mapped provider field: workers.scout_worker_bias->scouting.scout_priority",
+            result.warnings,
+        )
+
+    def test_compiles_marine_scouting_policy_without_raw_commands(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "status": "compiled",
+                "modulation": {
+                    "goal": "마린 5마리로 안전하게 정찰",
+                    "source": "llm",
+                    "override_level": "directive",
+                    "strategy": {
+                        "posture": "balanced",
+                        "doctrine": "scouting_map_control",
+                    },
+                    "scouting": {
+                        "scout_priority": 0.75,
+                        "scout_cadence_bias": 0.45,
+                        "risk_tolerance": 0.15,
+                        "require_fresh_enemy_observation": True,
+                        "target_biases": {
+                            "enemy_natural": 0.3,
+                            "watchtower": 0.35,
+                        },
+                    },
+                    "squad": {
+                        "split_army_bias": 0.45,
+                        "squad_role_biases": {"marine_scout": 0.8},
+                    },
+                    "combat": {
+                        "aggression": -0.15,
+                        "preserve_army_bias": 0.45,
+                    },
+                    "scope": {
+                        "army_group": "scout",
+                        "unit_classes": ["marine"],
+                        "min_units": 5,
+                        "max_units": 5,
+                        "duration_seconds": 120,
+                        "require_safety_margin": 0.35,
+                        "allow_partial_scope": True,
+                    },
+                    "tags": ["scouting", "marine_scout"],
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual("scouting_map_control", vector.strategy.doctrine)
+        self.assertEqual(0.75, vector.scouting.scout_priority)
+        self.assertEqual(0.45, vector.scouting.scout_cadence_bias)
+        self.assertEqual("scout", vector.scope.army_group)
+        self.assertEqual(("TERRAN_MARINE",), vector.scope.unit_classes)
+        self.assertEqual(5, vector.scope.min_units)
+        self.assertEqual(5, vector.scope.max_units)
+        self.assertEqual(0.8, vector.squad.squad_role_biases.to_dict()["marine_scout"])
+
+    def test_canonicalizes_korean_compound_unit_and_structure_biases(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "assistant_message": "마린 정찰과 보급고 보강 의도로 해석했습니다.",
+                "modulation": {
+                    "goal": "마린 5마리 정찰하고 보급고 계속 지어",
+                    "override_level": "directive",
+                    "production": {
+                        "queue_biases": {"마린": 0.8, "보급고": 0.7, "탱크": 0.25},
+                        "production_facility_biases": {"배럭": 0.5},
+                    },
+                    "tech": {"unit_biases": {"공성전차": 0.4}},
+                    "scope": {
+                        "army_group": "scout",
+                        "unit_classes": ["마린"],
+                        "min_units": 5,
+                        "max_units": 5,
+                    },
+                    "scouting": {"scout_priority": 0.8},
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual(
+            {
+                "TERRAN_MARINE": 0.8,
+                "TERRAN_SUPPLYDEPOT": 0.7,
+                "TERRAN_SIEGETANK": 0.25,
+            },
+            result.vector.production.queue_biases.to_dict(),
+        )
+        self.assertEqual(
+            {"TERRAN_BARRACKS": 0.5},
+            result.vector.production.production_facility_biases.to_dict(),
+        )
+        self.assertEqual(
+            {"TERRAN_SIEGETANK": 0.4},
+            result.vector.tech.unit_biases.to_dict(),
+        )
+        self.assertEqual(("TERRAN_MARINE",), result.vector.scope.unit_classes)
 
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (
@@ -332,6 +462,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
     def test_compiles_from_provider_interface(self) -> None:
         provider = StaticModulationProvider(
             {
+                "assistant_message": "입구 방어 의도로 해석해서 수비 성향을 높였습니다.",
                 "modulation": {
                     "goal": "hold_ramp",
                     "posture": "defensive",
@@ -350,6 +481,14 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
 
         self.assertTrue(result.ok, result.to_dict())
         self.assertEqual(1, len(provider.requests))
+        self.assertEqual(
+            "입구 방어 의도로 해석해서 수비 성향을 높였습니다.",
+            result.assistant_message,
+        )
+        self.assertEqual(
+            "입구 방어 의도로 해석해서 수비 성향을 높였습니다.",
+            result.to_dict()["assistant_message"],
+        )
         self.assertIsNotNone(result.vector)
         assert result.vector is not None
         self.assertEqual(PolicyModulationSource.UI, result.vector.source)

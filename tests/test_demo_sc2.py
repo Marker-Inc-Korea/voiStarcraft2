@@ -27,6 +27,8 @@ from starcraft_commander.live_pipeline import SC2CommandSession
 from starcraft_commander.llm_interpreter import (
     HybridCommandInterpreter,
     LocalLLMControl,
+    OPENAI_API_KEY_ENV_VAR,
+    OPENAI_API_KEY_REAL_ENV_VAR,
 )
 from starcraft_commander.map_resolver import (
     SC2_SUPPORTED_SEMANTIC_TARGETS,
@@ -311,7 +313,10 @@ class RenderOutcomeLinesTest(unittest.TestCase):
 class LiveModeGuardTest(unittest.TestCase):
     @unittest.skipUnless(ANTHROPIC_INSTALLED, "anthropic is not installed")
     def test_required_llm_reports_missing_api_key_separately(self) -> None:
-        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+        with mock.patch.dict(
+            os.environ,
+            {"ANTHROPIC_API_KEY": "", "ANTHROPIC_API_KEY_REAL": ""},
+        ):
             with self.assertRaises(MissingLLMDependencyError) as context:
                 demo_sc2.build_llm_interpreter("anthropic", "claude-sonnet-4-5")
         message = str(context.exception)
@@ -327,7 +332,10 @@ class LiveModeGuardTest(unittest.TestCase):
             captured["llm_control"] = llm_control
             return 0
 
-        with mock.patch.object(demo_sc2, "_run_dry_run_gui", fake_gui):
+        with mock.patch.dict(
+            os.environ,
+            {OPENAI_API_KEY_ENV_VAR: "", OPENAI_API_KEY_REAL_ENV_VAR: ""},
+        ), mock.patch.object(demo_sc2, "_run_dry_run_gui", fake_gui):
             result = demo_sc2.run_dry_run(
                 demo_sc2.parse_args(
                     [
@@ -342,9 +350,9 @@ class LiveModeGuardTest(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(result, 0)
-        self.assertIsInstance(captured["llm_control"], LocalLLMControl)
-        self.assertFalse(captured["llm_control"].is_available())
+            self.assertEqual(result, 0)
+            self.assertIsInstance(captured["llm_control"], LocalLLMControl)
+            self.assertFalse(captured["llm_control"].is_available())
         self.assertIsInstance(captured["session"].interpreter, HybridCommandInterpreter)
 
     def test_dry_run_gui_enables_live_auto_launch_after_key_setup(self) -> None:
@@ -398,14 +406,36 @@ class LiveModeGuardTest(unittest.TestCase):
 
     def test_live_local_llm_control_requires_provider_key_before_start(self) -> None:
         with mock.patch.object(demo_sc2, "require_openai", mock.Mock()):
-            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            with mock.patch.dict(
+                os.environ,
+                {OPENAI_API_KEY_ENV_VAR: "", OPENAI_API_KEY_REAL_ENV_VAR: ""},
+            ):
                 with self.assertRaises(MissingLLMDependencyError) as context:
                     demo_sc2.build_local_llm_control(
                         "openai", demo_sc2.DEFAULT_OPENAI_MODEL
                     )
         message = str(context.exception)
         self.assertIn("OPENAI_API_KEY", message)
+        self.assertIn("OPENAI_API_KEY_REAL", message)
         self.assertIn("LLM", message)
+
+    def test_live_local_llm_control_accepts_openai_real_env_alias(self) -> None:
+        with mock.patch.object(demo_sc2, "require_openai", mock.Mock()):
+            with mock.patch.dict(
+                os.environ,
+                {
+                    OPENAI_API_KEY_ENV_VAR: "",
+                    OPENAI_API_KEY_REAL_ENV_VAR: "real-env-key",
+                },
+            ):
+                control = demo_sc2.build_local_llm_control(
+                    "openai", demo_sc2.DEFAULT_OPENAI_MODEL
+                )
+
+        self.assertIsInstance(control, LocalLLMControl)
+        snapshot = control.snapshot()
+        self.assertEqual("openai", snapshot["provider"])
+        self.assertTrue(snapshot["configured"])
 
     @unittest.skipIf(PYTHON_SC2_INSTALLED, "python-sc2 is installed in this environment")
     def test_run_live_raises_actionable_missing_runtime_error(self) -> None:

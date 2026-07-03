@@ -67,7 +67,6 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         pending_keys = manifest["python_blackboard_emitted_but_not_consumed_by_current_cpp_patch"]
         self.assertIn("combat.pressure_window_frames", pending_keys)
         self.assertIn("squad.flank_bias", pending_keys)
-        self.assertIn("scope.army_group", pending_keys)
         self.assertIn("emergency.prioritize_repair", pending_keys)
         self.assertNotIn("strategy.doctrine", pending_keys)
         self.assertNotIn("production.queue_biases.*", pending_keys)
@@ -75,6 +74,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("production.production_facility_biases.*", pending_keys)
         self.assertNotIn("production.tech_switch_urgency", pending_keys)
         self.assertNotIn("combat.target_priority_biases.*", pending_keys)
+        self.assertNotIn("scope.army_group", pending_keys)
+        self.assertNotIn("scope.unit_classes", pending_keys)
+        self.assertNotIn("scope.max_units", pending_keys)
         self.assertNotIn("scouting.scan_priority", pending_keys)
         self.assertNotIn("squad.reinforce_bias", pending_keys)
 
@@ -161,6 +163,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "voiRetreatPatienceBias * 0.20f",
             "getVoiPolicyFloat(\"squad.contain_bias\", 0.0f)",
             "getVoiPolicyFloat(\"squad.reinforce_bias\", 0.0f)",
+            "squadScoutIntervention",
+            "getVoiScoutScopeStatus() == \"Consumed\"",
+            "scouting.scout_priority,squad.squad_role_biases.marine_scout",
             "getVoiPolicyString(\"strategy.doctrine\", \"\")",
             "applyVoiDoctrineProductionBias",
             "queueVoiDoctrineItem",
@@ -181,12 +186,55 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "last_doctrine_evidence",
             "last_doctrine_update_id",
             "last_doctrine_fresh",
+            "recordVoiActualProductionCommand",
+            "actual_production_command_issued_count",
+            "last_actual_production_command",
+            "last_actual_production_command_item",
+            "last_actual_production_command_update_id",
+            "last_actual_production_command_frame",
+            "recordVoiScoutCommand",
+            "recordVoiScoutProgress",
+            "getVoiScoutCommandIssuedCount",
+            "getLastVoiScoutCommand",
+            "last_actual_command",
+            "last_actual_command_frame",
+            "last_target_distance",
+            "max_home_distance",
+            "min_enemy_base_distance",
+            "deep_scout_frame_count",
+            "scout_enemy_base_deep_entry_move",
+            "scout_unknown_far_start_location_move",
+            "explicitVoiScout",
+            "occupiedByEnemy ? 100000000.0f",
             "recordVoiDoctrineConsumptionIfRepresented",
             "Only queueVoiDoctrineItem() records consumption",
+            "VOI doctrine bypassed pre-expand production cap",
             "policy_update_id",
-            "strategy.doctrine,production.queue_biases.*,production.composition_biases.*",
+            "strategy.doctrine",
+            "production.queue_biases.*",
+            "production.queue_biases.TERRAN_SUPPLYDEPOT",
+            "economy.supply_buffer_bias",
+            "production.composition_biases.*",
+            "queue_bias_supply_depot",
+            "economy_supply_buffer_bias",
+            "supply_buffer",
             "getVoiPolicyInt(\"scope.min_units\", 0)",
+            "getVoiPolicyInt(\"scope.max_units\", 0)",
+            "getVoiPolicyString(\"scope.army_group\", \"\")",
+            "getVoiPolicyString(\"scope.unit_classes\", \"\")",
             "getVoiPolicyString(\"scope.location_intent\", \"\")",
+            "getVoiPolicyFloat(\"scouting.scout_priority\", 0.0f)",
+            "getVoiPolicyFloat(\"squad.squad_role_biases.marine_scout\", 0.0f)",
+            "scope.unit_classes",
+            "squad.squad_role_biases.marine_scout",
+            "scout_scope_status",
+            "scout_scope_reason",
+            "scout_scope_assigned_unit_count",
+            "action_plan_count",
+            "actual_command_issued_count",
+            "action_skipped_count",
+            "last_planned_action",
+            "last_issued_action",
             "voiEngageMarginDelta",
             "but it must not bypass the combat simulation safety gate.",
             "voiRelaunchMargin",
@@ -197,6 +245,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "adoptAsPlayerStartLocation(Players::Self, selfDepot)",
             "closeToResourceCenter",
             "closeToMineralCenter",
+            "isVoiDepotFlowProtectedPlacement",
+            "getVoiNearbyResourceCenter",
+            "voiDistanceSqToSegment",
             "const bool forceVoiScout = getVoiPolicyFloat(\"scouting.scout_priority\", 0.0f) >= 0.35f",
             "NoScoutOn2PlayersMap && enemyBaseLocation != nullptr && !forceVoiScout",
             "workerSplitBase = m_bot.Bases().getPlayerStartingBaseLocation(Players::Self)",
@@ -209,6 +260,15 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "m_bot.GetCurrentFrame() < 5000",
             "canTrustOpeningWallPlacement",
             "trusting valid uncontested buildable placement.",
+            "Root fix for repeated addon cancellation",
+            "addon placement is validated by producer state and relocation logic",
+            "building.type.isAddon()",
+            "shouldUseVoiDirectAddonCommand",
+            "VOI addon direct command bypassed exploration gate",
+            "voiAddonCommandCooldownElapsed",
+            "VOI addon direct command bypassed conservative placement precheck",
+            "recordVoiActualProductionCommand(b.type, \"addon_build_command\")",
+            "continue;",
             "Supply provider recovery queued after supply block.",
             "m_queue.queueAsHighestPriority(supplyProviderType, false)",
             "Path to completed refinery is not safe; assigning gas worker with refinery fallback.",
@@ -225,7 +285,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "root_cause_reason",
             "setVoiWorkerCommandReason",
             "consumeVoiWorkerCommandReason",
+            "voiHasSamePositionOrder",
+            "voiHasSamePositionOrderTarget",
+            "redundant_existing_position_order",
             "Root fix for repeated SCV mineral commands",
+            "alreadyInMineralCycle",
             "currentJob->second == WorkerJobs::Minerals",
             "currentDepot->second.getTag() == jobUnit.getTag()",
             "const bool idleSpotIsUseful = Util::DistSq(worker.getPosition(), idlePos) > 1.0f",
@@ -303,6 +367,13 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, s2client_patch)
+
+    def test_patch_records_requeued_doctrine_items_as_existing_queue_evidence(self) -> None:
+        patch = PATCH_FILE.read_text()
+
+        self.assertNotIn("requeued_highest", patch)
+        self.assertNotIn("requeued_blocking", patch)
+        self.assertIn('recordVoiDoctrineConsumption(type, action, "queued_existing");', patch)
 
     def test_macos_scripts_document_reproducible_build_smoke_and_soak(self) -> None:
         build_script = BUILD_SCRIPT.read_text()
@@ -528,6 +599,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "worker root-cause archive violation",
             "archived_scout_duplicate_worker_move",
             "except json.JSONDecodeError",
+            "expected_actual_items_by_doctrine",
+            "last_actual_production_command_item",
+            "actual_production_command_issued_count",
         ):
             with self.subTest(term=term):
                 self.assertIn(term, smoke_script)
@@ -543,7 +617,13 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "summary_evidence_source",
             "latest_doctrine_action",
             "last_doctrine_evidence",
+            "actual_production_command_issued_count",
+            "last_actual_production_command",
+            "last_actual_production_command_frame",
             "worker_trace_status",
+            "worker_repeat_order_suppressions",
+            "worker_root_cause_status",
+            "worker_root_cause_reason",
         ):
             with self.subTest(strategy_matrix_contract=term):
                 self.assertIn(term, strategy_matrix_script)
@@ -573,6 +653,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "income-stall-frames",
             "bootstrap-no-start-units-frame",
             "max-placement-failures",
+            "max-worker-repeat-order-suppressions",
             "modulation-consumption-grace-frames",
             "termination-reason",
             "target_frame_reached_cleanup",
@@ -607,14 +688,19 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--expected-strategy-doctrine",
             "--expected-production-actions",
             "--expected-production-items",
+            "strategy_actual_command_missing",
+            "tactical_actual_command_missing",
+            "worker_repeat_order_suppression",
+            "scouting_map_control",
+            "expected_actual_production_items",
             "bio_marauder_techlab bio_marauder_support starport_transition medivac_drop_support",
-            "SOAK_AGGRESSIVE_MIN_FRAME",
+            'SOAK_AGGRESSIVE_MIN_FRAME="${SOAK_AGGRESSIVE_MIN_FRAME:-6000}"',
             "SOAK_MAX_ATTEMPTS",
             "SOAK_RETRY_SETTLE_SECONDS",
             "MicroMachine soak retrying after retryable startup failure",
             "SOAK_ATTEMPT_INDEX",
             "SOAK_NON_RETRYABLE_FAILURE_CODES",
-            "bootstrap_no_start_units repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing tactical_effect_missing",
+            "bootstrap_no_start_units repeated_placement_failures no_production_deadlock production_stall income_stall manager_intervention_missing stale_modulation strategy_profile_missing tactical_effect_missing tactical_actual_command_missing strategy_actual_command_missing worker_repeat_order_suppression",
             "retryable_startup_codes",
             "\"telemetry_missing\"",
             "latest_frame == 0 and codes and codes <= retryable_startup_codes",
@@ -635,6 +721,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SC2_USE_RUNTIME_DIR_ARGS",
             "resolve_map_file",
             "prepare_launch_contract",
+            "SOAK_REQUIRE_BUILD_IDENTITY",
+            "MICROMACHINE_BUILD_IDENTITY_REPORT",
+            "verify_build_identity",
+            "MicroMachine soak rejected: missing build identity report",
+            "MicroMachine soak rejected: stale build identity",
+            "Run integrations/micromachine/scripts/build_macos_local.sh",
             "map file not found",
             "SC2 executable is not runnable",
             "SC2_ROOT_ALIAS",
