@@ -41,6 +41,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -329,6 +330,10 @@ def _micromachine_compile_result_path(blackboard_dir: str) -> str:
     return os.path.join(blackboard_dir, "latest_modulation_compile_result.json")
 
 
+def _new_micromachine_update_id() -> str:
+    return f"voi-mm-{uuid.uuid4().hex}"
+
+
 def _write_micromachine_compile_result(
     blackboard_dir: str,
     payload: Mapping[str, object],
@@ -367,12 +372,31 @@ def _read_micromachine_compile_result(blackboard_dir: str) -> dict[str, object] 
     return dict(payload) if isinstance(payload, Mapping) else None
 
 
-def _latest_compile_result_payload(compile_document: object | None) -> dict[str, object] | None:
+def _latest_compile_result_payload(
+    compile_document: object | None,
+    *,
+    now_unix: float | None = None,
+) -> dict[str, object] | None:
     if not isinstance(compile_document, Mapping):
         return None
+    written_at = compile_document.get("written_at_unix")
+    if isinstance(written_at, (int, float)) and not isinstance(written_at, bool):
+        now = time.time() if now_unix is None else float(now_unix)
+        if now - float(written_at) > _MICROMACHINE_COMPILE_RESULT_FRESH_SECONDS:
+            return None
     payload = compile_document.get("compile_result")
     if isinstance(payload, Mapping):
-        return dict(payload)
+        result = dict(payload)
+        update_id = compile_document.get("update_id")
+        if isinstance(update_id, str) and update_id.strip():
+            result.setdefault("update_id", update_id.strip())
+        command_text = compile_document.get("command_text")
+        if isinstance(command_text, str) and command_text.strip():
+            result.setdefault("command_text", command_text.strip())
+        duration_ms = compile_document.get("duration_ms")
+        if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool):
+            result.setdefault("duration_ms", int(duration_ms))
+        return result
     return None
 
 
@@ -413,6 +437,64 @@ def _extract_micromachine_semantic_scope(
     if not normalized_scope and normalized_ttl is None:
         return None, None
     return normalized_scope or None, normalized_ttl
+
+
+def _extract_micromachine_language_context(
+    document: Mapping[str, object],
+    command_text: str,
+) -> dict[str, object]:
+    """Return response-language hints for the LLM policy modulation prompt."""
+
+    ui_code = _normalize_language_code(document.get("ui_language")) or "ko"
+    detected_code = _detect_text_language_code(command_text)
+    response_code = (
+        _normalize_language_code(document.get("response_language"))
+        or detected_code
+        or ui_code
+    )
+    return {
+        "ui_language_code": ui_code,
+        "ui_language": _language_label(ui_code),
+        "detected_user_language_code": detected_code or "",
+        "detected_user_language": _language_label(detected_code)
+        if detected_code
+        else "",
+        "response_language_code": response_code,
+        "response_language": _language_label(response_code),
+    }
+
+
+def _normalize_language_code(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = value.strip().lower().replace("_", "-")
+    if not normalized:
+        return ""
+    primary = normalized.split("-", 1)[0]
+    if primary in _MICROMACHINE_LANGUAGE_LABELS:
+        return primary
+    if len(normalized) <= 32 and all(
+        character.isalnum() or character in {"-", " "}
+        for character in normalized
+    ):
+        return normalized
+    return ""
+
+
+def _language_label(code: str) -> str:
+    if not code:
+        return ""
+    return _MICROMACHINE_LANGUAGE_LABELS.get(code, code)
+
+
+def _detect_text_language_code(text: str) -> str:
+    if any("\uac00" <= character <= "\ud7a3" for character in text):
+        return "ko"
+    if any("\u4e00" <= character <= "\u9fff" for character in text):
+        return "zh"
+    if any("a" <= character.lower() <= "z" for character in text):
+        return "en"
+    return ""
 
 
 def _normalize_micromachine_scope_payload(
@@ -570,6 +652,10 @@ def _micromachine_status_payload(
         limit=None,
     )
     log_snippets = evidence_log_snippets[-8:]
+    intervention_compile_result = _micromachine_compile_result_for_update(
+        compile_result,
+        update_id=update_id,
+    )
     return {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
@@ -580,12 +666,100 @@ def _micromachine_status_payload(
             consumption_status=consumption_status,
             log_snippets=log_snippets,
             evidence_log_snippets=evidence_log_snippets,
-            compile_result=compile_result,
+            compile_result=intervention_compile_result,
         ),
         "compile_result": dict(compile_result) if isinstance(compile_result, Mapping) else None,
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
     }
+
+
+def _micromachine_status_with_runtime_gate(
+    payload: Mapping[str, object],
+    *,
+    runtime_snapshot: Mapping[str, object] | None,
+    blackboard_dir: str,
+) -> dict[str, object]:
+    """Attach runtime metadata and fail closed when telemetry is detached."""
+
+    result = dict(payload)
+    if not isinstance(runtime_snapshot, Mapping):
+        return result
+
+    runtime_status = str(runtime_snapshot.get("status", "") or "")
+    for key in (
+        "runtime_attached",
+        "telemetry_current_for_process",
+        "telemetry_stale_or_detached",
+        "telemetry_present",
+        "telemetry_frame",
+        "pid",
+        "last_line",
+        "error",
+    ):
+        if key in runtime_snapshot:
+            result[key] = runtime_snapshot[key]
+    result["runtime_status"] = runtime_status
+
+    telemetry_is_current = runtime_snapshot.get("telemetry_current_for_process") is True
+    runtime_attached = runtime_snapshot.get("runtime_attached") is True
+    if runtime_attached and telemetry_is_current:
+        return result
+
+    dashboard = result.get("dashboard", {})
+    if not isinstance(dashboard, Mapping):
+        dashboard = {}
+    rebuilt = _micromachine_status_payload(
+        dashboard,
+        telemetry=None,
+        blackboard_dir=blackboard_dir,
+        compile_result=result.get("compile_result"),
+    )
+    result.update(rebuilt)
+    result["runtime_status"] = runtime_status
+    for key in (
+        "runtime_attached",
+        "telemetry_current_for_process",
+        "telemetry_stale_or_detached",
+        "telemetry_present",
+        "telemetry_frame",
+        "pid",
+        "last_line",
+        "error",
+    ):
+        if key in runtime_snapshot:
+            result[key] = runtime_snapshot[key]
+    if (
+        result.get("update") is not None
+        and runtime_snapshot.get("telemetry_present") is True
+        and not telemetry_is_current
+    ):
+        result["consumption_status"] = "detached_telemetry"
+        result["consumed"] = False
+        intervention = result.get("intervention")
+        if isinstance(intervention, Mapping):
+            intervention_payload = dict(intervention)
+            intervention_payload["applied"] = False
+            result["intervention"] = intervention_payload
+    return result
+
+
+def _micromachine_compile_result_for_update(
+    compile_result: object | None,
+    *,
+    update_id: str,
+) -> dict[str, object] | None:
+    """Scope latest async compile status to the active update evidence it describes."""
+
+    if not isinstance(compile_result, Mapping):
+        return None
+    result = dict(compile_result)
+    if not update_id:
+        return result
+    result_update_id = str(result.get("update_id", "") or "").strip()
+    if result_update_id == update_id:
+        return result
+    return None
 
 
 def _micromachine_consumption_status(
@@ -1350,6 +1524,9 @@ _STOP_SENTINEL: Final[object] = object()
 _MICROMACHINE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
 """Maximum HTTP wait for one queued MicroMachine modulation submission."""
 
+_MICROMACHINE_COMPILE_RESULT_FRESH_SECONDS: Final[float] = 300.0
+"""How long a failed/clarifying compile result remains current in the dashboard."""
+
 _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH: Final[str] = (
     "integrations/micromachine/scripts/smoke_macos_local.sh"
 )
@@ -1359,6 +1536,13 @@ _MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV: Final[str] = (
     "VOI_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS"
 )
 """Optional env override for UI-triggered MicroMachine smoke retries."""
+
+_MICROMACHINE_LANGUAGE_LABELS: Final[Mapping[str, str]] = {
+    "ko": "Korean",
+    "en": "English",
+    "zh": "Chinese",
+}
+"""Language labels passed to the LLM policy modulation context."""
 
 
 @dataclass(frozen=True)
@@ -1370,6 +1554,7 @@ class _MicroMachineModulationRequest:
     provider_output: Mapping[str, object] | None
     allow_smoke_keyword_provider: bool
     semantic_scope: Mapping[str, object] | None
+    commander_context: Mapping[str, object]
     ttl_seconds: int | None
     current_frame: int | None
     update_id: str | None
@@ -1845,16 +2030,23 @@ class _MicroMachineLaunchManager:
     def _snapshot_unlocked(self) -> dict[str, object]:
         process = self._process
         telemetry_frame = self._latest_telemetry_frame_unlocked()
+        runtime_attached = process is not None and process.poll() is None
+        telemetry_current_for_process = bool(runtime_attached and telemetry_frame is not None)
         return {
             "enabled": True,
             "mode": COMMAND_MODE_MICROMACHINE,
             "status": self._status,
-            "pid": process.pid if process is not None and process.poll() is None else None,
+            "pid": process.pid if runtime_attached else None,
+            "runtime_attached": runtime_attached,
             "blackboard_dir": self._blackboard_dir,
             "script_path": self._script_path,
             "last_line": self._last_line,
             "error": self._error,
             "telemetry_present": telemetry_frame is not None,
+            "telemetry_current_for_process": telemetry_current_for_process,
+            "telemetry_stale_or_detached": (
+                telemetry_frame is not None and not telemetry_current_for_process
+            ),
             "telemetry_frame": telemetry_frame,
         }
 
@@ -2046,6 +2238,7 @@ class SessionLoopBridge:
         provider_output: Mapping[str, object] | None = None,
         allow_smoke_keyword_provider: bool = False,
         semantic_scope: Mapping[str, object] | None = None,
+        commander_context: Mapping[str, object] | None = None,
         ttl_seconds: int | None = None,
         current_frame: int | None = None,
         update_id: str | None = None,
@@ -2068,6 +2261,7 @@ class SessionLoopBridge:
             provider_output=provider_output,
             allow_smoke_keyword_provider=allow_smoke_keyword_provider,
             semantic_scope=semantic_scope,
+            commander_context=dict(commander_context or {}),
             ttl_seconds=ttl_seconds,
             current_frame=current_frame,
             update_id=update_id,
@@ -2075,6 +2269,93 @@ class SessionLoopBridge:
         )
         loop.call_soon_threadsafe(queue.put_nowait, request)
         return future.result(timeout=_MICROMACHINE_REQUEST_TIMEOUT_SECONDS)
+
+    def submit_micromachine_modulation_background(
+        self,
+        text: str,
+        *,
+        blackboard_dir: str = "",
+        provider_output: Mapping[str, object] | None = None,
+        allow_smoke_keyword_provider: bool = False,
+        semantic_scope: Mapping[str, object] | None = None,
+        commander_context: Mapping[str, object] | None = None,
+        ttl_seconds: int | None = None,
+        current_frame: int | None = None,
+        update_id: str | None = None,
+    ) -> Mapping[str, object]:
+        """Queue one MicroMachine update and return immediately for chat UX."""
+
+        if not isinstance(text, str):
+            raise TypeError("MicroMachine command text must be a string.")
+        cleaned = text.strip()
+        if not cleaned:
+            raise ValueError("MicroMachine command text must be non-empty.")
+        loop = self._loop
+        queue = self._queue
+        if loop is None or queue is None or not self.is_running:
+            raise RuntimeError("Session loop bridge is not running; call start() first.")
+        root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
+        resolved_update_id = update_id or _new_micromachine_update_id()
+        future: concurrent.futures.Future[Mapping[str, object]] = (
+            concurrent.futures.Future()
+        )
+
+        def observe_background_result(done: concurrent.futures.Future[Mapping[str, object]]) -> None:
+            try:
+                done.result()
+            except Exception as error:  # noqa: BLE001 - persist async failures for UI polling.
+                _write_micromachine_compile_result(
+                    root,
+                    _redact_json_ready(
+                        {
+                            "command_text": cleaned,
+                            "status": "publish_failed",
+                            "current_frame": current_frame,
+                            "compile_result": {
+                                "status": "refused",
+                                "source": "llm",
+                                "refusal_reason": (
+                                    "MicroMachine async publish failed with "
+                                    f"{type(error).__name__}: {error}"
+                                ),
+                                "update_id": resolved_update_id,
+                            },
+                            "update_id": resolved_update_id,
+                            "duration_ms": 0,
+                            "written_at_unix": time.time(),
+                        }
+                    ),
+                )
+
+        future.add_done_callback(observe_background_result)
+        request = _MicroMachineModulationRequest(
+            text=cleaned,
+            blackboard_dir=root,
+            provider_output=provider_output,
+            allow_smoke_keyword_provider=allow_smoke_keyword_provider,
+            semantic_scope=semantic_scope,
+            commander_context=dict(commander_context or {}),
+            ttl_seconds=ttl_seconds,
+            current_frame=current_frame,
+            update_id=resolved_update_id,
+            future=future,
+        )
+        loop.call_soon_threadsafe(queue.put_nowait, request)
+        return {
+            "accepted": True,
+            "ok": True,
+            "queued": True,
+            "async_publish": True,
+            "status": "queued",
+            "command_text": cleaned,
+            "update_id": resolved_update_id,
+            "blackboard_dir": root,
+            "consumption_status": "pending_compile",
+            "message": (
+                "MicroMachine publish를 백그라운드에서 시작했습니다. "
+                "LLM forced-tool DSL 컴파일과 blackboard publish는 status polling으로 갱신됩니다."
+            ),
+        }
 
     def _publish_micromachine_modulation(
         self,
@@ -2084,6 +2365,7 @@ class SessionLoopBridge:
         provider_output: Mapping[str, object] | None = None,
         allow_smoke_keyword_provider: bool = False,
         semantic_scope: Mapping[str, object] | None = None,
+        commander_context: Mapping[str, object] | None = None,
         ttl_seconds: int | None = None,
         current_frame: int | None = None,
         update_id: str | None = None,
@@ -2114,6 +2396,7 @@ class SessionLoopBridge:
                 semantic_scope=semantic_scope,
                 ttl_seconds=ttl_seconds,
             )
+        started_at = time.monotonic()
         result = MicroMachineLiveTextSession(
             MicroMachineFilesystemBlackboard(root),
             provider,
@@ -2121,21 +2404,31 @@ class SessionLoopBridge:
             text,
             current_frame=current_frame,
             update_id=update_id,
+            commander_context=commander_context,
             tags=("web_gui",),
         )
         payload = result.to_dict()
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        payload["duration_ms"] = duration_ms
         payload["blackboard_dir"] = root
         update_for_compile = payload.get("update")
+        compile_update_id = (
+            str(update_for_compile.get("update_id", "") or "")
+            if isinstance(update_for_compile, Mapping)
+            else (update_id or "")
+        )
+        compile_result_for_document = payload.get("compile_result")
+        if isinstance(compile_result_for_document, Mapping) and compile_update_id:
+            compile_result_for_document = dict(compile_result_for_document)
+            compile_result_for_document.setdefault("update_id", compile_update_id)
+            payload["compile_result"] = compile_result_for_document
         compile_document: dict[str, object] = {
             "command_text": text,
             "status": str(payload.get("status", "") or ""),
             "current_frame": payload.get("current_frame"),
-            "compile_result": payload.get("compile_result"),
-            "update_id": (
-                str(update_for_compile.get("update_id", "") or "")
-                if isinstance(update_for_compile, Mapping)
-                else ""
-            ),
+            "compile_result": compile_result_for_document,
+            "update_id": compile_update_id,
+            "duration_ms": duration_ms,
             "written_at_unix": time.time(),
         }
         _write_micromachine_compile_result(
@@ -2232,6 +2525,7 @@ class SessionLoopBridge:
                 provider_output=request.provider_output,
                 allow_smoke_keyword_provider=request.allow_smoke_keyword_provider,
                 semantic_scope=request.semantic_scope,
+                commander_context=request.commander_context,
                 ttl_seconds=request.ttl_seconds,
                 current_frame=request.current_frame,
                 update_id=request.update_id,
@@ -2444,10 +2738,13 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   :root {
     color-scheme: light;
     --ink: #eff6ff;
-    --muted: #9fb3d9;
-    --panel: rgba(7, 13, 34, 0.78);
-    --panel-strong: rgba(14, 23, 54, 0.92);
-    --line: rgba(136, 169, 255, 0.2);
+    --muted: #a9bce4;
+    --panel: rgba(7, 13, 34, 0.8);
+    --panel-soft: rgba(13, 21, 47, 0.64);
+    --panel-strong: rgba(14, 23, 54, 0.94);
+    --field: rgba(240, 247, 255, 0.94);
+    --line: rgba(136, 169, 255, 0.24);
+    --line-strong: rgba(77, 238, 234, 0.34);
     --accent: #4deeea;
     --accent-dark: #33c7ff;
     --amber: #ffd166;
@@ -2458,9 +2755,13 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; min-height: 100vh; padding: 22px; color: var(--ink);
+    margin: 0; min-height: 100vh; padding: 24px; color: var(--ink);
     font-family: "Avenir Next", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
-    background: #02030b; overflow-x: hidden;
+    background:
+      radial-gradient(circle at 18% 12%, rgba(77, 238, 234, 0.13), transparent 30%),
+      radial-gradient(circle at 88% 8%, rgba(181, 140, 255, 0.12), transparent 32%),
+      linear-gradient(145deg, #02030b 0%, #070c22 42%, #10061c 100%);
+    overflow-x: hidden;
   }
   .space-background {
     position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
@@ -2549,7 +2850,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       background: ButtonFace; color: ButtonText; border: 1px solid ButtonText;
     }
   }
-  .app-shell { position: relative; z-index: 1; max-width: 1480px; margin: 0 auto; }
+  .app-shell { position: relative; z-index: 1; max-width: 1540px; margin: 0 auto; }
   .language-switcher {
     display: flex; gap: 8px; justify-content: flex-end; margin-bottom: 12px;
   }
@@ -2564,7 +2865,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   .hero {
     display: flex; align-items: flex-end; justify-content: space-between; gap: 18px;
-    margin-bottom: 18px;
+    margin-bottom: 22px;
   }
   .eyebrow {
     margin: 0 0 8px; color: var(--accent); font-weight: 800;
@@ -2578,21 +2879,22 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     box-shadow: 0 10px 30px rgba(17, 24, 39, 0.08); font-weight: 800;
   }
   main {
-    display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(330px, 0.75fr);
-    gap: 18px; align-items: stretch; min-height: 0;
+    display: grid; grid-template-columns: minmax(540px, 1.32fr) minmax(420px, 0.88fr);
+    gap: 24px; align-items: start; min-height: 0;
   }
   #command-panel {
     min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
-    height: clamp(420px, calc(100vh - 150px), 780px); max-height: calc(100vh - 150px);
+    height: clamp(560px, calc(100vh - 160px), 860px); max-height: calc(100vh - 160px);
     border: 1px solid var(--line);
     border-radius: 28px; background: var(--panel); box-shadow: var(--shadow);
     backdrop-filter: blur(18px);
   }
   .chat-header {
-    display: flex; justify-content: space-between; gap: 12px; align-items: center;
-    padding: 18px 20px; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; gap: 18px; align-items: flex-start;
+    padding: 20px 22px; border-bottom: 1px solid var(--line);
     background: linear-gradient(90deg, rgba(77, 238, 234, 0.15), rgba(181, 140, 255, 0.13));
   }
+  .chat-header > div:first-child { min-width: min(320px, 52%); }
   .chat-title { margin: 0; font-size: 1rem; font-weight: 900; }
   .chat-subtitle { margin: 3px 0 0; color: var(--muted); font-size: 0.82rem; }
   .assistant-pending-status {
@@ -2600,14 +2902,17 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     font-size: 0.78rem; font-weight: 900; letter-spacing: 0.01em;
   }
   .assistant-pending-status:empty { visibility: hidden; }
-  .quick-commands { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .quick-commands {
+    display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+    max-width: 48%; min-width: 240px;
+  }
   .quick-commands button {
     border: 1px solid rgba(77, 238, 234, 0.3); background: rgba(255, 255, 255, 0.08); color: var(--ink);
     border-radius: 999px; padding: 8px 10px; font-weight: 800; cursor: pointer;
   }
   .runtime-mode-panel {
-    padding: 12px 18px; border-bottom: 1px solid var(--line);
-    background: rgba(2, 6, 23, 0.42);
+    padding: 16px 22px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(2, 6, 23, 0.5), rgba(8, 13, 32, 0.34));
   }
   .runtime-mode-title {
     display: flex; justify-content: space-between; gap: 10px; margin: 0 0 10px;
@@ -2617,12 +2922,16 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     color: var(--accent); overflow-wrap: anywhere;
   }
   .mode-options {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px;
   }
   .mode-option {
     display: flex; gap: 10px; align-items: flex-start; padding: 11px 12px;
     border: 1px solid var(--line); border-radius: 16px;
-    background: rgba(255, 255, 255, 0.07); cursor: pointer;
+    background: rgba(255, 255, 255, 0.07); cursor: pointer; min-width: 0;
+  }
+  .mode-option:has(input:checked) {
+    border-color: var(--line-strong);
+    background: linear-gradient(135deg, rgba(77, 238, 234, 0.13), rgba(181, 140, 255, 0.1));
   }
   .mode-option input { margin-top: 3px; accent-color: var(--accent); }
   .mode-label { display: block; color: var(--ink); font-weight: 900; font-size: 0.85rem; }
@@ -2638,20 +2947,25 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     background: rgba(255, 255, 255, 0.08); color: var(--ink); font-size: 0.8rem; line-height: 1.45;
   }
   #live-status a { color: var(--accent); font-weight: 900; }
-  .runtime-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .runtime-actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   .runtime-actions button {
-    flex: 1; margin-top: 0 !important; padding: 9px 10px !important;
+    flex: 1 1 160px; margin-top: 0 !important; padding: 10px 12px !important;
     background: rgba(255, 255, 255, 0.9) !important; color: #071225 !important;
   }
   #state-panel {
-    min-width: 0; min-height: 0; max-height: calc(100vh - 150px); overflow-y: auto;
+    min-width: 0; min-height: 0; max-height: calc(100vh - 160px); overflow-y: auto;
+    display: flex; flex-direction: column; gap: 16px; scrollbar-gutter: stable;
     background: var(--panel); border: 1px solid var(--line);
-    border-radius: 28px; padding: 18px; box-shadow: var(--shadow); backdrop-filter: blur(18px);
+    border-radius: 28px; padding: 20px; box-shadow: var(--shadow); backdrop-filter: blur(18px);
   }
-  #state-panel h2, #llm-panel h2, #briefing-panel h2 { margin: 0 0 10px; font-size: 1rem; letter-spacing: -0.02em; }
-  .dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  #state-panel > * { min-width: 0; }
+  #state-panel h2, #llm-panel h2, #briefing-panel h2 { margin: 0; font-size: 1rem; letter-spacing: -0.02em; }
+  .dashboard-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+    gap: 12px; margin: 0;
+  }
   .metric-card {
-    min-height: 86px; padding: 13px; border-radius: 20px; background: var(--panel-strong);
+    min-height: 88px; padding: 14px; border-radius: 20px; background: var(--panel-strong);
     border: 1px solid var(--line); position: relative; overflow: hidden;
   }
   .metric-card::after {
@@ -2661,10 +2975,11 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .metric-card dt { margin: 0 0 8px; color: var(--muted); font-weight: 800; font-size: 0.76rem; }
   .metric-card dd { margin: 0; font-size: 1.28rem; font-weight: 900; font-variant-numeric: tabular-nums; }
   .wide-card { grid-column: 1 / -1; }
-  #state-availability { margin: 12px 0 0; font-size: 0.82rem; color: var(--muted); }
-  #briefing-panel, #llm-panel {
-    margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 22px;
-    background: rgba(255, 255, 255, 0.07);
+  #state-availability { margin: 0; font-size: 0.82rem; color: var(--muted); }
+  #briefing-panel, #llm-panel, #micromachine-panel {
+    margin: 0; padding: 16px; border: 1px solid var(--line); border-radius: 22px;
+    background: var(--panel-soft);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
   .collapsible-panel > summary {
     display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none;
@@ -2708,9 +3023,9 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   #llm-panel label { display: block; margin: 8px 0 4px; font-size: 0.78rem; font-weight: 900; color: var(--muted); }
   #llm-panel select, #llm-panel input {
     width: 100%; padding: 10px 11px; border: 1px solid rgba(96, 112, 128, 0.28);
-    border-radius: 12px; background: rgba(255, 255, 255, 0.92); color: #071225;
+    border-radius: 12px; background: var(--field); color: #071225;
   }
-  .provider-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 8px 0 10px; }
+  .provider-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 8px 0 10px; }
   .provider-option {
     display: flex !important; align-items: center; gap: 9px; margin: 0 !important;
     padding: 9px 10px; border: 1px solid rgba(96, 112, 128, 0.28);
@@ -2742,11 +3057,11 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   #micromachine-panel input, #micromachine-panel select {
     width: 100%; padding: 10px 11px; border: 1px solid rgba(96, 112, 128, 0.28);
-    border-radius: 12px; background: rgba(255, 255, 255, 0.92); color: #071225;
+    border-radius: 12px; background: var(--field); color: #071225; min-width: 0;
   }
   .micro-scope-grid {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
-    margin-top: 8px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px;
+    margin-top: 10px;
   }
   #micromachine-panel button {
     width: 100%; margin-top: 10px; padding: 11px 12px; border: none; border-radius: 14px;
@@ -2759,8 +3074,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     color: var(--ink); font-size: 0.8rem; line-height: 1.45;
   }
   #micromachine-intervention-dashboard {
-    margin-top: 10px; padding: 12px; border: 1px solid rgba(77, 238, 234, 0.28);
-    border-radius: 18px; background: rgba(2, 6, 23, 0.42);
+    margin-top: 12px; padding: 14px; border: 1px solid rgba(77, 238, 234, 0.28);
+    border-radius: 20px; background: rgba(2, 6, 23, 0.48);
   }
   .micro-intervention-header {
     display: flex; justify-content: space-between; align-items: center; gap: 10px;
@@ -2774,7 +3089,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .micro-badge-active { color: var(--accent); background: rgba(77, 238, 234, 0.12); }
   .micro-badge-pending { color: var(--amber); background: rgba(245, 158, 11, 0.14); }
   .micro-intervention-grid {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; margin: 0;
   }
   .micro-intervention-grid > div {
     min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--line);
@@ -2804,6 +3119,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   #micromachine-log-snippets li { margin-bottom: 6px; overflow-wrap: anywhere; }
   #log {
     flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px;
+    scrollbar-gutter: stable;
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
       radial-gradient(circle at 20% 20%, rgba(77, 238, 234, 0.11), transparent 32%);
@@ -2882,12 +3198,13 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .status-clarification { color: __COLOR_CLARIFICATION__; }
   .status-read_only { color: __COLOR_READ_ONLY__; }
   #command-form {
-    display: flex; gap: 10px; padding: 16px; border-top: 1px solid var(--line);
+    display: flex; gap: 12px; padding: 16px 18px; border-top: 1px solid var(--line);
     background: rgba(7, 13, 34, 0.72);
   }
   #command-input {
     flex: 1; font-size: 1.02rem; padding: 14px 16px;
-    border: 1px solid rgba(136, 169, 255, 0.28); border-radius: 18px; background: rgba(255, 255, 255, 0.92); color: #071225;
+    border: 1px solid rgba(136, 169, 255, 0.28); border-radius: 18px; background: var(--field); color: #071225;
+    min-width: 0;
   }
   #command-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.12); }
   #send-button {
@@ -2920,18 +3237,17 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   #strategy-briefing summary {
     cursor: pointer; color: var(--amber); font-weight: 900;
   }
-  @media (max-width: 980px) {
+  @media (max-width: 1180px) {
     body { padding: 12px; }
     .space-background::after { inset: 20% -20% -18% 24%; width: 105vw; height: 105vw; opacity: 0.48; }
     .star-depth { inset: -14vmax; }
     .star-depth-near { opacity: 0.42; }
     .hero { display: block; }
     .connection-pill { display: inline-block; margin-top: 12px; }
-    main { grid-template-columns: 1fr; }
+    main { grid-template-columns: 1fr; gap: 16px; }
+    .quick-commands { max-width: none; min-width: 0; justify-content: flex-start; }
     #command-panel { height: 68vh; min-height: 0; max-height: 68vh; }
     #state-panel { max-height: none; }
-    .dashboard-grid { grid-template-columns: 1fr 1fr; }
-    .micro-scope-grid { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 620px) {
     .space-background {
@@ -2944,8 +3260,9 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .space-background::after { inset: 36% -38% -12% 8%; width: 128vw; height: 128vw; opacity: 0.36; }
     .star-depth-far { opacity: 0.24; }
     .star-depth-near { opacity: 0.28; }
-    .dashboard-grid, .mode-options { grid-template-columns: 1fr; }
-    .micro-scope-grid, .micro-intervention-grid { grid-template-columns: 1fr; }
+    .chat-header { display: block; }
+    .quick-commands { margin-top: 12px; }
+    .dashboard-grid, .mode-options, .micro-scope-grid, .micro-intervention-grid, .provider-options { grid-template-columns: 1fr; }
     #command-form { flex-direction: column; }
     .message { max-width: 94%; }
   }
@@ -3224,10 +3541,11 @@ var MAX_CHAT_EVENTS = 36;
 var COMPACT_AFTER_EVENTS = 28;
 var COMPACT_KEEP_EVENTS = 24;
 var MAX_MESSAGE_PREVIEW_CHARS = 280;
-var MICROMACHINE_CHAT_TIMEOUT_MS = 12000;
+var MICROMACHINE_CHAT_TIMEOUT_MS = 35000;
 var trimmedChatEvents = 0;
 var recentEvents = [];
 var archivedChatEvents = [];
+var pendingMicroMachineAsyncUpdates = {};
 var compactedContext = {
   total: 0,
   successful: 0,
@@ -3323,6 +3641,7 @@ var I18N = {
     runtimeRunning: "선택한 런타임 실행 중",
     runtimeConnected: "MicroMachine telemetry 연결됨",
     runtimePassed: "MicroMachine smoke 통과",
+    runtimeDetachedTelemetry: "MicroMachine telemetry 파일은 있지만 현재 런타임 프로세스에 붙어 있지 않음",
     runtimeReady: "Legacy live GUI 준비됨",
     runtimeBlocked: "런타임 시작 보류",
     runtimeFailed: "런타임 시작 실패",
@@ -3339,6 +3658,9 @@ var I18N = {
     army: "병력",
     structures: "건물",
     noState: "게임 상태를 아직 읽을 수 없습니다.",
+    microMachineStateDashboardDisabled: "MicroMachine 모드에서는 레거시 전장 대시보드를 폴링하지 않습니다. 실제 소비 증거는 MicroMachine DSL 개입 대시보드를 보세요.",
+    microMachineStateConnection: "MicroMachine cockpit · legacy /api/state 비활성",
+    microMachineStateBriefing: "MicroMachine 모드는 dry-run 전장 자원값을 표시하지 않습니다. blackboard/telemetry evidence가 기준입니다.",
     noStructures: "없음",
     incompleteObservation: "관측이 불완전합니다.",
     briefingTitle: "전략 브리핑",
@@ -3479,6 +3801,7 @@ var I18N = {
     runtimeRunning: "Selected runtime is running",
     runtimeConnected: "MicroMachine telemetry connected",
     runtimePassed: "MicroMachine smoke passed",
+    runtimeDetachedTelemetry: "MicroMachine telemetry file exists but is not attached to a running runtime",
     runtimeReady: "Legacy live GUI ready",
     runtimeBlocked: "Runtime start blocked",
     runtimeFailed: "Runtime start failed",
@@ -3495,6 +3818,9 @@ var I18N = {
     army: "Army",
     structures: "Structures",
     noState: "Game state is not available yet.",
+    microMachineStateDashboardDisabled: "MicroMachine mode does not poll the legacy battlefield dashboard. Use the MicroMachine DSL intervention dashboard for actual consumption evidence.",
+    microMachineStateConnection: "MicroMachine cockpit · legacy /api/state disabled",
+    microMachineStateBriefing: "MicroMachine mode does not display dry-run battlefield resources. Blackboard/telemetry evidence is authoritative.",
     noStructures: "None",
     incompleteObservation: "Observation is incomplete.",
     briefingTitle: "Strategy Briefing",
@@ -3635,6 +3961,7 @@ var I18N = {
     runtimeRunning: "所选 runtime 正在运行",
     runtimeConnected: "MicroMachine telemetry 已连接",
     runtimePassed: "MicroMachine smoke 已通过",
+    runtimeDetachedTelemetry: "存在 MicroMachine telemetry 文件，但未连接到正在运行的 runtime",
     runtimeReady: "Legacy live GUI 已就绪",
     runtimeBlocked: "runtime 启动被阻止",
     runtimeFailed: "runtime 启动失败",
@@ -3651,6 +3978,9 @@ var I18N = {
     army: "部队",
     structures: "建筑",
     noState: "暂时无法读取游戏状态。",
+    microMachineStateDashboardDisabled: "MicroMachine 模式不会轮询旧战场仪表盘。请以 MicroMachine DSL intervention dashboard 的消费证据为准。",
+    microMachineStateConnection: "MicroMachine cockpit · legacy /api/state 已禁用",
+    microMachineStateBriefing: "MicroMachine 模式不会显示 dry-run 战场资源值。blackboard/telemetry evidence 才是依据。",
     noStructures: "无",
     incompleteObservation: "侦测信息不完整。",
     briefingTitle: "战略简报",
@@ -3806,6 +4136,11 @@ function setCommandMode(mode) {
       "llmRequiredLabel",
       isMicroMachineCommandMode() ? t("llmOptionalMicro") : t("llmMissing")
     );
+  }
+  if (isMicroMachineCommandMode()) {
+    renderMicroMachineStatePlaceholder();
+  } else {
+    pollState();
   }
   setCommandEnabled(llmConfigured);
 }
@@ -4218,6 +4553,7 @@ function refreshPendingLabels() {
 }
 
 function pollHistory() {
+  if (isMicroMachineCommandMode()) { return; }
   fetch("/api/history?after=" + lastSeq + authJoin)
     .then(function (response) { return response.json(); })
     .then(function (data) {
@@ -4246,7 +4582,24 @@ function setLlmStatus(state, labelKey, message) {
   messageNode.textContent = message;
 }
 
+function renderMicroMachineStatePlaceholder() {
+  latestState = null;
+  setText("state-minerals", "-");
+  setText("state-vespene", "-");
+  setText("state-supply", "-");
+  setText("state-workers", "-");
+  setText("state-army", "-");
+  setText("state-structures", "-");
+  setText("state-availability", t("microMachineStateDashboardDisabled"));
+  setText("connection-status", t("microMachineStateConnection"));
+  setText("strategy-briefing", t("microMachineStateBriefing"));
+}
+
 function renderState(data) {
+  if (isMicroMachineCommandMode()) {
+    renderMicroMachineStatePlaceholder();
+    return;
+  }
   if (!data || data.available === false) {
     latestState = null;
     setText("state-availability", t("noState"));
@@ -4923,9 +5276,19 @@ function briefingBlock(label, text) {
 }
 
 function pollState() {
-  fetch("/api/state" + authQuery)
+  if (isMicroMachineCommandMode()) {
+    renderMicroMachineStatePlaceholder();
+    return Promise.resolve(null);
+  }
+  return fetch("/api/state" + authQuery)
     .then(function (response) { return response.json(); })
-    .then(renderState)
+    .then(function (data) {
+      if (isMicroMachineCommandMode()) {
+        renderMicroMachineStatePlaceholder();
+        return null;
+      }
+      return renderState(data);
+    })
     .catch(function () { /* 다음 폴링에서 다시 시도합니다. */ });
 }
 
@@ -5064,6 +5427,10 @@ function handleRuntimeStatus(status, options) {
   if ((status.status === "ready" || status.status === "passed") && status.url) {
     setLiveStatusLink(t("runtimeReady"), status.url);
     if (options && options.autoOpen) { window.location.assign(status.url); }
+    return;
+  }
+  if (mode === COMMAND_MODE_MICROMACHINE && status.telemetry_stale_or_detached) {
+    setLiveStatusText(t("runtimeDetachedTelemetry") + formatRuntimeDetails(status));
     return;
   }
   if (status.status === "ready" && mode === COMMAND_MODE_LEGACY_COMMANDER) {
@@ -5210,7 +5577,9 @@ function summarizeMicroMachineManagers(managers) {
         manager + ": " + (payload.strategy_doctrine || payload.last_doctrine || "unknown") +
         " action=" + payload.last_doctrine_action +
         " item=" + (payload.last_doctrine_queue_item || "none") +
-        " evidence=" + (payload.last_doctrine_evidence || "missing")
+        " evidence=" + (payload.last_doctrine_evidence || "missing") +
+        " actual=" + (payload.last_actual_production_command || "none") +
+        " count=" + (payload.actual_production_command_issued_count || 0)
       );
     } else if (payload.policy_active === true) {
       parts.push(manager + ": policy_active");
@@ -5412,6 +5781,7 @@ function renderMicroMachineStatus(data) {
   if (dashboard.last_failure) { parts.push("failure " + dashboard.last_failure); }
   node.textContent = parts.length ? parts.join(" | ") : t("microMachinePending");
   renderMicroMachineIntervention(data);
+  maybeAppendMicroMachineAsyncCompletion(data);
 }
 
 function safeRenderMicroMachineStatus(data) {
@@ -5478,11 +5848,22 @@ function buildMicroMachineSemanticScopePayload() {
   return scope;
 }
 
+function detectMicroMachineResponseLanguage(text) {
+  var normalized = text || "";
+  if (/[가-힣]/.test(normalized)) { return "ko"; }
+  if (/[\u4e00-\u9fff]/.test(normalized)) { return "zh"; }
+  if (/[A-Za-z]/.test(normalized)) { return "en"; }
+  return currentLang || "ko";
+}
+
 function buildMicroMachineModulationPayload(text) {
   var blackboardInput = document.getElementById("micromachine-blackboard-dir");
   var payload = {
     text: text,
-    blackboard_dir: blackboardInput ? blackboardInput.value.trim() : ""
+    blackboard_dir: blackboardInput ? blackboardInput.value.trim() : "",
+    ui_language: currentLang || "ko",
+    response_language: detectMicroMachineResponseLanguage(text),
+    async_publish: true
   };
   var semanticScope = buildMicroMachineSemanticScopePayload();
   if (Object.keys(semanticScope).length) {
@@ -5495,19 +5876,70 @@ function buildMicroMachineModulationPayload(text) {
   return payload;
 }
 
+function rememberPendingMicroMachineAsync(text, data) {
+  if (!data || !data.async_publish || !data.update_id) { return; }
+  pendingMicroMachineAsyncUpdates[data.update_id] = {
+    text: text,
+    createdAt: Date.now()
+  };
+}
+
+function maybeAppendMicroMachineAsyncCompletion(data) {
+  if (!data || !pendingMicroMachineAsyncUpdates) { return; }
+  var compileResult = data.compile_result || {};
+  var update = data.update || {};
+  var updateId = compileResult.update_id || update.update_id || "";
+  if (!updateId || !pendingMicroMachineAsyncUpdates[updateId]) { return; }
+  var isTerminalRefusal = Boolean(
+    compileResult.refusal_reason ||
+    compileResult.clarification_prompt ||
+    compileResult.status === "refused" ||
+    compileResult.status === "clarification_required"
+  );
+  var isConsumed = data.consumption_status === "consumed";
+  if (!isTerminalRefusal && !isConsumed) { return; }
+  var pending = pendingMicroMachineAsyncUpdates[updateId];
+  delete pendingMicroMachineAsyncUpdates[updateId];
+  removePendingForCommand(pending.text || "");
+  appendLog({
+    command_text: pending.text,
+    status: isTerminalRefusal ? "clarification" : "partially_executed",
+    narration: microMachineChatNarration(data)
+  });
+}
+
+function microMachineAssistantMessage(compileResult, vector) {
+  var message = compileResult && compileResult.assistant_message;
+  if (typeof message === "string" && message.trim()) {
+    return message.trim();
+  }
+  message = vector && vector.assistant_message;
+  if (typeof message === "string" && message.trim()) {
+    return message.trim();
+  }
+  return "";
+}
+
 function microMachineChatNarration(data) {
   var intervention = (data && data.intervention) || {};
   var compileResult = (data && data.compile_result) || {};
   var vector = compileResult.vector || {};
+  var assistantMessage = microMachineAssistantMessage(compileResult, vector);
+  if (assistantMessage) {
+    return assistantMessage;
+  }
   var parts = [];
-  if (compileResult.refusal_reason || compileResult.clarification_prompt || data && data.accepted === false) {
+  if (data && data.status === "queued") {
+    parts.push("LLM이 MicroMachine DSL을 해석 중입니다.");
+    if (data.message) { parts.push(data.message); }
+  } else if (compileResult.refusal_reason || compileResult.clarification_prompt || data && data.accepted === false) {
     parts.push("MicroMachine blackboard에 publish하지 않았습니다.");
     if (compileResult.refusal_reason) { parts.push(compileResult.refusal_reason); }
     if (compileResult.clarification_prompt) { parts.push(compileResult.clarification_prompt); }
   } else {
     parts.push(t("microMachineChatPublished"));
     parts.push("해석: " + (intervention.goal || vector.goal || (data && data.command_text) || "전술 의도"));
-    parts.push("개입 방식: raw 유닛 클릭이 아니라 MicroMachine manager bias를 조정했습니다.");
+    parts.push("적용 증거: MicroMachine manager bias로 publish됨");
     if (data && data.provider_source) {
       parts.push("provider_source=" + data.provider_source);
     } else if (compileResult.source) {
@@ -5625,7 +6057,10 @@ function submitMicroMachineModulation(payload, options) {
     .then(parseJsonResponse)
     .then(function (data) {
       clearSubmitTimeout();
-      if (options.appendChat && !timedOut) { safelyAppendMicroMachineChatResult(payload.text || "", data); }
+      if (data && data.async_publish) { rememberPendingMicroMachineAsync(payload.text || "", data); }
+      if (options.appendChat && !timedOut && !(data && data.async_publish)) {
+        safelyAppendMicroMachineChatResult(payload.text || "", data);
+      }
       safeRenderMicroMachineStatus(data);
       if (options.clearInput && data.ok) { options.clearInput.value = ""; }
       return data;
@@ -5662,8 +6097,9 @@ document.getElementById("command-form").addEventListener("submit", function (eve
   setCommandMode(selectedCommandMode());
   if (isMicroMachineCommandMode()) {
     appendPendingCommand(text);
+    var microPayload = buildMicroMachineModulationPayload(text);
     submitMicroMachineModulation(
-      buildMicroMachineModulationPayload(text),
+      microPayload,
       { appendChat: true, timeoutMs: MICROMACHINE_CHAT_TIMEOUT_MS }
     ).catch(function () {});
     input.value = "";
@@ -6268,9 +6704,18 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         params = parse_qs(urlsplit(self.path).query)
         blackboard_dir = params.get("blackboard_dir", [""])[0] or ""
         try:
+            payload = dict(status_fn(blackboard_dir=blackboard_dir))
+            runtime_snapshot = None
+            launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
+            if launcher is not None and callable(getattr(launcher, "snapshot", None)):
+                runtime_snapshot = dict(launcher.snapshot(blackboard_dir=blackboard_dir))
             self._send_json(
                 HTTPStatus.OK,
-                dict(status_fn(blackboard_dir=blackboard_dir)),
+                _micromachine_status_with_runtime_gate(
+                    payload,
+                    runtime_snapshot=runtime_snapshot,
+                    blackboard_dir=str(payload.get("blackboard_dir", blackboard_dir) or ""),
+                ),
             )
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
@@ -6319,6 +6764,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"accepted": False, "error": "text 필드는 비어 있지 않은 문자열이어야 합니다."},
             )
             return
+        cleaned_text = text.strip()
+        commander_context = _extract_micromachine_language_context(
+            document,
+            cleaned_text,
+        )
         provider_output = document.get("provider_output")
         if provider_output is not None and not isinstance(provider_output, Mapping):
             self._send_json(
@@ -6336,6 +6786,13 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        async_publish = document.get("async_publish", False)
+        if type(async_publish) is not bool:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "async_publish 필드는 boolean이어야 합니다."},
+            )
+            return
         current_frame = document.get("current_frame")
         if current_frame is not None and (
             type(current_frame) is bool or not isinstance(current_frame, int)
@@ -6351,13 +6808,44 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if isinstance(document.get("update_id"), str)
                 else None
             )
+            if async_publish:
+                async_submit_fn = getattr(
+                    self._bridge,
+                    "submit_micromachine_modulation_background",
+                    None,
+                )
+                if not callable(async_submit_fn):
+                    self._send_json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "accepted": False,
+                            "error": "MicroMachine async modulation bridge is disabled.",
+                        },
+                    )
+                    return
+                payload = dict(
+                    async_submit_fn(
+                        cleaned_text,
+                        blackboard_dir=str(document.get("blackboard_dir", "") or ""),
+                        provider_output=provider_output,
+                        allow_smoke_keyword_provider=allow_smoke_keyword_provider,
+                        semantic_scope=semantic_scope,
+                        commander_context=commander_context,
+                        ttl_seconds=ttl_seconds,
+                        current_frame=current_frame,
+                        update_id=update_id,
+                    )
+                )
+                self._send_json(HTTPStatus.ACCEPTED, payload)
+                return
             payload = dict(
                 submit_fn(
-                    text.strip(),
+                    cleaned_text,
                     blackboard_dir=str(document.get("blackboard_dir", "") or ""),
                     provider_output=provider_output,
                     allow_smoke_keyword_provider=allow_smoke_keyword_provider,
                     semantic_scope=semantic_scope,
+                    commander_context=commander_context,
                     ttl_seconds=ttl_seconds,
                     current_frame=current_frame,
                     update_id=update_id,

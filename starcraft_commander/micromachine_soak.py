@@ -39,6 +39,15 @@ PLACEMENT_FAILURE_TERMS: Final[tuple[str, ...]] = (
     "Cancel building TERRAN_BARRACKS :",
     "Cancel building TERRAN_REFINERY :",
 )
+SUPPLY_BLOCK_TERM: Final[str] = "Supply blocked | 0x00000007"
+SUPPLY_RECOVERY_TERMS: Final[tuple[str, ...]] = (
+    "Supply provider recovery queued after supply block.",
+    "Supply provider recovery waiting for existing construction",
+)
+SUPPLY_PROVIDER_COMMAND_TERMS: Final[tuple[str, ...]] = (
+    "build command type=TERRAN_SUPPLYDEPOT",
+    "voi supply provider command kind=",
+)
 LOG_FRAME_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d+):\s*(.*)$")
 DISCONNECT_TERMS: Final[tuple[str, ...]] = (
     "Connection closed",
@@ -61,7 +70,49 @@ UNIT_PRODUCTION_TERMS: Final[tuple[str, ...]] = (
 )
 PRODUCTION_DOCTRINE_EVIDENCE_VALUES: Final[set[str]] = {
     "queued",
+    "queued_existing",
+    "command_issued",
 }
+EXPECTED_ACTUAL_PRODUCTION_ITEMS_BY_DOCTRINE: Final[Mapping[str, frozenset[str]]] = {
+    "marine_rush": frozenset({"Marine", "Barracks"}),
+    "bio_pressure": frozenset({"Marauder", "BarracksTechLab", "Starport", "Medivac"}),
+    "tank_defensive_hold": frozenset({"FactoryTechLab", "SiegeTank"}),
+    "siege_contain": frozenset({"FactoryTechLab", "SiegeTank"}),
+    "contain_enemy_natural": frozenset({"FactoryTechLab", "SiegeTank"}),
+    "mech_transition": frozenset({"Hellion", "Cyclone", "SiegeTank", "Thor"}),
+    "drop_harassment": frozenset({"Starport", "StarportReactor", "Medivac", "Hellion", "Reaper"}),
+    "worker_line_harassment": frozenset({"Starport", "StarportReactor", "Medivac", "Hellion", "Reaper"}),
+    "expand_macro": frozenset({"CommandCenter"}),
+    "anti_air_response": frozenset({"Starport", "EngineeringBay", "Viking"}),
+}
+"""Profile-specific actual build/train command items required for sign-off."""
+
+NON_PRODUCTION_STRATEGY_DOCTRINES: Final[frozenset[str]] = frozenset(
+    {"scouting_map_control"}
+)
+"""Strategy profiles that intentionally modulate non-production managers only."""
+
+ACTUAL_PRODUCTION_ITEM_ALIASES: Final[Mapping[str, str]] = {
+    "TERRAN_SUPPLYDEPOT": "SupplyDepot",
+    "TERRAN_BARRACKS": "Barracks",
+    "TERRAN_BARRACKSTECHLAB": "BarracksTechLab",
+    "TERRAN_FACTORY": "Factory",
+    "TERRAN_FACTORYTECHLAB": "FactoryTechLab",
+    "TERRAN_STARPORT": "Starport",
+    "TERRAN_STARPORTREACTOR": "StarportReactor",
+    "TERRAN_COMMANDCENTER": "CommandCenter",
+    "TERRAN_ENGINEERINGBAY": "EngineeringBay",
+    "TERRAN_MARINE": "Marine",
+    "TERRAN_MARAUDER": "Marauder",
+    "TERRAN_REAPER": "Reaper",
+    "TERRAN_HELLION": "Hellion",
+    "TERRAN_CYCLONE": "Cyclone",
+    "TERRAN_THOR": "Thor",
+    "TERRAN_SIEGETANK": "SiegeTank",
+    "TERRAN_MEDIVAC": "Medivac",
+    "TERRAN_VIKINGFIGHTER": "Viking",
+}
+"""Raw s2client-api/MicroMachine item names normalized to DSL evidence names."""
 
 
 @dataclass(frozen=True)
@@ -73,10 +124,12 @@ class MicroMachineSoakConfig:
     telemetry_stall_seconds: int = 90
     production_deadlock_frame: int = 9_000
     production_stall_frames: int = 6_000
+    supply_recovery_grace_frames: int = 672
     income_stall_frames: int = 2_000
     bootstrap_no_start_units_frame: int = 1_200
     max_placement_failures: int = 3
     max_worker_self_position_blocks: int = 0
+    max_worker_repeat_order_suppressions: int = 0
     modulation_consumption_grace_frames: int = 128
     require_macro_evidence: bool = True
     require_manager_intervention: bool = True
@@ -92,6 +145,7 @@ class MicroMachineSoakConfig:
         _require_positive("telemetry_stall_seconds", self.telemetry_stall_seconds)
         _require_positive("production_deadlock_frame", self.production_deadlock_frame)
         _require_positive("production_stall_frames", self.production_stall_frames)
+        _require_positive("supply_recovery_grace_frames", self.supply_recovery_grace_frames)
         _require_positive("income_stall_frames", self.income_stall_frames)
         _require_positive("bootstrap_no_start_units_frame", self.bootstrap_no_start_units_frame)
         _require_positive(
@@ -105,6 +159,14 @@ class MicroMachineSoakConfig:
             or self.max_worker_self_position_blocks < 0
         ):
             raise ValueError("max_worker_self_position_blocks must be a non-negative integer.")
+        if (
+            type(self.max_worker_repeat_order_suppressions) is bool
+            or not isinstance(self.max_worker_repeat_order_suppressions, int)
+            or self.max_worker_repeat_order_suppressions < 0
+        ):
+            raise ValueError(
+                "max_worker_repeat_order_suppressions must be a non-negative integer."
+            )
         object.__setattr__(
             self,
             "expected_profile_tags",
@@ -138,10 +200,12 @@ class MicroMachineSoakConfig:
             "telemetry_stall_seconds": self.telemetry_stall_seconds,
             "production_deadlock_frame": self.production_deadlock_frame,
             "production_stall_frames": self.production_stall_frames,
+            "supply_recovery_grace_frames": self.supply_recovery_grace_frames,
             "income_stall_frames": self.income_stall_frames,
             "bootstrap_no_start_units_frame": self.bootstrap_no_start_units_frame,
             "max_placement_failures": self.max_placement_failures,
             "max_worker_self_position_blocks": self.max_worker_self_position_blocks,
+            "max_worker_repeat_order_suppressions": self.max_worker_repeat_order_suppressions,
             "modulation_consumption_grace_frames": self.modulation_consumption_grace_frames,
             "require_macro_evidence": self.require_macro_evidence,
             "require_manager_intervention": self.require_manager_intervention,
@@ -357,6 +421,14 @@ def classify_micromachine_soak(
     if worker_root_cause_contract_failure is not None:
         failures.append(worker_root_cause_contract_failure)
 
+    worker_repeat_order_failure = _classify_worker_repeat_order_suppressions(
+        telemetry,
+        telemetry_archive,
+        resolved_config.max_worker_repeat_order_suppressions,
+    )
+    if worker_repeat_order_failure is not None:
+        failures.append(worker_repeat_order_failure)
+
     worker_self_position_failure = _classify_worker_self_position_blocks(
         telemetry,
         telemetry_archive,
@@ -384,6 +456,17 @@ def classify_micromachine_soak(
                 },
             )
         )
+
+    supply_block_failure = _classify_unrecovered_supply_block(
+        log_text,
+        telemetry,
+        telemetry_archive,
+        latest_frame,
+        resolved_config.target_frame,
+        resolved_config.supply_recovery_grace_frames,
+    )
+    if supply_block_failure is not None:
+        failures.append(supply_block_failure)
 
     macro_evidence_ok = has_required_macro_evidence(log_text)
     if (
@@ -522,6 +605,15 @@ def classify_micromachine_soak(
     )
     if strategy_consumption_failure is not None:
         failures.append(strategy_consumption_failure)
+    tactical_actual_command_failure = _classify_expected_tactical_actual_commands(
+        observation,
+        telemetry,
+        telemetry_archive,
+        latest_frame,
+        resolved_config,
+    )
+    if tactical_actual_command_failure is not None:
+        failures.append(tactical_actual_command_failure)
 
     target_reached = latest_frame >= resolved_config.target_frame
     status = "passed" if target_reached and macro_evidence_ok and manager_intervention_ok and not failures else "failed"
@@ -580,6 +672,200 @@ def missing_macro_evidence(log_text: str) -> list[str]:
     return missing
 
 
+def _classify_unrecovered_supply_block(
+    log_text: str,
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+    latest_frame: int,
+    target_frame: int,
+    grace_frames: int,
+) -> MicroMachineSoakFailure | None:
+    supply_block_frames = _log_frames_for_term(log_text, SUPPLY_BLOCK_TERM)
+    latest_log_supply_recovery_frame = _last_log_frame_for_terms(
+        log_text,
+        SUPPLY_RECOVERY_TERMS,
+    )
+    latest_log_supply_command_frame = _last_log_frame_for_terms(
+        log_text,
+        SUPPLY_PROVIDER_COMMAND_TERMS,
+    )
+    supply_evidence = _production_supply_recovery_evidence(
+        [*telemetry_archive, latest_telemetry]
+    )
+    telemetry_supply_block_frame = _int_value(supply_evidence.get("last_supply_block_frame"))
+    telemetry_supply_command_frame = _int_value(
+        supply_evidence.get("last_supply_provider_command_frame")
+    )
+    telemetry_supply_recovery_frame = _int_value(
+        supply_evidence.get("last_supply_recovery_frame")
+    )
+    latest_supply_block_frame = max(
+        supply_block_frames[-1] if supply_block_frames else 0,
+        telemetry_supply_block_frame,
+    )
+    if latest_supply_block_frame <= 0:
+        return None
+
+    latest_supply_recovery_frame = max(
+        latest_log_supply_recovery_frame or 0,
+        telemetry_supply_recovery_frame,
+    )
+    latest_supply_command_frame = max(
+        latest_log_supply_command_frame or 0,
+        telemetry_supply_command_frame,
+    )
+    under_construction_count = _int_value(
+        supply_evidence.get("supply_provider_under_construction_count")
+    )
+    supply_blocked_frames = max(
+        len(supply_block_frames),
+        _int_value(supply_evidence.get("supply_blocked_frames")),
+    )
+    base_evidence: dict[str, object] = {
+        **supply_evidence,
+        "latest_frame": latest_frame,
+        "supply_block_log_count": len(supply_block_frames),
+        "supply_blocked_frames": supply_blocked_frames,
+        "latest_supply_block_frame": latest_supply_block_frame,
+        "latest_supply_recovery_frame": latest_supply_recovery_frame,
+        "latest_supply_provider_command_frame": latest_supply_command_frame,
+        "target_frame": target_frame,
+        "supply_recovery_grace_frames": grace_frames,
+    }
+    if latest_frame >= target_frame:
+        if latest_supply_command_frame >= latest_supply_block_frame:
+            return None
+        if under_construction_count > 0 and latest_supply_recovery_frame >= latest_supply_block_frame:
+            return None
+        if latest_supply_recovery_frame >= latest_supply_block_frame:
+            return MicroMachineSoakFailure(
+                code="supply_recovery_pending_at_target",
+                message=(
+                    "ProductionManager reached the target frame while the latest supply block "
+                    "only had queued recovery evidence, not a subsequent SupplyDepot command "
+                    "or under-construction confirmation."
+                ),
+                evidence=base_evidence,
+            )
+        return MicroMachineSoakFailure(
+            code="supply_block_unrecovered",
+            message=(
+                "ProductionManager reached the target frame with unresolved supply-block "
+                "evidence and no recovery queue, SupplyDepot build command, or "
+                "under-construction evidence."
+            ),
+            evidence=base_evidence,
+        )
+    if latest_frame < latest_supply_block_frame + grace_frames:
+        return None
+    if latest_supply_command_frame >= latest_supply_block_frame:
+        return None
+    if under_construction_count > 0 and latest_supply_recovery_frame >= latest_supply_block_frame:
+        return None
+    if latest_supply_recovery_frame >= latest_supply_block_frame:
+        return MicroMachineSoakFailure(
+            code="supply_recovery_command_missing",
+            message=(
+                "ProductionManager detected supply block and queued/reported recovery, "
+                "but no subsequent SupplyDepot build command or under-construction "
+                "evidence appeared within the grace window."
+            ),
+            evidence=base_evidence,
+        )
+    return MicroMachineSoakFailure(
+        code="supply_block_unrecovered",
+        message=(
+            "ProductionManager emitted supply-block evidence without recovery queue, "
+            "SupplyDepot build command, or under-construction evidence."
+        ),
+        evidence=base_evidence,
+    )
+
+
+def _production_supply_recovery_evidence(
+    telemetry_entries: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    evidence: dict[str, object] = {
+        "telemetry_contract_seen": False,
+        "last_supply_recovery_status": "none",
+        "last_supply_recovery_reason": "none",
+        "supply_recovery_queued_count": 0,
+        "last_supply_recovery_frame": 0,
+        "last_supply_block_frame": 0,
+        "supply_provider_under_construction_count": 0,
+        "last_supply_provider_command_frame": 0,
+        "last_supply_provider_command_kind": "none",
+        "last_supply_provider_command_update_id": "",
+        "supply_blocked_frames": 0,
+    }
+    for entry in telemetry_entries:
+        managers = entry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        production = managers.get("ProductionManager")
+        if not isinstance(production, Mapping):
+            continue
+        if "last_supply_block_frame" in production or "supply_blocked_frames" in production:
+            evidence["telemetry_contract_seen"] = True
+        evidence["supply_blocked_frames"] = max(
+            _int_value(evidence.get("supply_blocked_frames")),
+            _int_value(production.get("supply_blocked_frames")),
+        )
+        for key in (
+            "last_supply_block_frame",
+            "last_supply_recovery_frame",
+            "last_supply_provider_command_frame",
+            "supply_recovery_queued_count",
+            "supply_provider_under_construction_count",
+        ):
+            value = _int_value(production.get(key))
+            if value >= _int_value(evidence.get(key)):
+                evidence[key] = value
+                if key == "last_supply_recovery_frame":
+                    evidence["last_supply_recovery_status"] = str(
+                        production.get("last_supply_recovery_status", "none") or "none"
+                    )
+                    evidence["last_supply_recovery_reason"] = str(
+                        production.get("last_supply_recovery_reason", "none") or "none"
+                    )
+                elif key == "last_supply_provider_command_frame":
+                    evidence["last_supply_provider_command_kind"] = str(
+                        production.get("last_supply_provider_command_kind", "none") or "none"
+                    )
+                    evidence["last_supply_provider_command_update_id"] = str(
+                        production.get("last_supply_provider_command_update_id", "") or ""
+                    )
+        item = _canonical_actual_production_item(
+            production.get("last_actual_production_command_item", "")
+        )
+        if item == "SupplyDepot":
+            frame = _int_value(production.get("last_actual_production_command_frame"))
+            if frame >= _int_value(evidence.get("last_supply_provider_command_frame")):
+                evidence["last_supply_provider_command_frame"] = frame
+                evidence["last_supply_provider_command_kind"] = str(
+                    production.get("last_actual_production_command_kind", "none") or "none"
+                )
+                evidence["last_supply_provider_command_update_id"] = str(
+                    production.get("last_actual_production_command_update_id", "") or ""
+                )
+    return evidence
+
+
+def _log_frames_for_term(log_text: str, term: str) -> list[int]:
+    frames: list[int] = []
+    seen: set[int] = set()
+    current_frame = 0
+    for line in log_text.splitlines():
+        parsed_frame = _log_frame(line)
+        if parsed_frame is not None:
+            current_frame = parsed_frame
+        if term not in line or current_frame <= 0 or current_frame in seen:
+            continue
+        seen.add(current_frame)
+        frames.append(current_frame)
+    return frames
+
+
 def build_artifact_manifest(observation: MicroMachineSoakObservation) -> dict[str, str]:
     """Return deterministic relative artifact names for archive/sign-off."""
 
@@ -627,6 +913,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=defaults.production_stall_frames,
     )
     parser.add_argument(
+        "--supply-recovery-grace-frames",
+        type=int,
+        default=defaults.supply_recovery_grace_frames,
+    )
+    parser.add_argument(
         "--income-stall-frames",
         type=int,
         default=defaults.income_stall_frames,
@@ -651,6 +942,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=defaults.max_worker_self_position_blocks,
     )
+    parser.add_argument(
+        "--max-worker-repeat-order-suppressions",
+        type=int,
+        default=defaults.max_worker_repeat_order_suppressions,
+    )
     parser.add_argument("--bot-exit-code", type=int)
     parser.add_argument("--bot-stopped", action="store_true")
     parser.add_argument("--termination-reason")
@@ -672,10 +968,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         telemetry_stall_seconds=args.telemetry_stall_seconds,
         production_deadlock_frame=args.production_deadlock_frame,
         production_stall_frames=args.production_stall_frames,
+        supply_recovery_grace_frames=args.supply_recovery_grace_frames,
         income_stall_frames=args.income_stall_frames,
         bootstrap_no_start_units_frame=args.bootstrap_no_start_units_frame,
         max_placement_failures=args.max_placement_failures,
         max_worker_self_position_blocks=args.max_worker_self_position_blocks,
+        max_worker_repeat_order_suppressions=args.max_worker_repeat_order_suppressions,
         modulation_consumption_grace_frames=args.modulation_consumption_grace_frames,
         expected_profile_tags=tuple(
             item for item in args.expected_profile_tags.split() if item
@@ -831,6 +1129,8 @@ def _classify_worker_root_cause_telemetry_contract(
         "last_trace_status",
         "last_trace_reason",
         "last_trace_target_kind",
+        "last_trace_target_tag",
+        "last_trace_distance_sq",
     )
     telemetry_entries = [entry for entry in (*telemetry_archive, latest_telemetry) if entry]
     for telemetry in telemetry_entries:
@@ -923,7 +1223,30 @@ def _classify_worker_self_position_blocks(
             continue
         count = _int_value(workers.get("self_position_command_block_count"))
         root_cause_status = workers.get("root_cause_status")
-        if count <= worst_count and root_cause_status != "self_position_move_blocked":
+        trace_status = str(workers.get("last_trace_status", "") or "")
+        trace_target_kind = str(workers.get("last_trace_target_kind", "") or "")
+        trace_target_tag = _int_value(workers.get("last_trace_target_tag"))
+        trace_distance_sq = _float_value(workers.get("last_trace_distance_sq"))
+        accepted_near_self_position = (
+            trace_status == "accepted_candidate"
+            and trace_target_tag == 0
+            and trace_distance_sq <= 1.0
+            and trace_target_kind
+            in {
+                "ability_position",
+                "build_position",
+                "micro_smart_move_position",
+                "queued_position",
+                "unit_move_position",
+                "unit_move_tile_position",
+                "unit_smart_position",
+            }
+        )
+        if (
+            count <= worst_count
+            and root_cause_status != "self_position_move_blocked"
+            and not accepted_near_self_position
+        ):
             continue
         worst_count = max(worst_count, count)
         worst_evidence = {
@@ -940,14 +1263,66 @@ def _classify_worker_self_position_blocks(
             "distance_sq": workers.get("last_self_position_distance_sq"),
             "current_order_ability": workers.get("last_worker_current_order_ability"),
             "current_order_target_tag": workers.get("last_worker_current_order_target_tag"),
+            "last_trace_status": trace_status,
+            "last_trace_target_kind": trace_target_kind,
+            "last_trace_target_tag": trace_target_tag,
+            "last_trace_distance_sq": trace_distance_sq,
         }
 
-    if worst_count > max_allowed or worst_evidence.get("root_cause_status") == "self_position_move_blocked":
+    if (
+        worst_count > max_allowed
+        or worst_evidence.get("root_cause_status") == "self_position_move_blocked"
+        or worst_evidence.get("last_trace_status") == "accepted_candidate"
+    ):
         return MicroMachineSoakFailure(
             code="worker_self_position_command",
             message=(
-                "WorkerManager generated a move/smart command to the worker's own "
-                "position; this is a root-cause bug, not a successful repeat guard."
+                "WorkerManager accepted a position command at the worker's own "
+                "position; this is a root-cause bug, not successful evidence."
+            ),
+            evidence=worst_evidence,
+        )
+    return None
+
+
+def _classify_worker_repeat_order_suppressions(
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+    max_allowed: int,
+) -> MicroMachineSoakFailure | None:
+    worst_count = 0
+    worst_evidence: dict[str, object] = {}
+    for telemetry in (*telemetry_archive, latest_telemetry):
+        managers = telemetry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        workers = managers.get("WorkerManager")
+        if not isinstance(workers, Mapping):
+            continue
+        count = _int_value(workers.get("repeat_order_suppressed_count"))
+        if count <= worst_count:
+            continue
+        worst_count = count
+        worst_evidence = {
+            "frame": _int_value(telemetry.get("frame")),
+            "repeat_order_suppressed_count": count,
+            "max_worker_repeat_order_suppressions": max_allowed,
+            "root_cause_status": workers.get("root_cause_status"),
+            "root_cause_reason": workers.get("root_cause_reason"),
+            "worker_tag": workers.get("last_repeat_order_worker_tag"),
+            "ability": workers.get("last_repeat_order_ability"),
+            "target_kind": workers.get("last_repeat_order_target_kind"),
+            "target_tag": workers.get("last_repeat_order_target_tag"),
+            "target_x": workers.get("last_repeat_order_target_x"),
+            "target_y": workers.get("last_repeat_order_target_y"),
+        }
+
+    if worst_count > max_allowed:
+        return MicroMachineSoakFailure(
+            code="worker_repeat_order_suppression",
+            message=(
+                "WorkerManager had to suppress repeated worker commands; this means "
+                "a root-cause command generator is still reissuing duplicate orders."
             ),
             evidence=worst_evidence,
         )
@@ -1004,6 +1379,14 @@ def _int_value(value: object) -> int:
     if isinstance(value, int):
         return max(value, 0)
     return 0
+
+
+def _float_value(value: object) -> float:
+    if type(value) is bool:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return max(float(value), 0.0)
+    return 0.0
 
 
 def _telemetry_recent(
@@ -1194,7 +1577,7 @@ def _manager_intervention_ok(
 ) -> bool:
     entries = [*telemetry_archive, latest_telemetry]
     combat_seen = False
-    production_seen = False
+    production_seen = not _requires_production_intervention(config)
     scout_seen = False
     active_policy_seen = False
     latest_update_id = latest_update.get("update_id")
@@ -1224,6 +1607,16 @@ def _manager_intervention_ok(
         if isinstance(scout, Mapping) and scout.get("bounded_intervention") is True:
             scout_seen = True
     return combat_seen and production_seen and scout_seen and active_policy_seen
+
+
+def _requires_production_intervention(config: MicroMachineSoakConfig) -> bool:
+    """Return whether the configured profile must prove ProductionManager action."""
+
+    return not (
+        config.expected_strategy_doctrine in NON_PRODUCTION_STRATEGY_DOCTRINES
+        and not config.expected_production_actions
+        and not config.expected_production_items
+    )
 
 
 def _production_doctrine_action_seen(
@@ -1281,6 +1674,8 @@ def _classify_expected_strategy_consumption(
         and not expected_actions
         and not expected_items
     ):
+        return None
+    if not _requires_production_intervention(config):
         return None
 
     best: Mapping[str, object] | None = None
@@ -1359,7 +1754,32 @@ def _classify_expected_strategy_consumption(
             break
 
     if best is not None:
-        return None
+        expected_actual_items = _expected_actual_production_items(config)
+        actual_seen, observed_actual_items, observed_actual_commands = (
+            _expected_actual_production_command_seen(
+                (*telemetry_archive, latest_telemetry),
+                expected_update_id=expected_update_id,
+                min_command_frame=min_doctrine_frame,
+                expected_items=expected_actual_items,
+            )
+        )
+        if actual_seen:
+            return None
+        return MicroMachineSoakFailure(
+            code="strategy_actual_command_missing",
+            message=(
+                "ProductionManager consumed the expected strategy, but no matching "
+                "actual build/train/morph/upgrade command was observed for that "
+                "strategy and update."
+            ),
+            evidence={
+                "expected_strategy_doctrine": expected_doctrine,
+                "expected_actual_production_items": sorted(expected_actual_items),
+                "observed_actual_items": sorted(observed_actual_items),
+                "observed_actual_commands": sorted(observed_actual_commands),
+                "latest_policy_update_id": expected_update_id,
+            },
+        )
 
     return MicroMachineSoakFailure(
         code="strategy_consumption_mismatch",
@@ -1376,6 +1796,248 @@ def _classify_expected_strategy_consumption(
             "observed_items": sorted(observed_items),
         },
     )
+
+
+def _expected_actual_production_items(config: MicroMachineSoakConfig) -> set[str]:
+    if config.expected_strategy_doctrine in EXPECTED_ACTUAL_PRODUCTION_ITEMS_BY_DOCTRINE:
+        return set(EXPECTED_ACTUAL_PRODUCTION_ITEMS_BY_DOCTRINE[config.expected_strategy_doctrine])
+    return {_canonical_actual_production_item(item) for item in config.expected_production_items}
+
+
+def _canonical_actual_production_item(item: object) -> str:
+    raw = str(item or "").strip()
+    return ACTUAL_PRODUCTION_ITEM_ALIASES.get(raw, raw)
+
+
+def _expected_actual_production_command_seen(
+    telemetry_entries: Sequence[Mapping[str, object]],
+    *,
+    expected_update_id: str,
+    min_command_frame: int,
+    expected_items: set[str],
+) -> tuple[bool, set[str], set[str]]:
+    observed_actual_items: set[str] = set()
+    observed_actual_commands: set[str] = set()
+    for entry in telemetry_entries:
+        managers = entry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        production = managers.get("ProductionManager")
+        if not isinstance(production, Mapping):
+            continue
+        item = _canonical_actual_production_item(
+            production.get("last_actual_production_command_item", "")
+        )
+        kind = str(production.get("last_actual_production_command_kind", "") or "")
+        update_id = str(production.get("last_actual_production_command_update_id", "") or "")
+        frame = _int_value(production.get("last_actual_production_command_frame"))
+        count = _int_value(production.get("actual_production_command_issued_count"))
+        if item and item != "none":
+            observed_actual_items.add(item)
+        if item and item != "none" and kind and kind != "none":
+            observed_actual_commands.add(f"{kind}|{item}")
+        if (
+            count > 0
+            and (not expected_update_id or update_id == expected_update_id)
+            and (not expected_items or item in expected_items)
+            and frame > 0
+            and (min_command_frame <= 0 or frame >= min_command_frame)
+        ):
+            return True, observed_actual_items, observed_actual_commands
+    return False, observed_actual_items, observed_actual_commands
+
+
+def _classify_expected_tactical_actual_commands(
+    observation: MicroMachineSoakObservation,
+    latest_telemetry: Mapping[str, object],
+    telemetry_archive: Sequence[Mapping[str, object]],
+    latest_frame: int,
+    config: MicroMachineSoakConfig,
+) -> MicroMachineSoakFailure | None:
+    if latest_frame < config.target_frame or not config.expected_tactical_effects:
+        return None
+
+    expected_effects = set(config.expected_tactical_effects)
+    latest_update = _latest_modulation_update(observation)
+    expected_update_id = str(latest_update.get("update_id", "") or "")
+    min_command_frame = _int_value(latest_update.get("issued_at_frame"))
+    failures: list[str] = []
+    evidence: dict[str, object] = {
+        "expected_tactical_effects": sorted(expected_effects),
+        "latest_policy_update_id": expected_update_id,
+        "min_command_frame": min_command_frame,
+    }
+    pressure_like_effects = {"pressure", "contain", "harass", "target_priority"}
+    if expected_effects & pressure_like_effects:
+        combat_seen, combat_evidence = _actual_combat_command_seen(
+            (*telemetry_archive, latest_telemetry),
+            expected_update_id=expected_update_id,
+            min_command_frame=min_command_frame,
+        )
+        evidence["combat"] = combat_evidence
+        if not combat_seen:
+            failures.append("combat_actual_command")
+    if "scout" in expected_effects:
+        scout_seen, scout_evidence = _actual_scout_command_seen(
+            (*telemetry_archive, latest_telemetry),
+            expected_update_id=expected_update_id,
+            min_command_frame=min_command_frame,
+        )
+        evidence["scout"] = scout_evidence
+        if not scout_seen:
+            failures.append("scout_actual_command")
+
+    if not failures:
+        return None
+    return MicroMachineSoakFailure(
+        code="tactical_actual_command_missing",
+        message=(
+            "Expected tactical effects were observed as manager bias/intent, but "
+            "matching MicroMachine command-level evidence was missing."
+        ),
+        evidence={**evidence, "missing": failures},
+    )
+
+
+def _actual_combat_command_seen(
+    telemetry_entries: Sequence[Mapping[str, object]],
+    *,
+    expected_update_id: str,
+    min_command_frame: int,
+) -> tuple[bool, dict[str, object]]:
+    best: dict[str, object] = {}
+    observed_actions: list[str] = []
+    for entry in telemetry_entries:
+        managers = entry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        commander = managers.get("GameCommander")
+        combat = managers.get("CombatCommander")
+        if not isinstance(commander, Mapping) or not isinstance(combat, Mapping):
+            continue
+        update_id = str(commander.get("update_id", "") or "")
+        action = str(combat.get("last_issued_action", "") or "")
+        frame = _int_value(combat.get("last_action_frame"))
+        count = _int_value(combat.get("actual_command_issued_count"))
+        if action:
+            observed_actions.append(action)
+        best = {
+            "frame": _int_value(entry.get("frame")),
+            "update_id": update_id,
+            "actual_command_issued_count": count,
+            "last_action_frame": frame,
+            "last_issued_action": action,
+            "main_attack_order_status": combat.get("main_attack_order_status"),
+        }
+        if (
+            count > 0
+            and action
+            and (not expected_update_id or update_id == expected_update_id)
+            and frame > 0
+            and (min_command_frame <= 0 or frame >= min_command_frame)
+        ):
+            return True, best
+    best["observed_actions"] = observed_actions[-8:]
+    return False, best
+
+
+def _actual_scout_command_seen(
+    telemetry_entries: Sequence[Mapping[str, object]],
+    *,
+    expected_update_id: str,
+    min_command_frame: int,
+) -> tuple[bool, dict[str, object]]:
+    best: dict[str, object] = {}
+    observed_commands: list[str] = []
+    for entry in telemetry_entries:
+        managers = entry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        commander = managers.get("GameCommander")
+        scout = managers.get("ScoutManager")
+        workers = managers.get("WorkerManager")
+        update_id = (
+            str(commander.get("update_id", "") or "") if isinstance(commander, Mapping) else ""
+        )
+        if isinstance(scout, Mapping):
+            command = str(scout.get("last_actual_command", "") or "")
+            frame = _int_value(scout.get("last_actual_command_frame"))
+            count = _int_value(scout.get("actual_command_issued_count"))
+            depth_ok, depth_evidence = _scout_depth_progress_satisfied(scout)
+            if command:
+                observed_commands.append(command)
+            best = {
+                "frame": _int_value(entry.get("frame")),
+                "update_id": update_id,
+                "actual_command_issued_count": count,
+                "last_actual_command_frame": frame,
+                "last_actual_command": command,
+                "status": scout.get("status"),
+                **depth_evidence,
+            }
+            if (
+                count > 0
+                and command
+                and depth_ok
+                and (not expected_update_id or update_id == expected_update_id)
+                and frame > 0
+                and (min_command_frame <= 0 or frame >= min_command_frame)
+            ):
+                return True, best
+        if isinstance(workers, Mapping):
+            reason = str(workers.get("last_trace_reason", "") or "")
+            status = str(workers.get("last_trace_status", "") or "")
+            frame = _int_value(workers.get("last_trace_frame"))
+            if reason.startswith("scout_"):
+                observed_commands.append(f"{status}|{reason}")
+            fallback = {
+                "frame": _int_value(entry.get("frame")),
+                "update_id": update_id,
+                "last_trace_frame": frame,
+                "last_trace_status": status,
+                "last_trace_reason": reason,
+                "last_trace_target_kind": workers.get("last_trace_target_kind"),
+                "source": "WorkerManager scout trace fallback",
+            }
+            if (
+                reason.startswith("scout_")
+                and status == "accepted_candidate"
+                and (not expected_update_id or update_id == expected_update_id)
+                and frame > 0
+                and (min_command_frame <= 0 or frame >= min_command_frame)
+            ):
+                fallback["depth_progress_required"] = True
+            if not best:
+                best = fallback
+    best["observed_commands"] = observed_commands[-8:]
+    return False, best
+
+
+def _scout_depth_progress_satisfied(scout: Mapping[str, object]) -> tuple[bool, dict[str, object]]:
+    """Require visible scout progress, not only a command emission.
+
+    A short command near home can still increment MicroMachine command counters.
+    Production sign-off needs evidence that the scout either left the main area
+    or reached enemy/deep scouting space.
+    """
+
+    last_target_distance = _float_value(scout.get("last_target_distance"))
+    max_home_distance = _float_value(scout.get("max_home_distance"))
+    min_enemy_base_distance = _float_value(scout.get("min_enemy_base_distance"))
+    deep_scout_frame_count = _int_value(scout.get("deep_scout_frame_count"))
+    evidence = {
+        "last_target_distance": last_target_distance,
+        "max_home_distance": max_home_distance,
+        "min_enemy_base_distance": min_enemy_base_distance,
+        "deep_scout_frame_count": deep_scout_frame_count,
+    }
+    if deep_scout_frame_count >= 16:
+        return True, evidence
+    if min_enemy_base_distance > 0.0 and min_enemy_base_distance <= 18.0:
+        return True, evidence
+    if max_home_distance >= 22.0 and last_target_distance >= 18.0:
+        return True, evidence
+    return False, evidence
 
 
 def _classify_stale_modulation(

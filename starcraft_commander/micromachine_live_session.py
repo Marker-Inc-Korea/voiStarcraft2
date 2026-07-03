@@ -350,6 +350,7 @@ class MicroMachineLiveTextSession:
             PolicyOverrideLevel.DIRECTIVE,
             PolicyOverrideLevel.EMERGENCY,
         ),
+        commander_context: Mapping[str, object] | None = None,
         tags: Sequence[str] = (),
     ) -> LiveTextModulationResult:
         """Compile and publish one live user text command."""
@@ -357,11 +358,15 @@ class MicroMachineLiveTextSession:
         text = _require_text("command_text", command_text)
         frame = self._resolve_current_frame(current_frame)
         telemetry_before = self._safe_read_latest_telemetry()
+        context = {"bridge_status": self.bridge_status.value}
+        if commander_context is not None:
+            context.update(dict(commander_context))
+        context["bridge_status"] = self.bridge_status.value
         request = PolicyModulationProviderRequest(
             command_text=text,
             source=getattr(self.provider, "source", PolicyModulationSource.LLM),
             game_state=_telemetry_game_state(telemetry_before, frame),
-            commander_context={"bridge_status": self.bridge_status.value},
+            commander_context=context,
             allowed_override_levels=tuple(allowed_override_levels),
             tags=tuple(tags),
         )
@@ -587,6 +592,7 @@ def _ensure_live_worker_repeat_order_guard(
         status=compile_result.status,
         source=compile_result.source,
         vector=vector,
+        assistant_message=compile_result.assistant_message,
         warnings=(
             *compile_result.warnings,
             f"live_worker_repeat_order_guard_frames_clamped={guard_frames}->32",

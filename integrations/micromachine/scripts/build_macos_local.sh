@@ -112,6 +112,10 @@ git -C "${MICROMACHINE_DIR}" checkout "${MICROMACHINE_COMMIT}"
 git -C "${MICROMACHINE_DIR}" reset --hard "${MICROMACHINE_COMMIT}"
 safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
 git -C "${MICROMACHINE_DIR}" submodule update --init --recursive
+# The upstream MicroMachine commit contains a legacy non-UTF-8 comment divider
+# in BuildingManager.cpp. Normalize it before applying our UTF-8 patch bundle so
+# the canonical patch remains readable by tests and review tools.
+perl -0pi -e 's/\xAF{8,}/---------------/g' "${MICROMACHINE_DIR}/src/BuildingManager.cpp"
 git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"

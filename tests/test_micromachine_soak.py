@@ -60,6 +60,10 @@ def _telemetry(
                 "active": True,
                 "bounded_intervention": True,
                 "aggression": 0.55,
+                "actual_command_issued_count": 3,
+                "last_action_frame": 6_260,
+                "last_issued_action": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
+                "main_attack_order_status": "Attack",
             },
             "ProductionManager": {
                 "active": True,
@@ -75,6 +79,22 @@ def _telemetry(
                 "last_doctrine_update_id": update_id,
                 "last_doctrine_frame": 6_200,
                 "last_doctrine_fresh": True,
+                "actual_production_command_issued_count": 1,
+                "last_actual_production_command": "train_command|Marine",
+                "last_actual_production_command_kind": "train_command",
+                "last_actual_production_command_item": "Marine",
+                "last_actual_production_command_update_id": update_id,
+                "last_actual_production_command_frame": 6_240,
+                "supply_blocked_frames": 0,
+                "last_supply_block_frame": 0,
+                "supply_recovery_queued_count": 0,
+                "last_supply_recovery_frame": 0,
+                "last_supply_recovery_status": "none",
+                "last_supply_recovery_reason": "none",
+                "supply_provider_under_construction_count": 0,
+                "last_supply_provider_command_frame": 0,
+                "last_supply_provider_command_kind": "none",
+                "last_supply_provider_command_update_id": "",
                 "consumed_axes": (
                     "strategy.doctrine,production.queue_biases.*,"
                     "production.composition_biases.*,"
@@ -85,6 +105,15 @@ def _telemetry(
                 "active": True,
                 "bounded_intervention": True,
                 "scout_priority": 0.7,
+                "actual_command_issued_count": 3,
+                "last_actual_command": "move|scout_enemy_region_known_move|x=33.5|y=138.5",
+                "last_actual_command_frame": 6_260,
+                "last_target_distance": 30.0,
+                "last_home_distance": 24.0,
+                "max_home_distance": 32.0,
+                "last_enemy_base_distance": 14.0,
+                "min_enemy_base_distance": 14.0,
+                "deep_scout_frame_count": 24,
             },
             "WorkerManager": {
                 "active": True,
@@ -100,6 +129,8 @@ def _telemetry(
                 "last_trace_status": "accepted_candidate",
                 "last_trace_reason": "mineral_assignment",
                 "last_trace_target_kind": "unit",
+                "last_trace_target_tag": 4324589569,
+                "last_trace_distance_sq": 140.0,
             },
         },
     }
@@ -129,9 +160,11 @@ class MicroMachineSoakConfigTest(unittest.TestCase):
         self.assertEqual(12_000, config.target_frame)
         self.assertEqual(9_000, config.production_deadlock_frame)
         self.assertEqual(6_000, config.production_stall_frames)
+        self.assertEqual(672, config.supply_recovery_grace_frames)
         self.assertEqual(2_000, config.income_stall_frames)
         self.assertEqual(1_200, config.bootstrap_no_start_units_frame)
         self.assertEqual(0, config.max_worker_self_position_blocks)
+        self.assertEqual(0, config.max_worker_repeat_order_suppressions)
         self.assertEqual(128, config.modulation_consumption_grace_frames)
         json.dumps(config.to_dict())
 
@@ -143,8 +176,12 @@ class MicroMachineSoakConfigTest(unittest.TestCase):
             MicroMachineSoakConfig(max_placement_failures=0)
         with self.assertRaisesRegex(ValueError, "max_worker_self_position_blocks"):
             MicroMachineSoakConfig(max_worker_self_position_blocks=-1)
+        with self.assertRaisesRegex(ValueError, "max_worker_repeat_order_suppressions"):
+            MicroMachineSoakConfig(max_worker_repeat_order_suppressions=-1)
         with self.assertRaisesRegex(ValueError, "income_stall_frames"):
             MicroMachineSoakConfig(income_stall_frames=0)
+        with self.assertRaisesRegex(ValueError, "supply_recovery_grace_frames"):
+            MicroMachineSoakConfig(supply_recovery_grace_frames=0)
         with self.assertRaisesRegex(ValueError, "bootstrap_no_start_units_frame"):
             MicroMachineSoakConfig(bootstrap_no_start_units_frame=0)
 
@@ -253,6 +290,129 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             )
 
             self.assert_failure_codes(report, {"repeated_placement_failures"})
+
+    def test_rejects_unrecovered_supply_block_after_macro_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production.update(
+                {
+                    "supply_blocked_frames": 18,
+                    "last_supply_block_frame": 10_000,
+                    "supply_recovery_queued_count": 0,
+                    "last_supply_recovery_frame": 0,
+                    "last_supply_recovery_status": "none",
+                    "last_supply_recovery_reason": "none",
+                    "supply_provider_under_construction_count": 0,
+                    "last_supply_provider_command_frame": 0,
+                    "last_supply_provider_command_kind": "none",
+                }
+            )
+            log_text = "\n".join(
+                (
+                    MACRO_LOG,
+                    "10000: manageBuildOrderQueue | Supply blocked | 0x00000007",
+                    "10032: manageBuildOrderQueue | Supply blocked | 0x00000007",
+                    "10112: manageBuildOrderQueue | Supply blocked | 0x00000007",
+                )
+            )
+            self._write_runtime(root, log_text=log_text, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"supply_block_unrecovered"})
+
+    def test_rejects_supply_recovery_pending_at_target_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production.update(
+                {
+                    "supply_blocked_frames": 32,
+                    "last_supply_block_frame": 12_480,
+                    "supply_recovery_queued_count": 6,
+                    "last_supply_recovery_frame": 12_482,
+                    "last_supply_recovery_status": "promoted_existing_queue",
+                    "last_supply_recovery_reason": "supply_block",
+                    "supply_provider_under_construction_count": 0,
+                    "last_supply_provider_command_frame": 10_120,
+                    "last_supply_provider_command_kind": "build_command",
+                }
+            )
+            log_text = "\n".join(
+                (
+                    MACRO_LOG,
+                    "12480: manageBuildOrderQueue | Supply blocked | 0x00000007",
+                    "12482: queueSupplyProviderRecovery | Supply provider recovery queued after supply block. status=promoted_existing_queue reason=supply_block",
+                )
+            )
+            self._write_runtime(root, log_text=log_text, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"supply_recovery_pending_at_target"})
+
+    def test_accepts_supply_block_recovered_by_supply_depot_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production.update(
+                {
+                    "supply_blocked_frames": 4,
+                    "last_supply_block_frame": 10_000,
+                    "supply_recovery_queued_count": 1,
+                    "last_supply_recovery_frame": 10_040,
+                    "last_supply_recovery_status": "queued",
+                    "last_supply_recovery_reason": "supply_block",
+                    "supply_provider_under_construction_count": 0,
+                    "last_supply_provider_command_frame": 10_120,
+                    "last_supply_provider_command_kind": "build_command",
+                    "last_supply_provider_command_update_id": "soak-aggressive-pressure",
+                }
+            )
+            log_text = "\n".join(
+                (
+                    MACRO_LOG,
+                    "10000: manageBuildOrderQueue | Supply blocked | 0x00000007",
+                    "10040: queueSupplyProviderRecovery | Supply provider recovery queued after supply block. status=queued reason=supply_block",
+                    "10120: constructAssignedBuildings | build command type=TERRAN_SUPPLYDEPOT",
+                )
+            )
+            self._write_runtime(root, log_text=log_text, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
 
     def test_detects_telemetry_stall_and_no_production_deadlock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -363,6 +523,45 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             self.assertEqual("idle_recovery_idle_spot", failure.evidence["root_cause_reason"])
             self.assertEqual(123, failure.evidence["worker_tag"])
 
+    def test_detects_accepted_worker_build_position_at_self(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            workers = managers["WorkerManager"]
+            assert isinstance(workers, dict)
+            workers.update(
+                {
+                    "self_position_command_block_count": 0,
+                    "root_cause_status": "none",
+                    "root_cause_reason": "none",
+                    "last_trace_status": "accepted_candidate",
+                    "last_trace_reason": "unlabeled_build_position",
+                    "last_trace_target_kind": "build_position",
+                    "last_trace_target_tag": 0,
+                    "last_trace_distance_sq": 0.001,
+                }
+            )
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"worker_self_position_command"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "worker_self_position_command"
+            ][0]
+            self.assertEqual("build_position", failure.evidence["last_trace_target_kind"])
+            self.assertEqual(0, failure.evidence["last_trace_target_tag"])
+
     def test_detects_missing_worker_root_cause_telemetry_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -382,6 +581,8 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 "last_trace_status": "accepted_candidate",
                 "last_trace_reason": "mineral_assignment",
                 "last_trace_target_kind": "unit",
+                "last_trace_target_tag": 4324589569,
+                "last_trace_distance_sq": 140.0,
             }
             self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
 
@@ -496,6 +697,41 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 failure.evidence["root_cause_reason"],
             )
             self.assertEqual(4350279681, failure.evidence["worker_tag"])
+
+    def test_detects_generic_worker_repeat_order_suppression_root_cause(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            workers = managers["WorkerManager"]
+            assert isinstance(workers, dict)
+            workers["repeat_order_suppressed_count"] = 2
+            workers["last_repeat_order_worker_tag"] = 777
+            workers["last_repeat_order_ability"] = 16
+            workers["last_repeat_order_target_kind"] = "unit_move_position"
+            workers["last_repeat_order_target_x"] = 42.0
+            workers["last_repeat_order_target_y"] = 32.0
+            workers["root_cause_status"] = "duplicate_command_safety_blocked"
+            workers["root_cause_reason"] = "mineral_distance_optimization_move"
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            self.assert_failure_codes(report, {"worker_repeat_order_suppression"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "worker_repeat_order_suppression"
+            ][0]
+            self.assertEqual("mineral_distance_optimization_move", failure.evidence["root_cause_reason"])
+            self.assertEqual(777, failure.evidence["worker_tag"])
 
     def test_detects_archived_scout_duplicate_even_when_latest_is_clean(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -811,8 +1047,8 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
 
     def test_accepts_expected_non_marine_strategy_consumption(self) -> None:
         cases = (
-            ("tank_defensive_hold", "factory_transition", "Factory"),
-            ("mech_transition", "factory_transition", "Factory"),
+            ("tank_defensive_hold", "factory_techlab", "FactoryTechLab"),
+            ("mech_transition", "hellion_harassment", "Hellion"),
             ("drop_harassment", "starport_transition", "Starport"),
             ("expand_macro", "expand_macro", "CommandCenter"),
         )
@@ -831,6 +1067,12 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                     production["last_doctrine_action"] = action
                     production["last_doctrine_queue_item"] = item
                     production["last_doctrine_update_id"] = f"soak-{doctrine}"
+                    production["actual_production_command_issued_count"] = 1
+                    production["last_actual_production_command"] = f"build_command|{item}"
+                    production["last_actual_production_command_kind"] = "build_command"
+                    production["last_actual_production_command_item"] = item
+                    production["last_actual_production_command_update_id"] = f"soak-{doctrine}"
+                    production["last_actual_production_command_frame"] = 6_260
                     self._write_runtime(
                         root,
                         log_text=MACRO_LOG,
@@ -852,6 +1094,311 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                     )
 
                     self.assertTrue(report.ok, report.to_dict())
+
+    def test_accepts_existing_queue_strategy_consumption_with_actual_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-bio_pressure"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["policy_update_id"] = update_id
+            production["strategy_doctrine"] = "bio_pressure"
+            production["last_doctrine"] = "bio_pressure"
+            production["last_doctrine_action"] = "bio_marauder_support"
+            production["last_doctrine_queue_item"] = "Marauder"
+            production["last_doctrine_evidence"] = "queued_existing"
+            production["last_doctrine_update_id"] = update_id
+            production["actual_production_command_issued_count"] = 1
+            production["last_actual_production_command"] = "train_command|Marauder"
+            production["last_actual_production_command_kind"] = "train_command"
+            production["last_actual_production_command_item"] = "Marauder"
+            production["last_actual_production_command_update_id"] = update_id
+            production["last_actual_production_command_frame"] = 6_240
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="bio_pressure",
+                    expected_production_actions=("bio_marauder_support",),
+                    expected_production_items=("Marauder",),
+                ),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+
+    def test_accepts_command_issued_strategy_consumption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-expand_macro"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["policy_update_id"] = update_id
+            production["strategy_doctrine"] = "expand_macro"
+            production["last_doctrine"] = "expand_macro"
+            production["last_doctrine_action"] = "expand_macro"
+            production["last_doctrine_queue_item"] = "CommandCenter"
+            production["last_doctrine_evidence"] = "command_issued"
+            production["last_doctrine_update_id"] = update_id
+            production["last_doctrine_frame"] = 6_240
+            production["actual_production_command_issued_count"] = 1
+            production["last_actual_production_command"] = "build_command|CommandCenter"
+            production["last_actual_production_command_kind"] = "build_command"
+            production["last_actual_production_command_item"] = "CommandCenter"
+            production["last_actual_production_command_update_id"] = update_id
+            production["last_actual_production_command_frame"] = 6_240
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="expand_macro",
+                    expected_production_actions=("expand_macro",),
+                    expected_production_items=("CommandCenter",),
+                ),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+
+    def test_accepts_non_production_scouting_strategy_with_actual_scout_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-scouting_map_control"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["policy_update_id"] = update_id
+            production["strategy_doctrine"] = "scouting_map_control"
+            production["last_doctrine"] = "none"
+            production["last_doctrine_action"] = "none"
+            production["last_doctrine_queue_item"] = "none"
+            production["last_doctrine_evidence"] = "none"
+            production["last_doctrine_update_id"] = ""
+            production["last_doctrine_frame"] = 0
+            production["last_doctrine_fresh"] = False
+            production["actual_production_command_issued_count"] = 0
+            production["last_actual_production_command"] = "none|none"
+            production["last_actual_production_command_kind"] = "none"
+            production["last_actual_production_command_item"] = "none"
+            production["last_actual_production_command_update_id"] = ""
+            production["last_actual_production_command_frame"] = 0
+            managers["ScoutManager"] = {
+                "active": True,
+                "bounded_intervention": True,
+                "scout_priority": 0.9,
+                "status": "Enemy base unknown, exploring",
+                "actual_command_issued_count": 1,
+                "last_actual_command": "move|scout_unknown_far_start_location_move|x=33.5|y=138.5",
+                "last_actual_command_frame": 6_260,
+                "last_target_distance": 42.0,
+                "last_home_distance": 28.0,
+                "max_home_distance": 34.0,
+                "last_enemy_base_distance": 0.0,
+                "min_enemy_base_distance": 0.0,
+                "deep_scout_frame_count": 0,
+                "consumed_axes": "scouting.scout_priority,scouting.risk_tolerance",
+            }
+            self._write_runtime(
+                root,
+                log_text="\n".join((MACRO_LOG, "6260: Scout policy target selected")),
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="scouting_map_control",
+                    expected_tactical_effects=("scout",),
+                ),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+
+    def test_accepts_raw_api_actual_production_command_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-tank_defensive_hold"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["policy_update_id"] = update_id
+            production["policy_issued_at_frame"] = 6_000
+            production["strategy_doctrine"] = "tank_defensive_hold"
+            production["last_doctrine"] = "tank_defensive_hold"
+            production["last_doctrine_action"] = "factory_techlab"
+            production["last_doctrine_queue_item"] = "FactoryTechLab"
+            production["last_doctrine_update_id"] = update_id
+            production["last_doctrine_frame"] = 6_200
+            production["last_doctrine_fresh"] = True
+            production["actual_production_command_issued_count"] = 1
+            production["last_actual_production_command"] = "addon_build_command|TERRAN_FACTORYTECHLAB"
+            production["last_actual_production_command_kind"] = "addon_build_command"
+            production["last_actual_production_command_item"] = "TERRAN_FACTORYTECHLAB"
+            production["last_actual_production_command_update_id"] = update_id
+            production["last_actual_production_command_frame"] = 6_240
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="tank_defensive_hold",
+                    expected_production_actions=("factory_techlab",),
+                    expected_production_items=("FactoryTechLab",),
+                ),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+
+    def test_rejects_tank_strategy_when_only_factory_was_issued(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-tank_defensive_hold"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["policy_update_id"] = update_id
+            production["policy_issued_at_frame"] = 6_000
+            production["strategy_doctrine"] = "tank_defensive_hold"
+            production["last_doctrine"] = "tank_defensive_hold"
+            production["last_doctrine_action"] = "factory_transition"
+            production["last_doctrine_queue_item"] = "Factory"
+            production["last_doctrine_update_id"] = update_id
+            production["last_doctrine_frame"] = 6_200
+            production["last_doctrine_fresh"] = True
+            production["actual_production_command_issued_count"] = 1
+            production["last_actual_production_command"] = "build_command|TERRAN_FACTORY"
+            production["last_actual_production_command_kind"] = "build_command"
+            production["last_actual_production_command_item"] = "TERRAN_FACTORY"
+            production["last_actual_production_command_update_id"] = update_id
+            production["last_actual_production_command_frame"] = 6_240
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="tank_defensive_hold",
+                    expected_production_actions=("factory_transition",),
+                    expected_production_items=("Factory",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"strategy_actual_command_missing"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "strategy_actual_command_missing"
+            ][0]
+            self.assertEqual(
+                ["FactoryTechLab", "SiegeTank"],
+                failure.evidence["expected_actual_production_items"],
+            )
+            self.assertEqual(["Factory"], failure.evidence["observed_actual_items"])
+
+    def test_rejects_expected_strategy_queue_without_actual_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-tank_defensive_hold"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["policy_update_id"] = update_id
+            production["strategy_doctrine"] = "tank_defensive_hold"
+            production["last_doctrine"] = "tank_defensive_hold"
+            production["last_doctrine_action"] = "factory_transition"
+            production["last_doctrine_queue_item"] = "Factory"
+            production["last_doctrine_update_id"] = update_id
+            production["actual_production_command_issued_count"] = 0
+            production["last_actual_production_command"] = "none|none"
+            production["last_actual_production_command_kind"] = "none"
+            production["last_actual_production_command_item"] = "none"
+            production["last_actual_production_command_update_id"] = ""
+            production["last_actual_production_command_frame"] = 0
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="tank_defensive_hold",
+                    expected_production_actions=("factory_transition",),
+                    expected_production_items=("Factory",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"strategy_actual_command_missing"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "strategy_actual_command_missing"
+            ][0]
+            self.assertEqual(
+                ["FactoryTechLab", "SiegeTank"],
+                failure.evidence["expected_actual_production_items"],
+            )
+            self.assertEqual([], failure.evidence["observed_actual_items"])
 
     def test_rejects_expected_strategy_consumption_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -954,6 +1501,60 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             )
 
             self.assert_failure_codes(report, {"strategy_consumption_mismatch"})
+
+    def test_rejects_bio_pressure_support_strategy_with_only_marine_actual_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-bio-pressure-support"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            production = managers["ProductionManager"]
+            assert isinstance(production, dict)
+            production["policy_update_id"] = update_id
+            production["strategy_doctrine"] = "bio_pressure"
+            production["last_doctrine"] = "bio_pressure"
+            production["last_doctrine_action"] = "bio_marauder_support"
+            production["last_doctrine_queue_item"] = "Marauder"
+            production["last_doctrine_evidence"] = "queued"
+            production["last_doctrine_update_id"] = update_id
+            production["last_doctrine_frame"] = 6_200
+            production["last_doctrine_fresh"] = True
+            production["actual_production_command_issued_count"] = 1
+            production["last_actual_production_command"] = "train_command|Marine"
+            production["last_actual_production_command_kind"] = "train_command"
+            production["last_actual_production_command_item"] = "Marine"
+            production["last_actual_production_command_update_id"] = update_id
+            production["last_actual_production_command_frame"] = 6_240
+            self._write_runtime(
+                root,
+                log_text=MACRO_LOG,
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_strategy_doctrine="bio_pressure",
+                    expected_production_actions=("bio_marauder_support",),
+                    expected_production_items=("Marauder",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"strategy_actual_command_missing"})
+            [failure] = [
+                item
+                for item in report.failures
+                if item.code == "strategy_actual_command_missing"
+            ]
+            self.assertNotIn("Marine", failure.evidence["expected_actual_production_items"])
+            self.assertIn("Marauder", failure.evidence["expected_actual_production_items"])
+            self.assertIn("Marine", failure.evidence["observed_actual_items"])
 
     def test_rejects_non_fresh_production_doctrine_false_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1424,6 +2025,154 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             assert report.tactical_evidence is not None
             self.assertEqual("passed", report.tactical_evidence.status)
             self.assertEqual((), report.tactical_evidence.missing_effects)
+
+    def test_rejects_tactical_effect_without_actual_combat_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["actual_command_issued_count"] = 0
+            combat["last_action_frame"] = 0
+            combat["last_issued_action"] = ""
+            managers["Squad"] = {
+                "active": True,
+                "contain_bias": 0.35,
+                "scope_location_intent": "enemy_natural",
+                "selected_target_class": "worker_line",
+                "consumed_axes": "squad.contain_bias,combat.target_priority_biases.*",
+            }
+            log_text = "\n".join(
+                (
+                    MACRO_LOG,
+                    "12450: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+                )
+            )
+            self._write_runtime(root, log_text=log_text, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+
+    def test_accepts_expected_scout_effect_with_scout_command_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            managers["ScoutManager"] = {
+                "active": True,
+                "bounded_intervention": True,
+                "scout_priority": 0.9,
+                "status": "Enemy base unknown, exploring",
+                "actual_command_issued_count": 1,
+                "last_actual_command": "move|scout_unknown_far_start_location_move|x=33.5|y=138.5",
+                "last_actual_command_frame": 6_260,
+                "last_target_distance": 42.0,
+                "last_home_distance": 28.0,
+                "max_home_distance": 34.0,
+                "last_enemy_base_distance": 0.0,
+                "min_enemy_base_distance": 0.0,
+                "deep_scout_frame_count": 0,
+                "consumed_axes": "scouting.scout_priority,scouting.risk_tolerance",
+            }
+            self._write_runtime(
+                root,
+                log_text="\n".join((MACRO_LOG, "6260: Scout policy target selected")),
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("scout",),
+                ),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+
+    def test_rejects_scout_effect_without_actual_scout_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            scout = managers["ScoutManager"]
+            assert isinstance(scout, dict)
+            scout["actual_command_issued_count"] = 0
+            scout["last_actual_command"] = ""
+            scout["last_actual_command_frame"] = 0
+            scout["status"] = "policy scout target selected"
+            self._write_runtime(
+                root,
+                log_text="\n".join((MACRO_LOG, "6260: Scout policy target selected")),
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("scout",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+
+    def test_rejects_shallow_scout_command_without_depth_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            scout = managers["ScoutManager"]
+            assert isinstance(scout, dict)
+            scout["status"] = "Enemy base unknown, shallow command only"
+            scout["actual_command_issued_count"] = 4
+            scout["last_actual_command"] = "move|scout_unknown_start_location_move|x=31.0|y=32.0"
+            scout["last_actual_command_frame"] = 6_260
+            scout["last_target_distance"] = 3.0
+            scout["last_home_distance"] = 2.0
+            scout["max_home_distance"] = 4.0
+            scout["last_enemy_base_distance"] = 0.0
+            scout["min_enemy_base_distance"] = 0.0
+            scout["deep_scout_frame_count"] = 0
+            self._write_runtime(
+                root,
+                log_text="\n".join((MACRO_LOG, "6260: Scout policy target selected")),
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("scout",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
 
     def test_cli_report_serialization_is_stable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

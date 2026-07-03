@@ -249,6 +249,9 @@ expected_strategy_contract() {
     drop_harassment|worker_line_harassment)
       printf '%s\t%s\t%s\n' "${profile}" "starport_transition drop_reactor medivac_drop_support factory_transition hellion_harassment reaper_harassment" "Starport StarportReactor Medivac Factory Hellion Reaper"
       ;;
+    scouting_map_control)
+      printf '%s\t%s\t%s\n' "scouting_map_control" "" ""
+      ;;
     expand_macro|economic_expansion)
       printf '%s\t%s\t%s\n' "expand_macro" "expand_macro" "CommandCenter"
       ;;
@@ -265,7 +268,7 @@ expected_strategy_contract() {
 IFS=$'\t' read -r SMOKE_EXPECTED_STRATEGY_DOCTRINE SMOKE_EXPECTED_PRODUCTION_ACTIONS SMOKE_EXPECTED_PRODUCTION_ITEMS < <(expected_strategy_contract "${SMOKE_STRATEGY_PROFILE_NAME}")
 if [[ -z "${SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE:-}" ]]; then
   case "${SMOKE_STRATEGY_PROFILE_NAME}" in
-    bio_pressure|marine_rush|aggressive_pressure|drop_harassment|worker_line_harassment)
+    bio_pressure|marine_rush|aggressive_pressure|drop_harassment|worker_line_harassment|scouting_map_control)
       SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE=1
       ;;
     *)
@@ -863,7 +866,15 @@ mkdir -p "${BLACKBOARD_DIR}"
 rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}" "${CLASSIFIER_BOT_LOG}" "${RUNTIME_LOG_BASELINE}"
 touch "${RUNTIME_LOG_MARKER}"
 record_runtime_log_baseline
-publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
+if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]]; then
+  publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
+else
+  SMOKE_ACTIVE_STRATEGY_UPDATE_ID="$(smoke_strategy_update_id "${SMOKE_STRATEGY_PROFILE_NAME}" "0")"
+  AGGRESSIVE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
+  DEFENSIVE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
+  publish_profile "${SMOKE_STRATEGY_PROFILE_NAME}" "${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}" "0"
+  AGGRESSIVE_PROFILE_PUBLISHED=1
+fi
 clean_sc2_ports_before_launch
 settle_after_sc2_port_cleanup
 capture_preexisting_sc2_port_pids
@@ -1079,6 +1090,12 @@ for axis in (
 if require_aggressive_combat:
     if combat.get("aggression", 0) <= 0:
         raise SystemExit(f"missing positive aggression evidence: {combat!r}")
+    if int(combat.get("actual_command_issued_count", 0) or 0) <= 0:
+        raise SystemExit(f"missing actual CombatCommander command evidence: {combat!r}")
+    if str(combat.get("last_issued_action", "") or "") in ("", "none"):
+        raise SystemExit(f"missing last issued CombatCommander action evidence: {combat!r}")
+    if int(combat.get("last_action_frame", 0) or 0) <= 0:
+        raise SystemExit(f"missing actual CombatCommander command frame evidence: {combat!r}")
     for axis in (
         "combat.retreat_patience_bias",
         "combat.rally_before_attack_bias",
@@ -1139,26 +1156,49 @@ if require_aggressive_combat:
 production = managers.get("ProductionManager")
 if not production or production.get("active") is not True:
     raise SystemExit(f"missing ProductionManager activity evidence: {managers!r}")
-if production.get("bounded_intervention") is not True:
-    raise SystemExit(f"missing ProductionManager bounded intervention evidence: {production!r}")
-if production.get("policy_update_id") != aggressive_update_id:
-    raise SystemExit(f"ProductionManager did not consume latest aggressive update: {production!r}")
-if production.get("strategy_doctrine") != expected_strategy_doctrine:
-    raise SystemExit(f"ProductionManager did not consume expected strategy doctrine {expected_strategy_doctrine}: {production!r}")
-if production.get("last_doctrine") != expected_strategy_doctrine:
-    raise SystemExit(f"ProductionManager latest doctrine mismatch: {production!r}")
-if production.get("last_doctrine_update_id") != aggressive_update_id:
-    raise SystemExit(f"ProductionManager doctrine action came from stale update: {production!r}")
-if production.get("last_doctrine_fresh") is not True:
-    raise SystemExit(f"ProductionManager doctrine action is not fresh: {production!r}")
-if str(production.get("last_doctrine_action", "") or "") in ("", "none"):
-    raise SystemExit(f"ProductionManager did not queue a doctrine action: {production!r}")
-if str(production.get("last_doctrine_queue_item", "") or "") in ("", "none"):
-    raise SystemExit(f"ProductionManager doctrine action did not queue an item: {production!r}")
-allowed_doctrine_evidence = {"queued"}
-if str(production.get("last_doctrine_evidence", "") or "") not in allowed_doctrine_evidence:
+latest_supply_block_frame = int(production.get("last_supply_block_frame", 0) or 0)
+latest_supply_recovery_frame = int(production.get("last_supply_recovery_frame", 0) or 0)
+latest_supply_provider_command_frame = int(production.get("last_supply_provider_command_frame", 0) or 0)
+supply_provider_under_construction_count = int(production.get("supply_provider_under_construction_count", 0) or 0)
+if (
+    payload.get("frame", 0) >= min_frame
+    and latest_supply_block_frame > 0
+    and latest_supply_provider_command_frame < latest_supply_block_frame
+    and supply_provider_under_construction_count <= 0
+):
+    if latest_supply_recovery_frame >= latest_supply_block_frame:
+        raise SystemExit(
+            "ProductionManager reached target frame with pending supply recovery but "
+            "no subsequent SupplyDepot command or under-construction evidence: "
+            f"{production!r}"
+        )
     raise SystemExit(
-        "ProductionManager doctrine action lacks direct queued evidence: "
+        "ProductionManager reached target frame with unresolved supply block and no "
+        "SupplyDepot recovery evidence: "
+        f"{production!r}"
+    )
+production_contract_required = bool(expected_production_actions or expected_production_items)
+if production_contract_required:
+    if production.get("bounded_intervention") is not True:
+        raise SystemExit(f"missing ProductionManager bounded intervention evidence: {production!r}")
+    if production.get("policy_update_id") != aggressive_update_id:
+        raise SystemExit(f"ProductionManager did not consume latest aggressive update: {production!r}")
+    if production.get("strategy_doctrine") != expected_strategy_doctrine:
+        raise SystemExit(f"ProductionManager did not consume expected strategy doctrine {expected_strategy_doctrine}: {production!r}")
+    if production.get("last_doctrine") != expected_strategy_doctrine:
+        raise SystemExit(f"ProductionManager latest doctrine mismatch: {production!r}")
+    if production.get("last_doctrine_update_id") != aggressive_update_id:
+        raise SystemExit(f"ProductionManager doctrine action came from stale update: {production!r}")
+    if production.get("last_doctrine_fresh") is not True:
+        raise SystemExit(f"ProductionManager doctrine action is not fresh: {production!r}")
+    if str(production.get("last_doctrine_action", "") or "") in ("", "none"):
+        raise SystemExit(f"ProductionManager did not queue a doctrine action: {production!r}")
+    if str(production.get("last_doctrine_queue_item", "") or "") in ("", "none"):
+        raise SystemExit(f"ProductionManager doctrine action did not queue an item: {production!r}")
+allowed_doctrine_evidence = {"queued", "queued_existing", "command_issued"}
+if production_contract_required and str(production.get("last_doctrine_evidence", "") or "") not in allowed_doctrine_evidence:
+    raise SystemExit(
+        "ProductionManager doctrine action lacks live queue evidence: "
         f"{production!r}"
     )
 archive = telemetry.with_name("telemetry.jsonl")
@@ -1219,6 +1259,19 @@ expected_action_item_pairs = {
 }
 expected_pairs = expected_action_item_pairs.get(expected_strategy_doctrine, set())
 
+def iter_telemetry_entries():
+    yield payload
+    if archive.exists():
+        for line in archive.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict):
+                yield entry
+
 def production_matches_expected(production_entry):
     if not isinstance(production_entry, dict):
         return False
@@ -1238,18 +1291,9 @@ def production_matches_expected(production_entry):
     return doctrine_ok and update_ok and fresh_ok and action_ok and item_ok and pair_ok and evidence_ok and frame_ok and action not in ("", "none") and item not in ("", "none")
 
 def find_expected_production_entry():
-    entries = [payload]
-    if archive.exists():
-        for line in archive.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
     observed_actions = set()
     observed_items = set()
-    for entry in entries:
+    for entry in iter_telemetry_entries():
         candidate = entry.get("managers", {}).get("ProductionManager", {})
         if not isinstance(candidate, dict):
             continue
@@ -1264,7 +1308,7 @@ def find_expected_production_entry():
     return None, observed_actions, observed_items
 
 matching_production, observed_production_actions, observed_production_items = find_expected_production_entry()
-if matching_production is None:
+if production_contract_required and matching_production is None:
     raise SystemExit(
         "ProductionManager did not emit expected strategy action/item evidence; "
         f"expected_actions={sorted(expected_production_actions)}, "
@@ -1272,8 +1316,84 @@ if matching_production is None:
         f"observed_actions={sorted(observed_production_actions)}, "
         f"observed_items={sorted(observed_production_items)}, latest={production!r}"
     )
-if int(matching_production.get("last_doctrine_frame", 0)) <= 0:
+if production_contract_required and int(matching_production.get("last_doctrine_frame", 0)) <= 0:
     raise SystemExit(f"ProductionManager doctrine action frame is missing: {matching_production!r}")
+expected_actual_items_by_doctrine = {
+    "marine_rush": {"Marine", "Barracks"},
+    "bio_pressure": {"Marauder", "BarracksTechLab", "Starport", "Medivac"},
+    "tank_defensive_hold": {"FactoryTechLab", "SiegeTank"},
+    "siege_contain": {"FactoryTechLab", "SiegeTank"},
+    "contain_enemy_natural": {"FactoryTechLab", "SiegeTank"},
+    "mech_transition": {"Hellion", "Cyclone", "SiegeTank", "Thor"},
+    "drop_harassment": {"Starport", "StarportReactor", "Medivac", "Hellion", "Reaper"},
+    "worker_line_harassment": {"Starport", "StarportReactor", "Medivac", "Hellion", "Reaper"},
+    "expand_macro": {"CommandCenter"},
+    "anti_air_response": {"Starport", "EngineeringBay", "Viking"},
+}
+actual_item_aliases = {
+    "TERRAN_SUPPLYDEPOT": "SupplyDepot",
+    "TERRAN_BARRACKS": "Barracks",
+    "TERRAN_BARRACKSTECHLAB": "BarracksTechLab",
+    "TERRAN_FACTORY": "Factory",
+    "TERRAN_FACTORYTECHLAB": "FactoryTechLab",
+    "TERRAN_STARPORT": "Starport",
+    "TERRAN_STARPORTREACTOR": "StarportReactor",
+    "TERRAN_COMMANDCENTER": "CommandCenter",
+    "TERRAN_ENGINEERINGBAY": "EngineeringBay",
+    "TERRAN_MARINE": "Marine",
+    "TERRAN_MARAUDER": "Marauder",
+    "TERRAN_REAPER": "Reaper",
+    "TERRAN_HELLION": "Hellion",
+    "TERRAN_CYCLONE": "Cyclone",
+    "TERRAN_THOR": "Thor",
+    "TERRAN_SIEGETANK": "SiegeTank",
+    "TERRAN_MEDIVAC": "Medivac",
+    "TERRAN_VIKINGFIGHTER": "Viking",
+}
+
+def find_expected_actual_production_command():
+    expected_actual_items = expected_actual_items_by_doctrine.get(
+        expected_strategy_doctrine,
+        expected_production_items,
+    )
+    observed_actual_items = set()
+    observed_actual_commands = set()
+    for entry in iter_telemetry_entries():
+        candidate = entry.get("managers", {}).get("ProductionManager", {})
+        if not isinstance(candidate, dict):
+            continue
+        item = actual_item_aliases.get(
+            str(candidate.get("last_actual_production_command_item", "") or ""),
+            str(candidate.get("last_actual_production_command_item", "") or ""),
+        )
+        kind = str(candidate.get("last_actual_production_command_kind", "") or "")
+        update_id = str(candidate.get("last_actual_production_command_update_id", "") or "")
+        frame = int(candidate.get("last_actual_production_command_frame", 0) or 0)
+        count = int(candidate.get("actual_production_command_issued_count", 0) or 0)
+        policy_issued_at = int(candidate.get("policy_issued_at_frame", 0) or 0)
+        if item and item != "none":
+            observed_actual_items.add(item)
+        if kind and kind != "none" and item and item != "none":
+            observed_actual_commands.add(f"{kind}|{item}")
+        if (
+            count > 0
+            and update_id == aggressive_update_id
+            and item in expected_actual_items
+            and frame > 0
+            and (policy_issued_at <= 0 or frame >= policy_issued_at)
+        ):
+            return candidate, observed_actual_items, observed_actual_commands
+    return None, observed_actual_items, observed_actual_commands
+
+matching_actual_production, observed_actual_items, observed_actual_commands = find_expected_actual_production_command()
+if production_contract_required and matching_actual_production is None:
+    raise SystemExit(
+        "ProductionManager queued the expected strategy but did not issue a matching "
+        "actual production/build command; "
+        f"expected_actual_items={sorted(expected_actual_items_by_doctrine.get(expected_strategy_doctrine, expected_production_items))}, "
+        f"observed_actual_items={sorted(observed_actual_items)}, "
+        f"observed_actual_commands={sorted(observed_actual_commands)}, latest={production!r}"
+    )
 positive_bias_expectations = {
     "marine_rush": ("queue_bias_marine", "composition_bias_bio"),
     "bio_pressure": ("queue_bias_medivac", "facility_bias_starport", "tech_unit_bias_medivac"),
@@ -1287,7 +1407,7 @@ positive_bias_expectations = {
     "anti_air_response": ("queue_bias_starport", "queue_bias_viking", "composition_bias_anti_air"),
 }
 expected_bias_keys = positive_bias_expectations.get(expected_strategy_doctrine, ())
-if expected_bias_keys and not any(float(production.get(key, 0)) > 0 for key in expected_bias_keys):
+if production_contract_required and expected_bias_keys and not any(float(production.get(key, 0)) > 0 for key in expected_bias_keys):
     raise SystemExit(
         f"ProductionManager missing positive bias evidence for {expected_strategy_doctrine}: "
         f"expected one of {expected_bias_keys}, production={production!r}"
@@ -1332,21 +1452,22 @@ elif expected_strategy_doctrine == "expand_macro":
     require_positive(production, "production_continuity_bias", "expand production contract")
     require_positive(combat, "defend_bias", "expand combat safety contract")
     require_negative(combat, "aggression", "expand combat safety contract")
-production_consumed_axes = {
-    axis.strip()
-    for axis in str(production.get("consumed_axes", "")).split(",")
-    if axis.strip()
-}
-for axis in (
-    "strategy.doctrine",
-    "production.queue_biases.*",
-    "production.composition_biases.*",
-    "production.production_facility_biases.*",
-    "production.tech_switch_urgency",
-    "tech.unit_biases.*",
-):
-    if axis not in production_consumed_axes:
-        raise SystemExit(f"missing ProductionManager consumed axis {axis}: {production!r}")
+if production_contract_required:
+    production_consumed_axes = {
+        axis.strip()
+        for axis in str(production.get("consumed_axes", "")).split(",")
+        if axis.strip()
+    }
+    for axis in (
+        "strategy.doctrine",
+        "production.queue_biases.*",
+        "production.composition_biases.*",
+        "production.production_facility_biases.*",
+        "production.tech_switch_urgency",
+        "tech.unit_biases.*",
+    ):
+        if axis not in production_consumed_axes:
+            raise SystemExit(f"missing ProductionManager consumed axis {axis}: {production!r}")
 workers = managers.get("WorkerManager")
 if not workers or workers.get("active") is not True:
     raise SystemExit(f"missing WorkerManager activity evidence: {managers!r}")
@@ -1422,6 +1543,20 @@ if require_scout_movement:
         raise SystemExit(f"no scout movement evidence: {scout!r}")
     if scout.get("status") in (None, "", "None"):
         raise SystemExit(f"no scout status evidence: {scout!r}")
+    scout_command_count = int(scout.get("actual_command_issued_count", 0) or 0)
+    scout_last_command = str(scout.get("last_actual_command", "") or "")
+    scout_last_command_frame = int(scout.get("last_actual_command_frame", 0) or 0)
+    worker_scout_trace = (
+        str(workers.get("last_trace_reason", "") or "").startswith("scout_")
+        and str(workers.get("last_trace_status", "") or "") == "accepted_candidate"
+    )
+    if scout_command_count <= 0 and not worker_scout_trace:
+        raise SystemExit(
+            "no actual scout command evidence: "
+            f"scout={scout!r}, worker_trace={workers!r}"
+        )
+    if scout_command_count > 0 and (scout_last_command in ("", "none") or scout_last_command_frame <= 0):
+        raise SystemExit(f"incomplete actual scout command evidence: {scout!r}")
 if not archive.exists():
     raise SystemExit(f"missing telemetry archive: {archive}")
 updates = []

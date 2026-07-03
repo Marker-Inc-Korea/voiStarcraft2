@@ -120,6 +120,7 @@ class PolicyModulationCompileResult:
     status: PolicyModulationCompileStatus | str
     source: PolicyModulationSource | str
     vector: PolicyModulationVector | None = None
+    assistant_message: str = ""
     refusal_reason: str = ""
     clarification_prompt: str = ""
     warnings: tuple[str, ...] = ()
@@ -140,6 +141,12 @@ class PolicyModulationCompileResult:
                 "refusal_reason",
                 _require_text("refusal_reason", self.refusal_reason),
             )
+        if self.assistant_message:
+            object.__setattr__(
+                self,
+                "assistant_message",
+                _require_text("assistant_message", self.assistant_message),
+            )
         if self.clarification_prompt:
             object.__setattr__(
                 self,
@@ -156,6 +163,7 @@ class PolicyModulationCompileResult:
             "status": self.status.value,
             "source": self.source.value,
             "vector": self.vector.to_dict() if self.vector else None,
+            "assistant_message": self.assistant_message,
             "refusal_reason": self.refusal_reason,
             "clarification_prompt": self.clarification_prompt,
             "warnings": list(self.warnings),
@@ -184,11 +192,13 @@ def compile_policy_modulation_provider_output(
         control_mapping = _extract_terminal_control_mapping(provider_output)
         source = _coerce_source(control_mapping.get("source", source))
         provider_status = _extract_provider_status(control_mapping)
+        assistant_message = _extract_assistant_message(control_mapping)
         clarification = _extract_clarification(control_mapping)
         if clarification or provider_status is PolicyModulationCompileStatus.CLARIFICATION_REQUIRED:
             return PolicyModulationCompileResult(
                 status=PolicyModulationCompileStatus.CLARIFICATION_REQUIRED,
                 source=source,
+                assistant_message=assistant_message,
                 clarification_prompt=(
                     clarification
                     or "의도를 정책 조정으로 변환하려면 더 구체적인 전략 목표가 필요합니다."
@@ -197,7 +207,11 @@ def compile_policy_modulation_provider_output(
         refusal = _extract_refusal(control_mapping)
         vector_payload = _extract_vector_payload(provider_output)
         if refusal or provider_status is PolicyModulationCompileStatus.REFUSED:
-            return _refused(source, refusal or "provider refused policy modulation.")
+            return _refused(
+                source,
+                refusal or "provider refused policy modulation.",
+                assistant_message=assistant_message,
+            )
         normalized, warnings = _normalize_provider_mapping(
             vector_payload if vector_payload is not None else provider_output,
             default_source=source,
@@ -208,6 +222,7 @@ def compile_policy_modulation_provider_output(
             status=PolicyModulationCompileStatus.COMPILED,
             source=vector.source,
             vector=vector,
+            assistant_message=assistant_message,
             warnings=warnings,
         )
     except (TypeError, ValueError) as exc:
@@ -260,6 +275,7 @@ _WRAPPER_METADATA_KEYS = {
     "ttl_s",
     "tags",
     "rationale",
+    "assistant_message",
 }
 
 _CONTROL_KEYS = {
@@ -267,6 +283,7 @@ _CONTROL_KEYS = {
     "needs_clarification",
     "clarification_prompt",
     "refusal_reason",
+    "assistant_message",
 }
 
 _TOP_LEVEL_ALIASES = {
@@ -293,15 +310,21 @@ _DOMAIN_ALIASES = {
     "expand_bias": ("economy", "expand_bias"),
     "worker_production_bias": ("economy", "worker_production_bias"),
     "worker_bias": ("economy", "worker_production_bias"),
+    "scv_production_bias": ("economy", "worker_production_bias"),
+    "scv_training_bias": ("economy", "worker_production_bias"),
     "gas_priority": ("economy", "gas_priority"),
     "gas_worker_target_bias": ("economy", "gas_worker_target_bias"),
+    "gas_worker_bias": ("economy", "gas_worker_target_bias"),
     "mineral_saturation_bias": ("economy", "mineral_saturation_bias"),
     "repair_priority": ("economy", "repair_priority"),
+    "repair_worker_bias": ("economy", "repair_priority"),
     "supply_buffer_bias": ("economy", "supply_buffer_bias"),
     "expansion_safety_bias": ("economy", "expansion_safety_bias"),
     "mule_priority": ("economy", "mule_priority"),
     "repeat_order_guard_frames": ("workers", "repeat_order_guard_frames"),
     "worker_repeat_order_guard_frames": ("workers", "repeat_order_guard_frames"),
+    "scout_worker_bias": ("scouting", "scout_priority"),
+    "worker_scout_bias": ("scouting", "scout_priority"),
     "structure_biases": ("tech", "structure_biases"),
     "unit_biases": ("tech", "unit_biases"),
     "upgrade_biases": ("tech", "upgrade_biases"),
@@ -364,12 +387,33 @@ _DOMAIN_ALIASES = {
     "allow_partial_scope": ("scope", "allow_partial_scope"),
     "cancel_attacks": ("emergency", "cancel_attacks"),
     "pull_workers_for_defense": ("emergency", "pull_workers_for_defense"),
+    "pull_workers_for_defense_bias": ("emergency", "pull_workers_for_defense"),
     "evacuate_workers": ("emergency", "evacuate_workers"),
     "force_retreat": ("emergency", "force_retreat"),
     "hold_position": ("emergency", "hold_position"),
     "prioritize_repair": ("emergency", "prioritize_repair"),
     "stop_expansion": ("emergency", "stop_expansion"),
 }
+
+_DOMAIN_FIELD_ALIASES = {
+    ("workers", "worker_production_bias"): ("economy", "worker_production_bias"),
+    ("workers", "worker_bias"): ("economy", "worker_production_bias"),
+    ("workers", "scv_production_bias"): ("economy", "worker_production_bias"),
+    ("workers", "scv_training_bias"): ("economy", "worker_production_bias"),
+    ("workers", "gas_worker_target_bias"): ("economy", "gas_worker_target_bias"),
+    ("workers", "gas_worker_bias"): ("economy", "gas_worker_target_bias"),
+    ("workers", "mineral_saturation_bias"): ("economy", "mineral_saturation_bias"),
+    ("workers", "repair_worker_bias"): ("economy", "repair_priority"),
+    ("workers", "repair_priority"): ("economy", "repair_priority"),
+    ("workers", "supply_buffer_bias"): ("economy", "supply_buffer_bias"),
+    ("workers", "scout_worker_bias"): ("scouting", "scout_priority"),
+    ("workers", "worker_scout_bias"): ("scouting", "scout_priority"),
+    ("workers", "pull_workers_for_defense_bias"): (
+        "emergency",
+        "pull_workers_for_defense",
+    ),
+}
+"""LLM-friendly nested aliases routed to the canonical manager domains."""
 
 _DOMAIN_KEYS = {
     "strategy",
@@ -393,6 +437,7 @@ _VECTOR_KEYS = {
     "constraints",
     "tags",
     "rationale",
+    "assistant_message",
     *_DOMAIN_KEYS,
 }
 
@@ -401,6 +446,117 @@ _REPRESENTATION_KEYS = {
     "representation_axes",
     "latent_axes",
     "latent_vector",
+}
+
+_CANONICAL_MICROMACHINE_KEY_ALIASES = {
+    "scv": "TERRAN_SCV",
+    "worker": "TERRAN_SCV",
+    "workers": "TERRAN_SCV",
+    "일꾼": "TERRAN_SCV",
+    "건설로봇": "TERRAN_SCV",
+    "supplydepot": "TERRAN_SUPPLYDEPOT",
+    "depot": "TERRAN_SUPPLYDEPOT",
+    "보급고": "TERRAN_SUPPLYDEPOT",
+    "commandcenter": "TERRAN_COMMANDCENTER",
+    "cc": "TERRAN_COMMANDCENTER",
+    "사령부": "TERRAN_COMMANDCENTER",
+    "refinery": "TERRAN_REFINERY",
+    "refinerygas": "TERRAN_REFINERY",
+    "gas": "TERRAN_REFINERY",
+    "vespene": "TERRAN_REFINERY",
+    "가스": "TERRAN_REFINERY",
+    "베스핀가스": "TERRAN_REFINERY",
+    "barracks": "TERRAN_BARRACKS",
+    "rax": "TERRAN_BARRACKS",
+    "병영": "TERRAN_BARRACKS",
+    "배럭": "TERRAN_BARRACKS",
+    "factory": "TERRAN_FACTORY",
+    "군수공장": "TERRAN_FACTORY",
+    "starport": "TERRAN_STARPORT",
+    "우주공항": "TERRAN_STARPORT",
+    "engineeringbay": "TERRAN_ENGINEERINGBAY",
+    "ebay": "TERRAN_ENGINEERINGBAY",
+    "공학연구소": "TERRAN_ENGINEERINGBAY",
+    "armory": "TERRAN_ARMORY",
+    "무기고": "TERRAN_ARMORY",
+    "bunker": "TERRAN_BUNKER",
+    "벙커": "TERRAN_BUNKER",
+    "marine": "TERRAN_MARINE",
+    "marines": "TERRAN_MARINE",
+    "해병": "TERRAN_MARINE",
+    "마린": "TERRAN_MARINE",
+    "marauder": "TERRAN_MARAUDER",
+    "marauders": "TERRAN_MARAUDER",
+    "불곰": "TERRAN_MARAUDER",
+    "reaper": "TERRAN_REAPER",
+    "reapers": "TERRAN_REAPER",
+    "사신": "TERRAN_REAPER",
+    "ghost": "TERRAN_GHOST",
+    "ghosts": "TERRAN_GHOST",
+    "유령": "TERRAN_GHOST",
+    "hellion": "TERRAN_HELLION",
+    "hellions": "TERRAN_HELLION",
+    "화염차": "TERRAN_HELLION",
+    "cyclone": "TERRAN_CYCLONE",
+    "cyclones": "TERRAN_CYCLONE",
+    "사이클론": "TERRAN_CYCLONE",
+    "thor": "TERRAN_THOR",
+    "thors": "TERRAN_THOR",
+    "토르": "TERRAN_THOR",
+    "siegetank": "TERRAN_SIEGETANK",
+    "tank": "TERRAN_SIEGETANK",
+    "tanks": "TERRAN_SIEGETANK",
+    "탱크": "TERRAN_SIEGETANK",
+    "공성전차": "TERRAN_SIEGETANK",
+    "medivac": "TERRAN_MEDIVAC",
+    "medivacs": "TERRAN_MEDIVAC",
+    "의료선": "TERRAN_MEDIVAC",
+    "viking": "TERRAN_VIKINGFIGHTER",
+    "vikings": "TERRAN_VIKINGFIGHTER",
+    "바이킹": "TERRAN_VIKINGFIGHTER",
+    "banshee": "TERRAN_BANSHEE",
+    "banshees": "TERRAN_BANSHEE",
+    "밴시": "TERRAN_BANSHEE",
+    "raven": "TERRAN_RAVEN",
+    "ravens": "TERRAN_RAVEN",
+    "밤까마귀": "TERRAN_RAVEN",
+    "battlecruiser": "TERRAN_BATTLECRUISER",
+    "battlecruisers": "TERRAN_BATTLECRUISER",
+    "bc": "TERRAN_BATTLECRUISER",
+    "전투순양함": "TERRAN_BATTLECRUISER",
+    "barrackstechlab": "BARRACKS_TECHLAB",
+    "raxtechlab": "BARRACKS_TECHLAB",
+    "병영기술실": "BARRACKS_TECHLAB",
+    "배럭기술실": "BARRACKS_TECHLAB",
+    "barracksreactor": "BARRACKS_REACTOR",
+    "raxreactor": "BARRACKS_REACTOR",
+    "병영반응로": "BARRACKS_REACTOR",
+    "배럭반응로": "BARRACKS_REACTOR",
+    "factorytechlab": "FACTORY_TECHLAB",
+    "군수공장기술실": "FACTORY_TECHLAB",
+    "factoryreactor": "FACTORY_REACTOR",
+    "군수공장반응로": "FACTORY_REACTOR",
+    "starporttechlab": "STARPORT_TECHLAB",
+    "우주공항기술실": "STARPORT_TECHLAB",
+    "starportreactor": "STARPORT_REACTOR",
+    "우주공항반응로": "STARPORT_REACTOR",
+    "techlab": "BARRACKS_TECHLAB",
+    "기술실": "BARRACKS_TECHLAB",
+    "reactor": "BARRACKS_REACTOR",
+    "반응로": "BARRACKS_REACTOR",
+    "stimpack": "STIMPACK",
+    "stim": "STIMPACK",
+    "전투자극제": "STIMPACK",
+    "combatshield": "COMBATSHIELD",
+    "방패업": "COMBATSHIELD",
+}
+
+_CANONICAL_BIAS_FIELDS = {
+    ("tech", "structure_biases"),
+    ("tech", "unit_biases"),
+    ("production", "queue_biases"),
+    ("production", "addon_biases"),
+    ("production", "production_facility_biases"),
 }
 
 
@@ -468,17 +624,31 @@ def _normalize_provider_mapping(
             continue
         if canonical_key in _DOMAIN_ALIASES:
             domain, field_name = _DOMAIN_ALIASES[canonical_key]
+            if (domain, field_name) == ("emergency", "pull_workers_for_defense"):
+                value = _coerce_bias_to_bool(
+                    value,
+                    field_name=canonical_key,
+                )
             _ensure_domain(result, domain)[field_name] = value
             continue
         if canonical_key in _DOMAIN_KEYS:
             if not isinstance(value, Mapping):
                 result[canonical_key] = value
                 continue
-            domain = _ensure_domain(result, canonical_key)
             for field_name, field_value in value.items():
                 if type(field_name) is not str or not field_name.strip():
                     raise ValueError(f"{canonical_key} field names must be strings.")
-                domain[field_name] = field_value
+                target_domain, target_field, target_value = _normalize_domain_field(
+                    canonical_key,
+                    field_name,
+                    field_value,
+                )
+                _ensure_domain(result, target_domain)[target_field] = target_value
+                if target_domain != canonical_key or target_field != field_name:
+                    warnings.append(
+                        "mapped provider field: "
+                        f"{canonical_key}.{field_name}->{target_domain}.{target_field}"
+                    )
             continue
         if canonical_key in _VECTOR_KEYS:
             result[canonical_key] = value
@@ -488,7 +658,34 @@ def _normalize_provider_mapping(
     result.setdefault("source", default_source.value)
     if "goal" not in result and default_goal:
         result["goal"] = default_goal
+    _canonicalize_micromachine_payload(result)
     return result, tuple(warnings)
+
+
+def _normalize_domain_field(
+    domain: str,
+    field_name: str,
+    field_value: object,
+) -> tuple[str, str, object]:
+    canonical_field = field_name.strip()
+    alias = _DOMAIN_FIELD_ALIASES.get((domain, canonical_field))
+    if alias is None:
+        return domain, canonical_field, field_value
+    target_domain, target_field = alias
+    if (target_domain, target_field) == ("emergency", "pull_workers_for_defense"):
+        return target_domain, target_field, _coerce_bias_to_bool(
+            field_value,
+            field_name=f"{domain}.{canonical_field}",
+        )
+    return target_domain, target_field, field_value
+
+
+def _coerce_bias_to_bool(value: object, *, field_name: str) -> bool:
+    if type(value) is bool:
+        return value
+    if type(value) in (int, float):
+        return float(value) > 0.0
+    raise ValueError(f"{field_name} must be a bool or numeric bias.")
 
 
 def _apply_representation_axes(result: dict[str, object], value: object) -> None:
@@ -511,6 +708,72 @@ def _apply_representation_axes(result: dict[str, object], value: object) -> None
         if not isinstance(nested, dict):
             raise ValueError(f"representation axis conflicts with scalar field: {axis}.")
         nested[".".join(parts[2:])] = axis_value
+
+
+def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
+    """Normalize LLM-friendly unit/building names to C++ blackboard keys."""
+
+    for domain_name, domain_value in list(payload.items()):
+        if domain_name not in _DOMAIN_KEYS or not isinstance(domain_value, dict):
+            continue
+        for field_name, field_value in list(domain_value.items()):
+            if (domain_name, field_name) in _CANONICAL_BIAS_FIELDS:
+                domain_value[field_name] = _canonicalize_bias_mapping(field_value)
+        if domain_name == "scope":
+            classes = domain_value.get("unit_classes")
+            if isinstance(classes, tuple):
+                domain_value["unit_classes"] = tuple(
+                    _canonicalize_micromachine_key(item) for item in classes
+                )
+            elif _is_non_text_sequence(classes):
+                domain_value["unit_classes"] = [
+                    _canonicalize_micromachine_key(item) for item in classes
+                ]
+
+
+def _canonicalize_bias_mapping(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return value
+    return {
+        _canonicalize_micromachine_key(key): bias_value
+        for key, bias_value in value.items()
+    }
+
+
+def _canonicalize_micromachine_key(value: object) -> str:
+    if type(value) is not str:
+        return str(value)
+    key = value.strip()
+    if not key:
+        return key
+    upper = key.upper()
+    if upper.startswith("TERRAN_") or upper in {
+        "BARRACKS_TECHLAB",
+        "BARRACKS_REACTOR",
+        "FACTORY_TECHLAB",
+        "FACTORY_REACTOR",
+        "STARPORT_TECHLAB",
+        "STARPORT_REACTOR",
+        "STIMPACK",
+        "COMBATSHIELD",
+    }:
+        return upper
+    return _CANONICAL_MICROMACHINE_KEY_ALIASES.get(
+        _canonical_key_token(key),
+        key,
+    )
+
+
+def _canonical_key_token(value: str) -> str:
+    return "".join(
+        char
+        for char in value.strip().lower()
+        if char.isalnum() or "\uac00" <= char <= "\ud7a3"
+    )
+
+
+def _is_non_text_sequence(value: object) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
 
 
 def _ensure_domain(result: dict[str, object], domain: str) -> dict[str, object]:
@@ -546,13 +809,21 @@ def _extract_refusal(mapping: Mapping[str, object]) -> str:
     return _require_text("refusal_reason", refusal) if refusal else ""
 
 
+def _extract_assistant_message(mapping: Mapping[str, object]) -> str:
+    message = mapping.get("assistant_message", "")
+    return _require_text("assistant_message", message) if message else ""
+
+
 def _refused(
     source: PolicyModulationSource,
     reason: str,
+    *,
+    assistant_message: str = "",
 ) -> PolicyModulationCompileResult:
     return PolicyModulationCompileResult(
         status=PolicyModulationCompileStatus.REFUSED,
         source=source,
+        assistant_message=assistant_message,
         refusal_reason=reason,
     )
 
