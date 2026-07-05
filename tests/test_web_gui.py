@@ -976,6 +976,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual("active-a", document["update"]["update_id"])
             self.assertEqual("failed-b", document["compile_result"]["update_id"])
             self.assertEqual("consumed", document["consumption_status"])
+            self.assertEqual("failed-b", document["latest_request"]["update_id"])
+            self.assertEqual("refused", document["latest_request"]["status"])
+            self.assertEqual(
+                "not_published",
+                document["latest_request"]["consumption_status"],
+            )
+            self.assertFalse(document["latest_request"]["is_active_update"])
             self.assertEqual("", document["intervention"]["refusal_reason"])
             self.assertNotEqual("refused", document["intervention"]["tactical_posture"])
             self.assertFalse(
@@ -3302,6 +3309,69 @@ const assert = require("assert");
   assert(!logBox.textContent.includes("provider_source=llm"));
   assert(!logBox.textContent.includes("attack_gate="));
   assert.strictEqual(nodes["command-input"].value, "");
+
+  rememberPendingMicroMachineAsync("active A consumed", {
+    async_publish: true,
+    update_id: "race-active-a"
+  });
+  rememberPendingMicroMachineAsync("latest B refused", {
+    async_publish: true,
+    update_id: "race-failed-b"
+  });
+  assert(Object.prototype.hasOwnProperty.call(
+    pendingMicroMachineAsyncUpdates,
+    "race-active-a"
+  ));
+  assert(Object.prototype.hasOwnProperty.call(
+    pendingMicroMachineAsyncUpdates,
+    "race-failed-b"
+  ));
+  renderMicroMachineStatus({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "refused",
+      update_id: "race-failed-b",
+      refusal_reason: "provider auth failed"
+    },
+    latest_request: {
+      update_id: "race-failed-b",
+      status: "refused",
+      consumption_status: "not_published",
+      is_active_update: false
+    },
+    update: { update_id: "race-active-a" },
+    intervention: {
+      latest_update_id: "race-active-a",
+      tactical_posture: "pressure",
+      manager_bias_domains: ["combat"],
+      goal: "active pressure"
+    },
+    dashboard: {
+      active_updates: [
+        { update_id: "race-active-a", manager_bias_domains: ["combat"] }
+      ]
+    }
+  });
+  assert(!Object.prototype.hasOwnProperty.call(
+    pendingMicroMachineAsyncUpdates,
+    "race-active-a"
+  ));
+  assert(!Object.prototype.hasOwnProperty.call(
+    pendingMicroMachineAsyncUpdates,
+    "race-failed-b"
+  ));
+  assert(logBox.textContent.includes("active A consumed"));
+  assert(logBox.textContent.includes("latest B refused"));
+  assert(logBox.textContent.includes("active pressure"));
+  assert(logBox.textContent.includes("provider auth failed"));
+  var activeEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
+    return entry.textContent.includes("active A consumed");
+  });
+  assert(activeEntry);
+  assert(!activeEntry.textContent.includes("provider auth failed"));
 
   renderMicroMachineStatus = function () {};
   nodes["command-input"].value = "실패 케이스도 pending 남기지 마";

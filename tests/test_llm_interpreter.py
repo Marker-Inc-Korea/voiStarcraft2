@@ -142,7 +142,13 @@ class _FakeOpenAICompletionsNamespace:
 
     def create(self, **kwargs):
         self._client.calls.append(kwargs)
-        return self._client.outcome
+        if self._client.outcomes:
+            outcome = self._client.outcomes.pop(0)
+        else:
+            outcome = self._client.outcome
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 class _FakeOpenAIChatNamespace:
@@ -151,8 +157,11 @@ class _FakeOpenAIChatNamespace:
 
 
 class FakeOpenAIClient:
-    def __init__(self, outcome):
-        self.outcome = outcome
+    def __init__(self, *outcomes):
+        if not outcomes:
+            raise ValueError("FakeOpenAIClient requires at least one outcome.")
+        self.outcomes = list(outcomes)
+        self.outcome = outcomes[-1]
         self.calls = []
         self.chat = _FakeOpenAIChatNamespace(self)
 
@@ -534,6 +543,63 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             "Retry once",
             fake_client.calls[1]["messages"][0]["content"],
         )
+
+    def test_openai_policy_modulation_uses_json_fallback_after_missing_tool(self) -> None:
+        provider_payload = {
+            "status": "compiled",
+            "assistant_message": "마린 압박과 보급 관리 의도로 해석했습니다.",
+            "modulation": {
+                "goal": "마린 압박 및 보급 관리",
+                "override_level": "bias",
+                "production": {
+                    "queue_biases": {
+                        "marine": 0.8,
+                        "supply_depot": 0.6,
+                    }
+                },
+                "combat": {"aggression": 0.6},
+            },
+        }
+        fake_client = FakeOpenAIClient(
+            _openai_text_response("마린 압박으로 처리하겠습니다."),
+            _openai_text_response("이번에는 JSON 없이 설명합니다."),
+            _openai_text_response(json.dumps(provider_payload)),
+        )
+        interpreter = LLMCommandInterpreter(
+            provider="openai",
+            model="gpt-test",
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="마린 러쉬 진행하고 보급고 계속 관리해",
+                commander_context={
+                    "response_language": "Korean",
+                    "response_language_code": "ko",
+                },
+            )
+        )
+
+        self.assertEqual("llm", output["source"])
+        self.assertEqual(
+            "마린 압박과 보급 관리 의도로 해석했습니다.",
+            output["assistant_message"],
+        )
+        self.assertEqual("llm", output["modulation"]["source"])
+        self.assertEqual(0.8, output["modulation"]["production"]["queue_biases"]["marine"])
+        self.assertEqual(0.6, output["modulation"]["combat"]["aggression"])
+        self.assertEqual(3, len(fake_client.calls))
+        self.assertEqual(
+            {
+                "type": "function",
+                "function": {"name": LLM_POLICY_MODULATION_TOOL_NAME},
+            },
+            fake_client.calls[0]["tool_choice"],
+        )
+        self.assertEqual({"type": "json_object"}, fake_client.calls[2]["response_format"])
+        self.assertNotIn("tools", fake_client.calls[2])
+        self.assertIn("raw JSON only", fake_client.calls[2]["messages"][1]["content"])
 
     def test_policy_modulation_provider_error_redacts_api_key(self) -> None:
         interpreter, _fake_client = _make_llm_interpreter(

@@ -296,6 +296,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "const bool depotFallbackIsUseful = Util::DistSq(worker.getPosition(), base->getDepotPosition()) > 1.0f",
             "m_lastVoiScoutMoveFrame",
             "m_lastVoiScoutMoveTarget",
+            "const float targetReachedDistanceSq = 1.0f",
             "already ordered",
             "workers.repeat_order_guard_frames",
             "m_bot->Commander().shouldSuppressRepeatedWorkerCommand(m_unit, sc2::ABILITY_ID::SMART",
@@ -374,6 +375,31 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("requeued_highest", patch)
         self.assertNotIn("requeued_blocking", patch)
         self.assertIn('recordVoiDoctrineConsumption(type, action, "queued_existing");', patch)
+
+    def test_completed_expansion_command_center_guard_does_not_require_placement_query(self) -> None:
+        patch = PATCH_FILE.read_text()
+        body = patch.split("+bool canTrustAssignedVoiExpansionDepot", 1)[1].split(
+            "+}\n+}\n+\n BuildingManager::BuildingManager",
+            1,
+        )[0]
+
+        self.assertNotIn("findVoiExpansionPlacementCommandPosition", body)
+        self.assertIn("building.buildingUnit.isValid()", body)
+        self.assertIn("building.buildingUnit.isCompleted()", body)
+        self.assertIn("building.buildingUnit.isFlying()", body)
+        self.assertIn("building.buildingUnit.getAPIUnitType()", body)
+        self.assertIn("A completed CommandCenter occupies its own footprint", body)
+        self.assertIn("GetCombatInfluenceOnTile(building.finalPosition", body)
+        self.assertEqual(
+            1,
+            patch.count("canTrustAssignedVoiExpansionDepot(m_bot, b)"),
+            "completed CommandCenter trust must not be used by pre-build placement paths",
+        )
+        self.assertGreaterEqual(
+            patch.count("canTrustVoiExpansionDepotPlacement(m_bot, b.type, b.finalPosition)"),
+            4,
+            "pre-build expansion paths must keep using placement validation",
+        )
 
     def test_macos_scripts_document_reproducible_build_smoke_and_soak(self) -> None:
         build_script = BUILD_SCRIPT.read_text()

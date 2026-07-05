@@ -428,6 +428,56 @@ _DOMAIN_KEYS = {
     "emergency",
 }
 
+_POSTURE_ALIASES = {
+    "aggressive": "pressure",
+    "attack": "pressure",
+    "attacking": "pressure",
+    "offensive": "pressure",
+    "pressure": "pressure",
+    "pressuring": "pressure",
+    "harass": "pressure",
+    "harassment": "pressure",
+    "contain": "pressure",
+    "macro": "economic",
+    "greedy": "economic",
+    "economy": "economic",
+    "economic": "economic",
+    "defense": "defensive",
+    "defensive": "defensive",
+    "hold": "defensive",
+    "turtle": "defensive",
+    "safe": "defensive",
+    "balanced": "balanced",
+    "normal": "balanced",
+    "allin": "all_in",
+    "all_in": "all_in",
+    "all-in": "all_in",
+    "rush": "all_in",
+}
+
+_ATTACK_CONDITION_OVERRIDE_ALIASES = {
+    "default": "normal",
+    "normal": "normal",
+    "none": "normal",
+    "safe": "earlier_if_safe",
+    "earlier": "earlier_if_safe",
+    "early": "earlier_if_safe",
+    "earlier_if_safe": "earlier_if_safe",
+    "opportunistic": "earlier_if_safe",
+    "pressure_when_safe": "earlier_if_safe",
+    "attack_when_safe": "earlier_if_safe",
+    "force": "force_when_threshold_met",
+    "forced": "force_when_threshold_met",
+    "force_when_ready": "force_when_threshold_met",
+    "force_when_threshold_met": "force_when_threshold_met",
+    "attack_when_ready": "force_when_threshold_met",
+    "threshold": "force_when_threshold_met",
+    "never": "never",
+    "no_attack": "never",
+    "hold": "never",
+    "hold_fire": "never",
+}
+
 _VECTOR_KEYS = {
     "goal",
     "source",
@@ -716,6 +766,16 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
     for domain_name, domain_value in list(payload.items()):
         if domain_name not in _DOMAIN_KEYS or not isinstance(domain_value, dict):
             continue
+        if domain_name == "strategy" and "posture" in domain_value:
+            domain_value["posture"] = _canonicalize_enum_alias(
+                domain_value["posture"],
+                aliases=_POSTURE_ALIASES,
+            )
+        if domain_name == "combat" and "attack_condition_override" in domain_value:
+            domain_value["attack_condition_override"] = _canonicalize_enum_alias(
+                domain_value["attack_condition_override"],
+                aliases=_ATTACK_CONDITION_OVERRIDE_ALIASES,
+            )
         for field_name, field_value in list(domain_value.items()):
             if (domain_name, field_name) in _CANONICAL_BIAS_FIELDS:
                 domain_value[field_name] = _canonicalize_bias_mapping(field_value)
@@ -738,6 +798,17 @@ def _canonicalize_bias_mapping(value: object) -> object:
         _canonicalize_micromachine_key(key): bias_value
         for key, bias_value in value.items()
     }
+
+
+def _canonicalize_enum_alias(
+    value: object,
+    *,
+    aliases: Mapping[str, str],
+) -> object:
+    if type(value) is not str:
+        return value
+    normalized = value.strip().lower().replace(" ", "_")
+    return aliases.get(normalized, value)
 
 
 def _canonicalize_micromachine_key(value: object) -> str:

@@ -109,6 +109,25 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual("enemy_natural", result.vector.scope.location_intent)
         self.assertTrue(result.vector.emergency.prioritize_repair)
 
+    def test_canonicalizes_llm_friendly_tactical_enum_aliases(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "공격적으로 안전할 때 압박",
+                "strategy": {"posture": "aggressive"},
+                "combat": {"attack_condition_override": "opportunistic"},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("pressure", result.vector.strategy.posture)
+        self.assertEqual(
+            "earlier_if_safe",
+            result.vector.combat.attack_condition_override,
+        )
+
     def test_compiles_neural_representation_axes_to_same_contract(self) -> None:
         result = compile_policy_modulation_provider_output(
             {
