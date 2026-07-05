@@ -656,6 +656,11 @@ def _micromachine_status_payload(
         compile_result,
         update_id=update_id,
     )
+    latest_request = _micromachine_latest_request_summary(
+        compile_result,
+        active_update_id=update_id,
+        active_consumption_status=consumption_status,
+    )
     return {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
@@ -669,6 +674,12 @@ def _micromachine_status_payload(
             compile_result=intervention_compile_result,
         ),
         "compile_result": dict(compile_result) if isinstance(compile_result, Mapping) else None,
+        "latest_request": latest_request,
+        "latest_request_consumption_status": (
+            latest_request.get("consumption_status")
+            if isinstance(latest_request, Mapping)
+            else ""
+        ),
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
     }
@@ -760,6 +771,43 @@ def _micromachine_compile_result_for_update(
     if result_update_id == update_id:
         return result
     return None
+
+
+def _micromachine_latest_request_summary(
+    compile_result: object | None,
+    *,
+    active_update_id: str,
+    active_consumption_status: str,
+) -> dict[str, object] | None:
+    """Describe the newest UI/LLM request separately from current active policy."""
+
+    if not isinstance(compile_result, Mapping):
+        return None
+    result_update_id = str(compile_result.get("update_id", "") or "").strip()
+    result_status = str(compile_result.get("status", "") or "").strip()
+    if not result_update_id and not result_status:
+        return None
+    if result_update_id and result_update_id == active_update_id:
+        request_consumption_status = active_consumption_status
+    elif result_status in {"refused", "clarification_required"}:
+        request_consumption_status = "not_published"
+    elif result_status in {"compiled", "published"}:
+        request_consumption_status = "pending_consumption"
+    else:
+        request_consumption_status = result_status or "unknown"
+    return {
+        "update_id": result_update_id,
+        "status": result_status,
+        "source": str(compile_result.get("source", "") or ""),
+        "consumption_status": request_consumption_status,
+        "active_update_id": active_update_id,
+        "is_active_update": bool(result_update_id and result_update_id == active_update_id),
+        "refusal_reason": str(compile_result.get("refusal_reason", "") or ""),
+        "clarification_prompt": str(
+            compile_result.get("clarification_prompt", "") or ""
+        ),
+        "duration_ms": compile_result.get("duration_ms"),
+    }
 
 
 def _micromachine_consumption_status(
@@ -5769,6 +5817,15 @@ function renderMicroMachineStatus(data) {
   if (latest && Array.isArray(latest.manager_bias_domains)) {
     parts.push("domains " + latest.manager_bias_domains.join(", "));
   }
+  if (data.latest_request && data.latest_request.update_id) {
+    var latestRequest = data.latest_request;
+    var requestBits = ["latest_request " + latestRequest.update_id];
+    if (latestRequest.status) { requestBits.push(String(latestRequest.status)); }
+    if (latestRequest.consumption_status) {
+      requestBits.push(String(latestRequest.consumption_status));
+    }
+    parts.push(requestBits.join(" "));
+  }
   if (dashboard.telemetry && typeof dashboard.telemetry.frame === "number") {
     parts.push("frame " + dashboard.telemetry.frame);
   }
@@ -5888,23 +5945,42 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
   if (!data || !pendingMicroMachineAsyncUpdates) { return; }
   var compileResult = data.compile_result || {};
   var update = data.update || {};
-  var updateId = compileResult.update_id || update.update_id || "";
-  if (!updateId || !pendingMicroMachineAsyncUpdates[updateId]) { return; }
+  var compileUpdateId = compileResult.update_id || "";
+  var activeUpdateId = update.update_id || "";
   var isTerminalRefusal = Boolean(
     compileResult.refusal_reason ||
     compileResult.clarification_prompt ||
     compileResult.status === "refused" ||
     compileResult.status === "clarification_required"
   );
-  var isConsumed = data.consumption_status === "consumed";
-  if (!isTerminalRefusal && !isConsumed) { return; }
-  var pending = pendingMicroMachineAsyncUpdates[updateId];
-  delete pendingMicroMachineAsyncUpdates[updateId];
-  removePendingForCommand(pending.text || "");
-  appendLog({
-    command_text: pending.text,
-    status: isTerminalRefusal ? "clarification" : "partially_executed",
-    narration: microMachineChatNarration(data)
+  var candidateUpdateIds = [];
+  if (activeUpdateId) { candidateUpdateIds.push(activeUpdateId); }
+  if (compileUpdateId && compileUpdateId !== activeUpdateId) {
+    candidateUpdateIds.push(compileUpdateId);
+  }
+  candidateUpdateIds.forEach(function(updateId) {
+    if (!updateId || !pendingMicroMachineAsyncUpdates[updateId]) { return; }
+    var requestStatus = data.latest_request && data.latest_request.update_id === updateId
+      ? data.latest_request.consumption_status
+      : (updateId === activeUpdateId ? data.consumption_status : "");
+    var terminalForUpdate = updateId === compileUpdateId && isTerminalRefusal;
+    var isConsumed = requestStatus === "consumed";
+    if (!terminalForUpdate && !isConsumed) { return; }
+    var pending = pendingMicroMachineAsyncUpdates[updateId];
+    delete pendingMicroMachineAsyncUpdates[updateId];
+    removePendingForCommand(pending.text || "");
+    var narrationData = data;
+    if (isConsumed && !terminalForUpdate && compileUpdateId && compileUpdateId !== updateId) {
+      narrationData = Object.assign({}, data, {
+        compile_result: {},
+        latest_request: null
+      });
+    }
+    appendLog({
+      command_text: pending.text,
+      status: terminalForUpdate ? "clarification" : "partially_executed",
+      narration: microMachineChatNarration(narrationData)
+    });
   });
 }
 

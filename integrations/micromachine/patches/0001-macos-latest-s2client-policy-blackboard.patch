@@ -1511,7 +1511,7 @@ diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
 index 2872a0b..7916bbf 100644
 --- a/src/BuildingManager.cpp
 +++ b/src/BuildingManager.cpp
-@@ -1,9 +1,1182 @@
+@@ -1,9 +1,1206 @@
  #include <algorithm>
 +#include <cmath>
 +#include <limits>
@@ -2686,8 +2686,32 @@ index 2872a0b..7916bbf 100644
 +
 +bool canTrustAssignedVoiExpansionDepot(CCBot & bot, const Building & building)
 +{
-+	return building.type.getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER &&
-+		canTrustVoiExpansionDepotPlacement(bot, building.type, building.finalPosition);
++	if (building.type.getAPIUnitType() != sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER ||
++		!shouldUseVoiExpansionDepotLocation(bot, building.type) ||
++		building.finalPosition == CCTilePosition() ||
++		!bot.Map().isValidTile(building.finalPosition) ||
++		!building.buildingUnit.isValid() ||
++		!building.buildingUnit.isCompleted() ||
++		building.buildingUnit.isFlying())
++	{
++		return false;
++	}
++
++	if (building.buildingUnit.getAPIUnitType() != sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER)
++	{
++		return false;
++	}
++
++	const BaseLocation * base = bot.Bases().getBaseForDepotPosition(building.finalPosition);
++	if (base && base->isUnderAttack())
++	{
++		return false;
++	}
++
++	// A completed CommandCenter occupies its own footprint, so SC2 placement
++	// queries are no longer valid evidence. Trust the assigned expansion depot
++	// while BaseLocation resource-depot mapping catches up.
++	return Util::PathFinding::GetCombatInfluenceOnTile(building.finalPosition, false, bot) <= 0;
 +}
 +}
 +
@@ -2720,7 +2744,7 @@ index 2872a0b..7916bbf 100644
  		{
 +			canBuildTrackedPosition = m_bot.Map().canBuildTypeAtPosition(position.x, position.y, building.type);
 +		}
-+		if (!canBuildTrackedPosition && canTrustAssignedVoiExpansionDepot(m_bot, building))
++		if (!canBuildTrackedPosition && canTrustVoiExpansionDepotPlacement(m_bot, building.type, building.finalPosition))
 +		{
 +			Util::DebugLog(__FUNCTION__, "VOI expand_macro keeps assigned CommandCenter depot despite generic placement recheck failure.", m_bot);
 +			continue;
@@ -3076,7 +3100,7 @@ index 2872a0b..7916bbf 100644
 -								if (b.type.isResourceDepot() && b.buildCommandGiven)	//if resource depot position is blocked by a unit, send elsewhere
 +								if (b.type.isResourceDepot() && setCommandGiven)	//if resource depot position is blocked by a unit, send elsewhere
  								{
-+									if (canTrustAssignedVoiExpansionDepot(m_bot, b))
++									if (canTrustVoiExpansionDepotPlacement(m_bot, b.type, b.finalPosition))
 +									{
 +										Util::DebugLog(__FUNCTION__, "VOI expand_macro keeps CommandCenter build assignment after command issue; waiting for SC2 construction feedback.", m_bot);
 +										b.buildCommandGiven = true;
@@ -3140,12 +3164,38 @@ index 2872a0b..7916bbf 100644
  				}
  			}
  		}
+@@ -1418,12 +2847,24 @@ void BuildingManager::checkForCompletedBuildings()
+ 					if (b.type.isResourceDepot())
+ 					{
+ 						//check if the command center is an expand or a command center to lift up
+ 						auto base = m_bot.Bases().getBaseForDepotPosition(b.finalPosition);
+ 						if (base == nullptr || !base->getResourceDepot().isValid() || base->getResourceDepot().getTag() != b.buildingUnit.getTag())
+ 						{
+-							b.buildingUnit.useAbility(sc2::ABILITY_ID::LIFT);
++							if (canTrustAssignedVoiExpansionDepot(m_bot, b))
++							{
++								Util::Log(__FUNCTION__,
++									"VOI expand_macro kept completed CommandCenter landed while BaseLocation resource-depot mapping catches up final_x=" +
++									std::to_string(b.finalPosition.x) +
++									" final_y=" +
++									std::to_string(b.finalPosition.y),
++									m_bot);
++							}
++							else
++							{
++								b.buildingUnit.useAbility(sc2::ABILITY_ID::LIFT);
++							}
+ 						}
+ 					}
+ 
+ 					if (m_bot.Strategy().getStartingStrategy() == PROXY_CYCLONES)
+ 					{
 @@ -1509,7 +2935,25 @@ bool BuildingManager::isConstructingType(const UnitType & type)
  // TODO: may need to iterate over all tiles of the building footprint
  bool BuildingManager::isBuildingPositionExplored(const Building & b) const
  {
 -    return m_bot.Map().isExplored(b.finalPosition);
-+	if (canTrustAssignedVoiExpansionDepot(m_bot, b))
++	if (canTrustVoiExpansionDepotPlacement(m_bot, b.type, b.finalPosition))
 +	{
 +		return true;
 +	}
@@ -3263,15 +3313,6 @@ index 2872a0b..7916bbf 100644
  	}
  
  	CCTilePosition basePosition = b.desiredPosition;
-@@ -2476,7 +3952,7 @@ void BuildingManager::RunProxyLogic()
- 	{
- 		/*
- 		Orders in order
--		---------------
-+		---------------
- 		Barracks
- 		Reaper
- 		Factory
 @@ -2505,7 +3981,7 @@ void BuildingManager::RunProxyLogic()
  			if (!flyingBarracks.empty())
  			{
@@ -12492,7 +12533,7 @@ index 045faab..5398ad8 100644
  }
  
  ProductionManager& GameCommander::Production()
-@@ -46,6 +478,215 @@ CombatCommander& GameCommander::Combat()
+@@ -46,6 +478,216 @@ CombatCommander& GameCommander::Combat()
  	return m_combatCommander;
  }
  
@@ -12581,25 +12622,26 @@ index 045faab..5398ad8 100644
 +	const CCPosition workerPosition(unit->pos);
 +	const float targetDistanceSq = voiDistanceSq(workerPosition, targetPosition);
 +	const bool buildPositionCommand = targetKind == "build_position" || targetKind == "ability_position";
++	constexpr float workerNearSelfCommandDistanceSq = 1.0f;
 +	const bool selfPositionCommand = targetTag == 0
 +		&& voiIsPositionWorkerAbility(abilityID)
-+		&& targetDistanceSq <= 0.36f;
++		&& targetDistanceSq <= workerNearSelfCommandDistanceSq;
 +	const bool sameAbilityPositionOrder = voiHasSamePositionOrder(unit, abilityID, targetPosition, 2.25f);
 +	const bool redundantExistingPositionOrder = targetTag == 0
 +		&& voiIsWorkerPositionCommandKind(targetKind)
 +		&& ((buildPositionCommand && sameAbilityPositionOrder)
-+			|| (!buildPositionCommand && sameAbilityPositionOrder && targetDistanceSq <= 0.36f));
++			|| (!buildPositionCommand && sameAbilityPositionOrder && targetDistanceSq <= workerNearSelfCommandDistanceSq));
 +	if (selfPositionCommand)
 +	{
-+		m_voiWorkerLastRootCauseStatus = "none";
-+		m_voiWorkerLastRootCauseReason = "none";
++		m_voiWorkerLastRootCauseStatus = "self_position_move_blocked";
++		m_voiWorkerLastRootCauseReason = next.reason.empty() ? targetKind : next.reason;
 +		recordVoiWorkerCommandTrace(next, unit, targetPosition, targetDistanceSq, "self_position_noop");
 +		return true;
 +	}
 +	if (redundantExistingPositionOrder)
 +	{
-+		m_voiWorkerLastRootCauseStatus = "none";
-+		m_voiWorkerLastRootCauseReason = "none";
++		m_voiWorkerLastRootCauseStatus = "duplicate_command_safety_blocked";
++		m_voiWorkerLastRootCauseReason = next.reason.empty() ? targetKind : next.reason;
 +		recordVoiWorkerCommandTrace(next, unit, targetPosition, targetDistanceSq, "redundant_existing_position_order");
 +		return true;
 +	}
@@ -12622,8 +12664,8 @@ index 045faab..5398ad8 100644
 +			&& last.targetKind == next.targetKind;
 +		if (sameCommand && currentFrame >= last.frame && currentFrame - last.frame < static_cast<uint32_t>(guardFrames))
 +		{
-+			m_voiWorkerLastRootCauseStatus = "none";
-+			m_voiWorkerLastRootCauseReason = "none";
++			m_voiWorkerLastRootCauseStatus = "duplicate_command_safety_blocked";
++			m_voiWorkerLastRootCauseReason = next.reason.empty() ? targetKind : next.reason;
 +			recordVoiWorkerCommandTrace(next, unit, targetPosition, targetDistanceSq, "duplicate_command_noop");
 +			return true;
 +		}
@@ -13596,7 +13638,7 @@ index 3859fdb..6a4a042 100644
  				{
  					bool idleProductionBuilding = false;
  					const auto & productionBuildings = m_bot.GetAllyUnits(toBuild.getUnitType().getAPIUnitType());
-@@ -1402,129 +1765,937 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -1402,129 +1765,953 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  				}
  #endif
  
@@ -13894,9 +13936,25 @@ index 3859fdb..6a4a042 100644
 +	m_lastVoiSupplyProviderUnderConstructionCount = m_bot.Buildings().countBeingBuilt(supplyProvider);
 +	if (m_lastVoiSupplyProviderUnderConstructionCount > 0)
 +	{
-+		m_lastVoiSupplyRecoveryStatus = "waiting_existing_under_construction";
-+		Util::Log(__FUNCTION__, "Supply provider recovery waiting for existing construction reason=" + reason + " count=" + std::to_string(m_lastVoiSupplyProviderUnderConstructionCount), m_bot);
-+		return true;
++		constexpr uint32_t staleSupplyProviderCommandFrames = 672;
++		const uint32_t currentFrame = m_bot.GetCurrentFrame();
++		const bool freshSupplyProviderCommand =
++			m_lastVoiSupplyProviderCommandFrame > 0 &&
++			currentFrame >= m_lastVoiSupplyProviderCommandFrame &&
++			currentFrame - m_lastVoiSupplyProviderCommandFrame < staleSupplyProviderCommandFrames;
++		if (freshSupplyProviderCommand)
++		{
++			m_lastVoiSupplyRecoveryStatus = "waiting_existing_under_construction";
++			Util::Log(__FUNCTION__, "Supply provider recovery waiting for existing construction reason=" + reason + " count=" + std::to_string(m_lastVoiSupplyProviderUnderConstructionCount), m_bot);
++			return true;
++		}
++
++		m_lastVoiSupplyRecoveryStatus = "stale_existing_under_construction_requeued";
++		Util::Log(__FUNCTION__,
++			"Supply provider recovery found stale existing construction; queuing another provider reason=" + reason +
++			" count=" + std::to_string(m_lastVoiSupplyProviderUnderConstructionCount) +
++			" last_command_frame=" + std::to_string(m_lastVoiSupplyProviderCommandFrame),
++			m_bot);
 +	}
 +
 +	if (!hasRequired(supplyProviderType, true) || !hasProducer(supplyProviderType, true))
@@ -15092,7 +15150,7 @@ index 217b38c..b464ff2 100644
 +    const float effectiveRiskTolerance = riskTolerance + std::max(0.0f, hiddenTechScoutBias) * 0.2f;
 +    const float harassDistance = 12.0f + std::max(0.0f, effectiveRiskTolerance) * 4.0f + std::max(0.0f, scanPriority) * 2.0f;
 +    const bool deepScoutRequested = scoutPriority >= 0.65f || hiddenTechScoutBias > 0.35f || scanPriority > 0.35f;
-+    const float targetReachedDistanceSq = deepScoutRequested ? 0.49f : 1.0f;
++    const float targetReachedDistanceSq = 1.0f;
 +    const float sameMoveOrderDistanceSq = 4.0f;
 +    auto issueScoutMove = [this, &workerScout, targetReachedDistanceSq, sameMoveOrderDistanceSq](const CCPosition & targetPosition, const std::string & reason, bool smartMove) -> bool
 +    {

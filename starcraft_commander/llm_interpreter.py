@@ -1178,6 +1178,9 @@ class LLMCommandInterpreter:
                     retry_after_missing_tool=True,
                 )
                 tool_input = _extract_tool_input(response)
+            if tool_input is None and _uses_openai_compatible_client(self.provider):
+                response = self._create_policy_modulation_json_message(request)
+                tool_input = _extract_openai_json_object_input(response)
         except Exception as error:  # noqa: BLE001 - provider boundary is fail-closed
             return {
                 "source": "llm",
@@ -1192,7 +1195,8 @@ class LLMCommandInterpreter:
                 "source": "llm",
                 "status": "refused",
                 "refusal_reason": (
-                    "LLM policy modulation response had no forced-tool JSON input."
+                    "LLM policy modulation response had no forced-tool or "
+                    "structured JSON input."
                 ),
             }
         return _normalize_policy_modulation_tool_output(tool_input, text)
@@ -1419,6 +1423,30 @@ class LLMCommandInterpreter:
             tools=[self.policy_modulation_tool_definition],
             tool_choice={"type": "tool", "name": LLM_POLICY_MODULATION_TOOL_NAME},
             messages=[{"role": "user", "content": prompt}],
+        )
+
+    def _create_policy_modulation_json_message(self, request: object) -> object:
+        """Issue an LLM-only JSON fallback after OpenAI tool forcing fails."""
+
+        command_text = _read_field(request, "command_text")
+        text = command_text if isinstance(command_text, str) else ""
+        prompt = (
+            self._policy_modulation_user_content(request, text)
+            + "\n\nYour previous forced-tool responses did not contain a tool call. "
+            "Retry once as raw JSON only. Return exactly one JSON object matching "
+            f"the {LLM_POLICY_MODULATION_TOOL_NAME} tool input schema. Do not use "
+            "markdown, prose, code fences, raw SC2 controls, coordinates, unit "
+            "tags, or API calls."
+        )
+        client = self._build_client()
+        return client.chat.completions.create(
+            model=self.model,
+            **_openai_compatible_token_args(self.provider, self.max_tokens),
+            messages=[
+                {"role": "system", "content": self.policy_modulation_system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
         )
 
     def briefing_summary(self, context: object | None = None) -> dict[str, object] | None:
@@ -2016,6 +2044,29 @@ def _extract_openai_text(response: object) -> str:
     message = _read_field(choices[0], "message")
     content = _read_field(message, "content")
     return content if isinstance(content, str) else ""
+
+
+def _extract_openai_json_object_input(response: object) -> Mapping[str, object] | None:
+    """Return a JSON object from an OpenAI-compatible text response."""
+
+    tool_input = _extract_openai_tool_input(response)
+    if tool_input is not None:
+        return tool_input
+    content = _extract_openai_text(response).strip()
+    if not content:
+        return None
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        content = "\n".join(lines).strip()
+    try:
+        decoded = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return decoded if isinstance(decoded, Mapping) else None
 
 
 def _extract_anthropic_text(response: object) -> str:
