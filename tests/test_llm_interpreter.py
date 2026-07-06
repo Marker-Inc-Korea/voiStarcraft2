@@ -752,6 +752,41 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                 self.assertIn("required bounded tactical_task", output["refusal_reason"])
                 self.assertEqual(2, len(fake_client.calls))
 
+    def test_policy_modulation_requires_tactical_task_for_common_english_production_commands(self) -> None:
+        payload = {
+            "source": "llm",
+            "status": "compiled",
+            "assistant_message": "I will bias macro production.",
+            "modulation": {
+                "goal": "macro production bias",
+                "source": "llm",
+                "override_level": "directive",
+                "economy": {"worker_production_bias": 0.8, "expand_bias": 0.7},
+                "production": {"queue_biases": {"SCV": 0.8, "CommandCenter": 0.7}},
+            },
+        }
+        commands = (
+            "make workers",
+            "keep making workers",
+            "get upgrades",
+            "take a third",
+            "make an expansion",
+        )
+        for command_text in commands:
+            with self.subTest(command_text=command_text):
+                interpreter, fake_client = _make_llm_interpreter(
+                    _tool_response(payload),
+                    _tool_response(payload),
+                )
+
+                output = interpreter.propose_policy_modulation(
+                    types.SimpleNamespace(command_text=command_text)
+                )
+
+                self.assertEqual("refused", output["status"])
+                self.assertIn("required bounded tactical_task", output["refusal_reason"])
+                self.assertEqual(2, len(fake_client.calls))
+
     def test_policy_modulation_provider_error_redacts_api_key(self) -> None:
         interpreter, _fake_client = _make_llm_interpreter(
             RuntimeError(
