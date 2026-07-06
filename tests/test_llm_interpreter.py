@@ -533,6 +533,14 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                         "override_level": "bias",
                         "production": {"queue_biases": {"marine": 0.8}},
                         "combat": {"aggression": 0.7},
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "unit_classes": ["marine"],
+                            "location_intent": "enemy_main",
+                            "priority": 0.7,
+                            "min_units": 6,
+                            "duration_seconds": 180,
+                        },
                     },
                 }
             ),
@@ -568,6 +576,15 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                     }
                 },
                 "combat": {"aggression": 0.6},
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "production_targets": ["marine", "supply_depot"],
+                    "unit_classes": ["marine"],
+                    "location_intent": "enemy_main",
+                    "priority": 0.7,
+                    "min_units": 6,
+                    "duration_seconds": 180,
+                },
             },
         }
         fake_client = FakeOpenAIClient(
@@ -610,6 +627,130 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual({"type": "json_object"}, fake_client.calls[2]["response_format"])
         self.assertNotIn("tools", fake_client.calls[2])
         self.assertIn("raw JSON only", fake_client.calls[2]["messages"][1]["content"])
+
+    def test_policy_modulation_retries_when_concrete_command_omits_tactical_task(self) -> None:
+        first_payload = {
+            "source": "llm",
+            "status": "compiled",
+            "assistant_message": "마린 정찰 성향을 높이겠습니다.",
+            "modulation": {
+                "goal": "마린 3기 정찰",
+                "source": "llm",
+                "override_level": "directive",
+                "scouting": {"scout_priority": 0.8},
+                "scope": {
+                    "army_group": "scout",
+                    "unit_classes": ["marine"],
+                    "min_units": 3,
+                    "max_units": 3,
+                },
+            },
+        }
+        retry_payload = {
+            "source": "llm",
+            "status": "compiled",
+            "assistant_message": "마린 3기 정찰 task로 해석했습니다.",
+            "modulation": {
+                "goal": "마린 3기 정찰",
+                "source": "llm",
+                "override_level": "directive",
+                "scouting": {"scout_priority": 0.85},
+                "scope": {
+                    "army_group": "scout",
+                    "unit_classes": ["marine"],
+                    "min_units": 3,
+                    "max_units": 3,
+                },
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["marine"],
+                    "location_intent": "enemy_main",
+                    "priority": 0.8,
+                    "min_units": 3,
+                    "max_units": 3,
+                    "duration_seconds": 120,
+                    "allow_partial": False,
+                },
+            },
+        }
+        interpreter, fake_client = _make_llm_interpreter(
+            _tool_response(first_payload),
+            _tool_response(retry_payload),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="마린 3마리 정찰해서 적 위치 찾아",
+                commander_context={
+                    "response_language": "Korean",
+                    "response_language_code": "ko",
+                },
+            )
+        )
+
+        self.assertEqual("compiled", output["status"])
+        self.assertEqual(
+            "scout_with_units",
+            output["modulation"]["tactical_task"]["task_type"],
+        )
+        self.assertEqual("마린 3기 정찰 task로 해석했습니다.", output["assistant_message"])
+        self.assertEqual(2, len(fake_client.calls))
+        self.assertIn(
+            "omitted the required tactical_task",
+            fake_client.calls[1]["messages"][0]["content"],
+        )
+
+    def test_policy_modulation_refuses_concrete_command_when_retry_still_has_no_tactical_task(self) -> None:
+        payload = {
+            "source": "llm",
+            "status": "compiled",
+            "assistant_message": "보급고 성향을 높이겠습니다.",
+            "modulation": {
+                "goal": "보급고 계속",
+                "source": "llm",
+                "override_level": "directive",
+                "production": {"queue_biases": {"supply_depot": 0.8}},
+            },
+        }
+        interpreter, fake_client = _make_llm_interpreter(
+            _tool_response(payload),
+            _tool_response(payload),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(command_text="보급고 계속 지어")
+        )
+
+        self.assertEqual("refused", output["status"])
+        self.assertIn("required bounded tactical_task", output["refusal_reason"])
+        self.assertEqual(2, len(fake_client.calls))
+
+    def test_policy_modulation_requires_tactical_task_for_common_korean_production_commands(self) -> None:
+        payload = {
+            "source": "llm",
+            "status": "compiled",
+            "assistant_message": "생산 성향을 높이겠습니다.",
+            "modulation": {
+                "goal": "생산 편향",
+                "source": "llm",
+                "override_level": "directive",
+                "production": {"queue_biases": {"marine": 0.8, "barracks": 0.7}},
+            },
+        }
+        for command_text in ("마린 뽑아", "배럭 지어", "병영 올려"):
+            with self.subTest(command_text=command_text):
+                interpreter, fake_client = _make_llm_interpreter(
+                    _tool_response(payload),
+                    _tool_response(payload),
+                )
+
+                output = interpreter.propose_policy_modulation(
+                    types.SimpleNamespace(command_text=command_text)
+                )
+
+                self.assertEqual("refused", output["status"])
+                self.assertIn("required bounded tactical_task", output["refusal_reason"])
+                self.assertEqual(2, len(fake_client.calls))
 
     def test_policy_modulation_provider_error_redacts_api_key(self) -> None:
         interpreter, _fake_client = _make_llm_interpreter(

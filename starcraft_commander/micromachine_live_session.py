@@ -13,6 +13,7 @@ import json
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -27,6 +28,7 @@ from starcraft_commander.micromachine_runtime import (
     MicroMachineModulationBackend,
 )
 from starcraft_commander.policy_modulation import (
+    PolicyModulationVector,
     PolicyModulationSource,
     PolicyOverrideLevel,
     WorkerModulation,
@@ -67,6 +69,14 @@ LLM_ONLY_PROVIDER_REQUIRED_REASON = (
     "requires an LLM-generated structured DSL output. Keyword/rule fallback is "
     "allowed only when explicit smoke mode is requested."
 )
+
+_PRODUCTION_TASK_TYPES = frozenset(
+    {"sustain_production", "tech_transition", "expand_or_land_command_center"}
+)
+_TACTICAL_ONLY_TASK_TYPES = frozenset({"scout_with_units", "pressure_with_main_army"})
+_PERSISTENT_LIVE_DOMAINS = ("strategy", "economy", "workers", "tech", "production")
+_TACTICAL_LIVE_DOMAINS = ("combat", "scouting", "squad", "scope")
+_LIVE_STANDING_MERGE_WARNING = "live_standing_orders_merged"
 
 
 class StaticJsonPolicyModulationProvider:
@@ -358,10 +368,15 @@ class MicroMachineLiveTextSession:
         text = _require_text("command_text", command_text)
         frame = self._resolve_current_frame(current_frame)
         telemetry_before = self._safe_read_latest_telemetry()
+        previous_update = self._safe_read_latest_update(frame)
         context = {"bridge_status": self.bridge_status.value}
         if commander_context is not None:
             context.update(dict(commander_context))
         context["bridge_status"] = self.bridge_status.value
+        if previous_update is not None:
+            context["active_micromachine_standing_orders"] = (
+                _standing_order_context(previous_update)
+            )
         request = PolicyModulationProviderRequest(
             command_text=text,
             source=getattr(self.provider, "source", PolicyModulationSource.LLM),
@@ -398,6 +413,10 @@ class MicroMachineLiveTextSession:
             )
 
         try:
+            compile_result = _merge_live_standing_orders(
+                compile_result,
+                previous_update=previous_update,
+            )
             update = self.backend.publish_vector(
                 compile_result.vector,
                 current_frame=frame,
@@ -471,6 +490,15 @@ class MicroMachineLiveTextSession:
     def _safe_read_latest_telemetry(self) -> MicroMachineTelemetry | None:
         try:
             return self.backend.read_latest_telemetry()
+        except (OSError, TypeError, ValueError):
+            return None
+
+    def _safe_read_latest_update(
+        self,
+        current_frame: int,
+    ) -> MicroMachineBlackboardUpdate | None:
+        try:
+            return self.backend.read_latest_update(current_frame=current_frame)
         except (OSError, TypeError, ValueError):
             return None
 
@@ -598,6 +626,367 @@ def _ensure_live_worker_repeat_order_guard(
             f"live_worker_repeat_order_guard_frames_clamped={guard_frames}->32",
         ),
     )
+
+
+def _merge_live_standing_orders(
+    compile_result: PolicyModulationCompileResult,
+    *,
+    previous_update: MicroMachineBlackboardUpdate | None,
+) -> PolicyModulationCompileResult:
+    """Preserve active production/economy standing intent across live commands.
+
+    MicroMachine reads a single latest blackboard vector. Without this merge, a
+    later "scout with three Marines" update erases prior "keep depots/SCVs/
+    Marines going" or "transition to tanks" standing orders.
+    """
+
+    if not compile_result.ok or compile_result.vector is None:
+        return compile_result
+    incoming_payload = _lift_task_to_persistent_biases(
+        compile_result.vector.to_dict()
+    )
+    if previous_update is None:
+        merged_vector = PolicyModulationVector.from_mapping(incoming_payload)
+        if merged_vector == compile_result.vector:
+            return compile_result
+        return replace(compile_result, vector=merged_vector)
+
+    previous_payload = previous_update.vector.to_dict()
+    _lift_task_to_persistent_biases(previous_payload)
+    merged_payload = _merge_live_vector_payloads(previous_payload, incoming_payload)
+    merged_vector = PolicyModulationVector.from_mapping(merged_payload)
+    if merged_vector == compile_result.vector:
+        return compile_result
+    warnings = tuple(
+        warning
+        for warning in compile_result.warnings
+        if warning != _LIVE_STANDING_MERGE_WARNING
+    )
+    return replace(
+        compile_result,
+        vector=merged_vector,
+        warnings=(*warnings, _LIVE_STANDING_MERGE_WARNING),
+    )
+
+
+def _merge_live_vector_payloads(
+    previous_payload: Mapping[str, object],
+    incoming_payload: Mapping[str, object],
+) -> dict[str, object]:
+    merged = deepcopy(dict(incoming_payload))
+    incoming_task_type = _task_type(incoming_payload)
+    incoming_production_intent = _has_production_intent(incoming_payload)
+    defensive_reset = _is_defensive_or_emergency_reset(incoming_payload)
+
+    for domain in _PERSISTENT_LIVE_DOMAINS:
+        previous_domain = _mapping_value(previous_payload, domain)
+        incoming_domain = _mapping_value(incoming_payload, domain)
+        if previous_domain or incoming_domain:
+            merged[domain] = _merge_previous_signal(previous_domain, incoming_domain)
+
+    if _stop_expansion_requested(incoming_payload):
+        _clear_expansion_biases(merged)
+
+    if (
+        not incoming_production_intent
+        and incoming_task_type in _TACTICAL_ONLY_TASK_TYPES
+        and _text_at(previous_payload, ("strategy", "doctrine"))
+    ):
+        strategy = dict(_mapping_value(merged, "strategy"))
+        strategy["doctrine"] = _text_at(previous_payload, ("strategy", "doctrine"))
+        for key in ("preferred_builds", "transition_biases", "timing_biases"):
+            strategy[key] = _merge_previous_signal(
+                _mapping_value(_mapping_value(previous_payload, "strategy"), key),
+                _mapping_value(strategy, key),
+            )
+        merged["strategy"] = strategy
+
+    if not defensive_reset:
+        for domain in _TACTICAL_LIVE_DOMAINS:
+            previous_domain = _mapping_value(previous_payload, domain)
+            incoming_domain = _mapping_value(incoming_payload, domain)
+            if previous_domain or incoming_domain:
+                merged[domain] = _merge_previous_signal(previous_domain, incoming_domain)
+        if not _mapping_has_signal(_mapping_value(incoming_payload, "tactical_task")):
+            previous_task = _mapping_value(previous_payload, "tactical_task")
+            if _mapping_has_signal(previous_task):
+                merged["tactical_task"] = previous_task
+
+    merged["goal"] = _merged_goal(previous_payload, incoming_payload)
+    merged["ttl_seconds"] = max(
+        int(previous_payload.get("ttl_seconds", 1) or 1),
+        int(incoming_payload.get("ttl_seconds", 1) or 1),
+    )
+    merged["tags"] = _merge_string_lists(
+        previous_payload.get("tags", ()),
+        incoming_payload.get("tags", ()),
+        extra=(_LIVE_STANDING_MERGE_WARNING,),
+    )
+    previous_rationale = str(previous_payload.get("rationale", "") or "").strip()
+    incoming_rationale = str(incoming_payload.get("rationale", "") or "").strip()
+    if previous_rationale and incoming_rationale:
+        merged["rationale"] = f"{incoming_rationale} Standing context preserved: {previous_rationale}"
+    elif previous_rationale:
+        merged["rationale"] = previous_rationale
+    return merged
+
+
+def _lift_task_to_persistent_biases(payload: Mapping[str, object]) -> dict[str, object]:
+    """Convert production-like bounded tasks into standing manager biases."""
+
+    result = deepcopy(dict(payload))
+    tactical_task = _mapping_value(result, "tactical_task")
+    task_type = str(tactical_task.get("task_type", "") or "")
+    raw_targets = tactical_task.get("production_targets", ())
+    if not isinstance(raw_targets, Sequence) or isinstance(
+        raw_targets,
+        (str, bytes, bytearray),
+    ):
+        raw_targets = ()
+    targets = {str(target) for target in raw_targets if str(target).strip()}
+
+    if task_type == "sustain_production" and not targets:
+        targets.update({"TERRAN_SCV", "TERRAN_SUPPLYDEPOT", "TERRAN_MARINE"})
+    if task_type == "tech_transition" and not targets:
+        targets.update({"TERRAN_FACTORY", "FACTORY_TECHLAB", "TERRAN_SIEGETANK"})
+    if task_type == "expand_or_land_command_center" and not targets:
+        targets.update({"TERRAN_COMMANDCENTER", "TERRAN_SCV", "TERRAN_SUPPLYDEPOT"})
+
+    priority = _float_at(tactical_task, ("priority",), default=0.65)
+    bias = max(0.45, min(0.9, priority or 0.65))
+    if "TERRAN_SUPPLYDEPOT" in targets:
+        _set_max_float(result, ("economy", "supply_buffer_bias"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_SUPPLYDEPOT"), bias)
+    if "TERRAN_SCV" in targets:
+        _set_max_float(result, ("economy", "worker_production_bias"), bias)
+        _set_max_float(result, ("economy", "mineral_saturation_bias"), min(0.8, bias))
+    if "TERRAN_MARINE" in targets:
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_MARINE"), bias)
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_MARINE"), min(0.85, bias))
+        _set_max_float(result, ("production", "production_continuity_bias"), min(0.8, bias))
+    if "TERRAN_COMMANDCENTER" in targets:
+        _set_max_float(result, ("economy", "expand_bias"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_COMMANDCENTER"), bias)
+        _set_max_float(result, ("production", "composition_biases", "macro"), min(0.85, bias))
+    if "TERRAN_FACTORY" in targets:
+        _set_max_float(result, ("tech", "structure_biases", "TERRAN_FACTORY"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_FACTORY"), bias)
+        _set_max_float(result, ("production", "production_facility_biases", "TERRAN_FACTORY"), bias)
+    if "FACTORY_TECHLAB" in targets or "TERRAN_FACTORYTECHLAB" in targets:
+        _set_max_float(result, ("production", "queue_biases", "FACTORY_TECHLAB"), bias)
+        _set_max_float(result, ("production", "addon_biases", "FACTORY_TECHLAB"), bias)
+    if "TERRAN_SIEGETANK" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_SIEGETANK"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_SIEGETANK"), bias)
+        _set_max_float(result, ("production", "composition_biases", "siege"), min(0.85, bias))
+        _set_max_float(result, ("production", "tech_switch_urgency"), min(0.85, bias))
+    if "TERRAN_MEDIVAC" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_MEDIVAC"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_MEDIVAC"), bias)
+        _set_max_float(result, ("production", "composition_biases", "medivac_support"), min(0.85, bias))
+    return result
+
+
+def _standing_order_context(update: MicroMachineBlackboardUpdate) -> dict[str, object]:
+    vector = update.vector
+    return {
+        "update_id": update.update_id,
+        "expires_at_frame": update.expires_at_frame,
+        "strategy": {
+            "posture": vector.strategy.posture,
+            "doctrine": vector.strategy.doctrine,
+        },
+        "economy": vector.economy.to_dict(),
+        "tech": vector.tech.to_dict(),
+        "production": vector.production.to_dict(),
+        "tactical_task": vector.tactical_task.to_dict(),
+        "tags": list(vector.tags),
+    }
+
+
+def _merge_previous_signal(
+    previous: Mapping[str, object],
+    incoming: Mapping[str, object],
+    *,
+    path: tuple[str, ...] = (),
+) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    for key in (*previous.keys(), *incoming.keys()):
+        if key in merged:
+            continue
+        current_path = (*path, str(key))
+        previous_value = previous.get(key)
+        incoming_value = incoming.get(key)
+        if isinstance(previous_value, Mapping) or isinstance(incoming_value, Mapping):
+            merged[key] = _merge_previous_signal(
+                previous_value if isinstance(previous_value, Mapping) else {},
+                incoming_value if isinstance(incoming_value, Mapping) else {},
+                path=current_path,
+            )
+        elif _value_has_signal(incoming_value, current_path):
+            merged[key] = deepcopy(incoming_value)
+        elif _value_has_signal(previous_value, current_path):
+            merged[key] = deepcopy(previous_value)
+        elif key in incoming:
+            merged[key] = deepcopy(incoming_value)
+        else:
+            merged[key] = deepcopy(previous_value)
+    return merged
+
+
+def _mapping_has_signal(mapping: Mapping[str, object]) -> bool:
+    return any(_value_has_signal(value, (str(key),)) for key, value in mapping.items())
+
+
+def _value_has_signal(value: object, path: tuple[str, ...]) -> bool:
+    key = path[-1] if path else ""
+    if isinstance(value, Mapping):
+        return _mapping_has_signal(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return any(_value_has_signal(item, (*path, str(index))) for index, item in enumerate(value))
+    if type(value) is bool:
+        return value or key in {"allow_partial", "allow_partial_scope"}
+    if isinstance(value, (int, float)) and type(value) is not bool:
+        return float(value) != 0.0
+    if type(value) is str:
+        normalized = value.strip()
+        if not normalized:
+            return False
+        if key == "attack_condition_override" and normalized == "normal":
+            return False
+        if key == "posture" and normalized == "balanced":
+            return False
+        return True
+    return value is not None
+
+
+def _has_production_intent(payload: Mapping[str, object]) -> bool:
+    tactical_task = _mapping_value(payload, "tactical_task")
+    task_type = str(tactical_task.get("task_type", "") or "")
+    if task_type in _PRODUCTION_TASK_TYPES:
+        return True
+    if _value_has_signal(tactical_task.get("production_targets"), ("production_targets",)):
+        return True
+    for domain in ("economy", "tech", "production"):
+        if _mapping_has_signal(_mapping_value(payload, domain)):
+            return True
+    doctrine = _text_at(payload, ("strategy", "doctrine"))
+    return bool(doctrine and doctrine != "scouting_map_control")
+
+
+def _is_defensive_or_emergency_reset(payload: Mapping[str, object]) -> bool:
+    if _mapping_has_signal(_mapping_value(payload, "emergency")):
+        return True
+    strategy = _mapping_value(payload, "strategy")
+    if str(strategy.get("posture", "") or "") == "defensive":
+        return True
+    combat = _mapping_value(payload, "combat")
+    return _float_at(combat, ("defend_bias",)) > 0.45 or _float_at(combat, ("aggression",)) < 0.0
+
+
+def _stop_expansion_requested(payload: Mapping[str, object]) -> bool:
+    emergency = _mapping_value(payload, "emergency")
+    if emergency.get("stop_expansion") is True:
+        return True
+    economy = _mapping_value(payload, "economy")
+    production = _mapping_value(payload, "production")
+    return (
+        _float_at(economy, ("expand_bias",)) < 0.0
+        or _float_at(production, ("queue_biases", "TERRAN_COMMANDCENTER")) < 0.0
+    )
+
+
+def _clear_expansion_biases(payload: dict[str, object]) -> None:
+    economy = dict(_mapping_value(payload, "economy"))
+    economy["expand_bias"] = min(0.0, _float_at(economy, ("expand_bias",)))
+    payload["economy"] = economy
+    production = deepcopy(dict(_mapping_value(payload, "production")))
+    queue_biases = dict(_mapping_value(production, "queue_biases"))
+    queue_biases.pop("TERRAN_COMMANDCENTER", None)
+    production["queue_biases"] = queue_biases
+    composition_biases = dict(_mapping_value(production, "composition_biases"))
+    composition_biases.pop("macro", None)
+    production["composition_biases"] = composition_biases
+    payload["production"] = production
+    strategy = dict(_mapping_value(payload, "strategy"))
+    if strategy.get("doctrine") == "expand_macro":
+        strategy["doctrine"] = ""
+    payload["strategy"] = strategy
+
+
+def _task_type(payload: Mapping[str, object]) -> str:
+    return _text_at(payload, ("tactical_task", "task_type"))
+
+
+def _merged_goal(
+    previous_payload: Mapping[str, object],
+    incoming_payload: Mapping[str, object],
+) -> str:
+    incoming_goal = str(incoming_payload.get("goal", "") or "").strip()
+    previous_goal = str(previous_payload.get("goal", "") or "").strip()
+    if not previous_goal or previous_goal == incoming_goal:
+        return incoming_goal or previous_goal or "live_micromachine_modulation"
+    return f"{incoming_goal} | standing: {previous_goal}"[:512]
+
+
+def _merge_string_lists(
+    previous: object,
+    incoming: object,
+    *,
+    extra: Sequence[str] = (),
+) -> list[str]:
+    result: list[str] = []
+    for values in (previous, incoming, extra):
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
+            for value in values:
+                text = str(value).strip()
+                if text and text not in result:
+                    result.append(text)
+    return result
+
+
+def _mapping_value(mapping: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = mapping.get(key, {})
+    return value if isinstance(value, Mapping) else {}
+
+
+def _text_at(mapping: Mapping[str, object], path: Sequence[str]) -> str:
+    value: object = mapping
+    for key in path:
+        if not isinstance(value, Mapping):
+            return ""
+        value = value.get(key, "")
+    return value.strip() if type(value) is str else ""
+
+
+def _float_at(
+    mapping: Mapping[str, object],
+    path: Sequence[str],
+    *,
+    default: float = 0.0,
+) -> float:
+    value: object = mapping
+    for key in path:
+        if not isinstance(value, Mapping):
+            return default
+        value = value.get(key, default)
+    if isinstance(value, (int, float)) and type(value) is not bool:
+        return float(value)
+    return default
+
+
+def _set_max_float(payload: dict[str, object], path: Sequence[str], value: float) -> None:
+    current: dict[str, object] = payload
+    for key in path[:-1]:
+        nested = current.get(key)
+        if not isinstance(nested, dict):
+            nested = {}
+            current[key] = nested
+        current = nested
+    leaf = path[-1]
+    existing = current.get(leaf, 0.0)
+    existing_float = float(existing) if isinstance(existing, (int, float)) and type(existing) is not bool else 0.0
+    current[leaf] = max(existing_float, value)
 
 
 def _force_provider_output_source(

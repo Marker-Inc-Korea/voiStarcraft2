@@ -1511,7 +1511,7 @@ diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
 index 3384d3a..2f336cc 100644
 --- a/src/BuildingManager.cpp
 +++ b/src/BuildingManager.cpp
-@@ -1,9 +1,1206 @@
+@@ -1,9 +1,1226 @@
  #include <algorithm>
 +#include <cmath>
 +#include <limits>
@@ -1952,8 +1952,8 @@ index 3384d3a..2f336cc 100644
 +	const auto buildAbility = bot.Data(building.type).buildAbility;
 +	const CCPosition desiredPosition = Util::GetPosition(building.desiredPosition);
 +	const float desiredHeight = forceSameHeight ? Util::TerrainHeight(building.desiredPosition) : 0.0f;
-+	constexpr size_t maxQueries = 700;
-+	const size_t maxTilesPerAnchor = isVoiSupplyRecoveryDepot(bot, building.type) ? 5000 : 900;
++	constexpr size_t maxQueries = 900;
++	const size_t maxTilesPerAnchor = isVoiSupplyRecoveryDepot(bot, building.type) ? 5000 : 2200;
 +
 +	auto tryAddCandidate = [&](const CCTilePosition & candidate, bool allowCombatInfluence, bool ignoreReservedForCandidate) {
 +		if (candidate == CCTilePosition() ||
@@ -2012,7 +2012,7 @@ index 3384d3a..2f336cc 100644
 +	auto collectSpiralCandidates = [&](bool allowCombatInfluence, bool ignoreReservedForCandidate) {
 +		for (const auto & anchor : anchors)
 +		{
-+			for (int radius = 4; radius <= 36 && queries.size() < maxQueries; radius += 2)
++			for (int radius = 2; radius <= 72 && queries.size() < maxQueries; radius += 2)
 +			{
 +				for (int dx = -radius; dx <= radius && queries.size() < maxQueries; dx += 2)
 +				{
@@ -2034,6 +2034,26 @@ index 3384d3a..2f336cc 100644
 +	};
 +
 +	collectCandidates(false, false);
++	if (queries.empty())
++	{
++		Util::Log(source, "VOI SC2 Query macro placement found no closest-tile candidates for " + building.type.getName() + "; retrying with local spiral SC2 Query placement.", bot);
++		collectSpiralCandidates(false, false);
++	}
++	if (queries.empty())
++	{
++		Util::Log(source, "VOI SC2 Query macro placement found no strict spiral candidates for " + building.type.getName() + "; retrying with stale-reservation-relaxed local spiral placement.", bot);
++		collectSpiralCandidates(false, true);
++	}
++	if (queries.empty())
++	{
++		Util::Log(source, "VOI SC2 Query macro placement found no reservation-relaxed candidates for " + building.type.getName() + "; retrying with combat-influence-relaxed SC2 Query placement.", bot);
++		collectCandidates(true, true);
++	}
++	if (queries.empty())
++	{
++		Util::Log(source, "VOI SC2 Query macro placement found no combat-influence-relaxed closest-tile candidates for " + building.type.getName() + "; retrying with combat-influence-relaxed local spiral placement.", bot);
++		collectSpiralCandidates(true, true);
++	}
 +	if (queries.empty() && isVoiSupplyRecoveryDepot(bot, building.type))
 +	{
 +		Util::Log(source, "VOI SupplyDepot recovery found no strict macro candidates; retrying with stale-reservation-relaxed SC2 Query placement.", bot);
@@ -2765,7 +2785,7 @@ index 3384d3a..2f336cc 100644
  			//Detect if the building was created this frame and we just don't know about it yet.
  			bool isAlreadyBuilt = false;
  			for (auto b : m_bot.GetAllyUnits(building.type.getAPIUnitType()))
-@@ -680,15 +1913,33 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+@@ -680,15 +1913,41 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
  		m_bot.StartProfiling("0.8.3.1 getBuildingLocation");
  		// grab a worker unit from WorkerManager which is closest to this final position
  		bool isRushed = m_bot.Strategy().isEarlyRushed() || m_bot.Strategy().isWorkerRushed();
@@ -2793,7 +2813,15 @@ index 3384d3a..2f336cc 100644
  		{
 -			if (b.type.getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER && m_bot.GetCurrentFrame() < 4 * 60 * 22.4f)//[expand in main first CC], before 4 minutes
 +			const bool useVoiExpansionDepotLocation = shouldUseVoiExpansionDepotLocation(m_bot, b.type);
-+			if (useVoiExpansionDepotLocation)
++			if (b.finalPosition != CCTilePosition() &&
++				m_bot.Map().isValidTile(b.finalPosition) &&
++				(canTrustVoiExpansionDepotPlacement(m_bot, b.type, b.finalPosition) ||
++				 canTrustSafeMacroPlacement(m_bot, b.type, b.finalPosition)))
++			{
++				testLocation = b.finalPosition;
++				Util::DebugLog(__FUNCTION__, "VOI reusing stable assigned macro placement for " + b.type.getName() + ".", m_bot);
++			}
++			else if (useVoiExpansionDepotLocation)
 +			{
 +				testLocation = getVoiExpansionDepotPosition(m_bot, b.type, true, __FUNCTION__);
 +				if (testLocation != CCTilePosition())
@@ -3875,7 +3903,7 @@ diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
 index a8d5f3a..c0d2c0d 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
-@@ -1,3879 +1,4173 @@
+@@ -1,3879 +1,4186 @@
 -#include "CombatCommander.h"
 -#include "Util.h"
 -#include "CCBot.h"
@@ -11523,7 +11551,20 @@ index a8d5f3a..c0d2c0d 100644
 +			action.executionFrame = m_bot.GetGameLoop();
 +			m_lastVoiActionIssuedCount++;
 +			m_lastVoiActionFrame = m_bot.GetGameLoop();
++			m_lastVoiIssuedActionFrame = m_bot.GetGameLoop();
 +			m_lastVoiIssuedAction = voiActionEvidence(action);
++			if (action.squad == "MainAttack")
++			{
++				m_lastVoiMainAttackActionIssuedCount++;
++				m_lastVoiMainAttackActionFrame = m_bot.GetGameLoop();
++				m_lastVoiMainAttackIssuedAction = m_lastVoiIssuedAction;
++			}
++			if (action.squad == "Scout")
++			{
++				m_lastVoiScoutActionIssuedCount++;
++				m_lastVoiScoutActionFrame = m_bot.GetGameLoop();
++				m_lastVoiScoutIssuedAction = m_lastVoiIssuedAction;
++			}
 +			if (action.duration > 0)
 +			{
 +				nextCommandFrameForUnit[rangedUnit] = m_bot.GetGameLoop() + action.duration;
@@ -11933,7 +11974,7 @@ diff --git a/src/CombatCommander.h b/src/CombatCommander.h
 index edb6fbe..cb6e571 100644
 --- a/src/CombatCommander.h
 +++ b/src/CombatCommander.h
-@@ -165,6 +165,26 @@ class CombatCommander
+@@ -165,6 +165,33 @@ class CombatCommander
  	bool m_hasEnoughVikingsAgainstTempests = true;
  	bool m_winAttackSimulation = true;
  	int m_lastRetreatFrame = -1000;
@@ -11944,23 +11985,30 @@ index edb6fbe..cb6e571 100644
 +	bool m_lastVoiMainAttackScopeThresholdMet = false;
 +	bool m_lastVoiMainAttackSimulationWon = false;
 +	CCPosition m_lastVoiMainAttackOrderPosition = CCPosition();
++	int m_lastVoiMainAttackActionIssuedCount = 0;
++	uint32_t m_lastVoiMainAttackActionFrame = 0;
++	std::string m_lastVoiMainAttackIssuedAction = "";
 +	std::string m_lastVoiScoutScopeStatus = "Uninitialized";
 +	std::string m_lastVoiScoutScopeReason = "No scout scope evaluated yet";
 +	int m_lastVoiScoutRequestedMinUnits = 0;
 +	int m_lastVoiScoutRequestedMaxUnits = 0;
 +	int m_lastVoiScoutAssignedUnitCount = 0;
 +	uint32_t m_lastVoiScoutScopeFrame = 0;
++	int m_lastVoiScoutActionIssuedCount = 0;
++	uint32_t m_lastVoiScoutActionFrame = 0;
++	std::string m_lastVoiScoutIssuedAction = "";
 +	int m_lastVoiActionPlanCount = 0;
 +	int m_lastVoiActionIssuedCount = 0;
 +	int m_lastVoiActionSkippedCount = 0;
 +	uint32_t m_lastVoiActionFrame = 0;
++	uint32_t m_lastVoiIssuedActionFrame = 0;
 +	std::string m_lastVoiPlannedAction = "";
 +	std::string m_lastVoiIssuedAction = "";
 +	std::string m_lastVoiSkippedAction = "";
  	bool m_logVikingActions = false;
  	bool m_allowEarlyBuildingAttack = false;
      bool            m_initialized;
-@@ -282,6 +302,26 @@ public:
+@@ -282,6 +309,33 @@ public:
  	bool isTileBlocked(int x, int y);
  	bool hasEnoughVikingsAgainstTempests() const { return m_hasEnoughVikingsAgainstTempests; }
  	bool winAttackSimulation() const { return m_winAttackSimulation; }
@@ -11971,23 +12019,30 @@ index edb6fbe..cb6e571 100644
 +	bool getVoiMainAttackScopeThresholdMet() const { return m_lastVoiMainAttackScopeThresholdMet; }
 +	bool getVoiMainAttackSimulationWon() const { return m_lastVoiMainAttackSimulationWon; }
 +	CCPosition getVoiMainAttackOrderPosition() const { return m_lastVoiMainAttackOrderPosition; }
++	int getVoiMainAttackActionIssuedCount() const { return m_lastVoiMainAttackActionIssuedCount; }
++	uint32_t getVoiMainAttackActionFrame() const { return m_lastVoiMainAttackActionFrame; }
++	const std::string & getVoiMainAttackIssuedAction() const { return m_lastVoiMainAttackIssuedAction; }
 +	const std::string & getVoiScoutScopeStatus() const { return m_lastVoiScoutScopeStatus; }
 +	const std::string & getVoiScoutScopeReason() const { return m_lastVoiScoutScopeReason; }
 +	int getVoiScoutRequestedMinUnits() const { return m_lastVoiScoutRequestedMinUnits; }
 +	int getVoiScoutRequestedMaxUnits() const { return m_lastVoiScoutRequestedMaxUnits; }
 +	int getVoiScoutAssignedUnitCount() const { return m_lastVoiScoutAssignedUnitCount; }
 +	uint32_t getVoiScoutScopeFrame() const { return m_lastVoiScoutScopeFrame; }
++	int getVoiScoutActionIssuedCount() const { return m_lastVoiScoutActionIssuedCount; }
++	uint32_t getVoiScoutActionFrame() const { return m_lastVoiScoutActionFrame; }
++	const std::string & getVoiScoutIssuedAction() const { return m_lastVoiScoutIssuedAction; }
 +	int getVoiActionPlanCount() const { return m_lastVoiActionPlanCount; }
 +	int getVoiActionIssuedCount() const { return m_lastVoiActionIssuedCount; }
 +	int getVoiActionSkippedCount() const { return m_lastVoiActionSkippedCount; }
 +	uint32_t getVoiActionFrame() const { return m_lastVoiActionFrame; }
++	uint32_t getVoiIssuedActionFrame() const { return m_lastVoiIssuedActionFrame; }
 +	const std::string & getVoiPlannedAction() const { return m_lastVoiPlannedAction; }
 +	const std::string & getVoiIssuedAction() const { return m_lastVoiIssuedAction; }
 +	const std::string & getVoiSkippedAction() const { return m_lastVoiSkippedAction; }
  	void initInfluenceMaps();
  	CCPosition getMainAttackLocation();
  	void updateBlockedTilesWithNeutral();
-@@ -310,4 +350,3 @@ public:
+@@ -310,4 +356,3 @@ public:
  	const sc2::Unit * getFirstProxyReaperToGoThroughNatural() const { return m_firstProxyReaperToGoThroughNatural; }
  	CCPosition getFirstProxyReaperGoal() const { return m_firstProxyReaperGoal; }
  };
@@ -12260,7 +12315,7 @@ index 045faab..115a073 100644
  	m_bot.StartProfiling("0.10.2   m_productionManager.onFrame");
  	m_productionManager.onFrame(executeMacro);
  	m_bot.StopProfiling("0.10.2   m_productionManager.onFrame");
-@@ -34,6 +164,449 @@ void GameCommander::onFrame(bool executeMacro)
+@@ -34,6 +164,466 @@ void GameCommander::onFrame(bool executeMacro)
  	m_bot.StartProfiling("0.10.4   m_combatCommander.onFrame");
      m_combatCommander.onFrame(m_combatUnits);
  	m_bot.StopProfiling("0.10.4   m_combatCommander.onFrame");
@@ -12370,22 +12425,32 @@ index 045faab..115a073 100644
 +    else if (rawTacticalTaskType == "scout_with_units")
 +    {
 +        tacticalTaskConsumedBy = "CombatCommander,Squad";
-+        tacticalTaskLastCommandFrame = m_combatCommander.getVoiScoutScopeFrame();
-+        const bool scoutScopeFresh = isFreshTacticalTaskFrame(tacticalTaskLastCommandFrame);
++        const uint32_t scoutScopeFrame = m_combatCommander.getVoiScoutScopeFrame();
++        const uint32_t scoutActionFrame = m_combatCommander.getVoiScoutActionFrame();
++        const bool scoutScopeFresh = isFreshTacticalTaskFrame(scoutScopeFrame);
++        const bool scoutActionFresh = isFreshTacticalTaskFrame(scoutActionFrame);
 +        const bool allowPartial = m_voiPolicyBlackboard.getBool("tactical_task.allow_partial", true);
 +        const int requestedMinUnits = std::max(0, m_voiPolicyBlackboard.getInt("tactical_task.min_units", 0));
 +        const int assignedUnitCount = m_combatCommander.getVoiScoutAssignedUnitCount();
-+        tacticalTaskActualCommandCount = scoutScopeFresh ? static_cast<uint32_t>(std::max(0, assignedUnitCount)) : 0;
-+        tacticalTaskLastCommand = scoutScopeFresh
-+            ? "ScoutSquadOrder|assigned_units=" + std::to_string(assignedUnitCount)
-+            : "";
-+        if (m_combatCommander.getVoiScoutScopeStatus() == "Consumed"
++        tacticalTaskLastCommandFrame = scoutActionFrame;
++        tacticalTaskActualCommandCount = scoutActionFresh ? static_cast<uint32_t>(m_combatCommander.getVoiScoutActionIssuedCount()) : 0;
++        tacticalTaskLastCommand = scoutActionFresh ? m_combatCommander.getVoiScoutIssuedAction() : "";
++        const bool scoutScopeSatisfied = m_combatCommander.getVoiScoutScopeStatus() == "Consumed"
 +            && scoutScopeFresh
 +            && assignedUnitCount > 0
-+            && (allowPartial || requestedMinUnits == 0 || assignedUnitCount >= requestedMinUnits))
++            && (allowPartial || requestedMinUnits == 0 || assignedUnitCount >= requestedMinUnits);
++        if (scoutScopeSatisfied
++            && scoutActionFresh
++            && tacticalTaskActualCommandCount > 0
++            && tacticalTaskLastCommand.find("squad=Scout") != std::string::npos)
 +        {
 +            tacticalTaskStatus = "executing";
-+            tacticalTaskReason = "CombatCommander assigned a fresh Scout squad order for this task";
++            tacticalTaskReason = "CombatCommander issued a fresh Scout squad unit command for this task";
++        }
++        else if (scoutScopeSatisfied)
++        {
++            tacticalTaskStatus = "accepted";
++            tacticalTaskReason = "Scout squad assigned; waiting for actual Scout unit command evidence";
 +        }
 +        else if (!allowPartial && requestedMinUnits > 0 && assignedUnitCount < requestedMinUnits)
 +        {
@@ -12405,10 +12470,10 @@ index 045faab..115a073 100644
 +    else if (rawTacticalTaskType == "pressure_with_main_army")
 +    {
 +        tacticalTaskConsumedBy = "CombatCommander,Squad";
-+        tacticalTaskLastCommandFrame = m_combatCommander.getVoiActionFrame();
++        tacticalTaskLastCommandFrame = m_combatCommander.getVoiMainAttackActionFrame();
 +        const bool combatActionFresh = isFreshTacticalTaskFrame(tacticalTaskLastCommandFrame);
-+        tacticalTaskActualCommandCount = combatActionFresh ? static_cast<uint32_t>(m_combatCommander.getVoiActionIssuedCount()) : 0;
-+        tacticalTaskLastCommand = combatActionFresh ? m_combatCommander.getVoiIssuedAction() : "";
++        tacticalTaskActualCommandCount = combatActionFresh ? static_cast<uint32_t>(m_combatCommander.getVoiMainAttackActionIssuedCount()) : 0;
++        tacticalTaskLastCommand = combatActionFresh ? m_combatCommander.getVoiMainAttackIssuedAction() : "";
 +        if (m_combatCommander.getVoiMainAttackOrderStatus() == "Attack" && combatActionFresh && tacticalTaskActualCommandCount > 0)
 +        {
 +            tacticalTaskStatus = "executing";
@@ -12528,16 +12593,23 @@ index 045faab..115a073 100644
 +        << "\"main_attack_simulation_won\":" << (m_combatCommander.getVoiMainAttackSimulationWon() ? "true" : "false") << ","
 +        << "\"main_attack_order_x\":" << m_combatCommander.getVoiMainAttackOrderPosition().x << ","
 +        << "\"main_attack_order_y\":" << m_combatCommander.getVoiMainAttackOrderPosition().y << ","
++        << "\"main_attack_actual_command_issued_count\":" << m_combatCommander.getVoiMainAttackActionIssuedCount() << ","
++        << "\"main_attack_last_action_frame\":" << m_combatCommander.getVoiMainAttackActionFrame() << ","
++        << "\"main_attack_last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiMainAttackIssuedAction()) << "\","
 +        << "\"scout_scope_status\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutScopeStatus()) << "\","
 +        << "\"scout_scope_reason\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutScopeReason()) << "\","
 +        << "\"scout_scope_frame\":" << m_combatCommander.getVoiScoutScopeFrame() << ","
 +        << "\"scout_scope_requested_min_units\":" << m_combatCommander.getVoiScoutRequestedMinUnits() << ","
 +        << "\"scout_scope_requested_max_units\":" << m_combatCommander.getVoiScoutRequestedMaxUnits() << ","
 +        << "\"scout_scope_assigned_unit_count\":" << m_combatCommander.getVoiScoutAssignedUnitCount() << ","
++        << "\"scout_actual_command_issued_count\":" << m_combatCommander.getVoiScoutActionIssuedCount() << ","
++        << "\"scout_last_action_frame\":" << m_combatCommander.getVoiScoutActionFrame() << ","
++        << "\"scout_last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutIssuedAction()) << "\","
 +        << "\"action_plan_count\":" << m_combatCommander.getVoiActionPlanCount() << ","
 +        << "\"actual_command_issued_count\":" << m_combatCommander.getVoiActionIssuedCount() << ","
 +        << "\"action_skipped_count\":" << m_combatCommander.getVoiActionSkippedCount() << ","
 +        << "\"last_action_frame\":" << m_combatCommander.getVoiActionFrame() << ","
++        << "\"last_issued_action_frame\":" << m_combatCommander.getVoiIssuedActionFrame() << ","
 +        << "\"last_planned_action\":\"" << voiJsonEscape(m_combatCommander.getVoiPlannedAction()) << "\","
 +        << "\"last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiIssuedAction()) << "\","
 +        << "\"last_skipped_action\":\"" << voiJsonEscape(m_combatCommander.getVoiSkippedAction()) << "\","
@@ -12710,7 +12782,7 @@ index 045faab..115a073 100644
  }
  
  ProductionManager& GameCommander::Production()
-@@ -46,6 +619,216 @@ CombatCommander& GameCommander::Combat()
+@@ -46,6 +632,217 @@ CombatCommander& GameCommander::Combat()
  	return m_combatCommander;
  }
  
@@ -12801,6 +12873,7 @@ index 045faab..115a073 100644
 +	const bool buildPositionCommand = targetKind == "build_position" || targetKind == "ability_position";
 +	constexpr float workerNearSelfCommandDistanceSq = 1.0f;
 +	const bool selfPositionCommand = targetTag == 0
++		&& !buildPositionCommand
 +		&& voiIsPositionWorkerAbility(abilityID)
 +		&& targetDistanceSq <= workerNearSelfCommandDistanceSq;
 +	const bool sameAbilityPositionOrder = voiHasSamePositionOrder(unit, abilityID, targetPosition, 2.25f);
@@ -12927,7 +13000,7 @@ index 045faab..115a073 100644
  // assigns units to various managers
  void GameCommander::handleUnitAssignments()
  {
-@@ -98,8 +881,9 @@ void GameCommander::setScoutUnits()
+@@ -98,8 +894,9 @@ void GameCommander::setScoutUnits()
      if (m_scoutUnits.empty())
      {
          const BaseLocation * enemyBaseLocation = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
@@ -12938,7 +13011,7 @@ index 045faab..115a073 100644
  			return;
  
          // We need to find the enemy base to do something
-@@ -125,6 +909,15 @@ void GameCommander::setScoutUnits()
+@@ -125,6 +922,15 @@ void GameCommander::setScoutUnits()
  
  bool GameCommander::shouldSendInitialScout()
  {
@@ -12954,7 +13027,7 @@ index 045faab..115a073 100644
      return m_bot.Strategy().scoutConditionIsMet();
  }
  
-@@ -230,4 +1023,4 @@ void GameCommander::GiveDelayedSmarAbilityOrders()
+@@ -230,4 +1036,4 @@ void GameCommander::GiveDelayedSmarAbilityOrders()
  			Micro::SmartAbility(command.first.getUnitPtr(), command.second.first, command.second.second, m_bot);
  		}
  	}
@@ -13602,7 +13675,7 @@ index 3859fdb..abc5614 100644
  	const auto factoryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Factory.getUnitType(), false, true);
  	const auto completedFactoryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Factory.getUnitType(), true, true);
  	const auto hasProducedFactoryUnit = hasProducedAtLeastXFactoryUnit(1);
-@@ -430,17 +709,51 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
+@@ -430,17 +709,55 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
  	const auto deadCCs = m_bot.GetDeadAllyUnitsCount(sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER);
  	const auto deadOrbitals = m_bot.GetDeadAllyUnitsCount(sc2::UNIT_TYPEID::TERRAN_ORBITALCOMMAND);
  	const bool hasStartedFirstExpand = ccs + orbitals + deadCCs + deadOrbitals > 1;
@@ -13647,12 +13720,16 @@ index 3859fdb..abc5614 100644
 +		voiFactoryTransitionRequested
 +		|| voiWorkerLineFactoryTransitionRequested
 +		|| voiStarportTransitionRequested;
++	const bool voiEarlyRefineryRequested =
++		currentItem.type == MetaTypeEnum::Refinery
++		&& (!m_initialBuildOrderFinished || voiPreExpandProductionTransitionRequested);
  	if (currentItem.type.getUnitType().isRefinery() && !m_bot.Strategy().isWorkerRushed())
  	{
 -		const bool hasBarracks = barracksCount > 0;
 -		shouldSkip = !hasBarracks;
 +		const bool hasCompletedBarracks = completedBarracksCount > 0;
-+		shouldSkip = !hasCompletedBarracks;
++		const bool hasStartedBarracks = barracksCount > 0;
++		shouldSkip = !hasCompletedBarracks && !(voiEarlyRefineryRequested && !hasStartedBarracks);
  	}
  	else if (currentItem.type.getUnitType().isResourceDepot() && !currentItem.type.getUnitType().isMorphedBuilding())
  	{
@@ -13758,7 +13835,7 @@ index 3859fdb..abc5614 100644
  void ProductionManager::putImportantBuildOrderItemsInQueue()
  {
  #ifdef NO_PRODUCTION
-@@ -738,15 +1116,16 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -738,15 +1116,21 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  	const auto currentStrategy = m_bot.Strategy().getCurrentStrategyPostBuildOrder();
  	const auto startingStrategy = m_bot.Strategy().getStartingStrategy();
  	const auto earlyRushed = m_bot.Strategy().isEarlyRushed();
@@ -13766,12 +13843,17 @@ index 3859fdb..abc5614 100644
  
  	// build supply if we need some
  	const int supplyWithAdditionalSupplyDepot = m_bot.GetMaxSupply() + m_bot.Buildings().countBeingBuilt(supplyProvider) * 8;
++	const float explicitVoiSupplyBias = std::max(
++		m_bot.Commander().getVoiPolicyFloat("production.queue_biases.TERRAN_SUPPLYDEPOT", 0.0f),
++		m_bot.Commander().getVoiPolicyFloat("economy.supply_buffer_bias", 0.0f));
++	const bool explicitVoiSupplyRequest = m_bot.Commander().isVoiPolicyActive() && explicitVoiSupplyBias > 0.25f;
++	const bool criticalSupplyNeed = supplyWithAdditionalSupplyDepot - m_bot.GetCurrentSupply() <= 2;
  	if(m_bot.GetCurrentSupply() + getSupplyNeedsFromProductionBuildings() + finishedBaseCount > supplyWithAdditionalSupplyDepot
 -		&& !m_queue.contains(supplyProviderType)
  		&& supplyWithAdditionalSupplyDepot < 200
 -		&& !m_bot.Strategy().isWorkerRushed())
 +		&& !m_bot.Strategy().isWorkerRushed()
-+		&& !reserveVoiExpandCommandCenter)
++		&& (!reserveVoiExpandCommandCenter || explicitVoiSupplyRequest || criticalSupplyNeed))
  	{
 -		m_queue.queueAsHighestPriority(supplyProviderType, false);
 +		queueSupplyProviderRecovery("proactive_supply_need");
@@ -13852,7 +13934,7 @@ index 3859fdb..abc5614 100644
  				{
  					bool idleProductionBuilding = false;
  					const auto & productionBuildings = m_bot.GetAllyUnits(toBuild.getUnitType().getAPIUnitType());
-@@ -1402,129 +1802,989 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -1402,129 +1802,1027 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  				}
  #endif
  
@@ -14076,11 +14158,22 @@ index 3859fdb..abc5614 100644
 +	}
 +
 +	m_queue.removeAllOfType(MetaTypeEnum::CommandCenter);
-+	m_queue.queueAsHighestPriority(MetaTypeEnum::CommandCenter, true);
++	const float supplyBufferBias = std::max(
++		m_bot.Commander().getVoiPolicyFloat("production.queue_biases.TERRAN_SUPPLYDEPOT", 0.0f),
++		m_bot.Commander().getVoiPolicyFloat("economy.supply_buffer_bias", 0.0f));
++	const float workerProductionBias = m_bot.Commander().getVoiPolicyFloat("economy.worker_production_bias", 0.0f);
++	const float marineBias = std::max(
++		m_bot.Commander().getVoiPolicyFloat("production.queue_biases.TERRAN_MARINE", 0.0f),
++		m_bot.Commander().getVoiPolicyFloat("tech.unit_biases.TERRAN_MARINE", 0.0f));
++	const int supplyWithQueuedProviders = m_bot.GetMaxSupply() + m_bot.Buildings().countBeingBuilt(supplyProvider) * 8;
++	const bool standingProductionNeedsRoom =
++		std::max({ supplyBufferBias, workerProductionBias, marineBias }) > 0.25f
++		&& supplyWithQueuedProviders - m_bot.GetCurrentSupply() <= 6;
++	m_queue.queueAsHighestPriority(MetaTypeEnum::CommandCenter, !standingProductionNeedsRoom);
 +	if (m_bot.GetCurrentFrame() - m_lastVoiExpandReserveLogFrame >= 224)
 +	{
 +		m_lastVoiExpandReserveLogFrame = m_bot.GetCurrentFrame();
-+		Util::Log(__FUNCTION__, "VOI prioritized expand_macro CommandCenter minerals=" + std::to_string(m_bot.GetFreeMinerals()), m_bot);
++		Util::Log(__FUNCTION__, "VOI prioritized expand_macro CommandCenter minerals=" + std::to_string(m_bot.GetFreeMinerals()) + " blocking=" + std::to_string(!standingProductionNeedsRoom), m_bot);
 +	}
 +}
 +
@@ -14421,6 +14514,7 @@ index 3859fdb..abc5614 100644
 +	const bool taskSustainProduction = tacticalTaskActive && tacticalTaskType == "sustain_production";
 +	const bool taskTechTransition = tacticalTaskActive && tacticalTaskType == "tech_transition";
 +	const bool taskExpandCommandCenter = tacticalTaskActive && tacticalTaskType == "expand_or_land_command_center";
++	const bool taskTargetsScv = voiCommaListContains(tacticalProductionTargets, "TERRAN_SCV") || voiCommaListContains(tacticalProductionTargets, "SCV");
 +	const bool taskTargetsSupplyDepot = voiCommaListContains(tacticalProductionTargets, "TERRAN_SUPPLYDEPOT");
 +	const bool taskTargetsCommandCenter = voiCommaListContains(tacticalProductionTargets, "TERRAN_COMMANDCENTER");
 +	const bool taskTargetsFactory = voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORY");
@@ -14442,6 +14536,9 @@ index 3859fdb..abc5614 100644
 +	const float compositionAntiAirBias = m_bot.Commander().getVoiPolicyFloat("production.composition_biases.anti_air", 0.0f);
 +	const float compositionDefenseBias = m_bot.Commander().getVoiPolicyFloat("production.composition_biases.defense", 0.0f);
 +	const float compositionCounterattackBias = m_bot.Commander().getVoiPolicyFloat("production.composition_biases.counterattack", 0.0f);
++	const float workerProductionBias = std::max(
++		m_bot.Commander().getVoiPolicyFloat("economy.worker_production_bias", 0.0f),
++		(taskSustainProduction && taskTargetsScv) ? tacticalTaskPriority : 0.0f);
 +	const float factoryBias = std::max(
 +		voiMaxBias(m_bot, "production.queue_biases.TERRAN_FACTORY", "production.production_facility_biases.TERRAN_FACTORY", "tech.structure_biases.TERRAN_FACTORY"),
 +		(taskTechTransition && taskTargetsFactory) ? tacticalTaskPriority : 0.0f);
@@ -14509,6 +14606,8 @@ index 3859fdb..abc5614 100644
 +	const bool wantsBarracksTechLab = doctrine == "bio_pressure" || effectiveBarracksTechLabBias > 0.25f;
 +
 +	const int barracksCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), false, true, true);
++	const int completedBarracksCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), true, true, true);
++	const int refineryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Refinery.getUnitType(), false, true, true);
 +	const int barracksTechLabCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::BarracksTechLab.getUnitType(), false, true);
 +	const int factoryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Factory.getUnitType(), false, true);
 +	const int factoryTechLabCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::FactoryTechLab.getUnitType(), false, true);
@@ -14522,28 +14621,47 @@ index 3859fdb..abc5614 100644
 +
 +	m_lastVoiDoctrine = doctrine;
 +
-+	const bool reservingFirstVoiExpand = wantsCommandCenter
-+		&& needsFirstVoiExpansion
-+		&& hasOpeningBarracks
-+		&& m_bot.GetFreeMinerals() < MetaTypeEnum::CommandCenter.getUnitType().mineralPrice();
 +	const int supplyWithQueuedProviders = m_bot.GetMaxSupply() + m_bot.Buildings().countBeingBuilt(supplyProvider) * 8;
 +	const int supplyBufferTarget = 4 + static_cast<int>(std::min(1.0f, std::max(0.0f, supplyProviderBias)) * 10.0f);
++	const bool explicitSupplyBufferNeeded = supplyProviderBias > 0.25f
++		&& supplyWithQueuedProviders < 200
++		&& supplyWithQueuedProviders - m_bot.GetCurrentSupply() <= supplyBufferTarget;
++	if (explicitSupplyBufferNeeded && queueVoiDoctrineItem(supplyProviderType, "supply_buffer", true))
++	{
++		return;
++	}
++	if (workerProductionBias > 0.25f
++		&& !m_queue.contains(workerMetatype)
++		&& m_bot.GetCurrentSupply() < supplyWithQueuedProviders
++		&& queueVoiDoctrineItem(workerMetatype, "worker_continuity", true))
++	{
++		return;
++	}
 +	if (wantsCommandCenter
 +		&& needsFirstVoiExpansion
 +		&& hasOpeningBarracks
-+		&& queueVoiDoctrineItem(MetaTypeEnum::CommandCenter, "expand_macro", true, true))
++		&& queueVoiDoctrineItem(MetaTypeEnum::CommandCenter, "expand_macro", true, !(explicitSupplyBufferNeeded || workerProductionBias > 0.25f || effectiveMarineBias > 0.25f)))
 +	{
 +		return;
 +	}
 +	if (supplyProviderBias > 0.25f
-+		&& !reservingFirstVoiExpand
 +		&& supplyWithQueuedProviders < 200
 +		&& supplyWithQueuedProviders - m_bot.GetCurrentSupply() <= supplyBufferTarget
 +		&& queueVoiDoctrineItem(supplyProviderType, "supply_buffer", true))
 +	{
 +		return;
 +	}
-+	if (wantsBioDoctrine && barracksCount < 2 && effectiveBarracksBias > 0.35f && queueVoiDoctrineItem(MetaTypeEnum::Barracks, "bio_facility", false))
++	const bool needsTechBootstrapBarracks = (wantsFactory || wantsStarport) && barracksCount == 0;
++	if (((wantsBioDoctrine && barracksCount < 2 && effectiveBarracksBias > 0.35f) || needsTechBootstrapBarracks)
++		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, needsTechBootstrapBarracks ? "tech_bootstrap_barracks" : "bio_facility", needsTechBootstrapBarracks))
++	{
++		return;
++	}
++	const bool needsTechBootstrapRefinery =
++		(wantsFactory || wantsStarport || wantsFactoryTechLab || effectiveTankBias > 0.25f)
++		&& completedBarracksCount > 0
++		&& refineryCount == 0;
++	if (needsTechBootstrapRefinery && queueVoiDoctrineItem(MetaTypeEnum::Refinery, "tech_bootstrap_refinery", true))
 +	{
 +		return;
 +	}
@@ -14551,7 +14669,7 @@ index 3859fdb..abc5614 100644
 +	{
 +		return;
 +	}
-+	if (wantsFactory && barracksCount > 0 && factoryCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Factory, "factory_transition", true))
++	if (wantsFactory && completedBarracksCount > 0 && refineryCount > 0 && factoryCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Factory, "factory_transition", true))
 +	{
 +		return;
 +	}
@@ -14919,7 +15037,9 @@ index 3859fdb..abc5614 100644
 +	}
 +
 +	const bool hasPendingFactoryTransition =
-+		m_queue.contains(MetaTypeEnum::Factory)
++		m_queue.contains(MetaTypeEnum::Barracks)
++		|| m_queue.contains(MetaTypeEnum::Refinery)
++		|| m_queue.contains(MetaTypeEnum::Factory)
 +		|| m_queue.contains(MetaTypeEnum::FactoryTechLab)
 +		|| m_queue.contains(MetaTypeEnum::SiegeTank)
 +		|| m_queue.contains(MetaTypeEnum::Hellion)
@@ -15085,14 +15205,15 @@ index 3859fdb..abc5614 100644
  	{
  		return true;
  	}
-@@ -3128,23 +4417,30 @@ bool ProductionManager::ValidateBuildingTiming(Building & b) const
+@@ -3128,23 +4417,31 @@ bool ProductionManager::ValidateBuildingTiming(Building & b) const
  {
  	if (b.type.isRefinery())
  	{
 -		auto nextRefinery = m_bot.Buildings().getBuildingPlacer().getRefineryPosition();
 -		auto base = m_bot.Bases().getBaseContainingPosition(Util::GetPosition(nextRefinery), Players::Self);
 -		if (base == nullptr)
-+		if (m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), true, true, true) == 0)
++		const bool allowEarlyRefinery = !m_initialBuildOrderFinished || m_bot.Commander().isVoiPolicyActive();
++		if (!allowEarlyRefinery && m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), true, true, true) == 0)
  		{
  			return false;
  		}

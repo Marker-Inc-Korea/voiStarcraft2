@@ -168,6 +168,157 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         assert result.update is not None
         self.assertEqual(48, result.update.vector.workers.repeat_order_guard_frames)
 
+    def test_live_commands_preserve_standing_production_when_scout_task_arrives(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        production_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 러쉬와 보급고, SCV 생산을 계속 유지한다.",
+                    "strategy": {"posture": "pressure", "doctrine": "marine_rush"},
+                    "economy": {
+                        "worker_production_bias": 0.75,
+                        "supply_buffer_bias": 0.75,
+                        "expand_bias": 0.55,
+                    },
+                    "production": {
+                        "queue_biases": {
+                            "TERRAN_SUPPLYDEPOT": 0.8,
+                            "TERRAN_MARINE": 0.8,
+                            "TERRAN_COMMANDCENTER": 0.55,
+                        },
+                        "production_continuity_bias": 0.75,
+                    },
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": [
+                            "TERRAN_SCV",
+                            "TERRAN_SUPPLYDEPOT",
+                            "TERRAN_MARINE",
+                            "TERRAN_COMMANDCENTER",
+                        ],
+                        "priority": 0.8,
+                        "duration_seconds": 600,
+                    },
+                    "tags": ["live_text"],
+                }
+            ),
+        )
+        first = production_session.submit_text("보급고와 마린, SCV 계속", current_frame=100)
+        self.assertTrue(first.ok, first.to_dict())
+
+        scout_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 3기로 적 위치를 정찰한다.",
+                    "strategy": {
+                        "posture": "balanced",
+                        "doctrine": "scouting_map_control",
+                    },
+                    "scouting": {
+                        "scout_priority": 0.9,
+                        "risk_tolerance": 0.25,
+                    },
+                    "scope": {
+                        "army_group": "scout",
+                        "unit_classes": ["marine"],
+                        "location_intent": "enemy_main",
+                        "min_units": 3,
+                        "max_units": 3,
+                    },
+                    "tactical_task": {
+                        "task_type": "scout_with_units",
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": "enemy_main",
+                        "min_units": 3,
+                        "max_units": 3,
+                        "priority": 0.85,
+                        "duration_seconds": 180,
+                    },
+                    "tags": ["live_text", "scout"],
+                }
+            ),
+        )
+        second = scout_session.submit_text("마린 3마리로 정찰해", current_frame=160)
+
+        self.assertTrue(second.ok, second.to_dict())
+        self.assertIsNotNone(second.update)
+        assert second.update is not None
+        vector = second.update.vector
+        self.assertEqual("scout_with_units", vector.tactical_task.task_type)
+        self.assertEqual("marine_rush", vector.strategy.doctrine)
+        queue_biases = vector.production.queue_biases.to_dict()
+        self.assertGreaterEqual(queue_biases["TERRAN_SUPPLYDEPOT"], 0.75)
+        self.assertGreaterEqual(queue_biases["TERRAN_MARINE"], 0.75)
+        self.assertGreaterEqual(queue_biases["TERRAN_COMMANDCENTER"], 0.5)
+        self.assertGreaterEqual(vector.economy.worker_production_bias, 0.7)
+        self.assertGreaterEqual(vector.economy.supply_buffer_bias, 0.7)
+        self.assertIn(
+            "live_standing_orders_merged",
+            second.compile_result.warnings,
+        )
+
+    def test_live_stop_expansion_command_drops_prior_command_center_bias(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        expand_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "사령부 확장과 SCV 생산을 유지한다.",
+                    "strategy": {"posture": "economic", "doctrine": "expand_macro"},
+                    "economy": {
+                        "expand_bias": 0.8,
+                        "worker_production_bias": 0.65,
+                        "supply_buffer_bias": 0.5,
+                    },
+                    "production": {
+                        "queue_biases": {
+                            "TERRAN_COMMANDCENTER": 0.8,
+                            "TERRAN_SUPPLYDEPOT": 0.5,
+                        },
+                        "composition_biases": {"macro": 0.8},
+                    },
+                    "tactical_task": {
+                        "task_type": "expand_or_land_command_center",
+                        "production_targets": [
+                            "TERRAN_COMMANDCENTER",
+                            "TERRAN_SCV",
+                            "TERRAN_SUPPLYDEPOT",
+                        ],
+                        "priority": 0.8,
+                    },
+                }
+            ),
+        )
+        self.assertTrue(expand_session.submit_text("사령부 하나 더", current_frame=10).ok)
+
+        stop_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "확장은 멈추고 방어에 집중한다.",
+                    "strategy": {"posture": "defensive"},
+                    "combat": {"defend_bias": 0.75, "aggression": -0.35},
+                    "emergency": {"stop_expansion": True},
+                }
+            ),
+        )
+        result = stop_session.submit_text("확장 멈추고 수비해", current_frame=20)
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("", vector.strategy.doctrine)
+        self.assertLessEqual(vector.economy.expand_bias, 0.0)
+        self.assertNotIn(
+            "TERRAN_COMMANDCENTER",
+            vector.production.queue_biases.to_dict(),
+        )
+        self.assertGreaterEqual(vector.economy.worker_production_bias, 0.6)
+        self.assertGreaterEqual(vector.economy.supply_buffer_bias, 0.5)
+
     def test_retries_transient_telemetry_read_before_issuing_live_update(self) -> None:
         backend = EventuallyReadableTelemetryBlackboard()
         session = MicroMachineLiveTextSession(

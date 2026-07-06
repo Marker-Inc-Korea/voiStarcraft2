@@ -183,9 +183,10 @@ def classify_micromachine_tactical_evidence(
     telemetry_entries = [*archive, latest] if latest else archive
     normalized_expected, unsupported = _normalize_expected_effects(expected_effects)
     consumed_axes = _consumed_axes_by_manager(telemetry_entries)
+    concrete_effects = _concrete_tactical_task_effects(telemetry_entries)
     effects = [
-        *_effects_from_telemetry(telemetry_entries),
-        *_effects_from_log(log_text),
+        *_effects_from_telemetry(telemetry_entries, concrete_effects=concrete_effects),
+        *_effects_from_log(log_text, concrete_effects=concrete_effects),
     ]
     observed = _ordered_unique(effect.tag for effect in effects)
     refusals = _ordered_unique(
@@ -286,7 +287,11 @@ def _normalize_expected_effects(
     return _ordered_unique(normalized), _ordered_unique(unsupported)
 
 
-def _effects_from_log(log_text: str) -> list[MicroMachineTacticalEffect]:
+def _effects_from_log(
+    log_text: str,
+    *,
+    concrete_effects: frozenset[str] = frozenset(),
+) -> list[MicroMachineTacticalEffect]:
     effects: list[MicroMachineTacticalEffect] = []
     for line in log_text.splitlines():
         cleaned = " ".join(line.strip().split())
@@ -294,10 +299,11 @@ def _effects_from_log(log_text: str) -> list[MicroMachineTacticalEffect]:
             continue
         lowered = cleaned.lower()
         frame = _log_frame(cleaned)
-        if _is_attack_order_line(lowered):
+        if "pressure" not in concrete_effects and _is_attack_order_line(lowered):
             effects.append(_log_effect("pressure", cleaned, frame))
-        if "contain" in lowered or (
-            "enemy natural" in lowered and _is_attack_order_line(lowered)
+        if "pressure" not in concrete_effects and (
+            "contain" in lowered
+            or ("enemy natural" in lowered and _is_attack_order_line(lowered))
         ):
             effects.append(_log_effect("contain", cleaned, frame))
         if "harass" in lowered or (
@@ -308,13 +314,15 @@ def _effects_from_log(log_text: str) -> list[MicroMachineTacticalEffect]:
             effects.append(_log_effect("target_priority", cleaned, frame))
         if _is_hold_line(lowered):
             effects.append(_log_effect("hold", cleaned, frame))
-        if _is_scout_line(lowered):
+        if "scout" not in concrete_effects and _is_scout_line(lowered):
             effects.append(_log_effect("scout", cleaned, frame))
     return _dedupe_effects(effects)
 
 
 def _effects_from_telemetry(
     telemetry_entries: Sequence[Mapping[str, object]],
+    *,
+    concrete_effects: frozenset[str] = frozenset(),
 ) -> list[MicroMachineTacticalEffect]:
     effects: list[MicroMachineTacticalEffect] = []
     for entry in telemetry_entries:
@@ -326,11 +334,28 @@ def _effects_from_telemetry(
             if not isinstance(payload, Mapping):
                 continue
             manager = str(manager_name)
-            if _manager_reports_attack_order(payload):
+            if _manager_reports_tactical_scout_task(manager, payload):
+                effects.append(_telemetry_effect("scout", manager, payload, frame))
+            if (
+                "scout" not in concrete_effects
+                and _manager_reports_combat_scout_command(manager, payload)
+            ):
+                effects.append(_telemetry_effect("scout", manager, payload, frame))
+            if _manager_reports_tactical_pressure_task(manager, payload):
+                effects.append(_telemetry_effect("pressure", manager, payload, frame))
+            if (
+                "pressure" not in concrete_effects
+                and _manager_reports_main_attack_command(manager, payload)
+            ):
+                effects.append(_telemetry_effect("pressure", manager, payload, frame))
+            if "pressure" not in concrete_effects and _manager_reports_attack_order(payload):
                 effects.append(_telemetry_effect("pressure", manager, payload, frame))
             if _manager_reports_hold(payload):
                 effects.append(_telemetry_effect("hold", manager, payload, frame))
-            if _manager_reports_contain(payload):
+            if (
+                "pressure" not in concrete_effects
+                or not _manager_reports_attack_order(payload)
+            ) and _manager_reports_contain(payload):
                 effects.append(_telemetry_effect("contain", manager, payload, frame))
             if _manager_reports_harass(payload):
                 effects.append(_telemetry_effect("harass", manager, payload, frame))
@@ -338,9 +363,28 @@ def _effects_from_telemetry(
                 effects.append(
                     _telemetry_effect("target_priority", manager, payload, frame)
                 )
-            if _manager_reports_scouting(manager, payload):
+            if "scout" not in concrete_effects and _manager_reports_scouting(manager, payload):
                 effects.append(_telemetry_effect("scout", manager, payload, frame))
     return _dedupe_effects(effects)
+
+
+def _concrete_tactical_task_effects(
+    telemetry_entries: Sequence[Mapping[str, object]],
+) -> frozenset[str]:
+    effects: set[str] = set()
+    for entry in telemetry_entries:
+        managers = entry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        tactical = managers.get("TacticalTask")
+        if not isinstance(tactical, Mapping):
+            continue
+        task_type = str(tactical.get("task_type", "") or "")
+        if task_type == "scout_with_units":
+            effects.add("scout")
+        elif task_type == "pressure_with_main_army":
+            effects.add("pressure")
+    return frozenset(effects)
 
 
 def _is_attack_order_line(lowered: str) -> bool:
@@ -453,6 +497,50 @@ def _manager_reports_scouting(manager: str, payload: Mapping[str, object]) -> bo
     )
 
 
+def _manager_reports_tactical_pressure_task(manager: str, payload: Mapping[str, object]) -> bool:
+    if manager != "TacticalTask":
+        return False
+    return (
+        str(payload.get("task_type", "") or "") == "pressure_with_main_army"
+        and str(payload.get("status", "") or "") == "executing"
+        and _number(payload.get("actual_command_issued_count")) > 0
+        and "squad=MainAttack" in str(payload.get("last_actual_command", "") or "")
+    )
+
+
+def _manager_reports_tactical_scout_task(manager: str, payload: Mapping[str, object]) -> bool:
+    if manager != "TacticalTask":
+        return False
+    return (
+        str(payload.get("task_type", "") or "") == "scout_with_units"
+        and str(payload.get("status", "") or "") == "executing"
+        and _number(payload.get("actual_command_issued_count")) > 0
+        and "squad=Scout" in str(payload.get("last_actual_command", "") or "")
+    )
+
+
+def _manager_reports_main_attack_command(manager: str, payload: Mapping[str, object]) -> bool:
+    if manager != "CombatCommander":
+        return False
+    return (
+        _number(payload.get("main_attack_actual_command_issued_count")) > 0
+        and _number(payload.get("main_attack_last_action_frame")) > 0
+        and "squad=MainAttack"
+        in str(payload.get("main_attack_last_issued_action", "") or "")
+        and str(payload.get("main_attack_order_status", "") or "") == "Attack"
+    )
+
+
+def _manager_reports_combat_scout_command(manager: str, payload: Mapping[str, object]) -> bool:
+    if manager != "CombatCommander":
+        return False
+    return (
+        _number(payload.get("scout_actual_command_issued_count")) > 0
+        and _number(payload.get("scout_last_action_frame")) > 0
+        and "squad=Scout" in str(payload.get("scout_last_issued_action", "") or "")
+    )
+
+
 def _actual_behavior_texts(payload: Mapping[str, object]) -> tuple[str, ...]:
     texts: list[str] = []
     for key in (*_ACTUAL_ORDER_KEYS, *_ACTUAL_DECISION_KEYS):
@@ -489,6 +577,17 @@ def _telemetry_effect(
         "last_selected_target_class",
         "scope_location_intent",
         "scout_priority",
+        "task_type",
+        "status",
+        "last_actual_command",
+        "last_actual_command_frame",
+        "actual_command_issued_count",
+        "main_attack_last_issued_action",
+        "main_attack_last_action_frame",
+        "main_attack_actual_command_issued_count",
+        "scout_last_issued_action",
+        "scout_last_action_frame",
+        "scout_actual_command_issued_count",
     )
     details = {
         key: payload.get(key)
