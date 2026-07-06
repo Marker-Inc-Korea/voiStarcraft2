@@ -45,6 +45,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "combat_analysis",
                 "squad",
                 "scope",
+                "tactical_task",
                 "workers",
             },
             domains,
@@ -77,6 +78,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("scope.army_group", pending_keys)
         self.assertNotIn("scope.unit_classes", pending_keys)
         self.assertNotIn("scope.max_units", pending_keys)
+        self.assertNotIn("tactical_task.task_type", pending_keys)
+        self.assertNotIn("tactical_task.production_targets", pending_keys)
         self.assertNotIn("scouting.scan_priority", pending_keys)
         self.assertNotIn("squad.reinforce_bias", pending_keys)
 
@@ -223,6 +226,23 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "getVoiPolicyString(\"scope.army_group\", \"\")",
             "getVoiPolicyString(\"scope.unit_classes\", \"\")",
             "getVoiPolicyString(\"scope.location_intent\", \"\")",
+            "getVoiPolicyString(\"tactical_task.task_type\", \"\")",
+            "getVoiPolicyString(\"tactical_task.unit_classes\", \"\")",
+            "getVoiPolicyString(\"tactical_task.production_targets\", \"\")",
+            "getVoiPolicyString(\"tactical_task.location_intent\", \"\")",
+            "getVoiPolicyFloat(\"tactical_task.priority\", 0.0f)",
+            "getVoiPolicyInt(\"tactical_task.min_units\", 0)",
+            "getVoiPolicyInt(\"tactical_task.max_units\", 0)",
+            "\\\"TacticalTask\\\"",
+            "\\\"status\\\":\\\"",
+            "\\\"consumed_by\\\":\\\"",
+            "tacticalTaskStatus",
+            "tacticalTaskConsumedBy",
+            "scout_with_units",
+            "pressure_with_main_army",
+            "sustain_production",
+            "tech_transition",
+            "expand_or_land_command_center",
             "getVoiPolicyFloat(\"scouting.scout_priority\", 0.0f)",
             "getVoiPolicyFloat(\"squad.squad_role_biases.marine_scout\", 0.0f)",
             "scope.unit_classes",

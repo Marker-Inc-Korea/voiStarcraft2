@@ -40,6 +40,7 @@ from starcraft_commander.policy_modulation import (
     SquadModulation,
     StrategyModulation,
     TacticalScopeModulation,
+    TacticalTaskModulation,
     TechModulation,
     WeightedBiases,
     WorkerModulation,
@@ -83,6 +84,17 @@ def _vector(ttl_seconds: int = 30) -> PolicyModulationVector:
             location_intent="enemy_natural",
             min_units=6,
             require_safety_margin=0.25,
+        ),
+        tactical_task=TacticalTaskModulation(
+            task_type="pressure_with_main_army",
+            task_id="runtime-pressure-1",
+            unit_classes=("marine", "siege_tank"),
+            production_targets=("siege_tank", "supply_depot"),
+            location_intent="enemy_natural",
+            priority=0.7,
+            min_units=6,
+            duration_seconds=180,
+            safety_margin=0.25,
         ),
         emergency=EmergencyModulation(force_retreat=True, prioritize_repair=True),
     )
@@ -262,6 +274,16 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             self.assertIn("scope.unit_classes=marine,siege_tank", kv)
             self.assertIn("scope.location_intent=enemy_natural", kv)
             self.assertIn("scope.require_safety_margin=0.25", kv)
+            self.assertIn("tactical_task.task_type=pressure_with_main_army", kv)
+            self.assertIn("tactical_task.task_id=runtime-pressure-1", kv)
+            self.assertIn("tactical_task.unit_classes=TERRAN_MARINE,TERRAN_SIEGETANK", kv)
+            self.assertIn(
+                "tactical_task.production_targets=TERRAN_SIEGETANK,TERRAN_SUPPLYDEPOT",
+                kv,
+            )
+            self.assertIn("tactical_task.priority=0.7", kv)
+            self.assertIn("tactical_task.min_units=6", kv)
+            self.assertIn("tactical_task.location_intent=enemy_natural", kv)
             self.assertIn("emergency.force_retreat=true", kv)
             self.assertIn("emergency.prioritize_repair=true", kv)
             self.assertEqual(1, len(archive.read_text().splitlines()))
@@ -530,7 +552,7 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
         self.assertIn("combat.aggression=-0.2\n", text)
         self.assertIn("combat.target_priority_biases.BANELING=0.9\n", text)
         self.assertIn(
-            "manager_bias_domains=strategy,economy,workers,tech,production,combat,scouting,squad,scope,emergency\n",
+            "manager_bias_domains=strategy,economy,workers,tech,production,combat,scouting,squad,scope,tactical_task,emergency\n",
             text,
         )
 

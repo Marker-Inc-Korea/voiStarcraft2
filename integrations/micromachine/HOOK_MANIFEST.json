@@ -54,6 +54,9 @@
       "status": "verified_consumed_with_actual_command_telemetry",
       "keys": [
         "strategy.doctrine",
+        "tactical_task.task_type",
+        "tactical_task.production_targets",
+        "tactical_task.priority",
         "production.queue_biases.*",
         "production.composition_biases.*",
         "production.addon_biases.*",
@@ -76,6 +79,36 @@
       "intended_effect": "Bias doctrine-specific queue, facility, addon, unit, expansion, and continuity choices while preserving MicroMachine build execution."
     },
     {
+      "domain": "tactical_task",
+      "source_path": "src/GameCommander.cpp",
+      "header_path": "src/GameCommander.h",
+      "function": "GameCommander::writeVoiTelemetry()",
+      "secondary_function": "CombatCommander::updateScoutSquad() / CombatCommander::updateAttackSquads() / ProductionManager::applyVoiDoctrineProductionBias()",
+      "status": "verified_consumed_with_task_lifecycle_telemetry",
+      "keys": [
+        "tactical_task.task_type",
+        "tactical_task.task_id",
+        "tactical_task.unit_classes",
+        "tactical_task.production_targets",
+        "tactical_task.location_intent",
+        "tactical_task.priority",
+        "tactical_task.min_units",
+        "tactical_task.max_units",
+        "tactical_task.duration_seconds",
+        "tactical_task.allow_partial",
+        "tactical_task.safety_margin"
+      ],
+      "telemetry_fields": [
+        "TacticalTask.status",
+        "TacticalTask.reason",
+        "TacticalTask.consumed_by",
+        "TacticalTask.actual_command_issued_count",
+        "TacticalTask.last_actual_command",
+        "TacticalTask.last_actual_command_frame"
+      ],
+      "intended_effect": "Turns LLM/user intent into a bounded task ticket consumed by existing MicroMachine managers with accepted/executing/refused lifecycle evidence."
+    },
+    {
       "domain": "combat",
       "source_path": "src/CombatCommander.cpp",
       "header_path": "src/CombatCommander.h",
@@ -94,6 +127,12 @@
         "scope.max_units",
         "scope.army_group",
         "scope.unit_classes",
+        "tactical_task.task_type",
+        "tactical_task.unit_classes",
+        "tactical_task.location_intent",
+        "tactical_task.min_units",
+        "tactical_task.max_units",
+        "tactical_task.priority",
         "scouting.scout_priority",
         "squad.squad_role_biases.marine_scout",
         "emergency.cancel_attacks",
@@ -185,6 +224,9 @@
         "scope.max_units",
         "scope.army_group",
         "scope.unit_classes",
+        "tactical_task.task_type",
+        "tactical_task.location_intent",
+        "tactical_task.min_units",
         "squad.contain_bias",
         "squad.reinforce_bias",
         "combat.target_priority_biases.*"

@@ -304,6 +304,18 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                         "require_safety_margin": 0.35,
                         "allow_partial_scope": True,
                     },
+                    "tactical_task": {
+                        "task_type": "scout",
+                        "task_id": "marine-scout-5",
+                        "unit_classes": ["marine"],
+                        "location_intent": "enemy_base",
+                        "priority": 0.75,
+                        "min_units": 5,
+                        "max_units": 5,
+                        "duration_seconds": 120,
+                        "allow_partial": True,
+                        "safety_margin": 0.35,
+                    },
                     "tags": ["scouting", "marine_scout"],
                 },
             }
@@ -320,6 +332,10 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual(("TERRAN_MARINE",), vector.scope.unit_classes)
         self.assertEqual(5, vector.scope.min_units)
         self.assertEqual(5, vector.scope.max_units)
+        self.assertEqual("scout_with_units", vector.tactical_task.task_type)
+        self.assertEqual("marine-scout-5", vector.tactical_task.task_id)
+        self.assertEqual(("TERRAN_MARINE",), vector.tactical_task.unit_classes)
+        self.assertEqual("enemy_main", vector.tactical_task.location_intent)
         self.assertEqual(0.8, vector.squad.squad_role_biases.to_dict()["marine_scout"])
 
     def test_canonicalizes_korean_compound_unit_and_structure_biases(self) -> None:
@@ -335,6 +351,12 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                         "production_facility_biases": {"배럭": 0.5},
                     },
                     "tech": {"unit_biases": {"공성전차": 0.4}},
+                    "tactical_task": {
+                        "type": "continuous_production",
+                        "id": "sustain-supply-and-marine",
+                        "production_items": ["마린", "보급고", "탱크"],
+                        "priority": 0.8,
+                    },
                     "scope": {
                         "army_group": "scout",
                         "unit_classes": ["마린"],
@@ -365,7 +387,45 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
             {"TERRAN_SIEGETANK": 0.4},
             result.vector.tech.unit_biases.to_dict(),
         )
+        self.assertEqual("sustain_production", result.vector.tactical_task.task_type)
+        self.assertEqual(
+            ("TERRAN_MARINE", "TERRAN_SUPPLYDEPOT", "TERRAN_SIEGETANK"),
+            result.vector.tactical_task.production_targets,
+        )
         self.assertEqual(("TERRAN_MARINE",), result.vector.scope.unit_classes)
+
+    def test_compiles_flat_tactical_task_aliases_for_bounded_tasks(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "intent": "탱크 체제로 전환하고 보급고 계속 지어",
+                "task_type": "tank_transition",
+                "task_id": "tank-transition-1",
+                "production_targets": ["factory", "factorytechlab", "siegetank", "보급고"],
+                "task_priority": 0.85,
+                "task_duration_seconds": 300,
+                "production": {
+                    "queue_biases": {"factory": 0.7, "siegetank": 0.9, "보급고": 0.5},
+                    "tech_switch_urgency": 0.7,
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("tech_transition", result.vector.tactical_task.task_type)
+        self.assertEqual("tank-transition-1", result.vector.tactical_task.task_id)
+        self.assertEqual(
+            (
+                "TERRAN_FACTORY",
+                "FACTORY_TECHLAB",
+                "TERRAN_SIEGETANK",
+                "TERRAN_SUPPLYDEPOT",
+            ),
+            result.vector.tactical_task.production_targets,
+        )
+        self.assertEqual(0.85, result.vector.tactical_task.priority)
 
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (

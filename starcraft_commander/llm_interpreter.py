@@ -34,7 +34,10 @@ from starcraft_commander.runtime_deps import (
     require_anthropic,
     require_openai,
 )
-from starcraft_commander.policy_modulation import MICROMACHINE_DOCTRINES
+from starcraft_commander.policy_modulation import (
+    MICROMACHINE_DOCTRINES,
+    MICROMACHINE_TACTICAL_TASK_TYPES,
+)
 from toycraft_commander.failure import build_parsing_failure_report
 from toycraft_commander.intents import (
     CANONICAL_INTENT_NAMES,
@@ -694,6 +697,48 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
         },
         "additionalProperties": False,
     }
+    tactical_task_schema = {
+        "type": "object",
+        "properties": {
+            "task_type": {
+                "type": "string",
+                "enum": sorted(MICROMACHINE_TACTICAL_TASK_TYPES),
+                "description": (
+                    "Bounded task ticket consumed by MicroMachine managers. "
+                    "This is not a raw SC2 command."
+                ),
+            },
+            "task_id": {
+                "type": "string",
+                "description": "Optional safe correlation id for telemetry lifecycle evidence.",
+            },
+            "unit_classes": {"type": "array", "items": {"type": "string"}},
+            "production_targets": {"type": "array", "items": {"type": "string"}},
+            "location_intent": {
+                "type": "string",
+                "enum": [
+                    "",
+                    "home",
+                    "natural",
+                    "enemy_main",
+                    "enemy_natural",
+                    "enemy_third",
+                    "third",
+                    "watchtower",
+                    "ramp",
+                    "last_seen_enemy_army",
+                    "safe_expansion",
+                ],
+            },
+            "priority": _positive_float_property("Task priority inside safe manager bounds."),
+            "min_units": {"type": "integer", "minimum": 0, "maximum": 200},
+            "max_units": {"type": "integer", "minimum": 0, "maximum": 200},
+            "duration_seconds": {"type": "integer", "minimum": 0, "maximum": 900},
+            "allow_partial": {"type": "boolean"},
+            "safety_margin": _positive_float_property("Required tactical safety margin."),
+        },
+        "additionalProperties": False,
+    }
     emergency_schema = {
         "type": "object",
         "properties": {
@@ -727,6 +772,7 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
             "scouting": scouting_schema,
             "squad": squad_schema,
             "scope": scope_schema,
+            "tactical_task": tactical_task_schema,
             "emergency": emergency_schema,
             "tags": {"type": "array", "items": {"type": "string"}},
             "rationale": {"type": "string"},
@@ -859,7 +905,8 @@ def build_policy_modulation_system_prompt() -> str:
         "Hard rules / 엄격 규칙:\n"
         "1. Output only manager-level policy modulation: strategy, economy, "
         "workers, tech, production, combat, scouting, squad, semantic scope, "
-        "and emergency constraints. MicroMachine keeps tactical ownership.\n"
+        "bounded tactical_task tickets, and emergency constraints. "
+        "MicroMachine keeps tactical ownership.\n"
         "2. Never output raw unit tags, coordinates, click targets, keyboard "
         "input, API method names, attack-move commands, train-unit commands, "
         "or direct SC2/s2client/python-sc2 controls. The deterministic compiler "
@@ -874,15 +921,19 @@ def build_policy_modulation_system_prompt() -> str:
         "anti-air response, defensive counterattack, and contain enemy natural. "
         "Set strategy.doctrine to the closest supported doctrine label when a "
         "specific doctrine is present.\n"
-        "5. Biases are bounded floats. Positive values increase preference, "
+        "5. Use tactical_task when the user asks for a concrete bounded outcome: "
+        "scout_with_units, pressure_with_main_army, sustain_production, "
+        "tech_transition, or expand_or_land_command_center. Never include raw "
+        "unit tags, coordinates, or API calls in a task.\n"
+        "6. Biases are bounded floats. Positive values increase preference, "
         "negative values reduce preference. Do not pretend that a bias directly "
         "clicks or commands a unit.\n"
-        "6. Always include assistant_message. It is the chat answer shown to "
+        "7. Always include assistant_message. It is the chat answer shown to "
         "the user and must be written in commander_context.response_language "
         "when present; otherwise match the user's utterance language. Explain "
         "the selected strategic interpretation, the main manager biases, and "
         "any uncertainty without using template-like debug wording.\n"
-        f"7. {LLM_PROMPT_INJECTION_GUARD}"
+        f"8. {LLM_PROMPT_INJECTION_GUARD}"
     )
 
 
@@ -1968,6 +2019,7 @@ def _has_substantive_policy_modulation(modulation: Mapping[str, object]) -> bool
         "scouting",
         "squad",
         "scope",
+        "tactical_task",
         "emergency",
         "constraints",
     }

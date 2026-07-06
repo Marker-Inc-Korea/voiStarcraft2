@@ -27,6 +27,7 @@ from starcraft_commander.policy_modulation import (
     PolicySafetyConstraint,
     StrategyModulation,
     TacticalScopeModulation,
+    TacticalTaskModulation,
     TechModulation,
     WeightedBiases,
     WorkerModulation,
@@ -91,6 +92,7 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
                 "combat",
                 "squad",
                 "scope",
+                "tactical_task",
                 "scouting",
                 "economy",
                 "workers",
@@ -133,12 +135,21 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
                 goal="pressure_third",
                 combat=CombatModulation(attack_condition_override="earlier_if_safe"),
                 scope=TacticalScopeModulation(location_intent="third"),
+                tactical_task=TacticalTaskModulation(
+                    task_type="pressure_with_main_army",
+                    task_id="pressure-third",
+                    location_intent="third",
+                    priority=0.6,
+                ),
                 workers=WorkerModulation(repeat_order_guard_frames=32),
             ),
             issued_at_frame=1000,
         )
 
-        self.assertEqual(("workers", "combat", "scope"), tactical.manager_bias_domains)
+        self.assertEqual(
+            ("workers", "combat", "scope", "tactical_task"),
+            tactical.manager_bias_domains,
+        )
 
     def test_blackboard_update_rejects_json_unsafe_update_id(self) -> None:
         with self.assertRaisesRegex(ValueError, "update_id"):

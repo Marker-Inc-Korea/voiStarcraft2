@@ -273,6 +273,7 @@ class MicroMachineBlackboardUpdate:
                 "scouting",
                 "squad",
                 "scope",
+                "tactical_task",
                 "emergency",
             )
             if _domain_has_signal(getattr(self.vector, domain))
@@ -631,6 +632,16 @@ MICROMACHINE_MANAGER_HOOKS: Final[tuple[MicroMachineManagerHook, ...]] = (
         responsibility=(
             "Carries unit-selection-like intent as semantic group, unit class, "
             "location, and duration constraints without raw unit tags."
+        ),
+    ),
+    MicroMachineManagerHook(
+        domain="tactical_task",
+        manager="CombatCommander / ScoutManager / ProductionManager",
+        hook="bounded task lifecycle ticket",
+        responsibility=(
+            "Accepts/refuses manager-bounded tasks such as scout_with_units, "
+            "pressure_with_main_army, sustain_production, tech_transition, and "
+            "expand_or_land_command_center."
         ),
     ),
     MicroMachineManagerHook(

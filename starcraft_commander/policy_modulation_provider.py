@@ -385,6 +385,19 @@ _DOMAIN_ALIASES = {
     "max_units": ("scope", "max_units"),
     "require_safety_margin": ("scope", "require_safety_margin"),
     "allow_partial_scope": ("scope", "allow_partial_scope"),
+    "tactical_task_type": ("tactical_task", "task_type"),
+    "task_type": ("tactical_task", "task_type"),
+    "task_id": ("tactical_task", "task_id"),
+    "task_unit_classes": ("tactical_task", "unit_classes"),
+    "task_production_targets": ("tactical_task", "production_targets"),
+    "production_targets": ("tactical_task", "production_targets"),
+    "task_location_intent": ("tactical_task", "location_intent"),
+    "task_priority": ("tactical_task", "priority"),
+    "task_min_units": ("tactical_task", "min_units"),
+    "task_max_units": ("tactical_task", "max_units"),
+    "task_duration_seconds": ("tactical_task", "duration_seconds"),
+    "task_allow_partial": ("tactical_task", "allow_partial"),
+    "task_safety_margin": ("tactical_task", "safety_margin"),
     "cancel_attacks": ("emergency", "cancel_attacks"),
     "pull_workers_for_defense": ("emergency", "pull_workers_for_defense"),
     "pull_workers_for_defense_bias": ("emergency", "pull_workers_for_defense"),
@@ -412,6 +425,19 @@ _DOMAIN_FIELD_ALIASES = {
         "emergency",
         "pull_workers_for_defense",
     ),
+    ("tactical_task", "type"): ("tactical_task", "task_type"),
+    ("tactical_task", "id"): ("tactical_task", "task_id"),
+    ("tactical_task", "units"): ("tactical_task", "unit_classes"),
+    ("tactical_task", "unit_types"): ("tactical_task", "unit_classes"),
+    ("tactical_task", "targets"): ("tactical_task", "production_targets"),
+    ("tactical_task", "build_targets"): ("tactical_task", "production_targets"),
+    ("tactical_task", "production_items"): ("tactical_task", "production_targets"),
+    ("tactical_task", "location"): ("tactical_task", "location_intent"),
+    ("tactical_task", "min_count"): ("tactical_task", "min_units"),
+    ("tactical_task", "max_count"): ("tactical_task", "max_units"),
+    ("tactical_task", "duration"): ("tactical_task", "duration_seconds"),
+    ("tactical_task", "allow_partial_scope"): ("tactical_task", "allow_partial"),
+    ("tactical_task", "require_safety_margin"): ("tactical_task", "safety_margin"),
 }
 """LLM-friendly nested aliases routed to the canonical manager domains."""
 
@@ -425,6 +451,7 @@ _DOMAIN_KEYS = {
     "scouting",
     "squad",
     "scope",
+    "tactical_task",
     "emergency",
 }
 
@@ -476,6 +503,50 @@ _ATTACK_CONDITION_OVERRIDE_ALIASES = {
     "no_attack": "never",
     "hold": "never",
     "hold_fire": "never",
+}
+
+_TACTICAL_TASK_TYPE_ALIASES = {
+    "scout": "scout_with_units",
+    "scouting": "scout_with_units",
+    "unit_scout": "scout_with_units",
+    "unit_scouting": "scout_with_units",
+    "scout_with_units": "scout_with_units",
+    "marine_scout": "scout_with_units",
+    "pressure": "pressure_with_main_army",
+    "attack": "pressure_with_main_army",
+    "main_attack": "pressure_with_main_army",
+    "main_army_pressure": "pressure_with_main_army",
+    "pressure_with_main_army": "pressure_with_main_army",
+    "sustain": "sustain_production",
+    "sustain_production": "sustain_production",
+    "continuous_production": "sustain_production",
+    "keep_producing": "sustain_production",
+    "supply_buffer": "sustain_production",
+    "tech": "tech_transition",
+    "tech_transition": "tech_transition",
+    "transition": "tech_transition",
+    "tank_transition": "tech_transition",
+    "mech_transition": "tech_transition",
+    "expand": "expand_or_land_command_center",
+    "land": "expand_or_land_command_center",
+    "land_command_center": "expand_or_land_command_center",
+    "expand_or_land_command_center": "expand_or_land_command_center",
+    "command_center_landing": "expand_or_land_command_center",
+}
+
+_LOCATION_INTENT_ALIASES = {
+    "enemy_base": "enemy_main",
+    "enemy_start": "enemy_main",
+    "enemy_main": "enemy_main",
+    "enemy_natural": "enemy_natural",
+    "enemy_third": "enemy_third",
+    "third": "third",
+    "watch_tower": "watchtower",
+    "watchtower": "watchtower",
+    "safe_expand": "safe_expansion",
+    "safe_expansion": "safe_expansion",
+    "new_base": "safe_expansion",
+    "expansion": "safe_expansion",
 }
 
 _VECTOR_KEYS = {
@@ -776,10 +847,20 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                 domain_value["attack_condition_override"],
                 aliases=_ATTACK_CONDITION_OVERRIDE_ALIASES,
             )
+        if domain_name == "tactical_task" and "task_type" in domain_value:
+            domain_value["task_type"] = _canonicalize_enum_alias(
+                domain_value["task_type"],
+                aliases=_TACTICAL_TASK_TYPE_ALIASES,
+            )
+        if domain_name in {"scope", "tactical_task"} and "location_intent" in domain_value:
+            domain_value["location_intent"] = _canonicalize_enum_alias(
+                domain_value["location_intent"],
+                aliases=_LOCATION_INTENT_ALIASES,
+            )
         for field_name, field_value in list(domain_value.items()):
             if (domain_name, field_name) in _CANONICAL_BIAS_FIELDS:
                 domain_value[field_name] = _canonicalize_bias_mapping(field_value)
-        if domain_name == "scope":
+        if domain_name in {"scope", "tactical_task"}:
             classes = domain_value.get("unit_classes")
             if isinstance(classes, tuple):
                 domain_value["unit_classes"] = tuple(
@@ -788,6 +869,16 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
             elif _is_non_text_sequence(classes):
                 domain_value["unit_classes"] = [
                     _canonicalize_micromachine_key(item) for item in classes
+                ]
+        if domain_name == "tactical_task":
+            targets = domain_value.get("production_targets")
+            if isinstance(targets, tuple):
+                domain_value["production_targets"] = tuple(
+                    _canonicalize_micromachine_key(item) for item in targets
+                )
+            elif _is_non_text_sequence(targets):
+                domain_value["production_targets"] = [
+                    _canonicalize_micromachine_key(item) for item in targets
                 ]
 
 
