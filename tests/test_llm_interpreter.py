@@ -454,6 +454,12 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                         "goal": "마린으로 enemy natural 압박",
                         "override_level": "bias",
                         "combat": {"aggression": 0.5},
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "unit_classes": ["marine"],
+                            "location_intent": "enemy_natural",
+                            "priority": 0.6,
+                        },
                     }
                 }
             )
@@ -480,6 +486,10 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         )
         self.assertEqual("llm", output["modulation"]["source"])
         self.assertEqual("마린으로 enemy natural 압박", output["modulation"]["goal"])
+        self.assertEqual(
+            "pressure_with_main_army",
+            output["modulation"]["tactical_task"]["task_type"],
+        )
         call = fake_client.calls[0]
         self.assertEqual(
             call["tool_choice"],
@@ -630,6 +640,13 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertIn("assistant_message", schema["required"])
         self.assertIn("assistant_message", schema["properties"])
         self.assertIn("combat", schema["properties"]["modulation"]["properties"])
+        self.assertIn("tactical_task", schema["properties"]["modulation"]["properties"])
+        self.assertIn(
+            "scout_with_units",
+            schema["properties"]["modulation"]["properties"]["tactical_task"]["properties"][
+                "task_type"
+            ]["enum"],
+        )
         self.assertIn("raw", build_policy_modulation_system_prompt().lower())
         self.assertIn("response_language", build_policy_modulation_system_prompt())
         self.assertNotIn("assistant_message in Korean", build_policy_modulation_system_prompt())

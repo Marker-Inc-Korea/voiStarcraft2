@@ -116,6 +116,7 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "ScoutingModulation": "starcraft_commander.policy_modulation",
     "SquadModulation": "starcraft_commander.policy_modulation",
     "StrategyModulation": "starcraft_commander.policy_modulation",
+    "TacticalTaskModulation": "starcraft_commander.policy_modulation",
     "TechModulation": "starcraft_commander.policy_modulation",
     "WeightedBiases": "starcraft_commander.policy_modulation",
     "WorkerModulation": "starcraft_commander.policy_modulation",

@@ -69,6 +69,87 @@ MICROMACHINE_DOCTRINES: Final[frozenset[str]] = frozenset(
 )
 """Supported semantic doctrine labels for MicroMachine manager-level bias."""
 
+MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "scout_with_units",
+        "pressure_with_main_army",
+        "sustain_production",
+        "tech_transition",
+        "expand_or_land_command_center",
+    }
+)
+"""Bounded task labels consumed by MicroMachine managers, never raw commands."""
+
+MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
+    "scv": "TERRAN_SCV",
+    "worker": "TERRAN_SCV",
+    "workers": "TERRAN_SCV",
+    "일꾼": "TERRAN_SCV",
+    "건설로봇": "TERRAN_SCV",
+    "supplydepot": "TERRAN_SUPPLYDEPOT",
+    "depot": "TERRAN_SUPPLYDEPOT",
+    "보급고": "TERRAN_SUPPLYDEPOT",
+    "commandcenter": "TERRAN_COMMANDCENTER",
+    "cc": "TERRAN_COMMANDCENTER",
+    "사령부": "TERRAN_COMMANDCENTER",
+    "refinery": "TERRAN_REFINERY",
+    "gas": "TERRAN_REFINERY",
+    "가스": "TERRAN_REFINERY",
+    "barracks": "TERRAN_BARRACKS",
+    "rax": "TERRAN_BARRACKS",
+    "병영": "TERRAN_BARRACKS",
+    "factory": "TERRAN_FACTORY",
+    "군수공장": "TERRAN_FACTORY",
+    "starport": "TERRAN_STARPORT",
+    "우주공항": "TERRAN_STARPORT",
+    "engineeringbay": "TERRAN_ENGINEERINGBAY",
+    "ebay": "TERRAN_ENGINEERINGBAY",
+    "공학연구소": "TERRAN_ENGINEERINGBAY",
+    "armory": "TERRAN_ARMORY",
+    "무기고": "TERRAN_ARMORY",
+    "bunker": "TERRAN_BUNKER",
+    "벙커": "TERRAN_BUNKER",
+    "marine": "TERRAN_MARINE",
+    "marines": "TERRAN_MARINE",
+    "마린": "TERRAN_MARINE",
+    "해병": "TERRAN_MARINE",
+    "marauder": "TERRAN_MARAUDER",
+    "marauders": "TERRAN_MARAUDER",
+    "불곰": "TERRAN_MARAUDER",
+    "reaper": "TERRAN_REAPER",
+    "reapers": "TERRAN_REAPER",
+    "사신": "TERRAN_REAPER",
+    "hellion": "TERRAN_HELLION",
+    "hellions": "TERRAN_HELLION",
+    "화염차": "TERRAN_HELLION",
+    "cyclone": "TERRAN_CYCLONE",
+    "cyclones": "TERRAN_CYCLONE",
+    "사이클론": "TERRAN_CYCLONE",
+    "thor": "TERRAN_THOR",
+    "thors": "TERRAN_THOR",
+    "토르": "TERRAN_THOR",
+    "siegetank": "TERRAN_SIEGETANK",
+    "tank": "TERRAN_SIEGETANK",
+    "tanks": "TERRAN_SIEGETANK",
+    "탱크": "TERRAN_SIEGETANK",
+    "공성전차": "TERRAN_SIEGETANK",
+    "medivac": "TERRAN_MEDIVAC",
+    "medivacs": "TERRAN_MEDIVAC",
+    "의료선": "TERRAN_MEDIVAC",
+    "viking": "TERRAN_VIKINGFIGHTER",
+    "vikings": "TERRAN_VIKINGFIGHTER",
+    "바이킹": "TERRAN_VIKINGFIGHTER",
+    "factorytechlab": "FACTORY_TECHLAB",
+    "factorylab": "FACTORY_TECHLAB",
+    "factoryreactor": "FACTORY_REACTOR",
+    "barrackstechlab": "BARRACKS_TECHLAB",
+    "barracksreactor": "BARRACKS_REACTOR",
+    "starporttechlab": "STARPORT_TECHLAB",
+    "starportreactor": "STARPORT_REACTOR",
+}
+"""Safe semantic tokens canonicalized before C++ blackboard serialization."""
+
 POLICY_MODULATION_RAW_CONTROL_KEYS: Final[frozenset[str]] = frozenset(
     {
         "api_call",
@@ -709,6 +790,157 @@ class TacticalScopeModulation:
 
 
 @dataclass(frozen=True)
+class TacticalTaskModulation:
+    """Bounded tactical task ticket consumed by MicroMachine managers.
+
+    This is stronger than a vague bias but still not raw control: it describes
+    a manager-consumable task type, semantic unit/production scope, and lifecycle
+    metadata. The C++ bot decides exact unit tags, positions, and orders.
+    """
+
+    task_type: str = ""
+    task_id: str = ""
+    unit_classes: tuple[str, ...] = ()
+    production_targets: tuple[str, ...] = ()
+    location_intent: str = ""
+    priority: float = 0.0
+    min_units: int = 0
+    max_units: int = 0
+    duration_seconds: int = 0
+    allow_partial: bool = True
+    safety_margin: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "task_type",
+            _optional_choice(
+                "task_type",
+                self.task_type,
+                set(MICROMACHINE_TACTICAL_TASK_TYPES),
+            ),
+        )
+        if self.task_id:
+            object.__setattr__(
+                self,
+                "task_id",
+                _validate_optional_identifier("task_id", self.task_id),
+            )
+        object.__setattr__(
+            self,
+            "unit_classes",
+            _canonicalize_task_tokens(
+                _validate_string_tuple("unit_classes", self.unit_classes)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "production_targets",
+            _canonicalize_task_tokens(
+                _validate_string_tuple("production_targets", self.production_targets)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "location_intent",
+            _optional_choice(
+                "location_intent",
+                self.location_intent,
+                {
+                    "home",
+                    "natural",
+                    "enemy_main",
+                    "enemy_natural",
+                    "enemy_third",
+                    "third",
+                    "watchtower",
+                    "ramp",
+                    "last_seen_enemy_army",
+                    "safe_expansion",
+                },
+            ),
+        )
+        object.__setattr__(
+            self,
+            "priority",
+            _coerce_unit_interval(
+                self.priority,
+                field_name="priority",
+                lower=0.0,
+                upper=1.0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "min_units",
+            _coerce_bounded_int(self.min_units, field_name="min_units", lower=0, upper=200),
+        )
+        object.__setattr__(
+            self,
+            "max_units",
+            _coerce_bounded_int(self.max_units, field_name="max_units", lower=0, upper=200),
+        )
+        if self.max_units and self.min_units and self.max_units < self.min_units:
+            raise ValueError("max_units must be greater than or equal to min_units.")
+        object.__setattr__(
+            self,
+            "duration_seconds",
+            _coerce_bounded_int(
+                self.duration_seconds,
+                field_name="duration_seconds",
+                lower=0,
+                upper=POLICY_MODULATION_TTL_MAX_SECONDS,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "allow_partial",
+            _coerce_bool(self.allow_partial, "allow_partial"),
+        )
+        object.__setattr__(
+            self,
+            "safety_margin",
+            _coerce_unit_interval(
+                self.safety_margin,
+                field_name="safety_margin",
+                lower=0.0,
+                upper=1.0,
+            ),
+        )
+        if not self.task_type and self._has_task_payload():
+            raise ValueError("task_type is required when tactical_task payload is set.")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "task_type": self.task_type,
+            "task_id": self.task_id,
+            "unit_classes": list(self.unit_classes),
+            "production_targets": list(self.production_targets),
+            "location_intent": self.location_intent,
+            "priority": self.priority,
+            "min_units": self.min_units,
+            "max_units": self.max_units,
+            "duration_seconds": self.duration_seconds,
+            "allow_partial": self.allow_partial,
+            "safety_margin": self.safety_margin,
+        }
+
+    def _has_task_payload(self) -> bool:
+        return (
+            bool(self.task_id)
+            or bool(self.unit_classes)
+            or bool(self.production_targets)
+            or bool(self.location_intent)
+            or self.priority != 0.0
+            or self.min_units != 0
+            or self.max_units != 0
+            or self.duration_seconds != 0
+            or self.allow_partial is not True
+            or self.safety_margin != 0.0
+        )
+
+
+@dataclass(frozen=True)
 class EmergencyModulation:
     """Short-lived emergency intervention flags."""
 
@@ -787,6 +1019,7 @@ class PolicyModulationVector:
     scouting: ScoutingModulation = field(default_factory=ScoutingModulation)
     squad: SquadModulation = field(default_factory=SquadModulation)
     scope: TacticalScopeModulation = field(default_factory=TacticalScopeModulation)
+    tactical_task: TacticalTaskModulation = field(default_factory=TacticalTaskModulation)
     emergency: EmergencyModulation = field(default_factory=EmergencyModulation)
     constraints: tuple[PolicySafetyConstraint, ...] = ()
     tags: tuple[str, ...] = ()
@@ -831,6 +1064,11 @@ class PolicyModulationVector:
             self, "scope", _coerce_domain(self.scope, TacticalScopeModulation)
         )
         object.__setattr__(
+            self,
+            "tactical_task",
+            _coerce_domain(self.tactical_task, TacticalTaskModulation),
+        )
+        object.__setattr__(
             self, "emergency", _coerce_domain(self.emergency, EmergencyModulation)
         )
         object.__setattr__(
@@ -866,6 +1104,11 @@ class PolicyModulationVector:
             scouting=_domain_from_mapping(mapping, "scouting", ScoutingModulation),
             squad=_domain_from_mapping(mapping, "squad", SquadModulation),
             scope=_domain_from_mapping(mapping, "scope", TacticalScopeModulation),
+            tactical_task=_domain_from_mapping(
+                mapping,
+                "tactical_task",
+                TacticalTaskModulation,
+            ),
             emergency=_domain_from_mapping(mapping, "emergency", EmergencyModulation),
             constraints=_constraints_from_mapping(mapping.get("constraints", ())),
             tags=_string_tuple_from_mapping(mapping.get("tags", ()), "tags"),
@@ -890,6 +1133,7 @@ class PolicyModulationVector:
             "scouting": self.scouting.to_dict(),
             "squad": self.squad.to_dict(),
             "scope": self.scope.to_dict(),
+            "tactical_task": self.tactical_task.to_dict(),
             "emergency": self.emergency.to_dict(),
             "constraints": [constraint.to_dict() for constraint in self.constraints],
             "tags": list(self.tags),
@@ -1049,6 +1293,18 @@ def _require_text(field_name: str, value: object) -> str:
     return value.strip()
 
 
+def _validate_optional_identifier(field_name: str, value: object) -> str:
+    text = _require_text(field_name, value)
+    if len(text) > 128:
+        raise ValueError(f"{field_name} cannot exceed 128 characters.")
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-")
+    if any(character not in allowed for character in text):
+        raise ValueError(
+            f"{field_name} may only contain letters, digits, underscore, dot, colon, or hyphen."
+        )
+    return text
+
+
 def _require_choice(field_name: str, value: object, choices: set[str]) -> str:
     text = _require_text(field_name, value).lower()
     if text not in choices:
@@ -1073,6 +1329,30 @@ def _validate_string_tuple(name: str, values: object) -> tuple[str, ...]:
     for value in result:
         _require_text(name, value)
     return tuple(str(value).strip() for value in result)
+
+
+def _canonicalize_task_tokens(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(_canonicalize_task_token(value) for value in values)
+
+
+def _canonicalize_task_token(value: str) -> str:
+    token = value.strip()
+    if not token:
+        return token
+    upper = token.upper()
+    if upper.startswith("TERRAN_") or upper in {
+        "BARRACKS_TECHLAB",
+        "BARRACKS_REACTOR",
+        "FACTORY_TECHLAB",
+        "FACTORY_REACTOR",
+        "STARPORT_TECHLAB",
+        "STARPORT_REACTOR",
+        "STIMPACK",
+        "COMBATSHIELD",
+    }:
+        return upper
+    normalized = "".join(character for character in token.lower() if character.isalnum())
+    return MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES.get(normalized, token)
 
 
 def _string_tuple_from_mapping(values: object, name: str) -> tuple[str, ...]:

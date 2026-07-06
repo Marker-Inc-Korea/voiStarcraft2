@@ -8,6 +8,7 @@ from starcraft_commander.policy_modulation import (
     EconomyModulation,
     EmergencyModulation,
     MICROMACHINE_DOCTRINES,
+    MICROMACHINE_TACTICAL_TASK_TYPES,
     PolicyModulationSource,
     PolicyModulationVector,
     PolicyOverrideLevel,
@@ -17,6 +18,7 @@ from starcraft_commander.policy_modulation import (
     SquadModulation,
     StrategyModulation,
     TacticalScopeModulation,
+    TacticalTaskModulation,
     TechModulation,
     WeightedBiases,
     WorkerModulation,
@@ -124,6 +126,19 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 max_units=18,
                 require_safety_margin=0.35,
             ),
+            tactical_task=TacticalTaskModulation(
+                task_type="pressure_with_main_army",
+                task_id="qa-pressure-001",
+                unit_classes=("marine", "siege_tank"),
+                production_targets=("siege_tank", "supply_depot"),
+                location_intent="enemy_natural",
+                priority=0.7,
+                min_units=6,
+                max_units=18,
+                duration_seconds=180,
+                allow_partial=True,
+                safety_margin=0.35,
+            ),
             emergency=EmergencyModulation(
                 cancel_attacks=True,
                 prioritize_repair=True,
@@ -161,6 +176,16 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual("main", document["scope"]["army_group"])
         self.assertEqual(["marine", "siege_tank"], document["scope"]["unit_classes"])
         self.assertEqual("enemy_natural", document["scope"]["location_intent"])
+        self.assertEqual("pressure_with_main_army", document["tactical_task"]["task_type"])
+        self.assertEqual("qa-pressure-001", document["tactical_task"]["task_id"])
+        self.assertEqual(
+            ["TERRAN_MARINE", "TERRAN_SIEGETANK"],
+            document["tactical_task"]["unit_classes"],
+        )
+        self.assertEqual(
+            ["TERRAN_SIEGETANK", "TERRAN_SUPPLYDEPOT"],
+            document["tactical_task"]["production_targets"],
+        )
         self.assertTrue(document["emergency"]["cancel_attacks"])
         self.assertTrue(document["emergency"]["prioritize_repair"])
         self.assertEqual("no_attack_before", document["constraints"][0]["key"])
@@ -196,6 +221,15 @@ class PolicyModulationVectorTest(unittest.TestCase):
                     "location_intent": "enemy_main",
                     "min_units": 1,
                 },
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "task_id": "representation-scout-1",
+                    "unit_classes": ["reaper"],
+                    "location_intent": "enemy_main",
+                    "priority": 0.6,
+                    "min_units": 1,
+                    "max_units": 2,
+                },
                 "constraints": [{"key": "require_scouting_before_attack"}],
                 "tags": ["representation_modulation"],
             }
@@ -212,6 +246,9 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual(48, vector.workers.repeat_order_guard_frames)
         self.assertEqual("harass", vector.scope.army_group)
         self.assertEqual(("reaper",), vector.scope.unit_classes)
+        self.assertEqual("scout_with_units", vector.tactical_task.task_type)
+        self.assertEqual("representation-scout-1", vector.tactical_task.task_id)
+        self.assertEqual(("TERRAN_REAPER",), vector.tactical_task.unit_classes)
         self.assertEqual("require_scouting_before_attack", vector.constraints[0].key)
 
     def test_tactical_scope_accepts_issue_third_location_wording(self) -> None:
@@ -305,6 +342,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
 
     def test_micromachine_doctrine_labels_are_bounded_and_serialized(self) -> None:
         self.assertIn("mech_transition", MICROMACHINE_DOCTRINES)
+        self.assertIn("scout_with_units", MICROMACHINE_TACTICAL_TASK_TYPES)
 
         vector = PolicyModulationVector(
             goal="transition_to_mech",
@@ -319,6 +357,31 @@ class PolicyModulationVectorTest(unittest.TestCase):
             "mech_transition",
             vector.to_dict()["strategy"]["doctrine"],
         )
+
+    def test_tactical_task_is_bounded_and_rejects_raw_like_identifiers(self) -> None:
+        task = TacticalTaskModulation(
+            task_type="sustain_production",
+            task_id="supply-buffer-001",
+            production_targets=("TERRAN_SUPPLYDEPOT", "TERRAN_SCV"),
+            priority=0.9,
+            duration_seconds=300,
+        )
+
+        self.assertEqual("sustain_production", task.task_type)
+        self.assertEqual(("TERRAN_SUPPLYDEPOT", "TERRAN_SCV"), task.production_targets)
+
+        with self.assertRaisesRegex(ValueError, "task_type"):
+            TacticalTaskModulation(task_type="raw_attack_move")
+        with self.assertRaisesRegex(ValueError, "task_id"):
+            TacticalTaskModulation(task_type="scout_with_units", task_id="bad id")
+        with self.assertRaisesRegex(ValueError, "task_type is required"):
+            TacticalTaskModulation(production_targets=("supply_depot",))
+        with self.assertRaisesRegex(ValueError, "max_units"):
+            TacticalTaskModulation(
+                task_type="scout_with_units",
+                min_units=3,
+                max_units=2,
+            )
 
 
 if __name__ == "__main__":
