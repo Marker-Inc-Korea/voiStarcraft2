@@ -1233,8 +1233,6 @@ def _classify_worker_self_position_blocks(
             and trace_distance_sq <= 1.0
             and trace_target_kind
             in {
-                "ability_position",
-                "build_position",
                 "micro_smart_move_position",
                 "queued_position",
                 "unit_move_position",
@@ -1277,8 +1275,8 @@ def _classify_worker_self_position_blocks(
         return MicroMachineSoakFailure(
             code="worker_self_position_command",
             message=(
-                "WorkerManager accepted a position command at the worker's own "
-                "position; this is a root-cause bug, not successful evidence."
+                "WorkerManager accepted a move/smart position command at the worker's "
+                "own position; this is a root-cause bug, not successful evidence."
             ),
             evidence=worst_evidence,
         )
@@ -1916,22 +1914,24 @@ def _actual_combat_command_seen(
         if not isinstance(commander, Mapping) or not isinstance(combat, Mapping):
             continue
         update_id = str(commander.get("update_id", "") or "")
-        action = str(combat.get("last_issued_action", "") or "")
-        frame = _int_value(combat.get("last_action_frame"))
-        count = _int_value(combat.get("actual_command_issued_count"))
+        action = str(combat.get("main_attack_last_issued_action", "") or "")
+        frame = _int_value(combat.get("main_attack_last_action_frame"))
+        count = _int_value(combat.get("main_attack_actual_command_issued_count"))
         if action:
             observed_actions.append(action)
         best = {
             "frame": _int_value(entry.get("frame")),
             "update_id": update_id,
-            "actual_command_issued_count": count,
-            "last_action_frame": frame,
-            "last_issued_action": action,
+            "main_attack_actual_command_issued_count": count,
+            "main_attack_last_action_frame": frame,
+            "main_attack_last_issued_action": action,
             "main_attack_order_status": combat.get("main_attack_order_status"),
         }
         if (
             count > 0
             and action
+            and "squad=MainAttack" in action
+            and str(combat.get("main_attack_order_status", "") or "") == "Attack"
             and (not expected_update_id or update_id == expected_update_id)
             and frame > 0
             and (min_command_frame <= 0 or frame >= min_command_frame)
@@ -1949,16 +1949,80 @@ def _actual_scout_command_seen(
 ) -> tuple[bool, dict[str, object]]:
     best: dict[str, object] = {}
     observed_commands: list[str] = []
+    tactical_scout_requested = any(
+        isinstance((entry.get("managers") or {}), Mapping)
+        and isinstance((entry.get("managers") or {}).get("TacticalTask"), Mapping)
+        and str(
+            ((entry.get("managers") or {}).get("TacticalTask") or {}).get(
+                "task_type",
+                "",
+            )
+            or ""
+        )
+        == "scout_with_units"
+        for entry in telemetry_entries
+    )
     for entry in telemetry_entries:
         managers = entry.get("managers")
         if not isinstance(managers, Mapping):
             continue
         commander = managers.get("GameCommander")
-        scout = managers.get("ScoutManager")
-        workers = managers.get("WorkerManager")
+        tactical = managers.get("TacticalTask")
+        combat = managers.get("CombatCommander")
         update_id = (
             str(commander.get("update_id", "") or "") if isinstance(commander, Mapping) else ""
         )
+        if isinstance(tactical, Mapping) and str(tactical.get("task_type", "") or "") == "scout_with_units":
+            command = str(tactical.get("last_actual_command", "") or "")
+            frame = _int_value(tactical.get("last_actual_command_frame"))
+            count = _int_value(tactical.get("actual_command_issued_count"))
+            status = str(tactical.get("status", "") or "")
+            if command:
+                observed_commands.append(command)
+            best = {
+                "frame": _int_value(entry.get("frame")),
+                "update_id": update_id,
+                "source": "TacticalTask scout_with_units",
+                "status": status,
+                "actual_command_issued_count": count,
+                "last_actual_command_frame": frame,
+                "last_actual_command": command,
+                "reason": tactical.get("reason"),
+            }
+            if (
+                status == "executing"
+                and count > 0
+                and "squad=Scout" in command
+                and (not expected_update_id or update_id == expected_update_id)
+                and frame > 0
+                and (min_command_frame <= 0 or frame >= min_command_frame)
+            ):
+                return True, best
+        if isinstance(combat, Mapping):
+            command = str(combat.get("scout_last_issued_action", "") or "")
+            frame = _int_value(combat.get("scout_last_action_frame"))
+            count = _int_value(combat.get("scout_actual_command_issued_count"))
+            if command:
+                observed_commands.append(command)
+            if (
+                count > 0
+                and "squad=Scout" in command
+                and (not expected_update_id or update_id == expected_update_id)
+                and frame > 0
+                and (min_command_frame <= 0 or frame >= min_command_frame)
+            ):
+                return True, {
+                    "frame": _int_value(entry.get("frame")),
+                    "update_id": update_id,
+                    "source": "CombatCommander scout action",
+                    "actual_command_issued_count": count,
+                    "last_actual_command_frame": frame,
+                    "last_actual_command": command,
+                }
+        if tactical_scout_requested:
+            continue
+        scout = managers.get("ScoutManager")
+        workers = managers.get("WorkerManager")
         if isinstance(scout, Mapping):
             command = str(scout.get("last_actual_command", "") or "")
             frame = _int_value(scout.get("last_actual_command_frame"))
@@ -2009,6 +2073,9 @@ def _actual_scout_command_seen(
                 fallback["depth_progress_required"] = True
             if not best:
                 best = fallback
+    if tactical_scout_requested:
+        best.setdefault("source", "TacticalTask scout_with_units")
+        best["required_actual_command"] = "squad=Scout"
     best["observed_commands"] = observed_commands[-8:]
     return False, best
 

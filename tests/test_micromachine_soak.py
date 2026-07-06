@@ -62,7 +62,11 @@ def _telemetry(
                 "aggression": 0.55,
                 "actual_command_issued_count": 3,
                 "last_action_frame": 6_260,
+                "last_issued_action_frame": 6_260,
                 "last_issued_action": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
+                "main_attack_actual_command_issued_count": 3,
+                "main_attack_last_action_frame": 6_260,
+                "main_attack_last_issued_action": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
                 "main_attack_order_status": "Attack",
             },
             "ProductionManager": {
@@ -523,7 +527,7 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             self.assertEqual("idle_recovery_idle_spot", failure.evidence["root_cause_reason"])
             self.assertEqual(123, failure.evidence["worker_tag"])
 
-    def test_detects_accepted_worker_build_position_at_self(self) -> None:
+    def test_allows_legitimate_worker_build_position_at_builder_location(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             telemetry = _telemetry(12_500)
@@ -537,8 +541,41 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                     "root_cause_status": "none",
                     "root_cause_reason": "none",
                     "last_trace_status": "accepted_candidate",
-                    "last_trace_reason": "unlabeled_build_position",
+                    "last_trace_reason": "build_position_command",
                     "last_trace_target_kind": "build_position",
+                    "last_trace_target_tag": 0,
+                    "last_trace_distance_sq": 0.001,
+                }
+            )
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            codes = {failure.code for failure in report.failures}
+            self.assertNotIn("worker_self_position_command", codes, report.to_dict())
+
+    def test_detects_accepted_worker_move_position_at_self(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            workers = managers["WorkerManager"]
+            assert isinstance(workers, dict)
+            workers.update(
+                {
+                    "self_position_command_block_count": 0,
+                    "root_cause_status": "none",
+                    "root_cause_reason": "none",
+                    "last_trace_status": "accepted_candidate",
+                    "last_trace_reason": "idle_recovery_idle_spot",
+                    "last_trace_target_kind": "unit_move_position",
                     "last_trace_target_tag": 0,
                     "last_trace_distance_sq": 0.001,
                 }
@@ -559,7 +596,7 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 for item in report.failures
                 if item.code == "worker_self_position_command"
             ][0]
-            self.assertEqual("build_position", failure.evidence["last_trace_target_kind"])
+            self.assertEqual("unit_move_position", failure.evidence["last_trace_target_kind"])
             self.assertEqual(0, failure.evidence["last_trace_target_tag"])
 
     def test_detects_missing_worker_root_cause_telemetry_contract(self) -> None:
@@ -1968,7 +2005,20 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
     def test_requires_expected_tactical_effect_evidence_at_target_frame(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            self._write_runtime(root, log_text=MACRO_LOG, telemetry=_telemetry(12_500))
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["actual_command_issued_count"] = 0
+            combat["last_action_frame"] = 0
+            combat["last_issued_action_frame"] = 0
+            combat["last_issued_action"] = ""
+            combat["main_attack_actual_command_issued_count"] = 0
+            combat["main_attack_last_action_frame"] = 0
+            combat["main_attack_last_issued_action"] = ""
+            combat["main_attack_order_status"] = "Waiting"
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
 
             report = classify_micromachine_soak(
                 MicroMachineSoakObservation(
@@ -2026,6 +2076,55 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             self.assertEqual("passed", report.tactical_evidence.status)
             self.assertEqual((), report.tactical_evidence.missing_effects)
 
+    def test_accepts_pressure_when_generic_latest_action_is_scout_but_main_attack_command_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["last_issued_action_frame"] = 6_300
+            combat["last_issued_action"] = (
+                "MoveToGoalOrder|squad=Scout|type=2|x=142.5|y=33.5"
+            )
+            combat["main_attack_actual_command_issued_count"] = 3
+            combat["main_attack_last_action_frame"] = 6_260
+            combat["main_attack_last_issued_action"] = (
+                "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5"
+            )
+            managers["Squad"] = {
+                "active": True,
+                "contain_bias": 0.35,
+                "scope_location_intent": "enemy_natural",
+                "selected_target_class": "worker_line",
+                "consumed_axes": "squad.contain_bias,combat.target_priority_biases.*",
+            }
+            self._write_runtime(
+                root,
+                log_text="\n".join(
+                    (
+                        MACRO_LOG,
+                        "12450: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+                        "12455: calcTargets | target worker_line selected by policy modulation",
+                    )
+                ),
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure", "contain", "target_priority"),
+                ),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+
     def test_rejects_tactical_effect_without_actual_combat_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2036,7 +2135,11 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             assert isinstance(combat, dict)
             combat["actual_command_issued_count"] = 0
             combat["last_action_frame"] = 0
+            combat["last_issued_action_frame"] = 0
             combat["last_issued_action"] = ""
+            combat["main_attack_actual_command_issued_count"] = 0
+            combat["main_attack_last_action_frame"] = 0
+            combat["main_attack_last_issued_action"] = ""
             managers["Squad"] = {
                 "active": True,
                 "contain_bias": 0.35,
@@ -2051,6 +2154,187 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 )
             )
             self._write_runtime(root, log_text=log_text, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+
+    def test_rejects_pressure_effect_when_latest_combat_command_is_not_main_attack(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["actual_command_issued_count"] = 3
+            combat["last_action_frame"] = 6_260
+            combat["last_issued_action_frame"] = 6_260
+            combat["last_issued_action"] = (
+                "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5"
+            )
+            combat["main_attack_actual_command_issued_count"] = 3
+            combat["main_attack_last_action_frame"] = 6_260
+            combat["main_attack_last_issued_action"] = (
+                "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5"
+            )
+            combat["main_attack_order_status"] = "Waiting"
+            managers["Squad"] = {
+                "active": True,
+                "contain_bias": 0.35,
+                "scope_location_intent": "enemy_natural",
+                "selected_target_class": "worker_line",
+                "consumed_axes": "squad.contain_bias,combat.target_priority_biases.*",
+            }
+            self._write_runtime(
+                root,
+                log_text="\n".join(
+                    (
+                        MACRO_LOG,
+                        "12450: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+                    )
+                ),
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+
+    def test_rejects_pressure_effect_when_only_stale_action_frame_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["actual_command_issued_count"] = 3
+            combat["last_action_frame"] = 6_260
+            combat["last_issued_action_frame"] = 0
+            combat["last_issued_action"] = (
+                "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5"
+            )
+            combat["main_attack_actual_command_issued_count"] = 3
+            combat["main_attack_last_action_frame"] = 0
+            combat["main_attack_last_issued_action"] = (
+                "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5"
+            )
+            combat["main_attack_order_status"] = "Attack"
+            self._write_runtime(
+                root,
+                log_text="\n".join(
+                    (
+                        MACRO_LOG,
+                        "12450: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+                    )
+                ),
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+
+    def test_rejects_pressure_effect_when_only_generic_main_attack_action_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["actual_command_issued_count"] = 3
+            combat["last_action_frame"] = 6_260
+            combat["last_issued_action_frame"] = 6_260
+            combat["last_issued_action"] = (
+                "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5"
+            )
+            combat["main_attack_actual_command_issued_count"] = 0
+            combat["main_attack_last_action_frame"] = 0
+            combat["main_attack_last_issued_action"] = ""
+            combat["main_attack_order_status"] = "Attack"
+            self._write_runtime(
+                root,
+                log_text="\n".join(
+                    (
+                        MACRO_LOG,
+                        "12450: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+                    )
+                ),
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+
+    def test_rejects_pressure_effect_when_main_attack_frame_missing_but_generic_frame_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["actual_command_issued_count"] = 3
+            combat["last_action_frame"] = 6_260
+            combat["last_issued_action_frame"] = 6_260
+            combat["last_issued_action"] = (
+                "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5"
+            )
+            combat["main_attack_actual_command_issued_count"] = 3
+            combat["main_attack_last_action_frame"] = 0
+            combat["main_attack_last_issued_action"] = (
+                "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5"
+            )
+            combat["main_attack_order_status"] = "Attack"
+            self._write_runtime(
+                root,
+                log_text="\n".join(
+                    (
+                        MACRO_LOG,
+                        "12450: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+                    )
+                ),
+                telemetry=telemetry,
+            )
 
             report = classify_micromachine_soak(
                 MicroMachineSoakObservation(
@@ -2091,6 +2375,164 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 root,
                 log_text="\n".join((MACRO_LOG, "6260: Scout policy target selected")),
                 telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("scout",),
+                ),
+            )
+
+            self.assertTrue(report.ok, report.to_dict())
+
+    def test_rejects_scout_with_units_task_when_only_squad_assignment_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-marine-scout"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            managers["TacticalTask"] = {
+                "active": True,
+                "task_type": "scout_with_units",
+                "task_id": "marine-scout-3",
+                "status": "executing",
+                "reason": "CombatCommander assigned a fresh Scout squad order for this task",
+                "consumed_by": "CombatCommander,Squad",
+                "actual_command_issued_count": 3,
+                "last_actual_command": "ScoutSquadOrder|assigned_units=3",
+                "last_actual_command_frame": 6_260,
+            }
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["scout_scope_status"] = "Consumed"
+            combat["scout_scope_assigned_unit_count"] = 3
+            combat["scout_actual_command_issued_count"] = 0
+            combat["scout_last_issued_action"] = ""
+            combat["scout_last_action_frame"] = 0
+            self._write_runtime(
+                root,
+                log_text="\n".join((MACRO_LOG, "6260: Scout squad assigned")),
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("scout",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "tactical_actual_command_missing"
+            ][0]
+            self.assertEqual(["scout_actual_command"], failure.evidence["missing"])
+            self.assertEqual(
+                "squad=Scout",
+                failure.evidence["scout"]["required_actual_command"],
+            )
+
+    def test_rejects_scout_with_units_task_when_only_scout_manager_fallback_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-marine-scout"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            managers["TacticalTask"] = {
+                "active": True,
+                "task_type": "scout_with_units",
+                "task_id": "marine-scout-3",
+                "status": "executing",
+                "reason": "Scout target selected, but no Scout squad command issued",
+                "consumed_by": "CombatCommander,Squad",
+                "actual_command_issued_count": 0,
+                "last_actual_command": "",
+                "last_actual_command_frame": 0,
+            }
+            managers["ScoutManager"] = {
+                "active": True,
+                "bounded_intervention": True,
+                "scout_priority": 0.9,
+                "status": "legacy scout worker exploring",
+                "actual_command_issued_count": 2,
+                "last_actual_command": "move|scout_enemy_region_known_move|x=33.5|y=138.5",
+                "last_actual_command_frame": 6_260,
+                "last_target_distance": 42.0,
+                "last_home_distance": 28.0,
+                "max_home_distance": 34.0,
+                "last_enemy_base_distance": 0.0,
+                "min_enemy_base_distance": 0.0,
+                "deep_scout_frame_count": 12,
+            }
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["scout_actual_command_issued_count"] = 0
+            combat["scout_last_issued_action"] = ""
+            combat["scout_last_action_frame"] = 0
+            self._write_runtime(
+                root,
+                log_text="\n".join((MACRO_LOG, "6260: legacy ScoutManager moved worker")),
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("scout",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+
+    def test_accepts_scout_with_units_task_only_with_actual_scout_squad_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-marine-scout"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            managers["TacticalTask"] = {
+                "active": True,
+                "task_type": "scout_with_units",
+                "task_id": "marine-scout-3",
+                "status": "executing",
+                "reason": "CombatCommander issued a fresh Scout squad unit command for this task",
+                "consumed_by": "CombatCommander,Squad",
+                "actual_command_issued_count": 1,
+                "last_actual_command": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                "last_actual_command_frame": 6_260,
+            }
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["scout_scope_status"] = "Consumed"
+            combat["scout_scope_assigned_unit_count"] = 3
+            combat["scout_actual_command_issued_count"] = 1
+            combat["scout_last_issued_action"] = "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5"
+            combat["scout_last_action_frame"] = 6_260
+            self._write_runtime(
+                root,
+                log_text="\n".join((MACRO_LOG, "6260: Scout squad action issued")),
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
             )
 
             report = classify_micromachine_soak(

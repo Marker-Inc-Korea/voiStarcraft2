@@ -113,6 +113,178 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
         self.assertEqual(("hold", "contain", "harass", "scout"), evidence.missing_effects)
         self.assertEqual((), evidence.observed_effects)
 
+    def test_scout_with_units_requires_actual_scout_squad_command(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "scout_with_units",
+                        "status": "executing",
+                        "actual_command_issued_count": 3,
+                        "last_actual_command": "ScoutSquadOrder|assigned_units=3",
+                    },
+                    "CombatCommander": {
+                        "scout_scope_status": "Consumed",
+                        "scout_scope_assigned_unit_count": 3,
+                    },
+                },
+            },
+            expected_effects=("scout",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("scout",), evidence.missing_effects)
+        self.assertEqual((), evidence.observed_effects)
+
+    def test_scout_with_units_ignores_generic_scout_manager_goal(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "scout_with_units",
+                        "status": "executing",
+                        "actual_command_issued_count": 3,
+                        "last_actual_command": "ScoutSquadOrder|assigned_units=3",
+                    },
+                    "ScoutManager": {
+                        "current_scout_goal": "enemy_start_location",
+                        "status": "policy scout target selected",
+                    },
+                },
+            },
+            log_text="13000: Scout policy target selected",
+            expected_effects=("scout",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("scout",), evidence.missing_effects)
+        self.assertEqual((), evidence.observed_effects)
+
+    def test_scout_with_units_accepts_actual_scout_squad_command(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "scout_with_units",
+                        "status": "executing",
+                        "actual_command_issued_count": 1,
+                        "last_actual_command": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                    },
+                },
+            },
+            expected_effects=("scout",),
+        )
+
+        self.assertTrue(evidence.ok, evidence.to_dict())
+        self.assertIn("scout", evidence.observed_effects)
+
+    def test_scout_with_units_ignores_stale_combat_scout_command(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "scout_with_units",
+                        "status": "accepted",
+                        "actual_command_issued_count": 0,
+                        "last_actual_command": "",
+                    },
+                    "CombatCommander": {
+                        "scout_actual_command_issued_count": 31,
+                        "scout_last_action_frame": 5256,
+                        "scout_last_issued_action": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                    },
+                },
+            },
+            expected_effects=("scout",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("scout",), evidence.missing_effects)
+        self.assertEqual((), evidence.observed_effects)
+
+    def test_pressure_task_ignores_attack_order_without_main_attack_command(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "pressure_with_main_army",
+                        "status": "accepted",
+                        "actual_command_issued_count": 0,
+                        "last_actual_command": "",
+                    },
+                    "CombatCommander": {
+                        "main_attack_order": "Attack enemy natural",
+                        "main_attack_order_status": "Attack",
+                        "main_attack_actual_command_issued_count": 0,
+                        "main_attack_last_action_frame": 0,
+                        "main_attack_last_issued_action": "",
+                    },
+                },
+            },
+            log_text="13000: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+            expected_effects=("pressure",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("pressure",), evidence.missing_effects)
+        self.assertEqual((), evidence.observed_effects)
+
+    def test_pressure_task_ignores_stale_main_attack_command(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "pressure_with_main_army",
+                        "status": "accepted",
+                        "actual_command_issued_count": 0,
+                        "last_actual_command": "",
+                    },
+                    "CombatCommander": {
+                        "main_attack_order_status": "Attack",
+                        "main_attack_actual_command_issued_count": 55,
+                        "main_attack_last_action_frame": 5277,
+                        "main_attack_last_issued_action": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
+                    },
+                },
+            },
+            expected_effects=("pressure",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("pressure",), evidence.missing_effects)
+        self.assertEqual((), evidence.observed_effects)
+
+    def test_pressure_task_accepts_actual_main_attack_command(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "pressure_with_main_army",
+                        "status": "executing",
+                        "actual_command_issued_count": 1,
+                        "last_actual_command": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
+                    },
+                    "CombatCommander": {
+                        "main_attack_order_status": "Attack",
+                        "main_attack_actual_command_issued_count": 1,
+                        "main_attack_last_action_frame": 13000,
+                        "main_attack_last_issued_action": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
+                    },
+                },
+            },
+            expected_effects=("pressure",),
+        )
+
+        self.assertTrue(evidence.ok, evidence.to_dict())
+        self.assertIn("pressure", evidence.observed_effects)
+
     def test_partial_when_only_some_expected_effects_are_observed(self) -> None:
         evidence = classify_micromachine_tactical_evidence(
             latest_telemetry={

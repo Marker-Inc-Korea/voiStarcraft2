@@ -881,27 +881,49 @@ capture_preexisting_sc2_port_pids
 
 python3 - <<'PY' "${MICROMACHINE_DIR}/bin/BotConfig.txt" "${MAP_FILE}"
 import json
+import os
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 map_file = sys.argv[2]
+profile = os.environ.get("SMOKE_STRATEGY_PROFILE_NAME", "bio_pressure")
 config = json.loads(path.read_text())
 config["SC2API"]["PlayAsHuman"] = False
-config["SC2API"]["ForceStepMode"] = bool(int(__import__("os").environ.get("SMOKE_FORCE_STEP_MODE", "0")))
+config["SC2API"]["ForceStepMode"] = bool(int(os.environ.get("SMOKE_FORCE_STEP_MODE", "0")))
 config["SC2API"]["MapFile"] = map_file
-config["SC2API"]["PlayVsItSelf"] = bool(int(__import__("os").environ.get("SMOKE_PLAY_VS_SELF", "0")))
-config["SC2API"]["EnemyDifficulty"] = int(__import__("os").environ.get("SMOKE_ENEMY_DIFFICULTY", "1"))
+config["SC2API"]["PlayVsItSelf"] = bool(int(os.environ.get("SMOKE_PLAY_VS_SELF", "0")))
+config["SC2API"]["EnemyDifficulty"] = int(os.environ.get("SMOKE_ENEMY_DIFFICULTY", "1"))
 config["SC2API"]["EnemyRace"] = "Zerg"
 config["SC2API"]["StepSize"] = 1
 config["Macro"]["SelectStartingBuildBasedOnHistory"] = False
 config["Macro"]["PrintGreetingMessage"] = False
-config["SC2API Strategy"]["Terran"] = "Terran_MarineRush"
 terran_strategies = config["SC2API Strategy"]["Strategies"]
-marine_rush = terran_strategies["Terran_MarineRush"]["OpeningBuildOrder"]
-if "Marine" not in marine_rush:
-    first_barracks = marine_rush.index("Barracks")
-    marine_rush.insert(first_barracks + 1, "Marine")
+strategy_by_profile = {
+    "marine_rush": "Terran_MarineRush",
+    "bio_pressure": "Terran_MarineRush",
+    "aggressive_pressure": "Terran_MarineRush",
+    "drop_harassment": "Terran_RefineryOpener",
+    "worker_line_harassment": "Terran_ReaperHarass",
+    "scouting_map_control": "Terran_ReaperHarass",
+    "tank_defensive_hold": "Terran_Hellion",
+    "siege_contain": "Terran_Hellion",
+    "contain_enemy_natural": "Terran_Hellion",
+    "mech_transition": "Terran_Hellion",
+    "tech_transition": "Terran_Hellion",
+    "anti_air_response": "Terran_RefineryOpener",
+    "expand_macro": "Terran_FastExpand",
+    "economic_expansion": "Terran_FastExpand",
+}
+selected_strategy = strategy_by_profile.get(profile, "Terran_MarineRush")
+if selected_strategy not in terran_strategies:
+    raise SystemExit(f"Unsupported Terran strategy {selected_strategy!r} for smoke profile {profile!r}")
+config["SC2API Strategy"]["Terran"] = selected_strategy
+if selected_strategy == "Terran_MarineRush":
+    marine_rush = terran_strategies["Terran_MarineRush"]["OpeningBuildOrder"]
+    if "Marine" not in marine_rush:
+        first_barracks = marine_rush.index("Barracks")
+        marine_rush.insert(first_barracks + 1, "Marine")
 path.write_text(json.dumps(config, indent=4) + "\n")
 PY
 
@@ -1039,6 +1061,18 @@ require_aggressive_combat = sys.argv[9] == "1"
 require_scout_movement = sys.argv[10] == "1"
 require_scout_modulation = sys.argv[11] == "1"
 require_squad_modulation = sys.argv[12] == "1"
+pressure_override_contract = {
+    "marine_rush": {"force_when_threshold_met"},
+    "bio_pressure": {"earlier_if_safe"},
+    "aggressive_pressure": {"earlier_if_safe"},
+}
+pressure_requires_rally = expected_strategy_doctrine in {"bio_pressure", "aggressive_pressure"}
+pressure_requires_contain = expected_strategy_doctrine in {"bio_pressure", "aggressive_pressure"}
+pressure_requires_target_keys = {
+    "bio_pressure": ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"),
+    "aggressive_pressure": ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"),
+    "marine_rush": ("target_worker_line_bias", "target_army_bias"),
+}
 
 def load_json_retry(path):
     last_error = None
@@ -1051,6 +1085,95 @@ def load_json_retry(path):
     raise SystemExit(f"could not read stable JSON from {path}: {last_error}")
 
 payload = load_json_retry(telemetry)
+archive = telemetry.with_name("telemetry.jsonl")
+
+def iter_telemetry_entries():
+    yield payload
+    if archive.exists():
+        for line in archive.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict):
+                yield entry
+
+def modulation_issued_at_frame(update_id):
+    candidates = []
+    latest_modulation = telemetry.with_name("latest_modulation.json")
+    if latest_modulation.exists():
+        try:
+            entry = json.loads(latest_modulation.read_text())
+        except json.JSONDecodeError:
+            entry = {}
+        if isinstance(entry, dict) and entry.get("update_id") == update_id:
+            candidates.append(entry)
+    modulation_archive = telemetry.with_name("modulation_updates.jsonl")
+    if modulation_archive.exists():
+        for line in modulation_archive.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict) and entry.get("update_id") == update_id:
+                candidates.append(entry)
+    if not candidates:
+        return None
+    return max(int(entry.get("issued_at_frame", 0) or 0) for entry in candidates)
+
+aggressive_issued_at_frame = modulation_issued_at_frame(aggressive_update_id)
+if require_aggressive_combat and aggressive_issued_at_frame is None:
+    raise SystemExit(
+        "missing aggressive modulation issued_at_frame evidence: "
+        f"update_id={aggressive_update_id}, telemetry={telemetry}"
+    )
+aggressive_issued_at_frame = int(aggressive_issued_at_frame or 0)
+
+def profile_main_attack_command_seen():
+    best = {}
+    for entry in iter_telemetry_entries():
+        managers_entry = entry.get("managers", {})
+        if not isinstance(managers_entry, dict):
+            continue
+        commander_entry = managers_entry.get("GameCommander", {})
+        combat_entry = managers_entry.get("CombatCommander", {})
+        tactical_entry = managers_entry.get("TacticalTask", {})
+        if not isinstance(commander_entry, dict) or not isinstance(combat_entry, dict):
+            continue
+        if commander_entry.get("update_id") != aggressive_update_id:
+            continue
+        command = str(combat_entry.get("main_attack_last_issued_action", "") or "")
+        frame = int(entry.get("frame", 0) or 0)
+        command_frame = int(combat_entry.get("main_attack_last_action_frame", 0) or 0)
+        command_count = int(combat_entry.get("main_attack_actual_command_issued_count", 0) or 0)
+        status = str(combat_entry.get("main_attack_order_status", "") or "")
+        best = {
+            "frame": frame,
+            "main_attack_actual_command_issued_count": command_count,
+            "main_attack_last_action_frame": command_frame,
+            "main_attack_last_issued_action": command,
+            "main_attack_order_status": status,
+            "main_attack_scope_threshold_met": combat_entry.get("main_attack_scope_threshold_met"),
+            "main_attack_simulation_won": combat_entry.get("main_attack_simulation_won"),
+            "aggressive_issued_at_frame": aggressive_issued_at_frame,
+        }
+        issued_main_attack = "squad=MainAttack" in command
+        if (
+            issued_main_attack
+            and command_count > 0
+            and status == "Attack"
+            and combat_entry.get("main_attack_scope_threshold_met") is True
+            and combat_entry.get("main_attack_simulation_won") is True
+            and command_frame > 0
+            and command_frame >= aggressive_issued_at_frame
+        ):
+            return True, best
+    return False, best
+
 if payload.get("protocol_version") != "voi-mm-bridge/v1":
     raise SystemExit(f"unexpected telemetry protocol in {telemetry}: {payload!r}")
 if payload.get("frame", 0) < min_frame:
@@ -1090,12 +1213,22 @@ for axis in (
 if require_aggressive_combat:
     if combat.get("aggression", 0) <= 0:
         raise SystemExit(f"missing positive aggression evidence: {combat!r}")
-    if int(combat.get("actual_command_issued_count", 0) or 0) <= 0:
+    main_attack_command_count = int(
+        combat.get("main_attack_actual_command_issued_count", 0) or 0
+    )
+    main_attack_command = str(combat.get("main_attack_last_issued_action", "") or "")
+    main_attack_command_frame = int(combat.get("main_attack_last_action_frame", 0) or 0)
+    if main_attack_command_count <= 0:
         raise SystemExit(f"missing actual CombatCommander command evidence: {combat!r}")
-    if str(combat.get("last_issued_action", "") or "") in ("", "none"):
-        raise SystemExit(f"missing last issued CombatCommander action evidence: {combat!r}")
-    if int(combat.get("last_action_frame", 0) or 0) <= 0:
-        raise SystemExit(f"missing actual CombatCommander command frame evidence: {combat!r}")
+    if main_attack_command in ("", "none") or "squad=MainAttack" not in main_attack_command:
+        raise SystemExit(f"missing MainAttack CombatCommander action evidence: {combat!r}")
+    if main_attack_command_frame <= 0:
+        raise SystemExit(f"missing issued-only CombatCommander command frame evidence: {combat!r}")
+    if main_attack_command_frame < aggressive_issued_at_frame:
+        raise SystemExit(
+            "MainAttack command evidence predates the aggressive modulation update: "
+            f"issued_at_frame={aggressive_issued_at_frame}, combat={combat!r}"
+        )
     for axis in (
         "combat.retreat_patience_bias",
         "combat.rally_before_attack_bias",
@@ -1107,19 +1240,32 @@ if require_aggressive_combat:
         raise SystemExit(f"missing attack timing bias evidence: {combat!r}")
     if float(combat.get("commitment_level", 0)) <= 0:
         raise SystemExit(f"missing commitment level evidence: {combat!r}")
-    if combat.get("attack_condition_override") != "earlier_if_safe":
-        raise SystemExit(f"missing attack condition override evidence: {combat!r}")
+    allowed_overrides = pressure_override_contract.get(
+        expected_strategy_doctrine,
+        {"earlier_if_safe", "force_when_threshold_met"},
+    )
+    if combat.get("attack_condition_override") not in allowed_overrides:
+        raise SystemExit(
+            "missing profile-specific attack condition override evidence: "
+            f"expected one of {sorted(allowed_overrides)}, combat={combat!r}"
+        )
     if combat.get("main_attack_order_status") != "Attack":
         raise SystemExit(f"missing aggressive attack order evidence: {combat!r}")
     if combat.get("main_attack_scope_threshold_met") is not True:
         raise SystemExit(f"missing attack scope threshold evidence: {combat!r}")
     if combat.get("main_attack_simulation_won") is not True:
         raise SystemExit(f"missing attack simulation safety evidence: {combat!r}")
+    main_attack_seen, main_attack_evidence = profile_main_attack_command_seen()
+    if not main_attack_seen:
+        raise SystemExit(
+            "missing archived MainAttack command evidence for aggressive profile: "
+            f"best={main_attack_evidence!r}, latest={combat!r}"
+        )
     if int(combat.get("main_attack_unit_count", 0)) < int(combat.get("main_attack_scope_min_units", 1)):
         raise SystemExit(f"attack order did not satisfy scope units: {combat!r}")
     if float(combat.get("retreat_patience_bias", 0)) <= 0:
         raise SystemExit(f"missing retreat patience evidence: {combat!r}")
-    if float(combat.get("rally_before_attack_bias", 0)) <= 0:
+    if pressure_requires_rally and float(combat.get("rally_before_attack_bias", 0)) <= 0:
         raise SystemExit(f"missing rally-before-attack evidence: {combat!r}")
 squad = managers.get("Squad")
 if not squad or squad.get("active") is not True:
@@ -1142,7 +1288,7 @@ if require_squad_modulation or squad.get("bounded_intervention") is True:
         if axis not in squad_consumed_axes:
             raise SystemExit(f"missing deep Squad consumed axis {axis}: {squad!r}")
 if require_aggressive_combat:
-    if float(squad.get("contain_bias", 0)) <= 0:
+    if pressure_requires_contain and float(squad.get("contain_bias", 0)) <= 0:
         raise SystemExit(f"missing contain bias evidence: {squad!r}")
     if float(squad.get("reinforce_bias", 0)) <= 0:
         raise SystemExit(f"missing reinforce bias evidence: {squad!r}")
@@ -1150,7 +1296,7 @@ if require_aggressive_combat:
         raise SystemExit(f"missing semantic scope location evidence: {squad!r}")
     if int(squad.get("scope_min_units", 0)) < 1:
         raise SystemExit(f"missing semantic scope unit threshold evidence: {squad!r}")
-    for key in ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"):
+    for key in pressure_requires_target_keys.get(expected_strategy_doctrine, ("target_worker_line_bias", "target_townhall_bias", "target_army_bias")):
         if float(squad.get(key, 0)) <= 0:
             raise SystemExit(f"missing target priority evidence {key}: {squad!r}")
 production = managers.get("ProductionManager")
@@ -1201,8 +1347,6 @@ if production_contract_required and str(production.get("last_doctrine_evidence",
         "ProductionManager doctrine action lacks live queue evidence: "
         f"{production!r}"
     )
-archive = telemetry.with_name("telemetry.jsonl")
-
 expected_action_item_pairs = {
     "marine_rush": {("marine_pressure", "Marine"), ("bio_facility", "Barracks")},
     "bio_pressure": {
@@ -1258,19 +1402,6 @@ expected_action_item_pairs = {
     },
 }
 expected_pairs = expected_action_item_pairs.get(expected_strategy_doctrine, set())
-
-def iter_telemetry_entries():
-    yield payload
-    if archive.exists():
-        for line in archive.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(entry, dict):
-                yield entry
 
 def production_matches_expected(production_entry):
     if not isinstance(production_entry, dict):
@@ -1524,6 +1655,20 @@ if (
     and str(workers.get("root_cause_reason", "")).startswith("scout_")
 ):
     raise SystemExit(f"ScoutManager still generates duplicate worker move commands: {workers!r}")
+worker_noop_position_trace_kinds = {
+    "micro_smart_move_position",
+    "queued_position",
+    "unit_move_position",
+    "unit_move_tile_position",
+    "unit_smart_position",
+}
+if (
+    str(workers.get("last_trace_status", "") or "") == "accepted_candidate"
+    and str(workers.get("last_trace_target_kind", "") or "") in worker_noop_position_trace_kinds
+    and int(workers.get("last_trace_target_tag", 0) or 0) == 0
+    and float(workers.get("last_trace_distance_sq", 999999.0) or 999999.0) <= 1.0
+):
+    raise SystemExit(f"worker move/smart self-position candidate was accepted: {workers!r}")
 scout = managers.get("ScoutManager")
 if not scout or scout.get("active") is not True:
     raise SystemExit(f"missing ScoutManager activity evidence: {managers!r}")
@@ -1657,6 +1802,18 @@ for line in archive.read_text().splitlines():
     ):
         worker_archive_violation = {
             "code": "archived_scout_duplicate_worker_move",
+            "frame": entry.get("frame"),
+            "workers": worker_entry,
+        }
+        break
+    if (
+        str(worker_entry.get("last_trace_status", "") or "") == "accepted_candidate"
+        and str(worker_entry.get("last_trace_target_kind", "") or "") in worker_noop_position_trace_kinds
+        and int(worker_entry.get("last_trace_target_tag", 0) or 0) == 0
+        and float(worker_entry.get("last_trace_distance_sq", 999999.0) or 999999.0) <= 1.0
+    ):
+        worker_archive_violation = {
+            "code": "archived_worker_move_self_position_candidate",
             "frame": entry.get("frame"),
             "workers": worker_entry,
         }

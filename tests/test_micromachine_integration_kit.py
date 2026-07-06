@@ -396,6 +396,19 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("requeued_blocking", patch)
         self.assertIn('recordVoiDoctrineConsumption(type, action, "queued_existing");', patch)
 
+    def test_patch_keeps_real_build_and_continuity_commands_from_live_blockers(self) -> None:
+        patch = PATCH_FILE.read_text()
+
+        self.assertIn("&& !buildPositionCommand", patch)
+        self.assertIn("explicitVoiSupplyRequest", patch)
+        self.assertIn("criticalSupplyNeed", patch)
+        self.assertIn("worker_continuity", patch)
+        self.assertIn("standingProductionNeedsRoom", patch)
+        self.assertIn(
+            "queueVoiDoctrineItem(MetaTypeEnum::CommandCenter, \"expand_macro\", true, !(explicitSupplyBufferNeeded || workerProductionBias > 0.25f || effectiveMarineBias > 0.25f))",
+            patch,
+        )
+
     def test_completed_expansion_command_center_guard_does_not_require_placement_query(self) -> None:
         patch = PATCH_FILE.read_text()
         body = patch.split("+bool canTrustAssignedVoiExpansionDepot", 1)[1].split(
@@ -577,10 +590,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "stream_current_run_log",
             "runtime_log_start_offset",
             '"EnemyDifficulty"] = int',
-            '"ForceStepMode"] = bool(int(__import__("os").environ.get("SMOKE_FORCE_STEP_MODE", "0")))',
+            '"ForceStepMode"] = bool(int(os.environ.get("SMOKE_FORCE_STEP_MODE", "0")))',
             '"EnemyRace"] = "Zerg"',
             '"StepSize"] = 1',
-            '"SC2API Strategy"]["Terran"] = "Terran_MarineRush"',
+            'profile = os.environ.get("SMOKE_STRATEGY_PROFILE_NAME", "bio_pressure")',
+            "strategy_by_profile = {",
+            '"tank_defensive_hold": "Terran_Hellion"',
+            '"expand_macro": "Terran_FastExpand"',
+            'config["SC2API Strategy"]["Terran"] = selected_strategy',
             "policy_active",
             "CombatCommander",
             "ScoutManager",

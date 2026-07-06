@@ -1250,7 +1250,41 @@ class LLMCommandInterpreter:
                     "structured JSON input."
                 ),
             }
-        return _normalize_policy_modulation_tool_output(tool_input, text)
+        normalized = _normalize_policy_modulation_tool_output(tool_input, text)
+        if _policy_modulation_requires_tactical_task(text) and not _policy_modulation_has_tactical_task(normalized):
+            try:
+                response = self._create_policy_modulation_message(
+                    request,
+                    retry_after_missing_tactical_task=True,
+                )
+                retry_tool_input = _extract_tool_input(response)
+                if retry_tool_input is None and _uses_openai_compatible_client(self.provider):
+                    response = self._create_policy_modulation_json_message(request)
+                    retry_tool_input = _extract_openai_json_object_input(response)
+                if retry_tool_input is not None:
+                    normalized = _normalize_policy_modulation_tool_output(
+                        retry_tool_input,
+                        text,
+                    )
+            except Exception as error:  # noqa: BLE001 - provider boundary is fail-closed
+                return {
+                    "source": "llm",
+                    "status": "refused",
+                    "refusal_reason": (
+                        "LLM policy modulation tactical-task retry failed with "
+                        f"{_safe_llm_provider_error_detail(error)}"
+                    ),
+                }
+        if _policy_modulation_requires_tactical_task(text) and not _policy_modulation_has_tactical_task(normalized):
+            return {
+                "source": "llm",
+                "status": "refused",
+                "refusal_reason": (
+                    "LLM policy modulation omitted the required bounded tactical_task "
+                    "for a concrete scout/attack/production/tech/expand command."
+                ),
+            }
+        return normalized
 
     def interpret(self, command_text: str) -> CommandInterpretationResult:
         """Return a typed payload or a Korean clarification; never raises."""
@@ -1429,6 +1463,7 @@ class LLMCommandInterpreter:
         request: object,
         *,
         retry_after_missing_tool: bool = False,
+        retry_after_missing_tactical_task: bool = False,
     ) -> object:
         """Issue the forced-tool LLM call for MicroMachine policy modulation."""
 
@@ -1440,6 +1475,19 @@ class LLMCommandInterpreter:
                 "\n\nThe previous response did not contain the required forced-tool "
                 f"JSON input. Retry once and respond only through "
                 f"{LLM_POLICY_MODULATION_TOOL_NAME}; do not answer in plain text."
+            )
+        if retry_after_missing_tactical_task:
+            prompt += (
+                "\n\nThe previous forced-tool JSON had manager biases but omitted "
+                "the required tactical_task for this concrete StarCraft II outcome. "
+                "Retry once with exactly one bounded tactical_task. Use "
+                "scout_with_units for unit scouting or exploration, "
+                "pressure_with_main_army for attack/rush/pressure, "
+                "sustain_production for keep-producing, SCV, marine, or supply "
+                "continuity, tech_transition for tank/mech/factory/starport tech, "
+                "and expand_or_land_command_center for expansion or command-center "
+                "landing intent. Keep assistant_message in the user's language. "
+                "Do not output raw coordinates, unit tags, clicks, or API calls."
             )
         client = self._build_client()
         if _uses_openai_compatible_client(self.provider):
@@ -2006,6 +2054,91 @@ def _normalize_policy_modulation_tool_output(
             "LLM policy modulation forced-tool output missing modulation object."
         ),
     }
+
+
+_TACTICAL_TASK_REQUIRED_MARKERS = (
+    "정찰",
+    "탐색",
+    "시야",
+    "공격",
+    "러시",
+    "러쉬",
+    "압박",
+    "견제",
+    "뽑",
+    "뽑아",
+    "찍어",
+    "계속 뽑",
+    "계속 생산",
+    "생산",
+    "보급고",
+    "지어",
+    "건설",
+    "올려",
+    "마린",
+    "해병",
+    "배럭",
+    "병영",
+    "scv",
+    "일꾼",
+    "탱크",
+    "메카닉",
+    "군수공장",
+    "테크",
+    "확장",
+    "커맨드 센터",
+    "커멘드 센터",
+    "사령부",
+    "착륙",
+    "scout",
+    "attack",
+    "rush",
+    "pressure",
+    "harass",
+    "build",
+    "produce",
+    "train",
+    "make worker",
+    "making worker",
+    "keep making",
+    "worker",
+    "workers",
+    "marine",
+    "barracks",
+    "supply",
+    "depot",
+    "tank",
+    "mech",
+    "factory",
+    "tech",
+    "upgrade",
+    "upgrades",
+    "expand",
+    "expansion",
+    "take a third",
+    "take third",
+    "third base",
+    "command center",
+    "land",
+)
+
+
+def _policy_modulation_requires_tactical_task(command_text: str) -> bool:
+    normalized = " ".join(str(command_text or "").lower().split())
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _TACTICAL_TASK_REQUIRED_MARKERS)
+
+
+def _policy_modulation_has_tactical_task(output: Mapping[str, object]) -> bool:
+    modulation = output.get("modulation")
+    if not isinstance(modulation, Mapping):
+        return False
+    tactical_task = modulation.get("tactical_task")
+    if not isinstance(tactical_task, Mapping):
+        return False
+    task_type = str(tactical_task.get("task_type", "") or "").strip()
+    return bool(task_type)
 
 
 def _has_substantive_policy_modulation(modulation: Mapping[str, object]) -> bool:
