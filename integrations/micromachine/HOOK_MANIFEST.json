@@ -167,6 +167,7 @@
         "BuildingTask.anchor",
         "BuildingTask.offset_direction",
         "BuildingTask.target_position",
+        "BuildingTask.resolved_position",
         "BuildingTask.allow_nearest_valid_fallback",
         "BuildingTask.status",
         "BuildingTask.reason"
