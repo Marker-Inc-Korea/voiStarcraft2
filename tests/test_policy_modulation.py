@@ -90,7 +90,12 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 CompositionRequirement("tank", count=1, role="siege_support"),
             ),
             unit_roles=(
-                UnitRoleAssignment("viking", role="anti_air", priority=0.7),
+                UnitRoleAssignment(
+                    "viking",
+                    role="anti_air",
+                    priority=0.7,
+                    ability_policy="never",
+                ),
             ),
             building_tasks=(
                 BuildingTask(
@@ -120,6 +125,15 @@ class PolicyModulationVectorTest(unittest.TestCase):
             {"unit_type": "TERRAN_MARINE", "count": 4, "role": "frontline"},
             payload["composition_requirements"][0],
         )
+        self.assertEqual(
+            {
+                "unit_type": "TERRAN_VIKINGFIGHTER",
+                "role": "anti_air",
+                "priority": 0.7,
+                "ability_policy": "never",
+            },
+            payload["unit_roles"][0],
+        )
         self.assertEqual("TERRAN_BUNKER", payload["building_tasks"][0]["building_type"])
         self.assertEqual("self_natural_choke", payload["building_tasks"][0]["placement_intent"])
         self.assertEqual("self_natural", payload["building_tasks"][0]["anchor"])
@@ -136,6 +150,8 @@ class PolicyModulationVectorTest(unittest.TestCase):
     def test_rich_intent_rejects_unknown_roles_and_out_of_bounds_coordinates(self) -> None:
         with self.assertRaisesRegex(ValueError, "role"):
             UnitRoleAssignment("marine", role="raw_attack_move")
+        with self.assertRaisesRegex(ValueError, "ability_policy"):
+            UnitRoleAssignment("banshee", role="worker_harass", ability_policy="raw_cast")
         with self.assertRaisesRegex(ValueError, "target_position"):
             BuildingTask("bunker", placement_intent="front_door", target_position=(300, 12))
         with self.assertRaisesRegex(ValueError, "allowed MicroMachine"):

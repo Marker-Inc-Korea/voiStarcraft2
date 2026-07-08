@@ -173,11 +173,12 @@
       "source_path": "src/CombatCommander.cpp",
       "header_path": "src/CombatCommander.h",
       "function": "CombatCommander::updateAttackSquads()",
-      "secondary_function": "voiUnitMatchesCompositionToken() / SquadData::assignUnitToSquad()",
-      "status": "verified_consumed_with_composition_assignment_telemetry",
+      "secondary_function": "voiUnitMatchesCompositionToken() / voiRoleForUnit() / CombatCommander::PlanAction() / CombatCommander::ExecuteActions() / SquadData::assignUnitToSquad()",
+      "status": "verified_consumed_with_composition_assignment_and_unit_role_micro_telemetry",
       "keys": [
         "composition_requirements.*",
         "unit_roles.*",
+        "unit_roles.*.ability_policy",
         "route_intent.route_type",
         "route_intent.avoid_enemy_strength",
         "target_intent.target_type",
@@ -193,9 +194,20 @@
         "CompositionTask.required_count",
         "CompositionTask.assigned_count",
         "CompositionTask.route_type",
-        "CompositionTask.target_type"
+        "CompositionTask.target_type",
+        "UnitRoleTask.active",
+        "UnitRoleTask.role",
+        "UnitRoleTask.unit_type",
+        "UnitRoleTask.ability_policy",
+        "UnitRoleTask.status",
+        "UnitRoleTask.reason",
+        "UnitRoleTask.ability",
+        "UnitRoleTask.requested_count",
+        "UnitRoleTask.available_count",
+        "UnitRoleTask.attempted_count",
+        "UnitRoleTask.executed_count"
       ],
-      "intended_effect": "Assigns exact requested combat composition from Idle/Backup/Scout/MainAttack into MainAttack, reports missing units, and applies route/target intents without pulling defense squads."
+      "intended_effect": "Assigns exact requested combat composition from Idle/Backup/Scout/MainAttack into MainAttack, applies route/target intents, and consumes unit roles for bounded micro/ability bias without pulling defense squads or bypassing SC2 ability availability."
     },
     {
       "domain": "combat",

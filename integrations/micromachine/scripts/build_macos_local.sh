@@ -116,8 +116,8 @@ git -C "${MICROMACHINE_DIR}" submodule update --init --recursive
 # in BuildingManager.cpp. Normalize it before applying our UTF-8 patch bundle so
 # the canonical patch remains readable by tests and review tools.
 perl -0pi -e 's/\xAF{8,}/---------------/g' "${MICROMACHINE_DIR}/src/BuildingManager.cpp"
-git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
-git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --recount --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \

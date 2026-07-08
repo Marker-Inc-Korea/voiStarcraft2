@@ -1533,6 +1533,7 @@ index 2872a0b..2f19e43 100644
 +	bool ignoreExtraBorder,
 +	bool requireQueryPlacement);
 +bool isVoiSupplyRecoveryDepot(CCBot & bot, const UnitType & type);
++CCPosition voiFarthestEnemyStartPosition(CCBot & bot);
 +bool isVoiSc2MacroPlacementSafeWithOptions(
 +	CCBot & bot,
 +	const UnitType & type,
@@ -1542,6 +1543,23 @@ index 2872a0b..2f19e43 100644
 +	bool ignoreExtraBorder,
 +	bool requireQueryPlacement,
 +	bool allowCombatInfluence);
++
++CCPosition voiFarthestEnemyStartPosition(CCBot & bot)
++{
++	CCPosition farthestPosition;
++	float farthestDistance = 0.0f;
++	const CCPosition homePosition = bot.GetStartLocation();
++	for (const auto & enemyStart : bot.GetEnemyStartLocations())
++	{
++		const float distance = Util::DistSq(enemyStart, homePosition);
++		if (farthestPosition == CCPosition() || distance > farthestDistance)
++		{
++			farthestPosition = enemyStart;
++			farthestDistance = distance;
++		}
++	}
++	return farthestPosition;
++}
 +
 +bool IsRefineryTargetStillValid(CCBot & bot, const Building & building)
 +{
@@ -3418,29 +3436,29 @@ index 2872a0b..2f19e43 100644
      }
  	else
 @@ -1863,16 +3378,28 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool che
-		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
-		Building placementBuilding = b;
-		CCTilePosition voiBuildingTaskAnchor;
-		bool voiBuildingTaskAllowNearestFallback = true;
-		const bool hasVoiBuildingTaskPlacement = resolveVoiBuildingTaskPlacement(m_bot, b, voiBuildingTaskAnchor, voiBuildingTaskAllowNearestFallback, __FUNCTION__);
-		const bool voiBuildingTaskBlocksFallback = !voiBuildingTaskAllowNearestFallback;
-		if (hasVoiBuildingTaskPlacement)
-		{
-			placementBuilding.desiredPosition = voiBuildingTaskAnchor;
-		}
-		if (hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
-		{
-			buildingLocation = voiBuildingTaskAnchor;
-		}
-		else if (!hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
-		{
-			buildingLocation = CCTilePosition();
-		}
-		else
-		{
-			buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
-		}
-		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
++		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
++		Building placementBuilding = b;
++		CCTilePosition voiBuildingTaskAnchor;
++		bool voiBuildingTaskAllowNearestFallback = true;
++		const bool hasVoiBuildingTaskPlacement = resolveVoiBuildingTaskPlacement(m_bot, b, voiBuildingTaskAnchor, voiBuildingTaskAllowNearestFallback, __FUNCTION__);
++		const bool voiBuildingTaskBlocksFallback = !voiBuildingTaskAllowNearestFallback;
++		if (hasVoiBuildingTaskPlacement)
++		{
++			placementBuilding.desiredPosition = voiBuildingTaskAnchor;
++		}
++		if (hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
++		{
++			buildingLocation = voiBuildingTaskAnchor;
++		}
++		else if (!hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
++		{
++			buildingLocation = CCTilePosition();
++		}
++		else
++		{
++			buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
++		}
++		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
 +		if (!voiBuildingTaskBlocksFallback &&
 +			shouldUseVoiSc2MacroPlacement(m_bot, b.type) &&
 +			(!m_bot.Map().isValidTile(buildingLocation) ||
@@ -7963,6 +7981,7 @@ index a8d5f3a..1fc1cee 100644
 +#include <algorithm>
 +#include <cmath>
 +#include <list>
++#include <sstream>
 +
 +const size_t IdlePriority = 0;
 +const size_t BackupPriority = 1;
@@ -8080,6 +8099,91 @@ index a8d5f3a..1fc1cee 100644
 +		|| (token == "TERRAN_BANSHEE" && type == sc2::UNIT_TYPEID::TERRAN_BANSHEE)
 +		|| (token == "TERRAN_RAVEN" && type == sc2::UNIT_TYPEID::TERRAN_RAVEN)
 +		|| (token == "TERRAN_BATTLECRUISER" && type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER);
++}
++
++bool voiSc2UnitMatchesRoleToken(const sc2::Unit * unit, const std::string & token)
++{
++	if (unit == nullptr)
++	{
++		return false;
++	}
++	const sc2::UNIT_TYPEID type = unit->unit_type;
++	return (token == "TERRAN_MARINE" && type == sc2::UNIT_TYPEID::TERRAN_MARINE)
++		|| (token == "TERRAN_MARAUDER" && type == sc2::UNIT_TYPEID::TERRAN_MARAUDER)
++		|| (token == "TERRAN_SIEGETANK" && (type == sc2::UNIT_TYPEID::TERRAN_SIEGETANK || type == sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED))
++		|| (token == "TERRAN_MEDIVAC" && type == sc2::UNIT_TYPEID::TERRAN_MEDIVAC)
++		|| (token == "TERRAN_VIKINGFIGHTER" && (type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER || type == sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT))
++		|| (token == "TERRAN_BANSHEE" && type == sc2::UNIT_TYPEID::TERRAN_BANSHEE)
++		|| (token == "TERRAN_BATTLECRUISER" && type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER);
++}
++
++std::string voiRoleForUnit(CCBot & bot, const sc2::Unit * unit)
++{
++	for (int i = 0; i < 8; ++i)
++	{
++		const std::string unitType = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
++		const std::string role = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".role", "");
++		if (!role.empty() && voiSc2UnitMatchesRoleToken(unit, unitType))
++		{
++			return role;
++		}
++	}
++	for (int i = 0; i < 8; ++i)
++	{
++		const std::string unitType = bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".unit_type", "");
++		const std::string role = bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".role", "");
++		if (!role.empty() && voiSc2UnitMatchesRoleToken(unit, unitType))
++		{
++			return role;
++		}
++	}
++	return "";
++}
++
++std::string voiAbilityPolicyForUnit(CCBot & bot, const sc2::Unit * unit, const std::string & role)
++{
++	for (int i = 0; i < 8; ++i)
++	{
++		const std::string unitType = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
++		const std::string policy = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".ability_policy", "");
++		if (!policy.empty() && voiSc2UnitMatchesRoleToken(unit, unitType))
++		{
++			return policy;
++		}
++	}
++	if (role == "cloak_if_available" || role == "worker_harass" || role == "siege_support" || role == "contain" || role == "defensive_hold")
++	{
++		return "if_available";
++	}
++	if (role == "yamato_high_value" || role == "capital_pressure" || role == "capital_ship" || role == "capital_ship_focus")
++	{
++		return "high_value_target";
++	}
++	if (role == "tactical_jump_escape" || role == "evac")
++	{
++		return "escape";
++	}
++	return "never";
++}
++
++bool voiIsHighValueTarget(const sc2::Unit * target)
++{
++	if (target == nullptr)
++	{
++		return false;
++	}
++	const auto type = target->unit_type.ToType();
++	return target->health_max >= 150.0f
++		|| target->is_flying
++		|| type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER
++		|| type == sc2::UNIT_TYPEID::PROTOSS_CARRIER
++		|| type == sc2::UNIT_TYPEID::PROTOSS_TEMPEST
++		|| type == sc2::UNIT_TYPEID::ZERG_BROODLORD
++		|| type == sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER
++		|| type == sc2::UNIT_TYPEID::PROTOSS_NEXUS
++		|| type == sc2::UNIT_TYPEID::ZERG_HATCHERY
++		|| type == sc2::UNIT_TYPEID::ZERG_LAIR
++		|| type == sc2::UNIT_TYPEID::ZERG_HIVE;
 +}
 +
 +std::string voiCompositionRequirementLabel(CCBot & bot, int index)
@@ -11965,6 +12069,173 @@ index a8d5f3a..1fc1cee 100644
 +
 +bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
 +{
++	const std::string voiRole = m_bot.Commander().isVoiPolicyActive() ? voiRoleForUnit(m_bot, unit) : "";
++	if (!voiRole.empty())
++	{
++		const std::string abilityPolicy = voiAbilityPolicyForUnit(m_bot, unit, voiRole);
++		m_lastVoiUnitRole = voiRole;
++		m_lastVoiUnitRoleUnitType = sc2::UnitTypeToName(unit->unit_type);
++		m_lastVoiUnitRolePolicy = abilityPolicy;
++		m_lastVoiUnitRoleStatus = "requested";
++		m_lastVoiUnitRoleReason = "Unit role read from VOI blackboard";
++		m_lastVoiUnitRoleFrame = m_bot.GetGameLoop();
++		m_lastVoiUnitRoleRequestedCount++;
++
++		if ((voiRole == "frontline" || voiRole == "focus_fire" || voiRole == "kite")
++			&& (unit->unit_type == sc2::UNIT_TYPEID::TERRAN_MARINE || unit->unit_type == sc2::UNIT_TYPEID::TERRAN_MARAUDER))
++		{
++			if (action.microActionType == MicroActionType::AttackUnit)
++			{
++				action.prioritized = true;
++				action.description = "VoiRoleBioFocus|" + voiRole;
++				m_lastVoiUnitRoleStatus = "attempted";
++				m_lastVoiUnitRoleReason = "Bio role raised focus-fire action priority";
++				m_lastVoiUnitRoleAttemptedCount++;
++			}
++		}
++		else if ((voiRole == "anti_air" || voiRole == "capital_ship_focus" || voiRole == "air_superiority")
++			&& (unit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER || unit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT))
++		{
++			const sc2::Unit * bestAirTarget = nullptr;
++			float bestAirTargetScore = 0.0f;
++			for (const auto & enemyUnit : m_bot.UnitInfo().getUnits(Players::Enemy))
++			{
++				const sc2::Unit * enemy = enemyUnit.getUnitPtr();
++				if (enemy == nullptr || !enemy->is_alive || !enemy->is_flying || enemy->display_type == sc2::Unit::Hidden)
++				{
++					continue;
++				}
++				const float distanceScore = std::max(1.0f, Util::DistSq(unit->pos, enemy->pos));
++				const float valueScore = voiIsHighValueTarget(enemy) ? 100000.0f : 1000.0f;
++				const float score = valueScore - distanceScore;
++				if (bestAirTarget == nullptr || score > bestAirTargetScore)
++				{
++					bestAirTarget = enemy;
++					bestAirTargetScore = score;
++				}
++			}
++			if (bestAirTarget != nullptr && unit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER)
++			{
++				action.microActionType = MicroActionType::AttackUnit;
++				action.target = bestAirTarget;
++				action.prioritized = true;
++				action.description = "VoiRoleVikingAirPriority";
++				m_lastVoiUnitRoleStatus = "attempted";
++				m_lastVoiUnitRoleReason = "Viking role selected visible air target";
++				m_lastVoiUnitRoleAttemptedCount++;
++			}
++		}
++		else if ((voiRole == "siege_support" || voiRole == "contain" || voiRole == "defensive_hold")
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_SIEGETANK
++			&& abilityPolicy != "never")
++		{
++			const bool abilityAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::MORPH_SIEGEMODE, unit, m_unitsAbilities);
++			if (abilityAvailable)
++			{
++				m_lastVoiUnitRoleAvailableCount++;
++			}
++			if (abilityAvailable && (abilityPolicy == "if_available" || abilityPolicy == "commit"))
++			{
++				action.microActionType = MicroActionType::Ability;
++				action.abilityID = sc2::ABILITY_ID::MORPH_SIEGEMODE;
++				action.prioritized = true;
++				action.description = "VoiRoleTankSiege|" + voiRole;
++				m_lastVoiUnitRoleStatus = "attempted";
++				m_lastVoiUnitRoleReason = "Tank role requested siege mode and ability is available";
++				m_lastVoiUnitRoleAbility = "MORPH_SIEGEMODE";
++				m_lastVoiUnitRoleAttemptedCount++;
++			}
++			else if (!abilityAvailable)
++			{
++				m_lastVoiUnitRoleStatus = "unavailable";
++				m_lastVoiUnitRoleReason = "Tank siege role active but siege ability is unavailable";
++				m_lastVoiUnitRoleAbility = "MORPH_SIEGEMODE";
++			}
++		}
++		else if ((voiRole == "worker_harass" || voiRole == "cloak_if_available")
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_BANSHEE
++			&& abilityPolicy != "never")
++		{
++			const bool abilityAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::BEHAVIOR_CLOAKON, unit, m_unitsAbilities);
++			if (abilityAvailable)
++			{
++				m_lastVoiUnitRoleAvailableCount++;
++			}
++			if (abilityAvailable && (abilityPolicy == "if_available" || abilityPolicy == "commit"))
++			{
++				action.microActionType = MicroActionType::Ability;
++				action.abilityID = sc2::ABILITY_ID::BEHAVIOR_CLOAKON;
++				action.prioritized = true;
++				action.description = "VoiRoleBansheeCloak";
++				m_lastVoiUnitRoleStatus = "attempted";
++				m_lastVoiUnitRoleReason = "Banshee harass role requested cloak and ability is available";
++				m_lastVoiUnitRoleAbility = "BEHAVIOR_CLOAKON";
++				m_lastVoiUnitRoleAttemptedCount++;
++			}
++			else if (!abilityAvailable)
++			{
++				m_lastVoiUnitRoleStatus = "unavailable";
++				m_lastVoiUnitRoleReason = "Banshee cloak role active but cloak ability is unavailable";
++				m_lastVoiUnitRoleAbility = "BEHAVIOR_CLOAKON";
++			}
++		}
++		else if ((voiRole == "yamato_high_value" || voiRole == "capital_pressure" || voiRole == "capital_ship" || voiRole == "capital_ship_focus")
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER
++			&& abilityPolicy != "never")
++		{
++			const bool yamatoAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::EFFECT_YAMATOGUN, unit, m_unitsAbilities);
++			if (yamatoAvailable)
++			{
++				m_lastVoiUnitRoleAvailableCount++;
++			}
++			if (yamatoAvailable && action.target != nullptr && voiIsHighValueTarget(action.target)
++				&& (abilityPolicy == "high_value_target" || abilityPolicy == "commit"))
++			{
++				action.microActionType = MicroActionType::AbilityTarget;
++				action.abilityID = sc2::ABILITY_ID::EFFECT_YAMATOGUN;
++				action.prioritized = true;
++				action.description = "VoiRoleBattlecruiserYamato";
++				m_lastVoiUnitRoleStatus = "attempted";
++				m_lastVoiUnitRoleReason = "Battlecruiser role requested Yamato on high-value target";
++				m_lastVoiUnitRoleAbility = "EFFECT_YAMATOGUN";
++				m_lastVoiUnitRoleAttemptedCount++;
++			}
++			else if (!yamatoAvailable)
++			{
++				m_lastVoiUnitRoleStatus = "unavailable";
++				m_lastVoiUnitRoleReason = "Battlecruiser Yamato role active but ability is unavailable";
++				m_lastVoiUnitRoleAbility = "EFFECT_YAMATOGUN";
++			}
++		}
++		else if ((voiRole == "tactical_jump_escape" || voiRole == "evac")
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER
++			&& abilityPolicy == "escape")
++		{
++			const bool tacticalJumpAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::EFFECT_TACTICALJUMP, unit, m_unitsAbilities);
++			if (tacticalJumpAvailable)
++			{
++				m_lastVoiUnitRoleAvailableCount++;
++			}
++			if (tacticalJumpAvailable && unit->health_max > 0.0f && unit->health / unit->health_max < 0.45f)
++			{
++				action.microActionType = MicroActionType::AbilityPosition;
++				action.abilityID = sc2::ABILITY_ID::EFFECT_TACTICALJUMP;
++				action.position = voiHomePosition(m_bot);
++				action.prioritized = true;
++				action.description = "VoiRoleBattlecruiserTacticalJumpEscape";
++				m_lastVoiUnitRoleStatus = "attempted";
++				m_lastVoiUnitRoleReason = "Battlecruiser escape role requested Tactical Jump home";
++				m_lastVoiUnitRoleAbility = "EFFECT_TACTICALJUMP";
++				m_lastVoiUnitRoleAttemptedCount++;
++			}
++			else if (!tacticalJumpAvailable)
++			{
++				m_lastVoiUnitRoleStatus = "unavailable";
++				m_lastVoiUnitRoleReason = "Battlecruiser escape role active but Tactical Jump unavailable";
++				m_lastVoiUnitRoleAbility = "EFFECT_TACTICALJUMP";
++			}
++		}
++	}
 +	auto & currentAction = unitActions[unit];
 +	// If the unit is already performing the same action, we do nothing
 +	if (currentAction == action)
@@ -12195,6 +12466,13 @@ index a8d5f3a..1fc1cee 100644
 +			m_lastVoiActionFrame = m_bot.GetGameLoop();
 +			m_lastVoiIssuedActionFrame = m_bot.GetGameLoop();
 +			m_lastVoiIssuedAction = voiActionEvidence(action);
++			if (action.description.rfind("VoiRole", 0) == 0)
++			{
++				m_lastVoiUnitRoleStatus = "executed";
++				m_lastVoiUnitRoleReason = "Role-biased action reached SC2 command issue path";
++				m_lastVoiUnitRoleExecutedCount++;
++				m_lastVoiUnitRoleFrame = m_bot.GetGameLoop();
++			}
 +			if (action.squad == "MainAttack")
 +			{
 +				m_lastVoiMainAttackActionIssuedCount++;
@@ -12659,6 +12937,17 @@ index edb6fbe..c7b9f8f 100644
 +	int m_lastVoiCompositionRequired = 0;
 +	int m_lastVoiCompositionAssigned = 0;
 +	uint32_t m_lastVoiCompositionFrame = 0;
++	std::string m_lastVoiUnitRole = "";
++	std::string m_lastVoiUnitRoleUnitType = "";
++	std::string m_lastVoiUnitRolePolicy = "";
++	std::string m_lastVoiUnitRoleStatus = "none";
++	std::string m_lastVoiUnitRoleReason = "No unit role consumed";
++	std::string m_lastVoiUnitRoleAbility = "";
++	int m_lastVoiUnitRoleRequestedCount = 0;
++	int m_lastVoiUnitRoleAvailableCount = 0;
++	int m_lastVoiUnitRoleAttemptedCount = 0;
++	int m_lastVoiUnitRoleExecutedCount = 0;
++	uint32_t m_lastVoiUnitRoleFrame = 0;
  	bool m_logVikingActions = false;
  	bool m_allowEarlyBuildingAttack = false;
      bool            m_initialized;
@@ -12704,6 +12993,17 @@ index edb6fbe..c7b9f8f 100644
 +	int getVoiCompositionRequired() const { return m_lastVoiCompositionRequired; }
 +	int getVoiCompositionAssigned() const { return m_lastVoiCompositionAssigned; }
 +	uint32_t getVoiCompositionFrame() const { return m_lastVoiCompositionFrame; }
++	const std::string & getVoiUnitRole() const { return m_lastVoiUnitRole; }
++	const std::string & getVoiUnitRoleUnitType() const { return m_lastVoiUnitRoleUnitType; }
++	const std::string & getVoiUnitRolePolicy() const { return m_lastVoiUnitRolePolicy; }
++	const std::string & getVoiUnitRoleStatus() const { return m_lastVoiUnitRoleStatus; }
++	const std::string & getVoiUnitRoleReason() const { return m_lastVoiUnitRoleReason; }
++	const std::string & getVoiUnitRoleAbility() const { return m_lastVoiUnitRoleAbility; }
++	int getVoiUnitRoleRequestedCount() const { return m_lastVoiUnitRoleRequestedCount; }
++	int getVoiUnitRoleAvailableCount() const { return m_lastVoiUnitRoleAvailableCount; }
++	int getVoiUnitRoleAttemptedCount() const { return m_lastVoiUnitRoleAttemptedCount; }
++	int getVoiUnitRoleExecutedCount() const { return m_lastVoiUnitRoleExecutedCount; }
++	uint32_t getVoiUnitRoleFrame() const { return m_lastVoiUnitRoleFrame; }
  	void initInfluenceMaps();
  	CCPosition getMainAttackLocation();
  	void updateBlockedTilesWithNeutral();
@@ -13303,6 +13603,21 @@ index 045faab..e42e478 100644
 +        << "\"target_type\":\"" << voiJsonEscape(m_voiPolicyBlackboard.getString("target_intent.target_type", "")) << "\","
 +        << "\"consumed_axes\":\"composition_requirements.*,unit_roles.*,route_intent.route_type,target_intent.target_type,tactical_task.allow_partial\""
 +        << "},"
++        << "\"UnitRoleTask\":{"
++        << "\"active\":" << (m_voiPolicyActive && hasVoiPolicyDomain("unit_roles") ? "true" : "false") << ","
++        << "\"role\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRole()) << "\","
++        << "\"unit_type\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRoleUnitType()) << "\","
++        << "\"ability_policy\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRolePolicy()) << "\","
++        << "\"status\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRoleStatus()) << "\","
++        << "\"reason\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRoleReason()) << "\","
++        << "\"ability\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRoleAbility()) << "\","
++        << "\"requested_count\":" << m_combatCommander.getVoiUnitRoleRequestedCount() << ","
++        << "\"available_count\":" << m_combatCommander.getVoiUnitRoleAvailableCount() << ","
++        << "\"attempted_count\":" << m_combatCommander.getVoiUnitRoleAttemptedCount() << ","
++        << "\"executed_count\":" << m_combatCommander.getVoiUnitRoleExecutedCount() << ","
++        << "\"frame\":" << m_combatCommander.getVoiUnitRoleFrame() << ","
++        << "\"consumed_axes\":\"unit_roles.*.unit_type,unit_roles.*.role,unit_roles.*.ability_policy,composition_requirements.*.role\""
++        << "},"
 +        << "\"CombatCommander\":{"
 +        << "\"active\":true,"
 +        << "\"combat_unit_count\":" << m_combatUnits.size() << ","
@@ -13349,7 +13664,7 @@ index 045faab..e42e478 100644
 +        << "\"last_planned_action\":\"" << voiJsonEscape(m_combatCommander.getVoiPlannedAction()) << "\","
 +        << "\"last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiIssuedAction()) << "\","
 +        << "\"last_skipped_action\":\"" << voiJsonEscape(m_combatCommander.getVoiSkippedAction()) << "\","
-+        << "\"consumed_axes\":\"combat.aggression,combat.defend_bias,combat.attack_timing_bias,combat.commitment_level,combat.attack_condition_override,combat.retreat_patience_bias,combat.rally_before_attack_bias,scope.min_units,scope.max_units,scope.army_group,scope.unit_classes,scouting.scout_priority,squad.squad_role_biases.marine_scout,tactical_task.task_type,tactical_task.unit_classes,tactical_task.location_intent,tactical_task.min_units,tactical_task.max_units,tactical_task.priority,composition_requirements.*,unit_roles.*,route_intent.route_type,target_intent.target_type\""
++        << "\"consumed_axes\":\"combat.aggression,combat.defend_bias,combat.attack_timing_bias,combat.commitment_level,combat.attack_condition_override,combat.retreat_patience_bias,combat.rally_before_attack_bias,scope.min_units,scope.max_units,scope.army_group,scope.unit_classes,scouting.scout_priority,squad.squad_role_biases.marine_scout,tactical_task.task_type,tactical_task.unit_classes,tactical_task.location_intent,tactical_task.min_units,tactical_task.max_units,tactical_task.priority,composition_requirements.*,unit_roles.*,unit_roles.*.ability_policy,route_intent.route_type,target_intent.target_type\""
 +        << "},"
 +        << "\"Squad\":{"
 +        << "\"active\":true,"

@@ -576,7 +576,12 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 ],
                 "unit_roles": [
                     {"unit_type": "viking", "role": "anti_air", "priority": 0.75},
-                    {"unit_type": "banshee", "role": "worker_harass", "priority": 0.65},
+                    {
+                        "unit_type": "banshee",
+                        "role": "worker_harass",
+                        "priority": 0.65,
+                        "ability_policy": "if_available",
+                    },
                 ],
                 "building_tasks": [
                     {
@@ -604,6 +609,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual("siege_support", result.vector.composition_requirements[1].role)
         self.assertEqual("TERRAN_BANSHEE", result.vector.unit_roles[1].unit_type)
         self.assertEqual("worker_harass", result.vector.unit_roles[1].role)
+        self.assertEqual("if_available", result.vector.unit_roles[1].ability_policy)
         self.assertEqual("TERRAN_BUNKER", result.vector.building_tasks[0].building_type)
         self.assertEqual("self_natural_choke", result.vector.building_tasks[0].placement_intent)
         self.assertEqual("self_natural", result.vector.building_tasks[0].anchor)
