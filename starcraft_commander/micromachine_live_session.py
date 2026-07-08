@@ -885,19 +885,29 @@ def _reduce_live_command_queue(
     ):
         _preserve_safe_macro_during_stop_expansion(previous_payload, reduced_payload)
     lifetime = _live_command_lifetime(command_text, category, action, reduced_payload)
-    reduced_payload["ttl_seconds"] = lifetime["ttl_seconds"]
+    transient_lifetime = lifetime
+    update_lifetime = _merged_update_lifetime_for_standing_order(
+        category=category,
+        action=action,
+        transient_lifetime=transient_lifetime,
+        previous_payload=previous_payload,
+    )
+    reduced_payload["ttl_seconds"] = update_lifetime["ttl_seconds"]
     if category is LiveCommandCategory.EMERGENCY:
         reduced_payload["override_level"] = PolicyOverrideLevel.EMERGENCY.value
     reduced_payload["lifetime"] = {
-        "mode": lifetime["mode"],
-        "completion_conditions": lifetime["completion_conditions"],
+        "mode": update_lifetime["mode"],
+        "completion_conditions": update_lifetime["completion_conditions"],
         "completion_state": "active",
-        "reason": lifetime["reason"],
+        "reason": update_lifetime["reason"],
     }
-    _sync_lifetime_duration_fields(reduced_payload, lifetime)
-    queue_summary["lifetime_mode"] = lifetime["mode"]
-    queue_summary["ttl_seconds"] = lifetime["ttl_seconds"]
-    queue_summary["completion_conditions"] = list(lifetime["completion_conditions"])
+    _sync_lifetime_duration_fields(reduced_payload, transient_lifetime)
+    queue_summary["lifetime_mode"] = transient_lifetime["mode"]
+    queue_summary["ttl_seconds"] = transient_lifetime["ttl_seconds"]
+    queue_summary["completion_conditions"] = list(transient_lifetime["completion_conditions"])
+    if update_lifetime != transient_lifetime:
+        queue_summary["update_lifetime_mode"] = update_lifetime["mode"]
+        queue_summary["update_ttl_seconds"] = update_lifetime["ttl_seconds"]
     reduced_vector = PolicyModulationVector.from_mapping(reduced_payload)
     warnings = tuple(
         warning
@@ -977,11 +987,13 @@ def _live_command_category(
     if _has_building_text_intent(normalized_text):
         return LiveCommandCategory.BUILDING
     task_type = _task_type(payload)
+    if task_type in _PRODUCTION_TASK_TYPES:
+        return LiveCommandCategory.PRODUCTION
     if task_type in _TACTICAL_ONLY_TASK_TYPES or _has_tactical_text_intent(normalized_text):
         return LiveCommandCategory.TACTICAL
     if task_type == "scout_with_units" or _has_scouting_text_intent(normalized_text):
         return LiveCommandCategory.SCOUTING
-    if task_type in _PRODUCTION_TASK_TYPES or _has_production_intent(payload):
+    if _has_production_intent(payload):
         return LiveCommandCategory.PRODUCTION
     if _mapping_has_signal(_mapping_value(payload, "strategy")):
         return LiveCommandCategory.STRATEGY
@@ -1086,6 +1098,42 @@ def _live_command_lifetime(
         "ttl_seconds": max(1, min(900, ttl_seconds)),
         "completion_conditions": ("ttl_expired",),
         "reason": "default bounded TTL",
+    }
+
+
+def _merged_update_lifetime_for_standing_order(
+    *,
+    category: LiveCommandCategory,
+    action: str,
+    transient_lifetime: Mapping[str, object],
+    previous_payload: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if action != "merge_standing_orders" or category not in {
+        LiveCommandCategory.SCOUTING,
+        LiveCommandCategory.TACTICAL,
+    }:
+        return dict(transient_lifetime)
+    if previous_payload is None:
+        return dict(transient_lifetime)
+    previous_lifetime = _mapping_value(previous_payload, "lifetime")
+    previous_mode = str(previous_lifetime.get("mode", "") or "")
+    if previous_mode not in {"until_cancelled", "standing_order"}:
+        previous_mode = "until_cancelled"
+    previous_ttl = int(previous_payload.get("ttl_seconds", 900) or 900)
+    conditions = previous_lifetime.get("completion_conditions", ())
+    if not isinstance(conditions, Sequence) or isinstance(
+        conditions,
+        (str, bytes, bytearray),
+    ):
+        conditions = ("cancelled_by_user", "ttl_expired")
+    return {
+        "mode": previous_mode,
+        "ttl_seconds": max(previous_ttl, int(transient_lifetime["ttl_seconds"])),
+        "completion_conditions": tuple(str(condition) for condition in conditions),
+        "reason": (
+            "standing order lifetime preserved while transient task duration "
+            f"{transient_lifetime['ttl_seconds']}s remains scoped to tactical_task"
+        ),
     }
 
 

@@ -907,9 +907,7 @@ def _repair_micromachine_emergency_defaults(payload: dict[str, object]) -> None:
     """Make emergency intent valid even when the provider omits emergency TTL."""
 
     emergency = payload.get("emergency")
-    if not isinstance(emergency, dict):
-        return
-    if not any(
+    has_emergency_flags = isinstance(emergency, dict) and any(
         emergency.get(key) is True
         for key in (
             "cancel_attacks",
@@ -919,7 +917,9 @@ def _repair_micromachine_emergency_defaults(payload: dict[str, object]) -> None:
             "hold_position",
             "stop_expansion",
         )
-    ):
+    )
+    override_level = str(payload.get("override_level", "") or "").strip().lower()
+    if not has_emergency_flags and override_level != "emergency":
         return
     payload["override_level"] = "emergency"
     ttl_seconds = payload.get("ttl_seconds")

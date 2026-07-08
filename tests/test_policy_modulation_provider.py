@@ -529,6 +529,21 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual("emergency", result.vector.override_level.value)
         self.assertEqual(60, result.vector.ttl_seconds)
 
+    def test_emergency_override_without_flags_gets_safe_default_ttl(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "후퇴해",
+                "override_level": "emergency",
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("emergency", result.vector.override_level.value)
+        self.assertEqual(60, result.vector.ttl_seconds)
+
     def test_emergency_flags_upgrade_override_level(self) -> None:
         result = compile_policy_modulation_provider_output(
             {
