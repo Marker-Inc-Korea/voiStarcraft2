@@ -9984,12 +9984,22 @@ index a8d5f3a..1fc1cee 100644
 +				requirements.push_back(std::make_pair(unitType, count));
 +			}
 +		}
-+		if (requirements.empty() && m_bot.Commander().hasVoiPolicyDomain("unit_roles"))
++		if (m_bot.Commander().hasVoiPolicyDomain("unit_roles"))
 +		{
 +			for (int i = 0; i < 8; ++i)
 +			{
 +				const std::string roleUnitType = m_bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
-+				if (!roleUnitType.empty())
++				const std::string roleName = m_bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".role", "");
++				bool alreadyRequired = false;
++				for (const auto & requirement : requirements)
++				{
++					if (requirement.first == roleUnitType)
++					{
++						alreadyRequired = true;
++						break;
++					}
++				}
++				if (!roleUnitType.empty() && !roleName.empty() && !alreadyRequired)
 +				{
 +					requirements.push_back(std::make_pair(roleUnitType, 1));
 +				}
