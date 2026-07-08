@@ -1157,6 +1157,83 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 intervention["lifetime"]["telemetry"]["completion_state"],
             )
 
+    def test_micromachine_status_exposes_command_execution_lifecycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.post_micromachine_modulation(
+                {
+                    "text": "4 마린으로 공격해",
+                    "blackboard_dir": directory,
+                    "current_frame": 100,
+                    "update_id": "web-execution-1",
+                    "provider_output": {
+                        "goal": "four marine attack",
+                        "combat": {"aggression": 0.75},
+                        "composition_requirements": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 4,
+                                "role": "frontline",
+                            }
+                        ],
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                        },
+                    },
+                }
+            )
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 110,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "GameCommander": {
+                        "policy_active": True,
+                        "update_id": "web-execution-1",
+                    },
+                    "CombatCommander": {
+                        "active": True,
+                        "policy_active": True,
+                        "policy_update_id": "web-execution-1",
+                        "main_attack_actual_command_issued_count": 1,
+                        "main_attack_last_action_frame": 108,
+                        "main_attack_last_issued_action": (
+                            "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5"
+                        ),
+                        "main_attack_order_status": "Attack",
+                        "main_attack_max_home_distance": 18.0,
+                        "consumed_axes": "combat.aggression",
+                    },
+                    "CompositionTask": {
+                        "active": True,
+                        "task_update_id": "web-execution-1",
+                        "assigned_frame": 108,
+                        "assigned_count": 4,
+                    },
+                },
+                "active_modulation_ids": ["web-execution-1"],
+                "last_failure": None,
+            }
+            with open(f"{directory}/latest_telemetry.json", "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+            self.attach_fake_micromachine_runtime(directory)
+
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=" + directory
+            )
+
+            execution = document["intervention"]["command_execution"]
+            self.assertEqual("failed", execution["state"], execution)
+            self.assertFalse(execution["ok"], execution)
+            self.assertEqual("web-execution-1", execution["command_id"])
+            stages = {stage["name"]: stage for stage in execution["stages"]}
+            self.assertTrue(stages["action_issued"]["ok"])
+            self.assertFalse(stages["effect_observed"]["ok"])
+            scenarios = {scenario["name"]: scenario for scenario in execution["scenarios"]}
+            self.assertEqual("passed", scenarios["four_marine_attack"]["status"])
+            self.assertEqual("Telemetry", execution["blocker_manager"])
+            self.assertIn("No observed", execution["blocker_reason"])
+
     def test_micromachine_tactical_evidence_ignores_stale_unscoped_behavior(self):
         with tempfile.TemporaryDirectory() as directory:
             self.post_micromachine_modulation(
@@ -1874,6 +1951,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
         self.assertIn('value="/tmp/voi-mm-custom&amp;safe"', page)
         self.assertIn("micromachine-tactical-evidence", page)
+        self.assertIn("micromachine-command-execution", page)
 
     def test_runtime_start_routes_micromachine_mode_to_launcher(self):
         class FakeMicroMachineLauncher:
@@ -3254,6 +3332,7 @@ var nodes = {
   "micromachine-target-priority": element("micromachine-target-priority"),
   "micromachine-attack-gate": element("micromachine-attack-gate"),
   "micromachine-tactical-evidence": element("micromachine-tactical-evidence"),
+  "micromachine-command-execution": element("micromachine-command-execution"),
   "micromachine-refusal": element("micromachine-refusal"),
   "micromachine-log-snippets": element("micromachine-log-snippets", "ul"),
   "micromachine-raw-evidence": element("micromachine-raw-evidence", "pre")
@@ -3492,7 +3571,21 @@ const assert = require("assert");
       latest_update_id: "race-active-a",
       tactical_posture: "pressure",
       manager_bias_domains: ["combat"],
-      goal: "active pressure"
+      goal: "active pressure",
+      command_execution: {
+        command_id: "race-active-a",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: [
+          { name: "effect_observed", ok: true, manager: "TacticalEvidence" }
+        ],
+        scenarios: [
+          { name: "four_marine_attack", ok: true },
+          { name: "marine_scout", ok: false }
+        ]
+      }
     },
     dashboard: {
       active_updates: [
@@ -3512,6 +3605,8 @@ const assert = require("assert");
   assert(logBox.textContent.includes("latest B refused"));
   assert(logBox.textContent.includes("active pressure"));
   assert(logBox.textContent.includes("provider auth failed"));
+  assert(nodes["micromachine-command-execution"].textContent.includes("state=completed"));
+  assert(nodes["micromachine-command-execution"].textContent.includes("four_marine_attack"));
   var activeEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
     return entry.textContent.includes("active A consumed");
   });

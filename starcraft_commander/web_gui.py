@@ -50,6 +50,9 @@ from typing import Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 
 from starcraft_commander.micromachine_bridge import require_micromachine_update_id
+from starcraft_commander.micromachine_command_execution import (
+    classify_micromachine_command_execution,
+)
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
     normalize_tactical_effect_tags,
@@ -916,7 +919,17 @@ def _micromachine_intervention_summary(
         expected_effects=_micromachine_expected_tactical_effects(vector),
         source_paths=_micromachine_log_snippet_sources(log_snippets),
         refusal_reasons=(refusal_reason,) if refusal_reason else (),
+    )
+    command_execution = classify_micromachine_command_execution(
+        latest_update=update if isinstance(update, Mapping) else {},
+        latest_telemetry=evidence_telemetry,
+        telemetry_archive=(),
+        tactical_evidence=tactical_evidence,
+        expected_tactical_effects=_micromachine_expected_tactical_effects(vector),
+        latest_frame=telemetry_frame or 0,
+        target_frame=(telemetry_frame or 0) if evidence_can_be_current else 0,
     ).to_dict()
+    tactical_evidence_payload = tactical_evidence.to_dict()
     dashboard_managers = evidence_telemetry.get("managers", {})
     if not isinstance(dashboard_managers, Mapping):
         dashboard_managers = {}
@@ -952,7 +965,8 @@ def _micromachine_intervention_summary(
         ),
         "target_priority": _micromachine_target_priority(vector, dashboard_managers),
         "attack_gate": _micromachine_attack_gate(vector, dashboard_managers),
-        "tactical_evidence": tactical_evidence,
+        "tactical_evidence": tactical_evidence_payload,
+        "command_execution": command_execution,
         "refusal_reason": refusal_reason,
         "log_snippets": [dict(item) for item in log_snippets],
     }
@@ -3742,6 +3756,10 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
             <dd id="micromachine-tactical-evidence">-</dd>
           </div>
           <div class="wide-card">
+            <dt data-i18n="microMachineCommandExecution">Command execution</dt>
+            <dd id="micromachine-command-execution">-</dd>
+          </div>
+          <div class="wide-card">
             <dt data-i18n="microMachineRefusalReason">Refusal / clarification</dt>
             <dd id="micromachine-refusal">-</dd>
           </div>
@@ -3986,6 +4004,7 @@ var I18N = {
     microMachineTargetPriority: "Target priority",
     microMachineAttackGate: "공격 게이트",
     microMachineTacticalEvidence: "전술 효과 증거",
+    microMachineCommandExecution: "명령 실행 상태",
     microMachineRefusalReason: "거부 / 추가 확인",
     microMachineTacticalLogs: "최근 MicroMachine 전술 로그",
     microMachineRawEvidence: "Raw modulation / telemetry 증거",
@@ -4146,6 +4165,7 @@ var I18N = {
     microMachineTargetPriority: "Target priority",
     microMachineAttackGate: "Attack gate",
     microMachineTacticalEvidence: "Tactical effect evidence",
+    microMachineCommandExecution: "Command execution",
     microMachineRefusalReason: "Refusal / clarification",
     microMachineTacticalLogs: "Recent MicroMachine tactical logs",
     microMachineRawEvidence: "Raw modulation / telemetry evidence",
@@ -4306,6 +4326,7 @@ var I18N = {
     microMachineTargetPriority: "Target priority",
     microMachineAttackGate: "Attack gate",
     microMachineTacticalEvidence: "Tactical effect evidence",
+    microMachineCommandExecution: "Command execution",
     microMachineRefusalReason: "Refusal / clarification",
     microMachineTacticalLogs: "Recent MicroMachine tactical logs",
     microMachineRawEvidence: "Raw modulation / telemetry evidence",
@@ -5952,6 +5973,36 @@ function formatMicroMachineTacticalEvidence(evidence) {
   return parts.length ? parts.join(" | ") : "-";
 }
 
+function formatMicroMachineCommandExecution(execution) {
+  if (!execution || typeof execution !== "object") { return "-"; }
+  var parts = [];
+  if (execution.state) { parts.push("state=" + execution.state); }
+  if (execution.command_id) { parts.push("id=" + execution.command_id); }
+  if (execution.completed !== undefined) { parts.push("completed=" + execution.completed); }
+  if (execution.failed) { parts.push("failed=true"); }
+  if (execution.expired) { parts.push("expired=true"); }
+  if (execution.blocker_manager) {
+    parts.push("blocker=" + execution.blocker_manager + ": " + (execution.blocker_reason || ""));
+  }
+  if (Array.isArray(execution.stages) && execution.stages.length) {
+    var missing = execution.stages
+      .filter(function (stage) { return stage && stage.ok === false; })
+      .map(function (stage) { return stage.name + "@" + (stage.manager || "unknown"); });
+    if (missing.length) { parts.push("missing=" + missing.join(", ")); }
+  }
+  if (Array.isArray(execution.scenarios) && execution.scenarios.length) {
+    var passed = execution.scenarios
+      .filter(function (scenario) { return scenario && scenario.ok === true; })
+      .map(function (scenario) { return scenario.name; });
+    var missingScenarios = execution.scenarios
+      .filter(function (scenario) { return scenario && scenario.ok === false; })
+      .map(function (scenario) { return scenario.name; });
+    if (passed.length) { parts.push("passed=" + passed.join(", ")); }
+    if (missingScenarios.length) { parts.push("scenario_missing=" + missingScenarios.join(", ")); }
+  }
+  return parts.length ? parts.join(" | ") : "-";
+}
+
 function renderMicroMachineLogSnippets(snippets) {
   var list = document.getElementById("micromachine-log-snippets");
   if (!list) { return; }
@@ -6013,6 +6064,7 @@ function renderMicroMachineIntervention(data) {
   setMicroMachineText("micromachine-target-priority", formatMicroMachineTargetPriority(intervention.target_priority));
   setMicroMachineText("micromachine-attack-gate", formatMicroMachineAttackGate(intervention.attack_gate));
   setMicroMachineText("micromachine-tactical-evidence", formatMicroMachineTacticalEvidence(intervention.tactical_evidence));
+  setMicroMachineText("micromachine-command-execution", formatMicroMachineCommandExecution(intervention.command_execution));
   setMicroMachineText("micromachine-refusal", intervention.refusal_reason);
   renderMicroMachineLogSnippets(intervention.log_snippets);
   updateMicroMachineBadge(intervention, data && data.consumption_status);
@@ -6022,6 +6074,7 @@ function renderMicroMachineIntervention(data) {
       intervention: intervention,
       update: data && data.update,
       telemetry: data && data.dashboard && data.dashboard.telemetry,
+      command_execution: intervention.command_execution,
       tactical_logs: intervention.log_snippets
     }, null, 2);
   }
