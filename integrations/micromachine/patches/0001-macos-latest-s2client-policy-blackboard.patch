@@ -12959,6 +12959,9 @@ index 045faab..e42e478 100644
 +        << "\"last_doctrine_action\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineAction()) << "\","
 +        << "\"last_doctrine_queue_item\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineQueueItem()) << "\","
 +        << "\"last_doctrine_evidence\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineEvidence()) << "\","
++        << "\"last_doctrine_requested_targets\":\"" << tacticalTaskProductionTargets << "\","
++        << "\"last_doctrine_blocked_reason\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineEvidence().rfind("blocked_", 0) == 0 ? m_productionManager.getLastVoiDoctrineEvidence() : "") << "\","
++        << "\"last_doctrine_missing_prerequisites\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineEvidence() == "blocked_missing_prerequisite_or_producer" ? m_productionManager.getLastVoiDoctrineQueueItem() : "") << "\","
 +        << "\"last_doctrine_update_id\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineUpdateId()) << "\","
 +        << "\"last_doctrine_frame\":" << m_productionManager.getLastVoiDoctrineFrame() << ","
 +        << "\"actual_production_command_issued_count\":" << m_productionManager.getVoiProductionCommandIssuedCount() << ","
@@ -14501,10 +14504,12 @@ index 3859fdb..a638b9c 100644
 +	}
 +	if (type.isBuilding() && isPlacementRetryCoolingDown(type))
 +	{
++		recordVoiDoctrineConsumption(type, action, "blocked_placement_retry_cooldown");
 +		return false;
 +	}
 +	if (!hasRequired(type, true) || !hasProducer(type, true))
 +	{
++		recordVoiDoctrineConsumption(type, action, "blocked_missing_prerequisite_or_producer");
 +		return false;
 +	}
 +
