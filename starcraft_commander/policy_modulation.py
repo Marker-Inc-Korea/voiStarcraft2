@@ -81,6 +81,38 @@ MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
 )
 """Bounded task labels consumed by MicroMachine managers, never raw commands."""
 
+MICROMACHINE_LIFETIME_MODES: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "ttl",
+        "until_completed",
+        "until_cancelled",
+        "standing_order",
+        "emergency_window",
+    }
+)
+"""Live command lifetime semantics layered over bounded blackboard TTL."""
+
+MICROMACHINE_COMPLETION_STATES: Final[frozenset[str]] = frozenset(
+    {"", "active", "completed", "expired", "cancelled", "failed"}
+)
+"""Coarse lifecycle state exposed to telemetry/UI without raw control."""
+
+MICROMACHINE_COMPLETION_CONDITIONS: Final[frozenset[str]] = frozenset(
+    {
+        "unit_count_reached",
+        "building_started",
+        "building_completed",
+        "order_issued",
+        "target_reached",
+        "enemy_observed",
+        "retreat_confirmed",
+        "cancelled_by_user",
+        "ttl_expired",
+    }
+)
+"""Supported completion condition labels for live command lifecycle tracking."""
+
 MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "scv": "TERRAN_SCV",
     "worker": "TERRAN_SCV",
@@ -790,6 +822,57 @@ class TacticalScopeModulation:
 
 
 @dataclass(frozen=True)
+class LifetimeModulation:
+    """Lifecycle semantics for one live MicroMachine command update."""
+
+    mode: str = ""
+    completion_conditions: tuple[str, ...] = ()
+    completion_state: str = "active"
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "mode",
+            _optional_choice("mode", self.mode, set(MICROMACHINE_LIFETIME_MODES)),
+        )
+        object.__setattr__(
+            self,
+            "completion_conditions",
+            _validate_completion_conditions(self.completion_conditions),
+        )
+        object.__setattr__(
+            self,
+            "completion_state",
+            _optional_choice(
+                "completion_state",
+                self.completion_state,
+                set(MICROMACHINE_COMPLETION_STATES),
+            )
+            or "active",
+        )
+        if self.reason:
+            object.__setattr__(self, "reason", _require_text("reason", self.reason))
+        if not self.mode and self._has_lifetime_payload():
+            raise ValueError("mode is required when lifetime payload is set.")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "completion_conditions": list(self.completion_conditions),
+            "completion_state": self.completion_state,
+            "reason": self.reason,
+        }
+
+    def _has_lifetime_payload(self) -> bool:
+        return (
+            bool(self.completion_conditions)
+            or self.completion_state not in {"", "active"}
+            or bool(self.reason)
+        )
+
+
+@dataclass(frozen=True)
 class TacticalTaskModulation:
     """Bounded tactical task ticket consumed by MicroMachine managers.
 
@@ -1019,6 +1102,7 @@ class PolicyModulationVector:
     scouting: ScoutingModulation = field(default_factory=ScoutingModulation)
     squad: SquadModulation = field(default_factory=SquadModulation)
     scope: TacticalScopeModulation = field(default_factory=TacticalScopeModulation)
+    lifetime: LifetimeModulation = field(default_factory=LifetimeModulation)
     tactical_task: TacticalTaskModulation = field(default_factory=TacticalTaskModulation)
     emergency: EmergencyModulation = field(default_factory=EmergencyModulation)
     constraints: tuple[PolicySafetyConstraint, ...] = ()
@@ -1064,6 +1148,9 @@ class PolicyModulationVector:
             self, "scope", _coerce_domain(self.scope, TacticalScopeModulation)
         )
         object.__setattr__(
+            self, "lifetime", _coerce_domain(self.lifetime, LifetimeModulation)
+        )
+        object.__setattr__(
             self,
             "tactical_task",
             _coerce_domain(self.tactical_task, TacticalTaskModulation),
@@ -1104,6 +1191,7 @@ class PolicyModulationVector:
             scouting=_domain_from_mapping(mapping, "scouting", ScoutingModulation),
             squad=_domain_from_mapping(mapping, "squad", SquadModulation),
             scope=_domain_from_mapping(mapping, "scope", TacticalScopeModulation),
+            lifetime=_domain_from_mapping(mapping, "lifetime", LifetimeModulation),
             tactical_task=_domain_from_mapping(
                 mapping,
                 "tactical_task",
@@ -1133,6 +1221,7 @@ class PolicyModulationVector:
             "scouting": self.scouting.to_dict(),
             "squad": self.squad.to_dict(),
             "scope": self.scope.to_dict(),
+            "lifetime": self.lifetime.to_dict(),
             "tactical_task": self.tactical_task.to_dict(),
             "emergency": self.emergency.to_dict(),
             "constraints": [constraint.to_dict() for constraint in self.constraints],
@@ -1201,6 +1290,21 @@ def _validate_constraints(values: object) -> tuple[PolicySafetyConstraint, ...]:
 
 def _constraints_from_mapping(values: object) -> tuple[PolicySafetyConstraint, ...]:
     return _validate_constraints(values)
+
+
+def _validate_completion_conditions(values: object) -> tuple[str, ...]:
+    conditions = _validate_string_tuple("completion_conditions", values)
+    result: list[str] = []
+    for condition in conditions:
+        normalized = condition.strip().lower()
+        if normalized not in MICROMACHINE_COMPLETION_CONDITIONS:
+            raise ValueError(
+                "completion_conditions entries must be one of: "
+                f"{', '.join(sorted(MICROMACHINE_COMPLETION_CONDITIONS))}."
+            )
+        if normalized not in result:
+            result.append(normalized)
+    return tuple(result)
 
 
 def _domain_from_mapping(mapping: Mapping[str, object], key: str, domain_type: type) -> object:

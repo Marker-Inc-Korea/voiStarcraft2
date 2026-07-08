@@ -1532,6 +1532,7 @@ def flatten_blackboard_update(update: MicroMachineBlackboardUpdate) -> str:
         "scouting",
         "squad",
         "scope",
+        "lifetime",
         "tactical_task",
         "emergency",
     ):

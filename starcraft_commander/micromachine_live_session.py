@@ -86,7 +86,8 @@ LLM_ONLY_PROVIDER_REQUIRED_REASON = (
 _PRODUCTION_TASK_TYPES = frozenset(
     {"sustain_production", "tech_transition", "expand_or_land_command_center"}
 )
-_TACTICAL_ONLY_TASK_TYPES = frozenset({"scout_with_units", "pressure_with_main_army"})
+_TRANSIENT_TASK_TYPES = frozenset({"scout_with_units", "pressure_with_main_army"})
+_TACTICAL_ONLY_TASK_TYPES = frozenset({"pressure_with_main_army"})
 _PERSISTENT_LIVE_DOMAINS = ("strategy", "economy", "workers", "tech", "production")
 _TACTICAL_LIVE_DOMAINS = ("combat", "scouting", "squad", "scope")
 _LIVE_STANDING_MERGE_WARNING = "live_standing_orders_merged"
@@ -883,6 +884,18 @@ def _reduce_live_command_queue(
         and _stop_expansion_requested(reduced_payload)
     ):
         _preserve_safe_macro_during_stop_expansion(previous_payload, reduced_payload)
+    lifetime = _live_command_lifetime(command_text, category, action, reduced_payload)
+    reduced_payload["ttl_seconds"] = lifetime["ttl_seconds"]
+    reduced_payload["lifetime"] = {
+        "mode": lifetime["mode"],
+        "completion_conditions": lifetime["completion_conditions"],
+        "completion_state": "active",
+        "reason": lifetime["reason"],
+    }
+    _sync_lifetime_duration_fields(reduced_payload, lifetime)
+    queue_summary["lifetime_mode"] = lifetime["mode"]
+    queue_summary["ttl_seconds"] = lifetime["ttl_seconds"]
+    queue_summary["completion_conditions"] = list(lifetime["completion_conditions"])
     reduced_vector = PolicyModulationVector.from_mapping(reduced_payload)
     warnings = tuple(
         warning
@@ -962,10 +975,10 @@ def _live_command_category(
     if _has_building_text_intent(normalized_text):
         return LiveCommandCategory.BUILDING
     task_type = _task_type(payload)
-    if task_type == "scout_with_units" or _has_scouting_text_intent(normalized_text):
-        return LiveCommandCategory.SCOUTING
     if task_type in _TACTICAL_ONLY_TASK_TYPES or _has_tactical_text_intent(normalized_text):
         return LiveCommandCategory.TACTICAL
+    if task_type == "scout_with_units" or _has_scouting_text_intent(normalized_text):
+        return LiveCommandCategory.SCOUTING
     if task_type in _PRODUCTION_TASK_TYPES or _has_production_intent(payload):
         return LiveCommandCategory.PRODUCTION
     if _mapping_has_signal(_mapping_value(payload, "strategy")):
@@ -993,6 +1006,125 @@ def _live_command_reducer_action(
     return "activate"
 
 
+def _live_command_lifetime(
+    command_text: str,
+    category: LiveCommandCategory,
+    action: str,
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    task_type = _task_type(payload)
+    if category is LiveCommandCategory.EMERGENCY:
+        return {
+            "mode": "emergency_window",
+            "ttl_seconds": 45 if _has_cancel_text_intent(command_text) else 60,
+            "completion_conditions": (
+                "cancelled_by_user",
+                "retreat_confirmed",
+                "ttl_expired",
+            ),
+            "reason": "short emergency override window",
+        }
+    if category is LiveCommandCategory.SCOUTING or task_type == "scout_with_units":
+        return {
+            "mode": "until_completed",
+            "ttl_seconds": 180,
+            "completion_conditions": (
+                "enemy_observed",
+                "target_reached",
+                "ttl_expired",
+            ),
+            "reason": "combat scout expires independently from standing production",
+        }
+    if category is LiveCommandCategory.TACTICAL:
+        duration = _float_at(_mapping_value(payload, "tactical_task"), ("duration_seconds",))
+        requested_ttl = int(payload.get("ttl_seconds", 0) or 0)
+        ttl_seconds = max(300, int(duration), requested_ttl)
+        return {
+            "mode": "until_completed",
+            "ttl_seconds": max(180, min(600, ttl_seconds)),
+            "completion_conditions": (
+                "order_issued",
+                "target_reached",
+                "ttl_expired",
+            ),
+            "reason": f"tactical command action={action}",
+        }
+    if category is LiveCommandCategory.BUILDING:
+        return {
+            "mode": "until_completed",
+            "ttl_seconds": 900,
+            "completion_conditions": (
+                "building_started",
+                "building_completed",
+                "ttl_expired",
+            ),
+            "reason": "building placement remains active until placement outcome",
+        }
+    if category is LiveCommandCategory.PRODUCTION:
+        return {
+            "mode": "until_cancelled",
+            "ttl_seconds": 900,
+            "completion_conditions": (
+                "unit_count_reached",
+                "cancelled_by_user",
+                "ttl_expired",
+            ),
+            "reason": "production command is a standing order within bounded blackboard TTL",
+        }
+    if category is LiveCommandCategory.STRATEGY:
+        return {
+            "mode": "standing_order",
+            "ttl_seconds": 900,
+            "completion_conditions": ("cancelled_by_user", "ttl_expired"),
+            "reason": "strategy command persists until cancelled or refreshed",
+        }
+    ttl_seconds = int(payload.get("ttl_seconds", 120) or 120)
+    return {
+        "mode": "ttl",
+        "ttl_seconds": max(1, min(900, ttl_seconds)),
+        "completion_conditions": ("ttl_expired",),
+        "reason": "default bounded TTL",
+    }
+
+
+def _sync_lifetime_duration_fields(
+    payload: dict[str, object],
+    lifetime: Mapping[str, object],
+) -> None:
+    ttl_seconds = int(lifetime.get("ttl_seconds", 120) or 120)
+    for domain in ("scope", "tactical_task"):
+        value = payload.get(domain)
+        if not isinstance(value, Mapping):
+            continue
+        domain_payload = dict(value)
+        if domain == "scope" and not _scope_has_lifetime_duration_target(
+            domain_payload
+        ):
+            continue
+        if domain == "tactical_task" and not str(
+            domain_payload.get("task_type", "") or ""
+        ):
+            continue
+        existing = _float_at(domain_payload, ("duration_seconds",))
+        if existing <= 0 or existing > ttl_seconds:
+            domain_payload["duration_seconds"] = ttl_seconds
+        payload[domain] = domain_payload
+
+
+def _scope_has_lifetime_duration_target(payload: Mapping[str, object]) -> bool:
+    return any(
+        bool(payload.get(key))
+        for key in (
+            "army_group",
+            "unit_classes",
+            "location_intent",
+            "min_units",
+            "max_units",
+            "require_safety_margin",
+        )
+    )
+
+
 def _merge_live_vector_payloads(
     previous_payload: Mapping[str, object],
     incoming_payload: Mapping[str, object],
@@ -1017,7 +1149,7 @@ def _merge_live_vector_payloads(
 
     if (
         not incoming_production_intent
-        and incoming_task_type in _TACTICAL_ONLY_TASK_TYPES
+        and incoming_task_type in _TRANSIENT_TASK_TYPES
         and _text_at(previous_payload, ("strategy", "doctrine"))
     ):
         strategy = dict(_mapping_value(merged, "strategy"))
@@ -1030,7 +1162,7 @@ def _merge_live_vector_payloads(
         merged["strategy"] = strategy
 
     explicit_tactical_task = (
-        incoming_task_type in _TACTICAL_ONLY_TASK_TYPES
+        incoming_task_type in _TRANSIENT_TASK_TYPES
         and _mapping_has_signal(_mapping_value(incoming_payload, "tactical_task"))
     )
     if not defensive_reset and not explicit_tactical_task:

@@ -385,6 +385,10 @@ _DOMAIN_ALIASES = {
     "max_units": ("scope", "max_units"),
     "require_safety_margin": ("scope", "require_safety_margin"),
     "allow_partial_scope": ("scope", "allow_partial_scope"),
+    "lifetime_mode": ("lifetime", "mode"),
+    "completion_conditions": ("lifetime", "completion_conditions"),
+    "completion_state": ("lifetime", "completion_state"),
+    "lifetime_reason": ("lifetime", "reason"),
     "tactical_task_type": ("tactical_task", "task_type"),
     "task_type": ("tactical_task", "task_type"),
     "task_id": ("tactical_task", "task_id"),
@@ -438,6 +442,8 @@ _DOMAIN_FIELD_ALIASES = {
     ("tactical_task", "duration"): ("tactical_task", "duration_seconds"),
     ("tactical_task", "allow_partial_scope"): ("tactical_task", "allow_partial"),
     ("tactical_task", "require_safety_margin"): ("tactical_task", "safety_margin"),
+    ("lifetime", "conditions"): ("lifetime", "completion_conditions"),
+    ("lifetime", "state"): ("lifetime", "completion_state"),
 }
 """LLM-friendly nested aliases routed to the canonical manager domains."""
 
@@ -451,6 +457,7 @@ _DOMAIN_KEYS = {
     "scouting",
     "squad",
     "scope",
+    "lifetime",
     "tactical_task",
     "emergency",
 }
