@@ -500,6 +500,129 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             "live_standing_orders_merged",
             second.compile_result.warnings,
         )
+        self.assertEqual("scouting", second.command_queue["category"])
+        self.assertEqual("merge_standing_orders", second.command_queue["action"])
+        self.assertEqual([first.update.update_id], second.command_queue["parent_command_ids"])
+        self.assertTrue(second.command_queue["standing_order_preserved"])
+        self.assertIn("live_command_reducer_applied", second.compile_result.warnings)
+        self.assertIn("command_category:scouting", vector.tags)
+        self.assertIn("command_action:merge_standing_orders", vector.tags)
+
+    def test_emergency_command_overwrites_active_tactical_command(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        tactical_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린으로 적진 공격",
+                    "combat": {"aggression": 0.7},
+                    "scope": {"army_group": "main", "location_intent": "enemy_main"},
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "location_intent": "enemy_main",
+                    },
+                }
+            ),
+        )
+        first = tactical_session.submit_text(
+            "마린으로 적진 공격해",
+            current_frame=100,
+            update_id="attack-before-retreat",
+        )
+        self.assertTrue(first.ok, first.to_dict())
+
+        emergency_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "후퇴해서 병력 살려",
+                    "override_level": "emergency",
+                    "ttl_seconds": 45,
+                    "combat": {"aggression": -0.8, "preserve_army_bias": 0.9},
+                    "squad": {"regroup_bias": 0.9, "defense_bias": 0.8},
+                    "emergency": {"force_retreat": True},
+                }
+            ),
+        )
+
+        result = emergency_session.submit_text(
+            "아니 후퇴해",
+            current_frame=140,
+            update_id="retreat-now",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual("emergency", result.command_queue["category"])
+        self.assertEqual("overwrite_emergency", result.command_queue["action"])
+        self.assertEqual(["attack-before-retreat"], result.command_queue["parent_command_ids"])
+        self.assertTrue(result.command_queue["superseded_previous"])
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("후퇴해서 병력 살려", vector.goal)
+        self.assertEqual("emergency", vector.override_level.value)
+        self.assertTrue(vector.emergency.force_retreat)
+        self.assertIn("command_action:overwrite_emergency", vector.tags)
+
+    def test_new_tactical_command_supersedes_stale_tactical_command(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        first_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린으로 적 앞마당 압박",
+                    "scope": {"army_group": "main", "location_intent": "enemy_natural"},
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "location_intent": "enemy_natural",
+                    },
+                }
+            ),
+        )
+        self.assertTrue(
+            first_session.submit_text(
+                "앞마당 압박해",
+                current_frame=100,
+                update_id="pressure-natural",
+            ).ok
+        )
+        second_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 4기로 적 본진 우회 공격",
+                    "scope": {
+                        "army_group": "main",
+                        "location_intent": "enemy_main",
+                        "min_units": 4,
+                        "max_units": 4,
+                    },
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "location_intent": "enemy_main",
+                        "min_units": 4,
+                        "max_units": 4,
+                    },
+                    "squad": {"flank_bias": 0.8},
+                }
+            ),
+        )
+
+        result = second_session.submit_text(
+            "마린 4기로 다른 길로 적 본진 공격해",
+            current_frame=160,
+            update_id="pressure-main-flank",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual("tactical", result.command_queue["category"])
+        self.assertEqual("supersede_tactical", result.command_queue["action"])
+        self.assertTrue(result.command_queue["superseded_previous"])
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("마린 4기로 적 본진 우회 공격", vector.goal)
+        self.assertEqual("enemy_main", vector.tactical_task.location_intent)
+        self.assertEqual(4, vector.tactical_task.min_units)
+        self.assertIn("command_action:supersede_tactical", vector.tags)
 
     def test_live_stop_expansion_command_drops_prior_command_center_bias(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
