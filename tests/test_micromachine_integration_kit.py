@@ -269,6 +269,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "building_tasks.0.target_position",
             "building_tasks.0.allow_nearest_valid_fallback",
             "getVoiPolicyBool(\"building_tasks.0.allow_nearest_valid_fallback\", true)",
+            "voiBuildingTaskBlocksFallback",
+            "buildingLocation = CCTilePosition();",
             "BuildingManager must place exactly at target_position or reject without nearest fallback",
             "exact placement invalid and nearest fallback disabled",
             "\\\"resolved_position\\\":\\\"",

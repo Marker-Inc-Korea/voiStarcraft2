@@ -3423,20 +3423,25 @@ index 2872a0b..2f19e43 100644
 		CCTilePosition voiBuildingTaskAnchor;
 		bool voiBuildingTaskAllowNearestFallback = true;
 		const bool hasVoiBuildingTaskPlacement = resolveVoiBuildingTaskPlacement(m_bot, b, voiBuildingTaskAnchor, voiBuildingTaskAllowNearestFallback, __FUNCTION__);
+		const bool voiBuildingTaskBlocksFallback = !voiBuildingTaskAllowNearestFallback;
 		if (hasVoiBuildingTaskPlacement)
 		{
 			placementBuilding.desiredPosition = voiBuildingTaskAnchor;
 		}
-		if (hasVoiBuildingTaskPlacement && !voiBuildingTaskAllowNearestFallback)
+		if (hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
 		{
 			buildingLocation = voiBuildingTaskAnchor;
+		}
+		else if (!hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
+		{
+			buildingLocation = CCTilePosition();
 		}
 		else
 		{
 			buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
 		}
 		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
-+		if (!(hasVoiBuildingTaskPlacement && !voiBuildingTaskAllowNearestFallback) &&
++		if (!voiBuildingTaskBlocksFallback &&
 +			shouldUseVoiSc2MacroPlacement(m_bot, b.type) &&
 +			(!m_bot.Map().isValidTile(buildingLocation) ||
 +			 buildingLocation == CCTilePosition() ||
