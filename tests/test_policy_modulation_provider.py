@@ -620,6 +620,18 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     }
                 ],
             },
+            {
+                "goal": "bad unit",
+                "composition_requirements": [
+                    {"unit_type": "UNSAFE_UNIT", "count": 1, "role": "frontline"}
+                ],
+            },
+            {
+                "goal": "bad building",
+                "building_tasks": [
+                    {"building_type": "DROP TABLE latest_modulation"}
+                ],
+            },
         ):
             with self.subTest(payload=payload):
                 result = compile_policy_modulation_provider_output(payload)

@@ -245,6 +245,15 @@ MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
 }
 """Safe semantic tokens canonicalized before C++ blackboard serialization."""
 
+MICROMACHINE_ALLOWED_TASK_TOKENS: Final[frozenset[str]] = frozenset(
+    {
+        *MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES.values(),
+        "STIMPACK",
+        "COMBATSHIELD",
+    }
+)
+"""Allow-list for rich DSL unit/building/addon/upgrade tokens."""
+
 POLICY_MODULATION_RAW_CONTROL_KEYS: Final[frozenset[str]] = frozenset(
     {
         "api_call",
@@ -1138,7 +1147,10 @@ class ProductionPlanModulation:
         object.__setattr__(
             self,
             "targets",
-            _canonicalize_task_tokens(_validate_string_tuple("targets", self.targets)),
+            _canonicalize_allowed_task_tokens(
+                "targets",
+                _validate_string_tuple("targets", self.targets),
+            ),
         )
         object.__setattr__(
             self,
@@ -1174,7 +1186,7 @@ class CompositionRequirement:
         object.__setattr__(
             self,
             "unit_type",
-            _canonicalize_task_token(_require_text("unit_type", self.unit_type)),
+            _canonicalize_allowed_task_token("unit_type", self.unit_type),
         )
         object.__setattr__(
             self,
@@ -1203,7 +1215,7 @@ class UnitRoleAssignment:
         object.__setattr__(
             self,
             "unit_type",
-            _canonicalize_task_token(_require_text("unit_type", self.unit_type)),
+            _canonicalize_allowed_task_token("unit_type", self.unit_type),
         )
         object.__setattr__(
             self,
@@ -1237,7 +1249,7 @@ class BuildingTask:
         object.__setattr__(
             self,
             "building_type",
-            _canonicalize_task_token(_require_text("building_type", self.building_type)),
+            _canonicalize_allowed_task_token("building_type", self.building_type),
         )
         object.__setattr__(
             self,
@@ -1637,6 +1649,8 @@ def _validate_object_sequence(
         return ()
     if not _is_non_text_sequence(values):
         raise ValueError(f"{name} must be a sequence.")
+    if len(values) > 32:
+        raise ValueError(f"{name} cannot contain more than 32 entries.")
     result: list[object] = []
     for value in values:
         if isinstance(value, item_type):
@@ -1820,6 +1834,22 @@ def _validate_map_position(name: str, values: object) -> tuple[float, ...]:
 
 def _canonicalize_task_tokens(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(_canonicalize_task_token(value) for value in values)
+
+
+def _canonicalize_allowed_task_tokens(
+    field_name: str,
+    values: tuple[str, ...],
+) -> tuple[str, ...]:
+    return tuple(_canonicalize_allowed_task_token(field_name, value) for value in values)
+
+
+def _canonicalize_allowed_task_token(field_name: str, value: object) -> str:
+    token = _canonicalize_task_token(_require_text(field_name, value))
+    if token not in MICROMACHINE_ALLOWED_TASK_TOKENS:
+        raise ValueError(
+            f"{field_name} must be an allowed MicroMachine unit/building/addon token."
+        )
+    return token
 
 
 def _canonicalize_task_token(value: str) -> str:

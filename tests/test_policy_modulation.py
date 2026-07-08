@@ -128,6 +128,17 @@ class PolicyModulationVectorTest(unittest.TestCase):
             UnitRoleAssignment("marine", role="raw_attack_move")
         with self.assertRaisesRegex(ValueError, "target_position"):
             BuildingTask("bunker", placement_intent="front_door", target_position=(300, 12))
+        with self.assertRaisesRegex(ValueError, "allowed MicroMachine"):
+            CompositionRequirement("UNSAFE_UNIT", count=1)
+        with self.assertRaisesRegex(ValueError, "allowed MicroMachine"):
+            BuildingTask("DROP TABLE latest_modulation", placement_intent="front_door")
+        with self.assertRaisesRegex(ValueError, "more than 32"):
+            PolicyModulationVector(
+                goal="too many",
+                composition_requirements=tuple(
+                    {"unit_type": "marine", "count": 1} for _ in range(33)
+                ),
+            )
 
     def test_vector_is_deep_json_ready_dsl_for_micro_machine_managers(self) -> None:
         vector = PolicyModulationVector(
