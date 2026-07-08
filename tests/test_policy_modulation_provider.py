@@ -679,6 +679,8 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 assert result.vector is not None
                 vector = result.vector
                 self.assertEqual(expected_chain, vector.tactical_task.production_targets)
+                self.assertEqual("sustain_production", vector.tactical_task.task_type)
+                self.assertNotIn("FACTORY_TECHLAB", vector.tactical_task.production_targets)
                 self.assertGreaterEqual(
                     vector.production.queue_biases.to_dict()["TERRAN_STARPORT"],
                     0.8,

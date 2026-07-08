@@ -12940,11 +12940,21 @@ index 045faab..e42e478 100644
 +        << "\"queue_bias_siege_tank\":" << m_voiPolicyBlackboard.getFloat("production.queue_biases.TERRAN_SIEGETANK", 0.0f) << ","
 +        << "\"queue_bias_medivac\":" << m_voiPolicyBlackboard.getFloat("production.queue_biases.TERRAN_MEDIVAC", 0.0f) << ","
 +        << "\"queue_bias_viking\":" << m_voiPolicyBlackboard.getFloat("production.queue_biases.TERRAN_VIKINGFIGHTER", 0.0f) << ","
++        << "\"queue_bias_starport_techlab\":" << m_voiPolicyBlackboard.getFloat("production.queue_biases.STARPORT_TECHLAB", 0.0f) << ","
++        << "\"queue_bias_banshee\":" << m_voiPolicyBlackboard.getFloat("production.queue_biases.TERRAN_BANSHEE", 0.0f) << ","
++        << "\"queue_bias_raven\":" << m_voiPolicyBlackboard.getFloat("production.queue_biases.TERRAN_RAVEN", 0.0f) << ","
++        << "\"queue_bias_fusion_core\":" << m_voiPolicyBlackboard.getFloat("production.queue_biases.TERRAN_FUSIONCORE", 0.0f) << ","
++        << "\"queue_bias_battlecruiser\":" << m_voiPolicyBlackboard.getFloat("production.queue_biases.TERRAN_BATTLECRUISER", 0.0f) << ","
 +        << "\"facility_bias_factory\":" << m_voiPolicyBlackboard.getFloat("production.production_facility_biases.TERRAN_FACTORY", 0.0f) << ","
 +        << "\"facility_bias_starport\":" << m_voiPolicyBlackboard.getFloat("production.production_facility_biases.TERRAN_STARPORT", 0.0f) << ","
++        << "\"facility_bias_fusion_core\":" << m_voiPolicyBlackboard.getFloat("production.production_facility_biases.TERRAN_FUSIONCORE", 0.0f) << ","
 +        << "\"tech_unit_bias_siege_tank\":" << m_voiPolicyBlackboard.getFloat("tech.unit_biases.TERRAN_SIEGETANK", 0.0f) << ","
 +        << "\"tech_unit_bias_medivac\":" << m_voiPolicyBlackboard.getFloat("tech.unit_biases.TERRAN_MEDIVAC", 0.0f) << ","
 +        << "\"tech_unit_bias_viking\":" << m_voiPolicyBlackboard.getFloat("tech.unit_biases.TERRAN_VIKINGFIGHTER", 0.0f) << ","
++        << "\"tech_unit_bias_banshee\":" << m_voiPolicyBlackboard.getFloat("tech.unit_biases.TERRAN_BANSHEE", 0.0f) << ","
++        << "\"tech_unit_bias_raven\":" << m_voiPolicyBlackboard.getFloat("tech.unit_biases.TERRAN_RAVEN", 0.0f) << ","
++        << "\"tech_unit_bias_battlecruiser\":" << m_voiPolicyBlackboard.getFloat("tech.unit_biases.TERRAN_BATTLECRUISER", 0.0f) << ","
++        << "\"tech_structure_bias_fusion_core\":" << m_voiPolicyBlackboard.getFloat("tech.structure_biases.TERRAN_FUSIONCORE", 0.0f) << ","
 +        << "\"last_doctrine\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrine()) << "\","
 +        << "\"last_doctrine_action\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineAction()) << "\","
 +        << "\"last_doctrine_queue_item\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineQueueItem()) << "\","
@@ -13683,9 +13693,12 @@ index 3859fdb..a638b9c 100644
 +	if (itemName == "TERRAN_FACTORY") { return "Factory"; }
 +	if (itemName == "TERRAN_FACTORYTECHLAB") { return "FactoryTechLab"; }
 +	if (itemName == "TERRAN_STARPORT") { return "Starport"; }
++	if (itemName == "STARPORT_TECHLAB") { return "StarportTechLab"; }
++	if (itemName == "TERRAN_STARPORTTECHLAB") { return "StarportTechLab"; }
 +	if (itemName == "TERRAN_STARPORTREACTOR") { return "StarportReactor"; }
 +	if (itemName == "TERRAN_COMMANDCENTER") { return "CommandCenter"; }
 +	if (itemName == "TERRAN_ENGINEERINGBAY") { return "EngineeringBay"; }
++	if (itemName == "TERRAN_FUSIONCORE") { return "FusionCore"; }
 +	if (itemName == "TERRAN_MARINE") { return "Marine"; }
 +	if (itemName == "TERRAN_MARAUDER") { return "Marauder"; }
 +	if (itemName == "TERRAN_REAPER") { return "Reaper"; }
@@ -13695,6 +13708,9 @@ index 3859fdb..a638b9c 100644
 +	if (itemName == "TERRAN_SIEGETANK") { return "SiegeTank"; }
 +	if (itemName == "TERRAN_MEDIVAC") { return "Medivac"; }
 +	if (itemName == "TERRAN_VIKINGFIGHTER") { return "Viking"; }
++	if (itemName == "TERRAN_BANSHEE") { return "Banshee"; }
++	if (itemName == "TERRAN_RAVEN") { return "Raven"; }
++	if (itemName == "TERRAN_BATTLECRUISER") { return "Battlecruiser"; }
 +	return itemName;
 +}
 +
@@ -14802,9 +14818,15 @@ index 3859fdb..a638b9c 100644
 +	const bool taskTargetsFactory = voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORY");
 +	const bool taskTargetsFactoryTechLab = voiCommaListContains(tacticalProductionTargets, "FACTORY_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORYTECHLAB");
 +	const bool taskTargetsStarport = voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORT");
++	const bool taskTargetsStarportTechLab = voiCommaListContains(tacticalProductionTargets, "STARPORT_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORTTECHLAB");
++	const bool taskTargetsFusionCore = voiCommaListContains(tacticalProductionTargets, "TERRAN_FUSIONCORE");
 +	const bool taskTargetsMarine = voiCommaListContains(tacticalProductionTargets, "TERRAN_MARINE");
 +	const bool taskTargetsSiegeTank = voiCommaListContains(tacticalProductionTargets, "TERRAN_SIEGETANK");
 +	const bool taskTargetsMedivac = voiCommaListContains(tacticalProductionTargets, "TERRAN_MEDIVAC");
++	const bool taskTargetsViking = voiCommaListContains(tacticalProductionTargets, "TERRAN_VIKINGFIGHTER");
++	const bool taskTargetsBanshee = voiCommaListContains(tacticalProductionTargets, "TERRAN_BANSHEE");
++	const bool taskTargetsRaven = voiCommaListContains(tacticalProductionTargets, "TERRAN_RAVEN");
++	const bool taskTargetsBattlecruiser = voiCommaListContains(tacticalProductionTargets, "TERRAN_BATTLECRUISER");
 +	const std::string doctrine = m_bot.Commander().getVoiPolicyString("strategy.doctrine", "");
 +	const float techSwitchUrgency = m_bot.Commander().getVoiPolicyFloat("production.tech_switch_urgency", 0.0f);
 +	const float compositionBioBias = m_bot.Commander().getVoiPolicyFloat("production.composition_biases.bio", 0.0f);
@@ -14847,9 +14869,24 @@ index 3859fdb..a638b9c 100644
 +		voiMaxBias(m_bot, "production.queue_biases.TERRAN_MEDIVAC", "tech.unit_biases.TERRAN_MEDIVAC"),
 +		(taskTechTransition && taskTargetsMedivac) ? tacticalTaskPriority : 0.0f);
 +	const float vikingBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_VIKINGFIGHTER", "tech.unit_biases.TERRAN_VIKINGFIGHTER");
++	const float bansheeBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_BANSHEE", "tech.unit_biases.TERRAN_BANSHEE"),
++		(taskTechTransition && taskTargetsBanshee) ? tacticalTaskPriority : 0.0f);
++	const float ravenBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_RAVEN", "tech.unit_biases.TERRAN_RAVEN"),
++		(taskTechTransition && taskTargetsRaven) ? tacticalTaskPriority : 0.0f);
++	const float battlecruiserBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_BATTLECRUISER", "tech.unit_biases.TERRAN_BATTLECRUISER"),
++		(taskTechTransition && taskTargetsBattlecruiser) ? tacticalTaskPriority : 0.0f);
 +	const float factoryTechLabBias = std::max(
 +		voiMaxBias(m_bot, "production.queue_biases.FACTORY_TECHLAB", "production.addon_biases.FACTORY_TECHLAB"),
 +		(taskTechTransition && taskTargetsFactoryTechLab) ? tacticalTaskPriority : 0.0f);
++	const float starportTechLabBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.STARPORT_TECHLAB", "production.addon_biases.STARPORT_TECHLAB"),
++		(taskTechTransition && taskTargetsStarportTechLab) ? tacticalTaskPriority : 0.0f);
++	const float fusionCoreBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_FUSIONCORE", "production.production_facility_biases.TERRAN_FUSIONCORE", "tech.structure_biases.TERRAN_FUSIONCORE"),
++		(taskTechTransition && taskTargetsFusionCore) ? tacticalTaskPriority : 0.0f);
 +	const float starportReactorBias = voiMaxBias(m_bot, "production.addon_biases.STARPORT_REACTOR");
 +	const float supplyProviderBias = std::max(
 +		voiMaxBias(m_bot, "production.queue_biases.TERRAN_SUPPLYDEPOT", "economy.supply_buffer_bias", "tech.structure_biases.TERRAN_SUPPLYDEPOT"),
@@ -14877,14 +14914,21 @@ index 3859fdb..a638b9c 100644
 +	const float effectiveCycloneBias = std::max(cycloneBias, compositionMechBias);
 +	const float effectiveThorBias = std::max(thorBias, compositionMechBias);
 +	const float effectiveMedivacBias = std::max({ medivacBias, compositionDropBias, compositionMedivacBias, compositionBioBias });
-+	const float effectiveVikingBias = std::max(vikingBias, compositionAntiAirBias);
++	const float effectiveVikingBias = std::max({ vikingBias, compositionAntiAirBias, (taskTechTransition && taskTargetsViking) ? tacticalTaskPriority : 0.0f });
++	const float effectiveBansheeBias = std::max({ bansheeBias, compositionHarassBias, compositionWorkerLineBias });
++	const float effectiveRavenBias = std::max(ravenBias, compositionAntiAirBias);
++	const float effectiveBattlecruiserBias = battlecruiserBias;
 +	const float effectiveFactoryTechLabBias = std::max({ factoryTechLabBias, compositionSiegeBias, compositionMechBias });
++	const float effectiveStarportTechLabBias = std::max({ starportTechLabBias, effectiveBansheeBias, effectiveRavenBias, effectiveBattlecruiserBias });
++	const float effectiveFusionCoreBias = std::max(fusionCoreBias, effectiveBattlecruiserBias);
 +	const float effectiveStarportReactorBias = std::max(starportReactorBias, compositionDropBias);
 +
 +	const bool wantsFactory = taskTechTransition || wantsFactoryDoctrine || effectiveFactoryBias > 0.25f || effectiveTankBias > 0.25f || effectiveHellionBias > 0.25f || effectiveCycloneBias > 0.25f || techSwitchUrgency > 0.55f;
-+	const bool wantsStarport = wantsStarportDoctrine || effectiveStarportBias > 0.25f || effectiveMedivacBias > 0.25f || effectiveVikingBias > 0.25f;
++	const bool wantsStarport = wantsStarportDoctrine || effectiveStarportBias > 0.25f || effectiveMedivacBias > 0.25f || effectiveVikingBias > 0.25f || effectiveBansheeBias > 0.25f || effectiveRavenBias > 0.25f || effectiveBattlecruiserBias > 0.25f;
 +	const bool wantsCommandCenter = taskExpandCommandCenter || wantsMacroDoctrine || effectiveCommandCenterBias > 0.45f;
 +	const bool wantsFactoryTechLab = taskTechTransition || wantsFactoryTechLabDoctrine || effectiveFactoryTechLabBias > 0.25f || effectiveTankBias > 0.25f || effectiveThorBias > 0.25f;
++	const bool wantsStarportTechLab = effectiveStarportTechLabBias > 0.25f;
++	const bool wantsFusionCore = effectiveFusionCoreBias > 0.25f;
 +	const bool wantsBarracksTechLab = doctrine == "bio_pressure" || effectiveBarracksTechLabBias > 0.25f;
 +
 +	const int barracksCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), false, true, true);
@@ -14894,7 +14938,9 @@ index 3859fdb..a638b9c 100644
 +	const int factoryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Factory.getUnitType(), false, true);
 +	const int factoryTechLabCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::FactoryTechLab.getUnitType(), false, true);
 +	const int starportCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Starport.getUnitType(), false, true);
++	const int starportTechLabCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::StarportTechLab.getUnitType(), false, true);
 +	const int starportReactorCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::StarportReactor.getUnitType(), false, true);
++	const int fusionCoreCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::FusionCore.getUnitType(), false, true);
 +	const int engineeringBayCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::EngineeringBay.getUnitType(), false, true);
 +	const int commandCenterCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::CommandCenter.getUnitType(), false, true, true);
 +	const int orbitalCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::OrbitalCommand.getUnitType(), false, true, true);
@@ -14940,7 +14986,7 @@ index 3859fdb..a638b9c 100644
 +		return;
 +	}
 +	const bool needsTechBootstrapRefinery =
-+		(wantsFactory || wantsStarport || wantsFactoryTechLab || effectiveTankBias > 0.25f)
++		(wantsFactory || wantsStarport || wantsFactoryTechLab || wantsStarportTechLab || wantsFusionCore || effectiveTankBias > 0.25f)
 +		&& completedBarracksCount > 0
 +		&& refineryCount == 0;
 +	if (needsTechBootstrapRefinery && queueVoiDoctrineItem(MetaTypeEnum::Refinery, "tech_bootstrap_refinery", true))
@@ -14960,6 +15006,14 @@ index 3859fdb..a638b9c 100644
 +		return;
 +	}
 +	if (wantsStarport && factoryCount > 0 && starportCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Starport, "starport_transition", true))
++	{
++		return;
++	}
++	if (wantsStarportTechLab && starportCount > starportTechLabCount && queueVoiDoctrineItem(MetaTypeEnum::StarportTechLab, "starport_techlab", true))
++	{
++		return;
++	}
++	if (wantsFusionCore && starportTechLabCount > 0 && fusionCoreCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::FusionCore, "fusion_core_transition", true))
 +	{
 +		return;
 +	}
@@ -14992,6 +15046,18 @@ index 3859fdb..a638b9c 100644
 +		return;
 +	}
 +	if (effectiveVikingBias > 0.25f && starportCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Viking, "anti_air_viking", true))
++	{
++		return;
++	}
++	if (effectiveBansheeBias > 0.25f && starportTechLabCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Banshee, "banshee_harassment", true))
++	{
++		return;
++	}
++	if (effectiveRavenBias > 0.25f && starportTechLabCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Raven, "raven_support", true))
++	{
++		return;
++	}
++	if (effectiveBattlecruiserBias > 0.25f && fusionCoreCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Battlecruiser, "battlecruiser_transition", true))
 +	{
 +		return;
 +	}
@@ -15036,6 +15102,20 @@ index 3859fdb..a638b9c 100644
 +			return;
 +		}
 +	}
++	if (wantsStarportTechLab && starportCount > 0)
++	{
++		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::StarportTechLab, "starport_techlab"))
++		{
++			return;
++		}
++	}
++	if (wantsFusionCore && starportTechLabCount > 0)
++	{
++		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::FusionCore, "fusion_core_transition"))
++		{
++			return;
++		}
++	}
 +	if (doctrine == "drop_harassment" && effectiveMedivacBias > 0.25f)
 +	{
 +		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::Medivac, "medivac_drop_support"))
@@ -15074,6 +15154,27 @@ index 3859fdb..a638b9c 100644
 +	if (effectiveVikingBias > 0.25f)
 +	{
 +		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::Viking, "anti_air_viking"))
++		{
++			return;
++		}
++	}
++	if (effectiveBansheeBias > 0.25f)
++	{
++		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::Banshee, "banshee_harassment"))
++		{
++			return;
++		}
++	}
++	if (effectiveRavenBias > 0.25f)
++	{
++		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::Raven, "raven_support"))
++		{
++			return;
++		}
++	}
++	if (effectiveBattlecruiserBias > 0.25f)
++	{
++		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::Battlecruiser, "battlecruiser_transition"))
 +		{
 +			return;
 +		}

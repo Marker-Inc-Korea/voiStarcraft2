@@ -1121,7 +1121,7 @@ def _lower_micromachine_production_plan(payload: dict[str, object]) -> None:
     )
     if merged_targets:
         tactical_task["production_targets"] = list(merged_targets[:32])
-    _set_if_empty(tactical_task, "task_type", "tech_transition")
+    _set_if_empty(tactical_task, "task_type", "sustain_production")
     _set_float_at_least(tactical_task, "priority", priority)
     if allow_prerequisites:
         _set_float_at_least(production, "tech_switch_urgency", min(1.0, priority))
