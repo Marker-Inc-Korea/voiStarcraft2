@@ -1090,7 +1090,9 @@ def _micromachine_lifetime(
     lifetime = vector.get("lifetime", {})
     if not isinstance(lifetime, Mapping):
         lifetime = {}
-    commander = managers.get("Commander", {})
+    commander = managers.get("GameCommander", {})
+    if not isinstance(commander, Mapping):
+        commander = managers.get("Commander", {})
     telemetry: dict[str, object] = {}
     if isinstance(commander, Mapping):
         telemetry = {

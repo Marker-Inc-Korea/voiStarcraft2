@@ -617,6 +617,9 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual("overwrite_emergency", result.command_queue["action"])
         assert result.update is not None
         vector = result.update.vector
+        self.assertEqual("emergency", vector.override_level.value)
+        self.assertEqual(45, vector.ttl_seconds)
+        self.assertEqual("emergency_window", vector.lifetime.mode)
         self.assertEqual("", vector.strategy.doctrine)
         self.assertEqual("공격 취소", vector.goal)
         self.assertIn("cancel_attack", vector.tags)

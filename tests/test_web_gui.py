@@ -1049,6 +1049,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "GameCommander": {
                         "policy_active": True,
                         "update_id": "web-tactical-1",
+                        "lifetime_mode": "until_completed",
+                        "completion_state": "completed",
+                        "completion_conditions": "order_issued,target_reached",
                     },
                     "CombatCommander": {
                         "active": True,
@@ -1145,6 +1148,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual([], tactical_evidence["missing_effects"])
             self.assertTrue(intervention["log_snippets"])
             self.assertIn("calcTargets", intervention["log_snippets"][-1]["line"])
+            self.assertEqual(
+                "until_completed",
+                intervention["lifetime"]["telemetry"]["lifetime_mode"],
+            )
+            self.assertEqual(
+                "completed",
+                intervention["lifetime"]["telemetry"]["completion_state"],
+            )
 
     def test_micromachine_tactical_evidence_ignores_stale_unscoped_behavior(self):
         with tempfile.TemporaryDirectory() as directory:

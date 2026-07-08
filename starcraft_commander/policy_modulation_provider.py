@@ -899,7 +899,35 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                 domain_value["production_targets"] = [
                     _canonicalize_micromachine_key(item) for item in targets
                 ]
+    _repair_micromachine_emergency_defaults(payload)
     _repair_micromachine_tactical_task_defaults(payload)
+
+
+def _repair_micromachine_emergency_defaults(payload: dict[str, object]) -> None:
+    """Make emergency intent valid even when the provider omits emergency TTL."""
+
+    emergency = payload.get("emergency")
+    if not isinstance(emergency, dict):
+        return
+    if not any(
+        emergency.get(key) is True
+        for key in (
+            "cancel_attacks",
+            "pull_workers_for_defense",
+            "evacuate_workers",
+            "force_retreat",
+            "hold_position",
+            "stop_expansion",
+        )
+    ):
+        return
+    payload["override_level"] = "emergency"
+    ttl_seconds = payload.get("ttl_seconds")
+    if ttl_seconds is None:
+        payload["ttl_seconds"] = 60
+        return
+    if isinstance(ttl_seconds, int) and not isinstance(ttl_seconds, bool):
+        payload["ttl_seconds"] = min(ttl_seconds, 60)
 
 
 def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> None:

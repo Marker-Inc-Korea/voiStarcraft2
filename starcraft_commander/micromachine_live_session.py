@@ -886,6 +886,8 @@ def _reduce_live_command_queue(
         _preserve_safe_macro_during_stop_expansion(previous_payload, reduced_payload)
     lifetime = _live_command_lifetime(command_text, category, action, reduced_payload)
     reduced_payload["ttl_seconds"] = lifetime["ttl_seconds"]
+    if category is LiveCommandCategory.EMERGENCY:
+        reduced_payload["override_level"] = PolicyOverrideLevel.EMERGENCY.value
     reduced_payload["lifetime"] = {
         "mode": lifetime["mode"],
         "completion_conditions": lifetime["completion_conditions"],

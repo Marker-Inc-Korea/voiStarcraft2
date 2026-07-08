@@ -512,6 +512,39 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         )
         self.assertEqual("scout lifecycle", result.vector.lifetime.reason)
 
+    def test_emergency_payload_without_ttl_gets_safe_default(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "후퇴해",
+                "override_level": "emergency",
+                "combat": {"aggression": -0.8},
+                "emergency": {"force_retreat": True},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("emergency", result.vector.override_level.value)
+        self.assertEqual(60, result.vector.ttl_seconds)
+
+    def test_emergency_flags_upgrade_override_level(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "병력 살려",
+                "combat": {"preserve_army_bias": 0.8},
+                "emergency": {"force_retreat": True},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("emergency", result.vector.override_level.value)
+        self.assertEqual(60, result.vector.ttl_seconds)
+
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (
             {"goal": "unsafe", "raw_action": "attack_move"},
