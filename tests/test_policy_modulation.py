@@ -7,6 +7,7 @@ from starcraft_commander.policy_modulation import (
     CombatModulation,
     EconomyModulation,
     EmergencyModulation,
+    LifetimeModulation,
     MICROMACHINE_DOCTRINES,
     MICROMACHINE_TACTICAL_TASK_TYPES,
     PolicyModulationSource,
@@ -38,6 +39,35 @@ class WeightedBiasesTest(unittest.TestCase):
     def test_rejects_out_of_range_weight(self) -> None:
         with self.assertRaisesRegex(ValueError, "between -1.0 and 1.0"):
             WeightedBiases({"proxy_cyclone": 2.0})
+
+
+class LifetimeModulationTest(unittest.TestCase):
+    def test_lifetime_domain_round_trips_completion_semantics(self) -> None:
+        vector = PolicyModulationVector(
+            goal="마린으로 정찰",
+            lifetime=LifetimeModulation(
+                mode="until_completed",
+                completion_conditions=("enemy_observed", "target_reached"),
+                completion_state="active",
+                reason="combat scout expires independently",
+            ),
+        )
+
+        payload = vector.to_dict()
+        self.assertEqual("until_completed", payload["lifetime"]["mode"])
+        self.assertEqual(
+            ["enemy_observed", "target_reached"],
+            payload["lifetime"]["completion_conditions"],
+        )
+        rebuilt = PolicyModulationVector.from_mapping(payload)
+        self.assertEqual(vector.lifetime, rebuilt.lifetime)
+
+    def test_lifetime_domain_rejects_unknown_completion_conditions(self) -> None:
+        with self.assertRaisesRegex(ValueError, "completion_conditions"):
+            LifetimeModulation(
+                mode="until_completed",
+                completion_conditions=("raw_sc2_action_done",),
+            )
 
 
 class PolicyModulationVectorTest(unittest.TestCase):

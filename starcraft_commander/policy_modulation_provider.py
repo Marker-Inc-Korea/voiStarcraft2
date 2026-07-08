@@ -385,6 +385,10 @@ _DOMAIN_ALIASES = {
     "max_units": ("scope", "max_units"),
     "require_safety_margin": ("scope", "require_safety_margin"),
     "allow_partial_scope": ("scope", "allow_partial_scope"),
+    "lifetime_mode": ("lifetime", "mode"),
+    "completion_conditions": ("lifetime", "completion_conditions"),
+    "completion_state": ("lifetime", "completion_state"),
+    "lifetime_reason": ("lifetime", "reason"),
     "tactical_task_type": ("tactical_task", "task_type"),
     "task_type": ("tactical_task", "task_type"),
     "task_id": ("tactical_task", "task_id"),
@@ -438,6 +442,8 @@ _DOMAIN_FIELD_ALIASES = {
     ("tactical_task", "duration"): ("tactical_task", "duration_seconds"),
     ("tactical_task", "allow_partial_scope"): ("tactical_task", "allow_partial"),
     ("tactical_task", "require_safety_margin"): ("tactical_task", "safety_margin"),
+    ("lifetime", "conditions"): ("lifetime", "completion_conditions"),
+    ("lifetime", "state"): ("lifetime", "completion_state"),
 }
 """LLM-friendly nested aliases routed to the canonical manager domains."""
 
@@ -451,6 +457,7 @@ _DOMAIN_KEYS = {
     "scouting",
     "squad",
     "scope",
+    "lifetime",
     "tactical_task",
     "emergency",
 }
@@ -892,7 +899,35 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                 domain_value["production_targets"] = [
                     _canonicalize_micromachine_key(item) for item in targets
                 ]
+    _repair_micromachine_emergency_defaults(payload)
     _repair_micromachine_tactical_task_defaults(payload)
+
+
+def _repair_micromachine_emergency_defaults(payload: dict[str, object]) -> None:
+    """Make emergency intent valid even when the provider omits emergency TTL."""
+
+    emergency = payload.get("emergency")
+    has_emergency_flags = isinstance(emergency, dict) and any(
+        emergency.get(key) is True
+        for key in (
+            "cancel_attacks",
+            "pull_workers_for_defense",
+            "evacuate_workers",
+            "force_retreat",
+            "hold_position",
+            "stop_expansion",
+        )
+    )
+    override_level = str(payload.get("override_level", "") or "").strip().lower()
+    if not has_emergency_flags and override_level != "emergency":
+        return
+    payload["override_level"] = "emergency"
+    ttl_seconds = payload.get("ttl_seconds")
+    if ttl_seconds is None:
+        payload["ttl_seconds"] = 60
+        return
+    if isinstance(ttl_seconds, int) and not isinstance(ttl_seconds, bool):
+        payload["ttl_seconds"] = min(ttl_seconds, 60)
 
 
 def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> None:

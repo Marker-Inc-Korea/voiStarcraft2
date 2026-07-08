@@ -256,6 +256,15 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(1, vector.tactical_task.min_units)
         self.assertEqual(2, vector.tactical_task.max_units)
         self.assertIn("TERRAN_MARINE", vector.tactical_task.unit_classes)
+        self.assertEqual(180, vector.ttl_seconds)
+        self.assertEqual("until_completed", vector.lifetime.mode)
+        self.assertEqual(
+            ("enemy_observed", "target_reached", "ttl_expired"),
+            vector.lifetime.completion_conditions,
+        )
+        self.assertEqual(180, vector.tactical_task.duration_seconds)
+        self.assertEqual(180, result.command_queue["ttl_seconds"])
+        self.assertEqual("until_completed", result.command_queue["lifetime_mode"])
 
     def test_explicit_tactical_task_drops_stale_defensive_tactical_standing_order(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
@@ -504,6 +513,13 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual("merge_standing_orders", second.command_queue["action"])
         self.assertEqual([first.update.update_id], second.command_queue["parent_command_ids"])
         self.assertTrue(second.command_queue["standing_order_preserved"])
+        self.assertEqual("until_completed", second.command_queue["lifetime_mode"])
+        self.assertEqual(180, second.command_queue["ttl_seconds"])
+        self.assertEqual("until_cancelled", second.command_queue["update_lifetime_mode"])
+        self.assertEqual(900, second.command_queue["update_ttl_seconds"])
+        self.assertEqual("until_cancelled", vector.lifetime.mode)
+        self.assertEqual(900, vector.ttl_seconds)
+        self.assertEqual(180, vector.tactical_task.duration_seconds)
         self.assertIn("live_command_reducer_applied", second.compile_result.warnings)
         self.assertIn("command_category:scouting", vector.tags)
         self.assertIn("command_action:merge_standing_orders", vector.tags)
@@ -608,6 +624,9 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual("overwrite_emergency", result.command_queue["action"])
         assert result.update is not None
         vector = result.update.vector
+        self.assertEqual("emergency", vector.override_level.value)
+        self.assertEqual(45, vector.ttl_seconds)
+        self.assertEqual("emergency_window", vector.lifetime.mode)
         self.assertEqual("", vector.strategy.doctrine)
         self.assertEqual("공격 취소", vector.goal)
         self.assertIn("cancel_attack", vector.tags)
@@ -643,6 +662,64 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                     vector.tactical_task.task_type,
                 )
                 self.assertIn("cancel_attack", vector.tags)
+
+    def test_keyword_provider_cancel_attack_uses_short_emergency_lifetime(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "공격 취소해",
+            current_frame=100,
+            update_id="cancel-short-window",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual(45, vector.ttl_seconds)
+        self.assertEqual("emergency_window", vector.lifetime.mode)
+        self.assertEqual(
+            ("cancelled_by_user", "retreat_confirmed", "ttl_expired"),
+            vector.lifetime.completion_conditions,
+        )
+        self.assertEqual(
+            100 + 45 * MICROMACHINE_GAME_LOOPS_PER_SECOND,
+            result.update.expires_at_frame,
+        )
+
+    def test_production_command_gets_until_cancelled_lifetime(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 계속 뽑아",
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_MARINE"],
+                        "priority": 0.8,
+                    },
+                }
+            ),
+        )
+
+        result = session.submit_text(
+            "마린 계속 뽑아",
+            current_frame=10,
+            update_id="marine-standing-production",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual(900, vector.ttl_seconds)
+        self.assertEqual("until_cancelled", vector.lifetime.mode)
+        self.assertEqual(
+            ("unit_count_reached", "cancelled_by_user", "ttl_expired"),
+            vector.lifetime.completion_conditions,
+        )
+        self.assertEqual("production", result.command_queue["category"])
+        self.assertEqual(900, result.command_queue["ttl_seconds"])
 
     def test_new_tactical_command_supersedes_stale_tactical_command(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
@@ -872,8 +949,9 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(42, result.update.issued_at_frame)
         self.assertEqual(32, result.update.vector.workers.repeat_order_guard_frames)
         self.assertIn("workers", result.update.manager_bias_domains)
+        self.assertEqual("standing_order", result.update.vector.lifetime.mode)
         self.assertEqual(
-            42 + 90 * MICROMACHINE_GAME_LOOPS_PER_SECOND,
+            42 + 900 * MICROMACHINE_GAME_LOOPS_PER_SECOND,
             result.update.expires_at_frame,
         )
         self.assertEqual(

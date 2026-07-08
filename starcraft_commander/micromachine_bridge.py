@@ -273,6 +273,7 @@ class MicroMachineBlackboardUpdate:
                 "scouting",
                 "squad",
                 "scope",
+                "lifetime",
                 "tactical_task",
                 "emergency",
             )

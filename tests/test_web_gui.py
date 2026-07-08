@@ -578,7 +578,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual(["TERRAN_MARINE", "TERRAN_SIEGETANK"], scope["unit_classes"])
             self.assertEqual("enemy_natural", scope["location_intent"])
             self.assertEqual(120, scope["duration_seconds"])
-            self.assertEqual(180, document["compile_result"]["vector"]["ttl_seconds"])
+            self.assertEqual(300, document["compile_result"]["vector"]["ttl_seconds"])
+            self.assertEqual(
+                "until_completed",
+                document["compile_result"]["vector"]["lifetime"]["mode"],
+            )
             with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
                 kv = handle.read()
             self.assertIn("scope.army_group=main", kv)
@@ -804,7 +808,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             intervention = document["intervention"]
             self.assertFalse(intervention["applied"])
             self.assertEqual("web-status-1", intervention["latest_update_id"])
-            self.assertEqual(["workers", "combat"], intervention["manager_bias_domains"])
+            self.assertEqual(
+                ["workers", "combat", "lifetime"],
+                intervention["manager_bias_domains"],
+            )
             self.assertEqual("수비", intervention["goal"])
 
     def test_micromachine_status_requires_post_publish_telemetry_before_consumed(self):
@@ -1042,6 +1049,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "GameCommander": {
                         "policy_active": True,
                         "update_id": "web-tactical-1",
+                        "lifetime_mode": "until_completed",
+                        "completion_state": "completed",
+                        "completion_conditions": "order_issued,target_reached",
                     },
                     "CombatCommander": {
                         "active": True,
@@ -1138,6 +1148,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual([], tactical_evidence["missing_effects"])
             self.assertTrue(intervention["log_snippets"])
             self.assertIn("calcTargets", intervention["log_snippets"][-1]["line"])
+            self.assertEqual(
+                "until_completed",
+                intervention["lifetime"]["telemetry"]["lifetime_mode"],
+            )
+            self.assertEqual(
+                "completed",
+                intervention["lifetime"]["telemetry"]["completion_state"],
+            )
 
     def test_micromachine_tactical_evidence_ignores_stale_unscoped_behavior(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1590,6 +1608,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual(
                 "pressure_with_main_army",
                 vector["tactical_task"]["task_type"],
+            )
+            self.assertEqual("until_completed", vector["lifetime"]["mode"])
+            self.assertIn(
+                "order_issued",
+                vector["lifetime"]["completion_conditions"],
+            )
+            self.assertEqual(
+                "until_completed",
+                payload["intervention"]["lifetime"]["mode"],
             )
             self.assertEqual("main", vector["scope"]["army_group"])
             self.assertEqual(
@@ -3573,7 +3600,23 @@ const assert = require("assert");
       status: "compiled",
       source: "ui",
       update_id: "latest-flank",
-      vector: { goal: "latest flank" }
+      vector: {
+        goal: "latest flank",
+        lifetime: {
+          mode: "until_completed",
+          completion_state: "active",
+          completion_conditions: ["order_issued", "target_reached", "ttl_expired"]
+        }
+      }
+    },
+    intervention: {
+      latest_update_id: "latest-flank",
+      goal: "latest flank",
+      lifetime: {
+        mode: "until_completed",
+        completion_state: "active",
+        completion_conditions: ["order_issued", "target_reached", "ttl_expired"]
+      }
     },
     update: { update_id: "latest-flank" }
   }));
@@ -3582,6 +3625,7 @@ const assert = require("assert");
   assert.strictEqual(pendingCommandCount(), 0);
   assert(logBox.textContent.includes("latest flank"));
   assert(logBox.textContent.includes("command_queue | category=tactical | action=supersede_tactical"));
+  assert(logBox.textContent.includes("lifetime=mode=until_completed"));
 })().catch(function (error) {
   console.error(error && error.stack ? error.stack : error);
   process.exit(1);

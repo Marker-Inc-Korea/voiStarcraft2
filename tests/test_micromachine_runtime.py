@@ -32,6 +32,7 @@ from starcraft_commander.policy_modulation import (
     CombatModulation,
     EconomyModulation,
     EmergencyModulation,
+    LifetimeModulation,
     PolicyModulationVector,
     PolicyOverrideLevel,
     PolicyModulationSource,
@@ -95,6 +96,12 @@ def _vector(ttl_seconds: int = 30) -> PolicyModulationVector:
             min_units=6,
             duration_seconds=180,
             safety_margin=0.25,
+        ),
+        lifetime=LifetimeModulation(
+            mode="until_completed",
+            completion_conditions=("order_issued", "target_reached", "ttl_expired"),
+            completion_state="active",
+            reason="runtime test lifecycle",
         ),
         emergency=EmergencyModulation(force_retreat=True, prioritize_repair=True),
     )
@@ -551,8 +558,14 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
         self.assertIn("workers.repeat_order_guard_frames=32\n", text)
         self.assertIn("combat.aggression=-0.2\n", text)
         self.assertIn("combat.target_priority_biases.BANELING=0.9\n", text)
+        self.assertIn("lifetime.mode=until_completed\n", text)
         self.assertIn(
-            "manager_bias_domains=strategy,economy,workers,tech,production,combat,scouting,squad,scope,tactical_task,emergency\n",
+            "lifetime.completion_conditions=order_issued,target_reached,ttl_expired\n",
+            text,
+        )
+        self.assertIn("lifetime.completion_state=active\n", text)
+        self.assertIn(
+            "manager_bias_domains=strategy,economy,workers,tech,production,combat,scouting,squad,scope,lifetime,tactical_task,emergency\n",
             text,
         )
 

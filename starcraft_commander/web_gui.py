@@ -944,6 +944,7 @@ def _micromachine_intervention_summary(
             dashboard_managers
         ),
         "tactical_scope": _micromachine_tactical_scope(vector, dashboard_managers),
+        "lifetime": _micromachine_lifetime(vector, dashboard_managers),
         "tactical_posture": _micromachine_tactical_posture(
             vector,
             dashboard_managers,
@@ -1080,6 +1081,38 @@ def _micromachine_tactical_scope(
             if value not in ("", None, 0)
         }
     return {"requested": requested, "telemetry": telemetry}
+
+
+def _micromachine_lifetime(
+    vector: Mapping[str, object],
+    managers: Mapping[str, object],
+) -> dict[str, object]:
+    lifetime = vector.get("lifetime", {})
+    if not isinstance(lifetime, Mapping):
+        lifetime = {}
+    commander = managers.get("GameCommander", {})
+    if not isinstance(commander, Mapping):
+        commander = managers.get("Commander", {})
+    telemetry: dict[str, object] = {}
+    if isinstance(commander, Mapping):
+        telemetry = {
+            key: value
+            for key, value in {
+                "lifetime_mode": commander.get("lifetime_mode"),
+                "completion_state": commander.get("completion_state"),
+                "completion_conditions": commander.get("completion_conditions"),
+            }.items()
+            if value not in ("", None, ())
+        }
+    return {
+        "mode": str(lifetime.get("mode", "") or ""),
+        "completion_state": str(lifetime.get("completion_state", "") or ""),
+        "completion_conditions": _string_list(
+            lifetime.get("completion_conditions", ())
+        ),
+        "reason": str(lifetime.get("reason", "") or ""),
+        "telemetry": telemetry,
+    }
 
 
 def _micromachine_tactical_posture(
@@ -5826,6 +5859,24 @@ function formatMicroMachineScope(scope) {
   return parts.length ? parts.join(" | ") : "-";
 }
 
+function formatMicroMachineLifetime(lifetime) {
+  if (!lifetime || typeof lifetime !== "object") { return "-"; }
+  var parts = [];
+  if (lifetime.mode) { parts.push("mode=" + lifetime.mode); }
+  if (lifetime.completion_state) {
+    parts.push("state=" + lifetime.completion_state);
+  }
+  if (Array.isArray(lifetime.completion_conditions) && lifetime.completion_conditions.length) {
+    parts.push("conditions=" + lifetime.completion_conditions.join(", "));
+  }
+  if (lifetime.reason) { parts.push("reason=" + lifetime.reason); }
+  var telemetry = lifetime.telemetry || {};
+  Object.keys(telemetry).forEach(function (key) {
+    parts.push("telemetry." + key + "=" + telemetry[key]);
+  });
+  return parts.length ? parts.join(" | ") : "-";
+}
+
 function formatMicroMachineAxesByManager(axesByManager) {
   if (!axesByManager || typeof axesByManager !== "object") { return "-"; }
   var parts = [];
@@ -5952,7 +6003,12 @@ function renderMicroMachineIntervention(data) {
   setMicroMachineText("micromachine-strategy-mode", intervention.strategy_mode);
   setMicroMachineText("micromachine-managers", summarizeMicroMachineManagers(intervention.manager_snapshot));
   setMicroMachineText("micromachine-posture", intervention.tactical_posture);
-  setMicroMachineText("micromachine-scope", formatMicroMachineScope(intervention.tactical_scope));
+  var scopeText = formatMicroMachineScope(intervention.tactical_scope);
+  var lifetimeText = formatMicroMachineLifetime(intervention.lifetime);
+  setMicroMachineText(
+    "micromachine-scope",
+    scopeText + " | lifetime " + lifetimeText
+  );
   setMicroMachineText("micromachine-consumed-axes", formatMicroMachineAxesByManager(intervention.consumed_axes_by_manager));
   setMicroMachineText("micromachine-target-priority", formatMicroMachineTargetPriority(intervention.target_priority));
   setMicroMachineText("micromachine-attack-gate", formatMicroMachineAttackGate(intervention.attack_gate));
@@ -6224,6 +6280,8 @@ function microMachineChatNarration(data) {
     parts.push(queueBits.join(" | "));
   }
   if (intervention.tactical_posture) { parts.push("posture=" + intervention.tactical_posture); }
+  var lifetimeText = formatMicroMachineLifetime(intervention.lifetime);
+  if (lifetimeText !== "-") { parts.push("lifetime=" + lifetimeText); }
   if (Array.isArray(intervention.manager_bias_domains) && intervention.manager_bias_domains.length) {
     parts.push("domains=" + intervention.manager_bias_domains.join(", "));
   }

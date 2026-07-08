@@ -490,6 +490,76 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         )
         self.assertEqual(0.85, result.vector.tactical_task.priority)
 
+    def test_compiles_lifetime_aliases(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "intent": "마린으로 정찰해",
+                "lifetime_mode": "until_completed",
+                "completion_conditions": ["enemy_observed", "target_reached"],
+                "completion_state": "active",
+                "lifetime_reason": "scout lifecycle",
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("until_completed", result.vector.lifetime.mode)
+        self.assertEqual(
+            ("enemy_observed", "target_reached"),
+            result.vector.lifetime.completion_conditions,
+        )
+        self.assertEqual("scout lifecycle", result.vector.lifetime.reason)
+
+    def test_emergency_payload_without_ttl_gets_safe_default(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "후퇴해",
+                "override_level": "emergency",
+                "combat": {"aggression": -0.8},
+                "emergency": {"force_retreat": True},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("emergency", result.vector.override_level.value)
+        self.assertEqual(60, result.vector.ttl_seconds)
+
+    def test_emergency_override_without_flags_gets_safe_default_ttl(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "후퇴해",
+                "override_level": "emergency",
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("emergency", result.vector.override_level.value)
+        self.assertEqual(60, result.vector.ttl_seconds)
+
+    def test_emergency_flags_upgrade_override_level(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "병력 살려",
+                "combat": {"preserve_army_bias": 0.8},
+                "emergency": {"force_retreat": True},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual("emergency", result.vector.override_level.value)
+        self.assertEqual(60, result.vector.ttl_seconds)
+
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (
             {"goal": "unsafe", "raw_action": "attack_move"},
