@@ -65,6 +65,18 @@ class LiveModulationConsumptionStatus(str, Enum):
     CONSUMED = "consumed"
 
 
+class LiveCommandCategory(str, Enum):
+    """Coarse live-command class used by the reducer before blackboard publish."""
+
+    EMERGENCY = "emergency"
+    TACTICAL = "tactical"
+    PRODUCTION = "production"
+    STRATEGY = "strategy"
+    BUILDING = "building"
+    SCOUTING = "scouting"
+    CLARIFICATION = "clarification"
+
+
 LLM_ONLY_PROVIDER_REQUIRED_REASON = (
     "LLM provider unavailable: MicroMachine production free-form text modulation "
     "requires an LLM-generated structured DSL output. Keyword/rule fallback is "
@@ -78,6 +90,7 @@ _TACTICAL_ONLY_TASK_TYPES = frozenset({"scout_with_units", "pressure_with_main_a
 _PERSISTENT_LIVE_DOMAINS = ("strategy", "economy", "workers", "tech", "production")
 _TACTICAL_LIVE_DOMAINS = ("combat", "scouting", "squad", "scope")
 _LIVE_STANDING_MERGE_WARNING = "live_standing_orders_merged"
+_LIVE_COMMAND_REDUCER_WARNING = "live_command_reducer_applied"
 
 
 class StaticJsonPolicyModulationProvider:
@@ -131,6 +144,30 @@ class KeywordPolicyModulationProvider:
                 "source": self.source.value,
                 "status": "clarification_required",
                 "clarification_prompt": "구체적인 전략 방향을 말해 주세요.",
+            }
+        if _has_cancel_text_intent(text):
+            return {
+                "source": self.source.value,
+                "goal": request.command_text,
+                "override_level": "emergency",
+                "confidence": 0.82,
+                "ttl_seconds": 45,
+                "posture": "defensive",
+                "combat": {
+                    "aggression": -0.75,
+                    "defend_bias": 0.45,
+                    "preserve_army_bias": 0.85,
+                    "attack_condition_override": "normal",
+                },
+                "squad": {
+                    "main_army_bias": -0.6,
+                    "regroup_bias": 0.85,
+                    "defense_bias": 0.55,
+                },
+                "emergency": {"cancel_attacks": True, "force_retreat": True},
+                "workers": {"repeat_order_guard_frames": 32},
+                "tags": ["keyword_provider", "live_text", "cancel_attack"],
+                "rationale": "Cancel the active attack and preserve combat units.",
             }
         if _has_defensive_text_intent(text):
             return {
@@ -357,6 +394,7 @@ class LiveTextModulationResult:
     update: MicroMachineBlackboardUpdate | None
     dashboard: PolicyModulationDashboardSnapshot
     consumption_status: LiveModulationConsumptionStatus | str
+    command_queue: Mapping[str, object] | None = None
     provider_failure_recorded: bool = False
 
     def __post_init__(self) -> None:
@@ -400,6 +438,7 @@ class LiveTextModulationResult:
             "dashboard": self.dashboard.to_dict(),
             "consumption_status": self.consumption_status.value,
             "consumed": self.consumed,
+            "command_queue": dict(self.command_queue or {}),
             "provider_failure_recorded": self.provider_failure_recorded,
         }
 
@@ -482,13 +521,31 @@ class MicroMachineLiveTextSession:
                 update=None,
                 dashboard=dashboard,
                 consumption_status=LiveModulationConsumptionStatus.NOT_PUBLISHED,
+                command_queue=_command_queue_summary_for_compile_failure(
+                    text,
+                    compile_result,
+                    update_id=update_id,
+                ),
                 provider_failure_recorded=failure_recorded,
             )
 
         try:
-            compile_result = _merge_live_standing_orders(
+            action = _live_command_reducer_action_for_result(
+                text,
                 compile_result,
                 previous_update=previous_update,
+            )
+            if action == "merge_standing_orders":
+                compile_result = _merge_live_standing_orders(
+                    compile_result,
+                    previous_update=previous_update,
+                )
+            compile_result, command_queue = _reduce_live_command_queue(
+                text,
+                compile_result,
+                previous_update=previous_update,
+                update_id=update_id,
+                forced_action=action,
             )
             update = self.backend.publish_vector(
                 compile_result.vector,
@@ -496,6 +553,11 @@ class MicroMachineLiveTextSession:
                 update_id=update_id,
                 rollback_update_id=rollback_update_id,
             )
+            command_queue = {
+                **command_queue,
+                "active_command_id": update.update_id,
+                "update_id": update.update_id,
+            }
         except (OSError, TypeError, ValueError) as exc:
             failure_recorded = self._try_record_provider_failure(
                 frame,
@@ -513,6 +575,11 @@ class MicroMachineLiveTextSession:
                 update=None,
                 dashboard=dashboard,
                 consumption_status=LiveModulationConsumptionStatus.NOT_PUBLISHED,
+                command_queue=_command_queue_summary_for_compile_failure(
+                    text,
+                    compile_result,
+                    update_id=update_id,
+                ),
                 provider_failure_recorded=failure_recorded,
             )
         publish_result = MicroMachineBackendPublishResult(
@@ -537,6 +604,7 @@ class MicroMachineLiveTextSession:
                 self._safe_read_latest_telemetry(),
                 telemetry_before,
             ),
+            command_queue=command_queue,
         )
 
     def _resolve_current_frame(self, current_frame: int | None) -> int:
@@ -715,6 +783,8 @@ def _merge_live_standing_orders(
 
     if not compile_result.ok or compile_result.vector is None:
         return compile_result
+    if compile_result.vector.override_level is PolicyOverrideLevel.EMERGENCY:
+        return compile_result
     incoming_payload = _lift_task_to_persistent_biases(
         compile_result.vector.to_dict()
     )
@@ -740,6 +810,187 @@ def _merge_live_standing_orders(
         vector=merged_vector,
         warnings=(*warnings, _LIVE_STANDING_MERGE_WARNING),
     )
+
+
+def _reduce_live_command_queue(
+    command_text: str,
+    compile_result: PolicyModulationCompileResult,
+    *,
+    previous_update: MicroMachineBlackboardUpdate | None,
+    update_id: str | None,
+    forced_action: str | None = None,
+) -> tuple[PolicyModulationCompileResult, dict[str, object]]:
+    """Classify and reduce the live command stream into one active plan.
+
+    The blackboard exposes a single latest vector to MicroMachine. This reducer
+    makes the overwrite/merge decision explicit so tactical commands do not get
+    hidden behind stale hold orders, while standing production remains visible.
+    """
+
+    if not compile_result.ok or compile_result.vector is None:
+        return compile_result, _command_queue_summary_for_compile_failure(
+            command_text,
+            compile_result,
+            update_id=update_id,
+        )
+    vector_payload = compile_result.vector.to_dict()
+    category = _live_command_category(command_text, vector_payload)
+    previous_payload = (
+        previous_update.vector.to_dict() if previous_update is not None else None
+    )
+    previous_category = (
+        _live_command_category("", previous_payload) if previous_payload else None
+    )
+    action = forced_action or _live_command_reducer_action(
+        category,
+        previous_category=previous_category,
+        previous_payload=previous_payload,
+        incoming_payload=vector_payload,
+    )
+    parent_ids = [previous_update.update_id] if previous_update is not None else []
+    queue_summary = {
+        "active_command_id": update_id or "",
+        "update_id": update_id or "",
+        "category": category.value,
+        "action": action,
+        "parent_command_ids": parent_ids,
+        "merged_command_count": 1 + len(parent_ids),
+        "standing_order_preserved": action == "merge_standing_orders",
+        "superseded_previous": action in {"overwrite_emergency", "supersede_tactical"},
+        "command_text": command_text,
+    }
+    reduced_payload = deepcopy(vector_payload)
+    reduced_tags = _merge_string_lists(
+        (),
+        _without_live_command_reducer_tags(reduced_payload.get("tags", ())),
+        extra=(
+            "live_command_reducer",
+            f"command_category:{category.value}",
+            f"command_action:{action}",
+        ),
+    )
+    reduced_payload["tags"] = reduced_tags
+    if action in {"overwrite_emergency", "supersede_tactical"}:
+        reduced_payload["goal"] = str(vector_payload.get("goal", "") or command_text)
+    elif parent_ids and category not in {
+        LiveCommandCategory.TACTICAL,
+        LiveCommandCategory.SCOUTING,
+    }:
+        reduced_payload["goal"] = _merged_goal(previous_payload or {}, vector_payload)
+    if (
+        action == "overwrite_emergency"
+        and previous_payload is not None
+        and _stop_expansion_requested(reduced_payload)
+    ):
+        _preserve_safe_macro_during_stop_expansion(previous_payload, reduced_payload)
+    reduced_vector = PolicyModulationVector.from_mapping(reduced_payload)
+    warnings = tuple(
+        warning
+        for warning in compile_result.warnings
+        if warning != _LIVE_COMMAND_REDUCER_WARNING
+    )
+    return (
+        replace(
+            compile_result,
+            vector=reduced_vector,
+            warnings=(*warnings, _LIVE_COMMAND_REDUCER_WARNING),
+        ),
+        queue_summary,
+    )
+
+
+def _live_command_reducer_action_for_result(
+    command_text: str,
+    compile_result: PolicyModulationCompileResult,
+    *,
+    previous_update: MicroMachineBlackboardUpdate | None,
+) -> str:
+    if not compile_result.ok or compile_result.vector is None:
+        return compile_result.status.value
+    incoming_payload = compile_result.vector.to_dict()
+    category = _live_command_category(command_text, incoming_payload)
+    previous_payload = (
+        previous_update.vector.to_dict() if previous_update is not None else None
+    )
+    previous_category = (
+        _live_command_category("", previous_payload) if previous_payload else None
+    )
+    return _live_command_reducer_action(
+        category,
+        previous_category=previous_category,
+        previous_payload=previous_payload,
+        incoming_payload=incoming_payload,
+    )
+
+
+def _command_queue_summary_for_compile_failure(
+    command_text: str,
+    compile_result: PolicyModulationCompileResult,
+    *,
+    update_id: str | None,
+) -> dict[str, object]:
+    category = LiveCommandCategory.CLARIFICATION
+    status = compile_result.status.value
+    return {
+        "active_command_id": update_id or "",
+        "update_id": update_id or "",
+        "category": category.value,
+        "action": status,
+        "parent_command_ids": [],
+        "merged_command_count": 0,
+        "standing_order_preserved": False,
+        "superseded_previous": False,
+        "command_text": command_text,
+    }
+
+
+def _live_command_category(
+    command_text: str,
+    payload: Mapping[str, object] | None,
+) -> LiveCommandCategory:
+    normalized_text = " ".join(str(command_text or "").lower().split())
+    payload = payload or {}
+    override_level = str(payload.get("override_level", "") or "").lower()
+    if override_level == "emergency" or _mapping_has_signal(_mapping_value(payload, "emergency")):
+        return LiveCommandCategory.EMERGENCY
+    if _has_cancel_text_intent(normalized_text):
+        return LiveCommandCategory.EMERGENCY
+    if _has_defensive_text_intent(normalized_text) and any(
+        token in normalized_text for token in ("후퇴", "retreat")
+    ):
+        return LiveCommandCategory.EMERGENCY
+    if _has_building_text_intent(normalized_text):
+        return LiveCommandCategory.BUILDING
+    task_type = _task_type(payload)
+    if task_type == "scout_with_units" or _has_scouting_text_intent(normalized_text):
+        return LiveCommandCategory.SCOUTING
+    if task_type in _TACTICAL_ONLY_TASK_TYPES or _has_tactical_text_intent(normalized_text):
+        return LiveCommandCategory.TACTICAL
+    if task_type in _PRODUCTION_TASK_TYPES or _has_production_intent(payload):
+        return LiveCommandCategory.PRODUCTION
+    if _mapping_has_signal(_mapping_value(payload, "strategy")):
+        return LiveCommandCategory.STRATEGY
+    return LiveCommandCategory.CLARIFICATION
+
+
+def _live_command_reducer_action(
+    category: LiveCommandCategory,
+    *,
+    previous_category: LiveCommandCategory | None,
+    previous_payload: Mapping[str, object] | None,
+    incoming_payload: Mapping[str, object],
+) -> str:
+    if category is LiveCommandCategory.EMERGENCY:
+        return "overwrite_emergency"
+    if previous_payload is None:
+        return "activate"
+    if category in {LiveCommandCategory.PRODUCTION, LiveCommandCategory.BUILDING, LiveCommandCategory.STRATEGY}:
+        return "merge_standing_orders"
+    if category in {LiveCommandCategory.TACTICAL, LiveCommandCategory.SCOUTING}:
+        if previous_category in {LiveCommandCategory.PRODUCTION, LiveCommandCategory.BUILDING, LiveCommandCategory.STRATEGY}:
+            return "merge_standing_orders"
+        return "supersede_tactical"
+    return "activate"
 
 
 def _merge_live_vector_payloads(
@@ -793,7 +1044,7 @@ def _merge_live_vector_payloads(
             if _mapping_has_signal(previous_task):
                 merged["tactical_task"] = previous_task
 
-    if explicit_tactical_task and previous_defensive_standing:
+    if explicit_tactical_task:
         merged["goal"] = (
             str(incoming_payload.get("goal", "") or "").strip()
             or "live_micromachine_modulation"
@@ -804,10 +1055,14 @@ def _merge_live_vector_payloads(
         int(previous_payload.get("ttl_seconds", 1) or 1),
         int(incoming_payload.get("ttl_seconds", 1) or 1),
     )
-    previous_tags: object = () if explicit_tactical_task and previous_defensive_standing else previous_payload.get("tags", ())
+    previous_tags: object = (
+        ()
+        if explicit_tactical_task and previous_defensive_standing
+        else _without_live_command_reducer_tags(previous_payload.get("tags", ()))
+    )
     merged["tags"] = _merge_string_lists(
         previous_tags,
-        incoming_payload.get("tags", ()),
+        _without_live_command_reducer_tags(incoming_payload.get("tags", ())),
         extra=(_LIVE_STANDING_MERGE_WARNING,),
     )
     previous_rationale = str(previous_payload.get("rationale", "") or "").strip()
@@ -1019,6 +1274,33 @@ def _clear_expansion_biases(payload: dict[str, object]) -> None:
     payload["strategy"] = strategy
 
 
+def _preserve_safe_macro_during_stop_expansion(
+    previous_payload: Mapping[str, object],
+    incoming_payload: dict[str, object],
+) -> None:
+    """Keep safe macro standing orders while explicitly cancelling expansion."""
+
+    previous_economy = _mapping_value(previous_payload, "economy")
+    economy = dict(_mapping_value(incoming_payload, "economy"))
+    for key in ("worker_production_bias", "supply_buffer_bias", "mineral_saturation_bias"):
+        previous_value = _float_at(previous_economy, (key,))
+        if previous_value > _float_at(economy, (key,)):
+            economy[key] = previous_value
+    incoming_payload["economy"] = economy
+
+    previous_production = _mapping_value(previous_payload, "production")
+    previous_queue = _mapping_value(previous_production, "queue_biases")
+    production = deepcopy(dict(_mapping_value(incoming_payload, "production")))
+    queue = dict(_mapping_value(production, "queue_biases"))
+    for key in ("TERRAN_SCV", "TERRAN_SUPPLYDEPOT", "TERRAN_MARINE"):
+        previous_value = _float_at(previous_queue, (key,))
+        if previous_value > _float_at(queue, (key,)):
+            queue[key] = previous_value
+    queue.pop("TERRAN_COMMANDCENTER", None)
+    production["queue_biases"] = queue
+    incoming_payload["production"] = production
+
+
 def _task_type(payload: Mapping[str, object]) -> str:
     return _text_at(payload, ("tactical_task", "task_type"))
 
@@ -1047,6 +1329,22 @@ def _merge_string_lists(
                 text = str(value).strip()
                 if text and text not in result:
                     result.append(text)
+    return result
+
+
+def _without_live_command_reducer_tags(values: object) -> list[str]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        return []
+    result: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        if text == "live_command_reducer":
+            continue
+        if text.startswith("command_category:") or text.startswith("command_action:"):
+            continue
+        result.append(text)
     return result
 
 
@@ -1192,6 +1490,86 @@ def _has_defensive_text_intent(text: str) -> bool:
             "defend",
             "defense",
             "retreat",
+        )
+    )
+
+
+def _has_cancel_text_intent(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    compact = "".join(normalized.split())
+    return any(
+        token in normalized or token in compact
+        for token in (
+            "cancel",
+            "stop",
+            "abort",
+            "취소",
+            "중지",
+            "멈춰",
+            "그만",
+            "공격취소",
+            "공격중지",
+        )
+    )
+
+
+def _has_scouting_text_intent(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "정찰",
+            "탐색",
+            "수색",
+            "scout",
+            "recon",
+            "侦察",
+        )
+    )
+
+
+def _has_tactical_text_intent(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "공격",
+            "러시",
+            "러쉬",
+            "압박",
+            "견제",
+            "적진",
+            "attack",
+            "rush",
+            "pressure",
+            "harass",
+            "enemy base",
+            "enemy main",
+            "进攻",
+        )
+    )
+
+
+def _has_building_text_intent(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "건물",
+            "건설",
+            "지어",
+            "짓",
+            "보급고",
+            "배럭",
+            "병영",
+            "팩토리",
+            "군수공장",
+            "스타포트",
+            "우주공항",
+            "벙커",
+            "build",
+            "depot",
+            "barracks",
+            "factory",
+            "starport",
+            "bunker",
         )
     )
 

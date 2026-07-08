@@ -396,6 +396,9 @@ def _latest_compile_result_payload(
         duration_ms = compile_document.get("duration_ms")
         if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool):
             result.setdefault("duration_ms", int(duration_ms))
+        command_queue = compile_document.get("command_queue")
+        if isinstance(command_queue, Mapping):
+            result.setdefault("command_queue", dict(command_queue))
         return result
     return None
 
@@ -661,18 +664,27 @@ def _micromachine_status_payload(
         active_update_id=update_id,
         active_consumption_status=consumption_status,
     )
+    command_queue = (
+        dict(intervention_compile_result.get("command_queue"))
+        if isinstance(intervention_compile_result, Mapping)
+        and isinstance(intervention_compile_result.get("command_queue"), Mapping)
+        else {}
+    )
+    intervention = _micromachine_intervention_summary(
+        latest,
+        telemetry,
+        consumption_status=consumption_status,
+        log_snippets=log_snippets,
+        evidence_log_snippets=evidence_log_snippets,
+        compile_result=intervention_compile_result,
+    )
+    if command_queue:
+        intervention["command_queue"] = command_queue
     return {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
         "update": dict(latest) if latest is not None else None,
-        "intervention": _micromachine_intervention_summary(
-            latest,
-            telemetry,
-            consumption_status=consumption_status,
-            log_snippets=log_snippets,
-            evidence_log_snippets=evidence_log_snippets,
-            compile_result=intervention_compile_result,
-        ),
+        "intervention": intervention,
         "compile_result": dict(compile_result) if isinstance(compile_result, Mapping) else None,
         "latest_request": latest_request,
         "latest_request_consumption_status": (
@@ -680,6 +692,7 @@ def _micromachine_status_payload(
             if isinstance(latest_request, Mapping)
             else ""
         ),
+        "command_queue": command_queue,
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
     }
@@ -807,6 +820,11 @@ def _micromachine_latest_request_summary(
             compile_result.get("clarification_prompt", "") or ""
         ),
         "duration_ms": compile_result.get("duration_ms"),
+        "command_queue": (
+            dict(compile_result.get("command_queue"))
+            if isinstance(compile_result.get("command_queue"), Mapping)
+            else {}
+        ),
     }
 
 
@@ -2604,6 +2622,7 @@ class SessionLoopBridge:
             "current_frame": payload.get("current_frame"),
             "compile_result": compile_result_for_document,
             "update_id": compile_update_id,
+            "command_queue": payload.get("command_queue"),
             "duration_ms": duration_ms,
             "written_at_unix": time.time(),
         }
@@ -2625,6 +2644,12 @@ class SessionLoopBridge:
                 update_id=update_id_for_logs,
             ),
         )
+        if isinstance(payload.get("intervention"), dict):
+            payload["intervention"]["command_queue"] = dict(
+                payload.get("command_queue")
+                if isinstance(payload.get("command_queue"), Mapping)
+                else {}
+            )
         return payload
 
     def micromachine_status(self, *, blackboard_dir: str = "") -> Mapping[str, object]:
@@ -3735,6 +3760,7 @@ var compactedContext = {
 };
 var pendingCommandSeq = 0;
 var pendingNodes = {};
+var latestMicroMachinePlanText = "";
 var latestState = null;
 var briefingAdviceToggleEnabled = false;
 var recognition = null;
@@ -4651,6 +4677,24 @@ function appendPendingCommand(text) {
   trimChatLog();
   updateAssistantPendingState();
   logBox.scrollTop = logBox.scrollHeight;
+}
+
+function clearPendingMicroMachinePlan() {
+  Object.keys(pendingNodes).forEach(function (key) {
+    var ids = pendingNodes[key] || [];
+    ids.forEach(function (pendingId) {
+      var node = document.getElementById(pendingId);
+      if (node) { node.remove(); }
+    });
+    delete pendingNodes[key];
+  });
+  updateAssistantPendingState();
+}
+
+function appendMicroMachinePendingPlan(text) {
+  clearPendingMicroMachinePlan();
+  latestMicroMachinePlanText = text;
+  appendPendingCommand(text);
 }
 
 function appendVoiceRecordingBubble() {
@@ -6167,6 +6211,18 @@ function microMachineChatNarration(data) {
     }
   }
   if (intervention.latest_update_id) { parts.push("update_id=" + intervention.latest_update_id); }
+  var commandQueue = (data && data.command_queue) || intervention.command_queue || compileResult.command_queue || {};
+  if (commandQueue.category || commandQueue.action) {
+    var queueBits = ["command_queue"];
+    if (commandQueue.category) { queueBits.push("category=" + commandQueue.category); }
+    if (commandQueue.action) { queueBits.push("action=" + commandQueue.action); }
+    if (commandQueue.merged_command_count) {
+      queueBits.push("merged=" + commandQueue.merged_command_count);
+    }
+    if (commandQueue.superseded_previous) { queueBits.push("superseded_previous=true"); }
+    if (commandQueue.standing_order_preserved) { queueBits.push("standing_order_preserved=true"); }
+    parts.push(queueBits.join(" | "));
+  }
   if (intervention.tactical_posture) { parts.push("posture=" + intervention.tactical_posture); }
   if (Array.isArray(intervention.manager_bias_domains) && intervention.manager_bias_domains.length) {
     parts.push("domains=" + intervention.manager_bias_domains.join(", "));
@@ -6183,6 +6239,11 @@ function microMachineChatNarration(data) {
 
 function appendMicroMachineChatResult(text, data) {
   var removed = removePendingForCommand(text);
+  if (!removed && latestMicroMachinePlanText && text !== latestMicroMachinePlanText && pendingCommandCount() > 0) {
+    updateAssistantPendingState();
+    return;
+  }
+  if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
   var accepted = data && data.accepted !== false && data.ok !== false;
   appendLog({
     command_text: text,
@@ -6196,6 +6257,11 @@ function appendMicroMachineChatResult(text, data) {
 
 function appendMicroMachineChatFailure(text, error) {
   var removed = removePendingForCommand(text);
+  if (!removed && latestMicroMachinePlanText && text !== latestMicroMachinePlanText && pendingCommandCount() > 0) {
+    updateAssistantPendingState();
+    return;
+  }
+  if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
   appendLog({
     command_text: text,
     status: "blocked",
@@ -6310,7 +6376,7 @@ document.getElementById("command-form").addEventListener("submit", function (eve
   if (!text) { return; }
   setCommandMode(selectedCommandMode());
   if (isMicroMachineCommandMode()) {
-    appendPendingCommand(text);
+    appendMicroMachinePendingPlan(text);
     var microPayload = buildMicroMachineModulationPayload(text);
     submitMicroMachineModulation(
       microPayload,

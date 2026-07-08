@@ -1597,6 +1597,58 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 vector["combat"]["attack_condition_override"],
             )
             self.assertIn("web_gui_tactical_fallback", vector["tags"])
+            self.assertEqual("tactical", payload["command_queue"]["category"])
+            self.assertEqual("activate", payload["command_queue"]["action"])
+            self.assertIn(
+                "command_category:tactical",
+                payload["update"]["vector"]["tags"],
+            )
+
+    def test_micromachine_status_scopes_command_queue_to_active_update(self):
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": "active-pressure",
+                    "manager_bias_domains": ["combat"],
+                    "vector": {
+                        "goal": "active pressure",
+                        "combat": {},
+                        "squad": {},
+                        "scope": {},
+                        "tactical_task": {},
+                    },
+                }
+            ],
+            "telemetry": {"frame": 200},
+        }
+        telemetry = SimpleNamespace(
+            frame=200,
+            active_modulation_ids=("active-pressure",),
+            to_dict=lambda: {"frame": 200, "active_modulation_ids": ["active-pressure"]},
+        )
+        stale_compile = {
+            "status": "refused",
+            "update_id": "stale-refusal",
+            "source": "llm",
+            "refusal_reason": "provider auth failed",
+            "command_queue": {
+                "category": "clarification",
+                "action": "refused",
+            },
+        }
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            compile_result=stale_compile,
+        )
+
+        self.assertEqual({}, payload["command_queue"])
+        self.assertNotIn("command_queue", payload["intervention"])
+        self.assertEqual(
+            stale_compile["command_queue"],
+            payload["latest_request"]["command_queue"],
+        )
 
     def test_micromachine_provider_output_cannot_spoof_llm_or_smoke_source(self):
         session, _bot = build_dry_run_session()
@@ -3467,6 +3519,69 @@ const assert = require("assert");
   assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
   assert(logBox.textContent.includes("pending을 해제했습니다"));
+
+  nodes["command-input"].value = "마린으로 앞마당 압박해";
+  nodes["command-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  assert.strictEqual(requests.length, 4);
+  assert.strictEqual(pendingCommandCount(), 1);
+  nodes["command-input"].value = "아니 4마린으로 적 본진 우회 공격해";
+  nodes["command-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  assert.strictEqual(requests.length, 5);
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
+  assert(!logBox.textContent.includes("마린으로 앞마당 압박해"));
+  assert(logBox.textContent.includes("아니 4마린으로 적 본진 우회 공격해"));
+  requests[3].deferred.resolve(response(202, {
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "pending_consumption",
+    command_queue: {
+      category: "tactical",
+      action: "supersede_tactical",
+      superseded_previous: true
+    },
+    compile_result: {
+      status: "compiled",
+      source: "ui",
+      update_id: "stale-pressure",
+      vector: { goal: "stale pressure" }
+    },
+    update: { update_id: "stale-pressure" }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert(!logBox.textContent.includes("stale pressure"));
+  requests[4].deferred.resolve(response(202, {
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "pending_consumption",
+    command_queue: {
+      category: "tactical",
+      action: "supersede_tactical",
+      superseded_previous: true
+    },
+    compile_result: {
+      status: "compiled",
+      source: "ui",
+      update_id: "latest-flank",
+      vector: { goal: "latest flank" }
+    },
+    update: { update_id: "latest-flank" }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert(logBox.textContent.includes("latest flank"));
+  assert(logBox.textContent.includes("command_queue | category=tactical | action=supersede_tactical"));
 })().catch(function (error) {
   console.error(error && error.stack ? error.stack : error);
   process.exit(1);
