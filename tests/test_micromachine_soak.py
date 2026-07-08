@@ -226,6 +226,9 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             self.assertTrue(report.ok, report.to_dict())
             self.assertEqual("passed", report.status)
             self.assertEqual(12_500, report.latest_frame)
+            self.assertIsNotNone(report.command_execution)
+            self.assertEqual("completed", report.command_execution.state)
+            self.assertTrue(report.to_dict()["command_execution"]["ok"])
             self.assertEqual("micromachine.log", report.artifact_manifest["bot_log"])
 
     def test_detects_crash_disconnect_and_repeated_placement_failures(self) -> None:

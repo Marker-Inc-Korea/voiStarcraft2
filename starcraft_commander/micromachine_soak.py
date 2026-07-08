@@ -19,6 +19,10 @@ from starcraft_commander.micromachine_tactical_evidence import (
     MicroMachineTacticalEvidence,
     classify_micromachine_tactical_evidence,
 )
+from starcraft_commander.micromachine_command_execution import (
+    MicroMachineCommandExecutionReport,
+    classify_micromachine_command_execution,
+)
 
 
 DEFAULT_REQUIRED_MACRO_TERMS: Final[tuple[str, ...]] = (
@@ -293,6 +297,7 @@ class MicroMachineSoakReport:
     macro_evidence_ok: bool
     manager_intervention_ok: bool
     tactical_evidence: MicroMachineTacticalEvidence | None = None
+    command_execution: MicroMachineCommandExecutionReport | None = None
     failures: tuple[MicroMachineSoakFailure, ...] = ()
     artifact_manifest: dict[str, str] = field(default_factory=dict)
 
@@ -312,6 +317,9 @@ class MicroMachineSoakReport:
             "manager_intervention_ok": self.manager_intervention_ok,
             "tactical_evidence": (
                 self.tactical_evidence.to_dict() if self.tactical_evidence else None
+            ),
+            "command_execution": (
+                self.command_execution.to_dict() if self.command_execution else None
             ),
             "failures": [failure.to_dict() for failure in self.failures],
             "artifact_manifest": self.artifact_manifest,
@@ -555,6 +563,16 @@ def classify_micromachine_soak(
         )
 
     latest_update = _latest_modulation_update(observation)
+    command_execution = classify_micromachine_command_execution(
+        latest_update=latest_update,
+        latest_telemetry=telemetry,
+        telemetry_archive=telemetry_archive,
+        tactical_evidence=tactical_evidence,
+        expected_tactical_effects=resolved_config.expected_tactical_effects,
+        expected_production_items=resolved_config.expected_production_items,
+        latest_frame=latest_frame,
+        target_frame=resolved_config.target_frame,
+    )
     manager_intervention_ok = _manager_intervention_ok(
         telemetry,
         telemetry_archive,
@@ -620,6 +638,21 @@ def classify_micromachine_soak(
     )
     if tactical_actual_command_failure is not None:
         failures.append(tactical_actual_command_failure)
+    if (
+        latest_frame >= resolved_config.target_frame
+        and (resolved_config.expected_tactical_effects or resolved_config.expected_production_items)
+        and not command_execution.ok
+    ):
+        failures.append(
+            MicroMachineSoakFailure(
+                code="command_execution_incomplete",
+                message=(
+                    "Command lifecycle did not reach effect_observed for the active "
+                    "live QA command."
+                ),
+                evidence=command_execution.to_dict(),
+            )
+        )
 
     target_reached = latest_frame >= resolved_config.target_frame
     status = "passed" if target_reached and macro_evidence_ok and manager_intervention_ok and not failures else "failed"
@@ -632,6 +665,7 @@ def classify_micromachine_soak(
         macro_evidence_ok=macro_evidence_ok,
         manager_intervention_ok=manager_intervention_ok,
         tactical_evidence=tactical_evidence,
+        command_execution=command_execution,
         failures=tuple(failures),
         artifact_manifest=build_artifact_manifest(observation),
     )
