@@ -579,7 +579,12 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     {"unit_type": "banshee", "role": "worker_harass", "priority": 0.65},
                 ],
                 "building_tasks": [
-                    {"building_type": "bunker", "placement_intent": "front_door"}
+                    {
+                        "building_type": "bunker",
+                        "placement_intent": "앞마당입구",
+                        "anchor": "앞마당",
+                        "offset_direction": "전방",
+                    }
                 ],
                 "route_intent": {"type": "flank_left", "avoid_enemy_strength": True},
                 "target_intent": {"type": "enemy_main", "priority": 0.9},
@@ -600,7 +605,17 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual("TERRAN_BANSHEE", result.vector.unit_roles[1].unit_type)
         self.assertEqual("worker_harass", result.vector.unit_roles[1].role)
         self.assertEqual("TERRAN_BUNKER", result.vector.building_tasks[0].building_type)
-        self.assertEqual("front_door", result.vector.building_tasks[0].placement_intent)
+        self.assertEqual("self_natural_choke", result.vector.building_tasks[0].placement_intent)
+        self.assertEqual("self_natural", result.vector.building_tasks[0].anchor)
+        self.assertEqual("toward_enemy", result.vector.building_tasks[0].offset_direction)
+        self.assertGreaterEqual(
+            result.vector.production.queue_biases.to_dict()["TERRAN_BUNKER"],
+            0.85,
+        )
+        self.assertGreaterEqual(
+            result.vector.tech.structure_biases.to_dict()["TERRAN_BUNKER"],
+            0.85,
+        )
         self.assertEqual("flank_left", result.vector.route_intent.route_type)
         self.assertEqual("enemy_main", result.vector.target_intent.target_type)
 

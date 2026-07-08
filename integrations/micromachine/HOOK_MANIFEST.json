@@ -53,7 +53,6 @@
     "production_plan.priority",
     "composition_requirements.*",
     "unit_roles.*",
-    "building_tasks.*",
     "route_intent.route_type",
     "route_intent.avoid_enemy_strength",
     "target_intent.target_type",
@@ -145,6 +144,34 @@
         "TacticalTask.last_actual_command_frame"
       ],
       "intended_effect": "Turns LLM/user intent into a bounded task ticket consumed by existing MicroMachine managers with accepted/executing/refused lifecycle evidence."
+    },
+    {
+      "domain": "building_tasks",
+      "source_path": "src/BuildingManager.cpp",
+      "header_path": "src/BuildingManager.h",
+      "function": "BuildingManager::getBuildingLocation(const Building &, bool, bool, bool, bool, bool)",
+      "secondary_function": "resolveVoiBuildingTaskPlacement() / BuildingPlacer::getBuildLocationNear() / findVoiSc2QueryMacroPlacement()",
+      "status": "verified_consumed_with_semantic_placement_telemetry",
+      "keys": [
+        "building_tasks.0.building_type",
+        "building_tasks.0.placement_intent",
+        "building_tasks.0.anchor",
+        "building_tasks.0.offset_direction",
+        "building_tasks.0.target_position",
+        "building_tasks.0.allow_nearest_valid_fallback"
+      ],
+      "telemetry_fields": [
+        "BuildingTask.active",
+        "BuildingTask.building_type",
+        "BuildingTask.placement_intent",
+        "BuildingTask.anchor",
+        "BuildingTask.offset_direction",
+        "BuildingTask.target_position",
+        "BuildingTask.allow_nearest_valid_fallback",
+        "BuildingTask.status",
+        "BuildingTask.reason"
+      ],
+      "intended_effect": "Turns semantic building placement tasks into a bounded desired-position anchor consumed by BuildingManager, then lets existing SC2 placement validation choose the nearest valid fallback."
     },
     {
       "domain": "combat",

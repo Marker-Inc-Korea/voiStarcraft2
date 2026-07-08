@@ -1877,6 +1877,78 @@ index 2872a0b..2f19e43 100644
 +		false);
 +}
 +
++bool voiBuildingTaskMatchesType(CCBot & bot, const UnitType & type)
++{
++	const std::string requested = bot.Commander().getVoiPolicyString("building_tasks.0.building_type", "");
++	if (requested.empty())
++	{
++		return false;
++	}
++	const sc2::UNIT_TYPEID apiType = type.getAPIUnitType();
++	return (requested == "TERRAN_BUNKER" && apiType == sc2::UNIT_TYPEID::TERRAN_BUNKER)
++		|| (requested == "TERRAN_BARRACKS" && apiType == sc2::UNIT_TYPEID::TERRAN_BARRACKS)
++		|| (requested == "TERRAN_FACTORY" && apiType == sc2::UNIT_TYPEID::TERRAN_FACTORY)
++		|| (requested == "TERRAN_STARPORT" && apiType == sc2::UNIT_TYPEID::TERRAN_STARPORT)
++		|| (requested == "TERRAN_SUPPLYDEPOT" && apiType == sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT)
++		|| (requested == "TERRAN_ENGINEERINGBAY" && apiType == sc2::UNIT_TYPEID::TERRAN_ENGINEERINGBAY)
++		|| (requested == "TERRAN_ARMORY" && apiType == sc2::UNIT_TYPEID::TERRAN_ARMORY);
++}
++
++CCTilePosition voiExplicitBuildingTaskCoordinate(CCBot & bot)
++{
++	const std::string raw = bot.Commander().getVoiPolicyString("building_tasks.0.target_position", "");
++	const size_t comma = raw.find(',');
++	if (comma == std::string::npos)
++	{
++		return CCTilePosition();
++	}
++	const float x = static_cast<float>(std::atof(raw.substr(0, comma).c_str()));
++	const float y = static_cast<float>(std::atof(raw.substr(comma + 1).c_str()));
++	return Util::GetTilePosition(CCPosition(x, y));
++}
++
++bool resolveVoiBuildingTaskPlacement(CCBot & bot, const Building & building, CCTilePosition & selected, const std::string & source)
++{
++	if (!bot.Commander().isVoiPolicyActive() || !voiBuildingTaskMatchesType(bot, building.type))
++	{
++		return false;
++	}
++	const std::string intent = bot.Commander().getVoiPolicyString("building_tasks.0.placement_intent", "");
++	if (intent.empty())
++	{
++		return false;
++	}
++	CCTilePosition anchor;
++	if (intent == "explicit_coordinate")
++	{
++		anchor = voiExplicitBuildingTaskCoordinate(bot);
++	}
++	else if (intent == "self_natural_choke" || intent == "self_natural_safe")
++	{
++		if (BaseLocation * nat = bot.Bases().getPlayerNat(Players::Self))
++		{
++			anchor = nat->getDepotTilePosition();
++		}
++	}
++	else if (intent == "proxy_near_enemy_natural")
++	{
++		const BaseLocation * enemyMain = bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
++		anchor = enemyMain ? enemyMain->getDepotTilePosition() : Util::GetTilePosition(voiFarthestEnemyStartPosition(bot));
++	}
++	else
++	{
++		anchor = Util::GetTilePosition(bot.GetStartLocation());
++	}
++	if (anchor == CCTilePosition() || !bot.Map().isValidTile(anchor))
++	{
++		Util::Log(source, "VOI building_task placement rejected invalid anchor intent=" + intent + " type=" + building.type.getName(), bot);
++		return false;
++	}
++	selected = anchor;
++	Util::Log(source, "VOI building_task placement anchor selected type=" + building.type.getName() + " intent=" + intent + " anchor_x=" + std::to_string(anchor.x) + " anchor_y=" + std::to_string(anchor.y), bot);
++	return true;
++}
++
 +int voiMacroTileKey(const CCTilePosition & position)
 +{
 +	return (position.x * 10000) + position.y;
@@ -3266,16 +3338,22 @@ index 2872a0b..2f19e43 100644
      }
  	else
 @@ -1863,16 +3378,28 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool che
- 		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
- 		buildingLocation = m_buildingPlacer.getBuildLocationNear(b, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
- 		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
+		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
+		Building placementBuilding = b;
+		CCTilePosition voiBuildingTaskAnchor;
+		if (resolveVoiBuildingTaskPlacement(m_bot, b, voiBuildingTaskAnchor, __FUNCTION__))
+		{
+			placementBuilding.desiredPosition = voiBuildingTaskAnchor;
+		}
+		buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
+		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
 +		if (shouldUseVoiSc2MacroPlacement(m_bot, b.type) &&
 +			(!m_bot.Map().isValidTile(buildingLocation) ||
 +			 buildingLocation == CCTilePosition() ||
 +			 !isVoiSc2MacroPlacementSafe(m_bot, b.type, buildingLocation, false, includeAddonTiles, ignoreExtraBorder, true)))
 +		{
 +			CCTilePosition queryLocation;
-+			if (findVoiSc2QueryMacroPlacement(m_bot, b, includeAddonTiles, ignoreExtraBorder, forceSameHeight, queryLocation, __FUNCTION__))
++			if (findVoiSc2QueryMacroPlacement(m_bot, placementBuilding, includeAddonTiles, ignoreExtraBorder, forceSameHeight, queryLocation, __FUNCTION__))
 +			{
 +				buildingLocation = queryLocation;
 +			}
@@ -12644,6 +12722,12 @@ index 045faab..e42e478 100644
 +    const std::string tacticalTaskUnitClasses = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.unit_classes", ""));
 +    const std::string tacticalTaskProductionTargets = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.production_targets", ""));
 +    const std::string tacticalTaskLocationIntent = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.location_intent", ""));
++    const std::string buildingTaskType = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.building_type", ""));
++    const std::string buildingTaskPlacementIntent = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.placement_intent", ""));
++    const std::string buildingTaskAnchor = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.anchor", ""));
++    const std::string buildingTaskOffsetDirection = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.offset_direction", ""));
++    const std::string buildingTaskTargetPosition = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.target_position", ""));
++    const bool buildingTaskNearestFallback = m_voiPolicyBlackboard.getBool("building_tasks.0.allow_nearest_valid_fallback", true);
 +    const bool workerRepeatGuardActive = hasVoiPolicyKey("workers.repeat_order_guard_frames");
 +    const int workerRepeatGuardFrames = getVoiWorkerRepeatGuardFrames();
 +    const std::string workerConsumedAxes = workerRepeatGuardActive ? "workers.repeat_order_guard_frames" : "";
@@ -12848,6 +12932,18 @@ index 045faab..e42e478 100644
 +        << "\"last_actual_command\":\"" << voiJsonEscape(tacticalTaskLastCommand) << "\","
 +        << "\"last_actual_command_frame\":" << tacticalTaskLastCommandFrame << ","
 +        << "\"consumed_axes\":\"tactical_task.task_type,tactical_task.task_id,tactical_task.unit_classes,tactical_task.production_targets,tactical_task.location_intent,tactical_task.priority,tactical_task.min_units,tactical_task.max_units,tactical_task.duration_seconds,tactical_task.allow_partial,tactical_task.safety_margin\""
++        << "},"
++        << "\"BuildingTask\":{"
++        << "\"active\":" << (!buildingTaskType.empty() && m_voiPolicyActive ? "true" : "false") << ","
++        << "\"building_type\":\"" << buildingTaskType << "\","
++        << "\"placement_intent\":\"" << buildingTaskPlacementIntent << "\","
++        << "\"anchor\":\"" << buildingTaskAnchor << "\","
++        << "\"offset_direction\":\"" << buildingTaskOffsetDirection << "\","
++        << "\"target_position\":\"" << buildingTaskTargetPosition << "\","
++        << "\"allow_nearest_valid_fallback\":" << (buildingTaskNearestFallback ? "true" : "false") << ","
++        << "\"status\":\"" << (!buildingTaskType.empty() && !buildingTaskPlacementIntent.empty() ? "accepted" : (!buildingTaskType.empty() ? "rejected" : "idle")) << "\","
++        << "\"reason\":\"" << (!buildingTaskType.empty() && !buildingTaskPlacementIntent.empty() ? "BuildingManager consumes semantic placement intent with SC2 placement fallback" : (!buildingTaskType.empty() ? "missing placement intent" : "")) << "\","
++        << "\"consumed_axes\":\"building_tasks.0.building_type,building_tasks.0.placement_intent,building_tasks.0.anchor,building_tasks.0.offset_direction,building_tasks.0.target_position,building_tasks.0.allow_nearest_valid_fallback\""
 +        << "},"
 +        << "\"CombatCommander\":{"
 +        << "\"active\":true,"

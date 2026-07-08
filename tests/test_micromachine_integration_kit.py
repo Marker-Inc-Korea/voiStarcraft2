@@ -50,6 +50,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "squad",
                 "scope",
                 "tactical_task",
+                "building_tasks",
                 "workers",
             },
             domains,
@@ -62,6 +63,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "src/CombatAnalyzer.cpp",
             "src/Squad.cpp",
             "src/GameCommander.cpp",
+            "src/BuildingManager.cpp",
         }
         self.assertEqual(required_sources, {hook["source_path"] for hook in hooks})
         for hook in hooks:
@@ -84,6 +86,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("scope.max_units", pending_keys)
         self.assertNotIn("tactical_task.task_type", pending_keys)
         self.assertNotIn("tactical_task.production_targets", pending_keys)
+        self.assertNotIn("building_tasks.*", pending_keys)
         self.assertNotIn("scouting.scan_priority", pending_keys)
         self.assertNotIn("squad.reinforce_bias", pending_keys)
 
@@ -255,9 +258,18 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "getVoiPolicyFloat(\"tactical_task.priority\", 0.0f)",
             "getVoiPolicyInt(\"tactical_task.min_units\", 0)",
             "getVoiPolicyInt(\"tactical_task.max_units\", 0)",
+            "resolveVoiBuildingTaskPlacement",
+            "building_tasks.0.building_type",
+            "building_tasks.0.placement_intent",
+            "building_tasks.0.anchor",
+            "building_tasks.0.offset_direction",
+            "building_tasks.0.target_position",
+            "building_tasks.0.allow_nearest_valid_fallback",
             "\\\"TacticalTask\\\"",
+            "\\\"BuildingTask\\\"",
             "\\\"status\\\":\\\"",
             "\\\"consumed_by\\\":\\\"",
+            "VOI building_task placement anchor selected",
             "tacticalTaskStatus",
             "tacticalTaskConsumedBy",
             "scout_with_units",

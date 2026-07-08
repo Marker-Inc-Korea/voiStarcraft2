@@ -161,12 +161,36 @@ MICROMACHINE_BUILDING_PLACEMENT_INTENTS: Final[frozenset[str]] = frozenset(
         "wall",
         "safe_expansion",
         "proxy",
+        "self_main_safe_macro",
+        "self_main_ramp",
+        "self_natural_choke",
+        "self_natural_safe",
+        "proxy_near_enemy_natural",
+        "explicit_coordinate",
         "near_factory",
         "near_barracks",
         "near_starport",
     }
 )
 """Semantic building placement labels bounded by placement managers."""
+
+MICROMACHINE_BUILDING_PLACEMENT_ANCHORS: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "self_main",
+        "self_ramp",
+        "self_natural",
+        "enemy_natural",
+        "enemy_main",
+        "explicit_coordinate",
+    }
+)
+"""Semantic placement anchors; not raw worker or API handles."""
+
+MICROMACHINE_BUILDING_PLACEMENT_DIRECTIONS: Final[frozenset[str]] = frozenset(
+    {"", "inside", "toward_enemy", "away_from_enemy", "left", "right", "center"}
+)
+"""Bounded semantic placement offsets resolved by BuildingManager."""
 
 MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "scv": "TERRAN_SCV",
@@ -1298,6 +1322,9 @@ class BuildingTask:
 
     building_type: str
     placement_intent: str = ""
+    anchor: str = ""
+    offset_direction: str = ""
+    allow_nearest_valid_fallback: bool = True
     count: int = 1
     target_position: tuple[float, ...] = ()
 
@@ -1322,6 +1349,32 @@ class BuildingTask:
         )
         object.__setattr__(
             self,
+            "anchor",
+            _optional_choice(
+                "anchor",
+                self.anchor,
+                set(MICROMACHINE_BUILDING_PLACEMENT_ANCHORS),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "offset_direction",
+            _optional_choice(
+                "offset_direction",
+                self.offset_direction,
+                set(MICROMACHINE_BUILDING_PLACEMENT_DIRECTIONS),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "allow_nearest_valid_fallback",
+            _coerce_bool(
+                self.allow_nearest_valid_fallback,
+                "allow_nearest_valid_fallback",
+            ),
+        )
+        object.__setattr__(
+            self,
             "count",
             _coerce_bounded_int(self.count, field_name="count", lower=1, upper=20),
         )
@@ -1335,6 +1388,9 @@ class BuildingTask:
         return {
             "building_type": self.building_type,
             "placement_intent": self.placement_intent,
+            "anchor": self.anchor,
+            "offset_direction": self.offset_direction,
+            "allow_nearest_valid_fallback": self.allow_nearest_valid_fallback,
             "count": self.count,
             "target_position": list(self.target_position),
         }
