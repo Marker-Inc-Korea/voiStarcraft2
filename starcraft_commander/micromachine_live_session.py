@@ -989,8 +989,6 @@ def _live_command_reducer_action(
     if category in {LiveCommandCategory.TACTICAL, LiveCommandCategory.SCOUTING}:
         if previous_category in {LiveCommandCategory.PRODUCTION, LiveCommandCategory.BUILDING, LiveCommandCategory.STRATEGY}:
             return "merge_standing_orders"
-        if _has_production_intent(previous_payload) and not _has_production_intent(incoming_payload):
-            return "merge_standing_orders"
         return "supersede_tactical"
     return "activate"
 

@@ -705,6 +705,63 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(4, vector.tactical_task.min_units)
         self.assertIn("command_action:supersede_tactical", vector.tags)
 
+    def test_new_tactical_command_supersedes_prior_tactical_doctrine(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        first_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "앞마당 contain",
+                    "strategy": {"doctrine": "contain_enemy_natural"},
+                    "combat": {"aggression": 0.55},
+                    "scope": {"location_intent": "enemy_natural"},
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "location_intent": "enemy_natural",
+                    },
+                    "tags": ["old_contain"],
+                }
+            ),
+        )
+        self.assertTrue(
+            first_session.submit_text(
+                "앞마당 contain",
+                current_frame=100,
+                update_id="old-contain",
+            ).ok
+        )
+        second_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 본진 공격",
+                    "combat": {"aggression": 0.75},
+                    "scope": {"location_intent": "enemy_main"},
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "location_intent": "enemy_main",
+                    },
+                    "tags": ["new_main_attack"],
+                }
+            ),
+        )
+
+        result = second_session.submit_text(
+            "이제 적 본진 공격해",
+            current_frame=140,
+            update_id="new-main-attack",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual("supersede_tactical", result.command_queue["action"])
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("", vector.strategy.doctrine)
+        self.assertEqual("enemy_main", vector.tactical_task.location_intent)
+        self.assertIn("new_main_attack", vector.tags)
+        self.assertNotIn("old_contain", vector.tags)
+        self.assertNotIn("command_action:merge_standing_orders", vector.tags)
+
     def test_live_stop_expansion_command_drops_prior_command_center_bias(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         expand_session = MicroMachineLiveTextSession(
