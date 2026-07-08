@@ -68,6 +68,10 @@ def _telemetry(
                 "main_attack_last_action_frame": 6_260,
                 "main_attack_last_issued_action": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
                 "main_attack_order_status": "Attack",
+                "main_attack_home_distance": 18.0,
+                "main_attack_max_home_distance": 28.0,
+                "scout_home_distance": 10.0,
+                "scout_max_home_distance": 14.0,
             },
             "ProductionManager": {
                 "active": True,
@@ -2125,6 +2129,47 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
 
             self.assertTrue(report.ok, report.to_dict())
 
+    def test_rejects_pressure_command_without_live_main_attack_movement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(12_500)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["main_attack_home_distance"] = 3.0
+            combat["main_attack_max_home_distance"] = 4.0
+            self._write_runtime(
+                root,
+                log_text="\n".join(
+                    (
+                        MACRO_LOG,
+                        "12450: updateAttackSquads | MainAttackSquad new order = Attack enemy natural",
+                    )
+                ),
+                telemetry=telemetry,
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("pressure",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "tactical_actual_command_missing"
+            ][0]
+            self.assertEqual(12.0, failure.evidence["combat"]["required_main_attack_max_home_distance"])
+            self.assertEqual(4.0, failure.evidence["combat"]["main_attack_max_home_distance"])
+
     def test_rejects_tactical_effect_without_actual_combat_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2528,6 +2573,8 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             combat["scout_actual_command_issued_count"] = 1
             combat["scout_last_issued_action"] = "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5"
             combat["scout_last_action_frame"] = 6_260
+            combat["scout_home_distance"] = 10.0
+            combat["scout_max_home_distance"] = 16.0
             self._write_runtime(
                 root,
                 log_text="\n".join((MACRO_LOG, "6260: Scout squad action issued")),
@@ -2547,6 +2594,60 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             )
 
             self.assertTrue(report.ok, report.to_dict())
+
+    def test_rejects_scout_with_units_command_without_live_combat_scout_movement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            update_id = "soak-marine-scout"
+            telemetry = _telemetry(12_500, update_id=update_id)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            managers["TacticalTask"] = {
+                "active": True,
+                "task_type": "scout_with_units",
+                "task_id": "marine-scout-3",
+                "status": "executing",
+                "reason": "CombatCommander issued a Scout squad command",
+                "consumed_by": "CombatCommander,Squad",
+                "actual_command_issued_count": 1,
+                "last_actual_command": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                "last_actual_command_frame": 6_260,
+            }
+            combat = managers["CombatCommander"]
+            assert isinstance(combat, dict)
+            combat["scout_scope_status"] = "Consumed"
+            combat["scout_scope_assigned_unit_count"] = 3
+            combat["scout_actual_command_issued_count"] = 1
+            combat["scout_last_issued_action"] = "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5"
+            combat["scout_last_action_frame"] = 6_260
+            combat["scout_home_distance"] = 2.0
+            combat["scout_max_home_distance"] = 3.0
+            self._write_runtime(
+                root,
+                log_text="\n".join((MACRO_LOG, "6260: Scout squad action issued")),
+                telemetry=telemetry,
+                modulation=_modulation(update_id=update_id),
+            )
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(
+                    target_frame=12_000,
+                    expected_tactical_effects=("scout",),
+                ),
+            )
+
+            self.assert_failure_codes(report, {"tactical_actual_command_missing"})
+            failure = [
+                item
+                for item in report.failures
+                if item.code == "tactical_actual_command_missing"
+            ][0]
+            self.assertEqual(8.0, failure.evidence["scout"]["required_scout_max_home_distance"])
+            self.assertEqual(3.0, failure.evidence["scout"]["scout_max_home_distance"])
 
     def test_rejects_scout_effect_without_actual_scout_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

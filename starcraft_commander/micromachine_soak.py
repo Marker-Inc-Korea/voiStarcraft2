@@ -92,6 +92,12 @@ NON_PRODUCTION_STRATEGY_DOCTRINES: Final[frozenset[str]] = frozenset(
 )
 """Strategy profiles that intentionally modulate non-production managers only."""
 
+MIN_MAIN_ATTACK_HOME_DISTANCE: Final[float] = 12.0
+"""Minimum live distance from home required to prove a MainAttack moved."""
+
+MIN_COMBAT_SCOUT_HOME_DISTANCE: Final[float] = 8.0
+"""Minimum live distance from home required to prove a combat scout moved."""
+
 ACTUAL_PRODUCTION_ITEM_ALIASES: Final[Mapping[str, str]] = {
     "TERRAN_SUPPLYDEPOT": "SupplyDepot",
     "TERRAN_BARRACKS": "Barracks",
@@ -1917,6 +1923,8 @@ def _actual_combat_command_seen(
         action = str(combat.get("main_attack_last_issued_action", "") or "")
         frame = _int_value(combat.get("main_attack_last_action_frame"))
         count = _int_value(combat.get("main_attack_actual_command_issued_count"))
+        home_distance = _float_value(combat.get("main_attack_home_distance"))
+        max_home_distance = _float_value(combat.get("main_attack_max_home_distance"))
         if action:
             observed_actions.append(action)
         best = {
@@ -1926,12 +1934,16 @@ def _actual_combat_command_seen(
             "main_attack_last_action_frame": frame,
             "main_attack_last_issued_action": action,
             "main_attack_order_status": combat.get("main_attack_order_status"),
+            "main_attack_home_distance": home_distance,
+            "main_attack_max_home_distance": max_home_distance,
+            "required_main_attack_max_home_distance": MIN_MAIN_ATTACK_HOME_DISTANCE,
         }
         if (
             count > 0
             and action
             and "squad=MainAttack" in action
             and str(combat.get("main_attack_order_status", "") or "") == "Attack"
+            and max_home_distance >= MIN_MAIN_ATTACK_HOME_DISTANCE
             and (not expected_update_id or update_id == expected_update_id)
             and frame > 0
             and (min_command_frame <= 0 or frame >= min_command_frame)
@@ -1988,37 +2000,38 @@ def _actual_scout_command_seen(
                 "last_actual_command_frame": frame,
                 "last_actual_command": command,
                 "reason": tactical.get("reason"),
+                "required_live_movement_source": "CombatCommander scout_max_home_distance",
             }
-            if (
-                status == "executing"
-                and count > 0
-                and "squad=Scout" in command
-                and (not expected_update_id or update_id == expected_update_id)
-                and frame > 0
-                and (min_command_frame <= 0 or frame >= min_command_frame)
-            ):
-                return True, best
         if isinstance(combat, Mapping):
             command = str(combat.get("scout_last_issued_action", "") or "")
             frame = _int_value(combat.get("scout_last_action_frame"))
             count = _int_value(combat.get("scout_actual_command_issued_count"))
+            home_distance = _float_value(combat.get("scout_home_distance"))
+            max_home_distance = _float_value(combat.get("scout_max_home_distance"))
             if command:
                 observed_commands.append(command)
+            combat_evidence = {
+                "frame": _int_value(entry.get("frame")),
+                "update_id": update_id,
+                "source": "CombatCommander scout action",
+                "actual_command_issued_count": count,
+                "last_actual_command_frame": frame,
+                "last_actual_command": command,
+                "scout_home_distance": home_distance,
+                "scout_max_home_distance": max_home_distance,
+                "required_scout_max_home_distance": MIN_COMBAT_SCOUT_HOME_DISTANCE,
+            }
+            if command or count > 0 or max_home_distance > 0.0:
+                best = combat_evidence
             if (
                 count > 0
                 and "squad=Scout" in command
+                and max_home_distance >= MIN_COMBAT_SCOUT_HOME_DISTANCE
                 and (not expected_update_id or update_id == expected_update_id)
                 and frame > 0
                 and (min_command_frame <= 0 or frame >= min_command_frame)
             ):
-                return True, {
-                    "frame": _int_value(entry.get("frame")),
-                    "update_id": update_id,
-                    "source": "CombatCommander scout action",
-                    "actual_command_issued_count": count,
-                    "last_actual_command_frame": frame,
-                    "last_actual_command": command,
-                }
+                return True, combat_evidence
         if tactical_scout_requested:
             continue
         scout = managers.get("ScoutManager")

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -131,6 +132,25 @@ class KeywordPolicyModulationProvider:
                 "status": "clarification_required",
                 "clarification_prompt": "구체적인 전략 방향을 말해 주세요.",
             }
+        if _has_defensive_text_intent(text):
+            return {
+                "source": self.source.value,
+                "goal": request.command_text,
+                "override_level": "constraint",
+                "confidence": 0.66,
+                "ttl_seconds": 120,
+                "posture": "defensive",
+                "economy": {"gas_priority": 0.25, "repair_priority": 0.25},
+                "workers": {"repeat_order_guard_frames": 32},
+                "combat": {
+                    "aggression": -0.25,
+                    "defend_bias": 0.65,
+                    "preserve_army_bias": 0.35,
+                },
+                "scouting": {"scout_priority": 0.25, "risk_tolerance": -0.2},
+                "squad": {"defense_bias": 0.45, "regroup_bias": 0.25},
+                "tags": ["keyword_provider", "live_text"],
+            }
         if any(
             token in text
             for token in (
@@ -165,6 +185,77 @@ class KeywordPolicyModulationProvider:
                     "right away",
                 )
             )
+            scout_intent = any(
+                token in text
+                for token in (
+                    "탐색",
+                    "정찰",
+                    "적발견",
+                    "적 발견",
+                    "scout",
+                    "enemy",
+                )
+            ) and not any(
+                token in text
+                for token in (
+                    "공격",
+                    "러시",
+                    "러쉬",
+                    "압박",
+                    "attack",
+                    "rush",
+                    "pressure",
+                )
+            )
+            task_type = (
+                "scout_with_units" if scout_intent else "pressure_with_main_army"
+            )
+            army_group = "scout" if scout_intent else "main"
+            enemy_main_attack = any(
+                token in text
+                for token in (
+                    "적진",
+                    "본진",
+                    "기지",
+                    "base",
+                    "main",
+                    "enemy base",
+                    "enemy main",
+                )
+            )
+            location_intent = (
+                "enemy_main"
+                if scout_intent or enemy_main_attack
+                else "enemy_natural"
+            )
+            requested_units = _extract_requested_combat_unit_count(text)
+            min_units = (
+                requested_units
+                if requested_units is not None
+                else (1 if immediate_attack or scout_intent else 2)
+            )
+            max_units = requested_units if requested_units is not None else (2 if scout_intent else 0)
+            flank_intent = _has_flank_route_intent(text)
+            squad_payload = {
+                "main_army_bias": 0.6,
+                "harassment_bias": 0.4,
+                "defense_bias": -0.2,
+                "reinforce_bias": 0.3,
+                "contain_bias": 0.1 if flank_intent else 0.35,
+            }
+            if flank_intent:
+                squad_payload["flank_bias"] = 0.75
+            tags = [
+                "keyword_provider",
+                "live_text",
+                "aggressive_pressure",
+                "scouting_map_control",
+                "target_priority",
+            ]
+            if requested_units is not None:
+                tags.append("explicit_unit_count")
+            if flank_intent:
+                tags.append("flank_route")
             return {
                 "source": self.source.value,
                 "goal": request.command_text,
@@ -184,6 +275,7 @@ class KeywordPolicyModulationProvider:
                     "harassment_bias": 0.35,
                     "defend_bias": -0.25,
                     "combat_sim_confidence_margin": -0.2,
+                    "flank_bias": 0.65 if flank_intent else 0.0,
                     "target_priority_biases": {
                         "army": 0.35,
                         "worker_line": 0.3,
@@ -200,47 +292,28 @@ class KeywordPolicyModulationProvider:
                     "scout_priority": 0.7,
                     "require_fresh_enemy_observation": False,
                 },
-                "squad": {
-                    "main_army_bias": 0.6,
-                    "harassment_bias": 0.4,
-                    "defense_bias": -0.2,
-                    "reinforce_bias": 0.3,
-                    "contain_bias": 0.35,
-                },
+                "squad": squad_payload,
                 "scope": {
-                    "army_group": "main",
-                    "location_intent": "enemy_natural",
+                    "army_group": army_group,
+                    "location_intent": location_intent,
                     "unit_classes": ["marine", "marauder", "medivac", "siege_tank"],
-                    "min_units": 1 if immediate_attack else 2,
+                    "min_units": min_units,
+                    "max_units": max_units,
                     "require_safety_margin": 0.05,
                     "allow_partial_scope": True,
                 },
-                "tags": [
-                    "keyword_provider",
-                    "live_text",
-                    "aggressive_pressure",
-                    "scouting_map_control",
-                    "target_priority",
-                ],
-            }
-        if any(token in text for token in ("수비", "버텨", "hold", "defend", "탱크")):
-            return {
-                "source": self.source.value,
-                "goal": request.command_text,
-                "override_level": "constraint",
-                "confidence": 0.66,
-                "ttl_seconds": 120,
-                "posture": "defensive",
-                "economy": {"gas_priority": 0.25, "repair_priority": 0.25},
-                "workers": {"repeat_order_guard_frames": 32},
-                "combat": {
-                    "aggression": -0.25,
-                    "defend_bias": 0.65,
-                    "preserve_army_bias": 0.35,
+                "tactical_task": {
+                    "task_type": task_type,
+                    "unit_classes": ["marine", "marauder", "medivac", "siege_tank"],
+                    "location_intent": location_intent,
+                    "priority": 0.9 if immediate_attack else 0.8,
+                    "min_units": min_units,
+                    "max_units": max_units,
+                    "duration_seconds": 180 if scout_intent else 300,
+                    "allow_partial": True,
+                    "safety_margin": 0.05,
                 },
-                "scouting": {"scout_priority": 0.25, "risk_tolerance": -0.2},
-                "squad": {"defense_bias": 0.45, "regroup_bias": 0.25},
-                "tags": ["keyword_provider", "live_text"],
+                "tags": tags,
             }
         return {
             "source": self.source.value,
@@ -677,6 +750,10 @@ def _merge_live_vector_payloads(
     incoming_task_type = _task_type(incoming_payload)
     incoming_production_intent = _has_production_intent(incoming_payload)
     defensive_reset = _is_defensive_or_emergency_reset(incoming_payload)
+    previous_defensive_standing = (
+        _is_defensive_or_emergency_reset(previous_payload)
+        or _has_defensive_standing_marker(previous_payload)
+    )
 
     for domain in _PERSISTENT_LIVE_DOMAINS:
         previous_domain = _mapping_value(previous_payload, domain)
@@ -701,7 +778,11 @@ def _merge_live_vector_payloads(
             )
         merged["strategy"] = strategy
 
-    if not defensive_reset:
+    explicit_tactical_task = (
+        incoming_task_type in _TACTICAL_ONLY_TASK_TYPES
+        and _mapping_has_signal(_mapping_value(incoming_payload, "tactical_task"))
+    )
+    if not defensive_reset and not explicit_tactical_task:
         for domain in _TACTICAL_LIVE_DOMAINS:
             previous_domain = _mapping_value(previous_payload, domain)
             incoming_domain = _mapping_value(incoming_payload, domain)
@@ -712,19 +793,29 @@ def _merge_live_vector_payloads(
             if _mapping_has_signal(previous_task):
                 merged["tactical_task"] = previous_task
 
-    merged["goal"] = _merged_goal(previous_payload, incoming_payload)
+    if explicit_tactical_task and previous_defensive_standing:
+        merged["goal"] = (
+            str(incoming_payload.get("goal", "") or "").strip()
+            or "live_micromachine_modulation"
+        )
+    else:
+        merged["goal"] = _merged_goal(previous_payload, incoming_payload)
     merged["ttl_seconds"] = max(
         int(previous_payload.get("ttl_seconds", 1) or 1),
         int(incoming_payload.get("ttl_seconds", 1) or 1),
     )
+    previous_tags: object = () if explicit_tactical_task and previous_defensive_standing else previous_payload.get("tags", ())
     merged["tags"] = _merge_string_lists(
-        previous_payload.get("tags", ()),
+        previous_tags,
         incoming_payload.get("tags", ()),
         extra=(_LIVE_STANDING_MERGE_WARNING,),
     )
     previous_rationale = str(previous_payload.get("rationale", "") or "").strip()
     incoming_rationale = str(incoming_payload.get("rationale", "") or "").strip()
-    if previous_rationale and incoming_rationale:
+    if explicit_tactical_task and previous_defensive_standing:
+        if incoming_rationale:
+            merged["rationale"] = incoming_rationale
+    elif previous_rationale and incoming_rationale:
         merged["rationale"] = f"{incoming_rationale} Standing context preserved: {previous_rationale}"
     elif previous_rationale:
         merged["rationale"] = previous_rationale
@@ -884,6 +975,20 @@ def _is_defensive_or_emergency_reset(payload: Mapping[str, object]) -> bool:
     return _float_at(combat, ("defend_bias",)) > 0.45 or _float_at(combat, ("aggression",)) < 0.0
 
 
+def _has_defensive_standing_marker(payload: Mapping[str, object]) -> bool:
+    goal = str(payload.get("goal", "") or "").lower()
+    if "micromachine_defensive_hold" in goal or "defensive_hold" in goal:
+        return True
+    tags = payload.get("tags", ())
+    if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes, bytearray)):
+        return any(
+            str(tag).strip().lower()
+            in {"defensive_hold", "micromachine_defensive_hold"}
+            for tag in tags
+        )
+    return False
+
+
 def _stop_expansion_requested(payload: Mapping[str, object]) -> bool:
     emergency = _mapping_value(payload, "emergency")
     if emergency.get("stop_expansion") is True:
@@ -1009,6 +1114,86 @@ def _force_provider_output_source(
             nested["source"] = source.value
             forced[key] = nested
     return forced
+
+
+_KOREAN_SMALL_NUMBERS: dict[str, int] = {
+    "한": 1,
+    "하나": 1,
+    "두": 2,
+    "둘": 2,
+    "세": 3,
+    "셋": 3,
+    "네": 4,
+    "넷": 4,
+    "다섯": 5,
+    "여섯": 6,
+    "일곱": 7,
+    "여덟": 8,
+    "아홉": 9,
+    "열": 10,
+}
+
+
+def _extract_requested_combat_unit_count(text: str) -> int | None:
+    normalized = text.lower()
+    digit_patterns = (
+        r"(?<!\d)(\d{1,3})\s*(?:마린|해병|marine|marines)",
+        r"(?:마린|해병|marine|marines)\s*(\d{1,3})\s*(?:기|마리|명|units?)?",
+        r"(?<!\d)(\d{1,3})\s*(?:기|마리|명)\s*(?:마린|해병|marine|marines)?",
+    )
+    for pattern in digit_patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            return max(1, min(200, int(match.group(1))))
+
+    word_pattern = (
+        r"("
+        + "|".join(sorted(map(re.escape, _KOREAN_SMALL_NUMBERS), key=len, reverse=True))
+        + r")\s*(?:마린|해병|기|마리|명)"
+    )
+    match = re.search(word_pattern, normalized)
+    if match:
+        return _KOREAN_SMALL_NUMBERS[match.group(1)]
+    return None
+
+
+def _has_flank_route_intent(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text.lower())
+    return any(
+        token in normalized
+        for token in (
+            "다른길",
+            "우회",
+            "옆길",
+            "측면",
+            "좌측",
+            "왼쪽",
+            "우측",
+            "오른쪽",
+            "flank",
+            "sideroute",
+            "alternateroute",
+            "differentroute",
+        )
+    )
+
+
+def _has_defensive_text_intent(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "수비",
+            "방어",
+            "버텨",
+            "지켜",
+            "막아",
+            "후퇴",
+            "hold",
+            "defend",
+            "defense",
+            "retreat",
+        )
+    )
 
 
 def _is_non_tactical_chatter(text: str) -> bool:

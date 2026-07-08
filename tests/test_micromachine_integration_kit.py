@@ -23,6 +23,10 @@ DEFAULT_MICROMACHINE_DIR = "/private/tmp/voi-micromachine-runtime/MicroMachine"
 DEFAULT_MICROMACHINE_BUILD_DIR = f"{DEFAULT_MICROMACHINE_DIR}/build-latest-api"
 
 
+def _read_patch_text(path: Path) -> str:
+    return path.read_text(encoding="latin-1")
+
+
 class MicroMachineIntegrationKitTest(unittest.TestCase):
     def test_hook_manifest_covers_verified_upstream_manager_hooks(self) -> None:
         manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
@@ -145,8 +149,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, readme)
 
     def test_patch_bundle_contains_build_bridge_and_smoke_hardening(self) -> None:
-        patch = PATCH_FILE.read_text()
-        s2client_patch = S2CLIENT_PATCH_FILE.read_text()
+        patch = _read_patch_text(PATCH_FILE)
+        s2client_patch = _read_patch_text(S2CLIENT_PATCH_FILE)
 
         required_terms = (
             "target_link_libraries(MicroMachine ${SC2Api_LIBRARIES})",
@@ -318,6 +322,13 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "m_lastVoiScoutMoveTarget",
             "const float targetReachedDistanceSq = 1.0f",
             "already ordered",
+            "voiIsMobileAttackUnit",
+            "autonomousCombatScoutScope",
+            "Autonomous combat scout assigned because enemy start is unexplored",
+            "autonomousAttackReady",
+            "Autonomous combat threshold met",
+            "main_attack_max_home_distance",
+            "scout_max_home_distance",
             "workers.repeat_order_guard_frames",
             "m_bot->Commander().shouldSuppressRepeatedWorkerCommand(m_unit, sc2::ABILITY_ID::SMART",
             "bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, sc2::ABILITY_ID::MOVE",
@@ -390,14 +401,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, s2client_patch)
 
     def test_patch_records_requeued_doctrine_items_as_existing_queue_evidence(self) -> None:
-        patch = PATCH_FILE.read_text()
+        patch = _read_patch_text(PATCH_FILE)
 
         self.assertNotIn("requeued_highest", patch)
         self.assertNotIn("requeued_blocking", patch)
         self.assertIn('recordVoiDoctrineConsumption(type, action, "queued_existing");', patch)
 
     def test_patch_keeps_real_build_and_continuity_commands_from_live_blockers(self) -> None:
-        patch = PATCH_FILE.read_text()
+        patch = _read_patch_text(PATCH_FILE)
 
         self.assertIn("&& !buildPositionCommand", patch)
         self.assertIn("explicitVoiSupplyRequest", patch)
@@ -410,7 +421,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
 
     def test_completed_expansion_command_center_guard_does_not_require_placement_query(self) -> None:
-        patch = PATCH_FILE.read_text()
+        patch = _read_patch_text(PATCH_FILE)
         body = patch.split("+bool canTrustAssignedVoiExpansionDepot", 1)[1].split(
             "+}\n+}\n+\n BuildingManager::BuildingManager",
             1,
@@ -535,6 +546,13 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "build_tank_defensive_hold_profile",
             "build_bio_pressure_profile",
             "latest_modulation.kv",
+            "preserve_existing_live_modulation",
+            "manual live mode preserved existing tactical blackboard command",
+            'update_id.startswith(("smoke-", "soak-"))',
+            "web_gui_tactical_fallback",
+            "PolicyModulationVector.from_mapping",
+            "MicroMachineBlackboardUpdate(",
+            "AGGRESSIVE_PROFILE_PUBLISHED=1",
             "telemetry.jsonl",
             "AcropolisLE.SC2Map",
             "resolve_sc2_executable",
@@ -616,6 +634,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "main_attack_order_status",
             "main_attack_scope_threshold_met",
             "main_attack_simulation_won",
+            "SMOKE_MIN_MAIN_ATTACK_HOME_DISTANCE",
+            "SMOKE_MIN_COMBAT_SCOUT_HOME_DISTANCE",
+            "MainAttack command did not produce live movement away from home",
+            "Combat scout squad was assigned but did not produce live movement away from home",
             "combat.retreat_patience_bias",
             "combat.rally_before_attack_bias",
             "squad.contain_bias",

@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "voiStarcraft2: a natural-language and voice StarCraft II commander."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "Dual license: AGPL-3.0-or-later OR commercial license from the copyright holder" }
 keywords = ["starcraft", "sc2", "natural-language", "voice", "commander"]
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+]
 # The core commander pipeline is pure stdlib; every runtime integration is optional.
 dependencies = []
 

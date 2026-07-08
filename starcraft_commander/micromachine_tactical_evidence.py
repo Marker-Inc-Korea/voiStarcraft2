@@ -107,6 +107,8 @@ _ACTUAL_DECISION_KEYS: Final[tuple[str, ...]] = (
     "decision",
     "behavior_status",
 )
+_MIN_MAIN_ATTACK_HOME_DISTANCE: Final[float] = 12.0
+_MIN_COMBAT_SCOUT_HOME_DISTANCE: Final[float] = 8.0
 
 
 @dataclass(frozen=True)
@@ -334,19 +336,15 @@ def _effects_from_telemetry(
             if not isinstance(payload, Mapping):
                 continue
             manager = str(manager_name)
-            if _manager_reports_tactical_scout_task(manager, payload):
+            if _manager_reports_tactical_scout_task(
+                manager,
+                payload,
+            ) or _manager_reports_combat_scout_command(manager, payload):
                 effects.append(_telemetry_effect("scout", manager, payload, frame))
-            if (
-                "scout" not in concrete_effects
-                and _manager_reports_combat_scout_command(manager, payload)
-            ):
-                effects.append(_telemetry_effect("scout", manager, payload, frame))
-            if _manager_reports_tactical_pressure_task(manager, payload):
-                effects.append(_telemetry_effect("pressure", manager, payload, frame))
-            if (
-                "pressure" not in concrete_effects
-                and _manager_reports_main_attack_command(manager, payload)
-            ):
+            if _manager_reports_tactical_pressure_task(
+                manager,
+                payload,
+            ) or _manager_reports_main_attack_command(manager, payload):
                 effects.append(_telemetry_effect("pressure", manager, payload, frame))
             if "pressure" not in concrete_effects and _manager_reports_attack_order(payload):
                 effects.append(_telemetry_effect("pressure", manager, payload, frame))
@@ -500,22 +498,31 @@ def _manager_reports_scouting(manager: str, payload: Mapping[str, object]) -> bo
 def _manager_reports_tactical_pressure_task(manager: str, payload: Mapping[str, object]) -> bool:
     if manager != "TacticalTask":
         return False
+    # TacticalTask may report intent or a delegated command string before
+    # CombatCommander proves that units actually moved. Do not count it as a
+    # concrete live effect without the movement telemetry.
     return (
         str(payload.get("task_type", "") or "") == "pressure_with_main_army"
         and str(payload.get("status", "") or "") == "executing"
         and _number(payload.get("actual_command_issued_count")) > 0
         and "squad=MainAttack" in str(payload.get("last_actual_command", "") or "")
+        and _number(payload.get("main_attack_max_home_distance"))
+        >= _MIN_MAIN_ATTACK_HOME_DISTANCE
     )
 
 
 def _manager_reports_tactical_scout_task(manager: str, payload: Mapping[str, object]) -> bool:
     if manager != "TacticalTask":
         return False
+    # A ScoutSquadOrder/MoveToGoalOrder alone can still be invisible in live QA;
+    # require actual movement away from home before reporting the effect.
     return (
         str(payload.get("task_type", "") or "") == "scout_with_units"
         and str(payload.get("status", "") or "") == "executing"
         and _number(payload.get("actual_command_issued_count")) > 0
         and "squad=Scout" in str(payload.get("last_actual_command", "") or "")
+        and _number(payload.get("scout_max_home_distance"))
+        >= _MIN_COMBAT_SCOUT_HOME_DISTANCE
     )
 
 
@@ -528,6 +535,8 @@ def _manager_reports_main_attack_command(manager: str, payload: Mapping[str, obj
         and "squad=MainAttack"
         in str(payload.get("main_attack_last_issued_action", "") or "")
         and str(payload.get("main_attack_order_status", "") or "") == "Attack"
+        and _number(payload.get("main_attack_max_home_distance"))
+        >= _MIN_MAIN_ATTACK_HOME_DISTANCE
     )
 
 
@@ -538,6 +547,8 @@ def _manager_reports_combat_scout_command(manager: str, payload: Mapping[str, ob
         _number(payload.get("scout_actual_command_issued_count")) > 0
         and _number(payload.get("scout_last_action_frame")) > 0
         and "squad=Scout" in str(payload.get("scout_last_issued_action", "") or "")
+        and _number(payload.get("scout_max_home_distance"))
+        >= _MIN_COMBAT_SCOUT_HOME_DISTANCE
     )
 
 
@@ -584,9 +595,13 @@ def _telemetry_effect(
         "actual_command_issued_count",
         "main_attack_last_issued_action",
         "main_attack_last_action_frame",
+        "main_attack_home_distance",
+        "main_attack_max_home_distance",
         "main_attack_actual_command_issued_count",
         "scout_last_issued_action",
         "scout_last_action_frame",
+        "scout_home_distance",
+        "scout_max_home_distance",
         "scout_actual_command_issued_count",
     )
     details = {

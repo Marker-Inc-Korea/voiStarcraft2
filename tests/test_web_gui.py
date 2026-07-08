@@ -137,6 +137,23 @@ class BlockingPolicyModulationLLMControl(FakePolicyModulationLLMControl):
         return super().propose_policy_modulation(request)
 
 
+class NoToolPolicyModulationLLMControl(FakeConfiguredLLMControl):
+    """Configured LLM test double that returns plain text instead of tool JSON."""
+
+    def is_available(self):
+        return True
+
+    def propose_policy_modulation(self, request):
+        return {
+            "source": "llm",
+            "status": "refused",
+            "refusal_reason": (
+                "LLM policy modulation response had no forced-tool or "
+                "structured JSON input."
+            ),
+        }
+
+
 class FakeFailingLLMControl:
     """LLM control test double that raises one setup failure."""
 
@@ -381,7 +398,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "setCommandMode",
             "submitMicroMachineModulation",
             "buildMicroMachineModulationPayload",
-            "async_publish: true",
+            "async_publish: !tacticalCommand",
             "if (isMicroMachineCommandMode()) { return; }",
             "microMachineStateDashboardDisabled",
             "renderMicroMachineStatePlaceholder",
@@ -1444,7 +1461,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 document["intervention"]["tactical_evidence"]["refusal_reasons"]
             )
 
-    def test_micromachine_modulation_without_llm_fails_closed_no_keyword_fallback(self):
+    def test_micromachine_modulation_without_llm_uses_web_tactical_fallback(self):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)
         bridge.start()
@@ -1477,12 +1494,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 connection.close()
 
             self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
-            self.assertFalse(payload["accepted"])
-            self.assertFalse(payload["ok"])
-            self.assertEqual("llm", payload["provider_source"])
-            self.assertEqual("refused", payload["compile_result"]["status"])
-            self.assertIn("LLM", payload["compile_result"]["refusal_reason"])
-            self.assertIsNone(payload["update"])
+            self.assertTrue(payload["accepted"], payload)
+            self.assertTrue(payload["ok"], payload)
+            self.assertEqual("ui", payload["provider_source"])
+            self.assertEqual("compiled", payload["compile_result"]["status"])
+            self.assertEqual("ui", payload["update"]["vector"]["source"])
+            self.assertGreater(payload["update"]["vector"]["combat"]["defend_bias"], 0)
+            self.assertIn(
+                "web_gui_tactical_fallback",
+                payload["update"]["vector"]["tags"],
+            )
             self.assertEqual(directory, payload["blackboard_dir"])
 
     def test_micromachine_modulation_allows_keyword_only_with_explicit_smoke_flag(self):
@@ -1523,6 +1544,59 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual("smoke_keyword", payload["provider_source"])
             self.assertEqual("keyword-smoke", payload["update"]["update_id"])
             self.assertEqual(directory, payload["blackboard_dir"])
+
+    def test_micromachine_modulation_rescues_llm_missing_tool_for_live_qa(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=NoToolPolicyModulationLLMControl(),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=5
+            )
+            try:
+                body = json.dumps(
+                    {
+                        "text": "마린 러쉬 진행해",
+                        "blackboard_dir": directory,
+                        "current_frame": 21,
+                        "update_id": "web-rush-fallback",
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
+            self.assertTrue(payload["accepted"], payload)
+            self.assertTrue(payload["ok"], payload)
+            self.assertEqual("ui", payload["provider_source"])
+            self.assertEqual("web-rush-fallback", payload["update"]["update_id"])
+            vector = payload["update"]["vector"]
+            self.assertEqual("ui", vector["source"])
+            self.assertEqual(
+                "pressure_with_main_army",
+                vector["tactical_task"]["task_type"],
+            )
+            self.assertEqual("main", vector["scope"]["army_group"])
+            self.assertEqual(
+                "force_when_threshold_met",
+                vector["combat"]["attack_condition_override"],
+            )
+            self.assertIn("web_gui_tactical_fallback", vector["tags"])
 
     def test_micromachine_provider_output_cannot_spoof_llm_or_smoke_source(self):
         session, _bot = build_dry_run_session()
@@ -3172,10 +3246,15 @@ var window = {
   SpeechRecognition: null,
   webkitSpeechRecognition: null
 };
-var console = {
-  warn: function () {},
-  error: function (message) { global.__consoleError = message; }
-};
+    var console = {
+      warn: function () {},
+      error: function (message) {
+        global.__consoleError = message;
+        if (typeof process !== "undefined" && process.stderr) {
+          process.stderr.write(String(message) + "\n");
+        }
+      }
+    };
 var setInterval = function () {};
 var URLSearchParams = global.URLSearchParams;
 var requests = [];
@@ -3236,6 +3315,11 @@ const assert = require("assert");
   assert.strictEqual(buildMicroMachineModulationPayload("marine rush").response_language, "en");
   assert.strictEqual(buildMicroMachineModulationPayload("마린 러쉬").response_language, "ko");
   assert.strictEqual(buildMicroMachineModulationPayload("进攻").response_language, "zh");
+  assert.strictEqual(buildMicroMachineModulationPayload("marine rush").async_publish, false);
+  assert.strictEqual(buildMicroMachineModulationPayload("hello").async_publish, true);
+  assert.strictEqual(buildMicroMachineModulationPayload("marine rush").allow_smoke_keyword_provider, true);
+  assert.strictEqual(buildMicroMachineModulationPayload("마린 러쉬").allow_smoke_keyword_provider, true);
+  assert.strictEqual(buildMicroMachineModulationPayload("hello").allow_smoke_keyword_provider, undefined);
 
   nodes["command-input"].value = "enemy natural 압박하고 탱크는 안전하게";
   nodes["command-form"].dispatchEvent({
@@ -3247,12 +3331,12 @@ const assert = require("assert");
   var firstBody = JSON.parse(requests[0].options.body);
   assert.strictEqual(firstBody.text, "enemy natural 압박하고 탱크는 안전하게");
   assert.strictEqual(firstBody.blackboard_dir, "/tmp/voi-mm-js-test");
-  assert.strictEqual(firstBody.async_publish, true);
+  assert.strictEqual(firstBody.async_publish, false);
+  assert.strictEqual(firstBody.allow_smoke_keyword_provider, true);
   assert.strictEqual(firstBody.ui_language, "ko");
   assert.strictEqual(firstBody.response_language, "ko");
   assert.strictEqual(firstBody.ttl_seconds, 600);
   assert.strictEqual(pendingCommandCount(), 1);
-  assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
 
   var originalRenderMicroMachineStatus = renderMicroMachineStatus;
@@ -3262,51 +3346,33 @@ const assert = require("assert");
   requests[0].deferred.resolve(response(202, {
     ok: true,
     accepted: true,
-    queued: true,
-    async_publish: true,
-    status: "queued",
-    update_id: "unit-update-1",
-    consumption_status: "pending_compile"
-  }));
-  await flushPromises();
-  await flushPromises();
-  assert.strictEqual(pendingCommandCount(), 1);
-  assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
-  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
-  assert(!logBox.textContent.includes("백그라운드에서 시작"));
-  assert(nodes["micromachine-status"].textContent.includes("dashboard render failed"));
-
-  renderMicroMachineStatus = originalRenderMicroMachineStatus;
-  renderMicroMachineStatus({
-    ok: true,
-    accepted: true,
+    queued: false,
+    async_publish: false,
     status: "published",
+    update_id: "unit-update-1",
     consumption_status: "consumed",
     compile_result: {
       status: "compiled",
-      source: "llm",
+      source: "smoke_keyword",
       update_id: "unit-update-1",
-      assistant_message: "LLM이 enemy natural 압박 의도를 해석했고 탱크는 안전하게 운용하도록 조정했습니다.",
-      vector: { goal: "enemy natural 압박", assistant_message: "unused duplicate" }
+      assistant_message: "",
+      vector: { goal: "enemy natural 압박" }
     },
-    update: { update_id: "unit-update-1" },
-    intervention: {
-      latest_update_id: "unit-update-1",
-      tactical_posture: "pressure",
-      manager_bias_domains: ["combat", "squad"]
-    },
-    dashboard: {
-      active_updates: [
-        { update_id: "unit-update-1", manager_bias_domains: ["combat", "squad"] }
-      ]
-    }
-  });
+    update: { update_id: "unit-update-1" }
+  }));
+  await flushPromises();
+  await flushPromises();
   assert.strictEqual(pendingCommandCount(), 0);
   assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
-  assert(logBox.textContent.includes("LLM이 enemy natural 압박 의도를 해석했고"));
-  assert(!logBox.textContent.includes("MicroMachine DSL modulation을 blackboard에 publish했습니다."));
-  assert(!logBox.textContent.includes("provider_source=llm"));
+  assert(!logBox.textContent.includes("백그라운드에서 시작"));
+  assert(logBox.textContent.includes("enemy natural 압박"));
+  assert(nodes["micromachine-status"].textContent.includes("dashboard render failed"));
+
+  renderMicroMachineStatus = originalRenderMicroMachineStatus;
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
   assert(!logBox.textContent.includes("attack_gate="));
   assert.strictEqual(nodes["command-input"].value, "");
 
