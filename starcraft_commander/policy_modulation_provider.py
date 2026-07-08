@@ -402,6 +402,17 @@ _DOMAIN_ALIASES = {
     "task_duration_seconds": ("tactical_task", "duration_seconds"),
     "task_allow_partial": ("tactical_task", "allow_partial"),
     "task_safety_margin": ("tactical_task", "safety_margin"),
+    "production_targets_plan": ("production_plan", "targets"),
+    "production_plan_targets": ("production_plan", "targets"),
+    "allow_prerequisite_buildings": (
+        "production_plan",
+        "allow_prerequisite_buildings",
+    ),
+    "production_plan_priority": ("production_plan", "priority"),
+    "route_type": ("route_intent", "route_type"),
+    "avoid_enemy_strength": ("route_intent", "avoid_enemy_strength"),
+    "target_type": ("target_intent", "target_type"),
+    "target_intent_priority": ("target_intent", "priority"),
     "cancel_attacks": ("emergency", "cancel_attacks"),
     "pull_workers_for_defense": ("emergency", "pull_workers_for_defense"),
     "pull_workers_for_defense_bias": ("emergency", "pull_workers_for_defense"),
@@ -444,6 +455,15 @@ _DOMAIN_FIELD_ALIASES = {
     ("tactical_task", "require_safety_margin"): ("tactical_task", "safety_margin"),
     ("lifetime", "conditions"): ("lifetime", "completion_conditions"),
     ("lifetime", "state"): ("lifetime", "completion_state"),
+    ("production_plan", "items"): ("production_plan", "targets"),
+    ("production_plan", "units"): ("production_plan", "targets"),
+    ("production_plan", "buildings"): ("production_plan", "targets"),
+    ("production_plan", "allow_prerequisites"): (
+        "production_plan",
+        "allow_prerequisite_buildings",
+    ),
+    ("route_intent", "type"): ("route_intent", "route_type"),
+    ("target_intent", "type"): ("target_intent", "target_type"),
 }
 """LLM-friendly nested aliases routed to the canonical manager domains."""
 
@@ -460,6 +480,9 @@ _DOMAIN_KEYS = {
     "lifetime",
     "tactical_task",
     "emergency",
+    "production_plan",
+    "route_intent",
+    "target_intent",
 }
 
 _POSTURE_ALIASES = {
@@ -578,6 +601,9 @@ _VECTOR_KEYS = {
     "tags",
     "rationale",
     "assistant_message",
+    "composition_requirements",
+    "unit_roles",
+    "building_tasks",
     *_DOMAIN_KEYS,
 }
 
@@ -899,8 +925,42 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                 domain_value["production_targets"] = [
                     _canonicalize_micromachine_key(item) for item in targets
                 ]
+        if domain_name == "production_plan":
+            targets = domain_value.get("targets")
+            if isinstance(targets, tuple):
+                domain_value["targets"] = tuple(
+                    _canonicalize_micromachine_key(item) for item in targets
+                )
+            elif _is_non_text_sequence(targets):
+                domain_value["targets"] = [
+                    _canonicalize_micromachine_key(item) for item in targets
+                ]
+    _canonicalize_rich_intent_sequences(payload)
     _repair_micromachine_emergency_defaults(payload)
     _repair_micromachine_tactical_task_defaults(payload)
+
+
+def _canonicalize_rich_intent_sequences(payload: dict[str, object]) -> None:
+    for key, field_name in (
+        ("composition_requirements", "unit_type"),
+        ("unit_roles", "unit_type"),
+        ("building_tasks", "building_type"),
+    ):
+        values = payload.get(key)
+        if not _is_non_text_sequence(values):
+            continue
+        normalized_items: list[object] = []
+        for item in values:
+            if not isinstance(item, Mapping):
+                normalized_items.append(item)
+                continue
+            normalized = dict(item)
+            if field_name in normalized:
+                normalized[field_name] = _canonicalize_micromachine_key(
+                    normalized[field_name]
+                )
+            normalized_items.append(normalized)
+        payload[key] = normalized_items
 
 
 def _repair_micromachine_emergency_defaults(payload: dict[str, object]) -> None:

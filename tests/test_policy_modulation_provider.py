@@ -560,6 +560,71 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual("emergency", result.vector.override_level.value)
         self.assertEqual(60, result.vector.ttl_seconds)
 
+    def test_compiles_rich_micromachine_intent_domains(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "마린 4기랑 탱크 1기로 적진 공격하고 바이킹은 공중 우선",
+                "production_plan": {
+                    "targets": ["marine", "tank", "viking"],
+                    "allow_prerequisites": True,
+                    "priority": 0.8,
+                },
+                "composition_requirements": [
+                    {"unit_type": "marine", "count": 4, "role": "frontline"},
+                    {"unit_type": "tank", "count": 1, "role": "siege_support"},
+                ],
+                "unit_roles": [
+                    {"unit_type": "viking", "role": "anti_air", "priority": 0.75},
+                    {"unit_type": "banshee", "role": "worker_harass", "priority": 0.65},
+                ],
+                "building_tasks": [
+                    {"building_type": "bunker", "placement_intent": "front_door"}
+                ],
+                "route_intent": {"type": "flank_left", "avoid_enemy_strength": True},
+                "target_intent": {"type": "enemy_main", "priority": 0.9},
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        self.assertEqual(
+            ("TERRAN_MARINE", "TERRAN_SIEGETANK", "TERRAN_VIKINGFIGHTER"),
+            result.vector.production_plan.targets,
+        )
+        self.assertTrue(result.vector.production_plan.allow_prerequisite_buildings)
+        self.assertEqual("TERRAN_MARINE", result.vector.composition_requirements[0].unit_type)
+        self.assertEqual(4, result.vector.composition_requirements[0].count)
+        self.assertEqual("siege_support", result.vector.composition_requirements[1].role)
+        self.assertEqual("TERRAN_BANSHEE", result.vector.unit_roles[1].unit_type)
+        self.assertEqual("worker_harass", result.vector.unit_roles[1].role)
+        self.assertEqual("TERRAN_BUNKER", result.vector.building_tasks[0].building_type)
+        self.assertEqual("front_door", result.vector.building_tasks[0].placement_intent)
+        self.assertEqual("flank_left", result.vector.route_intent.route_type)
+        self.assertEqual("enemy_main", result.vector.target_intent.target_type)
+
+    def test_rejects_unsafe_rich_intent_payloads(self) -> None:
+        for payload in (
+            {
+                "goal": "bad role",
+                "unit_roles": [{"unit_type": "marine", "role": "raw_action"}],
+            },
+            {
+                "goal": "bad coordinate",
+                "building_tasks": [
+                    {
+                        "building_type": "bunker",
+                        "placement_intent": "front_door",
+                        "target_position": [999, 12],
+                    }
+                ],
+            },
+        ):
+            with self.subTest(payload=payload):
+                result = compile_policy_modulation_provider_output(payload)
+                self.assertFalse(result.ok, result.to_dict())
+
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (
             {"goal": "unsafe", "raw_action": "attack_move"},

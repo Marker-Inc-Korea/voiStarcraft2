@@ -276,8 +276,18 @@ class MicroMachineBlackboardUpdate:
                 "lifetime",
                 "tactical_task",
                 "emergency",
+                "production_plan",
+                "composition_requirements",
+                "unit_roles",
+                "building_tasks",
+                "route_intent",
+                "target_intent",
             )
             if _domain_has_signal(getattr(self.vector, domain))
+            or (
+                domain in {"composition_requirements", "unit_roles", "building_tasks"}
+                and _value_has_signal(getattr(self.vector, domain))
+            )
         )
 
     def is_stale(self, current_frame: int) -> bool:

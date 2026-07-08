@@ -4,7 +4,9 @@ import json
 import unittest
 
 from starcraft_commander.policy_modulation import (
+    BuildingTask,
     CombatModulation,
+    CompositionRequirement,
     EconomyModulation,
     EmergencyModulation,
     LifetimeModulation,
@@ -20,7 +22,11 @@ from starcraft_commander.policy_modulation import (
     StrategyModulation,
     TacticalScopeModulation,
     TacticalTaskModulation,
+    TargetIntentModulation,
     TechModulation,
+    UnitRoleAssignment,
+    ProductionPlanModulation,
+    RouteIntentModulation,
     WeightedBiases,
     WorkerModulation,
     reject_raw_policy_control_keys,
@@ -71,6 +77,58 @@ class LifetimeModulationTest(unittest.TestCase):
 
 
 class PolicyModulationVectorTest(unittest.TestCase):
+    def test_rich_micromachine_intent_round_trips(self) -> None:
+        vector = PolicyModulationVector(
+            goal="마린 4기랑 탱크 1기로 적진 공격",
+            production_plan=ProductionPlanModulation(
+                targets=("marine", "tank"),
+                allow_prerequisite_buildings=True,
+                priority=0.8,
+            ),
+            composition_requirements=(
+                CompositionRequirement("marine", count=4, role="frontline"),
+                CompositionRequirement("tank", count=1, role="siege_support"),
+            ),
+            unit_roles=(
+                UnitRoleAssignment("viking", role="anti_air", priority=0.7),
+            ),
+            building_tasks=(
+                BuildingTask("bunker", placement_intent="front_door", count=1),
+            ),
+            route_intent=RouteIntentModulation(
+                route_type="flank_left",
+                avoid_enemy_strength=True,
+            ),
+            target_intent=TargetIntentModulation(
+                target_type="enemy_main",
+                priority=0.9,
+            ),
+        )
+
+        payload = vector.to_dict()
+        self.assertEqual(
+            ["TERRAN_MARINE", "TERRAN_SIEGETANK"],
+            payload["production_plan"]["targets"],
+        )
+        self.assertEqual(
+            {"unit_type": "TERRAN_MARINE", "count": 4, "role": "frontline"},
+            payload["composition_requirements"][0],
+        )
+        self.assertEqual("TERRAN_BUNKER", payload["building_tasks"][0]["building_type"])
+        rebuilt = PolicyModulationVector.from_mapping(payload)
+        self.assertEqual(vector.production_plan, rebuilt.production_plan)
+        self.assertEqual(vector.composition_requirements, rebuilt.composition_requirements)
+        self.assertEqual(vector.unit_roles, rebuilt.unit_roles)
+        self.assertEqual(vector.building_tasks, rebuilt.building_tasks)
+        self.assertEqual(vector.route_intent, rebuilt.route_intent)
+        self.assertEqual(vector.target_intent, rebuilt.target_intent)
+
+    def test_rich_intent_rejects_unknown_roles_and_out_of_bounds_coordinates(self) -> None:
+        with self.assertRaisesRegex(ValueError, "role"):
+            UnitRoleAssignment("marine", role="raw_attack_move")
+        with self.assertRaisesRegex(ValueError, "target_position"):
+            BuildingTask("bunker", placement_intent="front_door", target_position=(300, 12))
+
     def test_vector_is_deep_json_ready_dsl_for_micro_machine_managers(self) -> None:
         vector = PolicyModulationVector(
             goal="contain_and_expand",

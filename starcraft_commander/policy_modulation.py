@@ -113,6 +113,61 @@ MICROMACHINE_COMPLETION_CONDITIONS: Final[frozenset[str]] = frozenset(
 )
 """Supported completion condition labels for live command lifecycle tracking."""
 
+MICROMACHINE_UNIT_ROLES: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "frontline",
+        "siege_support",
+        "anti_air",
+        "harass",
+        "scout",
+        "detector_hunter",
+        "worker_harass",
+        "air_superiority",
+        "capital_ship",
+        "support",
+    }
+)
+"""Safe semantic unit roles; managers still resolve exact unit tags/actions."""
+
+MICROMACHINE_ROUTE_INTENTS: Final[frozenset[str]] = frozenset(
+    {"", "direct", "flank_left", "flank_right", "safe_path", "avoid_enemy_army"}
+)
+"""Semantic route labels, not raw pathing commands."""
+
+MICROMACHINE_TARGET_INTENTS: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "enemy_main",
+        "enemy_natural",
+        "worker_line",
+        "townhall",
+        "production",
+        "army",
+        "air_army",
+        "static_defense",
+        "tech",
+    }
+)
+"""Semantic target labels used by tactical managers."""
+
+MICROMACHINE_BUILDING_PLACEMENT_INTENTS: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "home",
+        "natural",
+        "ramp",
+        "front_door",
+        "wall",
+        "safe_expansion",
+        "proxy",
+        "near_factory",
+        "near_barracks",
+        "near_starport",
+    }
+)
+"""Semantic building placement labels bounded by placement managers."""
+
 MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "scv": "TERRAN_SCV",
     "worker": "TERRAN_SCV",
@@ -172,6 +227,14 @@ MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "viking": "TERRAN_VIKINGFIGHTER",
     "vikings": "TERRAN_VIKINGFIGHTER",
     "바이킹": "TERRAN_VIKINGFIGHTER",
+    "banshee": "TERRAN_BANSHEE",
+    "banshees": "TERRAN_BANSHEE",
+    "밴시": "TERRAN_BANSHEE",
+    "battlecruiser": "TERRAN_BATTLECRUISER",
+    "battlecruisers": "TERRAN_BATTLECRUISER",
+    "bc": "TERRAN_BATTLECRUISER",
+    "배틀크루저": "TERRAN_BATTLECRUISER",
+    "전투순양함": "TERRAN_BATTLECRUISER",
     "factorytechlab": "FACTORY_TECHLAB",
     "factorylab": "FACTORY_TECHLAB",
     "factoryreactor": "FACTORY_REACTOR",
@@ -1064,6 +1127,201 @@ class EmergencyModulation:
 
 
 @dataclass(frozen=True)
+class ProductionPlanModulation:
+    """Typed production intent with optional prerequisite permission."""
+
+    targets: tuple[str, ...] = ()
+    allow_prerequisite_buildings: bool = False
+    priority: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "targets",
+            _canonicalize_task_tokens(_validate_string_tuple("targets", self.targets)),
+        )
+        object.__setattr__(
+            self,
+            "allow_prerequisite_buildings",
+            _coerce_bool(
+                self.allow_prerequisite_buildings,
+                "allow_prerequisite_buildings",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "priority",
+            _coerce_unit_interval(self.priority, field_name="priority", lower=0.0, upper=1.0),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "targets": list(self.targets),
+            "allow_prerequisite_buildings": self.allow_prerequisite_buildings,
+            "priority": self.priority,
+        }
+
+
+@dataclass(frozen=True)
+class CompositionRequirement:
+    """One bounded unit-count requirement for tactical composition."""
+
+    unit_type: str
+    count: int = 1
+    role: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "unit_type",
+            _canonicalize_task_token(_require_text("unit_type", self.unit_type)),
+        )
+        object.__setattr__(
+            self,
+            "count",
+            _coerce_bounded_int(self.count, field_name="count", lower=1, upper=200),
+        )
+        object.__setattr__(
+            self,
+            "role",
+            _optional_choice("role", self.role, set(MICROMACHINE_UNIT_ROLES)),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {"unit_type": self.unit_type, "count": self.count, "role": self.role}
+
+
+@dataclass(frozen=True)
+class UnitRoleAssignment:
+    """Semantic role request for a unit class."""
+
+    unit_type: str
+    role: str
+    priority: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "unit_type",
+            _canonicalize_task_token(_require_text("unit_type", self.unit_type)),
+        )
+        object.__setattr__(
+            self,
+            "role",
+            _require_choice("role", self.role, set(MICROMACHINE_UNIT_ROLES) - {""}),
+        )
+        object.__setattr__(
+            self,
+            "priority",
+            _coerce_unit_interval(self.priority, field_name="priority", lower=0.0, upper=1.0),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "unit_type": self.unit_type,
+            "role": self.role,
+            "priority": self.priority,
+        }
+
+
+@dataclass(frozen=True)
+class BuildingTask:
+    """Semantic building placement task; no worker tag or raw build command."""
+
+    building_type: str
+    placement_intent: str = ""
+    count: int = 1
+    target_position: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "building_type",
+            _canonicalize_task_token(_require_text("building_type", self.building_type)),
+        )
+        object.__setattr__(
+            self,
+            "placement_intent",
+            _optional_choice(
+                "placement_intent",
+                self.placement_intent,
+                set(MICROMACHINE_BUILDING_PLACEMENT_INTENTS),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "count",
+            _coerce_bounded_int(self.count, field_name="count", lower=1, upper=20),
+        )
+        object.__setattr__(
+            self,
+            "target_position",
+            _validate_map_position("target_position", self.target_position),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "building_type": self.building_type,
+            "placement_intent": self.placement_intent,
+            "count": self.count,
+            "target_position": list(self.target_position),
+        }
+
+
+@dataclass(frozen=True)
+class RouteIntentModulation:
+    """Semantic route preference; not a waypoint command stream."""
+
+    route_type: str = ""
+    avoid_enemy_strength: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "route_type",
+            _optional_choice("route_type", self.route_type, set(MICROMACHINE_ROUTE_INTENTS)),
+        )
+        object.__setattr__(
+            self,
+            "avoid_enemy_strength",
+            _coerce_bool(self.avoid_enemy_strength, "avoid_enemy_strength"),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "route_type": self.route_type,
+            "avoid_enemy_strength": self.avoid_enemy_strength,
+        }
+
+
+@dataclass(frozen=True)
+class TargetIntentModulation:
+    """Semantic target preference for combat/squad managers."""
+
+    target_type: str = ""
+    priority: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "target_type",
+            _optional_choice(
+                "target_type",
+                self.target_type,
+                set(MICROMACHINE_TARGET_INTENTS),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "priority",
+            _coerce_unit_interval(self.priority, field_name="priority", lower=0.0, upper=1.0),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {"target_type": self.target_type, "priority": self.priority}
+
+
+@dataclass(frozen=True)
 class PolicySafetyConstraint:
     """A bounded constraint that a bridge may enforce against bot managers."""
 
@@ -1105,6 +1363,12 @@ class PolicyModulationVector:
     lifetime: LifetimeModulation = field(default_factory=LifetimeModulation)
     tactical_task: TacticalTaskModulation = field(default_factory=TacticalTaskModulation)
     emergency: EmergencyModulation = field(default_factory=EmergencyModulation)
+    production_plan: ProductionPlanModulation = field(default_factory=ProductionPlanModulation)
+    composition_requirements: tuple[CompositionRequirement, ...] = ()
+    unit_roles: tuple[UnitRoleAssignment, ...] = ()
+    building_tasks: tuple[BuildingTask, ...] = ()
+    route_intent: RouteIntentModulation = field(default_factory=RouteIntentModulation)
+    target_intent: TargetIntentModulation = field(default_factory=TargetIntentModulation)
     constraints: tuple[PolicySafetyConstraint, ...] = ()
     tags: tuple[str, ...] = ()
     rationale: str = ""
@@ -1160,6 +1424,40 @@ class PolicyModulationVector:
         )
         object.__setattr__(
             self,
+            "production_plan",
+            _coerce_domain(self.production_plan, ProductionPlanModulation),
+        )
+        object.__setattr__(
+            self,
+            "composition_requirements",
+            _validate_object_sequence(
+                "composition_requirements",
+                self.composition_requirements,
+                CompositionRequirement,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "unit_roles",
+            _validate_object_sequence("unit_roles", self.unit_roles, UnitRoleAssignment),
+        )
+        object.__setattr__(
+            self,
+            "building_tasks",
+            _validate_object_sequence("building_tasks", self.building_tasks, BuildingTask),
+        )
+        object.__setattr__(
+            self,
+            "route_intent",
+            _coerce_domain(self.route_intent, RouteIntentModulation),
+        )
+        object.__setattr__(
+            self,
+            "target_intent",
+            _coerce_domain(self.target_intent, TargetIntentModulation),
+        )
+        object.__setattr__(
+            self,
             "constraints",
             _validate_constraints(self.constraints),
         )
@@ -1198,6 +1496,36 @@ class PolicyModulationVector:
                 TacticalTaskModulation,
             ),
             emergency=_domain_from_mapping(mapping, "emergency", EmergencyModulation),
+            production_plan=_domain_from_mapping(
+                mapping,
+                "production_plan",
+                ProductionPlanModulation,
+            ),
+            composition_requirements=_object_sequence_from_mapping(
+                mapping.get("composition_requirements", ()),
+                "composition_requirements",
+                CompositionRequirement,
+            ),
+            unit_roles=_object_sequence_from_mapping(
+                mapping.get("unit_roles", ()),
+                "unit_roles",
+                UnitRoleAssignment,
+            ),
+            building_tasks=_object_sequence_from_mapping(
+                mapping.get("building_tasks", ()),
+                "building_tasks",
+                BuildingTask,
+            ),
+            route_intent=_domain_from_mapping(
+                mapping,
+                "route_intent",
+                RouteIntentModulation,
+            ),
+            target_intent=_domain_from_mapping(
+                mapping,
+                "target_intent",
+                TargetIntentModulation,
+            ),
             constraints=_constraints_from_mapping(mapping.get("constraints", ())),
             tags=_string_tuple_from_mapping(mapping.get("tags", ()), "tags"),
             rationale=str(mapping.get("rationale", "")),
@@ -1224,6 +1552,14 @@ class PolicyModulationVector:
             "lifetime": self.lifetime.to_dict(),
             "tactical_task": self.tactical_task.to_dict(),
             "emergency": self.emergency.to_dict(),
+            "production_plan": self.production_plan.to_dict(),
+            "composition_requirements": [
+                requirement.to_dict() for requirement in self.composition_requirements
+            ],
+            "unit_roles": [assignment.to_dict() for assignment in self.unit_roles],
+            "building_tasks": [task.to_dict() for task in self.building_tasks],
+            "route_intent": self.route_intent.to_dict(),
+            "target_intent": self.target_intent.to_dict(),
             "constraints": [constraint.to_dict() for constraint in self.constraints],
             "tags": list(self.tags),
             "rationale": self.rationale,
@@ -1290,6 +1626,34 @@ def _validate_constraints(values: object) -> tuple[PolicySafetyConstraint, ...]:
 
 def _constraints_from_mapping(values: object) -> tuple[PolicySafetyConstraint, ...]:
     return _validate_constraints(values)
+
+
+def _validate_object_sequence(
+    name: str,
+    values: object,
+    item_type: type,
+) -> tuple[object, ...]:
+    if values is None:
+        return ()
+    if not _is_non_text_sequence(values):
+        raise ValueError(f"{name} must be a sequence.")
+    result: list[object] = []
+    for value in values:
+        if isinstance(value, item_type):
+            result.append(value)
+        elif isinstance(value, Mapping):
+            result.append(item_type(**value))
+        else:
+            raise ValueError(f"{name} must contain mappings or {item_type.__name__}.")
+    return tuple(result)
+
+
+def _object_sequence_from_mapping(
+    values: object,
+    name: str,
+    item_type: type,
+) -> tuple[object, ...]:
+    return _validate_object_sequence(name, values, item_type)
 
 
 def _validate_completion_conditions(values: object) -> tuple[str, ...]:
@@ -1433,6 +1797,25 @@ def _validate_string_tuple(name: str, values: object) -> tuple[str, ...]:
     for value in result:
         _require_text(name, value)
     return tuple(str(value).strip() for value in result)
+
+
+def _validate_map_position(name: str, values: object) -> tuple[float, ...]:
+    if values in (None, ""):
+        return ()
+    if values == () or values == []:
+        return ()
+    if not _is_non_text_sequence(values):
+        raise ValueError(f"{name} must be a coordinate pair.")
+    result = tuple(values)
+    if len(result) != 2:
+        raise ValueError(f"{name} must contain exactly two coordinates.")
+    coordinates: list[float] = []
+    for value in result:
+        number = _coerce_float(value, field_name=name)
+        if not 0.0 <= number <= 256.0:
+            raise ValueError(f"{name} coordinates must be between 0.0 and 256.0.")
+        coordinates.append(number)
+    return tuple(coordinates)
 
 
 def _canonicalize_task_tokens(values: tuple[str, ...]) -> tuple[str, ...]:
