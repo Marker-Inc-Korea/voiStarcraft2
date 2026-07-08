@@ -10001,6 +10001,25 @@ index a8d5f3a..1fc1cee 100644
 +				overflowUnits.push_back(unit);
 +			}
 +		}
++		for (const auto & requirement : requirements)
++		{
++			int keptForType = 0;
++			for (const auto & unit : mainAttackSquad.getUnits())
++			{
++				if (!voiUnitMatchesCompositionToken(unit, requirement.first))
++				{
++					continue;
++				}
++				if (keptForType < requirement.second)
++				{
++					keptForType++;
++				}
++				else
++				{
++					overflowUnits.push_back(unit);
++				}
++			}
++		}
 +		for (const auto & unit : overflowUnits)
 +		{
 +			m_squadData.assignUnitToSquad(unit, backupSquad);

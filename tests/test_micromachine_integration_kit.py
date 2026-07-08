@@ -302,6 +302,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "Missing composition units",
             "Requested composition assigned to MainAttack",
             "voiPartialCompositionReady",
+            "keptForType",
             "tacticalPressureTask && !exactCompositionPressureTask && voiScopeMaxUnits",
             "composition_requirements.*,unit_roles.*,route_intent.route_type,target_intent.target_type",
             "scope.unit_classes",
