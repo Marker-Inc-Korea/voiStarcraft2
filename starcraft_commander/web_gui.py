@@ -665,9 +665,9 @@ def _micromachine_status_payload(
         active_consumption_status=consumption_status,
     )
     command_queue = (
-        dict(compile_result.get("command_queue"))
-        if isinstance(compile_result, Mapping)
-        and isinstance(compile_result.get("command_queue"), Mapping)
+        dict(intervention_compile_result.get("command_queue"))
+        if isinstance(intervention_compile_result, Mapping)
+        and isinstance(intervention_compile_result.get("command_queue"), Mapping)
         else {}
     )
     intervention = _micromachine_intervention_summary(

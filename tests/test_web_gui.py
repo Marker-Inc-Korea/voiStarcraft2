@@ -1604,6 +1604,52 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 payload["update"]["vector"]["tags"],
             )
 
+    def test_micromachine_status_scopes_command_queue_to_active_update(self):
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": "active-pressure",
+                    "manager_bias_domains": ["combat"],
+                    "vector": {
+                        "goal": "active pressure",
+                        "combat": {},
+                        "squad": {},
+                        "scope": {},
+                        "tactical_task": {},
+                    },
+                }
+            ],
+            "telemetry": {"frame": 200},
+        }
+        telemetry = SimpleNamespace(
+            frame=200,
+            active_modulation_ids=("active-pressure",),
+            to_dict=lambda: {"frame": 200, "active_modulation_ids": ["active-pressure"]},
+        )
+        stale_compile = {
+            "status": "refused",
+            "update_id": "stale-refusal",
+            "source": "llm",
+            "refusal_reason": "provider auth failed",
+            "command_queue": {
+                "category": "clarification",
+                "action": "refused",
+            },
+        }
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            compile_result=stale_compile,
+        )
+
+        self.assertEqual({}, payload["command_queue"])
+        self.assertNotIn("command_queue", payload["intervention"])
+        self.assertEqual(
+            stale_compile["command_queue"],
+            payload["latest_request"]["command_queue"],
+        )
+
     def test_micromachine_provider_output_cannot_spoof_llm_or_smoke_source(self):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)

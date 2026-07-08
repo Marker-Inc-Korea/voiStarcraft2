@@ -563,6 +563,87 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertTrue(vector.emergency.force_retreat)
         self.assertIn("command_action:overwrite_emergency", vector.tags)
 
+    def test_emergency_without_override_still_overwrites_without_stale_tags(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        first_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 러쉬",
+                    "strategy": {"doctrine": "marine_rush"},
+                    "combat": {"aggression": 0.7},
+                    "tactical_task": {"task_type": "pressure_with_main_army"},
+                    "tags": ["aggressive_pressure"],
+                }
+            ),
+        )
+        self.assertTrue(
+            first_session.submit_text(
+                "마린 러쉬",
+                current_frame=100,
+                update_id="old-rush",
+            ).ok
+        )
+        cancel_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "공격 취소",
+                    "combat": {"aggression": -0.7, "preserve_army_bias": 0.8},
+                    "squad": {"regroup_bias": 0.8},
+                    "emergency": {"force_retreat": True},
+                    "tags": ["cancel_attack"],
+                }
+            ),
+        )
+
+        result = cancel_session.submit_text(
+            "공격 취소해",
+            current_frame=150,
+            update_id="cancel-rush",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual("emergency", result.command_queue["category"])
+        self.assertEqual("overwrite_emergency", result.command_queue["action"])
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("", vector.strategy.doctrine)
+        self.assertEqual("공격 취소", vector.goal)
+        self.assertIn("cancel_attack", vector.tags)
+        self.assertIn("command_category:emergency", vector.tags)
+        self.assertNotIn("command_category:tactical", vector.tags)
+        self.assertNotIn("aggressive_pressure", vector.tags)
+
+    def test_keyword_provider_maps_cancel_attack_to_emergency_not_attack(self) -> None:
+        for command in ("공격 취소해", "cancel attack", "중지"):
+            with self.subTest(command=command):
+                backend = MicroMachineInMemoryBlackboard()
+                session = MicroMachineLiveTextSession(
+                    backend,
+                    KeywordPolicyModulationProvider(),
+                )
+
+                result = session.submit_text(
+                    command,
+                    current_frame=100,
+                    update_id=f"cancel-{len(command)}",
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                self.assertEqual("emergency", result.command_queue["category"])
+                self.assertEqual("overwrite_emergency", result.command_queue["action"])
+                assert result.update is not None
+                vector = result.update.vector
+                self.assertTrue(vector.emergency.cancel_attacks)
+                self.assertTrue(vector.emergency.force_retreat)
+                self.assertLess(vector.combat.aggression, 0.0)
+                self.assertNotEqual(
+                    "pressure_with_main_army",
+                    vector.tactical_task.task_type,
+                )
+                self.assertIn("cancel_attack", vector.tags)
+
     def test_new_tactical_command_supersedes_stale_tactical_command(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         first_session = MicroMachineLiveTextSession(
