@@ -9969,7 +9969,7 @@ index a8d5f3a..1fc1cee 100644
 +	const std::string exactCompositionTaskType = m_bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
 +	const bool exactCompositionPressureTask = exactCompositionTaskType == "pressure_with_main_army"
 +		&& voiTacticalTaskWithinDuration(m_bot)
-+		&& m_bot.Commander().hasVoiPolicyDomain("composition_requirements");
++		&& (m_bot.Commander().hasVoiPolicyDomain("composition_requirements") || m_bot.Commander().hasVoiPolicyDomain("unit_roles"));
 +	bool exactCompositionBlocksAttack = false;
 +	if (exactCompositionPressureTask)
 +	{
@@ -9982,6 +9982,17 @@ index a8d5f3a..1fc1cee 100644
 +			if (!unitType.empty() && count > 0)
 +			{
 +				requirements.push_back(std::make_pair(unitType, count));
++			}
++		}
++		if (requirements.empty() && m_bot.Commander().hasVoiPolicyDomain("unit_roles"))
++		{
++			for (int i = 0; i < 8; ++i)
++			{
++				const std::string roleUnitType = m_bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
++				if (!roleUnitType.empty())
++				{
++					requirements.push_back(std::make_pair(roleUnitType, 1));
++				}
 +			}
 +		}
 +		std::vector<Unit> overflowUnits;
