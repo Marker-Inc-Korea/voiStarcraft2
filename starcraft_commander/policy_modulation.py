@@ -254,6 +254,43 @@ MICROMACHINE_ALLOWED_TASK_TOKENS: Final[frozenset[str]] = frozenset(
 )
 """Allow-list for rich DSL unit/building/addon/upgrade tokens."""
 
+MICROMACHINE_ALLOWED_UNIT_TOKENS: Final[frozenset[str]] = frozenset(
+    {
+        "TERRAN_SCV",
+        "TERRAN_MARINE",
+        "TERRAN_MARAUDER",
+        "TERRAN_REAPER",
+        "TERRAN_HELLION",
+        "TERRAN_CYCLONE",
+        "TERRAN_THOR",
+        "TERRAN_SIEGETANK",
+        "TERRAN_MEDIVAC",
+        "TERRAN_VIKINGFIGHTER",
+        "TERRAN_BANSHEE",
+        "TERRAN_BATTLECRUISER",
+    }
+)
+
+MICROMACHINE_ALLOWED_BUILDING_TOKENS: Final[frozenset[str]] = frozenset(
+    {
+        "TERRAN_SUPPLYDEPOT",
+        "TERRAN_COMMANDCENTER",
+        "TERRAN_REFINERY",
+        "TERRAN_BARRACKS",
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "TERRAN_ENGINEERINGBAY",
+        "TERRAN_ARMORY",
+        "TERRAN_BUNKER",
+        "BARRACKS_TECHLAB",
+        "BARRACKS_REACTOR",
+        "FACTORY_TECHLAB",
+        "FACTORY_REACTOR",
+        "STARPORT_TECHLAB",
+        "STARPORT_REACTOR",
+    }
+)
+
 POLICY_MODULATION_RAW_CONTROL_KEYS: Final[frozenset[str]] = frozenset(
     {
         "api_call",
@@ -1150,8 +1187,11 @@ class ProductionPlanModulation:
             _canonicalize_allowed_task_tokens(
                 "targets",
                 _validate_string_tuple("targets", self.targets),
+                allowed=MICROMACHINE_ALLOWED_TASK_TOKENS,
             ),
         )
+        if len(self.targets) > 32:
+            raise ValueError("targets cannot contain more than 32 entries.")
         object.__setattr__(
             self,
             "allow_prerequisite_buildings",
@@ -1186,7 +1226,11 @@ class CompositionRequirement:
         object.__setattr__(
             self,
             "unit_type",
-            _canonicalize_allowed_task_token("unit_type", self.unit_type),
+            _canonicalize_allowed_task_token(
+                "unit_type",
+                self.unit_type,
+                allowed=MICROMACHINE_ALLOWED_UNIT_TOKENS,
+            ),
         )
         object.__setattr__(
             self,
@@ -1215,7 +1259,11 @@ class UnitRoleAssignment:
         object.__setattr__(
             self,
             "unit_type",
-            _canonicalize_allowed_task_token("unit_type", self.unit_type),
+            _canonicalize_allowed_task_token(
+                "unit_type",
+                self.unit_type,
+                allowed=MICROMACHINE_ALLOWED_UNIT_TOKENS,
+            ),
         )
         object.__setattr__(
             self,
@@ -1249,7 +1297,11 @@ class BuildingTask:
         object.__setattr__(
             self,
             "building_type",
-            _canonicalize_allowed_task_token("building_type", self.building_type),
+            _canonicalize_allowed_task_token(
+                "building_type",
+                self.building_type,
+                allowed=MICROMACHINE_ALLOWED_BUILDING_TOKENS,
+            ),
         )
         object.__setattr__(
             self,
@@ -1839,13 +1891,23 @@ def _canonicalize_task_tokens(values: tuple[str, ...]) -> tuple[str, ...]:
 def _canonicalize_allowed_task_tokens(
     field_name: str,
     values: tuple[str, ...],
+    *,
+    allowed: frozenset[str],
 ) -> tuple[str, ...]:
-    return tuple(_canonicalize_allowed_task_token(field_name, value) for value in values)
+    return tuple(
+        _canonicalize_allowed_task_token(field_name, value, allowed=allowed)
+        for value in values
+    )
 
 
-def _canonicalize_allowed_task_token(field_name: str, value: object) -> str:
+def _canonicalize_allowed_task_token(
+    field_name: str,
+    value: object,
+    *,
+    allowed: frozenset[str],
+) -> str:
     token = _canonicalize_task_token(_require_text(field_name, value))
-    if token not in MICROMACHINE_ALLOWED_TASK_TOKENS:
+    if token not in allowed:
         raise ValueError(
             f"{field_name} must be an allowed MicroMachine unit/building/addon token."
         )

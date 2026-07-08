@@ -632,6 +632,17 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     {"building_type": "DROP TABLE latest_modulation"}
                 ],
             },
+            {
+                "goal": "too many targets",
+                "production_plan": {
+                    "targets": ["marine"] * 33,
+                    "allow_prerequisites": True,
+                },
+            },
+            {
+                "goal": "unit as building",
+                "building_tasks": [{"building_type": "marine"}],
+            },
         ):
             with self.subTest(payload=payload):
                 result = compile_policy_modulation_provider_output(payload)

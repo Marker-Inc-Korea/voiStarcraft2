@@ -132,6 +132,12 @@ class PolicyModulationVectorTest(unittest.TestCase):
             CompositionRequirement("UNSAFE_UNIT", count=1)
         with self.assertRaisesRegex(ValueError, "allowed MicroMachine"):
             BuildingTask("DROP TABLE latest_modulation", placement_intent="front_door")
+        with self.assertRaisesRegex(ValueError, "allowed MicroMachine"):
+            BuildingTask("marine", placement_intent="front_door")
+        with self.assertRaisesRegex(ValueError, "allowed MicroMachine"):
+            UnitRoleAssignment("bunker", role="frontline")
+        with self.assertRaisesRegex(ValueError, "more than 32"):
+            ProductionPlanModulation(targets=tuple("marine" for _ in range(33)))
         with self.assertRaisesRegex(ValueError, "more than 32"):
             PolicyModulationVector(
                 goal="too many",
