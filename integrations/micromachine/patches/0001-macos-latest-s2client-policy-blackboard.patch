@@ -10149,7 +10149,7 @@ index a8d5f3a..1fc1cee 100644
 +	const int voiScopeMaxUnits = std::max(
 +		std::max(0, m_bot.Commander().getVoiPolicyInt("scope.max_units", 0)),
 +		tacticalPressureTask ? std::max(0, m_bot.Commander().getVoiPolicyInt("tactical_task.max_units", 0)) : 0);
-+	if (tacticalPressureTask && voiScopeMaxUnits > 0 && mainAttackSquad.getUnits().size() > static_cast<size_t>(voiScopeMaxUnits))
++	if (tacticalPressureTask && !exactCompositionPressureTask && voiScopeMaxUnits > 0 && mainAttackSquad.getUnits().size() > static_cast<size_t>(voiScopeMaxUnits))
 +	{
 +		int keptUnits = 0;
 +		for (auto & unit : mainAttackSquad.getUnits())
@@ -10167,7 +10167,12 @@ index a8d5f3a..1fc1cee 100644
 +		}
 +		unitsToTransfer.clear();
 +	}
-+	const bool voiScopeThresholdMet = voiScopeMinUnits == 0 || static_cast<int>(mainAttackSquad.getUnits().size()) >= voiScopeMinUnits;
++	const bool voiPartialCompositionReady = exactCompositionPressureTask
++		&& m_bot.Commander().getVoiPolicyBool("tactical_task.allow_partial", true)
++		&& m_lastVoiCompositionAssigned > 0;
++	const bool voiScopeThresholdMet = voiScopeMinUnits == 0
++		|| static_cast<int>(mainAttackSquad.getUnits().size()) >= voiScopeMinUnits
++		|| voiPartialCompositionReady;
 +	const int autonomousAttackUnitCount = voiCountMobileAttackUnits(mainAttackSquad.getUnits());
 +	const int autonomousAttackMinUnits = std::max(1, m_bot.Commander().getVoiPolicyInt("combat.autonomous_attack_min_units", 4));
 +	const bool voiDefensivePolicyBlocksAutonomy =
