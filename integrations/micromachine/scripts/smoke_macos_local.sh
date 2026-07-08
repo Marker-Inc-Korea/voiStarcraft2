@@ -740,6 +740,90 @@ backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_i
 PY
 }
 
+preserve_existing_live_modulation() {
+  local frame="$1"
+  # In manual live mode the web/voice cockpit may publish a user tactical command
+  # before the SC2 runtime is launched. Preserve that command instead of replacing
+  # it with the smoke-only defensive hold bootstrap profile.
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${BLACKBOARD_DIR}" "${frame}"
+import json
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_bridge import MicroMachineBlackboardUpdate
+from starcraft_commander.micromachine_runtime import MicroMachineFilesystemBlackboard
+from starcraft_commander.policy_modulation import PolicyModulationVector
+
+directory = Path(sys.argv[1])
+frame = int(sys.argv[2])
+latest_path = directory / "latest_modulation.json"
+if not latest_path.exists():
+    raise SystemExit(1)
+try:
+    payload = json.loads(latest_path.read_text())
+except Exception:
+    raise SystemExit(1)
+
+update_id = str(payload.get("update_id", "")).strip()
+if not update_id or update_id.startswith(("smoke-", "soak-")):
+    raise SystemExit(1)
+
+vector_payload = payload.get("vector")
+if not isinstance(vector_payload, dict):
+    raise SystemExit(1)
+
+source = str(vector_payload.get("source", "")).strip().lower()
+raw_tags = vector_payload.get("tags", [])
+tags = {
+    str(tag).strip()
+    for tag in raw_tags
+    if isinstance(tag, str) and tag.strip()
+}
+tactical_task = vector_payload.get("tactical_task", {})
+if not isinstance(tactical_task, dict):
+    tactical_task = {}
+scope = vector_payload.get("scope", {})
+if not isinstance(scope, dict):
+    scope = {}
+combat = vector_payload.get("combat", {})
+if not isinstance(combat, dict):
+    combat = {}
+
+live_tags = {
+    "live_text",
+    "keyword_provider",
+    "web_gui_tactical_fallback",
+    "scout_with_units",
+    "aggressive_pressure",
+    "marine_rush",
+}
+task_type = str(tactical_task.get("task_type", "")).strip()
+task_location = str(tactical_task.get("location_intent", "")).strip()
+scope_location = str(scope.get("location_intent", "")).strip()
+attack_override = str(combat.get("attack_condition_override", "")).strip()
+has_live_intent = (
+    source == "ui"
+    or bool(tags & live_tags)
+    or task_type in {"pressure_with_main_army", "scout_with_units"}
+    or bool(task_location)
+    or bool(scope_location)
+    or attack_override in {"earlier_if_safe", "force_when_threshold_met"}
+)
+if not has_live_intent:
+    raise SystemExit(1)
+
+vector = PolicyModulationVector.from_mapping(vector_payload)
+update = MicroMachineBlackboardUpdate(
+    update_id=update_id,
+    vector=vector,
+    issued_at_frame=frame,
+    rollback_update_id=payload.get("rollback_update_id"),
+)
+MicroMachineFilesystemBlackboard(directory).publish_update(update, current_frame=frame)
+print(update_id)
+PY
+}
+
 smoke_strategy_update_id() {
   local profile="$1"
   local frame="$2"
@@ -867,7 +951,15 @@ rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jso
 touch "${RUNTIME_LOG_MARKER}"
 record_runtime_log_baseline
 if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]]; then
-  publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
+  if preserved_update_id="$(preserve_existing_live_modulation "0")"; then
+    DEFENSIVE_UPDATE_ID="${preserved_update_id}"
+    AGGRESSIVE_UPDATE_ID="${preserved_update_id}"
+    SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${preserved_update_id}"
+    AGGRESSIVE_PROFILE_PUBLISHED=1
+    echo "MicroMachine manual live mode preserved existing tactical blackboard command: ${preserved_update_id}"
+  else
+    publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
+  fi
 else
   SMOKE_ACTIVE_STRATEGY_UPDATE_ID="$(smoke_strategy_update_id "${SMOKE_STRATEGY_PROFILE_NAME}" "0")"
   AGGRESSIVE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
@@ -1045,6 +1137,7 @@ print_bot_logs >/dev/null 2>&1
 
 python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${BOT_LOG}" "${DEFENSIVE_UPDATE_ID}" "${AGGRESSIVE_UPDATE_ID}" "${SMOKE_EXPECTED_STRATEGY_DOCTRINE}" "${SMOKE_EXPECTED_PRODUCTION_ACTIONS}" "${SMOKE_EXPECTED_PRODUCTION_ITEMS}" "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE}" "${SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE}" "${SMOKE_REQUIRE_SCOUT_MODULATION_EVIDENCE}" "${SMOKE_REQUIRE_SQUAD_MODULATION_EVIDENCE}"
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -1061,6 +1154,8 @@ require_aggressive_combat = sys.argv[9] == "1"
 require_scout_movement = sys.argv[10] == "1"
 require_scout_modulation = sys.argv[11] == "1"
 require_squad_modulation = sys.argv[12] == "1"
+min_main_attack_home_distance = float(os.environ.get("SMOKE_MIN_MAIN_ATTACK_HOME_DISTANCE", "12.0"))
+min_combat_scout_home_distance = float(os.environ.get("SMOKE_MIN_COMBAT_SCOUT_HOME_DISTANCE", "8.0"))
 pressure_override_contract = {
     "marine_rush": {"force_when_threshold_met"},
     "bio_pressure": {"earlier_if_safe"},
@@ -1151,6 +1246,7 @@ def profile_main_attack_command_seen():
         command_frame = int(combat_entry.get("main_attack_last_action_frame", 0) or 0)
         command_count = int(combat_entry.get("main_attack_actual_command_issued_count", 0) or 0)
         status = str(combat_entry.get("main_attack_order_status", "") or "")
+        max_home_distance = float(combat_entry.get("main_attack_max_home_distance", 0.0) or 0.0)
         best = {
             "frame": frame,
             "main_attack_actual_command_issued_count": command_count,
@@ -1159,6 +1255,8 @@ def profile_main_attack_command_seen():
             "main_attack_order_status": status,
             "main_attack_scope_threshold_met": combat_entry.get("main_attack_scope_threshold_met"),
             "main_attack_simulation_won": combat_entry.get("main_attack_simulation_won"),
+            "main_attack_max_home_distance": max_home_distance,
+            "required_main_attack_home_distance": min_main_attack_home_distance,
             "aggressive_issued_at_frame": aggressive_issued_at_frame,
         }
         issued_main_attack = "squad=MainAttack" in command
@@ -1170,6 +1268,7 @@ def profile_main_attack_command_seen():
             and combat_entry.get("main_attack_simulation_won") is True
             and command_frame > 0
             and command_frame >= aggressive_issued_at_frame
+            and max_home_distance >= min_main_attack_home_distance
         ):
             return True, best
     return False, best
@@ -1263,6 +1362,20 @@ if require_aggressive_combat:
         )
     if int(combat.get("main_attack_unit_count", 0)) < int(combat.get("main_attack_scope_min_units", 1)):
         raise SystemExit(f"attack order did not satisfy scope units: {combat!r}")
+    if float(combat.get("main_attack_max_home_distance", 0.0) or 0.0) < min_main_attack_home_distance:
+        raise SystemExit(
+            "MainAttack command did not produce live movement away from home: "
+            f"required_distance={min_main_attack_home_distance}, combat={combat!r}"
+        )
+    if (
+        combat.get("scout_scope_status") == "Consumed"
+        and int(combat.get("scout_scope_assigned_unit_count", 0) or 0) > 0
+        and float(combat.get("scout_max_home_distance", 0.0) or 0.0) < min_combat_scout_home_distance
+    ):
+        raise SystemExit(
+            "Combat scout squad was assigned but did not produce live movement away from home: "
+            f"required_distance={min_combat_scout_home_distance}, combat={combat!r}"
+        )
     if float(combat.get("retreat_patience_bias", 0)) <= 0:
         raise SystemExit(f"missing retreat patience evidence: {combat!r}")
     if pressure_requires_rally and float(combat.get("rally_before_attack_bias", 0)) <= 0:

@@ -31,6 +31,13 @@ python3 -m pytest -q
 The suite does not require StarCraft II, `burnysc2`, BWAPI, LLM credentials,
 or audio hardware.
 
+## License
+
+voiStarcraft2 is dual-licensed as `AGPL-3.0-or-later OR commercial`.
+Commercial closed-source use requires a paid commercial license from the
+copyright holder. If you do not obtain a commercial license, you must comply
+with the AGPL source-code disclosure obligations for the covered work.
+
 ## Quickstart
 
 Run the full commander pipeline against a scripted fake BotAI:
@@ -142,9 +149,11 @@ text / voice
 ```
 
 This default path does not call python-sc2 and does not emulate the SC2 screen,
-keyboard, or mouse. Production free-form MicroMachine modulation requires a
-configured LLM forced-tool provider. The built-in keyword provider is explicit
-smoke/test-only and is labeled `source=smoke_keyword`, never `source=llm`.
+keyboard, or mouse. The web cockpit prefers configured LLM forced-tool output,
+but tactical live-QA commands such as scout, attack, rush, pressure, defend, and
+hold are rescued by a bounded web fallback DSL when the LLM misses tool-call or
+JSON output. CLI keyword publishing remains explicit smoke/test-only and is
+labeled `source=smoke_keyword`, never `source=llm`.
 
 Standalone local UI:
 
@@ -242,11 +251,12 @@ Open the printed `http://0.0.0.0:PORT/?token=...` URL by replacing
 
 ### LLM Interpreter
 
-Live SC2 mode requires the LLM interpreter. Every user utterance goes through
-the selected provider before any mutating action can execute. Deprecated
-rule/keyword matching is not used as a live fallback and never rescues a
-configured LLM failure. The LLM is called once per user command, never per game
-frame.
+Legacy python-sc2 live mode requires the LLM interpreter. Every legacy user
+utterance goes through the selected provider before any mutating action can
+execute. The MicroMachine web cockpit is different: it uses the LLM first, then
+uses a bounded web fallback DSL for tactical live-QA commands if the provider
+does not return tool-call/JSON. The LLM is called once per user command, never
+per game frame.
 
 ```bash
 export OPENAI_API_KEY=...

@@ -173,6 +173,13 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
                         "actual_command_issued_count": 1,
                         "last_actual_command": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
                     },
+                    "CombatCommander": {
+                        "scout_actual_command_issued_count": 1,
+                        "scout_last_action_frame": 13000,
+                        "scout_last_issued_action": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                        "scout_home_distance": 10.0,
+                        "scout_max_home_distance": 16.0,
+                    },
                 },
             },
             expected_effects=("scout",),
@@ -180,6 +187,33 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
 
         self.assertTrue(evidence.ok, evidence.to_dict())
         self.assertIn("scout", evidence.observed_effects)
+
+    def test_scout_with_units_rejects_command_without_live_movement(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "scout_with_units",
+                        "status": "executing",
+                        "actual_command_issued_count": 1,
+                        "last_actual_command": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                    },
+                    "CombatCommander": {
+                        "scout_actual_command_issued_count": 1,
+                        "scout_last_action_frame": 13000,
+                        "scout_last_issued_action": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                        "scout_home_distance": 2.0,
+                        "scout_max_home_distance": 3.0,
+                    },
+                },
+            },
+            expected_effects=("scout",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("scout",), evidence.missing_effects)
+        self.assertEqual((), evidence.observed_effects)
 
     def test_scout_with_units_ignores_stale_combat_scout_command(self) -> None:
         evidence = classify_micromachine_tactical_evidence(
@@ -276,6 +310,8 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
                         "main_attack_actual_command_issued_count": 1,
                         "main_attack_last_action_frame": 13000,
                         "main_attack_last_issued_action": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
+                        "main_attack_home_distance": 18.0,
+                        "main_attack_max_home_distance": 28.0,
                     },
                 },
             },
@@ -284,6 +320,34 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
 
         self.assertTrue(evidence.ok, evidence.to_dict())
         self.assertIn("pressure", evidence.observed_effects)
+
+    def test_pressure_task_rejects_command_without_live_movement(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "pressure_with_main_army",
+                        "status": "executing",
+                        "actual_command_issued_count": 1,
+                        "last_actual_command": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
+                    },
+                    "CombatCommander": {
+                        "main_attack_order_status": "Attack",
+                        "main_attack_actual_command_issued_count": 1,
+                        "main_attack_last_action_frame": 13000,
+                        "main_attack_last_issued_action": "MoveToGoalOrder|squad=MainAttack|type=2|x=33.5|y=138.5",
+                        "main_attack_home_distance": 3.0,
+                        "main_attack_max_home_distance": 4.0,
+                    },
+                },
+            },
+            expected_effects=("pressure",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("pressure",), evidence.missing_effects)
+        self.assertEqual((), evidence.observed_effects)
 
     def test_partial_when_only_some_expected_effects_are_observed(self) -> None:
         evidence = classify_micromachine_tactical_evidence(

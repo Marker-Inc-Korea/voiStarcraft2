@@ -117,11 +117,253 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual("enemy_natural", vector.scope.location_intent)
         self.assertEqual(1, vector.scope.min_units)
         self.assertGreaterEqual(vector.ttl_seconds, 600)
+        self.assertEqual(
+            "pressure_with_main_army",
+            vector.tactical_task.task_type,
+        )
+        self.assertEqual("enemy_natural", vector.tactical_task.location_intent)
+        self.assertEqual(1, vector.tactical_task.min_units)
+        self.assertIn("TERRAN_MARINE", vector.tactical_task.unit_classes)
         self.assertGreaterEqual(vector.production.production_continuity_bias, 0.6)
         self.assertEqual(32, vector.workers.repeat_order_guard_frames)
         self.assertIn("workers", result.update.manager_bias_domains)
+        self.assertIn("tactical_task", result.update.manager_bias_domains)
         self.assertIn("worker_line", vector.combat.target_priority_biases.to_dict())
         self.assertIn("aggressive_pressure", vector.tags)
+
+    def test_keyword_provider_maps_enemy_base_attack_to_enemy_main(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "마린으로 적진 공격해",
+            current_frame=100,
+            update_id="attack-enemy-main",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("main", vector.scope.army_group)
+        self.assertEqual("enemy_main", vector.scope.location_intent)
+        self.assertEqual("pressure_with_main_army", vector.tactical_task.task_type)
+        self.assertEqual("enemy_main", vector.tactical_task.location_intent)
+        self.assertIn("TERRAN_MARINE", vector.tactical_task.unit_classes)
+
+    def test_keyword_provider_maps_four_marine_attack_to_unit_scope(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "4마린으로 적진 공격해",
+            current_frame=100,
+            update_id="attack-four-marines",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("main", vector.scope.army_group)
+        self.assertEqual("enemy_main", vector.scope.location_intent)
+        self.assertEqual(4, vector.scope.min_units)
+        self.assertEqual(4, vector.scope.max_units)
+        self.assertEqual("pressure_with_main_army", vector.tactical_task.task_type)
+        self.assertEqual(4, vector.tactical_task.min_units)
+        self.assertEqual(4, vector.tactical_task.max_units)
+        self.assertIn("explicit_unit_count", vector.tags)
+
+    def test_keyword_provider_maps_flank_route_attack_to_flank_bias(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "마린 4기로 다른 길로 우회해서 적진 공격해",
+            current_frame=100,
+            update_id="attack-flank-route",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("enemy_main", vector.scope.location_intent)
+        self.assertEqual(4, vector.scope.min_units)
+        self.assertEqual(4, vector.scope.max_units)
+        self.assertGreaterEqual(vector.squad.flank_bias, 0.7)
+        self.assertLessEqual(vector.squad.contain_bias, 0.15)
+        self.assertGreaterEqual(vector.combat.flank_bias, 0.6)
+        self.assertIn("flank_route", vector.tags)
+
+    def test_keyword_provider_prioritizes_defense_over_enemy_rush_words(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "defend enemy rush",
+            current_frame=100,
+            update_id="defend-enemy-rush",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertLess(vector.combat.aggression, 0.0)
+        self.assertGreaterEqual(vector.combat.defend_bias, 0.6)
+        self.assertGreaterEqual(vector.combat.preserve_army_bias, 0.3)
+        self.assertGreaterEqual(vector.squad.defense_bias, 0.4)
+        self.assertEqual("", vector.tactical_task.task_type)
+
+    def test_keyword_provider_prioritizes_korean_defense_over_rush_words(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "적 러쉬 오니까 수비해",
+            current_frame=100,
+            update_id="defend-korean-rush",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertLess(vector.combat.aggression, 0.0)
+        self.assertGreaterEqual(vector.combat.defend_bias, 0.6)
+        self.assertGreaterEqual(vector.squad.defense_bias, 0.4)
+        self.assertNotEqual("pressure_with_main_army", vector.tactical_task.task_type)
+
+    def test_keyword_provider_maps_marine_scout_to_scout_task(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "마린으로 적 본진 정찰해",
+            current_frame=100,
+            update_id="marine-scout",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("scout", vector.scope.army_group)
+        self.assertEqual("enemy_main", vector.scope.location_intent)
+        self.assertEqual("scout_with_units", vector.tactical_task.task_type)
+        self.assertEqual("enemy_main", vector.tactical_task.location_intent)
+        self.assertEqual(1, vector.tactical_task.min_units)
+        self.assertEqual(2, vector.tactical_task.max_units)
+        self.assertIn("TERRAN_MARINE", vector.tactical_task.unit_classes)
+
+    def test_explicit_tactical_task_drops_stale_defensive_tactical_standing_order(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        defensive_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "방어하면서 마린 생산은 유지",
+                    "strategy": {"posture": "defensive", "doctrine": "marine_rush"},
+                    "production": {"queue_biases": {"TERRAN_MARINE": 0.8}},
+                    "combat": {"defend_bias": 0.75, "aggression": -0.25},
+                    "squad": {"defense_bias": 0.8, "main_army_bias": -0.4},
+                    "tags": ["defensive_hold"],
+                    "rationale": "Hold the army near home.",
+                }
+            ),
+        )
+        self.assertTrue(defensive_session.submit_text("방어 유지", current_frame=100).ok)
+
+        pressure_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 러쉬 진행해",
+                    "scope": {
+                        "army_group": "main",
+                        "unit_classes": ["marine"],
+                        "location_intent": "",
+                    },
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "unit_classes": ["marine"],
+                        "location_intent": "",
+                    },
+                    "tags": ["aggressive_pressure"],
+                    "rationale": "Attack with the main army.",
+                }
+            ),
+        )
+
+        result = pressure_session.submit_text("마린 러쉬 진행해", current_frame=200)
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("marine_rush", vector.strategy.doctrine)
+        self.assertEqual(0.8, vector.production.queue_biases.to_dict()["TERRAN_MARINE"])
+        self.assertEqual("enemy_natural", vector.scope.location_intent)
+        self.assertEqual("enemy_natural", vector.tactical_task.location_intent)
+        self.assertEqual("force_when_threshold_met", vector.combat.attack_condition_override)
+        self.assertLess(vector.combat.defend_bias, 0.45)
+        self.assertEqual(0.0, vector.squad.defense_bias)
+        self.assertGreaterEqual(vector.squad.main_army_bias, 0.6)
+        self.assertEqual("마린 러쉬 진행해", vector.goal)
+        self.assertIn("aggressive_pressure", vector.tags)
+        self.assertNotIn("defensive_hold", vector.tags)
+        self.assertEqual("Attack with the main army.", vector.rationale)
+
+    def test_explicit_tactical_task_drops_defensive_marker_from_contaminated_standing_order(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        contaminated_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 러쉬 진행해 | standing: micromachine_defensive_hold",
+                    "strategy": {"posture": "pressure", "doctrine": "marine_rush"},
+                    "production": {"queue_biases": {"TERRAN_MARINE": 0.8}},
+                    "combat": {"defend_bias": -0.25, "aggression": 0.7},
+                    "tags": ["aggressive_pressure", "defensive_hold"],
+                    "rationale": "Hold the army near home.",
+                }
+            ),
+        )
+        self.assertTrue(contaminated_session.submit_text("이전 오염 상태", current_frame=100).ok)
+
+        pressure_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린으로 적진 공격해",
+                    "scope": {
+                        "army_group": "main",
+                        "unit_classes": ["marine"],
+                        "location_intent": "enemy_main",
+                    },
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "unit_classes": ["marine"],
+                        "location_intent": "enemy_main",
+                    },
+                    "tags": ["aggressive_pressure"],
+                    "rationale": "Attack the enemy main.",
+                }
+            ),
+        )
+
+        result = pressure_session.submit_text("마린으로 적진 공격해", current_frame=200)
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("마린으로 적진 공격해", vector.goal)
+        self.assertEqual("enemy_main", vector.scope.location_intent)
+        self.assertNotIn("defensive_hold", vector.tags)
+        self.assertNotIn("micromachine_defensive_hold", vector.goal)
+        self.assertEqual("Attack the enemy main.", vector.rationale)
 
     def test_live_provider_cannot_weaken_worker_repeat_order_guard(self) -> None:
         backend = MicroMachineInMemoryBlackboard()

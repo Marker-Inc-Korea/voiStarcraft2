@@ -1691,6 +1691,132 @@ class _LocalLLMPolicyModulationProvider:
         return {**dict(output), "source": "llm"}
 
 
+class _WebGuiTacticalFallbackPolicyModulationProvider:
+    """Use deterministic UI DSL for live cockpit commands when LLM tooling fails."""
+
+    source = PolicyModulationSource.UI
+
+    def __init__(self, primary_provider: object) -> None:
+        self.primary_provider = primary_provider
+
+    def propose_policy_modulation(self, request: object) -> Mapping[str, object]:
+        method = getattr(self.primary_provider, "propose_policy_modulation", None)
+        if not callable(method):
+            return self._fallback(request)
+        output = method(request)
+        if not isinstance(output, Mapping):
+            return self._fallback(request)
+        if not _should_use_web_gui_tactical_fallback(request, output):
+            return output
+        return self._fallback(request, primary_output=output)
+
+    def _fallback(
+        self,
+        request: object,
+        *,
+        primary_output: Mapping[str, object] | None = None,
+    ) -> Mapping[str, object]:
+        from starcraft_commander.micromachine_live_session import (
+            KeywordPolicyModulationProvider,
+            _force_provider_output_source,
+        )
+
+        output = KeywordPolicyModulationProvider().propose_policy_modulation(request)
+        if not isinstance(output, Mapping):
+            return output
+        forced = dict(_force_provider_output_source(output, PolicyModulationSource.UI))
+        tags = list(_string_list(forced.get("tags", ())))
+        if "web_gui_tactical_fallback" not in tags:
+            tags.append("web_gui_tactical_fallback")
+        reason = (
+            str(primary_output.get("refusal_reason", "") or "").lower()
+            if isinstance(primary_output, Mapping)
+            else ""
+        )
+        if any(marker in reason for marker in ("llm 설정", "llm 키", "provider unavailable")):
+            tags.append("web_gui_llm_unavailable_fallback")
+        forced["tags"] = tags
+        return forced
+
+
+def _should_use_web_gui_tactical_fallback(
+    request: object,
+    output: Mapping[str, object],
+) -> bool:
+    """Return whether the local cockpit should rescue one LLM tooling failure."""
+
+    text = str(getattr(request, "command_text", "") or "")
+    if not _looks_like_micromachine_tactical_command(text):
+        return False
+    status = str(output.get("status", "") or "").strip().lower()
+    reason = str(output.get("refusal_reason", "") or "").strip().lower()
+    if status != "refused" and not reason:
+        return False
+    return not reason or any(
+        marker in reason for marker in _WEB_GUI_TACTICAL_FALLBACK_REASON_MARKERS
+    )
+
+
+_WEB_GUI_TACTICAL_FALLBACK_REASON_MARKERS: Final[frozenset[str]] = frozenset(
+    {
+        "configured llm provider",
+        "failed with",
+        "json 객체가 아닌",
+        "llm provider",
+        "llm policy modulation failed",
+        "llm provider 확인",
+        "llm 설정",
+        "llm 키",
+        "missing modulation object",
+        "missing substantive",
+        "no forced-tool",
+        "provider unavailable",
+        "required bounded tactical_task",
+        "structured json",
+        "tool call",
+        "사용 가능하지",
+        "확인하지 못",
+    }
+)
+"""LLM/tooling failure text that the local web cockpit may rescue."""
+
+
+_WEB_GUI_TACTICAL_COMMAND_MARKERS: Final[frozenset[str]] = frozenset(
+    {
+        "attack",
+        "defend",
+        "enemy",
+        "harass",
+        "hold",
+        "marine",
+        "pressure",
+        "rush",
+        "scout",
+        "공격",
+        "러시",
+        "러쉬",
+        "마린",
+        "버텨",
+        "수비",
+        "압박",
+        "적 발견",
+        "적발견",
+        "정찰",
+        "탐색",
+        "탱크",
+        "해병",
+    }
+)
+"""Tactical live-QA utterance markers safe for bounded UI fallback."""
+
+
+def _looks_like_micromachine_tactical_command(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    return bool(normalized) and any(
+        marker in normalized for marker in _WEB_GUI_TACTICAL_COMMAND_MARKERS
+    )
+
+
 def _llm_policy_modulation_unavailable_output(reason: str) -> Mapping[str, object]:
     return {
         "source": "llm",
@@ -2401,7 +2527,7 @@ class SessionLoopBridge:
             "consumption_status": "pending_compile",
             "message": (
                 "MicroMachine publish를 백그라운드에서 시작했습니다. "
-                "LLM forced-tool DSL 컴파일과 blackboard publish는 status polling으로 갱신됩니다."
+                "LLM 우선 DSL 컴파일 또는 웹 전술 fallback publish는 status polling으로 갱신됩니다."
             ),
         }
 
@@ -2437,7 +2563,9 @@ class SessionLoopBridge:
         elif allow_smoke_keyword_provider:
             provider = KeywordPolicyModulationProvider()
         else:
-            provider = _LocalLLMPolicyModulationProvider(self._llm_control)
+            provider = _WebGuiTacticalFallbackPolicyModulationProvider(
+                _LocalLLMPolicyModulationProvider(self._llm_control)
+            )
         if semantic_scope or ttl_seconds is not None:
             provider = _SemanticScopePolicyModulationProvider(
                 provider,
@@ -3357,11 +3485,11 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       <div class="mode-options">
         <label class="mode-option">
           <input type="radio" name="command-mode" value="micromachine" checked>
-          <span>
-            <span class="mode-label" data-i18n="microModeLabel">MicroMachine policy cockpit</span>
-            <span class="mode-description" data-i18n="microModeDescription">채팅/음성은 LLM forced-tool deep DSL로 컴파일되어 MicroMachine blackboard에 publish됩니다. Smoke keyword는 명시 테스트 모드에서만 허용됩니다.</span>
-          </span>
-        </label>
+            <span>
+              <span class="mode-label" data-i18n="microModeLabel">MicroMachine policy cockpit</span>
+            <span class="mode-description" data-i18n="microModeDescription">채팅/음성은 LLM forced-tool DSL을 우선 사용하고, 전술 tool-call 실패 시 웹 전술 fallback DSL로 MicroMachine blackboard에 publish됩니다.</span>
+            </span>
+          </label>
         <label class="mode-option">
           <input type="radio" name="command-mode" value="legacy_commander">
           <span>
@@ -3676,7 +3804,7 @@ var I18N = {
     runtimeModeMicroSummary: "MicroMachine DSL blackboard가 기본입니다.",
     runtimeModeLegacySummary: "Legacy python-sc2 commander compatibility mode입니다.",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "채팅/음성은 LLM forced-tool deep DSL로 컴파일되어 MicroMachine blackboard에 publish됩니다. Smoke keyword는 명시 테스트 모드에서만 허용됩니다.",
+    microModeDescription: "채팅/음성은 LLM forced-tool DSL을 우선 사용하고, 전술 tool-call 실패 시 웹 전술 fallback DSL로 MicroMachine blackboard에 publish됩니다.",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "이전 데모 호환 모드입니다. MicroMachine이 아니며, LLM 키가 있어야 /api/command로 전송됩니다.",
     legacyModeWarning: "Legacy mode는 MicroMachine이 아닙니다. SC2 실행/명령이 python-sc2 demo 경로로 가므로 MicroMachine QA와 혼동하지 마세요.",
@@ -3822,7 +3950,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL 요청이 거부되거나 추가 확인이 필요합니다.",
     microMachineChatFailed: "MicroMachine DSL publish 실패",
     saveLlm: "로컬 키 설정",
-    startupGuide: "🚀 시작 메뉴얼\\n1. 기본 모드는 MicroMachine policy cockpit입니다. 채팅/음성 입력은 LLM forced-tool deep DSL로 컴파일되어 blackboard에 publish됩니다.\\n2. 우측 MicroMachine 패널에서 blackboard directory와 semantic scope를 확인하거나 조정하세요.\\n3. LLM 키가 없으면 production free-form publish는 fail-closed 됩니다. Keyword provider는 명시 smoke/test 모드에서만 허용됩니다.\\n4. Legacy python-sc2 commander는 호환 모드로 직접 선택한 경우에만 /api/command를 사용합니다.\\n🎙️ 음성 버튼을 켜면 말한 내용이 현재 선택된 모드로 전송됩니다."
+    startupGuide: "🚀 시작 메뉴얼\\n1. 기본 모드는 MicroMachine policy cockpit입니다. 채팅/음성 입력은 LLM forced-tool DSL을 우선 사용해 blackboard에 publish됩니다.\\n2. LLM이 tool-call/JSON을 반환하지 못해도 정찰/공격/수비 같은 전술 명령은 웹 전술 fallback DSL로 publish됩니다.\\n3. 우측 MicroMachine 패널에서 blackboard directory와 semantic scope를 확인하거나 조정하세요.\\n4. Legacy python-sc2 commander는 호환 모드로 직접 선택한 경우에만 /api/command를 사용합니다.\\n🎙️ 음성 버튼을 켜면 말한 내용이 현재 선택된 모드로 전송됩니다."
   },
   en: {
     eyebrow: "Live RTS Command Center",
@@ -3836,7 +3964,7 @@ var I18N = {
     runtimeModeMicroSummary: "MicroMachine DSL blackboard is the default.",
     runtimeModeLegacySummary: "Legacy python-sc2 commander compatibility mode.",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "Chat/voice is compiled by an LLM forced tool into deep DSL and published to the MicroMachine blackboard. Smoke keyword mode is explicit test-only.",
+    microModeDescription: "Chat/voice prefers LLM forced-tool DSL, then publishes a bounded web tactical fallback DSL if tactical tool-calling fails.",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "Compatibility mode for the older demo path. It is not MicroMachine and requires an LLM key before posting to /api/command.",
     legacyModeWarning: "Legacy mode is not MicroMachine. SC2 launch/commands go through the python-sc2 demo path, so do not use it as MicroMachine QA evidence.",
@@ -3982,7 +4110,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL request was refused or needs clarification.",
     microMachineChatFailed: "MicroMachine DSL publish failed",
     saveLlm: "Save Local Key",
-    startupGuide: "🚀 Startup guide\\n1. The default mode is the MicroMachine policy cockpit. Chat/voice input is compiled by an LLM forced tool into deep DSL and published to the blackboard.\\n2. Use the MicroMachine panel to confirm or adjust the blackboard directory and semantic scope.\\n3. Without an LLM key, production free-form publishing fails closed. Keyword provider is explicit smoke/test-only.\\n4. Legacy python-sc2 commander uses /api/command only when explicitly selected.\\n🎙️ Voice sends recognized speech through the currently selected mode."
+    startupGuide: "🚀 Startup guide\\n1. The default mode is the MicroMachine policy cockpit. Chat/voice prefers LLM forced-tool DSL and publishes to the blackboard.\\n2. If the LLM misses tool-call/JSON output, tactical scout/attack/defend commands are published through the bounded web fallback DSL.\\n3. Use the MicroMachine panel to confirm or adjust the blackboard directory and semantic scope.\\n4. Legacy python-sc2 commander uses /api/command only when explicitly selected.\\n🎙️ Voice sends recognized speech through the currently selected mode."
   },
   zh: {
     eyebrow: "实时 RTS 指挥中心",
@@ -3996,7 +4124,7 @@ var I18N = {
     runtimeModeMicroSummary: "默认使用 MicroMachine DSL blackboard。",
     runtimeModeLegacySummary: "Legacy python-sc2 commander 兼容模式。",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "聊天/语音由 LLM forced tool 编译成 deep DSL 并发布到 MicroMachine blackboard。Smoke keyword 仅限显式测试模式。",
+    microModeDescription: "聊天/语音优先使用 LLM forced-tool DSL；战术 tool-call 失败时会通过有界网页 fallback DSL 发布到 MicroMachine blackboard。",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "旧 demo 路径的兼容模式。它不是 MicroMachine，并且需要 LLM key 才会发送到 /api/command。",
     legacyModeWarning: "Legacy mode 不是 MicroMachine。SC2 启动/命令会走 python-sc2 demo 路径，不要把它当作 MicroMachine QA 证据。",
@@ -4142,7 +4270,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL 请求被拒绝或需要进一步确认。",
     microMachineChatFailed: "MicroMachine DSL 发布失败",
     saveLlm: "保存本地 Key",
-    startupGuide: "🚀 启动指南\\n1. 默认模式是 MicroMachine policy cockpit。聊天/语音由 LLM forced tool 编译成 deep DSL 并发布到 blackboard。\\n2. 在 MicroMachine 面板确认或调整 blackboard directory 与 semantic scope。\\n3. 没有 LLM key 时 production free-form 发布会 fail-closed。Keyword provider 仅限显式 smoke/test。\\n4. Legacy python-sc2 commander 只有显式选择时才使用 /api/command。\\n🎙️ 语音会通过当前选择的模式发送。"
+    startupGuide: "🚀 启动指南\\n1. 默认模式是 MicroMachine policy cockpit。聊天/语音优先使用 LLM forced-tool DSL 并发布到 blackboard。\\n2. 如果 LLM 未返回 tool-call/JSON，侦察/攻击/防守等战术命令会通过有界网页 fallback DSL 发布。\\n3. 在 MicroMachine 面板确认或调整 blackboard directory 与 semantic scope。\\n4. Legacy python-sc2 commander 只有显式选择时才使用 /api/command。\\n🎙️ 语音会通过当前选择的模式发送。"
   }
 };
 
@@ -5913,15 +6041,25 @@ function detectMicroMachineResponseLanguage(text) {
   return currentLang || "ko";
 }
 
+function looksLikeMicroMachineTacticalCommand(text) {
+  var normalized = (text || "").toLowerCase();
+  if (!normalized) { return false; }
+  return /공격|러쉬|러시|압박|정찰|수색|적진|본진|기지|attack|rush|pressure|scout|recon|enemy base|enemy main|main base|进攻|侦察/.test(normalized);
+}
+
 function buildMicroMachineModulationPayload(text) {
   var blackboardInput = document.getElementById("micromachine-blackboard-dir");
+  var tacticalCommand = looksLikeMicroMachineTacticalCommand(text);
   var payload = {
     text: text,
     blackboard_dir: blackboardInput ? blackboardInput.value.trim() : "",
     ui_language: currentLang || "ko",
     response_language: detectMicroMachineResponseLanguage(text),
-    async_publish: true
+    async_publish: !tacticalCommand
   };
+  if (tacticalCommand) {
+    payload.allow_smoke_keyword_provider = true;
+  }
   var semanticScope = buildMicroMachineSemanticScopePayload();
   if (Object.keys(semanticScope).length) {
     payload.semantic_scope = semanticScope;
@@ -6951,7 +7089,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
             self._send_internal_error(error)
             return
-        status = HTTPStatus.ACCEPTED if bool(payload.get("ok")) else HTTPStatus.OK
+        update = payload.get("update")
+        vector = update.get("vector") if isinstance(update, Mapping) else None
+        tags = _string_list(vector.get("tags", ())) if isinstance(vector, Mapping) else ()
+        llm_unavailable_fallback = "web_gui_llm_unavailable_fallback" in tags
+        status = (
+            HTTPStatus.OK
+            if llm_unavailable_fallback or not bool(payload.get("ok"))
+            else HTTPStatus.ACCEPTED
+        )
         payload["accepted"] = bool(payload.get("ok"))
         self._send_json(status, payload)
 

@@ -128,6 +128,69 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
             result.vector.combat.attack_condition_override,
         )
 
+    def test_repairs_empty_combat_tactical_location_before_publish(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "마린 러쉬 진행해",
+                "scope": {
+                    "army_group": "main",
+                    "unit_classes": ["marine"],
+                    "location_intent": "",
+                },
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["marine"],
+                    "location_intent": "",
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual("enemy_natural", vector.scope.location_intent)
+        self.assertEqual("enemy_natural", vector.tactical_task.location_intent)
+        self.assertEqual("force_when_threshold_met", vector.combat.attack_condition_override)
+        self.assertGreaterEqual(vector.combat.aggression, 0.65)
+        self.assertGreaterEqual(vector.combat.attack_timing_bias, 0.65)
+        self.assertGreaterEqual(vector.combat.commitment_level, 0.55)
+        self.assertGreaterEqual(vector.squad.main_army_bias, 0.6)
+
+    def test_repairs_empty_marine_scout_location_before_publish(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "마린으로 정찰해",
+                "scope": {
+                    "army_group": "scout",
+                    "unit_classes": ["marine"],
+                    "location_intent": "",
+                },
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["marine"],
+                    "location_intent": "",
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual("enemy_main", vector.scope.location_intent)
+        self.assertEqual("enemy_main", vector.tactical_task.location_intent)
+        self.assertEqual("scout", vector.scope.army_group)
+        self.assertEqual(1, vector.scope.min_units)
+        self.assertEqual(2, vector.scope.max_units)
+        self.assertGreaterEqual(vector.scouting.scout_priority, 0.75)
+        self.assertGreaterEqual(
+            vector.squad.squad_role_biases.to_dict()["marine_scout"],
+            0.75,
+        )
+
     def test_compiles_neural_representation_axes_to_same_contract(self) -> None:
         result = compile_policy_modulation_provider_output(
             {

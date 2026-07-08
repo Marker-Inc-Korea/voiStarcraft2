@@ -549,6 +549,18 @@ _LOCATION_INTENT_ALIASES = {
     "expansion": "safe_expansion",
 }
 
+_TACTICAL_SCOPE_LOCATION_INTENTS = {
+    "home",
+    "natural",
+    "enemy_main",
+    "enemy_natural",
+    "enemy_third",
+    "third",
+    "watchtower",
+    "ramp",
+    "last_seen_enemy_army",
+}
+
 _VECTOR_KEYS = {
     "goal",
     "source",
@@ -880,6 +892,165 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                 domain_value["production_targets"] = [
                     _canonicalize_micromachine_key(item) for item in targets
                 ]
+    _repair_micromachine_tactical_task_defaults(payload)
+
+
+def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> None:
+    """Make concrete MicroMachine tactical tasks executable, not just descriptive."""
+
+    tactical_task = payload.get("tactical_task")
+    if not isinstance(tactical_task, dict):
+        return
+    task_type = tactical_task.get("task_type")
+    if not isinstance(task_type, str) or not task_type.strip():
+        return
+    task_type = task_type.strip()
+
+    if task_type == "scout_with_units":
+        scope = _ensure_micromachine_domain_dict(payload, "scope")
+        location = _first_non_empty_text(
+            tactical_task.get("location_intent"),
+            scope.get("location_intent"),
+            "enemy_main",
+        )
+        tactical_task["location_intent"] = location
+        _set_if_empty(scope, "location_intent", location)
+        _set_if_empty(scope, "army_group", "scout")
+        _copy_or_default_unit_classes(
+            scope,
+            tactical_task,
+            default=("TERRAN_MARINE",),
+        )
+        _set_if_zero_or_empty(scope, "min_units", 1)
+        _set_if_zero_or_empty(scope, "max_units", 2)
+        _set_if_zero_or_empty(tactical_task, "min_units", 1)
+        _set_if_zero_or_empty(tactical_task, "max_units", 2)
+        _set_if_zero_or_empty(tactical_task, "duration_seconds", 180)
+        _set_if_zero_or_empty(tactical_task, "priority", 0.85)
+        scouting = _ensure_micromachine_domain_dict(payload, "scouting")
+        squad = _ensure_micromachine_domain_dict(payload, "squad")
+        _set_float_at_least(scouting, "scout_priority", 0.75)
+        _set_nested_float_at_least(squad, ("squad_role_biases", "marine_scout"), 0.75)
+        return
+
+    if task_type == "pressure_with_main_army":
+        scope = _ensure_micromachine_domain_dict(payload, "scope")
+        location = _first_non_empty_text(
+            tactical_task.get("location_intent"),
+            scope.get("location_intent"),
+            "enemy_natural",
+        )
+        tactical_task["location_intent"] = location
+        _set_if_empty(scope, "location_intent", location)
+        _set_if_empty(scope, "army_group", "main")
+        _copy_or_default_unit_classes(
+            scope,
+            tactical_task,
+            default=("TERRAN_MARINE", "TERRAN_MARAUDER", "TERRAN_MEDIVAC", "TERRAN_SIEGETANK"),
+        )
+        _set_if_zero_or_empty(scope, "min_units", 1)
+        _set_if_zero_or_empty(tactical_task, "min_units", 1)
+        _set_if_zero_or_empty(tactical_task, "duration_seconds", 300)
+        _set_if_zero_or_empty(tactical_task, "priority", 0.9)
+        combat = _ensure_micromachine_domain_dict(payload, "combat")
+        squad = _ensure_micromachine_domain_dict(payload, "squad")
+        attack_override = str(combat.get("attack_condition_override", "") or "").strip()
+        if not attack_override or attack_override == "normal":
+            combat["attack_condition_override"] = "force_when_threshold_met"
+        _set_float_at_least(combat, "aggression", 0.65)
+        _set_float_at_least(combat, "attack_timing_bias", 0.65)
+        _set_float_at_least(combat, "commitment_level", 0.55)
+        _set_float_at_least(combat, "retreat_patience_bias", 0.35)
+        _set_float_at_least(squad, "main_army_bias", 0.6)
+        _set_float_at_least(squad, "reinforce_bias", 0.25)
+        if location == "enemy_natural":
+            _set_float_at_least(squad, "contain_bias", 0.35)
+        return
+
+    if task_type == "expand_or_land_command_center":
+        _set_if_empty(tactical_task, "location_intent", "safe_expansion")
+        _set_if_zero_or_empty(tactical_task, "priority", 0.75)
+
+
+def _ensure_micromachine_domain_dict(
+    payload: dict[str, object],
+    domain_name: str,
+) -> dict[str, object]:
+    value = payload.get(domain_name)
+    if isinstance(value, dict):
+        return value
+    domain: dict[str, object] = {}
+    payload[domain_name] = domain
+    return domain
+
+
+def _first_non_empty_text(*values: object) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _is_empty_tactical_value(value: object) -> bool:
+    if value in (None, ""):
+        return True
+    if isinstance(value, (list, tuple)) and not value:
+        return True
+    return False
+
+
+def _set_if_empty(mapping: dict[str, object], key: str, value: object) -> None:
+    if _is_empty_tactical_value(mapping.get(key)):
+        mapping[key] = value
+
+
+def _set_if_zero_or_empty(mapping: dict[str, object], key: str, value: object) -> None:
+    current = mapping.get(key)
+    if _is_empty_tactical_value(current):
+        mapping[key] = value
+        return
+    if isinstance(current, (int, float)) and type(current) is not bool and float(current) == 0.0:
+        mapping[key] = value
+
+
+def _set_float_at_least(mapping: dict[str, object], key: str, minimum: float) -> None:
+    current = mapping.get(key)
+    if isinstance(current, (int, float)) and type(current) is not bool:
+        mapping[key] = max(float(current), minimum)
+        return
+    if _is_empty_tactical_value(current):
+        mapping[key] = minimum
+
+
+def _set_nested_float_at_least(
+    mapping: dict[str, object],
+    path: tuple[str, str],
+    minimum: float,
+) -> None:
+    parent_key, child_key = path
+    parent = mapping.get(parent_key)
+    if not isinstance(parent, dict):
+        parent = {}
+        mapping[parent_key] = parent
+    _set_float_at_least(parent, child_key, minimum)
+
+
+def _copy_or_default_unit_classes(
+    scope: dict[str, object],
+    tactical_task: dict[str, object],
+    *,
+    default: tuple[str, ...],
+) -> None:
+    task_classes = tactical_task.get("unit_classes")
+    scope_classes = scope.get("unit_classes")
+    if _is_empty_tactical_value(task_classes) and not _is_empty_tactical_value(scope_classes):
+        tactical_task["unit_classes"] = scope_classes
+        task_classes = scope_classes
+    if _is_empty_tactical_value(task_classes):
+        tactical_task["unit_classes"] = list(default)
+        task_classes = tactical_task["unit_classes"]
+    if _is_empty_tactical_value(scope_classes):
+        scope["unit_classes"] = task_classes
 
 
 def _canonicalize_bias_mapping(value: object) -> object:
