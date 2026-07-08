@@ -51,12 +51,6 @@
     "production_plan.targets",
     "production_plan.allow_prerequisite_buildings",
     "production_plan.priority",
-    "composition_requirements.*",
-    "unit_roles.*",
-    "route_intent.route_type",
-    "route_intent.avoid_enemy_strength",
-    "target_intent.target_type",
-    "target_intent.priority",
     "emergency.prioritize_repair",
     "emergency.pull_workers_for_defense",
     "emergency.evacuate_workers",
@@ -173,6 +167,35 @@
         "BuildingTask.reason"
       ],
       "intended_effect": "Turns semantic building placement tasks into a bounded desired-position anchor consumed by BuildingManager, then lets existing SC2 placement validation choose the nearest valid fallback."
+    },
+    {
+      "domain": "composition",
+      "source_path": "src/CombatCommander.cpp",
+      "header_path": "src/CombatCommander.h",
+      "function": "CombatCommander::updateAttackSquads()",
+      "secondary_function": "voiUnitMatchesCompositionToken() / SquadData::assignUnitToSquad()",
+      "status": "verified_consumed_with_composition_assignment_telemetry",
+      "keys": [
+        "composition_requirements.*",
+        "unit_roles.*",
+        "route_intent.route_type",
+        "route_intent.avoid_enemy_strength",
+        "target_intent.target_type",
+        "target_intent.priority",
+        "tactical_task.allow_partial"
+      ],
+      "telemetry_fields": [
+        "CompositionTask.active",
+        "CompositionTask.status",
+        "CompositionTask.reason",
+        "CompositionTask.requirements",
+        "CompositionTask.missing",
+        "CompositionTask.required_count",
+        "CompositionTask.assigned_count",
+        "CompositionTask.route_type",
+        "CompositionTask.target_type"
+      ],
+      "intended_effect": "Assigns exact requested combat composition from Idle/Backup/Scout/MainAttack into MainAttack, reports missing units, and applies route/target intents without pulling defense squads."
     },
     {
       "domain": "combat",
