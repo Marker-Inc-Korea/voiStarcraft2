@@ -366,6 +366,9 @@ class KeywordPolicyModulationProvider:
                     {
                         "unit_type": item["unit_type"],
                         "role": item.get("role", "frontline") or "frontline",
+                        "ability_policy": _default_ability_policy_for_role(
+                            str(item.get("role", "frontline") or "frontline")
+                        ),
                         "priority": 0.75,
                     }
                     for item in composition_requirements
@@ -1661,6 +1664,16 @@ def _extract_requested_combat_unit_count(text: str) -> int | None:
     if match:
         return _KOREAN_SMALL_NUMBERS[match.group(1)]
     return None
+
+
+def _default_ability_policy_for_role(role: str) -> str:
+    if role in {"worker_harass", "cloak_if_available", "siege_support", "contain", "defensive_hold"}:
+        return "if_available"
+    if role in {"capital_ship", "capital_ship_focus", "capital_pressure", "yamato_high_value"}:
+        return "high_value_target"
+    if role in {"tactical_jump_escape", "evac"}:
+        return "escape"
+    return "never"
 
 
 def _extract_composition_requirements(text: str) -> list[dict[str, object]]:

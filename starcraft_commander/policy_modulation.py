@@ -117,7 +117,11 @@ MICROMACHINE_UNIT_ROLES: Final[frozenset[str]] = frozenset(
     {
         "",
         "frontline",
+        "kite",
+        "focus_fire",
         "siege_support",
+        "contain",
+        "defensive_hold",
         "anti_air",
         "harass",
         "scout",
@@ -125,10 +129,22 @@ MICROMACHINE_UNIT_ROLES: Final[frozenset[str]] = frozenset(
         "worker_harass",
         "air_superiority",
         "capital_ship",
+        "capital_ship_focus",
+        "cloak_if_available",
+        "capital_pressure",
+        "yamato_high_value",
+        "tactical_jump_escape",
         "support",
+        "evac",
+        "transport",
     }
 )
 """Safe semantic unit roles; managers still resolve exact unit tags/actions."""
+
+MICROMACHINE_ABILITY_POLICIES: Final[frozenset[str]] = frozenset(
+    {"", "never", "if_available", "high_value_target", "escape", "commit"}
+)
+"""Bounded ability-use policies; C++ managers still gate availability and target validity."""
 
 MICROMACHINE_ROUTE_INTENTS: Final[frozenset[str]] = frozenset(
     {"", "direct", "flank_left", "flank_right", "safe_path", "avoid_enemy_army"}
@@ -1286,6 +1302,7 @@ class UnitRoleAssignment:
     unit_type: str
     role: str
     priority: float = 0.0
+    ability_policy: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1307,12 +1324,22 @@ class UnitRoleAssignment:
             "priority",
             _coerce_unit_interval(self.priority, field_name="priority", lower=0.0, upper=1.0),
         )
+        object.__setattr__(
+            self,
+            "ability_policy",
+            _optional_choice(
+                "ability_policy",
+                self.ability_policy,
+                set(MICROMACHINE_ABILITY_POLICIES),
+            ),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "unit_type": self.unit_type,
             "role": self.role,
             "priority": self.priority,
+            "ability_policy": self.ability_policy,
         }
 
 

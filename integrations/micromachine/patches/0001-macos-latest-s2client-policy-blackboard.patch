@@ -1508,10 +1508,10 @@ index a0858ed..1b55f01 100644
 \ No newline at end of file
 +}
 diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
-index 2872a0b..2f19e43 100644
+index 2872a0b..8cecb6c 100644
 --- a/src/BuildingManager.cpp
 +++ b/src/BuildingManager.cpp
-@@ -1,9 +1,1226 @@
+@@ -1,9 +1,1396 @@
  #include <algorithm>
 +#include <cmath>
 +#include <limits>
@@ -1533,6 +1533,7 @@ index 2872a0b..2f19e43 100644
 +	bool ignoreExtraBorder,
 +	bool requireQueryPlacement);
 +bool isVoiSupplyRecoveryDepot(CCBot & bot, const UnitType & type);
++CCPosition voiFarthestEnemyStartPosition(CCBot & bot);
 +bool isVoiSc2MacroPlacementSafeWithOptions(
 +	CCBot & bot,
 +	const UnitType & type,
@@ -1542,6 +1543,23 @@ index 2872a0b..2f19e43 100644
 +	bool ignoreExtraBorder,
 +	bool requireQueryPlacement,
 +	bool allowCombatInfluence);
++
++CCPosition voiFarthestEnemyStartPosition(CCBot & bot)
++{
++	CCPosition farthestPosition;
++	float farthestDistance = 0.0f;
++	const CCPosition homePosition = bot.GetStartLocation();
++	for (const auto & enemyStart : bot.GetEnemyStartLocations())
++	{
++		const float distance = Util::DistSq(enemyStart, homePosition);
++		if (farthestPosition == CCPosition() || distance > farthestDistance)
++		{
++			farthestPosition = enemyStart;
++			farthestDistance = distance;
++		}
++	}
++	return farthestPosition;
++}
 +
 +bool IsRefineryTargetStillValid(CCBot & bot, const Building & building)
 +{
@@ -2890,7 +2908,7 @@ index 2872a0b..2f19e43 100644
  BuildingManager::BuildingManager(CCBot & bot)
      : m_bot(bot)
      , m_buildingPlacer(bot)
-@@ -99,9 +1316,45 @@ void BuildingManager::lowPriorityChecks()
+@@ -99,9 +1486,45 @@ void BuildingManager::lowPriorityChecks()
  			toRemove.push_back(CancelBuilding(building, "trying to build an addon on a building with an addon", false));
  		}
  
@@ -2917,7 +2935,7 @@ index 2872a0b..2f19e43 100644
 +			canBuildTrackedPosition = m_bot.Map().canBuildTypeAtPosition(position.x, position.y, building.type);
 +		}
 +		if (!canBuildTrackedPosition && canTrustVoiExpansionDepotPlacement(m_bot, building.type, building.finalPosition))
-+		{
+ 		{
 +			Util::DebugLog(__FUNCTION__, "VOI expand_macro keeps assigned CommandCenter depot despite generic placement recheck failure.", m_bot);
 +			continue;
 +		}
@@ -2927,7 +2945,7 @@ index 2872a0b..2f19e43 100644
 +			continue;
 +		}
 +		if (!canBuildTrackedPosition)
- 		{
++		{
 +			if (IsRefineryTargetStillValid(m_bot, building))
 +			{
 +				Util::DebugLog(__FUNCTION__, "Refinery target is a visible geyser or active refinery; skipping generic blocked-location cancellation.", m_bot);
@@ -2937,7 +2955,7 @@ index 2872a0b..2f19e43 100644
  			//Detect if the building was created this frame and we just don't know about it yet.
  			bool isAlreadyBuilt = false;
  			for (auto b : m_bot.GetAllyUnits(building.type.getAPIUnitType()))
-@@ -680,15 +1933,41 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+@@ -680,15 +2103,41 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
  		m_bot.StartProfiling("0.8.3.1 getBuildingLocation");
  		// grab a worker unit from WorkerManager which is closest to this final position
  		bool isRushed = m_bot.Strategy().isEarlyRushed() || m_bot.Strategy().isWorkerRushed();
@@ -2985,7 +3003,7 @@ index 2872a0b..2f19e43 100644
  			{
  				testLocation = m_bot.Buildings().getBuildingPlacer().getBuildLocationNear(b, false, true, false, true, true);
  			}
-@@ -742,13 +2021,25 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+@@ -742,13 +2191,25 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
  			const auto isPathToGoalSafe = Util::PathFinding::IsPathToGoalSafe(builderUnit.getUnitPtr(), Util::GetPosition(b.finalPosition), b.type.isRefinery(), m_bot);
  			m_bot.StopProfiling("0.8.3.2 IsPathToGoalSafe");
  
@@ -3013,7 +3031,7 @@ index 2872a0b..2f19e43 100644
  				if (!b.underConstruction && (!m_bot.Map().isValidTile(testLocation) || (testLocation.x == 0 && testLocation.y == 0)))
  				{
  					return false;
-@@ -766,7 +2057,11 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+@@ -766,7 +2227,11 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
  				}
  				if (!Util::PathFinding::IsPathToGoalSafe(builderUnit.getUnitPtr(), Util::GetPosition(b.finalPosition), b.type.isRefinery(), m_bot))
  				{
@@ -3026,7 +3044,7 @@ index 2872a0b..2f19e43 100644
  					{
  						auto location = m_bot.Buildings().getBuildingPlacer().getBuildLocationNear(b, false, true, false, false, false);
  						if (location == CCPosition())//If no build location is found
-@@ -792,8 +2087,15 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+@@ -792,8 +2257,15 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
  					}
  					else
  					{
@@ -3044,7 +3062,7 @@ index 2872a0b..2f19e43 100644
  					}
  				}
  			}
-@@ -865,12 +2167,41 @@ void BuildingManager::constructAssignedBuildings()
+@@ -865,12 +2337,41 @@ void BuildingManager::constructAssignedBuildings()
          // if that worker is not currently constructing
          if (!isConstructing)
          {
@@ -3086,7 +3104,7 @@ index 2872a0b..2f19e43 100644
              }
              // if this is not the first time we've sent this guy to build this
              // it must be the case that something was in the way of building
-@@ -879,9 +2210,33 @@ void BuildingManager::constructAssignedBuildings()
+@@ -879,9 +2380,33 @@ void BuildingManager::constructAssignedBuildings()
                  // TODO: in here is where we would check to see if the builder died on the way
                  //       or if things are taking too long, or the build location is no longer valid
  
@@ -3121,18 +3139,18 @@ index 2872a0b..2f19e43 100644
              else
              {
  				bool setCommandGiven = true;
-@@ -899,12 +2254,24 @@ void BuildingManager::constructAssignedBuildings()
+@@ -899,12 +2424,24 @@ void BuildingManager::constructAssignedBuildings()
  						}
  					}
  
 -					if (geyser.isValid())
 +					if (m_bot.GetMinerals() < b.type.mineralPrice() || m_bot.GetGas() < b.type.gasPrice())
-+					{
+ 					{
+-						b.builderUnit.buildTarget(b.type, geyser);
 +						setCommandGiven = false;
 +					}
 +					else if (geyser.isValid())
- 					{
--						b.builderUnit.buildTarget(b.type, geyser);
++					{
 +						Util::Log(__FUNCTION__, "build command type=" + b.type.getName(), m_bot);
 +						m_bot.Commander().setVoiWorkerCommandReason(b.builderUnit, "build_refinery_target_command");
 +						const bool issuedBuildCommand = b.builderUnit.buildTarget(b.type, geyser);
@@ -3148,7 +3166,7 @@ index 2872a0b..2f19e43 100644
  						std::cout << "WARNING: NO VALID GEYSER UNIT FOUND TO BUILD ON, SKIPPING REFINERY\n";
  					}
  				}
-@@ -944,6 +2311,30 @@ void BuildingManager::constructAssignedBuildings()
+@@ -944,6 +2481,30 @@ void BuildingManager::constructAssignedBuildings()
  						}
  						else
  						{
@@ -3179,7 +3197,7 @@ index 2872a0b..2f19e43 100644
  							// Check if the addon position is blocked
  							bool blocked = false;
  							for (int x = 2; x <= 3; ++x)
-@@ -978,7 +2369,7 @@ void BuildingManager::constructAssignedBuildings()
+@@ -978,7 +2539,7 @@ void BuildingManager::constructAssignedBuildings()
  								if (blocked)
  								{
  									// The building cannot move just 2 tiles to the left, so we need to find it a suitable spot
@@ -3188,7 +3206,7 @@ index 2872a0b..2f19e43 100644
  									newBuildingPosition = Util::GetPosition(getBuildingPlacer().getBuildLocationNear(tempBuilding, false, true, true));
  								}
  								else
-@@ -995,7 +2386,7 @@ void BuildingManager::constructAssignedBuildings()
+@@ -995,7 +2556,7 @@ void BuildingManager::constructAssignedBuildings()
  									continue;
  								}
  
@@ -3197,7 +3215,7 @@ index 2872a0b..2f19e43 100644
  								m_liftedBuildingPositions[b.builderUnit.getTag()] = newBuildingPosition;
  
  								// Free the reserved tiles under the building and for the addon
-@@ -1062,6 +2453,7 @@ void BuildingManager::constructAssignedBuildings()
+@@ -1062,6 +2623,7 @@ void BuildingManager::constructAssignedBuildings()
  									{
  										// Spam the build ability in case there is a unit blocking it
  										Micro::SmartAbility(b.builderUnit.getUnitPtr(), m_bot.Data(b.type).buildAbility, m_bot);
@@ -3205,7 +3223,7 @@ index 2872a0b..2f19e43 100644
  										m_buildAddonCommandFrame[b.builderUnit.getUnitPtr()] = m_bot.GetCurrentFrame();
  										std::stringstream ss;
  										ss << sc2::UnitTypeToName(b.builderUnit.getAPIUnitType()) << " at (" << b.builderUnit.getPosition().x << ", " << b.builderUnit.getPosition().y << ") was given the command " << sc2::AbilityTypeToName(m_bot.Data(b.type).buildAbility);
-@@ -1075,8 +2467,27 @@ void BuildingManager::constructAssignedBuildings()
+@@ -1075,8 +2637,27 @@ void BuildingManager::constructAssignedBuildings()
  					{
  						if (b.buildingUnit.isValid())
  						{
@@ -3235,7 +3253,7 @@ index 2872a0b..2f19e43 100644
  						}
  						else
  						{
-@@ -1093,15 +2504,51 @@ void BuildingManager::constructAssignedBuildings()
+@@ -1093,15 +2674,51 @@ void BuildingManager::constructAssignedBuildings()
  									auto movePos = Util::GetPosition(nextSupplyDepotPos.front());
  									if (b.builderUnit.getUnitPtr()->orders.empty() || b.builderUnit.getUnitPtr()->orders[0].target_pos != movePos)
  									{
@@ -3289,7 +3307,7 @@ index 2872a0b..2f19e43 100644
  									// We want the worker to be close so it doesn't flag the base as blocked by error
  									const bool closeEnough = Util::DistSq(b.builderUnit, Util::GetPosition(b.finalPosition)) <= 3.f * 3.f;
  									// If we can't build here, we can flag it as blocked, checking closeEnough for the tilesBuildable variable is just an optimisation and not part of the logic
-@@ -1306,7 +2753,27 @@ void BuildingManager::checkForDeadTerranBuilders()
+@@ -1306,7 +2923,27 @@ void BuildingManager::checkForDeadTerranBuilders()
  						continue;
  					if (workerJob == WorkerJobs::Build)
  					{
@@ -3318,7 +3336,7 @@ index 2872a0b..2f19e43 100644
  						continue;
  					}
  					// else, we find a new worker
-@@ -1345,12 +2812,23 @@ void BuildingManager::checkForDeadTerranBuilders()
+@@ -1345,12 +2982,23 @@ void BuildingManager::checkForDeadTerranBuilders()
  				auto & orders = worker.getUnitPtr()->orders;
  				if (orders.size() == 0 || orders[0].target_unit_tag != b.buildingUnit.getTag())
  				{
@@ -3344,7 +3362,7 @@ index 2872a0b..2f19e43 100644
  				}
  			}
  		}
-@@ -1403,7 +2881,19 @@ void BuildingManager::checkForCompletedBuildings()
+@@ -1403,7 +3051,19 @@ void BuildingManager::checkForCompletedBuildings()
  						auto base = m_bot.Bases().getBaseForDepotPosition(b.finalPosition);
  						if (base == nullptr || !base->getResourceDepot().isValid() || base->getResourceDepot().getTag() != b.buildingUnit.getTag())
  						{
@@ -3365,7 +3383,7 @@ index 2872a0b..2f19e43 100644
  						}
  					}
  
-@@ -1509,7 +2999,25 @@ bool BuildingManager::isConstructingType(const UnitType & type)
+@@ -1509,7 +3169,25 @@ bool BuildingManager::isConstructingType(const UnitType & type)
  // TODO: may need to iterate over all tiles of the building footprint
  bool BuildingManager::isBuildingPositionExplored(const Building & b) const
  {
@@ -3392,7 +3410,7 @@ index 2872a0b..2f19e43 100644
  }
  
  char BuildingManager::getBuildingWorkerCode(const Building & b) const
-@@ -1790,7 +3298,7 @@ CCTilePosition BuildingManager::getProxyLocation()
+@@ -1790,7 +3468,7 @@ CCTilePosition BuildingManager::getProxyLocation()
  			const auto closestBase = it->second;
  			const auto depotPos = Util::GetPosition(closestBase->getDepotTilePosition());
  			const auto centerOfMinerals = Util::GetPosition(closestBase->getCenterOfMinerals());
@@ -3401,7 +3419,7 @@ index 2872a0b..2f19e43 100644
  			if (BUILD_BEHIND_MINERALS)
  			{
  				const auto depotHeight = Util::TerrainHeight(depotPos);
-@@ -1853,7 +3361,14 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool che
+@@ -1853,7 +3531,14 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool che
  	else if (b.type.isResourceDepot())
      {
  		m_bot.StartProfiling("0.8.3.1.2 getNextExpansionPosition");
@@ -3417,30 +3435,33 @@ index 2872a0b..2f19e43 100644
  		m_bot.StopProfiling("0.8.3.1.2 getNextExpansionPosition");
      }
  	else
-@@ -1863,16 +3378,28 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool che
-		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
-		Building placementBuilding = b;
-		CCTilePosition voiBuildingTaskAnchor;
-		bool voiBuildingTaskAllowNearestFallback = true;
-		const bool hasVoiBuildingTaskPlacement = resolveVoiBuildingTaskPlacement(m_bot, b, voiBuildingTaskAnchor, voiBuildingTaskAllowNearestFallback, __FUNCTION__);
-		const bool voiBuildingTaskBlocksFallback = !voiBuildingTaskAllowNearestFallback;
-		if (hasVoiBuildingTaskPlacement)
-		{
-			placementBuilding.desiredPosition = voiBuildingTaskAnchor;
-		}
-		if (hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
-		{
-			buildingLocation = voiBuildingTaskAnchor;
-		}
-		else if (!hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
-		{
-			buildingLocation = CCTilePosition();
-		}
-		else
-		{
-			buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
-		}
-		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
+@@ -1863,16 +3548,52 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool che
+ 		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
+ 		buildingLocation = m_buildingPlacer.getBuildLocationNear(b, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
+ 		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
++		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
++		Building placementBuilding = b;
++		CCTilePosition voiBuildingTaskAnchor;
++		bool voiBuildingTaskAllowNearestFallback = true;
++		const bool hasVoiBuildingTaskPlacement = resolveVoiBuildingTaskPlacement(m_bot, b, voiBuildingTaskAnchor, voiBuildingTaskAllowNearestFallback, __FUNCTION__);
++		const bool voiBuildingTaskBlocksFallback = !voiBuildingTaskAllowNearestFallback;
++		if (hasVoiBuildingTaskPlacement)
++		{
++			placementBuilding.desiredPosition = voiBuildingTaskAnchor;
++		}
++		if (hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
++		{
++			buildingLocation = voiBuildingTaskAnchor;
++		}
++		else if (!hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
++		{
++			buildingLocation = CCTilePosition();
++		}
++		else
++		{
++			buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
++		}
++		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
 +		if (!voiBuildingTaskBlocksFallback &&
 +			shouldUseVoiSc2MacroPlacement(m_bot, b.type) &&
 +			(!m_bot.Map().isValidTile(buildingLocation) ||
@@ -3468,7 +3489,7 @@ index 2872a0b..2f19e43 100644
  		{
  			if (closestTo != CCPosition())
  			{
-@@ -1881,20 +3408,33 @@ CCTilePosition BuildingManager::getNextBuildingLocation(Building & b, bool check
+@@ -1881,20 +3602,33 @@ CCTilePosition BuildingManager::getNextBuildingLocation(Building & b, bool check
  				for (auto & pos : it->second)
  				{
  					float distance = Util::DistSq(closestTo, Util::GetPosition(pos));
@@ -3509,7 +3530,7 @@ index 2872a0b..2f19e43 100644
  	}
  
  	CCTilePosition basePosition = b.desiredPosition;
-@@ -2505,7 +4045,7 @@ void BuildingManager::RunProxyLogic()
+@@ -2505,7 +4239,7 @@ void BuildingManager::RunProxyLogic()
  			if (!flyingBarracks.empty())
  			{
  				m_proxyBarracksPosition = flyingBarracks[0].getPosition();
@@ -3518,7 +3539,7 @@ index 2872a0b..2f19e43 100644
  				return;
  			}
  		}
-@@ -2515,7 +4055,7 @@ void BuildingManager::RunProxyLogic()
+@@ -2515,7 +4249,7 @@ void BuildingManager::RunProxyLogic()
  		{
  			// Called every frame so the barracks can choose a new location if it gets blocked
  			const auto barracksFlyingType = UnitType(sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING, m_bot);
@@ -3527,7 +3548,7 @@ index 2872a0b..2f19e43 100644
  			const auto landingPosition = Util::GetPosition(m_bot.Buildings().getBuildingPlacer().getBuildLocationNear(barracksBuilding, false, true, true));
  			Micro::SmartAbility(flyingBarracks[0].getUnitPtr(), sc2::ABILITY_ID::LAND, landingPosition, m_bot);
  		}
-@@ -2741,4 +4281,4 @@ bool BuildingManager::hasEnergyForScan() const
+@@ -2741,4 +4475,4 @@ bool BuildingManager::hasEnergyForScan() const
  			return true;
  	}
  	return false;
@@ -4073,10 +4094,10 @@ index 99878ac..0f889c4 100644
 \ No newline at end of file
 +}
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index a8d5f3a..1fc1cee 100644
+index a8d5f3a..77c5d70 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
-@@ -1,3879 +1,4456 @@
+@@ -1,3879 +1,4938 @@
 -#include "CombatCommander.h"
 -#include "Util.h"
 -#include "CCBot.h"
@@ -7963,6 +7984,7 @@ index a8d5f3a..1fc1cee 100644
 +#include <algorithm>
 +#include <cmath>
 +#include <list>
++#include <sstream>
 +
 +const size_t IdlePriority = 0;
 +const size_t BackupPriority = 1;
@@ -8080,6 +8102,105 @@ index a8d5f3a..1fc1cee 100644
 +		|| (token == "TERRAN_BANSHEE" && type == sc2::UNIT_TYPEID::TERRAN_BANSHEE)
 +		|| (token == "TERRAN_RAVEN" && type == sc2::UNIT_TYPEID::TERRAN_RAVEN)
 +		|| (token == "TERRAN_BATTLECRUISER" && type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER);
++}
++
++bool voiSc2UnitMatchesRoleToken(const sc2::Unit * unit, const std::string & token)
++{
++	if (unit == nullptr)
++	{
++		return false;
++	}
++	const sc2::UNIT_TYPEID type = unit->unit_type;
++	return (token == "TERRAN_MARINE" && type == sc2::UNIT_TYPEID::TERRAN_MARINE)
++		|| (token == "TERRAN_MARAUDER" && type == sc2::UNIT_TYPEID::TERRAN_MARAUDER)
++		|| (token == "TERRAN_SIEGETANK" && (type == sc2::UNIT_TYPEID::TERRAN_SIEGETANK || type == sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED))
++		|| (token == "TERRAN_MEDIVAC" && type == sc2::UNIT_TYPEID::TERRAN_MEDIVAC)
++		|| (token == "TERRAN_VIKINGFIGHTER" && (type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER || type == sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT))
++		|| (token == "TERRAN_BANSHEE" && type == sc2::UNIT_TYPEID::TERRAN_BANSHEE)
++		|| (token == "TERRAN_BATTLECRUISER" && type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER);
++}
++
++std::string voiRoleForUnit(CCBot & bot, const sc2::Unit * unit)
++{
++	for (int i = 0; i < 8; ++i)
++	{
++		const std::string unitType = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
++		const std::string role = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".role", "");
++		if (!role.empty() && voiSc2UnitMatchesRoleToken(unit, unitType))
++		{
++			return role;
++		}
++	}
++	for (int i = 0; i < 8; ++i)
++	{
++		const std::string unitType = bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".unit_type", "");
++		const std::string role = bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".role", "");
++		if (!role.empty() && voiSc2UnitMatchesRoleToken(unit, unitType))
++		{
++			return role;
++		}
++	}
++	return "";
++}
++
++std::string voiAbilityPolicyForUnit(CCBot & bot, const sc2::Unit * unit, const std::string & role)
++{
++	for (int i = 0; i < 8; ++i)
++	{
++		const std::string unitType = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
++		const std::string policy = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".ability_policy", "");
++		if (!policy.empty() && voiSc2UnitMatchesRoleToken(unit, unitType))
++		{
++			return policy;
++		}
++	}
++	if (role == "cloak_if_available" || role == "worker_harass" || role == "siege_support" || role == "contain" || role == "defensive_hold")
++	{
++		return "if_available";
++	}
++	if (role == "yamato_high_value" || role == "capital_pressure" || role == "capital_ship" || role == "capital_ship_focus")
++	{
++		return "high_value_target";
++	}
++	if (role == "tactical_jump_escape" || role == "evac")
++	{
++		return "escape";
++	}
++	return "never";
++}
++
++bool voiIsHighValueTarget(const sc2::Unit * target)
++{
++	if (target == nullptr)
++	{
++		return false;
++	}
++	const auto type = target->unit_type.ToType();
++	return target->health_max >= 150.0f
++		|| target->is_flying
++		|| type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER
++		|| type == sc2::UNIT_TYPEID::PROTOSS_CARRIER
++		|| type == sc2::UNIT_TYPEID::PROTOSS_TEMPEST
++		|| type == sc2::UNIT_TYPEID::ZERG_BROODLORD
++		|| type == sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER
++		|| type == sc2::UNIT_TYPEID::PROTOSS_NEXUS
++		|| type == sc2::UNIT_TYPEID::ZERG_HATCHERY
++		|| type == sc2::UNIT_TYPEID::ZERG_LAIR
++		|| type == sc2::UNIT_TYPEID::ZERG_HIVE;
++}
++
++bool voiCanTargetYamato(const sc2::Unit * caster, const sc2::Unit * target)
++{
++	if (caster == nullptr || target == nullptr || !caster->is_alive || !target->is_alive)
++	{
++		return false;
++	}
++	if (target->display_type != sc2::Unit::DisplayType::Visible || target->health <= 0.0f)
++	{
++		return false;
++	}
++	const float yamatoRange = 10.0f + caster->radius + target->radius;
++	return Util::DistSq(caster->pos, target->pos) <= yamatoRange * yamatoRange;
 +}
 +
 +std::string voiCompositionRequirementLabel(CCBot & bot, int index)
@@ -11965,6 +12086,174 @@ index a8d5f3a..1fc1cee 100644
 +
 +bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
 +{
++	const std::string voiRole = m_bot.Commander().isVoiPolicyActive() ? voiRoleForUnit(m_bot, unit) : "";
++	bool voiRoleBiasedAction = false;
++	if (!voiRole.empty())
++	{
++		const std::string abilityPolicy = voiAbilityPolicyForUnit(m_bot, unit, voiRole);
++		m_lastVoiUnitRole = voiRole;
++		m_lastVoiUnitRoleUnitType = sc2::UnitTypeToName(unit->unit_type);
++		m_lastVoiUnitRolePolicy = abilityPolicy;
++		m_lastVoiUnitRoleStatus = "requested";
++		m_lastVoiUnitRoleReason = "Unit role read from VOI blackboard";
++		m_lastVoiUnitRoleFrame = m_bot.GetGameLoop();
++		m_lastVoiUnitRoleRequestedCount++;
++
++		if ((voiRole == "frontline" || voiRole == "focus_fire" || voiRole == "kite")
++			&& (unit->unit_type == sc2::UNIT_TYPEID::TERRAN_MARINE || unit->unit_type == sc2::UNIT_TYPEID::TERRAN_MARAUDER))
++		{
++			if (action.microActionType == MicroActionType::AttackUnit)
++			{
++				action.prioritized = true;
++				action.description = "VoiRoleBioFocus|" + voiRole;
++				m_lastVoiUnitRoleStatus = "prepared";
++				m_lastVoiUnitRoleReason = "Bio role prepared focus-fire action priority";
++				voiRoleBiasedAction = true;
++			}
++		}
++		else if ((voiRole == "anti_air" || voiRole == "capital_ship_focus" || voiRole == "air_superiority")
++			&& (unit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER || unit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT))
++		{
++			const sc2::Unit * bestAirTarget = nullptr;
++			float bestAirTargetScore = 0.0f;
++			for (const auto & enemyUnit : m_bot.UnitInfo().getUnits(Players::Enemy))
++			{
++				const sc2::Unit * enemy = enemyUnit.getUnitPtr();
++				if (enemy == nullptr || !enemy->is_alive || !enemy->is_flying || enemy->display_type == sc2::Unit::Hidden)
++				{
++					continue;
++				}
++				const float distanceScore = std::max(1.0f, Util::DistSq(unit->pos, enemy->pos));
++				const float valueScore = voiIsHighValueTarget(enemy) ? 100000.0f : 1000.0f;
++				const float score = valueScore - distanceScore;
++				if (bestAirTarget == nullptr || score > bestAirTargetScore)
++				{
++					bestAirTarget = enemy;
++					bestAirTargetScore = score;
++				}
++			}
++			if (bestAirTarget != nullptr && unit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER)
++			{
++				action.microActionType = MicroActionType::AttackUnit;
++				action.target = bestAirTarget;
++				action.prioritized = true;
++				action.description = "VoiRoleVikingAirPriority";
++				m_lastVoiUnitRoleStatus = "prepared";
++				m_lastVoiUnitRoleReason = "Viking role prepared visible air target";
++				voiRoleBiasedAction = true;
++			}
++		}
++		else if ((voiRole == "siege_support" || voiRole == "contain" || voiRole == "defensive_hold")
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_SIEGETANK
++			&& abilityPolicy != "never")
++		{
++			const bool abilityAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::MORPH_SIEGEMODE, unit, m_unitsAbilities);
++			if (abilityAvailable)
++			{
++				m_lastVoiUnitRoleAvailableCount++;
++			}
++			if (abilityAvailable && (abilityPolicy == "if_available" || abilityPolicy == "commit"))
++			{
++				action.microActionType = MicroActionType::Ability;
++				action.abilityID = sc2::ABILITY_ID::MORPH_SIEGEMODE;
++				action.prioritized = true;
++				action.description = "VoiRoleTankSiege|" + voiRole;
++				m_lastVoiUnitRoleStatus = "prepared";
++				m_lastVoiUnitRoleReason = "Tank role prepared siege mode and ability is available";
++				m_lastVoiUnitRoleAbility = "MORPH_SIEGEMODE";
++				voiRoleBiasedAction = true;
++			}
++			else if (!abilityAvailable)
++			{
++				m_lastVoiUnitRoleStatus = "unavailable";
++				m_lastVoiUnitRoleReason = "Tank siege role active but siege ability is unavailable";
++				m_lastVoiUnitRoleAbility = "MORPH_SIEGEMODE";
++			}
++		}
++		else if ((voiRole == "worker_harass" || voiRole == "cloak_if_available")
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_BANSHEE
++			&& abilityPolicy != "never")
++		{
++			const bool abilityAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::BEHAVIOR_CLOAKON, unit, m_unitsAbilities);
++			if (abilityAvailable)
++			{
++				m_lastVoiUnitRoleAvailableCount++;
++			}
++			if (abilityAvailable && (abilityPolicy == "if_available" || abilityPolicy == "commit"))
++			{
++				action.microActionType = MicroActionType::Ability;
++				action.abilityID = sc2::ABILITY_ID::BEHAVIOR_CLOAKON;
++				action.prioritized = true;
++				action.description = "VoiRoleBansheeCloak";
++				m_lastVoiUnitRoleStatus = "prepared";
++				m_lastVoiUnitRoleReason = "Banshee harass role prepared cloak and ability is available";
++				m_lastVoiUnitRoleAbility = "BEHAVIOR_CLOAKON";
++				voiRoleBiasedAction = true;
++			}
++			else if (!abilityAvailable)
++			{
++				m_lastVoiUnitRoleStatus = "unavailable";
++				m_lastVoiUnitRoleReason = "Banshee cloak role active but cloak ability is unavailable";
++				m_lastVoiUnitRoleAbility = "BEHAVIOR_CLOAKON";
++			}
++		}
++		else if ((voiRole == "yamato_high_value" || voiRole == "capital_pressure" || voiRole == "capital_ship" || voiRole == "capital_ship_focus")
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER
++			&& abilityPolicy != "never")
++		{
++			const bool yamatoAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::EFFECT_YAMATOGUN, unit, m_unitsAbilities);
++			if (yamatoAvailable)
++			{
++				m_lastVoiUnitRoleAvailableCount++;
++			}
++			if (yamatoAvailable && voiCanTargetYamato(unit, action.target) && voiIsHighValueTarget(action.target)
++				&& (abilityPolicy == "high_value_target" || abilityPolicy == "commit"))
++			{
++				action.microActionType = MicroActionType::AbilityTarget;
++				action.abilityID = sc2::ABILITY_ID::EFFECT_YAMATOGUN;
++				action.prioritized = true;
++				action.description = "VoiRoleBattlecruiserYamato";
++				m_lastVoiUnitRoleStatus = "prepared";
++				m_lastVoiUnitRoleReason = "Battlecruiser role prepared Yamato on visible in-range high-value target";
++				m_lastVoiUnitRoleAbility = "EFFECT_YAMATOGUN";
++				voiRoleBiasedAction = true;
++			}
++			else if (!yamatoAvailable)
++			{
++				m_lastVoiUnitRoleStatus = "unavailable";
++				m_lastVoiUnitRoleReason = "Battlecruiser Yamato role active but ability is unavailable";
++				m_lastVoiUnitRoleAbility = "EFFECT_YAMATOGUN";
++			}
++		}
++		else if ((voiRole == "tactical_jump_escape" || voiRole == "evac")
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER
++			&& abilityPolicy == "escape")
++		{
++			const bool tacticalJumpAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::EFFECT_TACTICALJUMP, unit, m_unitsAbilities);
++			if (tacticalJumpAvailable)
++			{
++				m_lastVoiUnitRoleAvailableCount++;
++			}
++			if (tacticalJumpAvailable && unit->health_max > 0.0f && unit->health / unit->health_max < 0.45f)
++			{
++				action.microActionType = MicroActionType::AbilityPosition;
++				action.abilityID = sc2::ABILITY_ID::EFFECT_TACTICALJUMP;
++				action.position = voiHomePosition(m_bot);
++				action.prioritized = true;
++				action.description = "VoiRoleBattlecruiserTacticalJumpEscape";
++				m_lastVoiUnitRoleStatus = "prepared";
++				m_lastVoiUnitRoleReason = "Battlecruiser escape role prepared Tactical Jump home";
++				m_lastVoiUnitRoleAbility = "EFFECT_TACTICALJUMP";
++				voiRoleBiasedAction = true;
++			}
++			else if (!tacticalJumpAvailable)
++			{
++				m_lastVoiUnitRoleStatus = "unavailable";
++				m_lastVoiUnitRoleReason = "Battlecruiser escape role active but Tactical Jump unavailable";
++				m_lastVoiUnitRoleAbility = "EFFECT_TACTICALJUMP";
++			}
++		}
++	}
 +	auto & currentAction = unitActions[unit];
 +	// If the unit is already performing the same action, we do nothing
 +	if (currentAction == action)
@@ -11987,6 +12276,13 @@ index a8d5f3a..1fc1cee 100644
 +	}
 +
 +	unitActions[unit] = action;
++	if (voiRoleBiasedAction || action.description.rfind("VoiRole", 0) == 0)
++	{
++		m_lastVoiUnitRoleStatus = "attempted";
++		m_lastVoiUnitRoleReason = "Role-biased action accepted into action plan";
++		m_lastVoiUnitRoleAttemptedCount++;
++		m_lastVoiUnitRoleFrame = m_bot.GetGameLoop();
++	}
 +	m_lastVoiActionPlanCount++;
 +	m_lastVoiActionFrame = m_bot.GetGameLoop();
 +	m_lastVoiPlannedAction = voiActionEvidence(action);
@@ -12195,6 +12491,13 @@ index a8d5f3a..1fc1cee 100644
 +			m_lastVoiActionFrame = m_bot.GetGameLoop();
 +			m_lastVoiIssuedActionFrame = m_bot.GetGameLoop();
 +			m_lastVoiIssuedAction = voiActionEvidence(action);
++			if (action.description.rfind("VoiRole", 0) == 0)
++			{
++				m_lastVoiUnitRoleStatus = "executed";
++				m_lastVoiUnitRoleReason = "Role-biased action reached SC2 command issue path";
++				m_lastVoiUnitRoleExecutedCount++;
++				m_lastVoiUnitRoleFrame = m_bot.GetGameLoop();
++			}
 +			if (action.squad == "MainAttack")
 +			{
 +				m_lastVoiMainAttackActionIssuedCount++;
@@ -12614,10 +12917,10 @@ index a8d5f3a..1fc1cee 100644
 +}
 +
 diff --git a/src/CombatCommander.h b/src/CombatCommander.h
-index edb6fbe..c7b9f8f 100644
+index edb6fbe..6e1ec1e 100644
 --- a/src/CombatCommander.h
 +++ b/src/CombatCommander.h
-@@ -165,6 +165,37 @@ class CombatCommander
+@@ -165,6 +165,55 @@ class CombatCommander
  	bool m_hasEnoughVikingsAgainstTempests = true;
  	bool m_winAttackSimulation = true;
  	int m_lastRetreatFrame = -1000;
@@ -12659,10 +12962,21 @@ index edb6fbe..c7b9f8f 100644
 +	int m_lastVoiCompositionRequired = 0;
 +	int m_lastVoiCompositionAssigned = 0;
 +	uint32_t m_lastVoiCompositionFrame = 0;
++	std::string m_lastVoiUnitRole = "";
++	std::string m_lastVoiUnitRoleUnitType = "";
++	std::string m_lastVoiUnitRolePolicy = "";
++	std::string m_lastVoiUnitRoleStatus = "none";
++	std::string m_lastVoiUnitRoleReason = "No unit role consumed";
++	std::string m_lastVoiUnitRoleAbility = "";
++	int m_lastVoiUnitRoleRequestedCount = 0;
++	int m_lastVoiUnitRoleAvailableCount = 0;
++	int m_lastVoiUnitRoleAttemptedCount = 0;
++	int m_lastVoiUnitRoleExecutedCount = 0;
++	uint32_t m_lastVoiUnitRoleFrame = 0;
  	bool m_logVikingActions = false;
  	bool m_allowEarlyBuildingAttack = false;
      bool            m_initialized;
-@@ -282,6 +313,37 @@ public:
+@@ -282,6 +331,55 @@ public:
  	bool isTileBlocked(int x, int y);
  	bool hasEnoughVikingsAgainstTempests() const { return m_hasEnoughVikingsAgainstTempests; }
  	bool winAttackSimulation() const { return m_winAttackSimulation; }
@@ -12704,10 +13018,21 @@ index edb6fbe..c7b9f8f 100644
 +	int getVoiCompositionRequired() const { return m_lastVoiCompositionRequired; }
 +	int getVoiCompositionAssigned() const { return m_lastVoiCompositionAssigned; }
 +	uint32_t getVoiCompositionFrame() const { return m_lastVoiCompositionFrame; }
++	const std::string & getVoiUnitRole() const { return m_lastVoiUnitRole; }
++	const std::string & getVoiUnitRoleUnitType() const { return m_lastVoiUnitRoleUnitType; }
++	const std::string & getVoiUnitRolePolicy() const { return m_lastVoiUnitRolePolicy; }
++	const std::string & getVoiUnitRoleStatus() const { return m_lastVoiUnitRoleStatus; }
++	const std::string & getVoiUnitRoleReason() const { return m_lastVoiUnitRoleReason; }
++	const std::string & getVoiUnitRoleAbility() const { return m_lastVoiUnitRoleAbility; }
++	int getVoiUnitRoleRequestedCount() const { return m_lastVoiUnitRoleRequestedCount; }
++	int getVoiUnitRoleAvailableCount() const { return m_lastVoiUnitRoleAvailableCount; }
++	int getVoiUnitRoleAttemptedCount() const { return m_lastVoiUnitRoleAttemptedCount; }
++	int getVoiUnitRoleExecutedCount() const { return m_lastVoiUnitRoleExecutedCount; }
++	uint32_t getVoiUnitRoleFrame() const { return m_lastVoiUnitRoleFrame; }
  	void initInfluenceMaps();
  	CCPosition getMainAttackLocation();
  	void updateBlockedTilesWithNeutral();
-@@ -310,4 +372,3 @@ public:
+@@ -310,4 +408,3 @@ public:
  	const sc2::Unit * getFirstProxyReaperToGoThroughNatural() const { return m_firstProxyReaperToGoThroughNatural; }
  	CCPosition getFirstProxyReaperGoal() const { return m_firstProxyReaperGoal; }
  };
@@ -12821,7 +13146,7 @@ index 9110e7e..49fbd0c 100644
              {
                  m_dist[(int)nextTile.x][(int)nextTile.y] = m_dist[(int)tile.x][(int)tile.y] + 1;
 diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
-index 045faab..e42e478 100644
+index 045faab..27babe6 100644
 --- a/src/GameCommander.cpp
 +++ b/src/GameCommander.cpp
 @@ -2,18 +2,146 @@
@@ -12980,7 +13305,7 @@ index 045faab..e42e478 100644
  	m_bot.StartProfiling("0.10.2   m_productionManager.onFrame");
  	m_productionManager.onFrame(executeMacro);
  	m_bot.StopProfiling("0.10.2   m_productionManager.onFrame");
-@@ -34,6 +164,470 @@ void GameCommander::onFrame(bool executeMacro)
+@@ -34,6 +164,565 @@ void GameCommander::onFrame(bool executeMacro)
  	m_bot.StartProfiling("0.10.4   m_combatCommander.onFrame");
      m_combatCommander.onFrame(m_combatUnits);
  	m_bot.StopProfiling("0.10.4   m_combatCommander.onFrame");
@@ -13303,6 +13628,21 @@ index 045faab..e42e478 100644
 +        << "\"target_type\":\"" << voiJsonEscape(m_voiPolicyBlackboard.getString("target_intent.target_type", "")) << "\","
 +        << "\"consumed_axes\":\"composition_requirements.*,unit_roles.*,route_intent.route_type,target_intent.target_type,tactical_task.allow_partial\""
 +        << "},"
++        << "\"UnitRoleTask\":{"
++        << "\"active\":" << (m_voiPolicyActive && (hasVoiPolicyDomain("unit_roles") || hasVoiPolicyDomain("composition_requirements")) ? "true" : "false") << ","
++        << "\"role\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRole()) << "\","
++        << "\"unit_type\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRoleUnitType()) << "\","
++        << "\"ability_policy\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRolePolicy()) << "\","
++        << "\"status\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRoleStatus()) << "\","
++        << "\"reason\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRoleReason()) << "\","
++        << "\"ability\":\"" << voiJsonEscape(m_combatCommander.getVoiUnitRoleAbility()) << "\","
++        << "\"requested_count\":" << m_combatCommander.getVoiUnitRoleRequestedCount() << ","
++        << "\"available_count\":" << m_combatCommander.getVoiUnitRoleAvailableCount() << ","
++        << "\"attempted_count\":" << m_combatCommander.getVoiUnitRoleAttemptedCount() << ","
++        << "\"executed_count\":" << m_combatCommander.getVoiUnitRoleExecutedCount() << ","
++        << "\"frame\":" << m_combatCommander.getVoiUnitRoleFrame() << ","
++        << "\"consumed_axes\":\"unit_roles.*.unit_type,unit_roles.*.role,unit_roles.*.ability_policy,composition_requirements.*.role\""
++        << "},"
 +        << "\"CombatCommander\":{"
 +        << "\"active\":true,"
 +        << "\"combat_unit_count\":" << m_combatUnits.size() << ","
@@ -13349,7 +13689,7 @@ index 045faab..e42e478 100644
 +        << "\"last_planned_action\":\"" << voiJsonEscape(m_combatCommander.getVoiPlannedAction()) << "\","
 +        << "\"last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiIssuedAction()) << "\","
 +        << "\"last_skipped_action\":\"" << voiJsonEscape(m_combatCommander.getVoiSkippedAction()) << "\","
-+        << "\"consumed_axes\":\"combat.aggression,combat.defend_bias,combat.attack_timing_bias,combat.commitment_level,combat.attack_condition_override,combat.retreat_patience_bias,combat.rally_before_attack_bias,scope.min_units,scope.max_units,scope.army_group,scope.unit_classes,scouting.scout_priority,squad.squad_role_biases.marine_scout,tactical_task.task_type,tactical_task.unit_classes,tactical_task.location_intent,tactical_task.min_units,tactical_task.max_units,tactical_task.priority,composition_requirements.*,unit_roles.*,route_intent.route_type,target_intent.target_type\""
++        << "\"consumed_axes\":\"combat.aggression,combat.defend_bias,combat.attack_timing_bias,combat.commitment_level,combat.attack_condition_override,combat.retreat_patience_bias,combat.rally_before_attack_bias,scope.min_units,scope.max_units,scope.army_group,scope.unit_classes,scouting.scout_priority,squad.squad_role_biases.marine_scout,tactical_task.task_type,tactical_task.unit_classes,tactical_task.location_intent,tactical_task.min_units,tactical_task.max_units,tactical_task.priority,composition_requirements.*,unit_roles.*,unit_roles.*.ability_policy,route_intent.route_type,target_intent.target_type\""
 +        << "},"
 +        << "\"Squad\":{"
 +        << "\"active\":true,"
@@ -13531,7 +13871,7 @@ index 045faab..e42e478 100644
  }
  
  ProductionManager& GameCommander::Production()
-@@ -46,6 +640,217 @@ CombatCommander& GameCommander::Combat()
+@@ -46,6 +735,256 @@ CombatCommander& GameCommander::Combat()
  	return m_combatCommander;
  }
  
@@ -13788,7 +14128,7 @@ index 045faab..e42e478 100644
  // assigns units to various managers
  void GameCommander::handleUnitAssignments()
  {
-@@ -98,8 +903,9 @@ void GameCommander::setScoutUnits()
+@@ -98,8 +1037,9 @@ void GameCommander::setScoutUnits()
      if (m_scoutUnits.empty())
      {
          const BaseLocation * enemyBaseLocation = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
@@ -13799,7 +14139,7 @@ index 045faab..e42e478 100644
  			return;
  
          // We need to find the enemy base to do something
-@@ -125,6 +931,15 @@ void GameCommander::setScoutUnits()
+@@ -125,6 +1065,15 @@ void GameCommander::setScoutUnits()
  
  bool GameCommander::shouldSendInitialScout()
  {
@@ -13815,7 +14155,7 @@ index 045faab..e42e478 100644
      return m_bot.Strategy().scoutConditionIsMet();
  }
  
-@@ -230,4 +1045,4 @@ void GameCommander::GiveDelayedSmarAbilityOrders()
+@@ -230,4 +1179,4 @@ void GameCommander::GiveDelayedSmarAbilityOrders()
  			Micro::SmartAbility(command.first.getUnitPtr(), command.second.first, command.second.second, m_bot);
  		}
  	}
@@ -13823,7 +14163,7 @@ index 045faab..e42e478 100644
 \ No newline at end of file
 +}
 diff --git a/src/GameCommander.h b/src/GameCommander.h
-index d2d36db..98d6880 100644
+index d2d36db..0e2c384 100644
 --- a/src/GameCommander.h
 +++ b/src/GameCommander.h
 @@ -5,6 +5,7 @@
@@ -13834,7 +14174,7 @@ index d2d36db..98d6880 100644
  
  class CCBot;
  
-@@ -24,11 +25,64 @@ class GameCommander
+@@ -24,11 +25,70 @@ class GameCommander
  	std::map<sc2::Tag, Unit*> m_unitCarrier;
  
  	std::vector<std::pair<Unit, std::pair<sc2::AbilityID, CCPosition>>> m_delayedSmartAbility;
@@ -13905,7 +14245,7 @@ index d2d36db..98d6880 100644
  
  public:
  
-@@ -39,6 +93,16 @@ public:
+@@ -39,6 +99,22 @@ public:
  
  	ProductionManager& Production();
  	CombatCommander& Combat();
@@ -14067,10 +14407,10 @@ index 4f74df0..7b2cbef 100644
 \ No newline at end of file
 +}
 diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
-index 3859fdb..a638b9c 100644
+index 3859fdb..95d2259 100644
 --- a/src/ProductionManager.cpp
 +++ b/src/ProductionManager.cpp
-@@ -4,6 +4,228 @@
+@@ -4,6 +4,234 @@
  
  const int MIN_VIKING_COUNT = 2;
  
@@ -14305,7 +14645,7 @@ index 3859fdb..a638b9c 100644
  ProductionManager::ProductionManager(CCBot & bot)
      : m_bot             (bot)
      , m_queue           (bot)
-@@ -179,9 +401,12 @@ void ProductionManager::onFrame(bool executeMacro)
+@@ -179,9 +407,12 @@ void ProductionManager::onFrame(bool executeMacro)
  		lowPriorityChecks();
  		validateUpgradesProgress();
  		m_bot.StopProfiling("0.10.2.1    lowPriorityChecks");
@@ -14318,7 +14658,7 @@ index 3859fdb..a638b9c 100644
  		/*m_bot.StartProfiling("3.0 QueueDeadBuildings");
  		QueueDeadBuildings();
  		m_bot.StopProfiling("3.0 QueueDeadBuildings");*/
-@@ -218,6 +443,7 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -218,6 +449,7 @@ void ProductionManager::manageBuildOrderQueue()
  		putImportantBuildOrderItemsInQueue();
      }
  	m_bot.StopProfiling("0.10.2.2.1     putImportantBuildOrderItemsInQueue");
@@ -14326,7 +14666,7 @@ index 3859fdb..a638b9c 100644
  
  	if (m_queue.isEmpty())
  		return;
-@@ -261,13 +487,14 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -261,13 +493,14 @@ void ProductionManager::manageBuildOrderQueue()
  				if (m_bot.GetCurrentFrame() < 4032 /* 3 min */ && (proxyBarracks || proxyFactory))
  				{
  					const auto proxyLocation = Util::GetPosition(m_bot.Buildings().getProxyLocation());
@@ -14344,7 +14684,7 @@ index 3859fdb..a638b9c 100644
  						{
  							m_queue.removeCurrentHighestPriorityItem();
  							break;
-@@ -287,8 +514,11 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -287,8 +520,11 @@ void ProductionManager::manageBuildOrderQueue()
  						if (!idleTypes.empty())
  						{
  							bool isNonRequiredArmory = unitTypeID == sc2::UNIT_TYPEID::TERRAN_ARMORY && !m_queue.contains(MetaTypeEnum::Thor);
@@ -14357,7 +14697,7 @@ index 3859fdb..a638b9c 100644
  						}
  					}
  #endif
-@@ -323,7 +553,14 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -323,7 +559,14 @@ void ProductionManager::manageBuildOrderQueue()
  								if (m_bot.GetMaxSupply() < 200 && m_bot.Data(currentItem.type.getUnitType()).supplyCost > m_bot.GetMaxSupply() - m_bot.GetCurrentSupply())
  								{
  									supplyBlockedFrames++;
@@ -14372,7 +14712,7 @@ index 3859fdb..a638b9c 100644
  								}
  							}
  							m_bot.StartProfiling("0.10.2.2.2.2.1.1      canMakeNow");
-@@ -334,9 +571,19 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -334,9 +577,19 @@ void ProductionManager::manageBuildOrderQueue()
  								// create it and remove it from the _queue
  								m_bot.StartProfiling("0.10.2.2.2.2.1.2      create");
  								const auto producerCreatedItem = create(producer, currentItem, m_bot.GetBuildingArea(currentItem.type));
@@ -14392,7 +14732,7 @@ index 3859fdb..a638b9c 100644
  									m_queue.removeCurrentHighestPriorityItem();
  
  									// don't actually loop around in here
-@@ -346,9 +593,21 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -346,9 +599,21 @@ void ProductionManager::manageBuildOrderQueue()
  								}
  								else if (!m_initialBuildOrderFinished)
  								{
@@ -14414,7 +14754,7 @@ index 3859fdb..a638b9c 100644
  							}
  							m_bot.StopProfiling("0.10.2.2.2.2.1      Build without premovement");
  						}
-@@ -364,23 +623,37 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -364,23 +629,37 @@ void ProductionManager::manageBuildOrderQueue()
  							Building b(currentItem.type.getUnitType(), m_bot.GetBuildingArea(currentItem.type));
  							//Get building location
  
@@ -14461,7 +14801,7 @@ index 3859fdb..a638b9c 100644
  
  										// don't actually loop around in here
  										m_bot.StopProfiling("0.10.2.2.2.2.2      Build with premovement");
-@@ -395,6 +668,7 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -395,6 +674,7 @@ void ProductionManager::manageBuildOrderQueue()
  									currentItem.type.getUnitType().getAPIUnitType() != Util::GetRichRefineryType().getAPIUnitType())//Supresses the refinery related errors
  								{
  									Util::DisplayError("Invalid build location for " + currentItem.type.getName(), "0x0000002", m_bot);
@@ -14469,7 +14809,7 @@ index 3859fdb..a638b9c 100644
  								}
  							}
  							m_bot.StopProfiling("0.10.2.2.2.2.2      Build with premovement");
-@@ -421,6 +695,11 @@ void ProductionManager::manageBuildOrderQueue()
+@@ -421,6 +701,11 @@ void ProductionManager::manageBuildOrderQueue()
  bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentItem)
  {
  	bool shouldSkip = false;
@@ -14481,7 +14821,7 @@ index 3859fdb..a638b9c 100644
  	const auto factoryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Factory.getUnitType(), false, true);
  	const auto completedFactoryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Factory.getUnitType(), true, true);
  	const auto hasProducedFactoryUnit = hasProducedAtLeastXFactoryUnit(1);
-@@ -430,17 +709,55 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
+@@ -430,17 +715,55 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
  	const auto deadCCs = m_bot.GetDeadAllyUnitsCount(sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER);
  	const auto deadOrbitals = m_bot.GetDeadAllyUnitsCount(sc2::UNIT_TYPEID::TERRAN_ORBITALCOMMAND);
  	const bool hasStartedFirstExpand = ccs + orbitals + deadCCs + deadOrbitals > 1;
@@ -14539,7 +14879,7 @@ index 3859fdb..a638b9c 100644
  	}
  	else if (currentItem.type.getUnitType().isResourceDepot() && !currentItem.type.getUnitType().isMorphedBuilding())
  	{
-@@ -500,7 +817,13 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
+@@ -500,7 +823,13 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
  	else if (currentItem.type.getUnitType().getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_BARRACKS || currentItem.type.getUnitType().getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_FACTORY)
  	{
  		if (!hasStartedFirstExpand && barracksCount + factoryCount + starportCount >= 3)
@@ -14554,7 +14894,7 @@ index 3859fdb..a638b9c 100644
  		// The worker that just finished building the first Supply Depot should be the one building the first Barracks (unless it is proxied)
  		else if (currentItem.type.getUnitType().getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_BARRACKS &&
  			m_bot.GetUnitCount(sc2::UNIT_TYPEID::TERRAN_BARRACKS) == 0 &&
-@@ -513,11 +836,19 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
+@@ -513,11 +842,19 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
  	else if (currentItem.type.getUnitType().getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_STARPORT)
  	{
  		if (!hasStartedFirstExpand && barracksCount + factoryCount + starportCount >= 3)
@@ -14576,7 +14916,7 @@ index 3859fdb..a638b9c 100644
  		}
  	}
  	else if (currentItem.type.getUnitType().getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_STARPORTTECHLAB)
-@@ -550,6 +881,10 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
+@@ -550,6 +887,10 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
  	}
  	if (!shouldSkip)
  	{
@@ -14587,7 +14927,7 @@ index 3859fdb..a638b9c 100644
  		if (m_bot.Strategy().getStartingStrategy() == PROXY_CYCLONES)
  		{
  			if (currentItem.type == MetaTypeEnum::FactoryTechLab || currentItem.type == MetaTypeEnum::Factory)
-@@ -718,6 +1053,53 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
+@@ -718,6 +1059,53 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
  	return shouldSkip;
  }
  
@@ -14641,7 +14981,7 @@ index 3859fdb..a638b9c 100644
  void ProductionManager::putImportantBuildOrderItemsInQueue()
  {
  #ifdef NO_PRODUCTION
-@@ -738,15 +1120,21 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -738,15 +1126,21 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  	const auto currentStrategy = m_bot.Strategy().getCurrentStrategyPostBuildOrder();
  	const auto startingStrategy = m_bot.Strategy().getStartingStrategy();
  	const auto earlyRushed = m_bot.Strategy().isEarlyRushed();
@@ -14666,7 +15006,7 @@ index 3859fdb..a638b9c 100644
  	}
  
  	if (m_bot.GetSelfRace() == sc2::Race::Terran)
-@@ -807,13 +1195,19 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -807,13 +1201,19 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  			}
  			else
  			{
@@ -14688,7 +15028,7 @@ index 3859fdb..a638b9c 100644
  		}
  
  		if (!m_queue.contains(workerMetatype))//check queue
-@@ -957,7 +1351,7 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -957,7 +1357,7 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  				}
  
  				const bool forceProductionBuilding = proxyMaraudersStrategy && toBuild == MetaTypeEnum::Barracks;
@@ -14697,7 +15037,7 @@ index 3859fdb..a638b9c 100644
  				{
  					// No need to check for idle production buildings if we want to force its creation
  					bool laxIdleRules = finishedBaseCount < 3;
-@@ -1134,8 +1528,23 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -1134,8 +1534,23 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  				const float cycloneTankRatio = float(cycloneCount) / std::max(1.f, float(tankCount));
  				const float enemySupplyAirGroundRatio = float(m_bot.Analyzer().opponentAirSupply) / std::max(1.f, float(m_bot.Analyzer().opponentGroundSupply));
  				const bool shouldProduceHellionsAgainstEarlyLightUnitsRush = factoryTechLabCount == 0 && earlyRushed && m_bot.Analyzer().getEnemyLightGroundUnitCount() > hellionCount;
@@ -14722,7 +15062,7 @@ index 3859fdb..a638b9c 100644
  				{
  					m_queue.removeAllOfType(MetaTypeEnum::Cyclone);
  					m_queue.removeAllOfType(MetaTypeEnum::SiegeTank);
-@@ -1151,7 +1560,7 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -1151,7 +1566,7 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  					m_queue.removeAllOfType(MetaTypeEnum::Cyclone);
  					m_queue.removeAllOfType(MetaTypeEnum::SiegeTank);
  					m_queue.removeAllOfType(MetaTypeEnum::MagFieldAccelerator);
@@ -14731,7 +15071,7 @@ index 3859fdb..a638b9c 100644
  						m_queue.removeAllOfType(MetaTypeEnum::FactoryTechLab);
  #ifndef NO_UNITS
  					if (!m_queue.contains(MetaTypeEnum::Hellion))
-@@ -1318,7 +1727,7 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -1318,7 +1733,7 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  				}
  
  				const bool forceProductionBuilding = proxyMaraudersStrategy && toBuild == MetaTypeEnum::Barracks;
@@ -14740,7 +15080,7 @@ index 3859fdb..a638b9c 100644
  				{
  					bool idleProductionBuilding = false;
  					const auto & productionBuildings = m_bot.GetAllyUnits(toBuild.getUnitType().getAPIUnitType());
-@@ -1402,129 +1811,1027 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -1402,129 +1817,1114 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
  				}
  #endif
  
@@ -15711,11 +16051,7 @@ index 3859fdb..a638b9c 100644
 +		}
 +	}
 +}
- 
--				if (m_bot.Strategy().shouldProduceAntiAirDefense() && !isTechQueuedOrStarted(MetaTypeEnum::HiSecAutoTracking) && !m_bot.Strategy().isUpgradeCompleted(sc2::UPGRADE_ID::HISECAUTOTRACKING))
--				{
--					queueTech(MetaTypeEnum::HiSecAutoTracking);
--				}
++
 +void ProductionManager::enforceBarracksProductionContinuity()
 +{
 +	if (m_bot.GetSelfRace() != CCRace::Terran)
@@ -15756,6 +16092,17 @@ index 3859fdb..a638b9c 100644
 +		return;
 +	}
  
+-				if (m_bot.Strategy().shouldProduceAntiAirDefense() && !isTechQueuedOrStarted(MetaTypeEnum::HiSecAutoTracking) && !m_bot.Strategy().isUpgradeCompleted(sc2::UPGRADE_ID::HISECAUTOTRACKING))
+-				{
+-					queueTech(MetaTypeEnum::HiSecAutoTracking);
+-				}
++	for (auto & barracks : m_bot.GetAllyUnits(sc2::UNIT_TYPEID::TERRAN_BARRACKS))
++	{
++		if (!barracks.isValid() || !barracks.isCompleted() || barracks.isFlying())
++		{
++			continue;
++		}
+ 
 -				if (medivacCount == 0 || (marineCount + marauderCount) > medivacCount * 8)
 -				{
 -#ifndef NO_UNITS
@@ -15787,13 +16134,6 @@ index 3859fdb..a638b9c 100644
 -#endif
 -				}*/
 -				break;
-+	for (auto & barracks : m_bot.GetAllyUnits(sc2::UNIT_TYPEID::TERRAN_BARRACKS))
-+	{
-+		if (!barracks.isValid() || !barracks.isCompleted() || barracks.isFlying())
-+		{
-+			continue;
-+		}
-+
 +		bool barracksProductionOrderInFlight = false;
 +		bool barracksUnitTrainingOrderInFlight = false;
 +		for (const auto & order : barracks.getUnitPtr()->orders)
@@ -15965,7 +16305,7 @@ index 3859fdb..a638b9c 100644
  }
  
  std::vector<sc2::UNIT_TYPEID> ProductionManager::getIdleImportantProductionBuildingTypes(bool underConstructionConsideredIdle, bool constructingAddonConsideredIdle)
-@@ -1676,8 +2983,8 @@ void ProductionManager::fixBuildOrderDeadlock(MM::BuildOrderItem & item)
+@@ -1676,8 +3076,8 @@ void ProductionManager::fixBuildOrderDeadlock(MM::BuildOrderItem & item)
  {
  	const TypeData& typeData = m_bot.Data(item.type);
  
@@ -15976,7 +16316,7 @@ index 3859fdb..a638b9c 100644
  		return;
  
  	// check to see if we have the prerequisites for the item
-@@ -2111,7 +3418,7 @@ Unit ProductionManager::getProducer(const MetaType & type, bool allowTraining, C
+@@ -2111,7 +3511,7 @@ Unit ProductionManager::getProducer(const MetaType & type, bool allowTraining, C
  	// get all the types of units that cna build this type
  	auto & producerTypes = m_bot.Data(type).whatBuilds;
  	bool priorizeReactor = false;
@@ -15985,7 +16325,7 @@ index 3859fdb..a638b9c 100644
  
  	if (m_bot.GetSelfRace() == CCRace::Terran)
  	{
-@@ -2609,8 +3916,9 @@ Unit ProductionManager::getClosestUnitToPosition(const std::vector<Unit> & units
+@@ -2609,8 +4009,9 @@ Unit ProductionManager::getClosestUnitToPosition(const std::vector<Unit> & units
  void ProductionManager::createSkipQueue(MetaType type, CCPosition location)
  {
  	Unit producer = getProducer(type, false, location, true, false);
@@ -15997,7 +16337,7 @@ index 3859fdb..a638b9c 100644
  	bool includeAddonTiles;
  	switch ((sc2::UNIT_TYPEID)type.getUnitType().getAPIUnitType())
  	{
-@@ -2623,7 +3931,7 @@ void ProductionManager::createSkipQueue(MetaType type, CCPosition location)
+@@ -2623,7 +4024,7 @@ void ProductionManager::createSkipQueue(MetaType type, CCPosition location)
  			includeAddonTiles = false;
  	}
  	auto boItem = MM::BuildOrderItem(type, 0, true);
@@ -16006,7 +16346,7 @@ index 3859fdb..a638b9c 100644
  }
  
  // this function will check to see if all preconditions are met and then create a unit
-@@ -2647,10 +3955,15 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+@@ -2647,10 +4048,15 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
  				producer.cancel();
  			}
  			producer.morph(item.type.getUnitType());
@@ -16022,7 +16362,7 @@ index 3859fdb..a638b9c 100644
  			Building b(item.type.getUnitType(), desidredPosition);
  			if (item.type.getUnitType().isAddon())
  			{
-@@ -2671,6 +3984,18 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+@@ -2671,6 +4077,18 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
  					Util::Log(__FUNCTION__, ss.str(), m_bot);
  				}
  			}
@@ -16041,7 +16381,7 @@ index 3859fdb..a638b9c 100644
  			if (ValidateBuildingTiming(b))
  			{
  				b.reserveResources = reserveResources;
-@@ -2683,12 +4008,18 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+@@ -2683,12 +4101,18 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
  	else if (item.type.isUnit())
  	{
  		producer.train(item.type.getUnitType());
@@ -16060,7 +16400,7 @@ index 3859fdb..a638b9c 100644
  
  #if _DEBUG
  		if (isTechStarted(item.type))
-@@ -2723,6 +4054,7 @@ bool ProductionManager::create(const Unit & producer, Building & b, bool filterM
+@@ -2723,6 +4147,7 @@ bool ProductionManager::create(const Unit & producer, Building & b, bool filterM
      if (b.type.isMorphedBuilding())
      {
          producer.morph(b.type);
@@ -16068,7 +16408,7 @@ index 3859fdb..a638b9c 100644
  		return true;
      }
  
-@@ -2842,7 +4174,7 @@ bool ProductionManager::canMakeNow(const Unit & producer, const MetaType & type)
+@@ -2842,7 +4267,7 @@ bool ProductionManager::canMakeNow(const Unit & producer, const MetaType & type)
      {
          return false;
      }
@@ -16077,7 +16417,7 @@ index 3859fdb..a638b9c 100644
  	{//Do not check for abilities, buildings don't seem to have it listed. They always have the ability anyway, so its safe.
  		return true;
  	}
-@@ -3092,7 +4424,9 @@ Unit ProductionManager::meetsReservedResourcesWithCancelUnit(const MetaType & ty
+@@ -3092,7 +4517,9 @@ Unit ProductionManager::meetsReservedResourcesWithCancelUnit(const MetaType & ty
  bool ProductionManager::canMakeAtArrival(const Building & b, const Unit & worker, int additionalReservedMineral, int additionalReservedGas)
  {
  	if (!worker.isValid())
@@ -16087,7 +16427,7 @@ index 3859fdb..a638b9c 100644
  
  	const int workerCount = m_bot.Workers().getWorkerData().getWorkerJobCount(WorkerJobs::Minerals);
  	if (workerCount <= 3)//25% or less of the starting workers are mining. Do not consider the mineral gain rate as it is inconsistant and untrustable.
-@@ -3117,7 +4451,9 @@ bool ProductionManager::canMakeAtArrival(const Building & b, const Unit & worker
+@@ -3117,7 +4544,9 @@ bool ProductionManager::canMakeAtArrival(const Building & b, const Unit & worker
  	auto mineralGain = travelFrame * mineralRate;
  	auto gasGain = travelFrame * gasRate;
  
@@ -16098,7 +16438,7 @@ index 3859fdb..a638b9c 100644
  	{
  		return true;
  	}
-@@ -3128,23 +4464,31 @@ bool ProductionManager::ValidateBuildingTiming(Building & b) const
+@@ -3128,23 +4557,31 @@ bool ProductionManager::ValidateBuildingTiming(Building & b) const
  {
  	if (b.type.isRefinery())
  	{
@@ -16136,7 +16476,7 @@ index 3859fdb..a638b9c 100644
  
  		auto depotGeyserDifferenceX = base->getDepotTilePosition().x - nextRefinery.x;
  		auto depotGeyserDifferenceY = base->getDepotTilePosition().y - nextRefinery.y;
-@@ -3208,6 +4552,20 @@ void ProductionManager::drawProductionInformation()
+@@ -3208,6 +4645,20 @@ void ProductionManager::drawProductionInformation()
  	ss << "Gas Worker Target:" << m_bot.Workers().getGasWorkersTarget() << "\n";
  	ss << "Mineral income:   " << m_bot.Observation()->GetScore().score_details.collection_rate_minerals << "\n";
  	ss << "Gas income:       " << m_bot.Observation()->GetScore().score_details.collection_rate_vespene << "\n";

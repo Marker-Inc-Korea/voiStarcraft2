@@ -119,7 +119,14 @@ def _vector(ttl_seconds: int = 30) -> PolicyModulationVector:
             CompositionRequirement("marine", count=4, role="frontline"),
             CompositionRequirement("tank", count=1, role="siege_support"),
         ),
-        unit_roles=(UnitRoleAssignment("viking", role="anti_air", priority=0.7),),
+        unit_roles=(
+            UnitRoleAssignment(
+                "viking",
+                role="anti_air",
+                priority=0.7,
+                ability_policy="never",
+            ),
+        ),
         building_tasks=(BuildingTask("bunker", placement_intent="front_door"),),
         route_intent=RouteIntentModulation(
             route_type="flank_left",
@@ -590,6 +597,7 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
         self.assertIn("composition_requirements.0.unit_type=TERRAN_MARINE\n", text)
         self.assertIn("composition_requirements.0.count=4\n", text)
         self.assertIn("unit_roles.0.role=anti_air\n", text)
+        self.assertIn("unit_roles.0.ability_policy=never\n", text)
         self.assertIn("building_tasks.0.building_type=TERRAN_BUNKER\n", text)
         self.assertIn("route_intent.route_type=flank_left\n", text)
         self.assertIn("target_intent.target_type=enemy_main\n", text)
