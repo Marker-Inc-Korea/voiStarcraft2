@@ -579,6 +579,74 @@ _LOCATION_INTENT_ALIASES = {
     "expansion": "safe_expansion",
 }
 
+_BUILDING_PLACEMENT_INTENT_ALIASES = {
+    "home": "self_main_safe_macro",
+    "main": "self_main_safe_macro",
+    "self_main": "self_main_safe_macro",
+    "self_main_safe_macro": "self_main_safe_macro",
+    "본진": "self_main_safe_macro",
+    "본진안쪽": "self_main_safe_macro",
+    "ramp": "self_main_ramp",
+    "front_door": "self_main_ramp",
+    "wall": "self_main_ramp",
+    "self_main_ramp": "self_main_ramp",
+    "입구": "self_main_ramp",
+    "앞마당입구": "self_natural_choke",
+    "natural_choke": "self_natural_choke",
+    "self_natural_choke": "self_natural_choke",
+    "natural": "self_natural_safe",
+    "safe_expansion": "self_natural_safe",
+    "self_natural_safe": "self_natural_safe",
+    "앞마당": "self_natural_safe",
+    "proxy": "proxy_near_enemy_natural",
+    "proxy_near_enemy_natural": "proxy_near_enemy_natural",
+    "전진": "proxy_near_enemy_natural",
+    "적진근처": "proxy_near_enemy_natural",
+    "explicit": "explicit_coordinate",
+    "explicit_coordinate": "explicit_coordinate",
+    "here": "explicit_coordinate",
+    "여기": "explicit_coordinate",
+    "near_factory": "near_factory",
+    "near_barracks": "near_barracks",
+    "near_starport": "near_starport",
+}
+
+_BUILDING_PLACEMENT_ANCHOR_ALIASES = {
+    "main": "self_main",
+    "home": "self_main",
+    "self_main": "self_main",
+    "본진": "self_main",
+    "ramp": "self_ramp",
+    "self_ramp": "self_ramp",
+    "입구": "self_ramp",
+    "natural": "self_natural",
+    "self_natural": "self_natural",
+    "앞마당": "self_natural",
+    "enemy_natural": "enemy_natural",
+    "적앞마당": "enemy_natural",
+    "enemy_main": "enemy_main",
+    "적본진": "enemy_main",
+    "explicit": "explicit_coordinate",
+    "explicit_coordinate": "explicit_coordinate",
+    "here": "explicit_coordinate",
+    "여기": "explicit_coordinate",
+}
+
+_BUILDING_PLACEMENT_DIRECTION_ALIASES = {
+    "inside": "inside",
+    "안쪽": "inside",
+    "toward_enemy": "toward_enemy",
+    "전방": "toward_enemy",
+    "away_from_enemy": "away_from_enemy",
+    "후방": "away_from_enemy",
+    "left": "left",
+    "왼쪽": "left",
+    "right": "right",
+    "오른쪽": "right",
+    "center": "center",
+    "중앙": "center",
+}
+
 _TACTICAL_SCOPE_LOCATION_INTENTS = {
     "home",
     "natural",
@@ -1022,6 +1090,7 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
     _canonicalize_rich_intent_sequences(payload)
     _repair_micromachine_emergency_defaults(payload)
     _lower_micromachine_production_plan(payload)
+    _lower_micromachine_building_tasks(payload)
     _repair_micromachine_tactical_task_defaults(payload)
 
 
@@ -1044,6 +1113,22 @@ def _canonicalize_rich_intent_sequences(payload: dict[str, object]) -> None:
                 normalized[field_name] = _canonicalize_micromachine_key(
                     normalized[field_name]
                 )
+            if key == "building_tasks":
+                if "placement_intent" in normalized:
+                    normalized["placement_intent"] = _canonicalize_enum_alias(
+                        normalized["placement_intent"],
+                        aliases=_BUILDING_PLACEMENT_INTENT_ALIASES,
+                    )
+                if "anchor" in normalized:
+                    normalized["anchor"] = _canonicalize_enum_alias(
+                        normalized["anchor"],
+                        aliases=_BUILDING_PLACEMENT_ANCHOR_ALIASES,
+                    )
+                if "offset_direction" in normalized:
+                    normalized["offset_direction"] = _canonicalize_enum_alias(
+                        normalized["offset_direction"],
+                        aliases=_BUILDING_PLACEMENT_DIRECTION_ALIASES,
+                    )
             normalized_items.append(normalized)
         payload[key] = normalized_items
 
@@ -1138,6 +1223,41 @@ def _lower_micromachine_production_plan(payload: dict[str, object]) -> None:
     evidence = (
         "production_plan lowered to consumed production/tech/tactical_task fields; "
         f"targets={','.join(final_targets)}; queued={','.join(queue_items)}"
+    )
+    payload["rationale"] = _append_rationale(payload.get("rationale"), evidence)
+
+
+def _lower_micromachine_building_tasks(payload: dict[str, object]) -> None:
+    """Translate semantic building placement tasks into consumed build biases."""
+
+    building_tasks = payload.get("building_tasks")
+    if not _is_non_text_sequence(building_tasks):
+        return
+    production = _ensure_micromachine_domain_dict(payload, "production")
+    tech = _ensure_micromachine_domain_dict(payload, "tech")
+    lowered_buildings: list[str] = []
+    for item in building_tasks:
+        if not isinstance(item, Mapping):
+            continue
+        building_type = item.get("building_type")
+        if not isinstance(building_type, str) or not building_type.strip():
+            continue
+        token = _canonicalize_micromachine_key(building_type)
+        if token not in _PRODUCTION_PLAN_STRUCTURE_TARGETS:
+            continue
+        lowered_buildings.append(token)
+        _set_production_plan_bias(production, tech, token, 0.85)
+    if not lowered_buildings:
+        return
+    payload["tags"] = list(
+        _merge_ordered_tokens(
+            payload.get("tags", ()),
+            tuple(f"building_task:{token}" for token in lowered_buildings),
+        )
+    )
+    evidence = (
+        "building_tasks lowered to consumed production/tech fields; "
+        f"buildings={','.join(lowered_buildings)}"
     )
     payload["rationale"] = _append_rationale(payload.get("rationale"), evidence)
 

@@ -1877,6 +1877,158 @@ index 2872a0b..2f19e43 100644
 +		false);
 +}
 +
++bool voiBuildingTaskMatchesType(CCBot & bot, const UnitType & type)
++{
++	const std::string requested = bot.Commander().getVoiPolicyString("building_tasks.0.building_type", "");
++	if (requested.empty())
++	{
++		return false;
++	}
++	const sc2::UNIT_TYPEID apiType = type.getAPIUnitType();
++	return (requested == "TERRAN_BUNKER" && apiType == sc2::UNIT_TYPEID::TERRAN_BUNKER)
++		|| (requested == "TERRAN_BARRACKS" && apiType == sc2::UNIT_TYPEID::TERRAN_BARRACKS)
++		|| (requested == "TERRAN_FACTORY" && apiType == sc2::UNIT_TYPEID::TERRAN_FACTORY)
++		|| (requested == "TERRAN_STARPORT" && apiType == sc2::UNIT_TYPEID::TERRAN_STARPORT)
++		|| (requested == "TERRAN_SUPPLYDEPOT" && apiType == sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT)
++		|| (requested == "TERRAN_ENGINEERINGBAY" && apiType == sc2::UNIT_TYPEID::TERRAN_ENGINEERINGBAY)
++		|| (requested == "TERRAN_ARMORY" && apiType == sc2::UNIT_TYPEID::TERRAN_ARMORY);
++}
++
++CCTilePosition voiExplicitBuildingTaskCoordinate(CCBot & bot)
++{
++	const std::string raw = bot.Commander().getVoiPolicyString("building_tasks.0.target_position", "");
++	const size_t comma = raw.find(',');
++	if (comma == std::string::npos)
++	{
++		return CCTilePosition();
++	}
++	const float x = static_cast<float>(std::atof(raw.substr(0, comma).c_str()));
++	const float y = static_cast<float>(std::atof(raw.substr(comma + 1).c_str()));
++	return Util::GetTilePosition(CCPosition(x, y));
++}
++
++CCTilePosition offsetVoiBuildingTaskAnchor(CCBot & bot, const CCTilePosition & anchor, const std::string & direction, int distance)
++{
++	if (anchor == CCTilePosition() || direction.empty() || direction == "center")
++	{
++		return anchor;
++	}
++	CCPosition enemy = voiFarthestEnemyStartPosition(bot);
++	if (enemy == CCPosition())
++	{
++		enemy = bot.GetStartLocation();
++	}
++	const CCPosition anchorPosition = Util::GetPosition(anchor);
++	int dx = 0;
++	int dy = 0;
++	if (direction == "toward_enemy" || direction == "away_from_enemy")
++	{
++		dx = enemy.x > anchorPosition.x ? 1 : -1;
++		dy = enemy.y > anchorPosition.y ? 1 : -1;
++		if (direction == "away_from_enemy")
++		{
++			dx = -dx;
++			dy = -dy;
++		}
++	}
++	else if (direction == "inside")
++	{
++		const CCPosition home = bot.GetStartLocation();
++		dx = home.x > anchorPosition.x ? 1 : -1;
++		dy = home.y > anchorPosition.y ? 1 : -1;
++	}
++	else if (direction == "left")
++	{
++		dx = -1;
++	}
++	else if (direction == "right")
++	{
++		dx = 1;
++	}
++	return CCTilePosition(anchor.x + (dx * distance), anchor.y + (dy * distance));
++}
++
++CCTilePosition resolveVoiBuildingTaskAnchor(CCBot & bot, const std::string & intent, const std::string & anchorIntent)
++{
++	if (anchorIntent == "explicit_coordinate" || intent == "explicit_coordinate")
++	{
++		return voiExplicitBuildingTaskCoordinate(bot);
++	}
++	if (anchorIntent == "self_natural" || intent == "self_natural_choke" || intent == "self_natural_safe")
++	{
++		if (BaseLocation * nat = bot.Bases().getPlayerNat(Players::Self))
++		{
++			return nat->getDepotTilePosition();
++		}
++	}
++	if (anchorIntent == "enemy_natural" || intent == "proxy_near_enemy_natural")
++	{
++		if (BaseLocation * enemyNat = bot.Bases().getPlayerNat(Players::Enemy))
++		{
++			return enemyNat->getDepotTilePosition();
++		}
++	}
++	if (anchorIntent == "enemy_main")
++	{
++		const BaseLocation * enemyMain = bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
++		return enemyMain ? enemyMain->getDepotTilePosition() : Util::GetTilePosition(voiFarthestEnemyStartPosition(bot));
++	}
++	return Util::GetTilePosition(bot.GetStartLocation());
++}
++
++void recordVoiBuildingTaskPlacement(CCBot & bot, const std::string & status, const std::string & reason, const CCTilePosition & position);
++
++bool resolveVoiBuildingTaskPlacement(CCBot & bot, const Building & building, CCTilePosition & selected, bool & allowNearestFallback, const std::string & source)
++{
++	if (!bot.Commander().isVoiPolicyActive() || !voiBuildingTaskMatchesType(bot, building.type))
++	{
++		return false;
++	}
++	const std::string intent = bot.Commander().getVoiPolicyString("building_tasks.0.placement_intent", "");
++	if (intent.empty())
++	{
++		return false;
++	}
++	const std::string anchorIntent = bot.Commander().getVoiPolicyString("building_tasks.0.anchor", "");
++	std::string offsetDirection = bot.Commander().getVoiPolicyString("building_tasks.0.offset_direction", "");
++	allowNearestFallback = bot.Commander().getVoiPolicyBool("building_tasks.0.allow_nearest_valid_fallback", true);
++	if (offsetDirection.empty())
++	{
++		if (intent == "self_natural_choke" || intent == "proxy_near_enemy_natural")
++		{
++			offsetDirection = "toward_enemy";
++		}
++		else if (intent == "self_main_safe_macro" || intent == "self_natural_safe")
++		{
++			offsetDirection = "inside";
++		}
++	}
++	CCTilePosition anchor = resolveVoiBuildingTaskAnchor(bot, intent, anchorIntent);
++	const int offsetDistance = intent == "proxy_near_enemy_natural" ? 12 : (intent == "self_natural_choke" || intent == "self_main_ramp" ? 5 : 3);
++	anchor = offsetVoiBuildingTaskAnchor(bot, anchor, offsetDirection, offsetDistance);
++	if (anchor == CCTilePosition() || !bot.Map().isValidTile(anchor))
++	{
++		Util::Log(source, "VOI building_task placement rejected invalid anchor intent=" + intent + " anchor=" + anchorIntent + " direction=" + offsetDirection + " type=" + building.type.getName(), bot);
++		recordVoiBuildingTaskPlacement(bot, "refused", "invalid semantic placement anchor", anchor);
++		return false;
++	}
++	if (!allowNearestFallback && !isVoiSc2MacroPlacementSafe(bot, building.type, anchor, false, !building.type.isAddon(), false, true))
++	{
++		Util::Log(source, "VOI building_task placement rejected exact coordinate without fallback intent=" + intent + " anchor_x=" + std::to_string(anchor.x) + " anchor_y=" + std::to_string(anchor.y) + " type=" + building.type.getName(), bot);
++		recordVoiBuildingTaskPlacement(bot, "refused", "exact placement invalid and nearest fallback disabled", anchor);
++		return false;
++	}
++	selected = anchor;
++	Util::Log(source, "VOI building_task placement anchor selected type=" + building.type.getName() + " intent=" + intent + " anchor=" + anchorIntent + " direction=" + offsetDirection + " nearest_fallback=" + (allowNearestFallback ? "true" : "false") + " anchor_x=" + std::to_string(anchor.x) + " anchor_y=" + std::to_string(anchor.y), bot);
++	recordVoiBuildingTaskPlacement(bot, "accepted", "semantic placement anchor resolved", anchor);
++	return true;
++}
++
++void recordVoiBuildingTaskPlacement(CCBot & bot, const std::string & status, const std::string & reason, const CCTilePosition & position)
++{
++	bot.Commander().recordVoiBuildingTaskPlacement(status, reason, position);
++}
++
 +int voiMacroTileKey(const CCTilePosition & position)
 +{
 +	return (position.x * 10000) + position.y;
@@ -3266,16 +3418,37 @@ index 2872a0b..2f19e43 100644
      }
  	else
 @@ -1863,16 +3378,28 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool che
- 		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
- 		buildingLocation = m_buildingPlacer.getBuildLocationNear(b, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
- 		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
-+		if (shouldUseVoiSc2MacroPlacement(m_bot, b.type) &&
+		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
+		Building placementBuilding = b;
+		CCTilePosition voiBuildingTaskAnchor;
+		bool voiBuildingTaskAllowNearestFallback = true;
+		const bool hasVoiBuildingTaskPlacement = resolveVoiBuildingTaskPlacement(m_bot, b, voiBuildingTaskAnchor, voiBuildingTaskAllowNearestFallback, __FUNCTION__);
+		const bool voiBuildingTaskBlocksFallback = !voiBuildingTaskAllowNearestFallback;
+		if (hasVoiBuildingTaskPlacement)
+		{
+			placementBuilding.desiredPosition = voiBuildingTaskAnchor;
+		}
+		if (hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
+		{
+			buildingLocation = voiBuildingTaskAnchor;
+		}
+		else if (!hasVoiBuildingTaskPlacement && voiBuildingTaskBlocksFallback)
+		{
+			buildingLocation = CCTilePosition();
+		}
+		else
+		{
+			buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
+		}
+		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
++		if (!voiBuildingTaskBlocksFallback &&
++			shouldUseVoiSc2MacroPlacement(m_bot, b.type) &&
 +			(!m_bot.Map().isValidTile(buildingLocation) ||
 +			 buildingLocation == CCTilePosition() ||
 +			 !isVoiSc2MacroPlacementSafe(m_bot, b.type, buildingLocation, false, includeAddonTiles, ignoreExtraBorder, true)))
 +		{
 +			CCTilePosition queryLocation;
-+			if (findVoiSc2QueryMacroPlacement(m_bot, b, includeAddonTiles, ignoreExtraBorder, forceSameHeight, queryLocation, __FUNCTION__))
++			if (findVoiSc2QueryMacroPlacement(m_bot, placementBuilding, includeAddonTiles, ignoreExtraBorder, forceSameHeight, queryLocation, __FUNCTION__))
 +			{
 +				buildingLocation = queryLocation;
 +			}
@@ -12644,6 +12817,37 @@ index 045faab..e42e478 100644
 +    const std::string tacticalTaskUnitClasses = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.unit_classes", ""));
 +    const std::string tacticalTaskProductionTargets = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.production_targets", ""));
 +    const std::string tacticalTaskLocationIntent = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.location_intent", ""));
++    const std::string buildingTaskType = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.building_type", ""));
++    const std::string buildingTaskPlacementIntent = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.placement_intent", ""));
++    const std::string buildingTaskAnchor = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.anchor", ""));
++    const std::string buildingTaskOffsetDirection = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.offset_direction", ""));
++    const std::string buildingTaskTargetPosition = voiJsonEscape(m_voiPolicyBlackboard.getString("building_tasks.0.target_position", ""));
++    const bool buildingTaskNearestFallback = m_voiPolicyBlackboard.getBool("building_tasks.0.allow_nearest_valid_fallback", true);
++    const std::string rawBuildingTaskType = m_voiPolicyBlackboard.getString("building_tasks.0.building_type", "");
++    const std::string rawBuildingTaskPlacementIntent = m_voiPolicyBlackboard.getString("building_tasks.0.placement_intent", "");
++    const bool buildingTaskActive = !rawBuildingTaskType.empty() && m_voiPolicyActive;
++    std::string buildingTaskStatus = rawBuildingTaskType.empty() ? "idle" : "accepted";
++    std::string buildingTaskReason = rawBuildingTaskType.empty() ? "" : "BuildingManager will consume semantic placement intent with SC2 placement validation";
++    if (!rawBuildingTaskType.empty() && !m_voiPolicyActive)
++    {
++        buildingTaskStatus = "refused";
++        buildingTaskReason = "Policy inactive or expired";
++    }
++    else if (!rawBuildingTaskType.empty() && rawBuildingTaskPlacementIntent.empty())
++    {
++        buildingTaskStatus = "refused";
++        buildingTaskReason = "missing placement intent";
++    }
++    else if (rawBuildingTaskPlacementIntent == "explicit_coordinate" && buildingTaskTargetPosition.empty())
++    {
++        buildingTaskStatus = "refused";
++        buildingTaskReason = "explicit_coordinate requires target_position";
++    }
++    else if (rawBuildingTaskPlacementIntent == "explicit_coordinate" && !buildingTaskNearestFallback)
++    {
++        buildingTaskStatus = "accepted";
++        buildingTaskReason = "BuildingManager must place exactly at target_position or reject without nearest fallback";
++    }
 +    const bool workerRepeatGuardActive = hasVoiPolicyKey("workers.repeat_order_guard_frames");
 +    const int workerRepeatGuardFrames = getVoiWorkerRepeatGuardFrames();
 +    const std::string workerConsumedAxes = workerRepeatGuardActive ? "workers.repeat_order_guard_frames" : "";
@@ -12651,6 +12855,16 @@ index 045faab..e42e478 100644
 +    const uint32_t issuedAtFrame = static_cast<uint32_t>(std::max(0, m_voiPolicyBlackboard.getInt("issued_at_frame", 0)));
 +    const uint32_t expiresAtFrame = static_cast<uint32_t>(std::max(0, m_voiPolicyBlackboard.getInt("expires_at_frame", 0)));
 +    const uint32_t policyLifetimeFrames = expiresAtFrame > issuedAtFrame ? expiresAtFrame - issuedAtFrame : 4032;
++    const uint32_t buildingTaskPlacementFrame = getVoiBuildingTaskPlacementFrame();
++    const bool buildingTaskPlacementFresh = buildingTaskPlacementFrame > 0
++        && getVoiBuildingTaskPlacementUpdateId() == rawUpdateId
++        && currentFrame >= buildingTaskPlacementFrame
++        && currentFrame - buildingTaskPlacementFrame <= std::max(static_cast<uint32_t>(112), policyLifetimeFrames);
++    if (buildingTaskPlacementFresh)
++    {
++        buildingTaskStatus = getVoiBuildingTaskPlacementStatus();
++        buildingTaskReason = getVoiBuildingTaskPlacementReason();
++    }
 +    const uint32_t tacticalTaskDurationFrames = static_cast<uint32_t>(std::max(0, m_voiPolicyBlackboard.getInt("tactical_task.duration_seconds", 0))) * 22u;
 +    const uint32_t tacticalTaskFreshnessWindowFrames = std::max(static_cast<uint32_t>(112), tacticalTaskDurationFrames > 0 ? tacticalTaskDurationFrames : policyLifetimeFrames);
 +    const bool tacticalTaskWithinDuration = tacticalTaskDurationFrames == 0 || currentFrame <= issuedAtFrame + tacticalTaskDurationFrames;
@@ -12848,6 +13062,19 @@ index 045faab..e42e478 100644
 +        << "\"last_actual_command\":\"" << voiJsonEscape(tacticalTaskLastCommand) << "\","
 +        << "\"last_actual_command_frame\":" << tacticalTaskLastCommandFrame << ","
 +        << "\"consumed_axes\":\"tactical_task.task_type,tactical_task.task_id,tactical_task.unit_classes,tactical_task.production_targets,tactical_task.location_intent,tactical_task.priority,tactical_task.min_units,tactical_task.max_units,tactical_task.duration_seconds,tactical_task.allow_partial,tactical_task.safety_margin\""
++        << "},"
++        << "\"BuildingTask\":{"
++        << "\"active\":" << (buildingTaskActive ? "true" : "false") << ","
++        << "\"building_type\":\"" << buildingTaskType << "\","
++        << "\"placement_intent\":\"" << buildingTaskPlacementIntent << "\","
++        << "\"anchor\":\"" << buildingTaskAnchor << "\","
++        << "\"offset_direction\":\"" << buildingTaskOffsetDirection << "\","
++        << "\"target_position\":\"" << buildingTaskTargetPosition << "\","
++        << "\"resolved_position\":\"" << voiJsonEscape(buildingTaskPlacementFresh ? getVoiBuildingTaskPlacementPosition() : "") << "\","
++        << "\"allow_nearest_valid_fallback\":" << (buildingTaskNearestFallback ? "true" : "false") << ","
++        << "\"status\":\"" << voiJsonEscape(buildingTaskStatus) << "\","
++        << "\"reason\":\"" << voiJsonEscape(buildingTaskReason) << "\","
++        << "\"consumed_axes\":\"building_tasks.0.building_type,building_tasks.0.placement_intent,building_tasks.0.anchor,building_tasks.0.offset_direction,building_tasks.0.target_position,building_tasks.0.allow_nearest_valid_fallback\""
 +        << "},"
 +        << "\"CombatCommander\":{"
 +        << "\"active\":true,"
@@ -13127,6 +13354,45 @@ index 045faab..e42e478 100644
 +	return m_voiPolicyActive ? m_voiPolicyBlackboard.getString(key, fallback) : fallback;
 +}
 +
++void GameCommander::recordVoiBuildingTaskPlacement(const std::string & status, const std::string & reason, const CCTilePosition & position)
++{
++	m_voiBuildingTaskPlacementStatus = status.empty() ? "unknown" : status;
++	m_voiBuildingTaskPlacementReason = reason.empty() ? "unlabeled building task placement" : reason;
++	m_voiBuildingTaskPlacementFrame = m_bot.GetGameLoop();
++	m_voiBuildingTaskPlacementX = position.x;
++	m_voiBuildingTaskPlacementY = position.y;
++	m_voiBuildingTaskPlacementUpdateId = m_voiPolicyBlackboard.getString("update_id", "");
++}
++
++std::string GameCommander::getVoiBuildingTaskPlacementStatus() const
++{
++	return m_voiBuildingTaskPlacementStatus;
++}
++
++std::string GameCommander::getVoiBuildingTaskPlacementReason() const
++{
++	return m_voiBuildingTaskPlacementReason;
++}
++
++uint32_t GameCommander::getVoiBuildingTaskPlacementFrame() const
++{
++	return m_voiBuildingTaskPlacementFrame;
++}
++
++std::string GameCommander::getVoiBuildingTaskPlacementPosition() const
++{
++	if (m_voiBuildingTaskPlacementFrame == 0)
++	{
++		return "";
++	}
++	return std::to_string(m_voiBuildingTaskPlacementX) + "," + std::to_string(m_voiBuildingTaskPlacementY);
++}
++
++std::string GameCommander::getVoiBuildingTaskPlacementUpdateId() const
++{
++	return m_voiBuildingTaskPlacementUpdateId;
++}
++
 +int GameCommander::getVoiWorkerRepeatGuardFrames() const
 +{
 +	if (!hasVoiPolicyKey("workers.repeat_order_guard_frames"))
@@ -13396,6 +13662,12 @@ index d2d36db..98d6880 100644
 +	sc2::Tag                m_voiWorkerLastTraceCurrentOrderTargetTag = 0;
 +	float                   m_voiWorkerLastTraceCurrentOrderTargetX = 0.0f;
 +	float                   m_voiWorkerLastTraceCurrentOrderTargetY = 0.0f;
++	std::string             m_voiBuildingTaskPlacementStatus = "none";
++	std::string             m_voiBuildingTaskPlacementReason = "none";
++	uint32_t                m_voiBuildingTaskPlacementFrame = 0;
++	int                     m_voiBuildingTaskPlacementX = 0;
++	int                     m_voiBuildingTaskPlacementY = 0;
++	std::string             m_voiBuildingTaskPlacementUpdateId;
  
      void assignUnit(const Unit & unit, std::vector<Unit> & units);
      bool isAssigned(const Unit & unit) const;
@@ -13417,6 +13689,12 @@ index d2d36db..98d6880 100644
 +	int getVoiPolicyInt(const std::string & key, int fallback = 0) const;
 +	bool getVoiPolicyBool(const std::string & key, bool fallback = false) const;
 +	std::string getVoiPolicyString(const std::string & key, const std::string & fallback = "") const;
++	void recordVoiBuildingTaskPlacement(const std::string & status, const std::string & reason, const CCTilePosition & position);
++	std::string getVoiBuildingTaskPlacementStatus() const;
++	std::string getVoiBuildingTaskPlacementReason() const;
++	uint32_t getVoiBuildingTaskPlacementFrame() const;
++	std::string getVoiBuildingTaskPlacementPosition() const;
++	std::string getVoiBuildingTaskPlacementUpdateId() const;
 +	int getVoiWorkerRepeatGuardFrames() const;
 +	void setVoiWorkerCommandReason(const Unit & worker, const std::string & reason);
 +	bool shouldSuppressRepeatedWorkerCommand(const sc2::Unit * unit, const sc2::AbilityID & abilityID, sc2::Tag targetTag, const CCPosition & targetPosition, const std::string & targetKind);

@@ -93,7 +93,13 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 UnitRoleAssignment("viking", role="anti_air", priority=0.7),
             ),
             building_tasks=(
-                BuildingTask("bunker", placement_intent="front_door", count=1),
+                BuildingTask(
+                    "bunker",
+                    placement_intent="self_natural_choke",
+                    anchor="self_natural",
+                    offset_direction="toward_enemy",
+                    count=1,
+                ),
             ),
             route_intent=RouteIntentModulation(
                 route_type="flank_left",
@@ -115,6 +121,10 @@ class PolicyModulationVectorTest(unittest.TestCase):
             payload["composition_requirements"][0],
         )
         self.assertEqual("TERRAN_BUNKER", payload["building_tasks"][0]["building_type"])
+        self.assertEqual("self_natural_choke", payload["building_tasks"][0]["placement_intent"])
+        self.assertEqual("self_natural", payload["building_tasks"][0]["anchor"])
+        self.assertEqual("toward_enemy", payload["building_tasks"][0]["offset_direction"])
+        self.assertTrue(payload["building_tasks"][0]["allow_nearest_valid_fallback"])
         rebuilt = PolicyModulationVector.from_mapping(payload)
         self.assertEqual(vector.production_plan, rebuilt.production_plan)
         self.assertEqual(vector.composition_requirements, rebuilt.composition_requirements)
