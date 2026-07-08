@@ -604,6 +604,126 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual("flank_left", result.vector.route_intent.route_type)
         self.assertEqual("enemy_main", result.vector.target_intent.target_type)
 
+    def test_lowers_tank_production_plan_to_consumed_prerequisite_biases(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "탱크 생산해",
+                "override_level": "directive",
+                "production_plan": {
+                    "targets": ["탱크"],
+                    "allow_prerequisites": True,
+                    "priority": 0.85,
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual(("TERRAN_SIEGETANK",), vector.production_plan.targets)
+        self.assertEqual(
+            (
+                "TERRAN_FACTORY",
+                "FACTORY_TECHLAB",
+                "TERRAN_SIEGETANK",
+            ),
+            vector.tactical_task.production_targets,
+        )
+        self.assertGreaterEqual(
+            vector.production.queue_biases.to_dict()["TERRAN_FACTORY"],
+            0.85,
+        )
+        self.assertGreaterEqual(
+            vector.production.addon_biases.to_dict()["FACTORY_TECHLAB"],
+            0.85,
+        )
+        self.assertGreaterEqual(
+            vector.tech.unit_biases.to_dict()["TERRAN_SIEGETANK"],
+            0.85,
+        )
+        self.assertTrue(vector.production.allow_build_order_rewrite)
+        self.assertIn("queued=TERRAN_FACTORY,FACTORY_TECHLAB,TERRAN_SIEGETANK", vector.rationale)
+
+    def test_lowers_starport_production_plans_to_consumed_prerequisite_biases(self) -> None:
+        for target, expected_chain in (
+            ("바이킹", ("TERRAN_STARPORT", "TERRAN_VIKINGFIGHTER")),
+            ("밴시", ("TERRAN_STARPORT", "STARPORT_TECHLAB", "TERRAN_BANSHEE")),
+            (
+                "배틀크루저",
+                (
+                    "TERRAN_STARPORT",
+                    "STARPORT_TECHLAB",
+                    "TERRAN_FUSIONCORE",
+                    "TERRAN_BATTLECRUISER",
+                ),
+            ),
+        ):
+            with self.subTest(target=target):
+                result = compile_policy_modulation_provider_output(
+                    {
+                        "source": "llm",
+                        "goal": f"{target} 생산해",
+                        "override_level": "directive",
+                        "production_plan": {
+                            "targets": [target],
+                            "allow_prerequisites": True,
+                            "priority": 0.8,
+                        },
+                    }
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                self.assertIsNotNone(result.vector)
+                assert result.vector is not None
+                vector = result.vector
+                self.assertEqual(expected_chain, vector.tactical_task.production_targets)
+                self.assertEqual("sustain_production", vector.tactical_task.task_type)
+                self.assertNotIn("FACTORY_TECHLAB", vector.tactical_task.production_targets)
+                self.assertGreaterEqual(
+                    vector.production.queue_biases.to_dict()["TERRAN_STARPORT"],
+                    0.8,
+                )
+                final_target = expected_chain[-1]
+                self.assertGreaterEqual(
+                    vector.tech.unit_biases.to_dict()[final_target],
+                    0.8,
+                )
+                if "STARPORT_TECHLAB" in expected_chain:
+                    self.assertGreaterEqual(
+                        vector.production.addon_biases.to_dict()["STARPORT_TECHLAB"],
+                        0.8,
+                    )
+                if "TERRAN_FUSIONCORE" in expected_chain:
+                    self.assertGreaterEqual(
+                        vector.tech.structure_biases.to_dict()["TERRAN_FUSIONCORE"],
+                        0.8,
+                    )
+
+    def test_emergency_production_plan_does_not_queue_long_prerequisite_chain(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "급하면 탱크 생산해",
+                "override_level": "emergency",
+                "production_plan": {
+                    "targets": ["탱크"],
+                    "allow_prerequisites": True,
+                    "priority": 0.95,
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        assert result.vector is not None
+        vector = result.vector
+        self.assertFalse(vector.production_plan.allow_prerequisite_buildings)
+        self.assertEqual(("TERRAN_SIEGETANK",), vector.tactical_task.production_targets)
+        self.assertNotIn("TERRAN_FACTORY", vector.production.queue_biases.to_dict())
+        self.assertFalse(vector.production.allow_build_order_rewrite)
+
     def test_rejects_unsafe_rich_intent_payloads(self) -> None:
         for payload in (
             {

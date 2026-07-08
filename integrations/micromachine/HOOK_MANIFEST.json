@@ -8,6 +8,17 @@
     "kv": "latest_modulation.kv",
     "telemetry": "latest_telemetry.json"
   },
+  "python_lowered_to_cpp_consumed_axes": {
+    "production_plan.targets": [
+      "tactical_task.production_targets",
+      "production.queue_biases.*",
+      "production.addon_biases.*",
+      "production.production_facility_biases.*",
+      "tech.structure_biases.*",
+      "tech.unit_biases.*"
+    ],
+    "reason": "ProductionManager does not directly consume production_plan.*; provider compilation lowers rich production plans into the existing consumed production and tech axes before publish."
+  },
   "python_blackboard_emitted_but_not_consumed_by_current_cpp_patch": [
     "strategy.timing_biases.*",
     "strategy.transition_biases.*",
@@ -86,6 +97,19 @@
         "last_doctrine_action",
         "last_doctrine_queue_item",
         "last_doctrine_evidence",
+        "last_doctrine_requested_targets",
+        "last_doctrine_blocked_reason",
+        "last_doctrine_missing_prerequisites",
+        "queue_bias_starport_techlab",
+        "queue_bias_banshee",
+        "queue_bias_raven",
+        "queue_bias_fusion_core",
+        "queue_bias_battlecruiser",
+        "facility_bias_fusion_core",
+        "tech_unit_bias_banshee",
+        "tech_unit_bias_raven",
+        "tech_unit_bias_battlecruiser",
+        "tech_structure_bias_fusion_core",
         "actual_production_command_issued_count",
         "last_actual_production_command",
         "last_actual_production_command_frame"

@@ -689,7 +689,11 @@ _CANONICAL_MICROMACHINE_KEY_ALIASES = {
     "battlecruiser": "TERRAN_BATTLECRUISER",
     "battlecruisers": "TERRAN_BATTLECRUISER",
     "bc": "TERRAN_BATTLECRUISER",
+    "배틀크루저": "TERRAN_BATTLECRUISER",
     "전투순양함": "TERRAN_BATTLECRUISER",
+    "fusioncore": "TERRAN_FUSIONCORE",
+    "fusion": "TERRAN_FUSIONCORE",
+    "융합로": "TERRAN_FUSIONCORE",
     "barrackstechlab": "BARRACKS_TECHLAB",
     "raxtechlab": "BARRACKS_TECHLAB",
     "병영기술실": "BARRACKS_TECHLAB",
@@ -724,6 +728,86 @@ _CANONICAL_BIAS_FIELDS = {
     ("production", "addon_biases"),
     ("production", "production_facility_biases"),
 }
+
+_PRODUCTION_PLAN_PREREQUISITE_CHAINS: dict[str, tuple[str, ...]] = {
+    "TERRAN_MARINE": ("TERRAN_BARRACKS", "TERRAN_MARINE"),
+    "TERRAN_MARAUDER": (
+        "TERRAN_BARRACKS",
+        "BARRACKS_TECHLAB",
+        "TERRAN_MARAUDER",
+    ),
+    "TERRAN_REAPER": ("TERRAN_BARRACKS", "TERRAN_REAPER"),
+    "TERRAN_HELLION": ("TERRAN_FACTORY", "TERRAN_HELLION"),
+    "TERRAN_CYCLONE": ("TERRAN_FACTORY", "FACTORY_TECHLAB", "TERRAN_CYCLONE"),
+    "TERRAN_THOR": (
+        "TERRAN_FACTORY",
+        "FACTORY_TECHLAB",
+        "TERRAN_ARMORY",
+        "TERRAN_THOR",
+    ),
+    "TERRAN_SIEGETANK": (
+        "TERRAN_FACTORY",
+        "FACTORY_TECHLAB",
+        "TERRAN_SIEGETANK",
+    ),
+    "TERRAN_MEDIVAC": ("TERRAN_STARPORT", "TERRAN_MEDIVAC"),
+    "TERRAN_VIKINGFIGHTER": ("TERRAN_STARPORT", "TERRAN_VIKINGFIGHTER"),
+    "TERRAN_BANSHEE": (
+        "TERRAN_STARPORT",
+        "STARPORT_TECHLAB",
+        "TERRAN_BANSHEE",
+    ),
+    "TERRAN_RAVEN": ("TERRAN_STARPORT", "STARPORT_TECHLAB", "TERRAN_RAVEN"),
+    "TERRAN_BATTLECRUISER": (
+        "TERRAN_STARPORT",
+        "STARPORT_TECHLAB",
+        "TERRAN_FUSIONCORE",
+        "TERRAN_BATTLECRUISER",
+    ),
+}
+
+_PRODUCTION_PLAN_UNIT_TARGETS = frozenset(
+    {
+        "TERRAN_MARINE",
+        "TERRAN_MARAUDER",
+        "TERRAN_REAPER",
+        "TERRAN_HELLION",
+        "TERRAN_CYCLONE",
+        "TERRAN_THOR",
+        "TERRAN_SIEGETANK",
+        "TERRAN_MEDIVAC",
+        "TERRAN_VIKINGFIGHTER",
+        "TERRAN_BANSHEE",
+        "TERRAN_RAVEN",
+        "TERRAN_BATTLECRUISER",
+    }
+)
+
+_PRODUCTION_PLAN_STRUCTURE_TARGETS = frozenset(
+    {
+        "TERRAN_SUPPLYDEPOT",
+        "TERRAN_COMMANDCENTER",
+        "TERRAN_REFINERY",
+        "TERRAN_BARRACKS",
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "TERRAN_ENGINEERINGBAY",
+        "TERRAN_ARMORY",
+        "TERRAN_FUSIONCORE",
+        "TERRAN_BUNKER",
+    }
+)
+
+_PRODUCTION_PLAN_ADDON_TARGETS = frozenset(
+    {
+        "BARRACKS_TECHLAB",
+        "BARRACKS_REACTOR",
+        "FACTORY_TECHLAB",
+        "FACTORY_REACTOR",
+        "STARPORT_TECHLAB",
+        "STARPORT_REACTOR",
+    }
+)
 
 
 def _extract_vector_payload(mapping: Mapping[str, object]) -> Mapping[str, object] | None:
@@ -937,6 +1021,7 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                 ]
     _canonicalize_rich_intent_sequences(payload)
     _repair_micromachine_emergency_defaults(payload)
+    _lower_micromachine_production_plan(payload)
     _repair_micromachine_tactical_task_defaults(payload)
 
 
@@ -988,6 +1073,135 @@ def _repair_micromachine_emergency_defaults(payload: dict[str, object]) -> None:
         return
     if isinstance(ttl_seconds, int) and not isinstance(ttl_seconds, bool):
         payload["ttl_seconds"] = min(ttl_seconds, 60)
+
+
+def _lower_micromachine_production_plan(payload: dict[str, object]) -> None:
+    """Translate rich production plans into fields consumed by MicroMachine C++."""
+
+    production_plan = payload.get("production_plan")
+    if not isinstance(production_plan, dict):
+        return
+    raw_targets = production_plan.get("targets")
+    if not _is_non_text_sequence(raw_targets):
+        return
+    targets = tuple(_canonicalize_micromachine_key(target) for target in raw_targets)
+    if not targets:
+        return
+
+    override_level = str(payload.get("override_level", "") or "").strip().lower()
+    allow_prerequisites = bool(production_plan.get("allow_prerequisite_buildings"))
+    if override_level == PolicyOverrideLevel.EMERGENCY.value and allow_prerequisites:
+        allow_prerequisites = False
+        production_plan["allow_prerequisite_buildings"] = False
+
+    priority = _production_plan_priority(production_plan.get("priority"))
+    production = _ensure_micromachine_domain_dict(payload, "production")
+    tech = _ensure_micromachine_domain_dict(payload, "tech")
+    tactical_task = _ensure_micromachine_domain_dict(payload, "tactical_task")
+
+    queue_items: list[str] = []
+    final_targets: list[str] = []
+    for target in targets:
+        final_targets.append(target)
+        chain = _production_plan_chain_for_target(
+            target,
+            allow_prerequisites=allow_prerequisites,
+        )
+        for item in chain:
+            if item not in queue_items:
+                queue_items.append(item)
+
+    for item in queue_items:
+        _set_production_plan_bias(production, tech, item, priority)
+
+    existing_targets = tactical_task.get("production_targets")
+    merged_targets = _merge_ordered_tokens(
+        existing_targets if _is_non_text_sequence(existing_targets) else (),
+        queue_items,
+    )
+    if merged_targets:
+        tactical_task["production_targets"] = list(merged_targets[:32])
+    _set_if_empty(tactical_task, "task_type", "sustain_production")
+    _set_float_at_least(tactical_task, "priority", priority)
+    if allow_prerequisites:
+        _set_float_at_least(production, "tech_switch_urgency", min(1.0, priority))
+        if priority >= 0.75 and override_level in {
+            PolicyOverrideLevel.DIRECTIVE.value,
+            PolicyOverrideLevel.CONSTRAINT.value,
+            PolicyOverrideLevel.BIAS.value,
+            "",
+        }:
+            production["allow_build_order_rewrite"] = True
+
+    lowered_tags = tuple(f"production_plan:{target}" for target in final_targets)
+    payload["tags"] = list(_merge_ordered_tokens(payload.get("tags", ()), lowered_tags))
+    evidence = (
+        "production_plan lowered to consumed production/tech/tactical_task fields; "
+        f"targets={','.join(final_targets)}; queued={','.join(queue_items)}"
+    )
+    payload["rationale"] = _append_rationale(payload.get("rationale"), evidence)
+
+
+def _production_plan_chain_for_target(
+    target: str,
+    *,
+    allow_prerequisites: bool,
+) -> tuple[str, ...]:
+    if allow_prerequisites:
+        return _PRODUCTION_PLAN_PREREQUISITE_CHAINS.get(target, (target,))
+    return (target,)
+
+
+def _production_plan_priority(value: object) -> float:
+    if isinstance(value, (int, float)) and type(value) is not bool:
+        return max(0.1, min(1.0, float(value)))
+    return 0.8
+
+
+def _set_production_plan_bias(
+    production: dict[str, object],
+    tech: dict[str, object],
+    item: str,
+    priority: float,
+) -> None:
+    _set_nested_float_at_least(production, ("queue_biases", item), priority)
+    if item in _PRODUCTION_PLAN_ADDON_TARGETS:
+        _set_nested_float_at_least(production, ("addon_biases", item), priority)
+        return
+    if item in _PRODUCTION_PLAN_STRUCTURE_TARGETS:
+        _set_nested_float_at_least(
+            production,
+            ("production_facility_biases", item),
+            priority,
+        )
+        _set_nested_float_at_least(tech, ("structure_biases", item), priority)
+        return
+    if item in _PRODUCTION_PLAN_UNIT_TARGETS:
+        _set_nested_float_at_least(tech, ("unit_biases", item), priority)
+
+
+def _merge_ordered_tokens(*sequences: object) -> tuple[str, ...]:
+    result: list[str] = []
+    for sequence in sequences:
+        if isinstance(sequence, str):
+            candidates = (sequence,)
+        elif _is_non_text_sequence(sequence):
+            candidates = sequence
+        else:
+            continue
+        for item in candidates:
+            if type(item) is not str:
+                continue
+            normalized = item.strip()
+            if normalized and normalized not in result:
+                result.append(normalized)
+    return tuple(result)
+
+
+def _append_rationale(existing: object, addition: str) -> str:
+    if isinstance(existing, str) and existing.strip():
+        return f"{existing.strip()} {addition}"
+    return addition
 
 
 def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> None:
