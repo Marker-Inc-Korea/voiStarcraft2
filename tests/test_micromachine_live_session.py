@@ -174,6 +174,31 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(4, vector.tactical_task.max_units)
         self.assertIn("explicit_unit_count", vector.tags)
 
+    def test_keyword_provider_maps_marine_tank_attack_to_composition_requirements(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+
+        result = session.submit_text(
+            "4마린 1탱크로 적진 공격해",
+            current_frame=100,
+            update_id="attack-marine-tank",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.update)
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual(5, vector.scope.min_units)
+        self.assertEqual(5, vector.tactical_task.min_units)
+        self.assertEqual("pressure_with_main_army", vector.tactical_task.task_type)
+        self.assertEqual("enemy_main", vector.target_intent.target_type)
+        self.assertEqual("TERRAN_MARINE", vector.composition_requirements[0].unit_type)
+        self.assertEqual(4, vector.composition_requirements[0].count)
+        self.assertEqual("TERRAN_SIEGETANK", vector.composition_requirements[1].unit_type)
+        self.assertEqual(1, vector.composition_requirements[1].count)
+        self.assertEqual("siege_support", vector.composition_requirements[1].role)
+        self.assertIn("explicit_composition", vector.tags)
+
     def test_keyword_provider_maps_flank_route_attack_to_flank_bias(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())

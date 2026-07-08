@@ -267,6 +267,11 @@ class KeywordPolicyModulationProvider:
                 else "enemy_natural"
             )
             requested_units = _extract_requested_combat_unit_count(text)
+            composition_requirements = _extract_composition_requirements(text)
+            if composition_requirements:
+                requested_units = sum(
+                    int(item["count"]) for item in composition_requirements
+                )
             min_units = (
                 requested_units
                 if requested_units is not None
@@ -292,9 +297,11 @@ class KeywordPolicyModulationProvider:
             ]
             if requested_units is not None:
                 tags.append("explicit_unit_count")
+            if composition_requirements:
+                tags.append("explicit_composition")
             if flank_intent:
                 tags.append("flank_route")
-            return {
+            payload = {
                 "source": self.source.value,
                 "goal": request.command_text,
                 "override_level": "bias",
@@ -353,6 +360,25 @@ class KeywordPolicyModulationProvider:
                 },
                 "tags": tags,
             }
+            if composition_requirements:
+                payload["composition_requirements"] = composition_requirements
+                payload["unit_roles"] = [
+                    {
+                        "unit_type": item["unit_type"],
+                        "role": item.get("role", "frontline") or "frontline",
+                        "priority": 0.75,
+                    }
+                    for item in composition_requirements
+                ]
+                payload["route_intent"] = {
+                    "route_type": "flank_left" if flank_intent else "direct",
+                    "avoid_enemy_strength": bool(flank_intent),
+                }
+                payload["target_intent"] = {
+                    "target_type": location_intent,
+                    "priority": 0.85,
+                }
+            return payload
         return {
             "source": self.source.value,
             "goal": request.command_text,
@@ -1635,6 +1661,46 @@ def _extract_requested_combat_unit_count(text: str) -> int | None:
     if match:
         return _KOREAN_SMALL_NUMBERS[match.group(1)]
     return None
+
+
+def _extract_composition_requirements(text: str) -> list[dict[str, object]]:
+    normalized = text.lower()
+    specs = (
+        ("TERRAN_MARINE", "frontline", r"(?:마린|해병|marine|marines)"),
+        ("TERRAN_SIEGETANK", "siege_support", r"(?:탱크|공성전차|siege\s*tanks?|tanks?)"),
+        ("TERRAN_VIKINGFIGHTER", "anti_air", r"(?:바이킹|viking|vikings)"),
+        ("TERRAN_BANSHEE", "worker_harass", r"(?:밴시|banshee|banshees)"),
+        ("TERRAN_BATTLECRUISER", "capital_ship", r"(?:배틀크루저|전투순양함|battlecruiser|battlecruisers|bc)"),
+    )
+    requirements: list[dict[str, object]] = []
+    for unit_type, role, unit_pattern in specs:
+        count: int | None = None
+        digit_before = re.search(rf"(?<!\d)(\d{{1,3}})\s*{unit_pattern}", normalized)
+        digit_after = re.search(rf"{unit_pattern}\s*(\d{{1,3}})\s*(?:기|마리|대|명|units?)?", normalized)
+        if digit_before:
+            count = int(digit_before.group(1))
+        elif digit_after:
+            count = int(digit_after.group(1))
+        else:
+            word_match = re.search(
+                r"("
+                + "|".join(
+                    sorted(map(re.escape, _KOREAN_SMALL_NUMBERS), key=len, reverse=True)
+                )
+                + rf")\s*{unit_pattern}",
+                normalized,
+            )
+            if word_match:
+                count = _KOREAN_SMALL_NUMBERS[word_match.group(1)]
+        if count is not None:
+            requirements.append(
+                {
+                    "unit_type": unit_type,
+                    "count": max(1, min(200, count)),
+                    "role": role,
+                }
+            )
+    return requirements
 
 
 def _has_flank_route_intent(text: str) -> bool:

@@ -8061,6 +8061,39 @@ index a8d5f3a..1fc1cee 100644
 +	return unit.canAttackGround() || unit.canAttackAir();
 +}
 +
++bool voiUnitMatchesCompositionToken(const Unit & unit, const std::string & token)
++{
++	if (!unit.isValid())
++	{
++		return false;
++	}
++	const sc2::UNIT_TYPEID type = unit.getAPIUnitType();
++	return (token == "TERRAN_MARINE" && type == sc2::UNIT_TYPEID::TERRAN_MARINE)
++		|| (token == "TERRAN_MARAUDER" && type == sc2::UNIT_TYPEID::TERRAN_MARAUDER)
++		|| (token == "TERRAN_REAPER" && type == sc2::UNIT_TYPEID::TERRAN_REAPER)
++		|| (token == "TERRAN_HELLION" && type == sc2::UNIT_TYPEID::TERRAN_HELLION)
++		|| (token == "TERRAN_CYCLONE" && type == sc2::UNIT_TYPEID::TERRAN_CYCLONE)
++		|| (token == "TERRAN_THOR" && type == sc2::UNIT_TYPEID::TERRAN_THOR)
++		|| (token == "TERRAN_SIEGETANK" && (type == sc2::UNIT_TYPEID::TERRAN_SIEGETANK || type == sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED))
++		|| (token == "TERRAN_MEDIVAC" && type == sc2::UNIT_TYPEID::TERRAN_MEDIVAC)
++		|| (token == "TERRAN_VIKINGFIGHTER" && (type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER || type == sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT))
++		|| (token == "TERRAN_BANSHEE" && type == sc2::UNIT_TYPEID::TERRAN_BANSHEE)
++		|| (token == "TERRAN_RAVEN" && type == sc2::UNIT_TYPEID::TERRAN_RAVEN)
++		|| (token == "TERRAN_BATTLECRUISER" && type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER);
++}
++
++std::string voiCompositionRequirementLabel(CCBot & bot, int index)
++{
++	const std::string unitType = bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(index) + ".unit_type", "");
++	if (unitType.empty())
++	{
++		return "";
++	}
++	const int count = std::max(0, bot.Commander().getVoiPolicyInt("composition_requirements." + std::to_string(index) + ".count", 0));
++	const std::string role = bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(index) + ".role", "");
++	return unitType + ":" + std::to_string(count) + (role.empty() ? "" : ":" + role);
++}
++
 +int voiCountMobileAttackUnits(const std::vector<Unit> & units)
 +{
 +	int count = 0;
@@ -9933,7 +9966,161 @@ index a8d5f3a..1fc1cee 100644
 +	for (const auto & unit : unitsToTransfer)
 +		m_squadData.assignUnitToSquad(unit, mainAttackSquad);
 +
-+	if (mainAttackSquad.getUnits().empty() && m_attackStarted)
++	const std::string exactCompositionTaskType = m_bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
++	const bool exactCompositionPressureTask = exactCompositionTaskType == "pressure_with_main_army"
++		&& voiTacticalTaskWithinDuration(m_bot)
++		&& (m_bot.Commander().hasVoiPolicyDomain("composition_requirements") || m_bot.Commander().hasVoiPolicyDomain("unit_roles"));
++	bool exactCompositionBlocksAttack = false;
++	if (exactCompositionPressureTask)
++	{
++		const bool allowPartialComposition = m_bot.Commander().getVoiPolicyBool("tactical_task.allow_partial", true);
++		std::vector<std::pair<std::string, int>> requirements;
++		for (int i = 0; i < 8; ++i)
++		{
++			const std::string unitType = m_bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".unit_type", "");
++			const int count = std::max(0, m_bot.Commander().getVoiPolicyInt("composition_requirements." + std::to_string(i) + ".count", 0));
++			if (!unitType.empty() && count > 0)
++			{
++				requirements.push_back(std::make_pair(unitType, count));
++			}
++		}
++		if (m_bot.Commander().hasVoiPolicyDomain("unit_roles"))
++		{
++			for (int i = 0; i < 8; ++i)
++			{
++				const std::string roleUnitType = m_bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
++				const std::string roleName = m_bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".role", "");
++				bool alreadyRequired = false;
++				for (const auto & requirement : requirements)
++				{
++					if (requirement.first == roleUnitType)
++					{
++						alreadyRequired = true;
++						break;
++					}
++				}
++				if (!roleUnitType.empty() && !roleName.empty() && !alreadyRequired)
++				{
++					requirements.push_back(std::make_pair(roleUnitType, 1));
++				}
++			}
++		}
++		std::vector<Unit> overflowUnits;
++		for (const auto & unit : mainAttackSquad.getUnits())
++		{
++			bool represented = false;
++			for (const auto & requirement : requirements)
++			{
++				if (voiUnitMatchesCompositionToken(unit, requirement.first))
++				{
++					represented = true;
++					break;
++				}
++			}
++			if (!represented)
++			{
++				overflowUnits.push_back(unit);
++			}
++		}
++		for (const auto & requirement : requirements)
++		{
++			int keptForType = 0;
++			for (const auto & unit : mainAttackSquad.getUnits())
++			{
++				if (!voiUnitMatchesCompositionToken(unit, requirement.first))
++				{
++					continue;
++				}
++				if (keptForType < requirement.second)
++				{
++					keptForType++;
++				}
++				else
++				{
++					overflowUnits.push_back(unit);
++				}
++			}
++		}
++		for (const auto & unit : overflowUnits)
++		{
++			m_squadData.assignUnitToSquad(unit, backupSquad);
++		}
++		std::stringstream missing;
++		int totalRequired = 0;
++		int totalAssigned = 0;
++		for (const auto & requirement : requirements)
++		{
++			totalRequired += requirement.second;
++			int assignedForType = 0;
++			for (const auto & unit : mainAttackSquad.getUnits())
++			{
++				if (voiUnitMatchesCompositionToken(unit, requirement.first))
++				{
++					assignedForType++;
++				}
++			}
++			for (const std::string poolName : {"Idle", "Backup", "Scout"})
++			{
++				if (assignedForType >= requirement.second || !m_squadData.squadExists(poolName))
++				{
++					continue;
++				}
++				Squad & pool = m_squadData.getSquad(poolName);
++				std::vector<Unit> candidates;
++				for (const auto & unit : pool.getUnits())
++				{
++					if (voiUnitMatchesCompositionToken(unit, requirement.first) && m_squadData.canAssignUnitToSquad(unit, mainAttackSquad))
++					{
++						candidates.push_back(unit);
++					}
++				}
++				for (const auto & unit : candidates)
++				{
++					if (assignedForType >= requirement.second)
++					{
++						break;
++					}
++					m_squadData.assignUnitToSquad(unit, mainAttackSquad);
++					assignedForType++;
++				}
++			}
++			totalAssigned += std::min(assignedForType, requirement.second);
++			if (assignedForType < requirement.second)
++			{
++				if (missing.tellp() > 0)
++				{
++					missing << ",";
++				}
++				missing << requirement.first << ":" << assignedForType << "/" << requirement.second;
++			}
++		}
++		m_lastVoiCompositionStatus = totalAssigned >= totalRequired ? "Satisfied" : (allowPartialComposition && totalAssigned > 0 ? "Partial" : "Waiting");
++		m_lastVoiCompositionReason = missing.tellp() > 0 ? "Missing composition units " + missing.str() : "Requested composition assigned to MainAttack";
++		m_lastVoiCompositionRequired = totalRequired;
++		m_lastVoiCompositionAssigned = totalAssigned;
++		m_lastVoiCompositionMissing = missing.str();
++		m_lastVoiCompositionFrame = m_bot.GetGameLoop();
++		m_lastVoiCompositionRequirements = "";
++		for (int i = 0; i < 8; ++i)
++		{
++			const std::string label = voiCompositionRequirementLabel(m_bot, i);
++			if (!label.empty())
++			{
++				if (!m_lastVoiCompositionRequirements.empty())
++				{
++					m_lastVoiCompositionRequirements += ",";
++				}
++				m_lastVoiCompositionRequirements += label;
++			}
++		}
++		if (!allowPartialComposition && totalAssigned < totalRequired)
++		{
++			exactCompositionBlocksAttack = true;
++			mainAttackSquad.clear();
++		}
++	}
++
++	if (mainAttackSquad.getUnits().empty() && m_attackStarted && !exactCompositionBlocksAttack)
 +	{
 +		Squad & idleSquad = m_squadData.getSquad("Idle");
 +		for (const auto & idleUnit : idleSquad.getUnits())
@@ -9953,7 +10140,7 @@ index a8d5f3a..1fc1cee 100644
 +	if (mainAttackSquad.getUnits().empty())
 +	{
 +		m_lastVoiMainAttackOrderStatus = "Waiting";
-+		m_lastVoiMainAttackOrderReason = "No main attack units";
++		m_lastVoiMainAttackOrderReason = exactCompositionBlocksAttack ? m_lastVoiCompositionReason : "No main attack units";
 +		m_lastVoiMainAttackUnitCount = 0;
 +		m_lastVoiMainAttackScopeMinUnits = std::max(0, m_bot.Commander().getVoiPolicyInt("scope.min_units", 0));
 +		m_lastVoiMainAttackScopeThresholdMet = m_lastVoiMainAttackScopeMinUnits == 0;
@@ -9991,13 +10178,18 @@ index a8d5f3a..1fc1cee 100644
 +	const std::string voiLocationIntent = tacticalPressureTask && !tacticalTaskLocationIntent.empty()
 +		? tacticalTaskLocationIntent
 +		: m_bot.Commander().getVoiPolicyString("scope.location_intent", "");
++	const std::string voiTargetIntent = m_bot.Commander().getVoiPolicyString("target_intent.target_type", "");
++	const std::string voiEffectiveLocationIntent = !voiLocationIntent.empty()
++		? voiLocationIntent
++		: (voiTargetIntent == "enemy_main" || voiTargetIntent == "enemy_natural" ? voiTargetIntent : "");
++	const std::string voiRouteIntent = m_bot.Commander().getVoiPolicyString("route_intent.route_type", "");
 +	const int voiScopeMinUnits = std::max(
 +		std::max(0, m_bot.Commander().getVoiPolicyInt("scope.min_units", 0)),
 +		tacticalPressureTask ? std::max(0, m_bot.Commander().getVoiPolicyInt("tactical_task.min_units", 0)) : 0);
 +	const int voiScopeMaxUnits = std::max(
 +		std::max(0, m_bot.Commander().getVoiPolicyInt("scope.max_units", 0)),
 +		tacticalPressureTask ? std::max(0, m_bot.Commander().getVoiPolicyInt("tactical_task.max_units", 0)) : 0);
-+	if (tacticalPressureTask && voiScopeMaxUnits > 0 && mainAttackSquad.getUnits().size() > static_cast<size_t>(voiScopeMaxUnits))
++	if (tacticalPressureTask && !exactCompositionPressureTask && voiScopeMaxUnits > 0 && mainAttackSquad.getUnits().size() > static_cast<size_t>(voiScopeMaxUnits))
 +	{
 +		int keptUnits = 0;
 +		for (auto & unit : mainAttackSquad.getUnits())
@@ -10015,7 +10207,12 @@ index a8d5f3a..1fc1cee 100644
 +		}
 +		unitsToTransfer.clear();
 +	}
-+	const bool voiScopeThresholdMet = voiScopeMinUnits == 0 || static_cast<int>(mainAttackSquad.getUnits().size()) >= voiScopeMinUnits;
++	const bool voiPartialCompositionReady = exactCompositionPressureTask
++		&& m_bot.Commander().getVoiPolicyBool("tactical_task.allow_partial", true)
++		&& m_lastVoiCompositionAssigned > 0;
++	const bool voiScopeThresholdMet = voiScopeMinUnits == 0
++		|| static_cast<int>(mainAttackSquad.getUnits().size()) >= voiScopeMinUnits
++		|| voiPartialCompositionReady;
 +	const int autonomousAttackUnitCount = voiCountMobileAttackUnits(mainAttackSquad.getUnits());
 +	const int autonomousAttackMinUnits = std::max(1, m_bot.Commander().getVoiPolicyInt("combat.autonomous_attack_min_units", 4));
 +	const bool voiDefensivePolicyBlocksAutonomy =
@@ -10039,10 +10236,10 @@ index a8d5f3a..1fc1cee 100644
 +				- std::max(0.0f, voiCommitmentLevel) * 0.15f
 +				- voiRetreatPatienceBias * 0.20f
 +				+ tacticalTaskSafetyMargin * 0.35f));
-+	if (voiContainBias > 0.0f || !voiLocationIntent.empty())
++	if (voiContainBias > 0.0f || !voiEffectiveLocationIntent.empty())
 +	{
-+		const CCPosition resolvedTarget = voiResolveCombatLocationIntent(m_bot, voiLocationIntent.empty() ? "enemy_natural" : voiLocationIntent, orderPosition);
-+		if (voiLocationIntent == "enemy_main" || voiLocationIntent == "enemy_start" || voiLocationIntent == "enemy_start_location")
++		const CCPosition resolvedTarget = voiResolveCombatLocationIntent(m_bot, voiEffectiveLocationIntent.empty() ? "enemy_natural" : voiEffectiveLocationIntent, orderPosition);
++		if (voiEffectiveLocationIntent == "enemy_main" || voiEffectiveLocationIntent == "enemy_start" || voiEffectiveLocationIntent == "enemy_start_location")
 +		{
 +			orderPosition = resolvedTarget;
 +		}
@@ -10061,9 +10258,12 @@ index a8d5f3a..1fc1cee 100644
 +		}
 +	}
 +
-+	if (voiFlankBias > 0.0f && voiIsRemoteCombatTarget(m_bot, orderPosition) && voiSquadMaxHomeDistance(mainAttackSquad.getUnits(), m_bot) < 70.0f)
++	if ((voiFlankBias > 0.0f || voiRouteIntent == "flank_left" || voiRouteIntent == "flank_right" || voiRouteIntent == "safe_path")
++		&& voiIsRemoteCombatTarget(m_bot, orderPosition)
++		&& voiSquadMaxHomeDistance(mainAttackSquad.getUnits(), m_bot) < 70.0f)
 +	{
-+		const float flankStageWeight = std::min(0.45f, std::max(0.0f, voiFlankBias) * 0.45f);
++		const float routeBias = (voiRouteIntent == "flank_left" || voiRouteIntent == "flank_right" || voiRouteIntent == "safe_path") ? 0.65f : 0.0f;
++		const float flankStageWeight = std::min(0.45f, std::max(routeBias, std::max(0.0f, voiFlankBias)) * 0.45f);
 +		orderPosition = orderPosition * (1.0f - flankStageWeight) + m_bot.Map().center() * flankStageWeight;
 +	}
 +
@@ -12452,6 +12652,13 @@ index edb6fbe..c7b9f8f 100644
 +	std::string m_lastVoiPlannedAction = "";
 +	std::string m_lastVoiIssuedAction = "";
 +	std::string m_lastVoiSkippedAction = "";
++	std::string m_lastVoiCompositionStatus = "none";
++	std::string m_lastVoiCompositionReason = "No composition task evaluated";
++	std::string m_lastVoiCompositionRequirements = "";
++	std::string m_lastVoiCompositionMissing = "";
++	int m_lastVoiCompositionRequired = 0;
++	int m_lastVoiCompositionAssigned = 0;
++	uint32_t m_lastVoiCompositionFrame = 0;
  	bool m_logVikingActions = false;
  	bool m_allowEarlyBuildingAttack = false;
      bool            m_initialized;
@@ -12490,6 +12697,13 @@ index edb6fbe..c7b9f8f 100644
 +	const std::string & getVoiPlannedAction() const { return m_lastVoiPlannedAction; }
 +	const std::string & getVoiIssuedAction() const { return m_lastVoiIssuedAction; }
 +	const std::string & getVoiSkippedAction() const { return m_lastVoiSkippedAction; }
++	const std::string & getVoiCompositionStatus() const { return m_lastVoiCompositionStatus; }
++	const std::string & getVoiCompositionReason() const { return m_lastVoiCompositionReason; }
++	const std::string & getVoiCompositionRequirements() const { return m_lastVoiCompositionRequirements; }
++	const std::string & getVoiCompositionMissing() const { return m_lastVoiCompositionMissing; }
++	int getVoiCompositionRequired() const { return m_lastVoiCompositionRequired; }
++	int getVoiCompositionAssigned() const { return m_lastVoiCompositionAssigned; }
++	uint32_t getVoiCompositionFrame() const { return m_lastVoiCompositionFrame; }
  	void initInfluenceMaps();
  	CCPosition getMainAttackLocation();
  	void updateBlockedTilesWithNeutral();
@@ -13076,6 +13290,19 @@ index 045faab..e42e478 100644
 +        << "\"reason\":\"" << voiJsonEscape(buildingTaskReason) << "\","
 +        << "\"consumed_axes\":\"building_tasks.0.building_type,building_tasks.0.placement_intent,building_tasks.0.anchor,building_tasks.0.offset_direction,building_tasks.0.target_position,building_tasks.0.allow_nearest_valid_fallback\""
 +        << "},"
++        << "\"CompositionTask\":{"
++        << "\"active\":" << (m_voiPolicyActive && hasVoiPolicyDomain("composition_requirements") ? "true" : "false") << ","
++        << "\"status\":\"" << voiJsonEscape(m_combatCommander.getVoiCompositionStatus()) << "\","
++        << "\"reason\":\"" << voiJsonEscape(m_combatCommander.getVoiCompositionReason()) << "\","
++        << "\"requirements\":\"" << voiJsonEscape(m_combatCommander.getVoiCompositionRequirements()) << "\","
++        << "\"missing\":\"" << voiJsonEscape(m_combatCommander.getVoiCompositionMissing()) << "\","
++        << "\"required_count\":" << m_combatCommander.getVoiCompositionRequired() << ","
++        << "\"assigned_count\":" << m_combatCommander.getVoiCompositionAssigned() << ","
++        << "\"frame\":" << m_combatCommander.getVoiCompositionFrame() << ","
++        << "\"route_type\":\"" << voiJsonEscape(m_voiPolicyBlackboard.getString("route_intent.route_type", "")) << "\","
++        << "\"target_type\":\"" << voiJsonEscape(m_voiPolicyBlackboard.getString("target_intent.target_type", "")) << "\","
++        << "\"consumed_axes\":\"composition_requirements.*,unit_roles.*,route_intent.route_type,target_intent.target_type,tactical_task.allow_partial\""
++        << "},"
 +        << "\"CombatCommander\":{"
 +        << "\"active\":true,"
 +        << "\"combat_unit_count\":" << m_combatUnits.size() << ","
@@ -13122,7 +13349,7 @@ index 045faab..e42e478 100644
 +        << "\"last_planned_action\":\"" << voiJsonEscape(m_combatCommander.getVoiPlannedAction()) << "\","
 +        << "\"last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiIssuedAction()) << "\","
 +        << "\"last_skipped_action\":\"" << voiJsonEscape(m_combatCommander.getVoiSkippedAction()) << "\","
-+        << "\"consumed_axes\":\"combat.aggression,combat.defend_bias,combat.attack_timing_bias,combat.commitment_level,combat.attack_condition_override,combat.retreat_patience_bias,combat.rally_before_attack_bias,scope.min_units,scope.max_units,scope.army_group,scope.unit_classes,scouting.scout_priority,squad.squad_role_biases.marine_scout,tactical_task.task_type,tactical_task.unit_classes,tactical_task.location_intent,tactical_task.min_units,tactical_task.max_units,tactical_task.priority\""
++        << "\"consumed_axes\":\"combat.aggression,combat.defend_bias,combat.attack_timing_bias,combat.commitment_level,combat.attack_condition_override,combat.retreat_patience_bias,combat.rally_before_attack_bias,scope.min_units,scope.max_units,scope.army_group,scope.unit_classes,scouting.scout_priority,squad.squad_role_biases.marine_scout,tactical_task.task_type,tactical_task.unit_classes,tactical_task.location_intent,tactical_task.min_units,tactical_task.max_units,tactical_task.priority,composition_requirements.*,unit_roles.*,route_intent.route_type,target_intent.target_type\""
 +        << "},"
 +        << "\"Squad\":{"
 +        << "\"active\":true,"

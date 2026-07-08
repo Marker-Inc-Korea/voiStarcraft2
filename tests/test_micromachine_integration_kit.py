@@ -47,6 +47,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "scouting",
                 "economy",
                 "combat_analysis",
+                "composition",
                 "squad",
                 "scope",
                 "tactical_task",
@@ -87,6 +88,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("tactical_task.task_type", pending_keys)
         self.assertNotIn("tactical_task.production_targets", pending_keys)
         self.assertNotIn("building_tasks.*", pending_keys)
+        self.assertNotIn("composition_requirements.*", pending_keys)
+        self.assertNotIn("unit_roles.*", pending_keys)
+        self.assertNotIn("route_intent.route_type", pending_keys)
+        self.assertNotIn("target_intent.target_type", pending_keys)
         self.assertNotIn("scouting.scan_priority", pending_keys)
         self.assertNotIn("squad.reinforce_bias", pending_keys)
 
@@ -288,6 +293,21 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "expand_or_land_command_center",
             "getVoiPolicyFloat(\"scouting.scout_priority\", 0.0f)",
             "getVoiPolicyFloat(\"squad.squad_role_biases.marine_scout\", 0.0f)",
+            "voiUnitMatchesCompositionToken",
+            "composition_requirements.",
+            "unit_roles.",
+            "unit_roles.*",
+            "const std::string roleName = m_bot.Commander().getVoiPolicyString(\"unit_roles.\"",
+            "alreadyRequired",
+            "route_intent.route_type",
+            "target_intent.target_type",
+            "\\\"CompositionTask\\\"",
+            "Missing composition units",
+            "Requested composition assigned to MainAttack",
+            "voiPartialCompositionReady",
+            "keptForType",
+            "tacticalPressureTask && !exactCompositionPressureTask && voiScopeMaxUnits",
+            "composition_requirements.*,unit_roles.*,route_intent.route_type,target_intent.target_type",
             "scope.unit_classes",
             "squad.squad_role_biases.marine_scout",
             "scout_scope_status",
