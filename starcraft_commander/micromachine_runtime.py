@@ -14,7 +14,7 @@ import os
 import re
 import uuid
 from copy import deepcopy
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
@@ -1535,10 +1535,19 @@ def flatten_blackboard_update(update: MicroMachineBlackboardUpdate) -> str:
         "lifetime",
         "tactical_task",
         "emergency",
+        "production_plan",
+        "route_intent",
+        "target_intent",
     ):
         value = vector.get(domain, {})
         if isinstance(value, Mapping):
             _flatten_mapping(rows, domain, value)
+    for domain in ("composition_requirements", "unit_roles", "building_tasks"):
+        value = vector.get(domain, ())
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for index, item in enumerate(value):
+                if isinstance(item, Mapping):
+                    _flatten_mapping(rows, f"{domain}.{index}", item)
     constraints = vector.get("constraints", ())
     if isinstance(constraints, list):
         rows.append(("constraints.count", len(constraints)))

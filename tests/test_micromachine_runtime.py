@@ -29,20 +29,26 @@ from starcraft_commander.micromachine_runtime import (
     publish_policy_modulation_provider_output,
 )
 from starcraft_commander.policy_modulation import (
+    BuildingTask,
     CombatModulation,
+    CompositionRequirement,
     EconomyModulation,
     EmergencyModulation,
     LifetimeModulation,
     PolicyModulationVector,
     PolicyOverrideLevel,
     PolicyModulationSource,
+    ProductionPlanModulation,
     ProductionModulation,
+    RouteIntentModulation,
     ScoutingModulation,
     SquadModulation,
     StrategyModulation,
     TacticalScopeModulation,
     TacticalTaskModulation,
+    TargetIntentModulation,
     TechModulation,
+    UnitRoleAssignment,
     WeightedBiases,
     WorkerModulation,
 )
@@ -104,6 +110,22 @@ def _vector(ttl_seconds: int = 30) -> PolicyModulationVector:
             reason="runtime test lifecycle",
         ),
         emergency=EmergencyModulation(force_retreat=True, prioritize_repair=True),
+        production_plan=ProductionPlanModulation(
+            targets=("marine", "tank"),
+            allow_prerequisite_buildings=True,
+            priority=0.8,
+        ),
+        composition_requirements=(
+            CompositionRequirement("marine", count=4, role="frontline"),
+            CompositionRequirement("tank", count=1, role="siege_support"),
+        ),
+        unit_roles=(UnitRoleAssignment("viking", role="anti_air", priority=0.7),),
+        building_tasks=(BuildingTask("bunker", placement_intent="front_door"),),
+        route_intent=RouteIntentModulation(
+            route_type="flank_left",
+            avoid_enemy_strength=True,
+        ),
+        target_intent=TargetIntentModulation(target_type="enemy_main", priority=0.9),
     )
 
 
@@ -564,8 +586,15 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
             text,
         )
         self.assertIn("lifetime.completion_state=active\n", text)
+        self.assertIn("production_plan.targets=TERRAN_MARINE,TERRAN_SIEGETANK\n", text)
+        self.assertIn("composition_requirements.0.unit_type=TERRAN_MARINE\n", text)
+        self.assertIn("composition_requirements.0.count=4\n", text)
+        self.assertIn("unit_roles.0.role=anti_air\n", text)
+        self.assertIn("building_tasks.0.building_type=TERRAN_BUNKER\n", text)
+        self.assertIn("route_intent.route_type=flank_left\n", text)
+        self.assertIn("target_intent.target_type=enemy_main\n", text)
         self.assertIn(
-            "manager_bias_domains=strategy,economy,workers,tech,production,combat,scouting,squad,scope,lifetime,tactical_task,emergency\n",
+            "manager_bias_domains=strategy,economy,workers,tech,production,combat,scouting,squad,scope,lifetime,tactical_task,emergency,production_plan,composition_requirements,unit_roles,building_tasks,route_intent,target_intent\n",
             text,
         )
 
