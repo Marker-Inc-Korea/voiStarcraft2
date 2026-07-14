@@ -227,6 +227,20 @@ DEFAULT_MICROMACHINE_STABLE_OFFENSIVE_SWEEP_TARGET_PATCH: Final[Path] = (
     / "patches"
     / "0030-stable-offensive-sweep-target.patch"
 )
+DEFAULT_MICROMACHINE_ADAPTIVE_SUPPORT_COMPOSITION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0031-adaptive-support-composition.patch"
+)
+DEFAULT_MICROMACHINE_OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0032-operation-scoped-adaptive-combat-closure.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -339,6 +353,12 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_stable_offensive_sweep_target_patch: Path = (
         DEFAULT_MICROMACHINE_STABLE_OFFENSIVE_SWEEP_TARGET_PATCH
+    )
+    micromachine_adaptive_support_composition_patch: Path = (
+        DEFAULT_MICROMACHINE_ADAPTIVE_SUPPORT_COMPOSITION_PATCH
+    )
+    micromachine_operation_scoped_adaptive_combat_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -517,6 +537,14 @@ def build_micromachine_build_identity(
         "micromachine_stable_offensive_sweep_target_patch_sha256": (
             _sha256_file(config.micromachine_stable_offensive_sweep_target_patch)
         ),
+        "micromachine_adaptive_support_composition_patch_sha256": (
+            _sha256_file(config.micromachine_adaptive_support_composition_patch)
+        ),
+        "micromachine_operation_scoped_adaptive_combat_closure_patch_sha256": (
+            _sha256_file(
+                config.micromachine_operation_scoped_adaptive_combat_closure_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -530,7 +558,7 @@ def build_micromachine_build_identity(
     }
     identity = "sha256:" + _sha256_json(identity_material)
     return {
-        "schema_version": 30,
+        "schema_version": 32,
         "identity": identity,
         "ok": not failures,
         "failures": failures,
@@ -632,6 +660,12 @@ def build_micromachine_build_identity(
             ),
             "micromachine_stable_offensive_sweep_target_patch": str(
                 config.micromachine_stable_offensive_sweep_target_patch
+            ),
+            "micromachine_adaptive_support_composition_patch": str(
+                config.micromachine_adaptive_support_composition_patch
+            ),
+            "micromachine_operation_scoped_adaptive_combat_closure_patch": str(
+                config.micromachine_operation_scoped_adaptive_combat_closure_patch
             ),
             "s2client_patch": str(config.s2client_patch),
             "hook_manifest": str(config.hook_manifest),
@@ -813,6 +847,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--micromachine-stable-offensive-sweep-target-patch",
         default=str(DEFAULT_MICROMACHINE_STABLE_OFFENSIVE_SWEEP_TARGET_PATCH),
     )
+    parser.add_argument(
+        "--micromachine-adaptive-support-composition-patch",
+        default=str(DEFAULT_MICROMACHINE_ADAPTIVE_SUPPORT_COMPOSITION_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-operation-scoped-adaptive-combat-closure-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -930,6 +974,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             micromachine_stable_offensive_sweep_target_patch=Path(
                 args.micromachine_stable_offensive_sweep_target_patch
+            ),
+            micromachine_adaptive_support_composition_patch=Path(
+                args.micromachine_adaptive_support_composition_patch
+            ),
+            micromachine_operation_scoped_adaptive_combat_closure_patch=Path(
+                args.micromachine_operation_scoped_adaptive_combat_closure_patch
             ),
             s2client_patch=Path(args.s2client_patch),
             hook_manifest=Path(args.hook_manifest),

@@ -25,7 +25,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             write_build_identity_report(report, output)
 
             self.assertTrue(report["ok"], report)
-            self.assertEqual(30, report["schema_version"])
+            self.assertEqual(32, report["schema_version"])
             self.assertTrue(str(report["identity"]).startswith("sha256:"))
             self.assertEqual(report["identity"], read_build_identity(output))
             self.assertIn(
@@ -242,6 +242,22 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_stable_offensive_sweep_target_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_adaptive_support_composition_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_adaptive_support_composition_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_operation_scoped_adaptive_combat_closure_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_operation_scoped_adaptive_combat_closure_patch_sha256",
                 report["checksums"],
             )
             self.assertEqual(
@@ -584,6 +600,52 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 ],
             )
 
+    def test_adaptive_support_composition_patch_checksum_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_adaptive_support_composition_patch.write_text(
+                "different adaptive support composition patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][
+                    "micromachine_adaptive_support_composition_patch_sha256"
+                ],
+                second["checksums"][
+                    "micromachine_adaptive_support_composition_patch_sha256"
+                ],
+            )
+
+    def test_operation_scoped_adaptive_combat_closure_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_operation_scoped_adaptive_combat_closure_patch.write_text(
+                "different operation scoped adaptive combat closure patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][
+                    "micromachine_operation_scoped_adaptive_combat_closure_patch_sha256"
+                ],
+                second["checksums"][
+                    "micromachine_operation_scoped_adaptive_combat_closure_patch_sha256"
+                ],
+            )
+
     def test_read_report_cli_treats_malformed_json_as_invalid_not_crash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "identity.json"
@@ -707,6 +769,12 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_stable_offensive_sweep_target_patch = (
             root / "micromachine-stable-offensive-sweep-target.patch"
         )
+        micromachine_adaptive_support_composition_patch = (
+            root / "micromachine-adaptive-support-composition.patch"
+        )
+        micromachine_operation_scoped_adaptive_combat_closure_patch = (
+            root / "micromachine-operation-scoped-adaptive-combat-closure.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -742,6 +810,8 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_startup_telemetry_initialization_patch,
             micromachine_gas_worker_completion_cap_patch,
             micromachine_stable_offensive_sweep_target_patch,
+            micromachine_adaptive_support_composition_patch,
+            micromachine_operation_scoped_adaptive_combat_closure_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -833,6 +903,12 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_stable_offensive_sweep_target_patch=(
                 micromachine_stable_offensive_sweep_target_patch
+            ),
+            micromachine_adaptive_support_composition_patch=(
+                micromachine_adaptive_support_composition_patch
+            ),
+            micromachine_operation_scoped_adaptive_combat_closure_patch=(
+                micromachine_operation_scoped_adaptive_combat_closure_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

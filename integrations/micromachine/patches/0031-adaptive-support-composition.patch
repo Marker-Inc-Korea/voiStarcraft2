@@ -1,0 +1,374 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -189,6 +189,102 @@ bool voiContinuousCompositionProductionActive(CCBot & bot)
+ 	// Do not leave an oversized unit queued forever once the hard supply cap is
+ 	// nearly full. Production resumes automatically as combat losses free room.
+ 	return bot.GetMaxSupply() < 200 || bot.GetCurrentSupply() < 196;
++}
++
++int voiObservedAdaptiveSupportTargetCount(CCBot & bot, const std::string & policyUnitType)
++{
++	if (!voiContinuousCompositionProductionConfigured(bot))
++	{
++		return 0;
++	}
++
++	const int enemyAirSupply = std::max(0, bot.Analyzer().opponentAirSupply);
++	const int enemyGroundSupply = std::max(0, bot.Analyzer().opponentGroundSupply);
++	const int enemyLightGroundCount = std::max(0, bot.Analyzer().getEnemyLightGroundUnitCount());
++	const bool enemyHasAir =
++		bot.Analyzer().enemyHasCombatAirUnit()
++		|| bot.Strategy().shouldProduceAntiAirOffense()
++		|| enemyAirSupply >= 6;
++	const bool enemyHasHighTechAir =
++		bot.Strategy().enemyHasProtossHighTechAir()
++		|| enemyAirSupply >= 16;
++	const bool enemyHasInvisible =
++		bot.Strategy().enemyCurrentlyHasInvisible()
++		|| bot.Strategy().enemyHasBurrowingUpgrade();
++	const bool enemyHasMassLight =
++		bot.Strategy().enemyHasMassZerglings()
++		|| enemyLightGroundCount >= 8;
++	const bool enemyHasArmored =
++		bot.Strategy().enemyHasSeveralArmoredUnits();
++	const bool enemyGroundHeavy =
++		enemyGroundSupply >= std::max(10, enemyAirSupply * 2);
++
++	const auto representedCount = [&](const MetaType & type)
++	{
++		return voiRepresentedUnitCount(bot, type);
++	};
++	const int bioCount =
++		representedCount(MetaTypeEnum::Marine)
++		+ representedCount(MetaTypeEnum::Marauder)
++		+ representedCount(MetaTypeEnum::Ghost);
++
++	if (policyUnitType == "TERRAN_RAVEN" && enemyHasInvisible)
++	{
++		return 1;
++	}
++	if (policyUnitType == "TERRAN_VIKINGFIGHTER" && enemyHasAir)
++	{
++		return std::min(6, std::max(2, (enemyAirSupply + 2) / 3));
++	}
++	if (policyUnitType == "TERRAN_THOR" && enemyHasHighTechAir)
++	{
++		return 1;
++	}
++	if (policyUnitType == "TERRAN_HELLION" && enemyHasMassLight)
++	{
++		return std::min(6, std::max(2, (enemyLightGroundCount + 2) / 3));
++	}
++	if (policyUnitType == "TERRAN_WIDOWMINE"
++		&& enemyHasMassLight
++		&& bot.GetCurrentFrame() >= 22u * 5u * 60u)
++	{
++		return 2;
++	}
++	if (policyUnitType == "TERRAN_MARAUDER" && enemyHasArmored)
++	{
++		return 4;
++	}
++	if (policyUnitType == "TERRAN_CYCLONE" && enemyHasArmored)
++	{
++		return 2;
++	}
++	if (policyUnitType == "TERRAN_MEDIVAC" && bioCount >= 8)
++	{
++		return std::min(3, std::max(1, (bioCount + 7) / 8));
++	}
++	if (policyUnitType == "TERRAN_LIBERATOR"
++		&& enemyGroundHeavy
++		&& bot.GetCurrentFrame() >= 22u * 6u * 60u)
++	{
++		return 2;
++	}
++	if (policyUnitType == "TERRAN_BANSHEE"
++		&& bot.Commander().getVoiPolicyString("strategy.doctrine", "") == "worker_line_harassment"
++		&& !bot.Strategy().enemyHasFlyingDetector())
++	{
++		return 2;
++	}
++	if (policyUnitType == "TERRAN_BATTLECRUISER"
++		&& bot.GetCurrentFrame() >= 22u * 12u * 60u
++		&& bot.GetFreeMinerals() >= 1200
++		&& bot.GetFreeGas() >= 800
++		&& enemyAirSupply + enemyGroundSupply >= 40)
++	{
++		return 1;
++	}
++	return 0;
+ }
+ 
+ int voiCompositionProductionWaveMultiplier(CCBot & bot)
+@@ -247,17 +341,23 @@ bool voiExactCompositionAllowsTraining(CCBot & bot, const MetaType & type, int w
+ 	}
+ 	return "";
+ }
+ 
+-bool voiExactCompositionAllowsTraining(CCBot & bot, const MetaType & type, int waveMultiplier)
++bool voiExactCompositionAllowsTraining(
++	CCBot & bot,
++	const MetaType & type,
++	int waveMultiplier,
++	int adaptiveSupportTargetCount)
+ {
+ 	if (!voiExactCompositionActive(bot))
+ 	{
+ 		return true;
+ 	}
+ 	const std::string token = voiExactCompositionTokenForType(type);
+ 	if (token.empty())
+ 	{
+ 		return true;
+ 	}
+ 	const int productionTargetCount = voiCompositionProductionTargetCount(
+ 		bot,
+ 		token,
+ 		waveMultiplier);
+-	return voiRepresentedUnitCount(bot, type) < productionTargetCount;
++	const int adaptiveTargetCount = std::max(
++		0,
++		adaptiveSupportTargetCount);
++	return voiRepresentedUnitCount(bot, type)
++		< std::max(productionTargetCount, adaptiveTargetCount);
+ }
+ 
+ int voiCompletedGroundedProducerCount(CCBot & bot, sc2::UNIT_TYPEID producerType)
+@@ -679,10 +779,14 @@ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ 	if (!voiContinuousCompositionProductionConfigured(m_bot))
+ 	{
+ 		m_voiCompositionProductionOperationKey = "";
+ 		m_voiCompositionProductionWaveMultiplier = 1;
++		m_voiAdaptiveFirstWaveComplete = false;
++		m_voiAdaptiveSupportTargets.clear();
+ 		return;
+ 	}
+ 
+ 	std::string operationKey =
+@@ -697,6 +801,8 @@ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ 	{
+ 		m_voiCompositionProductionOperationKey = operationKey;
+ 		m_voiCompositionProductionWaveMultiplier = 1;
++		m_voiAdaptiveFirstWaveComplete = false;
++		m_voiAdaptiveSupportTargets.clear();
+ 	}
+ 
+ 	// The latch is monotonic for the operation. Combat losses may require
+@@ -715,6 +821,48 @@ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ 				m_bot);
+ 	}
++
++	if (!m_voiAdaptiveFirstWaveComplete
++		&& voiExactCompositionFirstWaveComplete(m_bot))
++	{
++		m_voiAdaptiveFirstWaveComplete = true;
++		Util::Log(
++			__FUNCTION__,
++			"VOI exact first wave completed; adaptive support selection enabled operation="
++				+ operationKey,
++			m_bot);
++	}
++	if (!m_voiAdaptiveFirstWaveComplete)
++	{
++		return;
++	}
++
++	for (const auto & entry : voiExactCompositionTypes())
++	{
++		const int observedTarget =
++			voiObservedAdaptiveSupportTargetCount(m_bot, entry.first);
++		int & latchedTarget = m_voiAdaptiveSupportTargets[entry.first];
++		if (observedTarget <= latchedTarget)
++		{
++			continue;
++		}
++		latchedTarget = observedTarget;
++		Util::Log(
++			__FUNCTION__,
++			"VOI selected adaptive support unit=" + entry.first
++				+ " target=" + std::to_string(latchedTarget)
++				+ " operation=" + operationKey,
++			m_bot);
++	}
+ }
+ 
++int ProductionManager::getVoiAdaptiveSupportTargetCount(
++	const std::string & policyUnitType) const
++{
++	const auto target = m_voiAdaptiveSupportTargets.find(policyUnitType);
++	return target == m_voiAdaptiveSupportTargets.end()
++		? 0
++		: std::max(0, target->second);
++}
++
+ void ProductionManager::onFrame(bool executeMacro)
+ {
+ 	if (executeMacro)
+@@ -1035,8 +1133,13 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 			m_bot,
+ 			entry.first,
+ 			m_voiCompositionProductionWaveMultiplier);
++		const int adaptiveTargetCount =
++			getVoiAdaptiveSupportTargetCount(entry.first);
++		const int effectiveRequestedCount =
++			std::max(requestedCount, adaptiveTargetCount);
+ 		const int representedCount = voiRepresentedUnitCount(m_bot, type);
+-		const int allowedQueuedCount = std::max(0, requestedCount - representedCount);
++		const int allowedQueuedCount =
++			std::max(0, effectiveRequestedCount - representedCount);
+ 		const int queuedCount = m_queue.getCountOfType(type);
+ 		if (queuedCount <= allowedQueuedCount)
+ 		{
+@@ -1051,6 +1154,7 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 		const auto apiType = type.getUnitType().getAPIUnitType();
+ 		const std::string reconciliationState =
+ 			std::to_string(requestedCount)
++			+ "|" + std::to_string(adaptiveTargetCount)
+ 			+ "|" + std::to_string(representedCount)
+ 			+ "|" + std::to_string(queuedCount)
+ 			+ "|" + std::to_string(allowedQueuedCount);
+@@ -1064,6 +1168,7 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 				__FUNCTION__,
+ 				"VOI exact composition reconciled " + type.getName()
+ 					+ " requested=" + std::to_string(requestedCount)
++					+ " adaptive=" + std::to_string(adaptiveTargetCount)
+ 					+ " represented=" + std::to_string(representedCount)
+ 					+ " queued=" + std::to_string(queuedCount)
+ 					+ " retained=" + std::to_string(allowedQueuedCount),
+@@ -3036,23 +3141,65 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float effectiveStarportBias = std::max({ starportBias, compositionDropBias, compositionMedivacBias, compositionAntiAirBias });
+ 	const float effectiveCommandCenterBias = std::max(commandCenterBias, compositionMacroBias);
+ 	const float effectiveMarineBias = std::max(marineBias, compositionBioBias);
+-	const float effectiveMarauderBias = std::max(marauderBias, bioMarauderSupportBias);
++	const auto adaptiveSupportBias = [&](const std::string & unitType)
++	{
++		return getVoiAdaptiveSupportTargetCount(unitType) > 0 ? 0.70f : 0.0f;
++	};
++	const float effectiveMarauderBias = std::max({
++		marauderBias,
++		bioMarauderSupportBias,
++		adaptiveSupportBias("TERRAN_MARAUDER") });
+ 	const float effectiveGhostBias = ghostBias;
+ 	const float effectiveGhostAcademyBias = std::max(ghostAcademyBias, effectiveGhostBias);
+ 	const float effectiveBarracksTechLabBias = std::max({ barracksTechLabBias, effectiveMarauderBias, effectiveGhostBias });
+ 	const float effectiveReaperBias = std::max({ reaperBias, compositionHarassBias, compositionWorkerLineBias });
+ 	const float effectiveTankBias = std::max({ tankBias, compositionSiegeBias, compositionDefenseBias });
+-	const float effectiveHellionBias = std::max({ hellionBias, compositionMechBias, compositionHarassBias, compositionWorkerLineBias });
+-	const float effectiveWidowMineBias = std::max(widowMineBias, compositionMechBias);
+-	const float effectiveCycloneBias = std::max(cycloneBias, compositionMechBias);
+-	const float effectiveThorBias = std::max(thorBias, compositionMechBias);
++	const float effectiveHellionBias = std::max({
++		hellionBias,
++		compositionMechBias,
++		compositionHarassBias,
++		compositionWorkerLineBias,
++		adaptiveSupportBias("TERRAN_HELLION") });
++	const float effectiveWidowMineBias = std::max({
++		widowMineBias,
++		compositionMechBias,
++		adaptiveSupportBias("TERRAN_WIDOWMINE") });
++	const float effectiveCycloneBias = std::max({
++		cycloneBias,
++		compositionMechBias,
++		adaptiveSupportBias("TERRAN_CYCLONE") });
++	const float effectiveThorBias = std::max({
++		thorBias,
++		compositionMechBias,
++		adaptiveSupportBias("TERRAN_THOR") });
+ 	const float effectiveArmoryBias = std::max(armoryBias, effectiveThorBias);
+-	const float effectiveMedivacBias = std::max({ medivacBias, compositionDropBias, compositionMedivacBias, compositionBioBias });
+-	const float effectiveVikingBias = std::max({ vikingBias, compositionAntiAirBias, (taskTechTransition && taskTargetsViking) ? tacticalTaskPriority : 0.0f });
+-	const float effectiveLiberatorBias = std::max({ liberatorBias, compositionAntiAirBias, compositionSiegeBias });
+-	const float effectiveBansheeBias = std::max({ bansheeBias, compositionHarassBias, compositionWorkerLineBias });
+-	const float effectiveRavenBias = ravenBias;
+-	const float effectiveBattlecruiserBias = battlecruiserBias;
++	const float effectiveMedivacBias = std::max({
++		medivacBias,
++		compositionDropBias,
++		compositionMedivacBias,
++		compositionBioBias,
++		adaptiveSupportBias("TERRAN_MEDIVAC") });
++	const float effectiveVikingBias = std::max({
++		vikingBias,
++		compositionAntiAirBias,
++		(taskTechTransition && taskTargetsViking) ? tacticalTaskPriority : 0.0f,
++		adaptiveSupportBias("TERRAN_VIKINGFIGHTER") });
++	const float effectiveLiberatorBias = std::max({
++		liberatorBias,
++		compositionAntiAirBias,
++		compositionSiegeBias,
++		adaptiveSupportBias("TERRAN_LIBERATOR") });
++	const float effectiveBansheeBias = std::max({
++		bansheeBias,
++		compositionHarassBias,
++		compositionWorkerLineBias,
++		adaptiveSupportBias("TERRAN_BANSHEE") });
++	const float effectiveRavenBias = std::max(
++		ravenBias,
++		adaptiveSupportBias("TERRAN_RAVEN"));
++	const float effectiveBattlecruiserBias = std::max(
++		battlecruiserBias,
++		adaptiveSupportBias("TERRAN_BATTLECRUISER"));
+ 	const float effectiveFactoryTechLabBias = std::max({ factoryTechLabBias, compositionSiegeBias, compositionMechBias });
+ 	const float effectiveStarportTechLabBias = std::max({ starportTechLabBias, effectiveBansheeBias, effectiveRavenBias, effectiveBattlecruiserBias });
+ 	const float effectiveFusionCoreBias = std::max(fusionCoreBias, effectiveBattlecruiserBias);
+@@ -3160,14 +3307,19 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			m_bot,
+ 			policyUnitType,
+ 			m_voiCompositionProductionWaveMultiplier);
++		const int adaptiveRequested =
++			getVoiAdaptiveSupportTargetCount(policyUnitType);
+ 		if (requested <= 0)
+ 		{
+-			// Broad doctrine biases may still request families such as "mech",
+-			// but an exact composition must never queue an unrequested unit
+-			// ahead of a requested Tank, Viking, or other combat unit.
+-			return exactCompositionActive;
++			// Keep the first exact wave atomic. Once it is complete, bounded
++			// counter units selected from observed enemy composition may join
++			// later reinforcement waves.
++			return adaptiveRequested > 0
++				? voiRepresentedUnitCount(type) >= adaptiveRequested
++				: exactCompositionActive;
+ 		}
+-		return voiRepresentedUnitCount(type) >= requested;
++		return voiRepresentedUnitCount(type)
++			>= std::max(requested, adaptiveRequested);
+ 	};
+ 	const bool tankCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_SIEGETANK", MetaTypeEnum::SiegeTank);
+ 	const bool ghostCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_GHOST", MetaTypeEnum::Ghost);
+@@ -5017,10 +5175,12 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+ 	if (item.type.isUnit()
+ 		&& !item.type.getUnitType().isBuilding()
+ 		&& !voiExactCompositionAllowsTraining(
+ 			m_bot,
+ 			item.type,
+-			m_voiCompositionProductionWaveMultiplier))
++			m_voiCompositionProductionWaveMultiplier,
++			getVoiAdaptiveSupportTargetCount(
++				voiExactCompositionTokenForType(item.type))))
+ 	{
+ 		Util::Log(
+ 			__FUNCTION__,
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -64,6 +64,8 @@ class ProductionManager
+ 	std::map<sc2::UNIT_TYPEID, int> m_placementRetryCount;
+ 	std::string m_voiCompositionProductionOperationKey = "";
+ 	int m_voiCompositionProductionWaveMultiplier = 1;
++	bool m_voiAdaptiveFirstWaveComplete = false;
++	std::map<std::string, int> m_voiAdaptiveSupportTargets;
+ 	std::map<sc2::UNIT_TYPEID, std::string> m_lastVoiExactCompositionReconciliationState;
+ 	std::map<sc2::UNIT_TYPEID, uint32_t> m_lastVoiExactCompositionReconciliationLogFrame;
+ 	std::vector<sc2::UNIT_TYPEID> factoryUnitTypes = { sc2::UNIT_TYPEID::TERRAN_HELLION, sc2::UNIT_TYPEID::TERRAN_HELLIONTANK, sc2::UNIT_TYPEID::TERRAN_WIDOWMINE, sc2::UNIT_TYPEID::TERRAN_SIEGETANK, sc2::UNIT_TYPEID::TERRAN_CYCLONE, sc2::UNIT_TYPEID::TERRAN_THOR };
+@@ -79,6 +81,7 @@ class ProductionManager
+ 	void	putImportantBuildOrderItemsInQueue();
+ 	void	applyVoiDoctrineProductionBias();
+ 	void	refreshVoiCompositionProductionWaveMultiplier();
++	int	getVoiAdaptiveSupportTargetCount(const std::string & policyUnitType) const;
+ 	void	reconcileVoiExactCompositionQueue();
+ 	bool	isVoiExpandMacroActive() const;
+ 	bool	isVoiExplicitExpandCommandCenterRequested() const;

@@ -41,6 +41,8 @@ RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH_FILE="${REPO_ROOT}/integrations/micr
 STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0028-startup-telemetry-initialization.patch"
 GAS_WORKER_COMPLETION_CAP_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0029-gas-worker-completion-and-cap.patch"
 STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0030-stable-offensive-sweep-target.patch"
+ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0031-adaptive-support-composition.patch"
+OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0032-operation-scoped-adaptive-combat-closure.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 
@@ -205,6 +207,10 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${GAS_WORKER_COMPLETION_CAP_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
@@ -256,6 +262,8 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-startup-telemetry-initialization-patch "${STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE}" \
   --micromachine-gas-worker-completion-cap-patch "${GAS_WORKER_COMPLETION_CAP_PATCH_FILE}" \
   --micromachine-stable-offensive-sweep-target-patch "${STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE}" \
+  --micromachine-adaptive-support-composition-patch "${ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE}" \
+  --micromachine-operation-scoped-adaptive-combat-closure-patch "${OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --output "${MICROMACHINE_BUILD_IDENTITY_REPORT}"
 

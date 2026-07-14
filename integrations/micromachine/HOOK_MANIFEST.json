@@ -158,6 +158,16 @@
       "path": "patches/0030-stable-offensive-sweep-target.patch",
       "order": 30,
       "scope": "operation-stable lost-contact offensive sweep target with majority-arrival and bounded stalled-route rotation"
+    },
+    {
+      "path": "patches/0031-adaptive-support-composition.patch",
+      "order": 31,
+      "scope": "operation-latched adaptive Terran support composition selected from observed enemy air, cloak, armor, light-ground, bio-support, harassment, and late-game capital-ship conditions"
+    },
+    {
+      "path": "patches/0032-operation-scoped-adaptive-combat-closure.patch",
+      "order": 32,
+      "scope": "operation-stable adaptive composition with completed-wave accounting, bounded observation lifetime and budget, addon prerequisite closure, and direct MainAttack ownership for produced support units"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

@@ -98,6 +98,12 @@ GAS_WORKER_COMPLETION_CAP_PATCH_FILE = (
 STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE = (
     KIT_DIR / "patches" / "0030-stable-offensive-sweep-target.patch"
 )
+ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE = (
+    KIT_DIR / "patches" / "0031-adaptive-support-composition.patch"
+)
+OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE = (
+    KIT_DIR / "patches" / "0032-operation-scoped-adaptive-combat-closure.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -1162,6 +1168,97 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             patch.index("orderPosition = m_voiSweepTarget;"),
         )
 
+    def test_adaptive_support_patch_selects_and_latches_counter_units(
+        self,
+    ) -> None:
+        patch = _read_patch_text(ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE)
+
+        for term in (
+            "voiObservedAdaptiveSupportTargetCount",
+            "m_voiAdaptiveFirstWaveComplete",
+            "m_voiAdaptiveSupportTargets.clear();",
+            "observedTarget <= latchedTarget",
+            "VOI exact first wave completed; adaptive support selection enabled",
+            "VOI selected adaptive support unit=",
+            "getVoiAdaptiveSupportTargetCount",
+            "TERRAN_MARAUDER",
+            "TERRAN_HELLION",
+            "TERRAN_WIDOWMINE",
+            "TERRAN_CYCLONE",
+            "TERRAN_THOR",
+            "TERRAN_MEDIVAC",
+            "TERRAN_VIKINGFIGHTER",
+            "TERRAN_LIBERATOR",
+            "TERRAN_BANSHEE",
+            "TERRAN_RAVEN",
+            "TERRAN_BATTLECRUISER",
+            "adaptiveSupportTargetCount",
+            "std::max(productionTargetCount, adaptiveTargetCount)",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.h b/src/ProductionManager.h"
+            ),
+        )
+
+    def test_operation_scoped_adaptive_combat_closure_enforces_runtime_invariants(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        for term in (
+            "voiCompletedUnitCount",
+            "Start from completed units, then count every order once",
+            "voiPressureOperationKey",
+            'getVoiPolicyString("tactical_task.task_id", "")',
+            "m_voiAdaptiveObservedTargets",
+            "m_voiAdaptiveLastObservedFrame",
+            "targetHoldFrames = 22u * 90u",
+            "supportSupplyBudget = 40",
+            "supportMineralBudget = 2400",
+            "supportGasBudget = 1600",
+            "std::max(0, productionTargetCount) + adaptiveTargetCount",
+            "barracks_addon_replacement",
+            "eligibleFactoryAddonProducers == 0",
+            "starport_addon_replacement",
+            "getVoiAdaptiveSupportTargets",
+            "desiredMainAttackCount",
+            "retainedAdaptiveUnits",
+            "m_squadData.assignUnitToSquad",
+            "TERRAN_GHOST",
+            "TERRAN_REAPER",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn(
+            "getUnitTypeCount(Players::Self, type.getUnitType(), false, true, true)",
+            added_lines,
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp"
+            ),
+        )
+
     def test_hook_manifest_covers_verified_upstream_manager_hooks(self) -> None:
         manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
 
@@ -1269,6 +1366,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertIn(
             "patches/0030-stable-offensive-sweep-target.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0031-adaptive-support-composition.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0032-operation-scoped-adaptive-combat-closure.patch",
             {patch["path"] for patch in manifest["patch_bundle"]},
         )
 
@@ -1925,6 +2030,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0028-startup-telemetry-initialization.patch",
             "0029-gas-worker-completion-and-cap.patch",
             "0030-stable-offensive-sweep-target.patch",
+            "0031-adaptive-support-composition.patch",
+            "0032-operation-scoped-adaptive-combat-closure.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -1953,6 +2060,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE",
             "GAS_WORKER_COMPLETION_CAP_PATCH_FILE",
             "STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE",
+            "ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE",
+            "OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",
