@@ -15,6 +15,9 @@ from enum import Enum
 from typing import Protocol
 
 from starcraft_commander.policy_modulation import (
+    MICROMACHINE_COMPLETION_CONDITIONS,
+    MICROMACHINE_COMPLETION_STATES,
+    MICROMACHINE_LIFETIME_MODES,
     POLICY_MODULATION_RAW_CONTROL_KEYS,
     PolicyModulationSource,
     PolicyModulationVector,
@@ -124,6 +127,11 @@ class PolicyModulationCompileResult:
     refusal_reason: str = ""
     clarification_prompt: str = ""
     warnings: tuple[str, ...] = ()
+    failure_kind: str = ""
+    llm_attempt_count: int = 0
+    llm_repair_reason: str = ""
+    llm_duration_ms: int = 0
+    primary_refusal_reason: str = ""
 
     def __post_init__(self) -> None:
         status = _coerce_status(self.status)
@@ -131,6 +139,10 @@ class PolicyModulationCompileResult:
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "source", source)
         object.__setattr__(self, "warnings", _string_tuple("warnings", self.warnings))
+        if type(self.llm_attempt_count) is not int or self.llm_attempt_count < 0:
+            raise ValueError("llm_attempt_count must be a non-negative integer.")
+        if type(self.llm_duration_ms) is not int or self.llm_duration_ms < 0:
+            raise ValueError("llm_duration_ms must be a non-negative integer.")
         if status is PolicyModulationCompileStatus.COMPILED and self.vector is None:
             raise ValueError("compiled modulation results require a vector.")
         if status is not PolicyModulationCompileStatus.COMPILED and self.vector is not None:
@@ -153,6 +165,18 @@ class PolicyModulationCompileResult:
                 "clarification_prompt",
                 _require_text("clarification_prompt", self.clarification_prompt),
             )
+        for field_name in (
+            "failure_kind",
+            "llm_repair_reason",
+            "primary_refusal_reason",
+        ):
+            value = getattr(self, field_name)
+            if value:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _require_text(field_name, value),
+                )
 
     @property
     def ok(self) -> bool:
@@ -167,6 +191,11 @@ class PolicyModulationCompileResult:
             "refusal_reason": self.refusal_reason,
             "clarification_prompt": self.clarification_prompt,
             "warnings": list(self.warnings),
+            "failure_kind": self.failure_kind,
+            "llm_attempt_count": self.llm_attempt_count,
+            "llm_repair_reason": self.llm_repair_reason,
+            "llm_duration_ms": self.llm_duration_ms,
+            "primary_refusal_reason": self.primary_refusal_reason,
         }
 
 
@@ -187,6 +216,7 @@ def compile_policy_modulation_provider_output(
         source = _coerce_source(default_source)
         if not isinstance(provider_output, Mapping):
             return _refused(source, "provider output must be a mapping.")
+        diagnostics = _extract_provider_diagnostics(provider_output)
         reject_raw_policy_control_keys(provider_output)
         source = _coerce_source(provider_output.get("source", source))
         control_mapping = _extract_terminal_control_mapping(provider_output)
@@ -203,6 +233,7 @@ def compile_policy_modulation_provider_output(
                     clarification
                     or "의도를 정책 조정으로 변환하려면 더 구체적인 전략 목표가 필요합니다."
                 ),
+                **diagnostics,
             )
         refusal = _extract_refusal(control_mapping)
         vector_payload = _extract_vector_payload(provider_output)
@@ -211,6 +242,7 @@ def compile_policy_modulation_provider_output(
                 source,
                 refusal or "provider refused policy modulation.",
                 assistant_message=assistant_message,
+                **diagnostics,
             )
         normalized, warnings = _normalize_provider_mapping(
             vector_payload if vector_payload is not None else provider_output,
@@ -224,6 +256,7 @@ def compile_policy_modulation_provider_output(
             vector=vector,
             assistant_message=assistant_message,
             warnings=warnings,
+            **diagnostics,
         )
     except (TypeError, ValueError) as exc:
         fallback_source = _safe_source(default_source)
@@ -276,6 +309,11 @@ _WRAPPER_METADATA_KEYS = {
     "tags",
     "rationale",
     "assistant_message",
+    "failure_kind",
+    "llm_attempt_count",
+    "llm_repair_reason",
+    "llm_duration_ms",
+    "primary_refusal_reason",
 }
 
 _CONTROL_KEYS = {
@@ -454,6 +492,7 @@ _DOMAIN_FIELD_ALIASES = {
     ("tactical_task", "allow_partial_scope"): ("tactical_task", "allow_partial"),
     ("tactical_task", "require_safety_margin"): ("tactical_task", "safety_margin"),
     ("lifetime", "conditions"): ("lifetime", "completion_conditions"),
+    ("lifetime", "completion_condition"): ("lifetime", "completion_conditions"),
     ("lifetime", "state"): ("lifetime", "completion_state"),
     ("production_plan", "items"): ("production_plan", "targets"),
     ("production_plan", "units"): ("production_plan", "targets"),
@@ -728,9 +767,15 @@ _CANONICAL_MICROMACHINE_KEY_ALIASES = {
     "ghost": "TERRAN_GHOST",
     "ghosts": "TERRAN_GHOST",
     "유령": "TERRAN_GHOST",
+    "ghostacademy": "TERRAN_GHOSTACADEMY",
+    "유령사관학교": "TERRAN_GHOSTACADEMY",
     "hellion": "TERRAN_HELLION",
     "hellions": "TERRAN_HELLION",
     "화염차": "TERRAN_HELLION",
+    "widowmine": "TERRAN_WIDOWMINE",
+    "widowmines": "TERRAN_WIDOWMINE",
+    "땅거미지뢰": "TERRAN_WIDOWMINE",
+    "지뢰": "TERRAN_WIDOWMINE",
     "cyclone": "TERRAN_CYCLONE",
     "cyclones": "TERRAN_CYCLONE",
     "사이클론": "TERRAN_CYCLONE",
@@ -748,6 +793,9 @@ _CANONICAL_MICROMACHINE_KEY_ALIASES = {
     "viking": "TERRAN_VIKINGFIGHTER",
     "vikings": "TERRAN_VIKINGFIGHTER",
     "바이킹": "TERRAN_VIKINGFIGHTER",
+    "liberator": "TERRAN_LIBERATOR",
+    "liberators": "TERRAN_LIBERATOR",
+    "해방선": "TERRAN_LIBERATOR",
     "banshee": "TERRAN_BANSHEE",
     "banshees": "TERRAN_BANSHEE",
     "밴시": "TERRAN_BANSHEE",
@@ -805,7 +853,14 @@ _PRODUCTION_PLAN_PREREQUISITE_CHAINS: dict[str, tuple[str, ...]] = {
         "TERRAN_MARAUDER",
     ),
     "TERRAN_REAPER": ("TERRAN_BARRACKS", "TERRAN_REAPER"),
+    "TERRAN_GHOST": (
+        "TERRAN_BARRACKS",
+        "BARRACKS_TECHLAB",
+        "TERRAN_GHOSTACADEMY",
+        "TERRAN_GHOST",
+    ),
     "TERRAN_HELLION": ("TERRAN_FACTORY", "TERRAN_HELLION"),
+    "TERRAN_WIDOWMINE": ("TERRAN_FACTORY", "TERRAN_WIDOWMINE"),
     "TERRAN_CYCLONE": ("TERRAN_FACTORY", "FACTORY_TECHLAB", "TERRAN_CYCLONE"),
     "TERRAN_THOR": (
         "TERRAN_FACTORY",
@@ -818,15 +873,35 @@ _PRODUCTION_PLAN_PREREQUISITE_CHAINS: dict[str, tuple[str, ...]] = {
         "FACTORY_TECHLAB",
         "TERRAN_SIEGETANK",
     ),
-    "TERRAN_MEDIVAC": ("TERRAN_STARPORT", "TERRAN_MEDIVAC"),
-    "TERRAN_VIKINGFIGHTER": ("TERRAN_STARPORT", "TERRAN_VIKINGFIGHTER"),
+    "TERRAN_MEDIVAC": (
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "TERRAN_MEDIVAC",
+    ),
+    "TERRAN_VIKINGFIGHTER": (
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "TERRAN_VIKINGFIGHTER",
+    ),
+    "TERRAN_LIBERATOR": (
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "TERRAN_LIBERATOR",
+    ),
     "TERRAN_BANSHEE": (
+        "TERRAN_FACTORY",
         "TERRAN_STARPORT",
         "STARPORT_TECHLAB",
         "TERRAN_BANSHEE",
     ),
-    "TERRAN_RAVEN": ("TERRAN_STARPORT", "STARPORT_TECHLAB", "TERRAN_RAVEN"),
+    "TERRAN_RAVEN": (
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "STARPORT_TECHLAB",
+        "TERRAN_RAVEN",
+    ),
     "TERRAN_BATTLECRUISER": (
+        "TERRAN_FACTORY",
         "TERRAN_STARPORT",
         "STARPORT_TECHLAB",
         "TERRAN_FUSIONCORE",
@@ -839,12 +914,56 @@ _PRODUCTION_PLAN_UNIT_TARGETS = frozenset(
         "TERRAN_MARINE",
         "TERRAN_MARAUDER",
         "TERRAN_REAPER",
+        "TERRAN_GHOST",
         "TERRAN_HELLION",
+        "TERRAN_WIDOWMINE",
         "TERRAN_CYCLONE",
         "TERRAN_THOR",
         "TERRAN_SIEGETANK",
         "TERRAN_MEDIVAC",
         "TERRAN_VIKINGFIGHTER",
+        "TERRAN_LIBERATOR",
+        "TERRAN_BANSHEE",
+        "TERRAN_RAVEN",
+        "TERRAN_BATTLECRUISER",
+    }
+)
+
+_PRODUCTION_PLAN_GAS_TARGETS = frozenset(
+    {
+        "BARRACKS_TECHLAB",
+        "FACTORY_TECHLAB",
+        "FACTORY_REACTOR",
+        "STARPORT_TECHLAB",
+        "STARPORT_REACTOR",
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "TERRAN_ARMORY",
+        "TERRAN_GHOSTACADEMY",
+        "TERRAN_FUSIONCORE",
+        "TERRAN_MARAUDER",
+        "TERRAN_REAPER",
+        "TERRAN_GHOST",
+        "TERRAN_WIDOWMINE",
+        "TERRAN_CYCLONE",
+        "TERRAN_THOR",
+        "TERRAN_SIEGETANK",
+        "TERRAN_MEDIVAC",
+        "TERRAN_VIKINGFIGHTER",
+        "TERRAN_LIBERATOR",
+        "TERRAN_BANSHEE",
+        "TERRAN_RAVEN",
+        "TERRAN_BATTLECRUISER",
+    }
+)
+
+_PRODUCTION_PLAN_HIGH_GAS_TARGETS = frozenset(
+    {
+        "TERRAN_CYCLONE",
+        "TERRAN_THOR",
+        "TERRAN_SIEGETANK",
+        "TERRAN_GHOST",
+        "TERRAN_LIBERATOR",
         "TERRAN_BANSHEE",
         "TERRAN_RAVEN",
         "TERRAN_BATTLECRUISER",
@@ -861,6 +980,7 @@ _PRODUCTION_PLAN_STRUCTURE_TARGETS = frozenset(
         "TERRAN_STARPORT",
         "TERRAN_ENGINEERINGBAY",
         "TERRAN_ARMORY",
+        "TERRAN_GHOSTACADEMY",
         "TERRAN_FUSIONCORE",
         "TERRAN_BUNKER",
     }
@@ -1088,6 +1208,7 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                     _canonicalize_micromachine_key(item) for item in targets
                 ]
     _canonicalize_rich_intent_sequences(payload)
+    _repair_micromachine_schema_bounds(payload)
     _repair_micromachine_emergency_defaults(payload)
     _lower_micromachine_production_plan(payload)
     _lower_micromachine_building_tasks(payload)
@@ -1131,6 +1252,108 @@ def _canonicalize_rich_intent_sequences(payload: dict[str, object]) -> None:
                     )
             normalized_items.append(normalized)
         payload[key] = normalized_items
+
+
+_LIFETIME_MODE_ALIASES = {
+    "forever": "until_cancelled",
+    "persistent": "standing_order",
+    "standing": "standing_order",
+    "until_cancel": "until_cancelled",
+    "until_complete": "until_completed",
+}
+
+_COMPLETION_STATE_ALIASES = {
+    "canceled": "cancelled",
+    "done": "completed",
+    "failure": "failed",
+    "in_progress": "active",
+    "running": "active",
+    "success": "completed",
+}
+
+_COMPLETION_CONDITION_ALIASES = {
+    "arrived": "target_reached",
+    "building_done": "building_completed",
+    "building_finished": "building_completed",
+    "building_queued": "building_started",
+    "enemy_found": "enemy_observed",
+    "issued": "order_issued",
+    "order_sent": "order_issued",
+    "reached_target": "target_reached",
+    "retreated": "retreat_confirmed",
+    "units_ready": "unit_count_reached",
+}
+
+
+def _repair_micromachine_schema_bounds(payload: dict[str, object]) -> None:
+    """Repair lossless LLM schema mistakes before canonical validation."""
+
+    _clamp_integral_field(payload, "ttl_seconds", lower=1, upper=900)
+    for domain_name in ("scope", "tactical_task"):
+        domain = payload.get(domain_name)
+        if isinstance(domain, dict):
+            _clamp_integral_field(
+                domain,
+                "duration_seconds",
+                lower=0,
+                upper=900,
+            )
+
+    lifetime = payload.get("lifetime")
+    if not isinstance(lifetime, dict):
+        return
+    mode = lifetime.get("mode")
+    if isinstance(mode, str):
+        normalized_mode = mode.strip().lower()
+        lifetime["mode"] = _LIFETIME_MODE_ALIASES.get(
+            normalized_mode,
+            normalized_mode,
+        )
+    state = lifetime.get("completion_state")
+    if isinstance(state, str):
+        normalized_state = state.strip().lower()
+        lifetime["completion_state"] = _COMPLETION_STATE_ALIASES.get(
+            normalized_state,
+            normalized_state,
+        )
+    conditions = lifetime.get("completion_conditions")
+    if isinstance(conditions, str):
+        conditions = [conditions]
+    if _is_non_text_sequence(conditions):
+        lifetime["completion_conditions"] = [
+            _COMPLETION_CONDITION_ALIASES.get(
+                str(condition).strip().lower(),
+                str(condition).strip().lower(),
+            )
+            for condition in conditions
+        ]
+
+    # Unknown semantic values remain unchanged so the compiler can reject them
+    # and the LLM interpreter can request one structured repair attempt.
+    if lifetime.get("mode") not in MICROMACHINE_LIFETIME_MODES:
+        return
+    if lifetime.get("completion_state") not in MICROMACHINE_COMPLETION_STATES:
+        return
+    repaired_conditions = lifetime.get("completion_conditions")
+    if _is_non_text_sequence(repaired_conditions) and any(
+        condition not in MICROMACHINE_COMPLETION_CONDITIONS
+        for condition in repaired_conditions
+    ):
+        return
+
+
+def _clamp_integral_field(
+    mapping: dict[str, object],
+    field_name: str,
+    *,
+    lower: int,
+    upper: int,
+) -> None:
+    value = mapping.get(field_name)
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if type(value) is int:
+        mapping[field_name] = max(lower, min(upper, value))
 
 
 def _repair_micromachine_emergency_defaults(payload: dict[str, object]) -> None:
@@ -1183,6 +1406,7 @@ def _lower_micromachine_production_plan(payload: dict[str, object]) -> None:
     production = _ensure_micromachine_domain_dict(payload, "production")
     tech = _ensure_micromachine_domain_dict(payload, "tech")
     tactical_task = _ensure_micromachine_domain_dict(payload, "tactical_task")
+    economy = _ensure_micromachine_domain_dict(payload, "economy")
 
     queue_items: list[str] = []
     final_targets: list[str] = []
@@ -1199,6 +1423,28 @@ def _lower_micromachine_production_plan(payload: dict[str, object]) -> None:
     for item in queue_items:
         _set_production_plan_bias(production, tech, item, priority)
 
+    if any(item in _PRODUCTION_PLAN_UNIT_TARGETS for item in queue_items):
+        _set_float_at_least(
+            economy,
+            "supply_buffer_bias",
+            max(0.55, min(1.0, priority)),
+        )
+    if any(item in _PRODUCTION_PLAN_GAS_TARGETS for item in queue_items):
+        high_gas = any(
+            item in _PRODUCTION_PLAN_HIGH_GAS_TARGETS for item in queue_items
+        )
+        gas_floor = 0.75 if high_gas else 0.55
+        _set_float_at_least(
+            economy,
+            "gas_priority",
+            max(gas_floor, min(1.0, priority)),
+        )
+        _set_float_at_least(
+            economy,
+            "gas_worker_target_bias",
+            0.75 if high_gas else 0.55,
+        )
+
     existing_targets = tactical_task.get("production_targets")
     merged_targets = _merge_ordered_tokens(
         existing_targets if _is_non_text_sequence(existing_targets) else (),
@@ -1208,8 +1454,23 @@ def _lower_micromachine_production_plan(payload: dict[str, object]) -> None:
         tactical_task["production_targets"] = list(merged_targets[:32])
     _set_if_empty(tactical_task, "task_type", "sustain_production")
     _set_float_at_least(tactical_task, "priority", priority)
-    if allow_prerequisites:
+    requires_advanced_tech = any(
+        item
+        in {
+            "TERRAN_FACTORY",
+            "FACTORY_TECHLAB",
+            "FACTORY_REACTOR",
+            "TERRAN_STARPORT",
+            "STARPORT_TECHLAB",
+            "STARPORT_REACTOR",
+            "TERRAN_ARMORY",
+            "TERRAN_FUSIONCORE",
+        }
+        for item in queue_items
+    )
+    if allow_prerequisites and requires_advanced_tech:
         _set_float_at_least(production, "tech_switch_urgency", min(1.0, priority))
+    if allow_prerequisites:
         if priority >= 0.75 and override_level in {
             PolicyOverrideLevel.DIRECTIVE.value,
             PolicyOverrideLevel.CONSTRAINT.value,
@@ -1379,6 +1640,41 @@ def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> N
         )
         _set_if_zero_or_empty(scope, "min_units", 1)
         _set_if_zero_or_empty(tactical_task, "min_units", 1)
+        exact_composition_units = _micromachine_exact_composition_unit_count(payload)
+        if exact_composition_units > 0:
+            continuous_composition = _micromachine_continuous_composition_order(
+                payload
+            )
+            explicit_hard_cap = _micromachine_has_explicit_hard_unit_cap(
+                payload
+            )
+            scope["min_units"] = max(
+                int(scope.get("min_units", 0) or 0),
+                exact_composition_units,
+            )
+            if continuous_composition and not explicit_hard_cap:
+                # In a standing production/pressure order, the exact
+                # composition is the minimum launch wave, not a permanent
+                # squad-size ceiling. A zero max is the DSL's unbounded form.
+                scope["max_units"] = 0
+            else:
+                scope["max_units"] = max(
+                    int(scope.get("max_units", 0) or 0),
+                    exact_composition_units,
+                )
+            scope["allow_partial_scope"] = False
+            tactical_task["min_units"] = max(
+                int(tactical_task.get("min_units", 0) or 0),
+                exact_composition_units,
+            )
+            if continuous_composition and not explicit_hard_cap:
+                tactical_task["max_units"] = 0
+            else:
+                tactical_task["max_units"] = max(
+                    int(tactical_task.get("max_units", 0) or 0),
+                    exact_composition_units,
+                )
+            tactical_task["allow_partial"] = False
         _set_if_zero_or_empty(tactical_task, "duration_seconds", 300)
         _set_if_zero_or_empty(tactical_task, "priority", 0.9)
         combat = _ensure_micromachine_domain_dict(payload, "combat")
@@ -1399,6 +1695,120 @@ def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> N
     if task_type == "expand_or_land_command_center":
         _set_if_empty(tactical_task, "location_intent", "safe_expansion")
         _set_if_zero_or_empty(tactical_task, "priority", 0.75)
+
+
+def _micromachine_exact_composition_unit_count(payload: Mapping[str, object]) -> int:
+    represented_types: set[str] = set()
+    required_units = 0
+    requirements = payload.get("composition_requirements")
+    if _is_non_text_sequence(requirements):
+        for item in requirements:
+            if not isinstance(item, Mapping):
+                continue
+            unit_type = str(item.get("unit_type", "") or "").strip()
+            count = item.get("count", 0)
+            if not unit_type or type(count) is bool or not isinstance(count, (int, float)):
+                continue
+            normalized_count = max(0, int(count))
+            if normalized_count <= 0:
+                continue
+            represented_types.add(unit_type)
+            required_units += normalized_count
+
+    roles = payload.get("unit_roles")
+    if _is_non_text_sequence(roles):
+        for item in roles:
+            if not isinstance(item, Mapping):
+                continue
+            unit_type = str(item.get("unit_type", "") or "").strip()
+            role = str(item.get("role", "") or "").strip()
+            if unit_type and role and unit_type not in represented_types:
+                represented_types.add(unit_type)
+                required_units += 1
+    return required_units
+
+
+def _micromachine_continuous_composition_order(
+    payload: Mapping[str, object],
+) -> bool:
+    continuity_active = False
+    production = payload.get("production")
+    if isinstance(production, Mapping):
+        continuity = production.get("production_continuity_bias", 0.0)
+        if (
+            isinstance(continuity, (int, float))
+            and type(continuity) is not bool
+            and float(continuity) > 0.25
+        ):
+            continuity_active = True
+    if not continuity_active:
+        return False
+
+    lifetime = payload.get("lifetime")
+    if isinstance(lifetime, Mapping):
+        mode = str(lifetime.get("mode", "") or "").strip().lower()
+        if mode in {"until_cancelled", "standing_order"}:
+            return True
+
+    tags = payload.get("tags")
+    if _is_non_text_sequence(tags):
+        normalized_tags = {
+            str(tag).strip().lower()
+            for tag in tags
+            if isinstance(tag, str) and str(tag).strip()
+        }
+        if normalized_tags.intersection(
+            {
+                "continuous_production",
+                "standing_order",
+                "regroup_and_relaunch",
+            }
+        ):
+            return True
+
+    goal = str(payload.get("goal", "") or "").strip().lower()
+    return any(
+        marker in goal
+        for marker in (
+            "계속",
+            "반복",
+            "지속",
+            "최소 편성",
+            "continuous",
+            "keep producing",
+            "repeat",
+            "standing order",
+        )
+    )
+
+
+def _micromachine_has_explicit_hard_unit_cap(
+    payload: Mapping[str, object],
+) -> bool:
+    tags = payload.get("tags")
+    if _is_non_text_sequence(tags):
+        for tag in tags:
+            if (
+                isinstance(tag, str)
+                and tag.strip().lower()
+                in {"explicit_hard_unit_cap", "bounded_exact_squad"}
+            ):
+                return True
+
+    goal = str(payload.get("goal", "") or "").strip().lower()
+    return any(
+        marker in goal
+        for marker in (
+            "최대",
+            "기까지만",
+            "기만으로",
+            "명까지만",
+            "명만으로",
+            "at most",
+            "no more than",
+            "exactly",
+        )
+    )
 
 
 def _ensure_micromachine_domain_dict(
@@ -1576,17 +1986,48 @@ def _extract_assistant_message(mapping: Mapping[str, object]) -> str:
     return _require_text("assistant_message", message) if message else ""
 
 
+def _extract_provider_diagnostics(
+    mapping: Mapping[str, object],
+) -> dict[str, object]:
+    diagnostics: dict[str, object] = {}
+    for field_name in (
+        "failure_kind",
+        "llm_repair_reason",
+        "primary_refusal_reason",
+    ):
+        value = mapping.get(field_name, "")
+        diagnostics[field_name] = (
+            _require_text(field_name, value) if value else ""
+        )
+    for field_name in ("llm_attempt_count", "llm_duration_ms"):
+        value = mapping.get(field_name, 0)
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{field_name} must be a non-negative integer.")
+        diagnostics[field_name] = value
+    return diagnostics
+
+
 def _refused(
     source: PolicyModulationSource,
     reason: str,
     *,
     assistant_message: str = "",
+    failure_kind: str = "",
+    llm_attempt_count: int = 0,
+    llm_repair_reason: str = "",
+    llm_duration_ms: int = 0,
+    primary_refusal_reason: str = "",
 ) -> PolicyModulationCompileResult:
     return PolicyModulationCompileResult(
         status=PolicyModulationCompileStatus.REFUSED,
         source=source,
         assistant_message=assistant_message,
         refusal_reason=reason,
+        failure_kind=failure_kind,
+        llm_attempt_count=llm_attempt_count,
+        llm_repair_reason=llm_repair_reason,
+        llm_duration_ms=llm_duration_ms,
+        primary_refusal_reason=primary_refusal_reason,
     )
 
 

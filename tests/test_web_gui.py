@@ -154,6 +154,54 @@ class NoToolPolicyModulationLLMControl(FakeConfiguredLLMControl):
         }
 
 
+class TypedApiFailurePolicyModulationLLMControl(FakeConfiguredLLMControl):
+    """Configured LLM test double that reports one typed API failure."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def is_available(self):
+        return True
+
+    def propose_policy_modulation(self, request):
+        self.calls += 1
+        return {
+            "source": "llm",
+            "status": "refused",
+            "failure_kind": "api_error",
+            "llm_attempt_count": 1,
+            "llm_repair_reason": "",
+            "llm_duration_ms": 321,
+            "refusal_reason": (
+                "LLM policy modulation failed with request timed out."
+            ),
+        }
+
+
+class SchemaInvalidPolicyModulationLLMControl(FakeConfiguredLLMControl):
+    """Configured LLM test double that returns compiler-invalid DSL once."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def is_available(self):
+        return True
+
+    def propose_policy_modulation(self, request):
+        self.calls += 1
+        return {
+            "source": "llm",
+            "status": "compiled",
+            "assistant_message": "공격 성향을 올리겠습니다.",
+            "modulation": {
+                "source": "llm",
+                "goal": request.command_text,
+                "override_level": "bias",
+                "combat": {"aggression": "very high"},
+            },
+        }
+
+
 class FakeFailingLLMControl:
     """LLM control test double that raises one setup failure."""
 
@@ -207,6 +255,36 @@ class ExplodingStateBridge:
 
 
 class WebGuiServerHTTPTest(unittest.TestCase):
+    def test_marine_scout_task_only_requires_scout_effect(self) -> None:
+        vector = {
+            "goal": "마린 1기로 적 본진을 정찰해 적 정보 확보",
+            "combat": {
+                "aggression": -0.25,
+                "commitment_level": 0.2,
+                "target_priority_biases": {
+                    "enemy_army": -0.2,
+                    "production": 0.1,
+                    "townhall": 0.15,
+                },
+            },
+            "scouting": {
+                "scout_priority": 0.85,
+                "risk_tolerance": 0.25,
+            },
+            "tactical_task": {
+                "task_type": "scout_with_units",
+                "unit_classes": ["TERRAN_MARINE"],
+                "min_units": 1,
+                "max_units": 1,
+            },
+            "tags": ["scouting_map_control", "single_unit_scout"],
+        }
+
+        self.assertEqual(
+            ("scout",),
+            web_gui._micromachine_expected_tactical_effects(vector),
+        )
+
     """End-to-end HTTP tests against a dry-run session on an ephemeral port."""
 
     def setUp(self):
@@ -398,7 +476,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "setCommandMode",
             "submitMicroMachineModulation",
             "buildMicroMachineModulationPayload",
-            "async_publish: !tacticalCommand",
+            "async_publish: true",
             "if (isMicroMachineCommandMode()) { return; }",
             "microMachineStateDashboardDisabled",
             "renderMicroMachineStatePlaceholder",
@@ -1556,7 +1634,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 document["intervention"]["tactical_evidence"]["refusal_reasons"]
             )
 
-    def test_micromachine_modulation_without_llm_uses_web_tactical_fallback(self):
+    def test_micromachine_modulation_without_llm_fails_closed(self):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)
         bridge.start()
@@ -1589,15 +1667,18 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 connection.close()
 
             self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
-            self.assertTrue(payload["accepted"], payload)
-            self.assertTrue(payload["ok"], payload)
-            self.assertEqual("ui", payload["provider_source"])
-            self.assertEqual("compiled", payload["compile_result"]["status"])
-            self.assertEqual("ui", payload["update"]["vector"]["source"])
-            self.assertGreater(payload["update"]["vector"]["combat"]["defend_bias"], 0)
-            self.assertIn(
-                "web_gui_tactical_fallback",
-                payload["update"]["vector"]["tags"],
+            self.assertFalse(payload["accepted"], payload)
+            self.assertFalse(payload["ok"], payload)
+            self.assertEqual("llm", payload["provider_source"])
+            self.assertEqual("refused", payload["compile_result"]["status"])
+            self.assertEqual(
+                "provider_unavailable",
+                payload["compile_result"]["failure_kind"],
+            )
+            self.assertIsNone(payload["update"])
+            self.assertNotEqual(
+                "smoke_keyword",
+                payload["provider_source"],
             )
             self.assertEqual(directory, payload["blackboard_dir"])
 
@@ -1640,7 +1721,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual("keyword-smoke", payload["update"]["update_id"])
             self.assertEqual(directory, payload["blackboard_dir"])
 
-    def test_micromachine_modulation_rescues_llm_missing_tool_for_live_qa(self):
+    def test_micromachine_modulation_missing_tool_does_not_use_rule_fallback(self):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(
             session=session,
@@ -1675,38 +1756,176 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             finally:
                 connection.close()
 
-            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
-            self.assertTrue(payload["accepted"], payload)
-            self.assertTrue(payload["ok"], payload)
-            self.assertEqual("ui", payload["provider_source"])
-            self.assertEqual("web-rush-fallback", payload["update"]["update_id"])
-            vector = payload["update"]["vector"]
-            self.assertEqual("ui", vector["source"])
-            self.assertEqual(
-                "pressure_with_main_army",
-                vector["tactical_task"]["task_type"],
-            )
-            self.assertEqual("until_completed", vector["lifetime"]["mode"])
+            self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
+            self.assertFalse(payload["accepted"], payload)
+            self.assertFalse(payload["ok"], payload)
+            self.assertEqual("llm", payload["provider_source"])
+            self.assertEqual("refused", payload["compile_result"]["status"])
             self.assertIn(
-                "order_issued",
-                vector["lifetime"]["completion_conditions"],
+                "no forced-tool",
+                payload["compile_result"]["refusal_reason"],
             )
-            self.assertEqual(
-                "until_completed",
-                payload["intervention"]["lifetime"]["mode"],
-            )
-            self.assertEqual("main", vector["scope"]["army_group"])
-            self.assertEqual(
-                "force_when_threshold_met",
-                vector["combat"]["attack_condition_override"],
-            )
-            self.assertIn("web_gui_tactical_fallback", vector["tags"])
-            self.assertEqual("tactical", payload["command_queue"]["category"])
-            self.assertEqual("activate", payload["command_queue"]["action"])
+            self.assertIsNone(payload["update"])
+            self.assertEqual("clarification", payload["command_queue"]["category"])
+            self.assertEqual("refused", payload["command_queue"]["action"])
             self.assertIn(
-                "command_category:tactical",
-                payload["update"]["vector"]["tags"],
+                "no forced-tool",
+                payload["intervention"]["refusal_reason"],
             )
+
+    def test_micromachine_modulation_api_failure_does_not_use_rule_fallback(self):
+        llm_control = TypedApiFailurePolicyModulationLLMControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=llm_control,
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=5
+            )
+            try:
+                body = json.dumps(
+                    {
+                        "text": "마린 러쉬 진행해",
+                        "blackboard_dir": directory,
+                        "current_frame": 21,
+                        "update_id": "api-failure-web-fallback",
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+            self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
+            self.assertEqual(1, llm_control.calls)
+            self.assertFalse(payload["accepted"], payload)
+            self.assertFalse(payload["ok"], payload)
+            self.assertEqual("llm", payload["provider_source"])
+            self.assertEqual("refused", payload["compile_result"]["status"])
+            self.assertEqual(
+                "api_error",
+                payload["compile_result"]["failure_kind"],
+            )
+            self.assertEqual(
+                1,
+                payload["compile_result"]["llm_attempt_count"],
+            )
+            self.assertEqual(
+                321,
+                payload["compile_result"]["llm_duration_ms"],
+            )
+            self.assertIn(
+                "request timed out",
+                payload["compile_result"]["refusal_reason"],
+            )
+            self.assertIsNone(payload["update"])
+
+    def test_api_failure_does_not_publish_rule_derived_tactical_state(self):
+        llm_control = TypedApiFailurePolicyModulationLLMControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=llm_control,
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=5
+            )
+            try:
+                body = json.dumps(
+                    {
+                        "text": (
+                            "마린 6기, 공성전차 2기, 바이킹 2기를 준비하고 "
+                            "정찰 후 공격해. 주변 적이 잠깐 안 보여도 공격을 "
+                            "취소하지 말고 불리하면 재집결해."
+                        ),
+                        "blackboard_dir": directory,
+                        "current_frame": 21,
+                        "update_id": "negated-cancel-web-fallback",
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+            self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
+            self.assertEqual(1, llm_control.calls)
+            self.assertFalse(payload["accepted"], payload)
+            self.assertEqual("llm", payload["provider_source"])
+            self.assertEqual(
+                "api_error",
+                payload["compile_result"]["failure_kind"],
+            )
+            self.assertIsNone(payload["update"])
+
+    def test_micromachine_modulation_schema_failure_does_not_use_rule_fallback(self):
+        llm_control = SchemaInvalidPolicyModulationLLMControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=llm_control,
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        server = WebGuiServer(bridge=bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=5
+            )
+            try:
+                body = json.dumps(
+                    {
+                        "text": "탱크로 수비해",
+                        "blackboard_dir": directory,
+                        "current_frame": 21,
+                        "update_id": "compiler-schema-web-fallback",
+                    }
+                ).encode("utf-8")
+                connection.request(
+                    "POST",
+                    "/api/micromachine/modulate",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+            self.assertEqual(HTTPStatus.OK, HTTPStatus(response.status))
+            self.assertEqual(1, llm_control.calls)
+            self.assertFalse(payload["accepted"], payload)
+            self.assertFalse(payload["ok"], payload)
+            self.assertEqual("llm", payload["provider_source"])
+            self.assertEqual("refused", payload["compile_result"]["status"])
+            self.assertIsNone(payload["update"])
 
     def test_micromachine_status_scopes_command_queue_to_active_update(self):
         dashboard = {
@@ -2019,6 +2238,36 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 launcher._script_path.startswith(web_gui._REPO_ROOT)  # noqa: SLF001
             )
             self.assertFalse(launcher._script_path.startswith(directory))  # noqa: SLF001
+
+    def test_micromachine_launcher_starts_fresh_tactical_session(self):
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self):
+                self.returncode = 0
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(
+                web_gui.subprocess,
+                "Popen",
+                return_value=FakeProcess(),
+            ) as popen:
+                launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+                launcher.start(directory)
+
+            argv = popen.call_args.args[0]
+            self.assertIn("--live-hold", argv)
+            self.assertIn("--fresh-live-session", argv)
+            self.assertLess(
+                argv.index("--fresh-live-session"),
+                argv.index("--blackboard-dir"),
+            )
 
     def test_micromachine_launcher_blocks_blackboard_switch_while_running(self):
         class FakeRunningProcess:
@@ -3049,7 +3298,7 @@ assert.strictEqual(logBox.querySelector(".voice-wave").querySelectorAll("span").
 appendPendingCommand("상황 보고해줘");
 assert.strictEqual(pendingCommandCount(), 2);
 assert(pendingStatus.textContent.includes("대기 중인 응답 2개"));
-assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 2);
+assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
 assert(document.getElementById("voice-recording-entry"));
 appendLog({
   seq: MAX_CHAT_EVENTS + 1,
@@ -3473,10 +3722,10 @@ const assert = require("assert");
   assert.strictEqual(buildMicroMachineModulationPayload("marine rush").response_language, "en");
   assert.strictEqual(buildMicroMachineModulationPayload("마린 러쉬").response_language, "ko");
   assert.strictEqual(buildMicroMachineModulationPayload("进攻").response_language, "zh");
-  assert.strictEqual(buildMicroMachineModulationPayload("marine rush").async_publish, false);
+  assert.strictEqual(buildMicroMachineModulationPayload("marine rush").async_publish, true);
   assert.strictEqual(buildMicroMachineModulationPayload("hello").async_publish, true);
-  assert.strictEqual(buildMicroMachineModulationPayload("marine rush").allow_smoke_keyword_provider, true);
-  assert.strictEqual(buildMicroMachineModulationPayload("마린 러쉬").allow_smoke_keyword_provider, true);
+  assert.strictEqual(buildMicroMachineModulationPayload("marine rush").allow_smoke_keyword_provider, undefined);
+  assert.strictEqual(buildMicroMachineModulationPayload("마린 러쉬").allow_smoke_keyword_provider, undefined);
   assert.strictEqual(buildMicroMachineModulationPayload("hello").allow_smoke_keyword_provider, undefined);
 
   nodes["command-input"].value = "enemy natural 압박하고 탱크는 안전하게";
@@ -3489,8 +3738,8 @@ const assert = require("assert");
   var firstBody = JSON.parse(requests[0].options.body);
   assert.strictEqual(firstBody.text, "enemy natural 압박하고 탱크는 안전하게");
   assert.strictEqual(firstBody.blackboard_dir, "/tmp/voi-mm-js-test");
-  assert.strictEqual(firstBody.async_publish, false);
-  assert.strictEqual(firstBody.allow_smoke_keyword_provider, true);
+  assert.strictEqual(firstBody.async_publish, true);
+  assert.strictEqual(firstBody.allow_smoke_keyword_provider, undefined);
   assert.strictEqual(firstBody.ui_language, "ko");
   assert.strictEqual(firstBody.response_language, "ko");
   assert.strictEqual(firstBody.ttl_seconds, 600);
@@ -3613,6 +3862,65 @@ const assert = require("assert");
   assert(activeEntry);
   assert(!activeEntry.textContent.includes("provider auth failed"));
 
+  rememberPendingMicroMachineAsync("LLM 경계 완료 테스트", {
+    async_publish: true,
+    update_id: "async-boundary-complete"
+  });
+  pendingMicroMachineAsyncUpdates["async-boundary-complete"].createdAt -= (
+    MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS + 1
+  );
+  appendPendingCommand("LLM 경계 완료 테스트");
+  renderMicroMachineStatus({
+    ok: true,
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "async-boundary-complete",
+      source: "llm",
+      assistant_message: "경계에서도 정상 완료"
+    },
+    update: { update_id: "async-boundary-complete" }
+  });
+  var boundaryEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
+    return entry.textContent.includes("LLM 경계 완료 테스트");
+  });
+  assert(boundaryEntry);
+  assert(boundaryEntry.textContent.includes("경계에서도 정상 완료"));
+  assert(!boundaryEntry.textContent.includes("120초 안에 완료되지 않았습니다"));
+
+  rememberPendingMicroMachineAsync("LLM 응답 만료 테스트", {
+    async_publish: true,
+    update_id: "async-timeout"
+  });
+  var asyncCreatedAt = pendingMicroMachineAsyncUpdates["async-timeout"].createdAt;
+  appendPendingCommand("LLM 응답 만료 테스트");
+  expirePendingMicroMachineAsync(
+    asyncCreatedAt + MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS + 1
+  );
+  assert(!Object.prototype.hasOwnProperty.call(
+    pendingMicroMachineAsyncUpdates,
+    "async-timeout"
+  ));
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
+  assert(logBox.textContent.includes("120초 안에 완료되지 않았습니다"));
+  renderMicroMachineStatus({
+    ok: true,
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "async-timeout",
+      source: "llm"
+    },
+    update: { update_id: "async-timeout" }
+  });
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function (entry) {
+      return entry.textContent.includes("LLM 응답 만료 테스트");
+    }).length,
+    1
+  );
+
   renderMicroMachineStatus = function () {};
   nodes["command-input"].value = "실패 케이스도 pending 남기지 마";
   nodes["command-form"].dispatchEvent({
@@ -3641,6 +3949,27 @@ const assert = require("assert");
   assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
   assert(logBox.textContent.includes("pending을 해제했습니다"));
+  requests[2].deferred.resolve(response(202, {
+    ok: true,
+    accepted: true,
+    async_publish: true,
+    status: "accepted",
+    update_id: "late-after-submit-timeout",
+    consumption_status: "pending_compile"
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert(!Object.prototype.hasOwnProperty.call(
+    pendingMicroMachineAsyncUpdates,
+    "late-after-submit-timeout"
+  ));
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function (entry) {
+      return entry.textContent.includes("응답이 없어도 pending은 풀어");
+    }).length,
+    1
+  );
 
   nodes["command-input"].value = "마린으로 앞마당 압박해";
   nodes["command-form"].dispatchEvent({

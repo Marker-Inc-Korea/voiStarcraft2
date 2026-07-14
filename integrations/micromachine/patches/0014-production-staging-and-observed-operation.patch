@@ -1,0 +1,400 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+index 5fbf272..a27627f 100644
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -20,6 +20,7 @@ bool isVoiSc2MacroPlacementSafe(
+ 	bool requireQueryPlacement);
+ bool isVoiSupplyRecoveryDepot(CCBot & bot, const UnitType & type);
+ CCPosition voiFarthestEnemyStartPosition(CCBot & bot);
++CCPosition voiProductionStagingPosition(CCBot & bot);
+ bool isVoiSc2MacroPlacementSafeWithOptions(
+ 	CCBot & bot,
+ 	const UnitType & type,
+@@ -47,6 +48,26 @@ CCPosition voiFarthestEnemyStartPosition(CCBot & bot)
+ 	return farthestPosition;
+ }
+ 
++CCPosition voiProductionStagingPosition(CCBot & bot)
++{
++	const BaseLocation * selfBase = bot.Bases().getPlayerStartingBaseLocation(Players::Self);
++	const CCPosition home = selfBase ? selfBase->getPosition() : bot.GetStartLocation();
++	const CCPosition mapCenter = bot.Map().center();
++	const CCPosition towardCenter = mapCenter - home;
++	const float distance = std::sqrt(towardCenter.x * towardCenter.x + towardCenter.y * towardCenter.y);
++	if (distance > 0.1f)
++	{
++		const CCPosition staging = home + towardCenter / distance * 10.0f;
++		if (bot.Map().isValidPosition(staging)
++			&& bot.Map().isWalkable(staging)
++			&& bot.Map().isConnected(home, staging))
++		{
++			return staging;
++		}
++	}
++	return home;
++}
++
+ bool IsRefineryTargetStillValid(CCBot & bot, const Building & building)
+ {
+ 	if (!building.type.isRefinery() || building.finalPosition == CCTilePosition(0, 0))
+@@ -308,6 +329,41 @@ bool isVoiSupplyRecoveryDepot(CCBot & bot, const UnitType & type)
+ 		bot.GetMaxSupply() < 200;
+ }
+ 
++bool voiProductionAddonAreaHasStaticBlocker(
++	CCBot & bot,
++	const UnitType & type,
++	const CCTilePosition & position)
++{
++	const auto apiType = type.getAPIUnitType();
++	if (apiType != sc2::UNIT_TYPEID::TERRAN_BARRACKS
++		&& apiType != sc2::UNIT_TYPEID::TERRAN_FACTORY
++		&& apiType != sc2::UNIT_TYPEID::TERRAN_STARPORT)
++	{
++		return false;
++	}
++
++	const CCPosition producerPosition = Util::GetPosition(position);
++	const CCPosition addonCenter = producerPosition + CCPosition(2.5f, -0.5f);
++	for (const auto & unit : bot.GetUnits())
++	{
++		if (!unit.isValid() || !unit.isAlive() || unit.isFlying())
++		{
++			continue;
++		}
++		if (!unit.getType().isBuilding()
++			&& !unit.getType().isMineral()
++			&& !unit.getType().isGeyser())
++		{
++			continue;
++		}
++		if (Util::Dist(addonCenter, unit.getPosition()) <= 1.0f + unit.getUnitPtr()->radius)
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
+ bool isVoiSc2MacroPlacementSafeWithOptions(
+ 	CCBot & bot,
+ 	const UnitType & type,
+@@ -357,6 +413,10 @@ bool isVoiSc2MacroPlacementSafeWithOptions(
+ 	{
+ 		return false;
+ 	}
++	if (includeAddonTiles && voiProductionAddonAreaHasStaticBlocker(bot, type, position))
++	{
++		return false;
++	}
+ 
+ 	return !requireQueryPlacement || queryCanPlaceVoiBuilding(bot, type, Util::GetPosition(position));
+ }
+@@ -2490,12 +2550,14 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 	{
+ 		return false;
+ 	}
++	const bool explicitRelocationAllowed = m_bot.Commander().isVoiPolicyActive()
++		&& m_bot.Commander().getVoiPolicyBool("production.allow_building_relocation", false);
++	const bool addonRelocation = owner == "legacy_addon" || owner == "addon_relocation";
++	const bool policyOwnedProxyRelocation = owner == "proxy_cyclones"
++		&& m_bot.Commander().isVoiPolicyActive();
+ 	if (ability == sc2::ABILITY_ID::LIFT
+-		&& m_bot.Commander().isVoiPolicyActive()
+-		&& !m_bot.Commander().getVoiPolicyBool("production.allow_building_relocation", false)
+-		&& (owner == "legacy_addon"
+-			|| owner == "addon_relocation"
+-			|| owner == "proxy_cyclones"))
++		&& !explicitRelocationAllowed
++		&& (addonRelocation || policyOwnedProxyRelocation))
+ 	{
+ 		Util::Log(
+ 			__FUNCTION__,
+@@ -4033,16 +4095,9 @@ void BuildingManager::checkForCompletedBuildings()
+ 						case sc2::UNIT_TYPEID::PROTOSS_ROBOTICSFACILITY:
+ 						case sc2::UNIT_TYPEID::PROTOSS_STARGATE:
+ 						{
+-							//Set rally towards enemy base
+-							const auto enemyBase = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
+-							if (enemyBase == nullptr)
+-							{
+-								b.buildingUnit.rightClick(m_bot.Map().center());
+-							}
+-							else
+-							{
+-								b.buildingUnit.rightClick(enemyBase->getPosition());
+-							}
++							// Squad ownership, not production rally, decides
++							// when a newly produced unit leaves the home area.
++							b.buildingUnit.rightClick(voiProductionStagingPosition(m_bot));
+ 							break;
+ 						}
+ 					}
+@@ -4884,16 +4939,9 @@ void BuildingManager::castBuildingsAbilities()
+ 			{
+ 				if (m_wallsBarracksPointsTowardBase)
+ 				{
+-					//Set rally towards enemy base
+-					const auto enemyBase = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
+-					if (enemyBase == nullptr)
+-					{
+-						barracks.rightClick(m_bot.Map().center());
+-					}
+-					else
+-					{
+-						barracks.rightClick(enemyBase->getPosition());
+-					}
++					// Return to the common staging rally. CombatCommander owns
++					// outgoing movement after the unit joins a squad.
++					barracks.rightClick(voiProductionStagingPosition(m_bot));
+ 					m_wallsBarracksPointsTowardBase = false;
+ 				}
+ 			}
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 6ef80d4..1619f2d 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -572,8 +572,7 @@ CCPosition voiResolveCombatLocationIntent(CCBot & bot, const std::string & locat
+ 	const bool explicitBlindAttack = voiCommaListContains(
+ 		bot.Commander().getVoiPolicyString("tags", ""),
+ 		"explicit_blind_attack");
+-	const bool requireFreshEnemyObservation = bot.Commander().isVoiPolicyActive()
+-		&& !explicitBlindAttack
++	const bool requireFreshEnemyObservation = !explicitBlindAttack
+ 		&& bot.Commander().getVoiPolicyBool(
+ 			"scouting.require_fresh_enemy_observation",
+ 			true);
+@@ -2192,7 +2191,7 @@ void CombatCommander::updateScoutSquad()
+ 	const float marineScoutBias = m_bot.Commander().getVoiPolicyFloat("squad.squad_role_biases.marine_scout", 0.0f);
+ 	const bool requireFreshEnemyObservation = m_bot.Commander().getVoiPolicyBool(
+ 		"scouting.require_fresh_enemy_observation",
+-		false);
++		true);
+ 	const bool explicitScoutScope = m_bot.Commander().isVoiPolicyActive()
+ 		&& (scopeTargetsScout || tacticalScoutTask || scoutPriority >= 0.65f || marineScoutBias > 0.25f);
+ 	const BaseLocation * enemyStartingBase = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
+@@ -2214,9 +2213,11 @@ void CombatCommander::updateScoutSquad()
+ 	const bool pressureNeedsScout = explicitPressureScope
+ 		&& requireFreshEnemyObservation
+ 		&& !voiHasObservedEnemyLocationEvidence(m_bot);
++	const bool autonomousNeedsEnemyEvidence = requireFreshEnemyObservation
++		&& !voiHasObservedEnemyLocationEvidence(m_bot);
+ 	const bool autonomousCombatScoutScope = !explicitScoutScope
+ 		&& (!explicitPressureScope || pressureNeedsScout)
+-		&& (enemyStartNeedsCombatScout || pressureNeedsScout)
++		&& (enemyStartNeedsCombatScout || pressureNeedsScout || autonomousNeedsEnemyEvidence)
+ 		&& voiCountMobileAttackUnits(m_combatUnits) >= 1;
+ 	const bool activeScoutScope = explicitScoutScope || autonomousCombatScoutScope;
+ 	scoutSquad.setPriority((explicitScoutScope || pressureNeedsScout) ? ExplicitOperationPriority : ScoutPriority);
+@@ -2734,6 +2735,7 @@ void CombatCommander::updateAttackSquads()
+ 	{
+ 		m_voiRallyLatchOperationKey = voiPressureOperationLatchKey;
+ 		m_voiRallyCompleted = false;
++		m_voiOperationObservedEnemy = false;
+ 		m_voiTacticalRegroupActive = false;
+ 		m_voiTacticalRegroupStartFrame = 0;
+ 		m_voiTacticalRelaunchGraceUntilFrame = 0;
+@@ -3072,15 +3074,18 @@ void CombatCommander::updateAttackSquads()
+ 	const bool explicitBlindAttack = voiCommaListContains(
+ 		m_bot.Commander().getVoiPolicyString("tags", ""),
+ 		"explicit_blind_attack");
+-	const bool voiRequiresFreshEnemyObservation = m_bot.Commander().isVoiPolicyActive()
+-		&& !explicitBlindAttack
++	const bool voiRequiresFreshEnemyObservation = !explicitBlindAttack
+ 		&& m_bot.Commander().getVoiPolicyBool(
+ 			"scouting.require_fresh_enemy_observation",
+ 			true);
+ 	const bool voiHasFreshEnemyObservation = voiHasObservedEnemyLocationEvidence(m_bot);
++	if (voiHasFreshEnemyObservation)
++	{
++		m_voiOperationObservedEnemy = true;
++	}
+ 	const bool voiAwaitingFreshEnemyObservation = voiRequiresFreshEnemyObservation
+ 		&& !voiHasFreshEnemyObservation
+-		&& !m_voiRallyCompleted;
++		&& !m_voiOperationObservedEnemy;
+ 	m_lastVoiTargetEvidence = voiHasFreshEnemyObservation
+ 		? "observed_enemy"
+ 		: (voiAwaitingFreshEnemyObservation
+@@ -3089,7 +3094,7 @@ void CombatCommander::updateAttackSquads()
+ 	const bool voiSweepingAfterLostContact = tacticalPressureTask
+ 		&& voiRequiresFreshEnemyObservation
+ 		&& !voiHasFreshEnemyObservation
+-		&& m_voiRallyCompleted;
++		&& m_voiOperationObservedEnemy;
+ 	if (voiSweepingAfterLostContact)
+ 	{
+ 		orderPosition = exploreMap();
+@@ -3455,40 +3460,49 @@ void CombatCommander::updateAttackSquads()
+ 				}
+ 			}
+ 			m_bot.StopProfiling("0.10.4.2.3.0     calcEnemies");
+-			m_bot.StartProfiling("0.10.4.2.3.1     simulateCombat");
+-			bool considerOurSiegeTanksUnsieged = !m_winAttackSimulation;
+-			bool stopSimulationWhenGroupHasNoTarget = false;
+-			const auto simulationResult = Util::SimulateCombat(allyUnits, enemyUnits, considerOurSiegeTanksUnsieged, stopSimulationWhenGroupHasNoTarget, m_bot);
+-			float armyRemainingDifference = simulationResult.supplyPercentageRemaining - simulationResult.enemySupplyPercentageRemaining;
+-			m_bot.StopProfiling("0.10.4.2.3.1     simulateCombat");
+-			if (m_winAttackSimulation)
++			if (enemyUnits.empty())
+ 			{
+-				m_winAttackSimulation = armyRemainingDifference > voiEngageMarginDelta || m_bot.GetCurrentSupply() >= 195;
+-				if (!m_winAttackSimulation)
+-				{
+-					auto allySupply = Util::GetSupplyOfUnits(allyUnits, m_bot);
+-					auto enemySupply = Util::GetSupplyOfUnits(enemyUnits, m_bot);
+-					std::stringstream ss;
+-					ss << std::fixed << std::setprecision(2);	// floats will show only 2 decimals
+-					ss << "Cancel offensive (" << armyRemainingDifference * 100 << "%, " << allySupply << " ally supply vs " << enemySupply << " enemy supply)";
+-					m_bot.Actions()->SendChat(ss.str(), sc2::ChatChannel::Team);
+-					Util::Log(__FUNCTION__, ss.str(), m_bot);
+-					m_lastRetreatFrame = m_bot.GetCurrentFrame();
+-				}
++				// No recently observed local combat threat is a safe advance,
++				// not a reason to cancel an already launched operation.
++				m_winAttackSimulation = true;
+ 			}
+ 			else
+ 			{
+-				const float voiRelaunchMargin = (voiForceAttackWhenReady ? 0.15f : 0.7f) + voiEngageMarginDelta;
+-				m_winAttackSimulation = armyRemainingDifference > voiRelaunchMargin || m_bot.GetCurrentSupply() >= 195;
++				m_bot.StartProfiling("0.10.4.2.3.1     simulateCombat");
++				bool considerOurSiegeTanksUnsieged = !m_winAttackSimulation;
++				bool stopSimulationWhenGroupHasNoTarget = false;
++				const auto simulationResult = Util::SimulateCombat(allyUnits, enemyUnits, considerOurSiegeTanksUnsieged, stopSimulationWhenGroupHasNoTarget, m_bot);
++				float armyRemainingDifference = simulationResult.supplyPercentageRemaining - simulationResult.enemySupplyPercentageRemaining;
++				m_bot.StopProfiling("0.10.4.2.3.1     simulateCombat");
+ 				if (m_winAttackSimulation)
+ 				{
+-					auto allySupply = Util::GetSupplyOfUnits(allyUnits, m_bot);
+-					auto enemySupply = Util::GetSupplyOfUnits(enemyUnits, m_bot);
+-					std::stringstream ss;
+-					ss << std::fixed << std::setprecision(2);	// floats will show only 2 decimals
+-					ss << "Relaunch offensive (" << armyRemainingDifference * 100 << "%, " << allySupply << " ally supply vs " << enemySupply << " enemy supply)";
+-					m_bot.Actions()->SendChat(ss.str(), sc2::ChatChannel::Team);
+-					Util::Log(__FUNCTION__, ss.str(), m_bot);
++					m_winAttackSimulation = armyRemainingDifference > voiEngageMarginDelta || m_bot.GetCurrentSupply() >= 195;
++					if (!m_winAttackSimulation)
++					{
++						auto allySupply = Util::GetSupplyOfUnits(allyUnits, m_bot);
++						auto enemySupply = Util::GetSupplyOfUnits(enemyUnits, m_bot);
++						std::stringstream ss;
++						ss << std::fixed << std::setprecision(2);	// floats will show only 2 decimals
++						ss << "Cancel offensive (" << armyRemainingDifference * 100 << "%, " << allySupply << " ally supply vs " << enemySupply << " enemy supply)";
++						m_bot.Actions()->SendChat(ss.str(), sc2::ChatChannel::Team);
++						Util::Log(__FUNCTION__, ss.str(), m_bot);
++						m_lastRetreatFrame = m_bot.GetCurrentFrame();
++					}
++				}
++				else
++				{
++					const float voiRelaunchMargin = (voiForceAttackWhenReady ? 0.15f : 0.7f) + voiEngageMarginDelta;
++					m_winAttackSimulation = armyRemainingDifference > voiRelaunchMargin || m_bot.GetCurrentSupply() >= 195;
++					if (m_winAttackSimulation)
++					{
++						auto allySupply = Util::GetSupplyOfUnits(allyUnits, m_bot);
++						auto enemySupply = Util::GetSupplyOfUnits(enemyUnits, m_bot);
++						std::stringstream ss;
++						ss << std::fixed << std::setprecision(2);	// floats will show only 2 decimals
++						ss << "Relaunch offensive (" << armyRemainingDifference * 100 << "%, " << allySupply << " ally supply vs " << enemySupply << " enemy supply)";
++						m_bot.Actions()->SendChat(ss.str(), sc2::ChatChannel::Team);
++						Util::Log(__FUNCTION__, ss.str(), m_bot);
++					}
+ 				}
+ 			}
+ 			if (!m_winAttackSimulation)
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index dd777c3..b1616f9 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -172,6 +172,7 @@ class CombatCommander
+ 	int m_lastVoiRallyRequiredUnits = 0;
+ 	std::string m_voiRallyLatchOperationKey = "";
+ 	bool m_voiRallyCompleted = false;
++	bool m_voiOperationObservedEnemy = false;
+ 	bool m_voiTacticalRegroupActive = false;
+ 	uint32_t m_voiTacticalRegroupStartFrame = 0;
+ 	uint32_t m_voiTacticalRelaunchGraceUntilFrame = 0;
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index 6c34f2e..fd46ad0 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -181,8 +181,17 @@ void GameCommander::updateVoiPolicyBlackboard()
+         return;
+     }
+ 
++    const std::string lifetimeMode = m_voiPolicyBlackboard.getString("lifetime.mode", "");
++    const std::string completionState = m_voiPolicyBlackboard.getString(
++        "lifetime.completion_state",
++        "active");
++    const bool semanticLifetimeActive = completionState == "active"
++        && (lifetimeMode == "until_completed"
++            || lifetimeMode == "until_cancelled"
++            || lifetimeMode == "standing_order");
+     if (!m_voiPolicyBlackboard.isProtocolCompatible()
+-        || m_voiPolicyBlackboard.isExpired(m_bot.GetGameLoop())) {
++        || (m_voiPolicyBlackboard.isExpired(m_bot.GetGameLoop())
++            && !semanticLifetimeActive)) {
+         return;
+     }
+ 
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 9caab37..2983f40 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -2559,7 +2559,6 @@ void ProductionManager::refreshVoiDoctrinePolicyBaseline(const std::string & upd
+ 	m_lastVoiSupplyRecoveryReason = "none";
+ 	m_lastVoiSupplyProviderCommandKind = "none";
+ 	m_lastVoiSupplyProviderCommandUpdateId = "";
+-	m_voiFactoryAddonReplacementQueued = false;
+ 
+ 	const std::vector<MetaType> baselineTypes = {
+ 		MetaTypeEnum::Barracks,
+@@ -2995,22 +2994,19 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	if (wantsFactoryTechLab
+ 		&& factoryTechLabCount == 0
+ 		&& eligibleFactoryAddonProducers == 0
+-		&& blockedFactoryAddonProducer)
+-	{
+-		if (!m_voiFactoryAddonReplacementQueued && !factoryReplacementPending)
+-		{
+-			if (queueVoiDoctrineItem(
+-				MetaTypeEnum::Factory,
+-				"factory_addon_replacement",
+-				true))
+-			{
+-				m_voiFactoryAddonReplacementQueued = true;
+-				Util::Log(
+-					__FUNCTION__,
+-					"VOI queued one addon-clear replacement Factory after the existing producer was quarantined.",
+-					m_bot);
+-				return;
+-			}
++		&& blockedFactoryAddonProducer
++		&& !factoryReplacementPending)
++	{
++		if (queueVoiDoctrineItem(
++			MetaTypeEnum::Factory,
++			"factory_addon_replacement",
++			true))
++		{
++			Util::Log(
++				__FUNCTION__,
++				"VOI queued an addon-clear replacement Factory because every completed producer is quarantined.",
++				m_bot);
++			return;
+ 		}
+ 	}
+ 	if (wantsFactoryTechLab
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+index 0d052b0..fc8809e 100644
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -58,7 +58,6 @@ class ProductionManager
+ 	uint32_t m_voiDoctrineBaselineFrame = 0;
+ 	std::map<sc2::UNIT_TYPEID, bool> m_voiDoctrineQueueBaseline;
+ 	std::map<sc2::UNIT_TYPEID, int> m_voiDoctrineUnitCountBaseline;
+-	bool m_voiFactoryAddonReplacementQueued = false;
+ 	std::map<sc2::UNIT_TYPEID, uint32_t> m_nextPlacementRetryFrame;
+ 	std::map<sc2::UNIT_TYPEID, int> m_placementRetryCount;
+ 	std::vector<sc2::UNIT_TYPEID> factoryUnitTypes = { sc2::UNIT_TYPEID::TERRAN_HELLION, sc2::UNIT_TYPEID::TERRAN_HELLIONTANK, sc2::UNIT_TYPEID::TERRAN_WIDOWMINE, sc2::UNIT_TYPEID::TERRAN_SIEGETANK, sc2::UNIT_TYPEID::TERRAN_CYCLONE, sc2::UNIT_TYPEID::TERRAN_THOR };

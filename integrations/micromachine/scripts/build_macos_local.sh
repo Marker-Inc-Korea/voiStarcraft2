@@ -12,6 +12,35 @@ MICROMACHINE_BUILD_IDENTITY_REPORT="${MICROMACHINE_BUILD_IDENTITY_REPORT:-${MICR
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-macos-latest-s2client-policy-blackboard.patch"
+TACTICAL_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0002-live-tactical-operation-fixes.patch"
+PRODUCTION_FIX_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0003-production-live-qa-blockers.patch"
+OPERATION_STATE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0004-live-operation-state-machine.patch"
+ADDON_RECOVERY_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0005-addon-relocation-recovery.patch"
+GROUNDED_ADDON_CANDIDATE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0006-grounded-addon-candidate-fix.patch"
+GUARANTEED_PRODUCER_GROUNDING_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0007-guaranteed-producer-grounding.patch"
+EMERGENCY_LAND_QUERY_FALLBACK_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0008-emergency-land-query-fallback.patch"
+GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0009-grounded-production-and-observed-targeting.patch"
+EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0010-exact-composition-production-progress.patch"
+PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0011-production-resource-operation-persistence.patch"
+LIVE_OPERATION_UNBLOCK_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0012-live-operation-unblock.patch"
+STABLE_FLANK_STAGE_LATCH_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0013-stable-flank-stage-latch.patch"
+PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0014-production-staging-and-observed-operation.patch"
+ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0015-addon-query-footprint-validation.patch"
+AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0016-authoritative-addon-placement-query.patch"
+AUTHORITATIVE_ADDON_EXECUTION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0017-authoritative-addon-execution.patch"
+CONTINUOUS_ARMY_MACRO_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0018-continuous-army-macro.patch"
+CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0019-continuous-army-economy-scaling.patch"
+STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0020-standing-composition-reinforcement-waves.patch"
+OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0021-offensive-sweep-self-base-exclusion.patch"
+BOUNDED_PLACEMENT_QUERY_CACHE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0022-bounded-placement-query-cache.patch"
+PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0023-production-facility-stability-and-tank-recovery.patch"
+BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0024-balanced-composition-wave-production.patch"
+EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0025-exact-composition-production-unblock.patch"
+CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0026-continuous-combat-production-relaunch.patch"
+RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0027-resource-throughput-and-expansion-backoff.patch"
+STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0028-startup-telemetry-initialization.patch"
+GAS_WORKER_COMPLETION_CAP_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0029-gas-worker-completion-and-cap.patch"
+STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0030-stable-offensive-sweep-target.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 
@@ -116,8 +145,66 @@ git -C "${MICROMACHINE_DIR}" submodule update --init --recursive
 # in BuildingManager.cpp. Normalize it before applying our UTF-8 patch bundle so
 # the canonical patch remains readable by tests and review tools.
 perl -0pi -e 's/\xAF{8,}/---------------/g' "${MICROMACHINE_DIR}/src/BuildingManager.cpp"
-git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
-git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${TACTICAL_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${TACTICAL_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PRODUCTION_FIX_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PRODUCTION_FIX_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${OPERATION_STATE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${OPERATION_STATE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${ADDON_RECOVERY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${ADDON_RECOVERY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${GROUNDED_ADDON_CANDIDATE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${GROUNDED_ADDON_CANDIDATE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${GUARANTEED_PRODUCER_GROUNDING_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${GUARANTEED_PRODUCER_GROUNDING_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${EMERGENCY_LAND_QUERY_FALLBACK_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${EMERGENCY_LAND_QUERY_FALLBACK_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${LIVE_OPERATION_UNBLOCK_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${LIVE_OPERATION_UNBLOCK_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${STABLE_FLANK_STAGE_LATCH_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${STABLE_FLANK_STAGE_LATCH_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${AUTHORITATIVE_ADDON_EXECUTION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${AUTHORITATIVE_ADDON_EXECUTION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${CONTINUOUS_ARMY_MACRO_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${CONTINUOUS_ARMY_MACRO_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${BOUNDED_PLACEMENT_QUERY_CACHE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BOUNDED_PLACEMENT_QUERY_CACHE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${GAS_WORKER_COMPLETION_CAP_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${GAS_WORKER_COMPLETION_CAP_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
@@ -139,6 +226,37 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-build-dir "${MICROMACHINE_BUILD_DIR}" \
   --micromachine-commit "${MICROMACHINE_COMMIT}" \
   --s2client-commit "${S2CLIENT_COMMIT}" \
+  --micromachine-patch "${PATCH_FILE}" \
+  --micromachine-tactical-patch "${TACTICAL_PATCH_FILE}" \
+  --micromachine-production-fix-patch "${PRODUCTION_FIX_PATCH_FILE}" \
+  --micromachine-operation-state-patch "${OPERATION_STATE_PATCH_FILE}" \
+  --micromachine-addon-recovery-patch "${ADDON_RECOVERY_PATCH_FILE}" \
+  --micromachine-grounded-addon-candidate-patch "${GROUNDED_ADDON_CANDIDATE_PATCH_FILE}" \
+  --micromachine-guaranteed-producer-grounding-patch "${GUARANTEED_PRODUCER_GROUNDING_PATCH_FILE}" \
+  --micromachine-emergency-land-query-fallback-patch "${EMERGENCY_LAND_QUERY_FALLBACK_PATCH_FILE}" \
+  --micromachine-grounded-production-observed-targeting-patch "${GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH_FILE}" \
+  --micromachine-exact-composition-production-progress-patch "${EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH_FILE}" \
+  --micromachine-production-resource-operation-persistence-patch "${PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH_FILE}" \
+  --micromachine-live-operation-unblock-patch "${LIVE_OPERATION_UNBLOCK_PATCH_FILE}" \
+  --micromachine-stable-flank-stage-latch-patch "${STABLE_FLANK_STAGE_LATCH_PATCH_FILE}" \
+  --micromachine-production-staging-observed-operation-patch "${PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH_FILE}" \
+  --micromachine-addon-query-footprint-validation-patch "${ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH_FILE}" \
+  --micromachine-authoritative-addon-placement-query-patch "${AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH_FILE}" \
+  --micromachine-authoritative-addon-execution-patch "${AUTHORITATIVE_ADDON_EXECUTION_PATCH_FILE}" \
+  --micromachine-continuous-army-macro-patch "${CONTINUOUS_ARMY_MACRO_PATCH_FILE}" \
+  --micromachine-continuous-army-economy-scaling-patch "${CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH_FILE}" \
+  --micromachine-standing-composition-reinforcement-waves-patch "${STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH_FILE}" \
+  --micromachine-offensive-sweep-self-base-exclusion-patch "${OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH_FILE}" \
+  --micromachine-bounded-placement-query-cache-patch "${BOUNDED_PLACEMENT_QUERY_CACHE_PATCH_FILE}" \
+  --micromachine-production-facility-stability-tank-recovery-patch "${PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH_FILE}" \
+  --micromachine-balanced-composition-wave-production-patch "${BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH_FILE}" \
+  --micromachine-exact-composition-production-unblock-patch "${EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH_FILE}" \
+  --micromachine-continuous-combat-production-relaunch-patch "${CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH_FILE}" \
+  --micromachine-resource-throughput-expansion-backoff-patch "${RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH_FILE}" \
+  --micromachine-startup-telemetry-initialization-patch "${STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE}" \
+  --micromachine-gas-worker-completion-cap-patch "${GAS_WORKER_COMPLETION_CAP_PATCH_FILE}" \
+  --micromachine-stable-offensive-sweep-target-patch "${STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE}" \
+  --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --output "${MICROMACHINE_BUILD_IDENTITY_REPORT}"
 
 printf 'MicroMachine executable: %s\n' "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"

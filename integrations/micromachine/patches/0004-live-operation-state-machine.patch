@@ -1,0 +1,429 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+index b3f7e2e..786a681 100644
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2370,6 +2370,14 @@ bool voiIsBuildingMobilityOrder(const sc2::UnitOrder & order)
+ 		|| order.ability_id == sc2::ABILITY_ID::LAND_FACTORY
+ 		|| order.ability_id == sc2::ABILITY_ID::LAND_STARPORT;
+ }
++
++bool voiIsLandAbility(sc2::AbilityID ability)
++{
++	return ability == sc2::ABILITY_ID::LAND
++		|| ability == sc2::ABILITY_ID::LAND_BARRACKS
++		|| ability == sc2::ABILITY_ID::LAND_FACTORY
++		|| ability == sc2::ABILITY_ID::LAND_STARPORT;
++}
+ }
+ 
+ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+@@ -2383,6 +2391,11 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 	{
+ 		return false;
+ 	}
++	if (voiIsLandAbility(ability) && target == CCPosition())
++	{
++		Util::Log(__FUNCTION__, "VOI refused a LAND command without a valid target position.", m_bot);
++		return false;
++	}
+ 
+ 	const sc2::Tag tag = unit.getTag();
+ 	const auto ownerIt = m_voiMobilityOwner.find(tag);
+@@ -2411,6 +2424,12 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 		return false;
+ 	}
+ 
++	const sc2::AvailableAbilities availableAbilities = m_bot.Query()->GetAbilitiesForUnit(unit.getUnitPtr());
++	if (!Util::IsAbilityAvailable((sc2::ABILITY_ID)ability, availableAbilities))
++	{
++		return false;
++	}
++
+ 	if (target != CCPosition())
+ 	{
+ 		if (!m_bot.Query()->Placement(ability, target, unit.getUnitPtr()))
+@@ -2459,7 +2478,13 @@ void BuildingManager::releaseVoiBuildingMobilityOwnershipIfSettled(const Unit &
+ 	{
+ 		return;
+ 	}
++	const std::string owner = m_voiMobilityOwner[tag];
+ 	m_voiMobilityOwner.erase(tag);
++	m_voiMobilityLastCommandFrame.erase(tag);
++	if (owner == "damaged_building")
++	{
++		m_liftedBuildingPositions.erase(tag);
++	}
+ }
+ 
+ bool BuildingManager::isVoiBuildingMobilityOwned(sc2::Tag tag) const
+@@ -2467,6 +2492,25 @@ bool BuildingManager::isVoiBuildingMobilityOwned(sc2::Tag tag) const
+ 	return m_voiMobilityOwner.find(tag) != m_voiMobilityOwner.end();
+ }
+ 
++bool BuildingManager::isVoiProducerCommandOwned(sc2::Tag tag) const
++{
++	if (isVoiBuildingMobilityOwned(tag))
++	{
++		return true;
++	}
++	for (const auto & building : m_buildings)
++	{
++		if (building.type.isAddon()
++			&& !building.buildingUnit.isValid()
++			&& building.builderUnit.isValid()
++			&& building.builderUnit.getTag() == tag)
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
+ bool BuildingManager::isVoiAddonLandingSiteValid(const Building & b, const CCPosition & producerPosition)
+ {
+ 	if (producerPosition == CCPosition() || !b.builderUnit.isValid())
+@@ -2783,10 +2827,9 @@ void BuildingManager::constructAssignedBuildings()
+         // if that worker is not currently constructing
+         if (!isConstructing)
+         {
+-			if (b.type.isAddon() &&
+-				b.builderUnit.isValid() &&
+-				b.builderUnit.isCompleted() &&
+-				(m_addonRelocations.find(b.builderUnit.getTag()) != m_addonRelocations.end() || m_bot.Commander().Production().shouldUseVoiDirectAddonCommand(b.type)))
++			if (b.type.isAddon()
++				&& b.builderUnit.isValid()
++				&& b.builderUnit.isCompleted())
+ 			{
+ 				handleVoiAddonTask(b);
+ 				continue;
+@@ -4685,13 +4728,17 @@ void BuildingManager::RunProxyLogic()
+ 			// Called every frame so the barracks can choose a new location if it gets blocked
+ 			const auto barracksFlyingType = UnitType(sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING, m_bot);
+ 			const auto barracksBuilding = Building(barracksFlyingType, Util::GetTilePosition(m_proxyBarracksPosition));
+-			const auto landingPosition = Util::GetPosition(m_bot.Buildings().getBuildingPlacer().getBuildLocationNear(barracksBuilding, false, true, true));
+-			tryIssueVoiBuildingMobilityCommand(
+-				flyingBarracks[0],
+-				voiLandAbilityForProducer(flyingBarracks[0]),
+-				landingPosition,
+-				"proxy_cyclones",
+-				64);
++			const CCTilePosition landingTile = m_bot.Buildings().getBuildingPlacer().getBuildLocationNear(barracksBuilding, false, true, true);
++			if (landingTile != CCTilePosition())
++			{
++				const CCPosition landingPosition = Util::GetPosition(landingTile);
++				tryIssueVoiBuildingMobilityCommand(
++					flyingBarracks[0],
++					voiLandAbilityForProducer(flyingBarracks[0]),
++					landingPosition,
++					"proxy_cyclones",
++					64);
++			}
+ 		}
+ 
+ 		// Lift Factory
+@@ -4736,6 +4783,12 @@ void BuildingManager::RunProxyLogic()
+ 			const auto totalReapers = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Reaper.getUnitType(), true) + m_bot.GetDeadAllyUnitsCount(sc2::UNIT_TYPEID::TERRAN_REAPER);
+ 			if (!barracks.empty() && totalReapers >= 2)
+ 			{
++				if (m_bot.Commander().isVoiPolicyActive())
++				{
++					m_barracksSentToEnemyBase = true;
++					Util::Log(__FUNCTION__, "VOI kept the proxy Barracks grounded instead of handing it to combat micro.", m_bot);
++					return;
++				}
+ 				if (tryIssueVoiBuildingMobilityCommand(
+ 					barracks[0],
+ 					sc2::ABILITY_ID::LIFT,
+diff --git a/src/BuildingManager.h b/src/BuildingManager.h
+index 9ebb422..692aa59 100644
+--- a/src/BuildingManager.h
++++ b/src/BuildingManager.h
+@@ -145,4 +145,5 @@ public:
+ 	bool				isProxyCyclonesStrategyCompleted() const { return m_barracksSentToEnemyBase; }
+ 	bool				hasEnergyForScan() const;
+ 	bool				isVoiBuildingMobilityOwned(sc2::Tag tag) const;
++	bool				isVoiProducerCommandOwned(sc2::Tag tag) const;
+ };
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index be934dc..23dadf3 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -251,6 +251,28 @@ std::string voiCompositionRequirementLabel(CCBot & bot, int index)
+ 	return unitType + ":" + std::to_string(count) + (role.empty() ? "" : ":" + role);
+ }
+ 
++std::string voiPressureOperationKey(CCBot & bot)
++{
++	std::string key = bot.Commander().getVoiPolicyString("tactical_task.task_id", "");
++	if (key.empty())
++	{
++		key = bot.Commander().getVoiPolicyString("update_id", "");
++	}
++	for (int i = 0; i < 8; ++i)
++	{
++		const std::string label = voiCompositionRequirementLabel(bot, i);
++		if (!label.empty())
++		{
++			key += "|" + label;
++		}
++	}
++	key += "|min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.min_units", 0)));
++	key += "|max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.max_units", 0)));
++	key += "|route=" + bot.Commander().getVoiPolicyString("route_intent.route_type", "");
++	key += "|location=" + bot.Commander().getVoiPolicyString("tactical_task.location_intent", "");
++	return key;
++}
++
+ int voiCountMobileAttackUnits(const std::vector<Unit> & units)
+ {
+ 	int count = 0;
+@@ -1726,7 +1748,14 @@ void CombatCommander::updateBackupSquads()
+ 	}
+ 	else
+ 	{
+-		SquadOrder sendBackupsOrder(SquadOrderTypes::Attack, mainAttackSquad.calcCenter(), reinforceRadius, "Send backups");
++		CCPosition backupTarget = mainAttackSquad.getUnits().empty()
++			? m_idlePosition
++			: mainAttackSquad.calcCenter();
++		if (backupTarget == CCPosition())
++		{
++			backupTarget = m_bot.GetStartLocation();
++		}
++		SquadOrder sendBackupsOrder(SquadOrderTypes::Attack, backupTarget, reinforceRadius, "Send backups");
+ 		backupSquad.setSquadOrder(sendBackupsOrder);
+ 	}
+ }
+@@ -2425,8 +2454,17 @@ void CombatCommander::updateAttackSquads()
+ 
+     Squad & mainAttackSquad = m_squadData.getSquad("MainAttack");
+ 	const std::string exactCompositionTaskType = m_bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
+-	const bool exactCompositionPressureTask = exactCompositionTaskType == "pressure_with_main_army"
+-		&& voiTacticalTaskWithinDuration(m_bot)
++	const bool voiPressureOperation = exactCompositionTaskType == "pressure_with_main_army"
++		&& voiTacticalTaskWithinDuration(m_bot);
++	const std::string voiPressureOperationLatchKey = voiPressureOperation
++		? voiPressureOperationKey(m_bot)
++		: "";
++	if (!voiPressureOperation || m_voiRallyLatchOperationKey != voiPressureOperationLatchKey)
++	{
++		m_voiRallyLatchOperationKey = voiPressureOperationLatchKey;
++		m_voiRallyCompleted = false;
++	}
++	const bool exactCompositionPressureTask = voiPressureOperation
+ 		&& (m_bot.Commander().hasVoiPolicyDomain("composition_requirements") || m_bot.Commander().hasVoiPolicyDomain("unit_roles"));
+ 	mainAttackSquad.setPriority(exactCompositionPressureTask ? ExplicitOperationPriority : AttackPriority);
+ 
+@@ -2683,6 +2721,10 @@ void CombatCommander::updateAttackSquads()
+ 
+ 	if (mainAttackSquad.getUnits().empty())
+ 	{
++		if (exactCompositionBlocksAttack)
++		{
++			m_voiRallyCompleted = false;
++		}
+ 		m_lastVoiMainAttackOrderStatus = "Waiting";
+ 		m_lastVoiMainAttackOrderReason = exactCompositionBlocksAttack ? m_lastVoiCompositionReason : "No main attack units";
+ 		m_lastVoiOperationPhase = exactCompositionPressureTask ? "Producing" : "Idle";
+@@ -2708,6 +2750,10 @@ void CombatCommander::updateAttackSquads()
+ 	const float tacticalTaskSafetyMargin = tacticalPressureTask ? std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("tactical_task.safety_margin", 0.0f)) : 0.0f;
+ 	const bool voiForceRetreat = m_bot.Commander().getVoiPolicyBool("emergency.force_retreat", false)
+ 		|| m_bot.Commander().getVoiPolicyBool("emergency.cancel_attacks", false);
++	if (voiForceRetreat)
++	{
++		m_voiRallyCompleted = false;
++	}
+ 	const float voiDefendBias = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("combat.defend_bias", 0.0f));
+ 	const float voiAggression = m_bot.Commander().getVoiPolicyFloat("combat.aggression", 0.0f) + (tacticalPressureTask ? tacticalTaskPriority * 0.25f : 0.0f);
+ 	const float voiAttackTimingBias = m_bot.Commander().getVoiPolicyFloat("combat.attack_timing_bias", 0.0f) + (tacticalPressureTask ? tacticalTaskPriority * 0.25f : 0.0f);
+@@ -2784,10 +2830,20 @@ void CombatCommander::updateAttackSquads()
+ 	const bool voiCompositionReady = !exactCompositionPressureTask
+ 		|| m_lastVoiCompositionAssigned >= m_lastVoiCompositionRequired;
+ 	const bool voiOperationProducing = tacticalPressureTask && (!voiScopeThresholdMet || !voiCompositionReady);
++	if (voiOperationProducing)
++	{
++		m_voiRallyCompleted = false;
++	}
++	else if (tacticalPressureTask
++		&& voiRallyRequiredUnits > 0
++		&& voiRallyReadyUnits >= voiRallyRequiredUnits)
++	{
++		m_voiRallyCompleted = true;
++	}
+ 	const bool voiOperationRallying = tacticalPressureTask
+ 		&& !voiOperationProducing
+ 		&& voiRallyRequiredUnits > 0
+-		&& voiRallyReadyUnits < voiRallyRequiredUnits;
++		&& !m_voiRallyCompleted;
+ 	m_lastVoiRallyReadyUnits = voiRallyReadyUnits;
+ 	m_lastVoiRallyRequiredUnits = voiRallyRequiredUnits;
+ 	m_lastVoiBoundedForceCommit = false;
+@@ -4579,6 +4635,42 @@ bool CombatCommander::ShouldSkipFrame(const sc2::Unit * rangedUnit) const
+ 
+ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ {
++	if (unit == nullptr || !unit->is_alive)
++	{
++		return false;
++	}
++	const bool positionAction = action.microActionType == MicroActionType::Move
++		|| action.microActionType == MicroActionType::AttackMove
++		|| action.microActionType == MicroActionType::AbilityPosition;
++	if (positionAction && action.position == CCPosition())
++	{
++		m_lastVoiActionSkippedCount++;
++		m_lastVoiActionFrame = m_bot.GetGameLoop();
++		m_lastVoiSkippedAction = "invalid_zero_position|" + voiActionEvidence(action);
++		return false;
++	}
++	if (m_bot.Data(unit->unit_type).isBuilding
++		&& m_bot.Buildings().isVoiBuildingMobilityOwned(unit->tag))
++	{
++		unitActions.erase(unit);
++		m_lastVoiActionSkippedCount++;
++		m_lastVoiActionFrame = m_bot.GetGameLoop();
++		m_lastVoiSkippedAction = "building_mobility_owned|" + voiActionEvidence(action);
++		return false;
++	}
++
++	auto existingActionIt = unitActions.find(unit);
++	if (existingActionIt != unitActions.end()
++		&& existingActionIt->second.microActionType == MicroActionType::Ability
++		&& voiIsMorphAbility(existingActionIt->second.abilityID)
++		&& !Util::IsAbilityAvailable(
++			(sc2::ABILITY_ID)existingActionIt->second.abilityID,
++			unit,
++			m_unitsAbilities))
++	{
++		unitActions.erase(existingActionIt);
++	}
++
+ 	const std::string voiRole = m_bot.Commander().isVoiPolicyActive() ? voiRoleForUnit(m_bot, unit) : "";
+ 	const bool preserveScoutObjective = action.squad == "Scout";
+ 	bool voiRoleBiasedAction = false;
+@@ -4764,6 +4856,16 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ 			}
+ 		}
+ 	}
++	if (action.microActionType == MicroActionType::Ability
++		&& voiIsMorphAbility(action.abilityID)
++		&& !Util::IsAbilityAvailable((sc2::ABILITY_ID)action.abilityID, unit, m_unitsAbilities))
++	{
++		m_lastVoiActionSkippedCount++;
++		m_lastVoiActionFrame = m_bot.GetGameLoop();
++		m_lastVoiSkippedAction = "morph_unavailable|" + voiActionEvidence(action);
++		return false;
++	}
++
+ 	auto & currentAction = unitActions[unit];
+ 	// If the unit is already performing the same action, we do nothing
+ 	if (currentAction == action
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index bc6bc42..08935a7 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -170,6 +170,8 @@ class CombatCommander
+ 	std::string m_lastVoiOperationPhase = "Idle";
+ 	int m_lastVoiRallyReadyUnits = 0;
+ 	int m_lastVoiRallyRequiredUnits = 0;
++	std::string m_voiRallyLatchOperationKey = "";
++	bool m_voiRallyCompleted = false;
+ 	bool m_lastVoiBoundedForceCommit = false;
+ 	int m_lastVoiMainAttackUnitCount = 0;
+ 	int m_lastVoiMainAttackScopeMinUnits = 0;
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 7cc6e2b..7875b11 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -2948,7 +2948,7 @@ void ProductionManager::enforceBarracksProductionContinuity()
+ 		{
+ 			continue;
+ 		}
+-		if (m_bot.Buildings().isVoiBuildingMobilityOwned(barracks.getTag()))
++		if (m_bot.Buildings().isVoiProducerCommandOwned(barracks.getTag()))
+ 		{
+ 			continue;
+ 		}
+@@ -3669,7 +3669,7 @@ Unit ProductionManager::getProducer(const MetaType & type, bool allowTraining, C
+ 					if (!unit.isValid()) { continue; }
+ 					if (!unit.isCompleted()) { continue; }
+ 					if (unit.isFlying()) { continue; }
+-					if (m_bot.Buildings().isVoiBuildingMobilityOwned(unit.getTag())) { continue; }
++					if (m_bot.Buildings().isVoiProducerCommandOwned(unit.getTag())) { continue; }
+ 					if (unit.isAddonTraining()) { continue; }
+ 
+ 					//Building can produce unit, now check if addon is reactor and available
+@@ -3708,7 +3708,7 @@ Unit ProductionManager::getProducer(const MetaType & type, bool allowTraining, C
+ 			if (!unit.isValid()) { continue; }
+ 			if (!unit.isCompleted()) { continue; }
+ 			if (unit.isFlying()) { continue; }
+-			if (m_bot.Buildings().isVoiBuildingMobilityOwned(unit.getTag())) { continue; }
++			if (m_bot.Buildings().isVoiProducerCommandOwned(unit.getTag())) { continue; }
+ 
+ 			bool isBuilding = m_bot.Data(unit).isBuilding;
+ 			if (!allowTraining && isBuilding && unit.isTraining() && unit.getAddonTag() == 0) { continue; }//TODO might break other races
+@@ -4238,6 +4238,12 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+ 	// if we're dealing with a non-building unit
+ 	else if (item.type.isUnit())
+ 	{
++		if (m_bot.Data(producer).isBuilding
++			&& m_bot.Buildings().isVoiProducerCommandOwned(producer.getTag()))
++		{
++			Util::Log(__FUNCTION__, "VOI deferred training because the producer is reserved for addon or mobility work.", m_bot);
++			return false;
++		}
+ 		producer.train(item.type.getUnitType());
+ 		recordVoiActualProductionCommand(item.type, "train_command");
+ 		if (item.type == MetaTypeEnum::Marine || item.type == MetaTypeEnum::Reaper)
+diff --git a/src/RangedManager.cpp b/src/RangedManager.cpp
+index 02a98c4..dbbda68 100644
+--- a/src/RangedManager.cpp
++++ b/src/RangedManager.cpp
+@@ -2816,17 +2816,22 @@ bool RangedManager::ExecuteThreatFightingLogic(const sc2::Unit * rangedUnit, boo
+ 				{
+ 					action = UnitAction(MicroActionType::Ability, sc2::ABILITY_ID::MORPH_VIKINGASSAULTMODE, true, VIKING_MORPH_FRAME_COUNT, ACTION_DESCRIPTION_THREAT_FIGHT_MORPH, m_squad->getName());
+ 				}
+-				m_bot.Commander().Combat().PlanAction(unit, action);
++				const bool actionAccepted = m_bot.Commander().Combat().PlanAction(unit, action);
+ 				m_bot.StopProfiling("0.10.4.1.5.1.5.5.6            VikingFighterMoveOrMorph");
+-				continue;
++				if (actionAccepted || action.microActionType == MicroActionType::Move)
++				{
++					continue;
++				}
+ 			}
+ 
+ 			// Morph the landed Viking
+ 			if (morphLandedVikings && unit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT)
+ 			{
+ 				const auto action = UnitAction(MicroActionType::Ability, sc2::ABILITY_ID::MORPH_VIKINGFIGHTERMODE, true, VIKING_MORPH_FRAME_COUNT, ACTION_DESCRIPTION_THREAT_FIGHT_MORPH, m_squad->getName());
+-				m_bot.Commander().Combat().PlanAction(unit, action);
+-				continue;
++				if (m_bot.Commander().Combat().PlanAction(unit, action))
++				{
++					continue;
++				}
+ 			}
+ 
+ 			// Check if we should morph the tank
+diff --git a/src/Squad.cpp b/src/Squad.cpp
+index 1170c5f..2c0e029 100644
+--- a/src/Squad.cpp
++++ b/src/Squad.cpp
+@@ -301,9 +301,14 @@ void Squad::addUnitsToMicroManagers()
+     std::vector<Unit> tankUnits;
+ 
+     // add _units to micro managers
+-    for (auto & unit : m_units)
+-    {
+-        BOT_ASSERT(unit.isValid(), "null unit in addUnitsToMicroManagers()");
++	for (auto & unit : m_units)
++	{
++		BOT_ASSERT(unit.isValid(), "null unit in addUnitsToMicroManagers()");
++		if (unit.getType().isBuilding()
++			&& m_bot.Buildings().isVoiBuildingMobilityOwned(unit.getTag()))
++		{
++			continue;
++		}
+ 
+ 		const auto exceptions = { sc2::UNIT_TYPEID::TERRAN_RAVEN, sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING, sc2::UNIT_TYPEID::TERRAN_MEDIVAC };
+         if (Util::GetMaxAttackRange(unit.getUnitPtr(), m_bot) >= 2.5f || Util::Contains(unit.getType().getAPIUnitType(), exceptions))

@@ -1,0 +1,46 @@
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -139,12 +139,15 @@ GameCommander::GameCommander(CCBot & bot)
+ 
+ void GameCommander::onStart()
+ {
+     updateVoiPolicyBlackboard();
+-    writeVoiTelemetry();
+ 
+     m_productionManager.onStart();
+     m_scoutManager.onStart();
+     m_combatCommander.onStart();
++
++    // Startup telemetry reads manager-owned counters and unit summaries.
++    // Publish only after every subordinate manager has initialized.
++    writeVoiTelemetry();
+ }
+ 
+ void GameCommander::onFrame(bool executeMacro)
+diff --git a/src/UnitInfoManager.cpp b/src/UnitInfoManager.cpp
+--- a/src/UnitInfoManager.cpp
++++ b/src/UnitInfoManager.cpp
+@@ -13,7 +13,9 @@ UnitInfoManager::UnitInfoManager(CCBot & bot)
+ 
+ void UnitInfoManager::onStart()
+ {
+-
++    // Managers and startup telemetry can query unit information before the
++    // first regular onFrame() pass. Seed the snapshot from CCBot::setUnits().
++    updateUnitInfo();
+ }
+ 
+ void UnitInfoManager::onFrame()
+diff --git a/src/WorkerManager.cpp b/src/WorkerManager.cpp
+--- a/src/WorkerManager.cpp
++++ b/src/WorkerManager.cpp
+@@ -2408,7 +2408,7 @@ int WorkerManager::getCompletedRefineryCount() const
+ {
+ 	int completedRefineries = 0;
+-	for (const auto & unit : m_bot.UnitInfo().getUnits(Players::Self))
++	for (const auto & unit : m_bot.GetAllyGeyserUnits())
+ 	{
+ 		if (unit.isValid()
+ 			&& unit.isCompleted()
+ 			&& unit.getType().isRefinery())

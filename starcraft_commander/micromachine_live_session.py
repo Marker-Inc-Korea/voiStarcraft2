@@ -170,13 +170,17 @@ class KeywordPolicyModulationProvider:
                 "tags": ["keyword_provider", "live_text", "cancel_attack"],
                 "rationale": "Cancel the active attack and preserve combat units.",
             }
-        if _has_defensive_text_intent(text):
+        if (
+            _has_defensive_text_intent(text)
+            and not _has_conditional_tactical_retreat_intent(text)
+        ):
+            standing_intent = _has_standing_text_intent(text)
             return {
                 "source": self.source.value,
                 "goal": request.command_text,
                 "override_level": "constraint",
                 "confidence": 0.66,
-                "ttl_seconds": 120,
+                "ttl_seconds": 900 if standing_intent else 120,
                 "posture": "defensive",
                 "economy": {"gas_priority": 0.25, "repair_priority": 0.25},
                 "workers": {"repeat_order_guard_frames": 32},
@@ -187,7 +191,64 @@ class KeywordPolicyModulationProvider:
                 },
                 "scouting": {"scout_priority": 0.25, "risk_tolerance": -0.2},
                 "squad": {"defense_bias": 0.45, "regroup_bias": 0.25},
-                "tags": ["keyword_provider", "live_text"],
+                "lifetime": (
+                    {
+                        "mode": "standing_order",
+                        "completion_conditions": ["cancelled_by_user", "ttl_expired"],
+                        "completion_state": "active",
+                        "reason": "standing defensive intent from live text",
+                    }
+                    if standing_intent
+                    else {}
+                ),
+                "tags": (
+                    ["keyword_provider", "live_text", "standing_order"]
+                    if standing_intent
+                    else ["keyword_provider", "live_text"]
+                ),
+            }
+        if (
+            _has_unit_production_text_intent(text)
+            and not _has_tactical_text_intent(text)
+        ):
+            composition_requirements = _extract_composition_requirements(
+                text,
+                default_count=1,
+            )
+            requested_unit_classes = _requested_unit_classes_from_composition(
+                composition_requirements
+            )
+            requested_production_targets = _production_targets_with_prerequisites(
+                requested_unit_classes
+            )
+            standing_intent = _has_standing_text_intent(text)
+            return {
+                "source": self.source.value,
+                "goal": request.command_text,
+                "override_level": "bias",
+                "confidence": 0.78,
+                "ttl_seconds": 900 if standing_intent else 300,
+                "posture": "balanced",
+                "workers": {"repeat_order_guard_frames": 32},
+                "tactical_task": {
+                    "task_type": "sustain_production",
+                    "production_targets": requested_production_targets,
+                    "priority": 0.8,
+                    "duration_seconds": 900 if standing_intent else 300,
+                    "allow_partial": True,
+                },
+                "production_plan": {
+                    "targets": requested_production_targets,
+                    "allow_prerequisites": True,
+                    "priority": 0.8,
+                },
+                "composition_requirements": composition_requirements,
+                "tags": [
+                    "keyword_provider",
+                    "live_text",
+                    "production_intent",
+                    "standing_order" if standing_intent else "bounded_production",
+                ],
             }
         if any(
             token in text
@@ -267,7 +328,10 @@ class KeywordPolicyModulationProvider:
                 else "enemy_natural"
             )
             requested_units = _extract_requested_combat_unit_count(text)
-            composition_requirements = _extract_composition_requirements(text)
+            composition_requirements = _extract_composition_requirements(
+                text,
+                default_count=1 if scout_intent else None,
+            )
             if composition_requirements:
                 requested_units = sum(
                     int(item["count"]) for item in composition_requirements
@@ -278,13 +342,19 @@ class KeywordPolicyModulationProvider:
                 else (1 if immediate_attack or scout_intent else 2)
             )
             max_units = requested_units if requested_units is not None else (2 if scout_intent else 0)
-            flank_intent = _has_flank_route_intent(text)
+            flank_route_type = _flank_route_type(text)
+            flank_intent = bool(flank_route_type)
+            focus_fire_intent = _has_focus_fire_intent(text)
+            kite_intent = _has_kite_intent(text)
+            tactical_retreat_intent = _has_conditional_tactical_retreat_intent(text)
+            standing_intent = _has_standing_text_intent(text)
             squad_payload = {
                 "main_army_bias": 0.6,
                 "harassment_bias": 0.4,
                 "defense_bias": -0.2,
                 "reinforce_bias": 0.3,
                 "contain_bias": 0.1 if flank_intent else 0.35,
+                "regroup_bias": 0.7 if tactical_retreat_intent else 0.2,
             }
             if flank_intent:
                 squad_payload["flank_bias"] = 0.75
@@ -301,12 +371,34 @@ class KeywordPolicyModulationProvider:
                 tags.append("explicit_composition")
             if flank_intent:
                 tags.append("flank_route")
+            if focus_fire_intent:
+                tags.append("focus_fire")
+            if kite_intent:
+                tags.append("kite")
+            if tactical_retreat_intent:
+                tags.append("conditional_retreat_regroup")
+            if standing_intent:
+                tags.extend(("continuous_production", "standing_order"))
+            requested_unit_classes = _requested_unit_classes_from_composition(
+                composition_requirements
+            )
+            requested_production_targets = _production_targets_with_prerequisites(
+                requested_unit_classes
+            )
+            proactive_supply_intent = _has_proactive_supply_intent(text)
+            if (
+                proactive_supply_intent
+                and "TERRAN_SUPPLYDEPOT" not in requested_production_targets
+            ):
+                requested_production_targets.append("TERRAN_SUPPLYDEPOT")
+            blind_attack_intent = _has_explicit_blind_attack_intent(text)
+            require_fresh_enemy_observation = not blind_attack_intent
             payload = {
                 "source": self.source.value,
                 "goal": request.command_text,
                 "override_level": "bias",
                 "confidence": 0.76,
-                "ttl_seconds": 600,
+                "ttl_seconds": 900 if standing_intent else 600,
                 "posture": "pressure",
                 "combat": {
                     "aggression": 0.7,
@@ -316,11 +408,13 @@ class KeywordPolicyModulationProvider:
                     "commitment_level": 0.55,
                     "attack_condition_override": "force_when_threshold_met",
                     "retreat_patience_bias": 0.45,
+                    "preserve_army_bias": 0.65 if tactical_retreat_intent else 0.15,
                     "rally_before_attack_bias": 0.0,
                     "harassment_bias": 0.35,
                     "defend_bias": -0.25,
                     "combat_sim_confidence_margin": -0.2,
                     "flank_bias": 0.65 if flank_intent else 0.0,
+                    "kite_bias": 0.75 if kite_intent else 0.0,
                     "target_priority_biases": {
                         "army": 0.35,
                         "worker_line": 0.3,
@@ -330,38 +424,69 @@ class KeywordPolicyModulationProvider:
                 },
                 "production": {
                     "production_continuity_bias": 0.65,
+                    "queue_biases": (
+                        {"TERRAN_SUPPLYDEPOT": 0.8}
+                        if proactive_supply_intent
+                        else {}
+                    ),
+                },
+                "economy": {
+                    "supply_buffer_bias": 0.8 if proactive_supply_intent else 0.0,
                 },
                 "workers": {"repeat_order_guard_frames": 32},
                 "scouting": {
                     "risk_tolerance": 0.45,
-                    "scout_priority": 0.7,
-                    "require_fresh_enemy_observation": False,
+                    "scout_priority": 0.7 if scout_intent else 0.0,
+                    "require_fresh_enemy_observation": (
+                        require_fresh_enemy_observation
+                    ),
                 },
                 "squad": squad_payload,
                 "scope": {
                     "army_group": army_group,
                     "location_intent": location_intent,
-                    "unit_classes": ["marine", "marauder", "medivac", "siege_tank"],
+                    "unit_classes": requested_unit_classes,
                     "min_units": min_units,
                     "max_units": max_units,
                     "require_safety_margin": 0.05,
-                    "allow_partial_scope": True,
+                    "allow_partial_scope": not bool(composition_requirements),
                 },
                 "tactical_task": {
                     "task_type": task_type,
-                    "unit_classes": ["marine", "marauder", "medivac", "siege_tank"],
+                    "unit_classes": requested_unit_classes,
+                    "production_targets": requested_production_targets,
                     "location_intent": location_intent,
                     "priority": 0.9 if immediate_attack else 0.8,
                     "min_units": min_units,
                     "max_units": max_units,
-                    "duration_seconds": 180 if scout_intent else 300,
-                    "allow_partial": True,
+                    "duration_seconds": (
+                        180 if scout_intent else (900 if standing_intent else 300)
+                    ),
+                    "allow_partial": not bool(composition_requirements),
                     "safety_margin": 0.05,
                 },
                 "tags": tags,
             }
+            if standing_intent:
+                payload["lifetime"] = {
+                    "mode": "standing_order",
+                    "completion_conditions": ["cancelled_by_user", "ttl_expired"],
+                    "completion_state": "active",
+                    "reason": "standing tactical intent from live text",
+                }
+            if proactive_supply_intent:
+                payload["tags"].append("proactive_supply")
+            if blind_attack_intent:
+                payload["tags"].append("explicit_blind_attack")
+            else:
+                payload["tags"].append("search_before_attack")
             if composition_requirements:
                 payload["composition_requirements"] = composition_requirements
+                payload["production_plan"] = {
+                    "targets": requested_production_targets,
+                    "allow_prerequisites": True,
+                    "priority": 0.8,
+                }
                 payload["unit_roles"] = [
                     {
                         "unit_type": item["unit_type"],
@@ -374,7 +499,7 @@ class KeywordPolicyModulationProvider:
                     for item in composition_requirements
                 ]
                 payload["route_intent"] = {
-                    "route_type": "flank_left" if flank_intent else "direct",
+                    "route_type": flank_route_type or "direct",
                     "avoid_enemy_strength": bool(flank_intent),
                 }
                 payload["target_intent"] = {
@@ -565,6 +690,10 @@ class MicroMachineLiveTextSession:
                 compile_result,
                 previous_update=previous_update,
             )
+            reducer_category = _live_command_category(
+                text,
+                compile_result.vector.to_dict(),
+            )
             if action == "merge_standing_orders":
                 compile_result = _merge_live_standing_orders(
                     compile_result,
@@ -576,6 +705,7 @@ class MicroMachineLiveTextSession:
                 previous_update=previous_update,
                 update_id=update_id,
                 forced_action=action,
+                forced_category=reducer_category,
             )
             update = self.backend.publish_vector(
                 compile_result.vector,
@@ -824,8 +954,9 @@ def _merge_live_standing_orders(
             return compile_result
         return replace(compile_result, vector=merged_vector)
 
-    previous_payload = previous_update.vector.to_dict()
-    _lift_task_to_persistent_biases(previous_payload)
+    previous_payload = _lift_task_to_persistent_biases(
+        previous_update.vector.to_dict()
+    )
     merged_payload = _merge_live_vector_payloads(previous_payload, incoming_payload)
     merged_vector = PolicyModulationVector.from_mapping(merged_payload)
     if merged_vector == compile_result.vector:
@@ -849,6 +980,7 @@ def _reduce_live_command_queue(
     previous_update: MicroMachineBlackboardUpdate | None,
     update_id: str | None,
     forced_action: str | None = None,
+    forced_category: LiveCommandCategory | None = None,
 ) -> tuple[PolicyModulationCompileResult, dict[str, object]]:
     """Classify and reduce the live command stream into one active plan.
 
@@ -864,7 +996,7 @@ def _reduce_live_command_queue(
             update_id=update_id,
         )
     vector_payload = compile_result.vector.to_dict()
-    category = _live_command_category(command_text, vector_payload)
+    category = forced_category or _live_command_category(command_text, vector_payload)
     previous_payload = (
         previous_update.vector.to_dict() if previous_update is not None else None
     )
@@ -902,10 +1034,14 @@ def _reduce_live_command_queue(
     reduced_payload["tags"] = reduced_tags
     if action in {"overwrite_emergency", "supersede_tactical"}:
         reduced_payload["goal"] = str(vector_payload.get("goal", "") or command_text)
-    elif parent_ids and category not in {
-        LiveCommandCategory.TACTICAL,
-        LiveCommandCategory.SCOUTING,
-    }:
+    elif (
+        parent_ids
+        and action != "merge_standing_orders"
+        and category not in {
+            LiveCommandCategory.TACTICAL,
+            LiveCommandCategory.SCOUTING,
+        }
+    ):
         reduced_payload["goal"] = _merged_goal(previous_payload or {}, vector_payload)
     if (
         action == "overwrite_emergency"
@@ -1009,12 +1145,12 @@ def _live_command_category(
         return LiveCommandCategory.EMERGENCY
     if _has_cancel_text_intent(normalized_text):
         return LiveCommandCategory.EMERGENCY
-    if _has_defensive_text_intent(normalized_text) and any(
-        token in normalized_text for token in ("후퇴", "retreat")
+    if (
+        _has_defensive_text_intent(normalized_text)
+        and any(token in normalized_text for token in ("후퇴", "retreat"))
+        and not _has_conditional_tactical_retreat_intent(normalized_text)
     ):
         return LiveCommandCategory.EMERGENCY
-    if _has_building_text_intent(normalized_text):
-        return LiveCommandCategory.BUILDING
     task_type = _task_type(payload)
     if task_type in _PRODUCTION_TASK_TYPES:
         return LiveCommandCategory.PRODUCTION
@@ -1022,6 +1158,8 @@ def _live_command_category(
         return LiveCommandCategory.TACTICAL
     if task_type == "scout_with_units" or _has_scouting_text_intent(normalized_text):
         return LiveCommandCategory.SCOUTING
+    if _has_building_text_intent(normalized_text):
+        return LiveCommandCategory.BUILDING
     if _has_production_intent(payload):
         return LiveCommandCategory.PRODUCTION
     if _mapping_has_signal(_mapping_value(payload, "strategy")):
@@ -1068,29 +1206,48 @@ def _live_command_lifetime(
             "reason": "short emergency override window",
         }
     if category is LiveCommandCategory.SCOUTING or task_type == "scout_with_units":
+        if _has_standing_text_intent(command_text):
+            return {
+                "mode": "until_cancelled",
+                "ttl_seconds": 900,
+                "completion_conditions": (
+                    "enemy_observed",
+                    "cancelled_by_user",
+                ),
+                "reason": "standing scout instruction remains active until cancelled",
+            }
         return {
             "mode": "until_completed",
             "ttl_seconds": 180,
             "completion_conditions": (
                 "enemy_observed",
                 "target_reached",
-                "ttl_expired",
             ),
-            "reason": "combat scout expires independently from standing production",
+            "reason": "combat scout remains active until it observes or reaches its target",
         }
     if category is LiveCommandCategory.TACTICAL:
+        if _has_standing_text_intent(command_text):
+            return {
+                "mode": "until_cancelled",
+                "ttl_seconds": 900,
+                "completion_conditions": (
+                    "order_issued",
+                    "target_reached",
+                    "cancelled_by_user",
+                ),
+                "reason": f"standing tactical command action={action}",
+            }
         duration = _float_at(_mapping_value(payload, "tactical_task"), ("duration_seconds",))
         requested_ttl = int(payload.get("ttl_seconds", 0) or 0)
         ttl_seconds = max(300, int(duration), requested_ttl)
         return {
             "mode": "until_completed",
-            "ttl_seconds": max(180, min(600, ttl_seconds)),
+            "ttl_seconds": max(180, min(900, ttl_seconds)),
             "completion_conditions": (
                 "order_issued",
                 "target_reached",
-                "ttl_expired",
             ),
-            "reason": f"tactical command action={action}",
+            "reason": f"tactical command persists until its operation completes action={action}",
         }
     if category is LiveCommandCategory.BUILDING:
         return {
@@ -1099,7 +1256,6 @@ def _live_command_lifetime(
             "completion_conditions": (
                 "building_started",
                 "building_completed",
-                "ttl_expired",
             ),
             "reason": "building placement remains active until placement outcome",
         }
@@ -1110,16 +1266,15 @@ def _live_command_lifetime(
             "completion_conditions": (
                 "unit_count_reached",
                 "cancelled_by_user",
-                "ttl_expired",
             ),
-            "reason": "production command is a standing order within bounded blackboard TTL",
+            "reason": "production command remains active until its target or cancellation",
         }
     if category is LiveCommandCategory.STRATEGY:
         return {
             "mode": "standing_order",
             "ttl_seconds": 900,
-            "completion_conditions": ("cancelled_by_user", "ttl_expired"),
-            "reason": "strategy command persists until cancelled or refreshed",
+            "completion_conditions": ("cancelled_by_user",),
+            "reason": "strategy command persists until cancelled or superseded",
         }
     ttl_seconds = int(payload.get("ttl_seconds", 120) or 120)
     return {
@@ -1154,7 +1309,7 @@ def _merged_update_lifetime_for_standing_order(
         conditions,
         (str, bytes, bytearray),
     ):
-        conditions = ("cancelled_by_user", "ttl_expired")
+        conditions = ("cancelled_by_user",)
     return {
         "mode": previous_mode,
         "ttl_seconds": max(previous_ttl, int(transient_lifetime["ttl_seconds"])),
@@ -1171,6 +1326,11 @@ def _sync_lifetime_duration_fields(
     lifetime: Mapping[str, object],
 ) -> None:
     ttl_seconds = int(lifetime.get("ttl_seconds", 120) or 120)
+    semantic_lifetime = str(lifetime.get("mode", "") or "") in {
+        "until_completed",
+        "until_cancelled",
+        "standing_order",
+    }
     for domain in ("scope", "tactical_task"):
         value = payload.get(domain)
         if not isinstance(value, Mapping):
@@ -1185,7 +1345,15 @@ def _sync_lifetime_duration_fields(
         ):
             continue
         existing = _float_at(domain_payload, ("duration_seconds",))
-        if existing <= 0 or existing > ttl_seconds:
+        production_backed_task = (
+            domain == "tactical_task"
+            and bool(domain_payload.get("production_targets"))
+        )
+        if semantic_lifetime and domain == "tactical_task":
+            domain_payload["duration_seconds"] = 0
+        elif semantic_lifetime:
+            pass
+        elif production_backed_task or existing <= 0 or existing > ttl_seconds:
             domain_payload["duration_seconds"] = ttl_seconds
         payload[domain] = domain_payload
 
@@ -1209,9 +1377,15 @@ def _merge_live_vector_payloads(
     incoming_payload: Mapping[str, object],
 ) -> dict[str, object]:
     merged = deepcopy(dict(incoming_payload))
+    previous_task_type = _task_type(previous_payload)
     incoming_task_type = _task_type(incoming_payload)
     incoming_production_intent = _has_production_intent(incoming_payload)
     defensive_reset = _is_defensive_or_emergency_reset(incoming_payload)
+    preserve_active_tactical_operation = (
+        not defensive_reset
+        and previous_task_type in _TRANSIENT_TASK_TYPES
+        and incoming_task_type in _PRODUCTION_TASK_TYPES
+    )
     previous_defensive_standing = (
         _is_defensive_or_emergency_reset(previous_payload)
         or _has_defensive_standing_marker(previous_payload)
@@ -1254,6 +1428,25 @@ def _merge_live_vector_payloads(
             previous_task = _mapping_value(previous_payload, "tactical_task")
             if _mapping_has_signal(previous_task):
                 merged["tactical_task"] = previous_task
+
+    if preserve_active_tactical_operation:
+        previous_task = deepcopy(
+            dict(_mapping_value(previous_payload, "tactical_task"))
+        )
+        incoming_task = _mapping_value(incoming_payload, "tactical_task")
+        previous_task["production_targets"] = _merge_string_lists(
+            previous_task.get("production_targets", ()),
+            incoming_task.get("production_targets", ()),
+        )
+        merged["tactical_task"] = previous_task
+        for domain in ("scope", "route_intent", "target_intent"):
+            previous_domain = _mapping_value(previous_payload, domain)
+            if _mapping_has_signal(previous_domain):
+                merged[domain] = deepcopy(dict(previous_domain))
+        for domain in ("composition_requirements", "unit_roles"):
+            previous_value = previous_payload.get(domain, ())
+            if _value_has_signal(previous_value, (domain,)):
+                merged[domain] = deepcopy(previous_value)
 
     if explicit_tactical_task:
         merged["goal"] = (
@@ -1321,6 +1514,25 @@ def _lift_task_to_persistent_biases(payload: Mapping[str, object]) -> dict[str, 
         _set_max_float(result, ("production", "queue_biases", "TERRAN_MARINE"), bias)
         _set_max_float(result, ("tech", "unit_biases", "TERRAN_MARINE"), min(0.85, bias))
         _set_max_float(result, ("production", "production_continuity_bias"), min(0.8, bias))
+    if "TERRAN_MARAUDER" in targets:
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_MARAUDER"), bias)
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_MARAUDER"), min(0.85, bias))
+        _set_max_float(result, ("production", "addon_biases", "BARRACKS_TECHLAB"), bias)
+    if "TERRAN_REAPER" in targets:
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_REAPER"), bias)
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_REAPER"), min(0.85, bias))
+    if "TERRAN_GHOSTACADEMY" in targets:
+        _set_max_float(result, ("tech", "structure_biases", "TERRAN_GHOSTACADEMY"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_GHOSTACADEMY"), bias)
+        _set_max_float(
+            result,
+            ("production", "production_facility_biases", "TERRAN_GHOSTACADEMY"),
+            bias,
+        )
+    if "TERRAN_GHOST" in targets:
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_GHOST"), bias)
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_GHOST"), min(0.85, bias))
+        _set_max_float(result, ("production", "addon_biases", "BARRACKS_TECHLAB"), bias)
     if "TERRAN_COMMANDCENTER" in targets:
         _set_max_float(result, ("economy", "expand_bias"), bias)
         _set_max_float(result, ("production", "queue_biases", "TERRAN_COMMANDCENTER"), bias)
@@ -1337,10 +1549,58 @@ def _lift_task_to_persistent_biases(payload: Mapping[str, object]) -> dict[str, 
         _set_max_float(result, ("production", "queue_biases", "TERRAN_SIEGETANK"), bias)
         _set_max_float(result, ("production", "composition_biases", "siege"), min(0.85, bias))
         _set_max_float(result, ("production", "tech_switch_urgency"), min(0.85, bias))
+    if "TERRAN_HELLION" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_HELLION"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_HELLION"), bias)
+        _set_max_float(result, ("production", "composition_biases", "mech"), min(0.85, bias))
+    if "TERRAN_WIDOWMINE" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_WIDOWMINE"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_WIDOWMINE"), bias)
+        _set_max_float(result, ("production", "composition_biases", "mech"), min(0.85, bias))
+    if "TERRAN_CYCLONE" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_CYCLONE"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_CYCLONE"), bias)
+        _set_max_float(result, ("production", "composition_biases", "mech"), min(0.85, bias))
+    if "TERRAN_THOR" in targets:
+        _set_max_float(result, ("tech", "structure_biases", "TERRAN_ARMORY"), bias)
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_THOR"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_ARMORY"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_THOR"), bias)
+        _set_max_float(result, ("production", "composition_biases", "mech"), min(0.85, bias))
+    if "TERRAN_STARPORT" in targets:
+        _set_max_float(result, ("tech", "structure_biases", "TERRAN_STARPORT"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_STARPORT"), bias)
+        _set_max_float(result, ("production", "production_facility_biases", "TERRAN_STARPORT"), bias)
+    if "STARPORT_TECHLAB" in targets or "TERRAN_STARPORTTECHLAB" in targets:
+        _set_max_float(result, ("production", "queue_biases", "STARPORT_TECHLAB"), bias)
+        _set_max_float(result, ("production", "addon_biases", "STARPORT_TECHLAB"), bias)
     if "TERRAN_MEDIVAC" in targets:
         _set_max_float(result, ("tech", "unit_biases", "TERRAN_MEDIVAC"), bias)
         _set_max_float(result, ("production", "queue_biases", "TERRAN_MEDIVAC"), bias)
         _set_max_float(result, ("production", "composition_biases", "medivac_support"), min(0.85, bias))
+    if "TERRAN_VIKINGFIGHTER" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_VIKINGFIGHTER"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_VIKINGFIGHTER"), bias)
+        _set_max_float(result, ("production", "composition_biases", "anti_air"), min(0.85, bias))
+    if "TERRAN_LIBERATOR" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_LIBERATOR"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_LIBERATOR"), bias)
+        _set_max_float(result, ("production", "composition_biases", "anti_air"), min(0.85, bias))
+        _set_max_float(result, ("production", "composition_biases", "siege"), min(0.85, bias))
+    if "TERRAN_BANSHEE" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_BANSHEE"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_BANSHEE"), bias)
+        _set_max_float(result, ("production", "composition_biases", "harass"), min(0.85, bias))
+    if "TERRAN_RAVEN" in targets:
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_RAVEN"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_RAVEN"), bias)
+        _set_max_float(result, ("production", "composition_biases", "support"), min(0.85, bias))
+    if "TERRAN_BATTLECRUISER" in targets:
+        _set_max_float(result, ("tech", "structure_biases", "TERRAN_FUSIONCORE"), bias)
+        _set_max_float(result, ("tech", "unit_biases", "TERRAN_BATTLECRUISER"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_FUSIONCORE"), bias)
+        _set_max_float(result, ("production", "queue_biases", "TERRAN_BATTLECRUISER"), bias)
+        _set_max_float(result, ("production", "composition_biases", "capital_air"), min(0.85, bias))
     return result
 
 
@@ -1667,7 +1927,16 @@ def _extract_requested_combat_unit_count(text: str) -> int | None:
 
 
 def _default_ability_policy_for_role(role: str) -> str:
-    if role in {"worker_harass", "cloak_if_available", "siege_support", "contain", "defensive_hold"}:
+    if role in {
+        "worker_harass",
+        "cloak_if_available",
+        "spellcaster",
+        "ambush",
+        "zone_control",
+        "siege_support",
+        "contain",
+        "defensive_hold",
+    }:
         return "if_available"
     if role in {"capital_ship", "capital_ship_focus", "capital_pressure", "yamato_high_value"}:
         return "high_value_target"
@@ -1676,13 +1945,82 @@ def _default_ability_policy_for_role(role: str) -> str:
     return "never"
 
 
-def _extract_composition_requirements(text: str) -> list[dict[str, object]]:
+def _requested_unit_classes_from_composition(
+    composition_requirements: list[dict[str, object]],
+) -> list[str]:
+    if not composition_requirements:
+        return ["marine", "marauder", "medivac", "siege_tank"]
+    classes: list[str] = []
+    for requirement in composition_requirements:
+        unit_type = str(requirement.get("unit_type", "") or "")
+        if unit_type and unit_type not in classes:
+            classes.append(unit_type)
+    return classes or ["marine", "marauder", "medivac", "siege_tank"]
+
+
+def _production_targets_with_prerequisites(unit_classes: list[str]) -> list[str]:
+    targets = list(unit_classes)
+    prerequisites_by_unit = {
+        "TERRAN_MARAUDER": ("BARRACKS_TECHLAB",),
+        "TERRAN_GHOST": (
+            "BARRACKS_TECHLAB",
+            "TERRAN_GHOSTACADEMY",
+        ),
+        "TERRAN_HELLION": ("TERRAN_FACTORY",),
+        "TERRAN_WIDOWMINE": ("TERRAN_FACTORY",),
+        "TERRAN_CYCLONE": ("TERRAN_FACTORY", "FACTORY_TECHLAB"),
+        "TERRAN_THOR": ("TERRAN_FACTORY", "FACTORY_TECHLAB", "TERRAN_ARMORY"),
+        "TERRAN_SIEGETANK": ("TERRAN_FACTORY", "FACTORY_TECHLAB"),
+        "TERRAN_MEDIVAC": ("TERRAN_FACTORY", "TERRAN_STARPORT"),
+        "TERRAN_VIKINGFIGHTER": ("TERRAN_FACTORY", "TERRAN_STARPORT"),
+        "TERRAN_LIBERATOR": ("TERRAN_FACTORY", "TERRAN_STARPORT"),
+        "TERRAN_BANSHEE": (
+            "TERRAN_FACTORY",
+            "TERRAN_STARPORT",
+            "STARPORT_TECHLAB",
+        ),
+        "TERRAN_RAVEN": (
+            "TERRAN_FACTORY",
+            "TERRAN_STARPORT",
+            "STARPORT_TECHLAB",
+        ),
+        "TERRAN_BATTLECRUISER": (
+            "TERRAN_FACTORY",
+            "TERRAN_STARPORT",
+            "STARPORT_TECHLAB",
+            "TERRAN_FUSIONCORE",
+        ),
+    }
+    for unit_class in unit_classes:
+        for prerequisite in prerequisites_by_unit.get(unit_class, ()):
+            if prerequisite not in targets:
+                targets.append(prerequisite)
+    return targets
+
+
+def _extract_composition_requirements(
+    text: str,
+    *,
+    default_count: int | None = None,
+) -> list[dict[str, object]]:
     normalized = text.lower()
+    focus_fire_intent = _has_focus_fire_intent(normalized)
+    kite_intent = _has_kite_intent(normalized)
     specs = (
         ("TERRAN_MARINE", "frontline", r"(?:마린|해병|marine|marines)"),
+        ("TERRAN_MARAUDER", "frontline", r"(?:불곰|marauder|marauders)"),
+        ("TERRAN_REAPER", "worker_harass", r"(?:사신|reaper|reapers)"),
+        ("TERRAN_GHOST", "spellcaster", r"(?:유령|ghost|ghosts)"),
+        ("TERRAN_HELLION", "worker_harass", r"(?:화염차|hellion|hellions)"),
+        ("TERRAN_WIDOWMINE", "ambush", r"(?:땅거미지뢰|지뢰|widow\s*mine|widow\s*mines)"),
+        ("TERRAN_CYCLONE", "kite", r"(?:사이클론|cyclone|cyclones)"),
+        ("TERRAN_THOR", "anti_air", r"(?:토르|thor|thors)"),
         ("TERRAN_SIEGETANK", "siege_support", r"(?:탱크|공성전차|siege\s*tanks?|tanks?)"),
+        ("TERRAN_MEDIVAC", "support", r"(?:의료선|medivac|medivacs)"),
         ("TERRAN_VIKINGFIGHTER", "anti_air", r"(?:바이킹|viking|vikings)"),
+        ("TERRAN_LIBERATOR", "zone_control", r"(?:해방선|liberator|liberators)"),
         ("TERRAN_BANSHEE", "worker_harass", r"(?:밴시|banshee|banshees)"),
+        ("TERRAN_RAVEN", "support", r"(?:밤까마귀|raven|ravens)"),
         ("TERRAN_BATTLECRUISER", "capital_ship", r"(?:배틀크루저|전투순양함|battlecruiser|battlecruisers|bc)"),
     )
     requirements: list[dict[str, object]] = []
@@ -1705,36 +2043,81 @@ def _extract_composition_requirements(text: str) -> list[dict[str, object]]:
             )
             if word_match:
                 count = _KOREAN_SMALL_NUMBERS[word_match.group(1)]
+        if count is None and default_count is not None and re.search(unit_pattern, normalized):
+            count = default_count
         if count is not None:
+            effective_role = role
+            if unit_type in {"TERRAN_MARINE", "TERRAN_MARAUDER"}:
+                if focus_fire_intent:
+                    effective_role = "focus_fire"
+                elif kite_intent:
+                    effective_role = "kite"
             requirements.append(
                 {
                     "unit_type": unit_type,
                     "count": max(1, min(200, count)),
-                    "role": role,
+                    "role": effective_role,
                 }
             )
     return requirements
 
 
-def _has_flank_route_intent(text: str) -> bool:
+def _has_focus_fire_intent(text: str) -> bool:
     normalized = re.sub(r"\s+", "", text.lower())
     return any(
+        token in normalized
+        for token in (
+            "집중사격",
+            "점사",
+            "한놈씩",
+            "한명씩",
+            "focusfire",
+            "focustarget",
+        )
+    )
+
+
+def _has_kite_intent(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text.lower())
+    return any(
+        token in normalized
+        for token in (
+            "kite",
+            "kiting",
+            "카이트",
+            "카이팅",
+            "치고빠져",
+            "무빙샷",
+            "stutterstep",
+        )
+    )
+
+
+def _has_flank_route_intent(text: str) -> bool:
+    return bool(_flank_route_type(text))
+
+
+def _flank_route_type(text: str) -> str:
+    normalized = re.sub(r"\s+", "", text.lower())
+    if any(token in normalized for token in ("우측", "오른쪽", "flankright", "rightflank")):
+        return "flank_right"
+    if any(token in normalized for token in ("좌측", "왼쪽", "flankleft", "leftflank")):
+        return "flank_left"
+    if any(
         token in normalized
         for token in (
             "다른길",
             "우회",
             "옆길",
             "측면",
-            "좌측",
-            "왼쪽",
-            "우측",
-            "오른쪽",
             "flank",
             "sideroute",
             "alternateroute",
             "differentroute",
         )
-    )
+    ):
+        return "flank_left"
+    return ""
 
 
 def _has_defensive_text_intent(text: str) -> bool:
@@ -1755,8 +2138,62 @@ def _has_defensive_text_intent(text: str) -> bool:
     )
 
 
+def _has_conditional_tactical_retreat_intent(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    compact = "".join(normalized.split())
+    if not _has_tactical_text_intent(normalized):
+        return False
+    if not any(token in normalized for token in ("후퇴", "retreat", "fall back", "fallback")):
+        return False
+    return any(
+        token in normalized or token in compact
+        for token in (
+            "위험하면",
+            "위험할 때",
+            "위험할때",
+            "불리하면",
+            "불리할 때",
+            "불리할때",
+            "필요하면",
+            "피해가 크면",
+            "후퇴 후 재집결",
+            "후퇴후재집결",
+            "후퇴했다가",
+            "재집결해서 다시 공격",
+            "재집결후다시공격",
+            "if retreat",
+            "retreat if",
+            "if needed",
+            "if necessary",
+            "if unsafe",
+            "if outmatched",
+            "fall back and regroup",
+            "retreat and regroup",
+            "regroup and attack again",
+        )
+    )
+
+
 def _has_cancel_text_intent(text: str) -> bool:
     normalized = " ".join(str(text or "").lower().split())
+    # A fallback parser must not invert "do not cancel the attack" into an
+    # emergency retreat. Remove only negated cancel verbs; any later positive
+    # cancel clause remains available for the intent check below.
+    for pattern in (
+        (
+            r"(?:(?:공격|러시|러쉬|압박)(?:을|를)?\s*)?"
+            r"(?:취소|중지)(?:하)?지\s*"
+            r"(?:마(?:라|세요)?|말(?:고|아|라)?|않(?:아|는다|도록|고)?)"
+        ),
+        (
+            r"(?:(?:공격|러시|러쉬|압박)(?:을|를)?\s*)?"
+            r"(?:멈추|그만두)지\s*"
+            r"(?:마(?:라|세요)?|말(?:고|아|라)?|않(?:아|는다|도록|고)?)"
+        ),
+        r"\b(?:do\s+not|don't|dont|never)\s+(?:cancel|stop|abort)\b",
+        r"\bwithout\s+(?:cancel(?:ing|ling)?|stopp?ing|abort(?:ing)?)\b",
+    ):
+        normalized = re.sub(pattern, " ", normalized)
     compact = "".join(normalized.split())
     return any(
         token in normalized or token in compact
@@ -1772,6 +2209,48 @@ def _has_cancel_text_intent(text: str) -> bool:
             "공격중지",
         )
     )
+
+
+def _has_standing_text_intent(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    compact = "".join(normalized.split())
+    return any(
+        token in normalized or token in compact
+        for token in (
+            "계속",
+            "유지",
+            "항상",
+            "상시",
+            "게임 내내",
+            "게임내내",
+            "끝까지",
+            "쭉",
+            "keep",
+            "continue",
+            "always",
+            "until cancelled",
+            "standing",
+        )
+    )
+
+
+def _has_unit_production_text_intent(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if not any(
+        token in normalized
+        for token in (
+            "뽑",
+            "생산",
+            "만들",
+            "찍",
+            "train",
+            "produce",
+            "make",
+            "build units",
+        )
+    ):
+        return False
+    return bool(_extract_composition_requirements(normalized, default_count=1))
 
 
 def _has_scouting_text_intent(text: str) -> bool:
@@ -1805,6 +2284,60 @@ def _has_tactical_text_intent(text: str) -> bool:
             "enemy base",
             "enemy main",
             "进攻",
+        )
+    )
+
+
+def _has_proactive_supply_intent(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    compact = "".join(normalized.split())
+    supply_marker = any(
+        token in normalized
+        for token in (
+            "보급고",
+            "서플라이",
+            "supply depot",
+            "supply",
+            "depot",
+        )
+    )
+    proactive_marker = any(
+        token in normalized or token in compact
+        for token in (
+            "부족해지기 전에",
+            "부족하기 전에",
+            "막히기 전에",
+            "미리",
+            "계속",
+            "유지",
+            "before supply",
+            "before getting supply blocked",
+            "avoid supply block",
+            "keep production",
+            "continue production",
+        )
+    )
+    return supply_marker and proactive_marker
+
+
+def _has_explicit_blind_attack_intent(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    compact = "".join(normalized.split())
+    return any(
+        token in normalized or token in compact
+        for token in (
+            "정찰 없이",
+            "정찰없이",
+            "시야 없이",
+            "시야없이",
+            "확인 없이",
+            "확인없이",
+            "못 찾아도 바로",
+            "위치 몰라도",
+            "blind attack",
+            "blind rush",
+            "without scouting",
+            "without vision",
         )
     )
 

@@ -109,6 +109,37 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertEqual("enemy_natural", result.vector.scope.location_intent)
         self.assertTrue(result.vector.emergency.prioritize_repair)
 
+    def test_preserves_primary_llm_failure_diagnostics_on_compiled_fallback(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "ui",
+                "goal": "마린 4기로 공격",
+                "strategy": {"posture": "pressure"},
+                "combat": {"aggression": 0.7},
+                "failure_kind": "contract_error",
+                "llm_attempt_count": 2,
+                "llm_repair_reason": "forced-tool output was missing tactical_task",
+                "llm_duration_ms": 487,
+                "primary_refusal_reason": (
+                    "LLM policy modulation response had no forced-tool JSON."
+                ),
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual("contract_error", result.failure_kind)
+        self.assertEqual(2, result.llm_attempt_count)
+        self.assertEqual(
+            "forced-tool output was missing tactical_task",
+            result.llm_repair_reason,
+        )
+        self.assertEqual(487, result.llm_duration_ms)
+        self.assertIn("no forced-tool JSON", result.primary_refusal_reason)
+        self.assertEqual(
+            "contract_error",
+            result.to_dict()["failure_kind"],
+        )
+
     def test_canonicalizes_llm_friendly_tactical_enum_aliases(self) -> None:
         result = compile_policy_modulation_provider_output(
             {
@@ -157,6 +188,115 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertGreaterEqual(vector.combat.attack_timing_bias, 0.65)
         self.assertGreaterEqual(vector.combat.commitment_level, 0.55)
         self.assertGreaterEqual(vector.squad.main_army_bias, 0.6)
+
+    def test_repairs_exact_llm_composition_to_hard_unit_floor(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "마린 4기와 탱크 1기, 바이킹 1기로 공격",
+                "scope": {
+                    "army_group": "main",
+                    "min_units": 1,
+                    "max_units": 2,
+                    "allow_partial_scope": True,
+                },
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "min_units": 1,
+                    "max_units": 2,
+                    "allow_partial": True,
+                },
+                "composition_requirements": [
+                    {"unit_type": "marine", "count": 4, "role": "frontline"},
+                    {"unit_type": "tank", "count": 1, "role": "siege_support"},
+                ],
+                "unit_roles": [
+                    {"unit_type": "viking", "role": "anti_air"},
+                ],
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual(6, vector.scope.min_units)
+        self.assertEqual(6, vector.scope.max_units)
+        self.assertFalse(vector.scope.allow_partial_scope)
+        self.assertEqual(6, vector.tactical_task.min_units)
+        self.assertEqual(6, vector.tactical_task.max_units)
+        self.assertFalse(vector.tactical_task.allow_partial)
+
+    def test_continuous_exact_composition_is_a_launch_floor_not_a_hard_cap(
+        self,
+    ) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": (
+                    "마린 6기, 탱크 2기, 바이킹 2기를 최소 편성으로 "
+                    "계속 생산하고 반복 공격한다"
+                ),
+                "lifetime": {
+                    "mode": "until_cancelled",
+                    "completion_state": "active",
+                },
+                "production": {"production_continuity_bias": 0.9},
+                "scope": {
+                    "army_group": "main",
+                    "min_units": 1,
+                    "max_units": 10,
+                },
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "min_units": 1,
+                    "max_units": 10,
+                },
+                "composition_requirements": [
+                    {"unit_type": "marine", "count": 6, "role": "frontline"},
+                    {"unit_type": "tank", "count": 2, "role": "siege_support"},
+                    {"unit_type": "viking", "count": 2, "role": "anti_air"},
+                ],
+                "tags": ["continuous_production", "standing_order"],
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual(10, vector.scope.min_units)
+        self.assertEqual(0, vector.scope.max_units)
+        self.assertFalse(vector.scope.allow_partial_scope)
+        self.assertEqual(10, vector.tactical_task.min_units)
+        self.assertEqual(0, vector.tactical_task.max_units)
+        self.assertFalse(vector.tactical_task.allow_partial)
+
+    def test_continuous_exact_composition_preserves_explicit_hard_cap(
+        self,
+    ) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "마린 4기까지만 계속 생산해서 반복 공격한다",
+                "lifetime": {
+                    "mode": "until_cancelled",
+                    "completion_state": "active",
+                },
+                "production": {"production_continuity_bias": 0.9},
+                "scope": {"army_group": "main", "max_units": 4},
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "max_units": 4,
+                },
+                "composition_requirements": [
+                    {"unit_type": "marine", "count": 4, "role": "frontline"}
+                ],
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        self.assertEqual(4, result.vector.scope.max_units)
+        self.assertEqual(4, result.vector.tactical_task.max_units)
 
     def test_repairs_empty_marine_scout_location_before_publish(self) -> None:
         result = compile_policy_modulation_provider_output(
@@ -512,6 +652,52 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         )
         self.assertEqual("scout lifecycle", result.vector.lifetime.reason)
 
+    def test_repairs_lossless_llm_bounds_and_lifetime_aliases(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "탱크를 계속 생산해서 공격해",
+                "ttl_seconds": 3600,
+                "scope": {"duration_seconds": 1800},
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "duration_seconds": 1200,
+                },
+                "lifetime": {
+                    "mode": "until_complete",
+                    "completion_condition": "units_ready",
+                    "completion_state": "in_progress",
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        self.assertEqual(900, result.vector.ttl_seconds)
+        self.assertEqual(900, result.vector.scope.duration_seconds)
+        self.assertEqual(900, result.vector.tactical_task.duration_seconds)
+        self.assertEqual("until_completed", result.vector.lifetime.mode)
+        self.assertEqual(
+            ("unit_count_reached",),
+            result.vector.lifetime.completion_conditions,
+        )
+        self.assertEqual("active", result.vector.lifetime.completion_state)
+
+    def test_unknown_lifetime_condition_remains_a_validation_error(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "적이 완전히 망할 때까지 공격",
+                "lifetime": {
+                    "mode": "until_completed",
+                    "completion_conditions": ["enemy_destroyed_forever"],
+                },
+            }
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("completion_conditions", result.refusal_reason)
+
     def test_emergency_payload_without_ttl_gets_safe_default(self) -> None:
         result = compile_policy_modulation_provider_output(
             {
@@ -664,16 +850,67 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
             vector.tech.unit_biases.to_dict()["TERRAN_SIEGETANK"],
             0.85,
         )
+        self.assertGreaterEqual(vector.economy.gas_priority, 0.85)
+        self.assertGreaterEqual(vector.economy.gas_worker_target_bias, 0.75)
+        self.assertGreaterEqual(vector.economy.supply_buffer_bias, 0.55)
+        self.assertGreaterEqual(vector.production.tech_switch_urgency, 0.85)
         self.assertTrue(vector.production.allow_build_order_rewrite)
         self.assertIn("queued=TERRAN_FACTORY,FACTORY_TECHLAB,TERRAN_SIEGETANK", vector.rationale)
 
+    def test_marine_production_plan_does_not_request_unrelated_factory_transition(
+        self,
+    ) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "마린 8기를 생산해",
+                "override_level": "bias",
+                "production_plan": {
+                    "targets": ["TERRAN_MARINE"],
+                    "allow_prerequisites": True,
+                    "priority": 0.8,
+                },
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual(
+            ("TERRAN_BARRACKS", "TERRAN_MARINE"),
+            vector.tactical_task.production_targets,
+        )
+        self.assertGreaterEqual(
+            vector.production.queue_biases.to_dict()["TERRAN_MARINE"],
+            0.8,
+        )
+        self.assertEqual(0.0, vector.production.tech_switch_urgency)
+        self.assertEqual(0.0, vector.economy.gas_priority)
+        self.assertGreaterEqual(vector.economy.supply_buffer_bias, 0.55)
+        self.assertNotIn(
+            "TERRAN_FACTORY",
+            vector.production.queue_biases.to_dict(),
+        )
+
     def test_lowers_starport_production_plans_to_consumed_prerequisite_biases(self) -> None:
         for target, expected_chain in (
-            ("바이킹", ("TERRAN_STARPORT", "TERRAN_VIKINGFIGHTER")),
-            ("밴시", ("TERRAN_STARPORT", "STARPORT_TECHLAB", "TERRAN_BANSHEE")),
+            (
+                "바이킹",
+                ("TERRAN_FACTORY", "TERRAN_STARPORT", "TERRAN_VIKINGFIGHTER"),
+            ),
+            (
+                "밴시",
+                (
+                    "TERRAN_FACTORY",
+                    "TERRAN_STARPORT",
+                    "STARPORT_TECHLAB",
+                    "TERRAN_BANSHEE",
+                ),
+            ),
             (
                 "배틀크루저",
                 (
+                    "TERRAN_FACTORY",
                     "TERRAN_STARPORT",
                     "STARPORT_TECHLAB",
                     "TERRAN_FUSIONCORE",
@@ -702,6 +939,10 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 self.assertEqual(expected_chain, vector.tactical_task.production_targets)
                 self.assertEqual("sustain_production", vector.tactical_task.task_type)
                 self.assertNotIn("FACTORY_TECHLAB", vector.tactical_task.production_targets)
+                self.assertGreaterEqual(
+                    vector.production.queue_biases.to_dict()["TERRAN_FACTORY"],
+                    0.8,
+                )
                 self.assertGreaterEqual(
                     vector.production.queue_biases.to_dict()["TERRAN_STARPORT"],
                     0.8,

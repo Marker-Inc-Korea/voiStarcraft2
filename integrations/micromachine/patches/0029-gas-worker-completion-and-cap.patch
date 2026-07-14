@@ -1,0 +1,105 @@
+diff --git a/src/WorkerManager.cpp b/src/WorkerManager.cpp
+--- a/src/WorkerManager.cpp
++++ b/src/WorkerManager.cpp
+@@ -906,6 +906,7 @@ void WorkerManager::handleGasWorkers()
+ 			m_bot);
+ 	}
+ 
++	std::set<sc2::Tag> handledCompletedRefineryTags;
+ 	for (auto & geyser : m_bot.GetAllyGeyserUnits())
+     {
+         // if that unit is a refinery
+@@ -915,9 +916,34 @@ void WorkerManager::handleGasWorkers()
+ 		const bool ownCompletedRefinery = geyser.getType().isRefinery() && geyser.getPlayer() == Players::Self;
+ 		if (!ownCompletedRefinery && geyser.getUnitPtr()->vespene_contents <= 0)
+ 			continue;
+ 
+ 		// get the number of workers currently assigned to it
+ 		int numAssigned = m_workerData.getNumAssignedWorkers(geyser);
++		if (numAssigned > gasWorkersTarget)
++		{
++			m_bot.StartProfiling("0.7.3.1    capGasWorkersBeforeBaseLookup");
++			int removedWorkers = 0;
++			while (numAssigned > gasWorkersTarget)
++			{
++				auto gasWorker = getGasWorker(geyser, true, true);
++				if (!gasWorker.isValid())
++				{
++					break;
++				}
++				gasWorker.stop();
++				m_workerData.setWorkerJob(gasWorker, WorkerJobs::Idle);
++				numAssigned--;
++				removedWorkers++;
++			}
++			if (removedWorkers > 0)
++			{
++				Util::Log(
++					__FUNCTION__,
++					"Trimmed excess gas workers before refinery base/depot lookup.",
++					m_bot);
++			}
++			m_bot.StopProfiling("0.7.3.1    capGasWorkersBeforeBaseLookup");
++		}
+ 
+ 		auto geyserPosition = geyser.getPosition();
+ 		auto base = m_bot.Bases().getBaseContainingPosition(geyserPosition, Players::Self);
+@@ -1082,37 +1108,48 @@ void WorkerManager::handleGasWorkers()
+ 			if (base == nullptr || !base->getResourceDepot().isValid() || !base->getResourceDepot().isCompleted())
+ 			{
+ 				continue;
+ 			}
++			if (!handledCompletedRefineryTags.insert(refinery.getTag()).second)
++			{
++				continue;
++			}
++
+ 			auto lastGasFallback = m_lastGasFallbackAssignmentFrame.find(refinery.getTag());
+ 			if (lastGasFallback != m_lastGasFallbackAssignmentFrame.end()
+ 				&& m_bot.GetCurrentFrame() - lastGasFallback->second < 336)
+ 			{
+ 				continue;
+ 			}
+ 
+ 			int numAssigned = m_workerData.getNumAssignedWorkers(refinery);
+ 			while (numAssigned < gasWorkersTarget)
+ 			{
+ 				auto mineralWorker = getMineralWorker(refinery);
+ 				if (!mineralWorker.isValid())
+ 				{
+ 					Util::Log(__FUNCTION__, "Completed refinery fallback could not find a mineral worker for gas assignment.", m_bot);
+ 					break;
+ 				}
+ 				if (m_workerData.isWorkerAssignedToRefinery(mineralWorker, refinery))
+ 				{
+ 					break;
+ 				}
+ 				m_workerData.setWorkerJob(mineralWorker, WorkerJobs::Gas, refinery);
+ 				m_lastGasFallbackAssignmentFrame[refinery.getTag()] = m_bot.GetCurrentFrame();
+ 				numAssigned = m_workerData.getNumAssignedWorkers(refinery);
+ 				Util::Log(__FUNCTION__, "Assigned worker to completed refinery via self-unit fallback.", m_bot);
++				// Re-evaluate next frame so completion-time assignments cannot oversubscribe gas.
++				break;
+ 			}
+ 		}
+ 
+ 		for (auto & refinery : m_bot.GetAllyGeyserUnits())
+ 		{
+-			if (!refinery.isValid() || !refinery.getType().isRefinery() || refinery.getPlayer() != Players::Self)
++			if (!refinery.isValid()
++				|| !refinery.isCompleted()
++				|| !refinery.getType().isRefinery()
++				|| refinery.getPlayer() != Players::Self
++				|| !handledCompletedRefineryTags.insert(refinery.getTag()).second)
+ 			{
+ 				continue;
+ 			}
+@@ -1139,6 +1176,8 @@ void WorkerManager::handleGasWorkers()
+ 				m_lastGasFallbackAssignmentFrame[refinery.getTag()] = m_bot.GetCurrentFrame();
+ 				numAssigned = m_workerData.getNumAssignedWorkers(refinery);
+ 				Util::Log(__FUNCTION__, "Assigned worker to refinery via ally-geyser fallback.", m_bot);
++				// Re-evaluate next frame so completion-time assignments cannot oversubscribe gas.
++				break;
+ 			}
+ 		}
+ 	}

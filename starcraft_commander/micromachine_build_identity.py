@@ -22,6 +22,211 @@ DEFAULT_MICROMACHINE_PATCH: Final[Path] = (
     / "patches"
     / "0001-macos-latest-s2client-policy-blackboard.patch"
 )
+DEFAULT_MICROMACHINE_TACTICAL_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0002-live-tactical-operation-fixes.patch"
+)
+DEFAULT_MICROMACHINE_PRODUCTION_FIX_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0003-production-live-qa-blockers.patch"
+)
+DEFAULT_MICROMACHINE_OPERATION_STATE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0004-live-operation-state-machine.patch"
+)
+DEFAULT_MICROMACHINE_ADDON_RECOVERY_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0005-addon-relocation-recovery.patch"
+)
+DEFAULT_MICROMACHINE_GROUNDED_ADDON_CANDIDATE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0006-grounded-addon-candidate-fix.patch"
+)
+DEFAULT_MICROMACHINE_GUARANTEED_PRODUCER_GROUNDING_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0007-guaranteed-producer-grounding.patch"
+)
+DEFAULT_MICROMACHINE_EMERGENCY_LAND_QUERY_FALLBACK_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0008-emergency-land-query-fallback.patch"
+)
+DEFAULT_MICROMACHINE_GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0009-grounded-production-and-observed-targeting.patch"
+)
+DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0010-exact-composition-production-progress.patch"
+)
+DEFAULT_MICROMACHINE_PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0011-production-resource-operation-persistence.patch"
+)
+DEFAULT_MICROMACHINE_LIVE_OPERATION_UNBLOCK_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0012-live-operation-unblock.patch"
+)
+DEFAULT_MICROMACHINE_STABLE_FLANK_STAGE_LATCH_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0013-stable-flank-stage-latch.patch"
+)
+DEFAULT_MICROMACHINE_PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0014-production-staging-and-observed-operation.patch"
+)
+DEFAULT_MICROMACHINE_ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0015-addon-query-footprint-validation.patch"
+)
+DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0016-authoritative-addon-placement-query.patch"
+)
+DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_EXECUTION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0017-authoritative-addon-execution.patch"
+)
+DEFAULT_MICROMACHINE_CONTINUOUS_ARMY_MACRO_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0018-continuous-army-macro.patch"
+)
+DEFAULT_MICROMACHINE_CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0019-continuous-army-economy-scaling.patch"
+)
+DEFAULT_MICROMACHINE_STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0020-standing-composition-reinforcement-waves.patch"
+)
+DEFAULT_MICROMACHINE_OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0021-offensive-sweep-self-base-exclusion.patch"
+)
+DEFAULT_MICROMACHINE_BOUNDED_PLACEMENT_QUERY_CACHE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0022-bounded-placement-query-cache.patch"
+)
+DEFAULT_MICROMACHINE_PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH: Final[
+    Path
+] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0023-production-facility-stability-and-tank-recovery.patch"
+)
+DEFAULT_MICROMACHINE_BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0024-balanced-composition-wave-production.patch"
+)
+DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0025-exact-composition-production-unblock.patch"
+)
+DEFAULT_MICROMACHINE_CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0026-continuous-combat-production-relaunch.patch"
+)
+DEFAULT_MICROMACHINE_RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0027-resource-throughput-and-expansion-backoff.patch"
+)
+DEFAULT_MICROMACHINE_STARTUP_TELEMETRY_INITIALIZATION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0028-startup-telemetry-initialization.patch"
+)
+DEFAULT_MICROMACHINE_GAS_WORKER_COMPLETION_CAP_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0029-gas-worker-completion-and-cap.patch"
+)
+DEFAULT_MICROMACHINE_STABLE_OFFENSIVE_SWEEP_TARGET_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0030-stable-offensive-sweep-target.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -50,6 +255,91 @@ class MicroMachineBuildIdentityConfig:
     micromachine_commit: str = DEFAULT_MICROMACHINE_COMMIT
     s2client_commit: str = DEFAULT_S2CLIENT_COMMIT
     micromachine_patch: Path = DEFAULT_MICROMACHINE_PATCH
+    micromachine_tactical_patch: Path = DEFAULT_MICROMACHINE_TACTICAL_PATCH
+    micromachine_production_fix_patch: Path = (
+        DEFAULT_MICROMACHINE_PRODUCTION_FIX_PATCH
+    )
+    micromachine_operation_state_patch: Path = (
+        DEFAULT_MICROMACHINE_OPERATION_STATE_PATCH
+    )
+    micromachine_addon_recovery_patch: Path = (
+        DEFAULT_MICROMACHINE_ADDON_RECOVERY_PATCH
+    )
+    micromachine_grounded_addon_candidate_patch: Path = (
+        DEFAULT_MICROMACHINE_GROUNDED_ADDON_CANDIDATE_PATCH
+    )
+    micromachine_guaranteed_producer_grounding_patch: Path = (
+        DEFAULT_MICROMACHINE_GUARANTEED_PRODUCER_GROUNDING_PATCH
+    )
+    micromachine_emergency_land_query_fallback_patch: Path = (
+        DEFAULT_MICROMACHINE_EMERGENCY_LAND_QUERY_FALLBACK_PATCH
+    )
+    micromachine_grounded_production_observed_targeting_patch: Path = (
+        DEFAULT_MICROMACHINE_GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH
+    )
+    micromachine_exact_composition_production_progress_patch: Path = (
+        DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH
+    )
+    micromachine_production_resource_operation_persistence_patch: Path = (
+        DEFAULT_MICROMACHINE_PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH
+    )
+    micromachine_live_operation_unblock_patch: Path = (
+        DEFAULT_MICROMACHINE_LIVE_OPERATION_UNBLOCK_PATCH
+    )
+    micromachine_stable_flank_stage_latch_patch: Path = (
+        DEFAULT_MICROMACHINE_STABLE_FLANK_STAGE_LATCH_PATCH
+    )
+    micromachine_production_staging_observed_operation_patch: Path = (
+        DEFAULT_MICROMACHINE_PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH
+    )
+    micromachine_addon_query_footprint_validation_patch: Path = (
+        DEFAULT_MICROMACHINE_ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH
+    )
+    micromachine_authoritative_addon_placement_query_patch: Path = (
+        DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH
+    )
+    micromachine_authoritative_addon_execution_patch: Path = (
+        DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_EXECUTION_PATCH
+    )
+    micromachine_continuous_army_macro_patch: Path = (
+        DEFAULT_MICROMACHINE_CONTINUOUS_ARMY_MACRO_PATCH
+    )
+    micromachine_continuous_army_economy_scaling_patch: Path = (
+        DEFAULT_MICROMACHINE_CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH
+    )
+    micromachine_standing_composition_reinforcement_waves_patch: Path = (
+        DEFAULT_MICROMACHINE_STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH
+    )
+    micromachine_offensive_sweep_self_base_exclusion_patch: Path = (
+        DEFAULT_MICROMACHINE_OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH
+    )
+    micromachine_bounded_placement_query_cache_patch: Path = (
+        DEFAULT_MICROMACHINE_BOUNDED_PLACEMENT_QUERY_CACHE_PATCH
+    )
+    micromachine_production_facility_stability_tank_recovery_patch: Path = (
+        DEFAULT_MICROMACHINE_PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH
+    )
+    micromachine_balanced_composition_wave_production_patch: Path = (
+        DEFAULT_MICROMACHINE_BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH
+    )
+    micromachine_exact_composition_production_unblock_patch: Path = (
+        DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH
+    )
+    micromachine_continuous_combat_production_relaunch_patch: Path = (
+        DEFAULT_MICROMACHINE_CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH
+    )
+    micromachine_resource_throughput_expansion_backoff_patch: Path = (
+        DEFAULT_MICROMACHINE_RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH
+    )
+    micromachine_startup_telemetry_initialization_patch: Path = (
+        DEFAULT_MICROMACHINE_STARTUP_TELEMETRY_INITIALIZATION_PATCH
+    )
+    micromachine_gas_worker_completion_cap_patch: Path = (
+        DEFAULT_MICROMACHINE_GAS_WORKER_COMPLETION_CAP_PATCH
+    )
+    micromachine_stable_offensive_sweep_target_patch: Path = (
+        DEFAULT_MICROMACHINE_STABLE_OFFENSIVE_SWEEP_TARGET_PATCH
+    )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
     map_pool: Path = DEFAULT_MAP_POOL
@@ -112,6 +402,121 @@ def build_micromachine_build_identity(
 
     checksums = {
         "micromachine_patch_sha256": _sha256_file(config.micromachine_patch),
+        "micromachine_tactical_patch_sha256": _sha256_file(
+            config.micromachine_tactical_patch
+        ),
+        "micromachine_production_fix_patch_sha256": _sha256_file(
+            config.micromachine_production_fix_patch
+        ),
+        "micromachine_operation_state_patch_sha256": _sha256_file(
+            config.micromachine_operation_state_patch
+        ),
+        "micromachine_addon_recovery_patch_sha256": _sha256_file(
+            config.micromachine_addon_recovery_patch
+        ),
+        "micromachine_grounded_addon_candidate_patch_sha256": _sha256_file(
+            config.micromachine_grounded_addon_candidate_patch
+        ),
+        "micromachine_guaranteed_producer_grounding_patch_sha256": _sha256_file(
+            config.micromachine_guaranteed_producer_grounding_patch
+        ),
+        "micromachine_emergency_land_query_fallback_patch_sha256": _sha256_file(
+            config.micromachine_emergency_land_query_fallback_patch
+        ),
+        "micromachine_grounded_production_observed_targeting_patch_sha256": (
+            _sha256_file(
+                config.micromachine_grounded_production_observed_targeting_patch
+            )
+        ),
+        "micromachine_exact_composition_production_progress_patch_sha256": (
+            _sha256_file(
+                config.micromachine_exact_composition_production_progress_patch
+            )
+        ),
+        "micromachine_production_resource_operation_persistence_patch_sha256": (
+            _sha256_file(
+                config.micromachine_production_resource_operation_persistence_patch
+            )
+        ),
+        "micromachine_live_operation_unblock_patch_sha256": _sha256_file(
+            config.micromachine_live_operation_unblock_patch
+        ),
+        "micromachine_stable_flank_stage_latch_patch_sha256": _sha256_file(
+            config.micromachine_stable_flank_stage_latch_patch
+        ),
+        "micromachine_production_staging_observed_operation_patch_sha256": (
+            _sha256_file(
+                config.micromachine_production_staging_observed_operation_patch
+            )
+        ),
+        "micromachine_addon_query_footprint_validation_patch_sha256": (
+            _sha256_file(
+                config.micromachine_addon_query_footprint_validation_patch
+            )
+        ),
+        "micromachine_authoritative_addon_placement_query_patch_sha256": (
+            _sha256_file(
+                config.micromachine_authoritative_addon_placement_query_patch
+            )
+        ),
+        "micromachine_authoritative_addon_execution_patch_sha256": _sha256_file(
+            config.micromachine_authoritative_addon_execution_patch
+        ),
+        "micromachine_continuous_army_macro_patch_sha256": _sha256_file(
+            config.micromachine_continuous_army_macro_patch
+        ),
+        "micromachine_continuous_army_economy_scaling_patch_sha256": _sha256_file(
+            config.micromachine_continuous_army_economy_scaling_patch
+        ),
+        "micromachine_standing_composition_reinforcement_waves_patch_sha256": (
+            _sha256_file(
+                config.micromachine_standing_composition_reinforcement_waves_patch
+            )
+        ),
+        "micromachine_offensive_sweep_self_base_exclusion_patch_sha256": (
+            _sha256_file(
+                config.micromachine_offensive_sweep_self_base_exclusion_patch
+            )
+        ),
+        "micromachine_bounded_placement_query_cache_patch_sha256": _sha256_file(
+            config.micromachine_bounded_placement_query_cache_patch
+        ),
+        "micromachine_production_facility_stability_tank_recovery_patch_sha256": (
+            _sha256_file(
+                config.micromachine_production_facility_stability_tank_recovery_patch
+            )
+        ),
+        "micromachine_balanced_composition_wave_production_patch_sha256": (
+            _sha256_file(
+                config.micromachine_balanced_composition_wave_production_patch
+            )
+        ),
+        "micromachine_exact_composition_production_unblock_patch_sha256": (
+            _sha256_file(
+                config.micromachine_exact_composition_production_unblock_patch
+            )
+        ),
+        "micromachine_continuous_combat_production_relaunch_patch_sha256": (
+            _sha256_file(
+                config.micromachine_continuous_combat_production_relaunch_patch
+            )
+        ),
+        "micromachine_resource_throughput_expansion_backoff_patch_sha256": (
+            _sha256_file(
+                config.micromachine_resource_throughput_expansion_backoff_patch
+            )
+        ),
+        "micromachine_startup_telemetry_initialization_patch_sha256": (
+            _sha256_file(
+                config.micromachine_startup_telemetry_initialization_patch
+            )
+        ),
+        "micromachine_gas_worker_completion_cap_patch_sha256": (
+            _sha256_file(config.micromachine_gas_worker_completion_cap_patch)
+        ),
+        "micromachine_stable_offensive_sweep_target_patch_sha256": (
+            _sha256_file(config.micromachine_stable_offensive_sweep_target_patch)
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -125,7 +530,7 @@ def build_micromachine_build_identity(
     }
     identity = "sha256:" + _sha256_json(identity_material)
     return {
-        "schema_version": 1,
+        "schema_version": 30,
         "identity": identity,
         "ok": not failures,
         "failures": failures,
@@ -143,6 +548,91 @@ def build_micromachine_build_identity(
             "micromachine_build_dir": str(config.micromachine_build_dir),
             "binary": str(config.binary_path),
             "micromachine_patch": str(config.micromachine_patch),
+            "micromachine_tactical_patch": str(config.micromachine_tactical_patch),
+            "micromachine_production_fix_patch": str(
+                config.micromachine_production_fix_patch
+            ),
+            "micromachine_operation_state_patch": str(
+                config.micromachine_operation_state_patch
+            ),
+            "micromachine_addon_recovery_patch": str(
+                config.micromachine_addon_recovery_patch
+            ),
+            "micromachine_grounded_addon_candidate_patch": str(
+                config.micromachine_grounded_addon_candidate_patch
+            ),
+            "micromachine_guaranteed_producer_grounding_patch": str(
+                config.micromachine_guaranteed_producer_grounding_patch
+            ),
+            "micromachine_emergency_land_query_fallback_patch": str(
+                config.micromachine_emergency_land_query_fallback_patch
+            ),
+            "micromachine_grounded_production_observed_targeting_patch": str(
+                config.micromachine_grounded_production_observed_targeting_patch
+            ),
+            "micromachine_exact_composition_production_progress_patch": str(
+                config.micromachine_exact_composition_production_progress_patch
+            ),
+            "micromachine_production_resource_operation_persistence_patch": str(
+                config.micromachine_production_resource_operation_persistence_patch
+            ),
+            "micromachine_live_operation_unblock_patch": str(
+                config.micromachine_live_operation_unblock_patch
+            ),
+            "micromachine_stable_flank_stage_latch_patch": str(
+                config.micromachine_stable_flank_stage_latch_patch
+            ),
+            "micromachine_production_staging_observed_operation_patch": str(
+                config.micromachine_production_staging_observed_operation_patch
+            ),
+            "micromachine_addon_query_footprint_validation_patch": str(
+                config.micromachine_addon_query_footprint_validation_patch
+            ),
+            "micromachine_authoritative_addon_placement_query_patch": str(
+                config.micromachine_authoritative_addon_placement_query_patch
+            ),
+            "micromachine_authoritative_addon_execution_patch": str(
+                config.micromachine_authoritative_addon_execution_patch
+            ),
+            "micromachine_continuous_army_macro_patch": str(
+                config.micromachine_continuous_army_macro_patch
+            ),
+            "micromachine_continuous_army_economy_scaling_patch": str(
+                config.micromachine_continuous_army_economy_scaling_patch
+            ),
+            "micromachine_standing_composition_reinforcement_waves_patch": str(
+                config.micromachine_standing_composition_reinforcement_waves_patch
+            ),
+            "micromachine_offensive_sweep_self_base_exclusion_patch": str(
+                config.micromachine_offensive_sweep_self_base_exclusion_patch
+            ),
+            "micromachine_bounded_placement_query_cache_patch": str(
+                config.micromachine_bounded_placement_query_cache_patch
+            ),
+            "micromachine_production_facility_stability_tank_recovery_patch": str(
+                config.micromachine_production_facility_stability_tank_recovery_patch
+            ),
+            "micromachine_balanced_composition_wave_production_patch": str(
+                config.micromachine_balanced_composition_wave_production_patch
+            ),
+            "micromachine_exact_composition_production_unblock_patch": str(
+                config.micromachine_exact_composition_production_unblock_patch
+            ),
+            "micromachine_continuous_combat_production_relaunch_patch": str(
+                config.micromachine_continuous_combat_production_relaunch_patch
+            ),
+            "micromachine_resource_throughput_expansion_backoff_patch": str(
+                config.micromachine_resource_throughput_expansion_backoff_patch
+            ),
+            "micromachine_startup_telemetry_initialization_patch": str(
+                config.micromachine_startup_telemetry_initialization_patch
+            ),
+            "micromachine_gas_worker_completion_cap_patch": str(
+                config.micromachine_gas_worker_completion_cap_patch
+            ),
+            "micromachine_stable_offensive_sweep_target_patch": str(
+                config.micromachine_stable_offensive_sweep_target_patch
+            ),
             "s2client_patch": str(config.s2client_patch),
             "hook_manifest": str(config.hook_manifest),
             "map_pool": str(config.map_pool),
@@ -179,6 +669,150 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--micromachine-commit", default=DEFAULT_MICROMACHINE_COMMIT)
     parser.add_argument("--s2client-commit", default=DEFAULT_S2CLIENT_COMMIT)
     parser.add_argument("--micromachine-patch", default=str(DEFAULT_MICROMACHINE_PATCH))
+    parser.add_argument(
+        "--micromachine-tactical-patch",
+        default=str(DEFAULT_MICROMACHINE_TACTICAL_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-production-fix-patch",
+        default=str(DEFAULT_MICROMACHINE_PRODUCTION_FIX_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-operation-state-patch",
+        default=str(DEFAULT_MICROMACHINE_OPERATION_STATE_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-addon-recovery-patch",
+        default=str(DEFAULT_MICROMACHINE_ADDON_RECOVERY_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-grounded-addon-candidate-patch",
+        default=str(DEFAULT_MICROMACHINE_GROUNDED_ADDON_CANDIDATE_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-guaranteed-producer-grounding-patch",
+        default=str(DEFAULT_MICROMACHINE_GUARANTEED_PRODUCER_GROUNDING_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-emergency-land-query-fallback-patch",
+        default=str(DEFAULT_MICROMACHINE_EMERGENCY_LAND_QUERY_FALLBACK_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-grounded-production-observed-targeting-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-exact-composition-production-progress-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-production-resource-operation-persistence-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-live-operation-unblock-patch",
+        default=str(DEFAULT_MICROMACHINE_LIVE_OPERATION_UNBLOCK_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-stable-flank-stage-latch-patch",
+        default=str(DEFAULT_MICROMACHINE_STABLE_FLANK_STAGE_LATCH_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-production-staging-observed-operation-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-addon-query-footprint-validation-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-authoritative-addon-placement-query-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-authoritative-addon-execution-patch",
+        default=str(DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_EXECUTION_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-continuous-army-macro-patch",
+        default=str(DEFAULT_MICROMACHINE_CONTINUOUS_ARMY_MACRO_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-continuous-army-economy-scaling-patch",
+        default=str(DEFAULT_MICROMACHINE_CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-standing-composition-reinforcement-waves-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-offensive-sweep-self-base-exclusion-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-bounded-placement-query-cache-patch",
+        default=str(DEFAULT_MICROMACHINE_BOUNDED_PLACEMENT_QUERY_CACHE_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-production-facility-stability-tank-recovery-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-balanced-composition-wave-production-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-exact-composition-production-unblock-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-continuous-combat-production-relaunch-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-resource-throughput-expansion-backoff-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-startup-telemetry-initialization-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_STARTUP_TELEMETRY_INITIALIZATION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-gas-worker-completion-cap-patch",
+        default=str(DEFAULT_MICROMACHINE_GAS_WORKER_COMPLETION_CAP_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-stable-offensive-sweep-target-patch",
+        default=str(DEFAULT_MICROMACHINE_STABLE_OFFENSIVE_SWEEP_TARGET_PATCH),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -212,6 +846,91 @@ def main(argv: Sequence[str] | None = None) -> int:
             micromachine_commit=args.micromachine_commit,
             s2client_commit=args.s2client_commit,
             micromachine_patch=Path(args.micromachine_patch),
+            micromachine_tactical_patch=Path(args.micromachine_tactical_patch),
+            micromachine_production_fix_patch=Path(
+                args.micromachine_production_fix_patch
+            ),
+            micromachine_operation_state_patch=Path(
+                args.micromachine_operation_state_patch
+            ),
+            micromachine_addon_recovery_patch=Path(
+                args.micromachine_addon_recovery_patch
+            ),
+            micromachine_grounded_addon_candidate_patch=Path(
+                args.micromachine_grounded_addon_candidate_patch
+            ),
+            micromachine_guaranteed_producer_grounding_patch=Path(
+                args.micromachine_guaranteed_producer_grounding_patch
+            ),
+            micromachine_emergency_land_query_fallback_patch=Path(
+                args.micromachine_emergency_land_query_fallback_patch
+            ),
+            micromachine_grounded_production_observed_targeting_patch=Path(
+                args.micromachine_grounded_production_observed_targeting_patch
+            ),
+            micromachine_exact_composition_production_progress_patch=Path(
+                args.micromachine_exact_composition_production_progress_patch
+            ),
+            micromachine_production_resource_operation_persistence_patch=Path(
+                args.micromachine_production_resource_operation_persistence_patch
+            ),
+            micromachine_live_operation_unblock_patch=Path(
+                args.micromachine_live_operation_unblock_patch
+            ),
+            micromachine_stable_flank_stage_latch_patch=Path(
+                args.micromachine_stable_flank_stage_latch_patch
+            ),
+            micromachine_production_staging_observed_operation_patch=Path(
+                args.micromachine_production_staging_observed_operation_patch
+            ),
+            micromachine_addon_query_footprint_validation_patch=Path(
+                args.micromachine_addon_query_footprint_validation_patch
+            ),
+            micromachine_authoritative_addon_placement_query_patch=Path(
+                args.micromachine_authoritative_addon_placement_query_patch
+            ),
+            micromachine_authoritative_addon_execution_patch=Path(
+                args.micromachine_authoritative_addon_execution_patch
+            ),
+            micromachine_continuous_army_macro_patch=Path(
+                args.micromachine_continuous_army_macro_patch
+            ),
+            micromachine_continuous_army_economy_scaling_patch=Path(
+                args.micromachine_continuous_army_economy_scaling_patch
+            ),
+            micromachine_standing_composition_reinforcement_waves_patch=Path(
+                args.micromachine_standing_composition_reinforcement_waves_patch
+            ),
+            micromachine_offensive_sweep_self_base_exclusion_patch=Path(
+                args.micromachine_offensive_sweep_self_base_exclusion_patch
+            ),
+            micromachine_bounded_placement_query_cache_patch=Path(
+                args.micromachine_bounded_placement_query_cache_patch
+            ),
+            micromachine_production_facility_stability_tank_recovery_patch=Path(
+                args.micromachine_production_facility_stability_tank_recovery_patch
+            ),
+            micromachine_balanced_composition_wave_production_patch=Path(
+                args.micromachine_balanced_composition_wave_production_patch
+            ),
+            micromachine_exact_composition_production_unblock_patch=Path(
+                args.micromachine_exact_composition_production_unblock_patch
+            ),
+            micromachine_continuous_combat_production_relaunch_patch=Path(
+                args.micromachine_continuous_combat_production_relaunch_patch
+            ),
+            micromachine_resource_throughput_expansion_backoff_patch=Path(
+                args.micromachine_resource_throughput_expansion_backoff_patch
+            ),
+            micromachine_startup_telemetry_initialization_patch=Path(
+                args.micromachine_startup_telemetry_initialization_patch
+            ),
+            micromachine_gas_worker_completion_cap_patch=Path(
+                args.micromachine_gas_worker_completion_cap_patch
+            ),
+            micromachine_stable_offensive_sweep_target_patch=Path(
+                args.micromachine_stable_offensive_sweep_target_patch
+            ),
             s2client_patch=Path(args.s2client_patch),
             hook_manifest=Path(args.hook_manifest),
             map_pool=Path(args.map_pool),

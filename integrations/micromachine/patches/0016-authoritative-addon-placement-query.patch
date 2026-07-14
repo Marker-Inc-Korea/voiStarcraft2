@@ -1,0 +1,211 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -222,6 +222,32 @@ bool queryCanPlaceVoiBuilding(CCBot & bot, const UnitType & type, const CCPosition & commandPosition)
+ 	return bot.Query()->Placement(bot.Data(type).buildAbility, commandPosition);
+ }
+ 
++bool isVoiProductionBuildingWithAddonFootprint(const UnitType & type)
++{
++	const auto apiType = type.getAPIUnitType();
++	return apiType == sc2::UNIT_TYPEID::TERRAN_BARRACKS
++		|| apiType == sc2::UNIT_TYPEID::TERRAN_FACTORY
++		|| apiType == sc2::UNIT_TYPEID::TERRAN_STARPORT;
++}
++
++CCPosition voiProductionAddonProbePosition(const CCTilePosition & producerPosition)
++{
++	// A 2x2 SupplyDepot centered here covers exactly the future addon tiles:
++	// (x+2,y-1), (x+2,y), (x+3,y-1), and (x+3,y).
++	return CCPosition(
++		static_cast<float>(producerPosition.x + 3),
++		static_cast<float>(producerPosition.y));
++}
++
++bool queryCanPlaceVoiProductionAddonFootprint(
++	CCBot & bot,
++	const CCTilePosition & producerPosition)
++{
++	const UnitType addonProbeType(sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT, bot);
++	return bot.Query()->Placement(
++		bot.Data(addonProbeType).buildAbility,
++		voiProductionAddonProbePosition(producerPosition));
++}
++
+ bool shouldUseVoiSc2MacroPlacement(CCBot & bot, const UnitType & type)
+ {
+ 	return bot.Commander().isVoiPolicyActive() &&
+@@ -332,81 +358,6 @@ bool isVoiSupplyRecoveryDepot(CCBot & bot, const UnitType & type)
+ 		bot.GetMaxSupply() < 200;
+ }
+ 
+-std::vector<CCTilePosition> voiProductionAddonTiles(
+-	const UnitType & type,
+-	const CCTilePosition & position)
+-{
+-	const auto apiType = type.getAPIUnitType();
+-	if (apiType != sc2::UNIT_TYPEID::TERRAN_BARRACKS
+-		&& apiType != sc2::UNIT_TYPEID::TERRAN_FACTORY
+-		&& apiType != sc2::UNIT_TYPEID::TERRAN_STARPORT)
+-	{
+-		return {};
+-	}
+-
+-	// Terran production buildings are 3x3 around the center tile. Their addon
+-	// occupies the two columns immediately to the right of the producer.
+-	return {
+-		CCTilePosition(position.x + 2, position.y - 1),
+-		CCTilePosition(position.x + 2, position.y),
+-		CCTilePosition(position.x + 3, position.y - 1),
+-		CCTilePosition(position.x + 3, position.y),
+-	};
+-}
+-
+-bool voiStaticUnitOccupiesTile(const Unit & unit, const CCTilePosition & tile)
+-{
+-	// Use the same radius-derived bounds as CombatCommander's blocked-tile
+-	// map. UnitType::tileWidth() depends on a build ability and is not reliable
+-	// for every neutral or special map object.
+-	CCTilePosition bottomLeft;
+-	CCTilePosition topRight;
+-	unit.getBuildingLimits(bottomLeft, topRight);
+-	return tile.x >= bottomLeft.x
+-		&& tile.x < topRight.x
+-		&& tile.y >= bottomLeft.y
+-		&& tile.y < topRight.y;
+-}
+-
+-bool voiProductionAddonFootprintIsBuildable(
+-	CCBot & bot,
+-	const UnitType & type,
+-	const CCTilePosition & position)
+-{
+-	const auto addonTiles = voiProductionAddonTiles(type, position);
+-	for (const auto & tile : addonTiles)
+-	{
+-		if (!bot.Map().isValidTile(tile)
+-			|| !bot.Map().isBuildable(tile.x, tile.y)
+-			|| (!Util::IsZerg(bot.GetSelfRace())
+-				&& bot.Observation()->HasCreep(CCPosition(tile.x, tile.y))))
+-		{
+-			return false;
+-		}
+-	}
+-
+-	if (addonTiles.empty())
+-	{
+-		return true;
+-	}
+-
+-	for (const auto & unit : bot.GetUnits())
+-	{
+-		if (!unit.isValid() || !unit.isAlive() || unit.isFlying())
+-		{
+-			continue;
+-		}
+-		if (!unit.getType().isBuilding()
+-			&& !unit.getType().isMineral()
+-			&& !unit.getType().isGeyser())
+-		{
+-			continue;
+-		}
+-		for (const auto & tile : addonTiles)
+-		{
+-			if (voiStaticUnitOccupiesTile(unit, tile))
+-			{
+-				return false;
+-			}
+-		}
+-	}
+-	return true;
+-}
+-
+ bool isVoiSc2MacroPlacementSafeWithOptions(
+ 	CCBot & bot,
+ 	const UnitType & type,
+@@ -455,12 +406,16 @@ bool isVoiSc2MacroPlacementSafeWithOptions(
+ 	{
+ 		return false;
+ 	}
+-	if (includeAddonTiles && !voiProductionAddonFootprintIsBuildable(bot, type, position))
++	if (!requireQueryPlacement)
+ 	{
+-		return false;
++		return true;
+ 	}
+ 
+-	return !requireQueryPlacement || queryCanPlaceVoiBuilding(bot, type, Util::GetPosition(position));
++	return queryCanPlaceVoiBuilding(bot, type, Util::GetPosition(position))
++		&& (!includeAddonTiles
++			|| !isVoiProductionBuildingWithAddonFootprint(type)
++			|| queryCanPlaceVoiProductionAddonFootprint(bot, position));
+ }
+ 
+ bool isVoiSc2MacroPlacementSafe(
+@@ -703,10 +658,14 @@ bool findVoiSc2QueryMacroPlacement(
+ 	};
+ 
+ 	std::vector<sc2::QueryInterface::PlacementQuery> queries;
++	std::vector<sc2::QueryInterface::PlacementQuery> addonQueries;
+ 	std::vector<QueryMeta> queryMeta;
+ 	std::set<int> seenTiles;
+ 	const auto buildAbility = bot.Data(building.type).buildAbility;
++	const bool queryAddonFootprint =
++		includeAddonTiles && isVoiProductionBuildingWithAddonFootprint(building.type);
++	const UnitType addonProbeType(sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT, bot);
++	const auto addonProbeAbility = bot.Data(addonProbeType).buildAbility;
+ 	const CCPosition desiredPosition = Util::GetPosition(building.desiredPosition);
+ 	const float desiredHeight = forceSameHeight ? Util::TerrainHeight(building.desiredPosition) : 0.0f;
+ 	constexpr size_t maxQueries = 900;
+@@ -746,6 +705,10 @@ bool findVoiSc2QueryMacroPlacement(
+ 		const CCPosition commandPosition = Util::GetPosition(candidate);
+ 		seenTiles.insert(voiMacroTileKey(candidate));
+ 		queries.emplace_back(buildAbility, commandPosition);
++		if (queryAddonFootprint)
++		{
++			addonQueries.emplace_back(addonProbeAbility, voiProductionAddonProbePosition(candidate));
++		}
+ 		QueryMeta meta;
+ 		meta.finalPosition = candidate;
+ 		meta.commandPosition = commandPosition;
+@@ -839,13 +802,28 @@ bool findVoiSc2QueryMacroPlacement(
+ 	}
+ 
+ 	const std::vector<bool> results = bot.Query()->Placement(queries);
++	std::vector<bool> addonResults;
++	if (queryAddonFootprint)
++	{
++		addonResults = bot.Query()->Placement(addonQueries);
++	}
+ 	bool hasSelected = false;
++	size_t bodyAcceptedCount = 0;
++	size_t addonAcceptedCount = 0;
+ 	QueryMeta best;
+ 	best.score = std::numeric_limits<float>::max();
+ 	for (size_t i = 0; i < results.size() && i < queryMeta.size(); ++i)
+ 	{
+ 		if (!results[i])
+ 		{
+ 			continue;
+ 		}
++		++bodyAcceptedCount;
++		if (queryAddonFootprint
++			&& (i >= addonResults.size() || !addonResults[i]))
++		{
++			continue;
++		}
++		++addonAcceptedCount;
+ 		if (!hasSelected || queryMeta[i].score < best.score)
+ 		{
+ 			hasSelected = true;
+@@ -858,6 +836,9 @@ bool findVoiSc2QueryMacroPlacement(
+ 		Util::Log(source,
+ 			"VOI SC2 Query macro placement rejected all candidates for " + building.type.getName() +
+-			" query_count=" + std::to_string(queries.size()) + ".",
++			" query_count=" + std::to_string(queries.size()) +
++			" body_accepted=" + std::to_string(bodyAcceptedCount) +
++			" addon_query=" + (queryAddonFootprint ? "true" : "false") +
++			" addon_accepted=" + std::to_string(addonAcceptedCount) + ".",
+ 			bot);
+ 		return false;
+ 	}

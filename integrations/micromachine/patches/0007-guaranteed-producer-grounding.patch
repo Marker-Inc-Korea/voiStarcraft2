@@ -1,0 +1,411 @@
+diff --git a/src/BuildingManager.h b/src/BuildingManager.h
+--- a/src/BuildingManager.h
++++ b/src/BuildingManager.h
+@@ -47,13 +47,16 @@ class BuildingManager
+ 	{
+ 		AddonRelocationPhase phase = AddonRelocationPhase::LiftIssued;
+ 		CCPosition target = CCPosition();
++		CCPosition originalPosition = CCPosition();
+ 		uint32_t lastCommandFrame = 0;
++		uint32_t liftFrame = 0;
+ 		uint32_t stableSinceFrame = 0;
+ 		uint32_t nextRetryFrame = 0;
+ 		int liftAttempts = 0;
+ 		int landAttempts = 0;
+ 		int noSiteAttempts = 0;
+ 		bool abortAfterLanding = false;
++		bool producerOnlyRecovery = false;
+ 	};
+ 	struct AddonPlacementRetryState
+ 	{
+@@ -75,9 +78,10 @@ class BuildingManager
+ 	bool			handleVoiAddonTask(Building & b);
+ 	bool			isVoiAddonFootprintClear(const Building & b, const CCPosition & producerPosition);
+ 	bool			isVoiProducerFootprintClear(const Building & b, const CCPosition & producerPosition);
++	bool			isVoiProducerLandingSiteValid(const Building & b, const CCPosition & producerPosition);
+ 	bool			isVoiAddonLandingSiteValid(const Building & b, const CCPosition & producerPosition);
+ 	CCPosition		findVoiAddonLandingSite(const Building & b);
+-	CCPosition		findVoiProducerLandingSite(const Building & b);
++	CCPosition		findVoiProducerLandingSite(const Building & b, const CCPosition & preferredPosition);
+ 	void			castBuildingsAbilities();
+ 	void			RunProxyLogic();
+ 	void			LiftOrLandDamagedBuildings();
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2335,13 +2335,29 @@ bool BuildingManager::isVoiAddonFootprintClear(const Building & b, const CCPosit
+ 
+ bool BuildingManager::isVoiProducerFootprintClear(const Building & b, const CCPosition & producerPosition)
+ {
++	sc2::UNIT_TYPEID producerTypeId = (sc2::UNIT_TYPEID)b.builderUnit.getAPIUnitType();
++	switch (producerTypeId)
++	{
++		case sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING:
++			producerTypeId = sc2::UNIT_TYPEID::TERRAN_BARRACKS;
++			break;
++		case sc2::UNIT_TYPEID::TERRAN_FACTORYFLYING:
++			producerTypeId = sc2::UNIT_TYPEID::TERRAN_FACTORY;
++			break;
++		case sc2::UNIT_TYPEID::TERRAN_STARPORTFLYING:
++			producerTypeId = sc2::UNIT_TYPEID::TERRAN_STARPORT;
++			break;
++		default:
++			break;
++	}
++	const UnitType groundedProducerType(producerTypeId, m_bot);
+ 	for (int x = -1; x <= 1; ++x)
+ 	{
+ 		for (int y = -1; y <= 1; ++y)
+ 		{
+ 			const CCPosition producerTile = producerPosition + CCPosition(static_cast<float>(x), static_cast<float>(y));
+ 			if (!getBuildingPlacer().buildable(
+-				b.builderUnit.getType(),
++				groundedProducerType,
+ 				static_cast<int>(producerTile.x),
+ 				static_cast<int>(producerTile.y),
+ 				true))
+@@ -2388,6 +2404,54 @@ sc2::AbilityID voiLandAbilityForProducer(const Unit & producer)
+ 	}
+ }
+ 
++std::vector<sc2::AbilityID> voiLandAbilityCandidatesForProducer(const Unit & producer)
++{
++	const sc2::AbilityID specializedAbility = voiLandAbilityForProducer(producer);
++	if (specializedAbility == sc2::ABILITY_ID::LAND)
++	{
++		return {sc2::ABILITY_ID::LAND};
++	}
++	return {specializedAbility, sc2::ABILITY_ID::LAND};
++}
++
++sc2::AbilityID voiAvailableLandAbility(
++	const Unit & producer,
++	const sc2::AvailableAbilities & availableAbilities)
++{
++	for (const sc2::AbilityID ability : voiLandAbilityCandidatesForProducer(producer))
++	{
++		if (Util::IsAbilityAvailable((sc2::ABILITY_ID)ability, availableAbilities))
++		{
++			return ability;
++		}
++	}
++	return sc2::ABILITY_ID::INVALID;
++}
++
++sc2::AbilityID voiResolveLandAbility(
++	CCBot & bot,
++	const Unit & producer,
++	const CCPosition & target,
++	const sc2::AvailableAbilities & availableAbilities)
++{
++	if (!producer.isValid() || !producer.isAlive() || !producer.isFlying() || target == CCPosition())
++	{
++		return sc2::ABILITY_ID::INVALID;
++	}
++	for (const sc2::AbilityID ability : voiLandAbilityCandidatesForProducer(producer))
++	{
++		if (!Util::IsAbilityAvailable((sc2::ABILITY_ID)ability, availableAbilities))
++		{
++			continue;
++		}
++		if (bot.Query()->Placement(ability, target, producer.getUnitPtr()))
++		{
++			return ability;
++		}
++	}
++	return sc2::ABILITY_ID::INVALID;
++}
++
+ bool voiIsLandOrderForTarget(const sc2::UnitOrder & order, const CCPosition & target)
+ {
+ 	const bool landOrder = order.ability_id == sc2::ABILITY_ID::LAND
+@@ -2460,22 +2524,43 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 	}
+ 
+ 	const sc2::AvailableAbilities availableAbilities = m_bot.Query()->GetAbilitiesForUnit(unit.getUnitPtr());
+-	if (!Util::IsAbilityAvailable((sc2::ABILITY_ID)ability, availableAbilities))
++	sc2::AbilityID resolvedAbility = ability;
++	if (voiIsLandAbility(ability))
++	{
++		resolvedAbility = voiResolveLandAbility(m_bot, unit, target, availableAbilities);
++		if (resolvedAbility == sc2::ABILITY_ID::INVALID && owner == "addon_relocation")
++		{
++			resolvedAbility = voiAvailableLandAbility(unit, availableAbilities);
++			if (resolvedAbility != sc2::ABILITY_ID::INVALID)
++			{
++				Util::Log(
++					__FUNCTION__,
++					"VOI addon emergency grounding is issuing one locally validated LAND despite a false-negative SC2 placement query.",
++					m_bot);
++			}
++		}
++		if (resolvedAbility == sc2::ABILITY_ID::INVALID)
++		{
++			return false;
++		}
++	}
++	else if (!Util::IsAbilityAvailable((sc2::ABILITY_ID)ability, availableAbilities))
+ 	{
+ 		return false;
+ 	}
+ 
+ 	if (target != CCPosition())
+ 	{
+-		if (!m_bot.Query()->Placement(ability, target, unit.getUnitPtr()))
++		if (!voiIsLandAbility(resolvedAbility)
++			&& !m_bot.Query()->Placement(resolvedAbility, target, unit.getUnitPtr()))
+ 		{
+ 			return false;
+ 		}
+-		Micro::SmartAbility(unit.getUnitPtr(), ability, target, m_bot);
++		Micro::SmartAbility(unit.getUnitPtr(), resolvedAbility, target, m_bot);
+ 	}
+ 	else
+ 	{
+-		Micro::SmartAbility(unit.getUnitPtr(), ability, m_bot);
++		Micro::SmartAbility(unit.getUnitPtr(), resolvedAbility, m_bot);
+ 	}
+ 	m_voiMobilityOwner[tag] = owner;
+ 	m_voiMobilityLastCommandFrame[tag] = currentFrame;
+@@ -2571,8 +2656,25 @@ bool BuildingManager::isVoiAddonLandingSiteValid(const Building & b, const CCPos
+ 	{
+ 		return true;
+ 	}
+-	const sc2::AbilityID landAbility = voiLandAbilityForProducer(b.builderUnit);
+-	return m_bot.Query()->Placement(landAbility, producerPosition, b.builderUnit.getUnitPtr());
++	const sc2::AvailableAbilities availableAbilities = m_bot.Query()->GetAbilitiesForUnit(b.builderUnit.getUnitPtr());
++	return voiResolveLandAbility(m_bot, b.builderUnit, producerPosition, availableAbilities)
++		!= sc2::ABILITY_ID::INVALID;
+ }
+ 
++bool BuildingManager::isVoiProducerLandingSiteValid(const Building & b, const CCPosition & producerPosition)
++{
++	if (producerPosition == CCPosition()
++		|| !b.builderUnit.isValid()
++		|| !b.builderUnit.isFlying()
++		|| !isVoiProducerFootprintClear(b, producerPosition))
++	{
++		return false;
++	}
++	const sc2::AvailableAbilities availableAbilities = m_bot.Query()->GetAbilitiesForUnit(b.builderUnit.getUnitPtr());
++	return voiResolveLandAbility(m_bot, b.builderUnit, producerPosition, availableAbilities)
++			!= sc2::ABILITY_ID::INVALID
++		|| voiAvailableLandAbility(b.builderUnit, availableAbilities)
++			!= sc2::ABILITY_ID::INVALID;
++}
++
+ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+@@ -2637,46 +2739,126 @@ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+ 	return CCPosition();
+ }
+ 
+-CCPosition BuildingManager::findVoiProducerLandingSite(const Building & b)
++CCPosition BuildingManager::findVoiProducerLandingSite(const Building & b, const CCPosition & preferredPosition)
+ {
+ 	const CCPosition origin = b.builderUnit.getPosition();
++	sc2::UNIT_TYPEID producerTypeId = (sc2::UNIT_TYPEID)b.builderUnit.getAPIUnitType();
++	switch (producerTypeId)
++	{
++		case sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING:
++			producerTypeId = sc2::UNIT_TYPEID::TERRAN_BARRACKS;
++			break;
++		case sc2::UNIT_TYPEID::TERRAN_FACTORYFLYING:
++			producerTypeId = sc2::UNIT_TYPEID::TERRAN_FACTORY;
++			break;
++		case sc2::UNIT_TYPEID::TERRAN_STARPORTFLYING:
++			producerTypeId = sc2::UNIT_TYPEID::TERRAN_STARPORT;
++			break;
++		default:
++			break;
++	}
++	const UnitType groundedProducerType(producerTypeId, m_bot);
+ 	std::vector<CCPosition> candidates;
+-	for (float radius = 4.0f; radius <= 24.0f; radius += 4.0f)
++	auto appendCandidate = [&](const CCPosition & candidate)
+ 	{
+-		candidates.push_back(origin + CCPosition(-radius, 0.0f));
+-		candidates.push_back(origin + CCPosition(radius, 0.0f));
+-		candidates.push_back(origin + CCPosition(0.0f, -radius));
+-		candidates.push_back(origin + CCPosition(0.0f, radius));
+-		candidates.push_back(origin + CCPosition(-radius, -radius));
+-		candidates.push_back(origin + CCPosition(-radius, radius));
+-		candidates.push_back(origin + CCPosition(radius, -radius));
+-		candidates.push_back(origin + CCPosition(radius, radius));
++		if (candidate != CCPosition()
++			&& std::find(candidates.begin(), candidates.end(), candidate) == candidates.end())
++		{
++			candidates.push_back(candidate);
++		}
++	};
++	appendCandidate(preferredPosition);
++	appendCandidate(origin);
++	for (const CCPosition & anchor : {preferredPosition, origin})
++	{
++		if (anchor == CCPosition())
++		{
++			continue;
++		}
++		const Building groundedProducer(groundedProducerType, Util::GetTilePosition(anchor));
++		const CCTilePosition nearbyTile = getBuildingPlacer().getBuildLocationNear(
++			groundedProducer,
++			true,
++			false,
++			false,
++			true);
++		if (nearbyTile != CCTilePosition())
++		{
++			appendCandidate(Util::GetPosition(nearbyTile));
++		}
++	}
++	for (float radius = 4.0f; radius <= 48.0f; radius += 4.0f)
++	{
++		appendCandidate(origin + CCPosition(-radius, 0.0f));
++		appendCandidate(origin + CCPosition(radius, 0.0f));
++		appendCandidate(origin + CCPosition(0.0f, -radius));
++		appendCandidate(origin + CCPosition(0.0f, radius));
++		appendCandidate(origin + CCPosition(-radius, -radius));
++		appendCandidate(origin + CCPosition(-radius, radius));
++		appendCandidate(origin + CCPosition(radius, -radius));
++		appendCandidate(origin + CCPosition(radius, radius));
+ 	}
+ 	if (candidates.empty())
+ 	{
+ 		return CCPosition();
+ 	}
+ 
+-	const size_t queryBudget = 8;
+-	const size_t startIndex = ((m_bot.GetCurrentFrame() / 64u) * queryBudget) % candidates.size();
++	const size_t queryBudget = 16;
++	const size_t preferredCandidateCount = std::min<size_t>(4, candidates.size());
+ 	size_t queryChecks = 0;
+-	const sc2::AbilityID landAbility = voiLandAbilityForProducer(b.builderUnit);
++	const sc2::AvailableAbilities availableAbilities = m_bot.Query()->GetAbilitiesForUnit(b.builderUnit.getUnitPtr());
++	const sc2::AbilityID availableLandAbility = voiAvailableLandAbility(b.builderUnit, availableAbilities);
++	std::vector<CCPosition> locallyValidatedFallbacks;
+-	for (size_t offset = 0; offset < candidates.size(); ++offset)
++	auto validateCandidate = [&](const CCPosition & candidate)
+ 	{
+-		const CCPosition & candidate = candidates[(startIndex + offset) % candidates.size()];
+ 		if (!isVoiProducerFootprintClear(b, candidate))
+ 		{
+-			continue;
++			return false;
+ 		}
+ 		if (queryChecks++ >= queryBudget)
+ 		{
+-			break;
++			return false;
+ 		}
++		if (availableLandAbility != sc2::ABILITY_ID::INVALID)
++		{
++			locallyValidatedFallbacks.push_back(candidate);
++		}
+-		if (m_bot.Query()->Placement(landAbility, candidate, b.builderUnit.getUnitPtr()))
++		return voiResolveLandAbility(m_bot, b.builderUnit, candidate, availableAbilities)
++			!= sc2::ABILITY_ID::INVALID;
++	};
++	for (size_t index = 0; index < preferredCandidateCount; ++index)
++	{
++		if (validateCandidate(candidates[index]))
+ 		{
+-			return candidate;
++			return candidates[index];
++		}
++	}
++	const size_t rotatingCandidateCount = candidates.size() - preferredCandidateCount;
++	if (rotatingCandidateCount == 0)
++	{
++		return CCPosition();
++	}
++	const size_t startIndex = preferredCandidateCount
++		+ (((m_bot.GetCurrentFrame() / 32u) * 13u) % rotatingCandidateCount);
++	for (size_t offset = 0; offset < rotatingCandidateCount && queryChecks < queryBudget; ++offset)
++	{
++		const size_t index = preferredCandidateCount
++			+ ((startIndex - preferredCandidateCount + offset) % rotatingCandidateCount);
++		if (validateCandidate(candidates[index]))
++		{
++			return candidates[index];
+ 		}
+ 	}
++	if (!locallyValidatedFallbacks.empty())
++	{
++		const size_t fallbackIndex = ((m_bot.GetCurrentFrame() / 32u) * 13u)
++			% locallyValidatedFallbacks.size();
++		Util::Log(
++			__FUNCTION__,
++			"VOI producer recovery selected a rotating locally valid LAND fallback after SC2 placement query rejected all checked candidates.",
++			m_bot);
++		return locallyValidatedFallbacks[fallbackIndex];
++	}
+ 	return CCPosition();
+ }
+ 
+@@ -2690,6 +2872,7 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 	const sc2::Tag producerTag = b.builderUnit.getTag();
+ 	const uint32_t currentFrame = m_bot.GetCurrentFrame();
+ 	const uint32_t commandCooldown = 64;
++	const uint32_t maximumAddonFlightFrames = 22u * 10u;
+ 	releaseVoiBuildingMobilityOwnershipIfSettled(b.builderUnit);
+ 	auto relocationIt = m_addonRelocations.find(producerTag);
+ 
+@@ -2741,27 +2924,44 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 			return true;
+ 		}
+ 
+-		if (state.landAttempts >= 4 || !isVoiAddonLandingSiteValid(b, state.target))
++		const bool flightTimedOut = state.liftFrame > 0
++			&& currentFrame >= state.liftFrame
++			&& currentFrame - state.liftFrame >= maximumAddonFlightFrames;
++		const bool targetValid = state.producerOnlyRecovery
++			? isVoiProducerLandingSiteValid(b, state.target)
++			: isVoiAddonLandingSiteValid(b, state.target);
++		const bool mustEnterProducerRecovery = flightTimedOut && !state.producerOnlyRecovery;
++		if (state.landAttempts >= 4 || mustEnterProducerRecovery || !targetValid)
+ 		{
+-			const CCPosition replacement = findVoiAddonLandingSite(b);
++			const CCPosition replacement = state.producerOnlyRecovery || flightTimedOut
++				? CCPosition()
++				: findVoiAddonLandingSite(b);
+ 			if (replacement == CCPosition())
+ 			{
+ 				state.noSiteAttempts++;
+ 				const uint32_t retryDelay = 64u << std::min(2, state.noSiteAttempts - 1);
+ 				state.nextRetryFrame = currentFrame + retryDelay;
+-				if (state.noSiteAttempts < 2)
++				if (!state.producerOnlyRecovery && !flightTimedOut && state.noSiteAttempts < 2)
+ 				{
+ 					Util::Log(__FUNCTION__, "VOI addon relocation is backing off before one more bounded addon-footprint search.", m_bot);
+ 					return true;
+ 				}
+-				const CCPosition producerOnlyTarget = findVoiProducerLandingSite(b);
++				state.producerOnlyRecovery = true;
++				state.abortAfterLanding = true;
++				const CCPosition producerOnlyTarget = findVoiProducerLandingSite(b, state.originalPosition);
+ 				if (producerOnlyTarget == CCPosition())
+ 				{
++					state.nextRetryFrame = currentFrame + 32u;
++					if (state.noSiteAttempts == 2 || state.noSiteAttempts % 8 == 0)
++					{
++						Util::Log(__FUNCTION__, "VOI addon relocation emergency grounding search has no valid LAND target yet; retaining exclusive ownership and rotating candidates.", m_bot);
++					}
+ 					return true;
+ 				}
+ 				state.target = producerOnlyTarget;
+ 				state.landAttempts = 0;
+-				state.abortAfterLanding = true;
++				state.noSiteAttempts = 0;
++				state.nextRetryFrame = 0;
+ 				Util::Log(__FUNCTION__, "VOI addon relocation is grounding the producer without an addon footprint before task replanning.", m_bot);
+ 			}
+ 			else
+@@ -2975,7 +3175,9 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 	AddonRelocationState state;
+ 	state.phase = AddonRelocationPhase::LiftIssued;
+ 	state.target = landingTarget;
++	state.originalPosition = b.builderUnit.getPosition();
+ 	state.lastCommandFrame = currentFrame;
++	state.liftFrame = currentFrame;
+ 	state.liftAttempts = 1;
+ 	if (!tryIssueVoiBuildingMobilityCommand(
+ 		b.builderUnit,

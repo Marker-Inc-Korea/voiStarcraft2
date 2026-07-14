@@ -1,0 +1,270 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -3176,6 +3176,12 @@ void CombatCommander::updateAttackSquads()
+ 	const bool voiScopeThresholdMet = voiScopeMinUnits == 0
+ 		|| static_cast<int>(mainAttackSquad.getUnits().size()) >= voiScopeMinUnits;
++	const bool voiPostLaunchScopeThresholdMet =
++		tacticalPressureTask
++		&& m_voiRallyCompleted
++		&& !mainAttackSquad.getUnits().empty();
++	const bool voiEffectiveScopeThresholdMet =
++		voiScopeThresholdMet || voiPostLaunchScopeThresholdMet;
+ 	const int autonomousAttackUnitCount = voiCountMobileAttackUnits(mainAttackSquad.getUnits());
+ 	const int autonomousAttackMinUnits = std::max(1, m_bot.Commander().getVoiPolicyInt("combat.autonomous_attack_min_units", 4));
+ 	const bool voiDefensivePolicyBlocksAutonomy =
+@@ -3186,7 +3192,7 @@ void CombatCommander::updateAttackSquads()
+ 		&& voiAttackOverride != "never"
+ 		&& !voiDefensivePolicyBlocksAutonomy;
+ 	const bool voiForceAttackWhenReady =
+-		voiScopeThresholdMet
++		voiEffectiveScopeThresholdMet
+ 		&& voiAttackOverride == "force_when_threshold_met";
+ 	const CCPosition voiRallyPosition = voiForwardRallyPosition(m_bot, orderPosition);
+ 	const int voiRallyRequiredUnits = tacticalPressureTask
+@@ -3376,7 +3382,10 @@ void CombatCommander::updateAttackSquads()
+ 		retreat = true;
+ 		retreatReason = "VOI attack condition override never";
+ 	}
+-	if (!retreat && voiAttackOverride == "force_when_threshold_met" && !voiScopeThresholdMet)
++	if (!retreat
++		&& voiAttackOverride == "force_when_threshold_met"
++		&& !voiEffectiveScopeThresholdMet)
+ 	{
+ 		retreat = true;
+ 		retreatReason = "Waiting for scope min units";
+@@ -3396,7 +3405,7 @@ void CombatCommander::updateAttackSquads()
+ 		int allyBases = m_bot.Bases().getBaseCount(Players::Self);
+ 		int enemyBases = m_bot.Bases().getBaseCount(Players::Enemy);
+ 		const bool voiMayAttackEarly =
+-			voiScopeThresholdMet
++			voiEffectiveScopeThresholdMet
+ 			&& (voiAttackOverride == "force_when_threshold_met"
+ 				|| (voiAttackOverride == "earlier_if_safe" && voiAggression + voiAttackTimingBias + voiCommitmentLevel > 0.6f));
+ 		if (allyBases >= enemyBases && !voiMayAttackEarly)
+@@ -3574,7 +3583,11 @@ void CombatCommander::updateAttackSquads()
+ 	}
+ 
+ 	std::string orderStatus = "Attack";
+-	std::string orderReason = autonomousAttackReady ? "Autonomous combat threshold met" : (voiForceAttackWhenReady ? "VOI bounded force threshold met" : "Attack conditions met");
++	std::string orderReason = autonomousAttackReady
++		? "Autonomous combat threshold met"
++		: (voiForceAttackWhenReady
++			? (voiPostLaunchScopeThresholdMet && !voiScopeThresholdMet ? "VOI post-launch survivors cleared bounded relaunch gate" : "VOI bounded force threshold met")
++			: "Attack conditions met");
+ 	m_lastVoiOperationPhase = voiEngaging ? "Engaging" : "Advancing";
+ 	if (voiSweepingAfterLostContact)
+ 	{
+@@ -3623,7 +3636,7 @@ void CombatCommander::updateAttackSquads()
+ 	m_lastVoiMainAttackOrderReason = orderReason;
+ 	m_lastVoiMainAttackUnitCount = static_cast<int>(mainAttackSquad.getUnits().size());
+ 	m_lastVoiMainAttackScopeMinUnits = voiScopeMinUnits;
+-	m_lastVoiMainAttackScopeThresholdMet = voiScopeThresholdMet;
++	m_lastVoiMainAttackScopeThresholdMet = voiEffectiveScopeThresholdMet;
+ 	m_lastVoiMainAttackSimulationWon = m_winAttackSimulation;
+ 	m_lastVoiMainAttackOrderPosition = orderPosition;
+ 	m_lastVoiMainAttackHomeDistance = voiSquadMaxHomeDistance(mainAttackSquad.getUnits(), m_bot);
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -1047,14 +1047,26 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 		{
+ 			m_queue.queueAsHighestPriority(type, false);
+ 		}
+-		Util::Log(
+-			__FUNCTION__,
+-			"VOI exact composition reconciled " + type.getName()
+-				+ " requested=" + std::to_string(requestedCount)
+-				+ " represented=" + std::to_string(representedCount)
+-				+ " queued=" + std::to_string(queuedCount)
+-				+ " retained=" + std::to_string(allowedQueuedCount),
+-			m_bot);
++		const auto apiType = type.getUnitType().getAPIUnitType();
++		const std::string reconciliationState =
++			std::to_string(requestedCount)
++			+ "|" + std::to_string(representedCount)
++			+ "|" + std::to_string(queuedCount)
++			+ "|" + std::to_string(allowedQueuedCount);
++		const uint32_t currentFrame = m_bot.GetCurrentFrame();
++		if (m_lastVoiExactCompositionReconciliationState[apiType] != reconciliationState
++			|| currentFrame - m_lastVoiExactCompositionReconciliationLogFrame[apiType] >= 224)
++		{
++			m_lastVoiExactCompositionReconciliationState[apiType] = reconciliationState;
++			m_lastVoiExactCompositionReconciliationLogFrame[apiType] = currentFrame;
++			Util::Log(
++				__FUNCTION__,
++				"VOI exact composition reconciled " + type.getName()
++					+ " requested=" + std::to_string(requestedCount)
++					+ " represented=" + std::to_string(representedCount)
++					+ " queued=" + std::to_string(queuedCount)
++					+ " retained=" + std::to_string(allowedQueuedCount),
++				m_bot);
++		}
+ 	}
+ }
+ 
+@@ -1585,6 +1597,14 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+ 			}
+ 		}
+ 
++		// The VOI doctrine path owns combat-unit selection and prerequisite
++		// production for exact compositions. Running the legacy strategy picker
++		// as well repeatedly injects unrequested Reapers, Marauders, Banshees,
++		// and their addons, then reconciliation removes them on the same frame.
++		if (voiExactCompositionActive(m_bot))
++		{
++			return;
++		}
++
+ 		// Strategy base logic
+ 		switch (currentStrategy)
+ 		{
+@@ -2343,7 +2363,7 @@ bool ProductionManager::shouldReserveForVoiExpandCommandCenter() const
+ 	{
+ 		return false;
+ 	}
+-	if (!voiExactCompositionFirstWaveComplete(m_bot))
++	if (voiExactCompositionActive(m_bot))
+ 	{
+ 		return false;
+ 	}
+@@ -2387,10 +2407,11 @@ void ProductionManager::prioritizeVoiExpandCommandCenter()
+ 	const bool exactCompositionFirstWaveIncomplete =
+ 		!voiExactCompositionFirstWaveComplete(m_bot);
+ 	const bool blocking =
+-		!standingProductionNeedsRoom && !exactCompositionFirstWaveIncomplete;
++		!standingProductionNeedsRoom
++		&& !voiExactCompositionActive(m_bot);
+ 	m_queue.queueAsHighestPriority(MetaTypeEnum::CommandCenter, blocking);
+ 	if (m_bot.GetCurrentFrame() - m_lastVoiExpandReserveLogFrame >= 224)
+ 	{
+@@ -2402,6 +2423,8 @@ void ProductionManager::prioritizeVoiExpandCommandCenter()
+ 				+ " blocking=" + std::to_string(blocking)
+ 				+ " exact_composition_first_wave_incomplete="
+-				+ std::to_string(exactCompositionFirstWaveIncomplete),
++				+ std::to_string(exactCompositionFirstWaveIncomplete)
++				+ " exact_composition_active="
++				+ std::to_string(voiExactCompositionActive(m_bot)),
+ 			m_bot);
+ 	}
+ }
+@@ -2841,6 +2864,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool taskTargetsGhostAcademy = voiCommaListContains(tacticalProductionTargets, "TERRAN_GHOSTACADEMY");
+ 	const bool taskTargetsFactory = voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORY");
+ 	const bool taskTargetsFactoryTechLab = voiCommaListContains(tacticalProductionTargets, "FACTORY_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORYTECHLAB");
++	const bool taskTargetsArmory = voiCommaListContains(tacticalProductionTargets, "TERRAN_ARMORY");
+ 	const bool taskTargetsStarport = voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORT");
+ 	const bool taskTargetsStarportTechLab = voiCommaListContains(tacticalProductionTargets, "STARPORT_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORTTECHLAB");
+ 	const bool taskTargetsFusionCore = voiCommaListContains(tacticalProductionTargets, "TERRAN_FUSIONCORE");
+@@ -2919,6 +2943,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float factoryTechLabBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.FACTORY_TECHLAB", "production.addon_biases.FACTORY_TECHLAB"),
+ 		(taskTechTransition && taskTargetsFactoryTechLab) ? tacticalTaskPriority : 0.0f);
++	const float armoryBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_ARMORY", "production.production_facility_biases.TERRAN_ARMORY", "tech.structure_biases.TERRAN_ARMORY"),
++		(taskTechTransition && taskTargetsArmory) ? tacticalTaskPriority : 0.0f);
+ 	const float starportTechLabBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.STARPORT_TECHLAB", "production.addon_biases.STARPORT_TECHLAB"),
+ 		(taskTechTransition && taskTargetsStarportTechLab) ? tacticalTaskPriority : 0.0f);
+@@ -2957,6 +2984,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float effectiveWidowMineBias = std::max(widowMineBias, compositionMechBias);
+ 	const float effectiveCycloneBias = std::max(cycloneBias, compositionMechBias);
+ 	const float effectiveThorBias = std::max(thorBias, compositionMechBias);
++	const float effectiveArmoryBias = std::max(armoryBias, effectiveThorBias);
+ 	const float effectiveMedivacBias = std::max({ medivacBias, compositionDropBias, compositionMedivacBias, compositionBioBias });
+ 	const float effectiveVikingBias = std::max({ vikingBias, compositionAntiAirBias, (taskTechTransition && taskTargetsViking) ? tacticalTaskPriority : 0.0f });
+ 	const float effectiveLiberatorBias = std::max({ liberatorBias, compositionAntiAirBias, compositionSiegeBias });
+@@ -2969,7 +2997,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float effectiveStarportReactorBias = std::max(starportReactorBias, compositionDropBias);
+ 
+ 	const bool wantsStarport = wantsStarportDoctrine || effectiveStarportBias > 0.25f || effectiveMedivacBias > 0.25f || effectiveVikingBias > 0.25f || effectiveLiberatorBias > 0.25f || effectiveBansheeBias > 0.25f || effectiveRavenBias > 0.25f || effectiveBattlecruiserBias > 0.25f;
+-	const bool wantsFactory = taskTechTransition || wantsFactoryDoctrine || wantsStarport || effectiveFactoryBias > 0.25f || effectiveTankBias > 0.25f || effectiveHellionBias > 0.25f || effectiveWidowMineBias > 0.25f || effectiveCycloneBias > 0.25f;
++	const bool wantsFactory = taskTechTransition || wantsFactoryDoctrine || wantsStarport || effectiveFactoryBias > 0.25f || effectiveTankBias > 0.25f || effectiveHellionBias > 0.25f || effectiveWidowMineBias > 0.25f || effectiveCycloneBias > 0.25f || effectiveThorBias > 0.25f;
+ 	const bool wantsCommandCenter = taskExpandCommandCenter || wantsMacroDoctrine || effectiveCommandCenterBias > 0.45f;
+ 	const bool wantsFactoryTechLab =
+ 		(taskTechTransition && (taskTargetsFactoryTechLab || taskTargetsSiegeTank))
+@@ -2978,6 +3006,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		|| effectiveTankBias > 0.25f
+ 		|| effectiveCycloneBias > 0.25f
+ 		|| effectiveThorBias > 0.25f;
++	const bool wantsArmory = effectiveArmoryBias > 0.25f;
+ 	const bool wantsStarportTechLab = effectiveStarportTechLabBias > 0.25f;
+ 	const bool wantsFusionCore = effectiveFusionCoreBias > 0.25f;
+ 	const bool wantsBarracksTechLab = doctrine == "bio_pressure" || effectiveBarracksTechLabBias > 0.25f;
+@@ -3012,6 +3041,16 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		sc2::UNIT_TYPEID::TERRAN_FACTORY);
+ 	const bool blockedFactoryAddonProducer = m_bot.Buildings().hasVoiBlockedAddonProducer(
+ 		sc2::UNIT_TYPEID::TERRAN_FACTORY);
++	const int armoryCount = m_bot.UnitInfo().getUnitTypeCount(
++		Players::Self,
++		MetaTypeEnum::Armory.getUnitType(),
++		false,
++		true);
++	const int completedArmoryCount = m_bot.UnitInfo().getUnitTypeCount(
++		Players::Self,
++		MetaTypeEnum::Armory.getUnitType(),
++		true,
++		true);
+ 	const int starportCount = m_bot.UnitInfo().getUnitTypeCount(
+ 		Players::Self,
+ 		MetaTypeEnum::Starport.getUnitType(),
+@@ -3157,6 +3196,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		(wantsFactory
+ 			|| wantsStarport
+ 			|| wantsFactoryTechLab
++			|| wantsArmory
+ 			|| wantsStarportTechLab
+ 			|| wantsFusionCore
+ 			|| wantsGhostAcademy
+@@ -3257,6 +3297,15 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			return;
+ 		}
+ 	}
++	if (wantsArmory
++		&& completedFactoryCount > 0
++		&& armoryCount == 0
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::Armory,
++			"thor_armory_transition",
++			true))
++	{
++		return;
++	}
+ 	if (wantsStarport && factoryCount > 0 && starportCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Starport, "starport_transition", true))
+ 	{
+ 		return;
+@@ -3325,7 +3374,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
+-	if (effectiveThorBias > 0.25f && !thorCompositionSatisfied && factoryTechLabCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Thor, "thor_mech", false))
++	if (effectiveThorBias > 0.25f && !thorCompositionSatisfied && factoryTechLabCount > 0 && completedArmoryCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Thor, "thor_mech", false))
+ 	{
+ 		return;
+ 	}
+@@ -3395,6 +3444,13 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			return;
+ 		}
+ 	}
++	if (wantsArmory && factoryCount > 0)
++	{
++		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::Armory, "thor_armory_transition"))
++		{
++			return;
++		}
++	}
+ 	if (wantsStarport && factoryCount > 0)
+ 	{
+ 		if (recordVoiDoctrineConsumptionIfRepresented(MetaTypeEnum::Starport, "starport_transition"))
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -61,6 +61,8 @@ class ProductionManager
+ 	std::map<sc2::UNIT_TYPEID, int> m_placementRetryCount;
+ 	std::string m_voiCompositionProductionOperationKey = "";
+ 	int m_voiCompositionProductionWaveMultiplier = 1;
++	std::map<sc2::UNIT_TYPEID, std::string> m_lastVoiExactCompositionReconciliationState;
++	std::map<sc2::UNIT_TYPEID, uint32_t> m_lastVoiExactCompositionReconciliationLogFrame;
+ 	std::vector<sc2::UNIT_TYPEID> factoryUnitTypes = { sc2::UNIT_TYPEID::TERRAN_HELLION, sc2::UNIT_TYPEID::TERRAN_HELLIONTANK, sc2::UNIT_TYPEID::TERRAN_WIDOWMINE, sc2::UNIT_TYPEID::TERRAN_SIEGETANK, sc2::UNIT_TYPEID::TERRAN_CYCLONE, sc2::UNIT_TYPEID::TERRAN_THOR };
+ 
+ 	void	validateUpgradesProgress();

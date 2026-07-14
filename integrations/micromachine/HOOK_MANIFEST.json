@@ -8,6 +8,158 @@
     "kv": "latest_modulation.kv",
     "telemetry": "latest_telemetry.json"
   },
+  "patch_bundle": [
+    {
+      "path": "patches/0001-macos-latest-s2client-policy-blackboard.patch",
+      "order": 1,
+      "scope": "s2client-api linkage, libvoxelbot build bridge, and VOI blackboard runtime hook"
+    },
+    {
+      "path": "patches/0002-live-tactical-operation-fixes.patch",
+      "order": 2,
+      "scope": "live tactical operation ownership, rally/launch, siege, scout, and Viking fixes"
+    },
+    {
+      "path": "patches/0003-production-live-qa-blockers.patch",
+      "order": 3,
+      "scope": "production, mobility, worker-order, focus-fire, kiting, and live QA blocker fixes"
+    },
+    {
+      "path": "patches/0004-live-operation-state-machine.patch",
+      "order": 4,
+      "scope": "operation state-machine latch, invalid action, morph availability, producer ownership, LAND target, and proxy Barracks grounding fixes"
+    },
+    {
+      "path": "patches/0005-addon-relocation-recovery.patch",
+      "order": 5,
+      "scope": "grounded LAND-query prevention, bounded addon relocation search, safe producer recovery landing, ownership cleanup, and addon-only producer cooldown"
+    },
+    {
+      "path": "patches/0006-grounded-addon-candidate-fix.patch",
+      "order": 6,
+      "scope": "trust BuildingPlacer producer-plus-addon validation before lift, remove redundant grounded unit-distance rejection, and reserve SC2 LAND queries for flying producers"
+    },
+    {
+      "path": "patches/0007-guaranteed-producer-grounding.patch",
+      "order": 7,
+      "scope": "grounded producer type validation, specialized/generic LAND ability resolution, bounded local-footprint fallback for SC2 query false negatives, original-position fallback, finite addon-flight timeout, producer-only emergency LAND search, and post-landing ownership release"
+    },
+    {
+      "path": "patches/0008-emergency-land-query-fallback.patch",
+      "order": 8,
+      "scope": "landing-specific static footprint validation, exact dynamic collision checks, and alternating nonqueued LAND commands when SC2 placement and availability queries both report false negatives"
+    },
+    {
+      "path": "patches/0009-grounded-production-and-observed-targeting.patch",
+      "order": 9,
+      "scope": "producer-specific LAND only, grounded addon-footprint clearance, continuous macro planning after supply or worker queueing, observed-enemy targeting with combat-scout gating, and launched-operation continuity after casualties or temporary target loss"
+    },
+    {
+      "path": "patches/0010-exact-composition-production-progress.patch",
+      "order": 10,
+      "scope": "exact Marine composition progress capped at requested count, two-unit combat-scout bootstrap, single-unit fresh-observation scouting, and Factory prerequisite closure for Starport unit production"
+    },
+    {
+      "path": "patches/0011-production-resource-operation-persistence.patch",
+      "order": 11,
+      "scope": "grounded production buildings, consumed gas policy, exact all-Terran combat compositions, producer-specific addon requirements, observed-target combat, bounded regroup/relaunch, and Ghost/Widow Mine/Liberator role micro"
+    },
+    {
+      "path": "patches/0012-live-operation-unblock.patch",
+      "order": 12,
+      "scope": "blocked addon-producer quarantine, one-shot addon-clear Factory replacement, enemy-start candidate combat scouting with stalled-route rotation, target-evidence classification, and flank completion transition"
+    },
+    {
+      "path": "patches/0013-stable-flank-stage-latch.patch",
+      "order": 13,
+      "scope": "operation-stable flank and safe-path stage selection with a 60-percent arrival gate before advancing to the final observed target"
+    },
+    {
+      "path": "patches/0014-production-staging-and-observed-operation.patch",
+      "order": 14,
+      "scope": "home production staging, static addon-footprint validation, repeatable Factory replacement, semantic operation lifetime, autonomous combat scouting, observed-enemy operation latching, and safe advance through temporary local contact loss"
+    },
+    {
+      "path": "patches/0015-addon-query-footprint-validation.patch",
+      "order": 15,
+      "scope": "exact Terran production-addon tile validation for terrain buildability, creep, structures, minerals, and geysers before SC2 body-placement queries"
+    },
+    {
+      "path": "patches/0016-authoritative-addon-placement-query.patch",
+      "order": 16,
+      "scope": "SC2-authoritative batched body and 2x2 addon-footprint placement queries for Barracks, Factory, and Starport macro construction"
+    },
+    {
+      "path": "patches/0017-authoritative-addon-execution.patch",
+      "order": 17,
+      "scope": "SC2-authoritative addon-footprint validation at command execution, short producer retry quarantine, and bounded addon-clear Factory replacement"
+    },
+    {
+      "path": "patches/0018-continuous-army-macro.patch",
+      "order": 18,
+      "scope": "continuous composition-ratio production waves, macro worker continuity, proactive supply use, and hard-capped Barracks, Factory, and Starport scaling"
+    },
+    {
+      "path": "patches/0019-continuous-army-economy-scaling.patch",
+      "order": 19,
+      "scope": "gas-demand-aware Refinery scaling, worker-saturation Command Center expansion, and gas-flow-based Factory and Starport scaling for continuous mixed armies"
+    },
+    {
+      "path": "patches/0020-standing-composition-reinforcement-waves.patch",
+      "order": 20,
+      "scope": "standing exact-composition operations preserve launched MainAttack units and atomically add complete home-staged reinforcement waves without an implicit permanent unit cap"
+    },
+    {
+      "path": "patches/0021-offensive-sweep-self-base-exclusion.patch",
+      "order": 21,
+      "scope": "offensive sweep candidate selection excludes self starting, self occupied, and home-adjacent bases while preferring observed enemy and remote unexplored bases"
+    },
+    {
+      "path": "patches/0022-bounded-placement-query-cache.patch",
+      "order": 22,
+      "scope": "validated macro placement cache, bounded authoritative SC2 query budgets, one placement pass, and bounded legacy fallback search"
+    },
+    {
+      "path": "patches/0023-production-facility-stability-and-tank-recovery.patch",
+      "order": 23,
+      "scope": "policy-wide Barracks/Factory/Starport no-lift guard, continuous-army supply buffering, third Factory addon recovery, and tank-tech gas priority over Vikings"
+    },
+    {
+      "path": "patches/0024-balanced-composition-wave-production.patch",
+      "order": 24,
+      "scope": "per-unit minimum completed-wave production with an operation-scoped monotonic latch so surplus Marines cannot inflate Tank targets and combat losses cannot strand incomplete home reinforcements"
+    },
+    {
+      "path": "patches/0025-exact-composition-production-unblock.patch",
+      "order": 25,
+      "scope": "exact-composition off-target unit suppression, nonblocking expansion until the first requested wave is represented, and rate-limited production-building lift refusal diagnostics"
+    },
+    {
+      "path": "patches/0026-continuous-combat-production-relaunch.patch",
+      "order": 26,
+      "scope": "legacy strategy unit-picker isolation for exact compositions, nonblocking expansion throughout standing army production, bounded reconciliation diagnostics, survivor relaunch after tactical regroup, and explicit Thor Armory prerequisite consumption"
+    },
+    {
+      "path": "patches/0027-resource-throughput-and-expansion-backoff.patch",
+      "order": 27,
+      "scope": "cumulative Marine wave accounting, per-refinery gas saturation, passive expansion placement quarantine, and resource/supply/gas telemetry for sustained mixed-army production"
+    },
+    {
+      "path": "patches/0028-startup-telemetry-initialization.patch",
+      "order": 28,
+      "scope": "startup-safe UnitInfo seeding, manager initialization ordering before telemetry, and refinery telemetry independent of the first UnitInfo frame"
+    },
+    {
+      "path": "patches/0029-gas-worker-completion-and-cap.patch",
+      "order": 29,
+      "scope": "completed-refinery-only gas assignment and per-refinery gas worker caps enforced before base/depot fallback"
+    },
+    {
+      "path": "patches/0030-stable-offensive-sweep-target.patch",
+      "order": 30,
+      "scope": "operation-stable lost-contact offensive sweep target with majority-arrival and bounded stalled-route rotation"
+    }
+  ],
   "python_lowered_to_cpp_consumed_axes": {
     "production_plan.targets": [
       "tactical_task.production_targets",
@@ -22,18 +174,15 @@
   "python_blackboard_emitted_but_not_consumed_by_current_cpp_patch": [
     "strategy.timing_biases.*",
     "strategy.transition_biases.*",
-    "economy.gas_worker_target_bias",
     "economy.mineral_saturation_bias",
     "economy.expansion_safety_bias",
     "economy.mule_priority",
     "economy.worker_production_bias",
     "economy.repair_priority",
-    "economy.gas_priority",
     "production.max_tech_deviation",
     "production.allow_build_order_rewrite",
     "combat.pressure_window_frames",
     "combat.siege_position_bias",
-    "combat.kite_bias",
     "combat.flank_bias",
     "combat.combat_sim_confidence_margin",
     "combat.engage_threshold_delta",
@@ -44,9 +193,7 @@
     "scope.duration_seconds",
     "scope.require_safety_margin",
     "scope.allow_partial_scope",
-    "lifetime.mode",
     "lifetime.completion_conditions",
-    "lifetime.completion_state",
     "lifetime.reason",
     "production_plan.targets",
     "production_plan.allow_prerequisite_buildings",
@@ -224,6 +371,7 @@
         "combat.attack_condition_override",
         "combat.retreat_patience_bias",
         "combat.rally_before_attack_bias",
+        "combat.kite_bias",
         "scope.min_units",
         "scope.max_units",
         "scope.army_group",
@@ -239,7 +387,7 @@
         "emergency.cancel_attacks",
         "emergency.force_retreat"
       ],
-      "intended_effect": "Bias attack/hold/retreat posture and explicit scout-scope assignment without issuing direct unit orders."
+      "intended_effect": "Bias attack/hold/retreat posture, explicit scout-scope assignment, and ranged-unit cooldown kiting through RangedManager without bypassing MicroMachine action planning."
     },
     {
       "domain": "scouting",
@@ -262,11 +410,12 @@
       "source_path": "src/WorkerManager.cpp",
       "header_path": "src/WorkerManager.h",
       "function": "WorkerManager::onFrame(bool executeMacro)",
-      "secondary_function": "WorkerManager::handleRepairWorkers()",
-      "status": "pending_cpp_hook_not_counted_as_consumed",
+      "secondary_function": "WorkerManager::handleGasWorkers() / WorkerManager::handleRepairWorkers()",
+      "status": "verified_consumed_for_gas_worker_targets",
       "keys": [
         "economy.repair_priority",
         "economy.gas_priority",
+        "economy.gas_worker_target_bias",
         "emergency.pull_workers_for_defense",
         "emergency.evacuate_workers"
       ],

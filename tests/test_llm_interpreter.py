@@ -44,6 +44,9 @@ from starcraft_commander.llm_interpreter import (
     build_policy_modulation_tool_input_schema,
 )
 from starcraft_commander.runtime_deps import ANTHROPIC_MODULE_NAME, OPENAI_MODULE_NAME
+from starcraft_commander.policy_modulation_provider import (
+    compile_policy_modulation_provider_output,
+)
 from toycraft_commander.failure import build_parsing_failure_report
 from toycraft_commander.intents import (
     CANONICAL_INTENT_NAMES,
@@ -501,7 +504,43 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertIn("response_language", call["messages"][0]["content"])
         self.assertIn("Korean", call["messages"][0]["content"])
 
-    def test_policy_modulation_malformed_forced_tool_output_refuses(self) -> None:
+    def test_policy_modulation_terminal_statuses_do_not_repair(self) -> None:
+        terminal_cases = (
+            (
+                "refused",
+                {
+                    "status": "refused",
+                    "assistant_message": "이 명령은 안전하게 실행할 수 없습니다.",
+                    "refusal_reason": "raw SC2 control is not allowed.",
+                },
+            ),
+            (
+                "clarification_required",
+                {
+                    "status": "clarification_required",
+                    "assistant_message": "전술 의도를 더 구체화해야 합니다.",
+                    "clarification_prompt": "어느 위치를 정찰할까요?",
+                },
+            ),
+        )
+        for label, tool_input in terminal_cases:
+            with self.subTest(label=label):
+                interpreter, fake_client = _make_llm_interpreter(
+                    _tool_response(tool_input),
+                    _tool_response({"status": "compiled", "modulation": {}}),
+                )
+
+                output = interpreter.propose_policy_modulation(
+                    types.SimpleNamespace(command_text="마린으로 적 본진 정찰해")
+                )
+
+                self.assertEqual("llm", output["source"])
+                self.assertEqual(label, output["status"])
+                self.assertEqual(1, output["llm_attempt_count"])
+                self.assertEqual("", output["llm_repair_reason"])
+                self.assertEqual(1, len(fake_client.calls))
+
+    def test_policy_modulation_malformed_forced_tool_output_repairs_once(self) -> None:
         for tool_input in (
             {},
             {"status": "compiled"},
@@ -509,8 +548,9 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             {"status": "compiled", "modulation": {"goal": "무언가 해줘"}},
         ):
             with self.subTest(tool_input=tool_input):
-                interpreter, _fake_client = _make_llm_interpreter(
-                    _tool_response(tool_input)
+                interpreter, fake_client = _make_llm_interpreter(
+                    _tool_response(tool_input),
+                    _tool_response(tool_input),
                 )
 
                 output = interpreter.propose_policy_modulation(
@@ -519,7 +559,103 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
 
                 self.assertEqual("llm", output["source"])
                 self.assertEqual("refused", output["status"])
+                self.assertEqual("contract_error", output["failure_kind"])
                 self.assertIn("missing", output["refusal_reason"])
+                self.assertEqual(2, output["llm_attempt_count"])
+                self.assertTrue(output["llm_repair_reason"])
+                self.assertEqual(2, len(fake_client.calls))
+
+    def test_policy_modulation_repairs_lossless_numeric_bounds_without_retry(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "modulation": {
+                "goal": "마린 6기와 탱크 2기로 계속 공격",
+                "ttl_seconds": 3600,
+                "scope": {
+                    "army_group": "main",
+                    "unit_classes": ["marine", "tank"],
+                    "duration_seconds": 1800,
+                },
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["marine", "tank"],
+                    "location_intent": "enemy_main",
+                    "duration_seconds": 1200,
+                },
+                "lifetime": {
+                    "mode": "until_complete",
+                    "completion_conditions": ["units_ready"],
+                    "completion_state": "in_progress",
+                },
+            },
+        }
+        interpreter, fake_client = _make_llm_interpreter(_tool_response(payload))
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(command_text="마린 6기와 탱크 2기로 계속 공격해")
+        )
+
+        self.assertEqual("compiled", output["status"])
+        self.assertEqual(1, output["llm_attempt_count"])
+        self.assertEqual(1, len(fake_client.calls))
+        compiled = compile_policy_modulation_provider_output(output)
+        self.assertTrue(compiled.ok, compiled.to_dict())
+        assert compiled.vector is not None
+        self.assertEqual(900, compiled.vector.ttl_seconds)
+        self.assertEqual(900, compiled.vector.scope.duration_seconds)
+        self.assertEqual(900, compiled.vector.tactical_task.duration_seconds)
+        self.assertEqual("until_completed", compiled.vector.lifetime.mode)
+        self.assertEqual(
+            ("unit_count_reached",),
+            compiled.vector.lifetime.completion_conditions,
+        )
+
+    def test_policy_modulation_retries_unknown_completion_condition(self) -> None:
+        invalid_payload = {
+            "status": "compiled",
+            "modulation": {
+                "goal": "마린으로 적 본진 정찰",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["marine"],
+                    "location_intent": "enemy_main",
+                },
+                "lifetime": {
+                    "mode": "until_completed",
+                    "completion_conditions": ["enemy_destroyed_forever"],
+                },
+            },
+        }
+        repaired_payload = {
+            "status": "compiled",
+            "modulation": {
+                "goal": "마린으로 적 본진 정찰",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["marine"],
+                    "location_intent": "enemy_main",
+                },
+                "lifetime": {
+                    "mode": "until_completed",
+                    "completion_conditions": ["enemy_observed"],
+                },
+            },
+        }
+        interpreter, fake_client = _make_llm_interpreter(
+            _tool_response(invalid_payload),
+            _tool_response(repaired_payload),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(command_text="마린으로 적 본진 정찰해")
+        )
+
+        self.assertEqual("compiled", output["status"])
+        self.assertEqual(2, output["llm_attempt_count"])
+        self.assertIn("completion_conditions", output["llm_repair_reason"])
+        self.assertEqual(2, len(fake_client.calls))
 
     def test_policy_modulation_retries_once_when_forced_tool_is_missing(self) -> None:
         interpreter, fake_client = _make_llm_interpreter(
@@ -556,6 +692,8 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             output["assistant_message"],
         )
         self.assertEqual("마린 러쉬", output["modulation"]["goal"])
+        self.assertEqual(2, output["llm_attempt_count"])
+        self.assertIn("no forced-tool", output["llm_repair_reason"])
         self.assertEqual(2, len(fake_client.calls))
         self.assertIn(
             "Retry once",
@@ -589,7 +727,6 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         }
         fake_client = FakeOpenAIClient(
             _openai_text_response("마린 압박으로 처리하겠습니다."),
-            _openai_text_response("이번에는 JSON 없이 설명합니다."),
             _openai_text_response(json.dumps(provider_payload)),
         )
         interpreter = LLMCommandInterpreter(
@@ -616,7 +753,9 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual("llm", output["modulation"]["source"])
         self.assertEqual(0.8, output["modulation"]["production"]["queue_biases"]["marine"])
         self.assertEqual(0.6, output["modulation"]["combat"]["aggression"])
-        self.assertEqual(3, len(fake_client.calls))
+        self.assertEqual(2, output["llm_attempt_count"])
+        self.assertIn("no forced-tool", output["llm_repair_reason"])
+        self.assertEqual(2, len(fake_client.calls))
         self.assertEqual(
             {
                 "type": "function",
@@ -624,9 +763,9 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             },
             fake_client.calls[0]["tool_choice"],
         )
-        self.assertEqual({"type": "json_object"}, fake_client.calls[2]["response_format"])
-        self.assertNotIn("tools", fake_client.calls[2])
-        self.assertIn("raw JSON only", fake_client.calls[2]["messages"][1]["content"])
+        self.assertEqual({"type": "json_object"}, fake_client.calls[1]["response_format"])
+        self.assertNotIn("tools", fake_client.calls[1])
+        self.assertIn("raw JSON only", fake_client.calls[1]["messages"][1]["content"])
 
     def test_policy_modulation_retries_when_concrete_command_omits_tactical_task(self) -> None:
         first_payload = {
@@ -694,9 +833,11 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             output["modulation"]["tactical_task"]["task_type"],
         )
         self.assertEqual("마린 3기 정찰 task로 해석했습니다.", output["assistant_message"])
+        self.assertEqual(2, output["llm_attempt_count"])
+        self.assertIn("required bounded tactical_task", output["llm_repair_reason"])
         self.assertEqual(2, len(fake_client.calls))
         self.assertIn(
-            "omitted the required tactical_task",
+            "required bounded tactical_task",
             fake_client.calls[1]["messages"][0]["content"],
         )
 
@@ -722,7 +863,10 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         )
 
         self.assertEqual("refused", output["status"])
+        self.assertEqual("contract_error", output["failure_kind"])
         self.assertIn("required bounded tactical_task", output["refusal_reason"])
+        self.assertEqual(2, output["llm_attempt_count"])
+        self.assertIn("required bounded tactical_task", output["llm_repair_reason"])
         self.assertEqual(2, len(fake_client.calls))
 
     def test_policy_modulation_requires_tactical_task_for_common_korean_production_commands(self) -> None:
@@ -749,7 +893,9 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                 )
 
                 self.assertEqual("refused", output["status"])
+                self.assertEqual("contract_error", output["failure_kind"])
                 self.assertIn("required bounded tactical_task", output["refusal_reason"])
+                self.assertEqual(2, output["llm_attempt_count"])
                 self.assertEqual(2, len(fake_client.calls))
 
     def test_policy_modulation_requires_tactical_task_for_common_english_production_commands(self) -> None:
@@ -784,11 +930,33 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                 )
 
                 self.assertEqual("refused", output["status"])
+                self.assertEqual("contract_error", output["failure_kind"])
                 self.assertIn("required bounded tactical_task", output["refusal_reason"])
+                self.assertEqual(2, output["llm_attempt_count"])
                 self.assertEqual(2, len(fake_client.calls))
 
+    def test_policy_modulation_api_timeout_and_error_do_not_repair(self) -> None:
+        for label, error in (
+            ("api exception", RuntimeError("provider exploded")),
+            ("timeout", TimeoutError("request timed out")),
+        ):
+            with self.subTest(label=label):
+                interpreter, fake_client = _make_llm_interpreter(error)
+
+                output = interpreter.propose_policy_modulation(
+                    types.SimpleNamespace(command_text="마린 러쉬 진행해")
+                )
+
+                self.assertEqual("llm", output["source"])
+                self.assertEqual("refused", output["status"])
+                self.assertEqual("api_error", output["failure_kind"])
+                self.assertIn("LLM policy modulation failed", output["refusal_reason"])
+                self.assertEqual(1, output["llm_attempt_count"])
+                self.assertEqual("", output["llm_repair_reason"])
+                self.assertEqual(1, len(fake_client.calls))
+
     def test_policy_modulation_provider_error_redacts_api_key(self) -> None:
-        interpreter, _fake_client = _make_llm_interpreter(
+        interpreter, fake_client = _make_llm_interpreter(
             RuntimeError(
                 "Incorrect API key provided: sk-proj-secret-live-key. "
                 "You can find your API key at https://example.test"
@@ -801,6 +969,10 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
 
         self.assertEqual("llm", output["source"])
         self.assertEqual("refused", output["status"])
+        self.assertEqual("api_error", output["failure_kind"])
+        self.assertEqual(1, output["llm_attempt_count"])
+        self.assertEqual("", output["llm_repair_reason"])
+        self.assertEqual(1, len(fake_client.calls))
         reason = output["refusal_reason"]
         self.assertIn("provider authentication failed", reason)
         self.assertNotIn("sk-proj-secret-live-key", reason)

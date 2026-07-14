@@ -352,7 +352,10 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             blackboard = MicroMachineFilesystemBlackboard(directory)
             update = MicroMachineBlackboardUpdate(
                 update_id="stale",
-                vector=_vector(ttl_seconds=1),
+                vector=PolicyModulationVector(
+                    goal="short bounded bias",
+                    ttl_seconds=1,
+                ),
                 issued_at_frame=0,
             )
             blackboard.publish_update(update, current_frame=0)
@@ -365,6 +368,29 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             (Path(directory) / LATEST_UPDATE_JSON_NAME).write_text(json.dumps(raw_payload))
             with self.assertRaisesRegex(ValueError, "raw runtime control"):
                 blackboard.read_latest_update(current_frame=1)
+
+    def test_read_latest_update_keeps_active_semantic_operation_after_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard = MicroMachineFilesystemBlackboard(directory)
+            vector = PolicyModulationVector(
+                goal="produce the requested composition and attack",
+                ttl_seconds=1,
+                lifetime=LifetimeModulation(
+                    mode="until_completed",
+                    completion_conditions=("unit_count_reached", "target_reached"),
+                ),
+            )
+            blackboard.publish_vector(
+                vector,
+                current_frame=0,
+                update_id="semantic-operation",
+            )
+
+            latest = blackboard.read_latest_update(current_frame=10_000)
+
+            self.assertIsNotNone(latest)
+            assert latest is not None
+            self.assertEqual("semantic-operation", latest.update_id)
 
     def test_ingests_telemetry_and_builds_dashboard_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

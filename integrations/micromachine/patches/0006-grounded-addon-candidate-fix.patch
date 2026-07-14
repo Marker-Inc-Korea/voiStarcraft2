@@ -1,0 +1,57 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+index 9207d4c..6ca75d6 100644
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2578,19 +2578,25 @@ bool BuildingManager::isVoiAddonLandingSiteValid(const Building & b, const CCPos
+ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+ {
+ 	const CCPosition origin = b.builderUnit.getPosition();
+-	std::vector<CCPosition> candidates;
+-
+ 	if (!b.builderUnit.isFlying())
+ 	{
+ 		const auto tempBuilding = Building(b.builderUnit.getType(), Util::GetTilePosition(origin));
+-		const CCTilePosition nearbyTile = getBuildingPlacer().getBuildLocationNear(tempBuilding, false, true, true);
++		const CCTilePosition nearbyTile = getBuildingPlacer().getBuildLocationNear(
++			tempBuilding,
++			false,
++			false,
++			true,
++			true);
+ 		if (nearbyTile != CCTilePosition())
+ 		{
+-			candidates.push_back(Util::GetPosition(nearbyTile));
++			// BuildingPlacer already validated the producer plus addon footprint.
++			// Dynamic unit occupancy is checked by the LAND query after lift.
++			return Util::GetPosition(nearbyTile);
+ 		}
++		return CCPosition();
+ 	}
+ 
+-	candidates.push_back(origin - CCPosition(4.0f, 0.0f));
++	std::vector<CCPosition> candidates;
+ 	for (float radius = 4.0f; radius <= 20.0f; radius += 4.0f)
+ 	{
+ 		candidates.push_back(origin + CCPosition(-radius, 0.0f));
+@@ -2608,11 +2614,8 @@ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+ 		return CCPosition();
+ 	}
+ 
+-	const bool requiresSc2Query = b.builderUnit.isFlying();
+ 	const size_t queryBudget = 8;
+-	const size_t startIndex = requiresSc2Query
+-		? ((m_bot.GetCurrentFrame() / 64u) * queryBudget) % candidates.size()
+-		: 0;
++	const size_t startIndex = ((m_bot.GetCurrentFrame() / 64u) * queryBudget) % candidates.size();
+ 	size_t queryChecks = 0;
+ 	for (size_t offset = 0; offset < candidates.size(); ++offset)
+ 	{
+@@ -2622,7 +2625,7 @@ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+ 		{
+ 			continue;
+ 		}
+-		if (requiresSc2Query && queryChecks++ >= queryBudget)
++		if (queryChecks++ >= queryBudget)
+ 		{
+ 			break;
+ 		}

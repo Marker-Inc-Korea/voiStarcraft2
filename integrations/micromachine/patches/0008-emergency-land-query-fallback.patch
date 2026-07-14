@@ -1,0 +1,87 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2351,16 +2351,18 @@ bool BuildingManager::isVoiProducerFootprintClear(const Building & b, const CCPo
+ 			break;
+ 	}
+ 	const UnitType groundedProducerType(producerTypeId, m_bot);
++	const float producerHalfExtent = 0.5f * static_cast<float>(
++		std::max(groundedProducerType.tileWidth(), groundedProducerType.tileHeight()));
+ 	for (int x = -1; x <= 1; ++x)
+ 	{
+ 		for (int y = -1; y <= 1; ++y)
+ 		{
+ 			const CCPosition producerTile = producerPosition + CCPosition(static_cast<float>(x), static_cast<float>(y));
+-			if (!getBuildingPlacer().buildable(
+-				groundedProducerType,
+-				static_cast<int>(producerTile.x),
+-				static_cast<int>(producerTile.y),
+-				true))
++			const int tileX = static_cast<int>(producerTile.x);
++			const int tileY = static_cast<int>(producerTile.y);
++			if (!m_bot.Map().isBuildable(tileX, tileY)
++				|| (!Util::IsZerg(m_bot.GetSelfRace())
++					&& m_bot.Observation()->HasCreep(CCPosition(tileX, tileY))))
+ 			{
+ 				return false;
+ 			}
+@@ -2376,7 +2378,9 @@ bool BuildingManager::isVoiProducerFootprintClear(const Building & b, const CCPo
+ 		{
+ 			continue;
+ 		}
+-		if (Util::Dist(producerPosition, unit.getPosition()) <= 2.15f + unit.getUnitPtr()->radius)
++		const CCPosition delta = producerPosition - unit.getPosition();
++		const float collisionExtent = producerHalfExtent + unit.getUnitPtr()->radius;
++		if (std::abs(delta.x) < collisionExtent && std::abs(delta.y) < collisionExtent)
+ 		{
+ 			return false;
+ 		}
+@@ -2531,11 +2535,17 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 		if (resolvedAbility == sc2::ABILITY_ID::INVALID && owner == "addon_relocation")
+ 		{
+ 			resolvedAbility = voiAvailableLandAbility(unit, availableAbilities);
++			if (resolvedAbility == sc2::ABILITY_ID::INVALID)
++			{
++				const auto fallbackAbilities = voiLandAbilityCandidatesForProducer(unit);
++				const size_t fallbackIndex = (currentFrame / 64u) % fallbackAbilities.size();
++				resolvedAbility = fallbackAbilities[fallbackIndex];
++			}
+ 			if (resolvedAbility != sc2::ABILITY_ID::INVALID)
+ 			{
+ 				Util::Log(
+ 					__FUNCTION__,
+-					"VOI addon emergency grounding is issuing one locally validated LAND despite a false-negative SC2 placement query.",
++					"VOI addon emergency grounding is issuing one locally validated nonqueued LAND despite false-negative SC2 placement or availability queries.",
+ 					m_bot);
+ 			}
+ 		}
+@@ -2673,8 +2683,7 @@ bool BuildingManager::isVoiProducerLandingSiteValid(const Building & b, const CC
+ 	const sc2::AvailableAbilities availableAbilities = m_bot.Query()->GetAbilitiesForUnit(b.builderUnit.getUnitPtr());
+ 	return voiResolveLandAbility(m_bot, b.builderUnit, producerPosition, availableAbilities)
+ 			!= sc2::ABILITY_ID::INVALID
+-		|| voiAvailableLandAbility(b.builderUnit, availableAbilities)
+-			!= sc2::ABILITY_ID::INVALID;
++		|| !voiLandAbilityCandidatesForProducer(b.builderUnit).empty();
+ }
+ 
+ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+@@ -2807,7 +2816,6 @@ CCPosition BuildingManager::findVoiProducerLandingSite(const Building & b, const
+ 	const size_t preferredCandidateCount = std::min<size_t>(4, candidates.size());
+ 	size_t queryChecks = 0;
+ 	const sc2::AvailableAbilities availableAbilities = m_bot.Query()->GetAbilitiesForUnit(b.builderUnit.getUnitPtr());
+-	const sc2::AbilityID availableLandAbility = voiAvailableLandAbility(b.builderUnit, availableAbilities);
+ 	std::vector<CCPosition> locallyValidatedFallbacks;
+ 	auto validateCandidate = [&](const CCPosition & candidate)
+ 	{
+@@ -2819,10 +2827,7 @@ CCPosition BuildingManager::findVoiProducerLandingSite(const Building & b, const
+ 		{
+ 			return false;
+ 		}
+-		if (availableLandAbility != sc2::ABILITY_ID::INVALID)
+-		{
+-			locallyValidatedFallbacks.push_back(candidate);
+-		}
++		locallyValidatedFallbacks.push_back(candidate);
+ 		return voiResolveLandAbility(m_bot, b.builderUnit, candidate, availableAbilities)
+ 			!= sc2::ABILITY_ID::INVALID;
+ 	};

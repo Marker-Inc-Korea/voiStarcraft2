@@ -1265,6 +1265,14 @@ def _micromachine_expected_tactical_effects(
     vector: Mapping[str, object],
 ) -> tuple[str, ...]:
     candidates: list[str] = []
+    tactical_task = _mapping_child(vector, "tactical_task")
+    task_type = str(tactical_task.get("task_type", "") or "")
+    if task_type == "scout_with_units":
+        # Combat/target biases on a scout task describe risk and target
+        # selection, not additional attack effects that must be observed.
+        return ("scout",)
+    if task_type == "pressure_with_main_army":
+        candidates.append("pressure")
     tags = vector.get("tags")
     if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes)):
         candidates.extend(str(tag) for tag in tags if tag is not None)
@@ -1748,7 +1756,15 @@ class _LocalLLMPolicyModulationProvider:
             return _llm_policy_modulation_unavailable_output(
                 "LLM control이 MicroMachine policy modulation provider를 지원하지 않습니다."
             )
-        output = propose(request)
+        try:
+            output = propose(request)
+        except Exception as error:  # noqa: BLE001 - normalize provider boundary.
+            return {
+                **_llm_policy_modulation_unavailable_output(
+                    f"LLM provider 호출에 실패했습니다: {type(error).__name__}: {error}"
+                ),
+                "failure_kind": "api_error",
+            }
         if not isinstance(output, Mapping):
             return _llm_policy_modulation_unavailable_output(
                 "LLM provider가 JSON 객체가 아닌 응답을 반환했습니다."
@@ -1756,137 +1772,12 @@ class _LocalLLMPolicyModulationProvider:
         return {**dict(output), "source": "llm"}
 
 
-class _WebGuiTacticalFallbackPolicyModulationProvider:
-    """Use deterministic UI DSL for live cockpit commands when LLM tooling fails."""
-
-    source = PolicyModulationSource.UI
-
-    def __init__(self, primary_provider: object) -> None:
-        self.primary_provider = primary_provider
-
-    def propose_policy_modulation(self, request: object) -> Mapping[str, object]:
-        method = getattr(self.primary_provider, "propose_policy_modulation", None)
-        if not callable(method):
-            return self._fallback(request)
-        output = method(request)
-        if not isinstance(output, Mapping):
-            return self._fallback(request)
-        if not _should_use_web_gui_tactical_fallback(request, output):
-            return output
-        return self._fallback(request, primary_output=output)
-
-    def _fallback(
-        self,
-        request: object,
-        *,
-        primary_output: Mapping[str, object] | None = None,
-    ) -> Mapping[str, object]:
-        from starcraft_commander.micromachine_live_session import (
-            KeywordPolicyModulationProvider,
-            _force_provider_output_source,
-        )
-
-        output = KeywordPolicyModulationProvider().propose_policy_modulation(request)
-        if not isinstance(output, Mapping):
-            return output
-        forced = dict(_force_provider_output_source(output, PolicyModulationSource.UI))
-        tags = list(_string_list(forced.get("tags", ())))
-        if "web_gui_tactical_fallback" not in tags:
-            tags.append("web_gui_tactical_fallback")
-        reason = (
-            str(primary_output.get("refusal_reason", "") or "").lower()
-            if isinstance(primary_output, Mapping)
-            else ""
-        )
-        if any(marker in reason for marker in ("llm 설정", "llm 키", "provider unavailable")):
-            tags.append("web_gui_llm_unavailable_fallback")
-        forced["tags"] = tags
-        return forced
-
-
-def _should_use_web_gui_tactical_fallback(
-    request: object,
-    output: Mapping[str, object],
-) -> bool:
-    """Return whether the local cockpit should rescue one LLM tooling failure."""
-
-    text = str(getattr(request, "command_text", "") or "")
-    if not _looks_like_micromachine_tactical_command(text):
-        return False
-    status = str(output.get("status", "") or "").strip().lower()
-    reason = str(output.get("refusal_reason", "") or "").strip().lower()
-    if status != "refused" and not reason:
-        return False
-    return not reason or any(
-        marker in reason for marker in _WEB_GUI_TACTICAL_FALLBACK_REASON_MARKERS
-    )
-
-
-_WEB_GUI_TACTICAL_FALLBACK_REASON_MARKERS: Final[frozenset[str]] = frozenset(
-    {
-        "configured llm provider",
-        "failed with",
-        "json 객체가 아닌",
-        "llm provider",
-        "llm policy modulation failed",
-        "llm provider 확인",
-        "llm 설정",
-        "llm 키",
-        "missing modulation object",
-        "missing substantive",
-        "no forced-tool",
-        "provider unavailable",
-        "required bounded tactical_task",
-        "structured json",
-        "tool call",
-        "사용 가능하지",
-        "확인하지 못",
-    }
-)
-"""LLM/tooling failure text that the local web cockpit may rescue."""
-
-
-_WEB_GUI_TACTICAL_COMMAND_MARKERS: Final[frozenset[str]] = frozenset(
-    {
-        "attack",
-        "defend",
-        "enemy",
-        "harass",
-        "hold",
-        "marine",
-        "pressure",
-        "rush",
-        "scout",
-        "공격",
-        "러시",
-        "러쉬",
-        "마린",
-        "버텨",
-        "수비",
-        "압박",
-        "적 발견",
-        "적발견",
-        "정찰",
-        "탐색",
-        "탱크",
-        "해병",
-    }
-)
-"""Tactical live-QA utterance markers safe for bounded UI fallback."""
-
-
-def _looks_like_micromachine_tactical_command(text: str) -> bool:
-    normalized = " ".join(str(text or "").lower().split())
-    return bool(normalized) and any(
-        marker in normalized for marker in _WEB_GUI_TACTICAL_COMMAND_MARKERS
-    )
-
-
 def _llm_policy_modulation_unavailable_output(reason: str) -> Mapping[str, object]:
     return {
         "source": "llm",
         "status": "refused",
         "refusal_reason": reason,
+        "failure_kind": "provider_unavailable",
     }
 
 
@@ -2176,6 +2067,7 @@ class _MicroMachineLaunchManager:
                 "bash",
                 self._script_path,
                 "--live-hold",
+                "--fresh-live-session",
                 "--blackboard-dir",
                 root,
                 "--max-attempts",
@@ -2592,7 +2484,7 @@ class SessionLoopBridge:
             "consumption_status": "pending_compile",
             "message": (
                 "MicroMachine publish를 백그라운드에서 시작했습니다. "
-                "LLM 우선 DSL 컴파일 또는 웹 전술 fallback publish는 status polling으로 갱신됩니다."
+                "LLM DSL 컴파일과 publish 결과는 status polling으로 갱신됩니다."
             ),
         }
 
@@ -2628,9 +2520,7 @@ class SessionLoopBridge:
         elif allow_smoke_keyword_provider:
             provider = KeywordPolicyModulationProvider()
         else:
-            provider = _WebGuiTacticalFallbackPolicyModulationProvider(
-                _LocalLLMPolicyModulationProvider(self._llm_control)
-            )
+            provider = _LocalLLMPolicyModulationProvider(self._llm_control)
         if semantic_scope or ttl_seconds is not None:
             provider = _SemanticScopePolicyModulationProvider(
                 provider,
@@ -3559,7 +3449,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
           <input type="radio" name="command-mode" value="micromachine" checked>
             <span>
               <span class="mode-label" data-i18n="microModeLabel">MicroMachine policy cockpit</span>
-            <span class="mode-description" data-i18n="microModeDescription">채팅/음성은 LLM forced-tool DSL을 우선 사용하고, 전술 tool-call 실패 시 웹 전술 fallback DSL로 MicroMachine blackboard에 publish됩니다.</span>
+            <span class="mode-description" data-i18n="microModeDescription">채팅/음성은 LLM forced-tool DSL만 사용하며, 구조화 응답 검증에 성공한 명령만 MicroMachine blackboard에 publish됩니다.</span>
             </span>
           </label>
         <label class="mode-option">
@@ -3794,6 +3684,7 @@ var COMPACT_AFTER_EVENTS = 28;
 var COMPACT_KEEP_EVENTS = 24;
 var MAX_MESSAGE_PREVIEW_CHARS = 280;
 var MICROMACHINE_CHAT_TIMEOUT_MS = 35000;
+var MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS = 120000;
 var trimmedChatEvents = 0;
 var recentEvents = [];
 var archivedChatEvents = [];
@@ -3811,6 +3702,7 @@ var compactedContext = {
 };
 var pendingCommandSeq = 0;
 var pendingNodes = {};
+var pendingAggregateId = "pending-aggregate";
 var latestMicroMachinePlanText = "";
 var latestState = null;
 var briefingAdviceToggleEnabled = false;
@@ -3881,7 +3773,7 @@ var I18N = {
     runtimeModeMicroSummary: "MicroMachine DSL blackboard가 기본입니다.",
     runtimeModeLegacySummary: "Legacy python-sc2 commander compatibility mode입니다.",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "채팅/음성은 LLM forced-tool DSL을 우선 사용하고, 전술 tool-call 실패 시 웹 전술 fallback DSL로 MicroMachine blackboard에 publish됩니다.",
+    microModeDescription: "채팅/음성은 LLM forced-tool DSL만 사용하며, 구조화 응답 검증에 성공한 명령만 MicroMachine blackboard에 publish됩니다.",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "이전 데모 호환 모드입니다. MicroMachine이 아니며, LLM 키가 있어야 /api/command로 전송됩니다.",
     legacyModeWarning: "Legacy mode는 MicroMachine이 아닙니다. SC2 실행/명령이 python-sc2 demo 경로로 가므로 MicroMachine QA와 혼동하지 마세요.",
@@ -4028,7 +3920,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL 요청이 거부되거나 추가 확인이 필요합니다.",
     microMachineChatFailed: "MicroMachine DSL publish 실패",
     saveLlm: "로컬 키 설정",
-    startupGuide: "🚀 시작 메뉴얼\\n1. 기본 모드는 MicroMachine policy cockpit입니다. 채팅/음성 입력은 LLM forced-tool DSL을 우선 사용해 blackboard에 publish됩니다.\\n2. LLM이 tool-call/JSON을 반환하지 못해도 정찰/공격/수비 같은 전술 명령은 웹 전술 fallback DSL로 publish됩니다.\\n3. 우측 MicroMachine 패널에서 blackboard directory와 semantic scope를 확인하거나 조정하세요.\\n4. Legacy python-sc2 commander는 호환 모드로 직접 선택한 경우에만 /api/command를 사용합니다.\\n🎙️ 음성 버튼을 켜면 말한 내용이 현재 선택된 모드로 전송됩니다."
+    startupGuide: "🚀 시작 메뉴얼\\n1. 기본 모드는 MicroMachine policy cockpit입니다. 채팅/음성 입력은 LLM forced-tool DSL로 blackboard에 publish됩니다.\\n2. LLM이 tool-call/JSON 계약을 충족하지 못하면 명령은 publish되지 않고 실패 상태가 표시됩니다.\\n3. 우측 MicroMachine 패널에서 blackboard directory와 semantic scope를 확인하거나 조정하세요.\\n4. Legacy python-sc2 commander는 호환 모드로 직접 선택한 경우에만 /api/command를 사용합니다.\\n🎙️ 음성 버튼을 켜면 말한 내용이 현재 선택된 모드로 전송됩니다."
   },
   en: {
     eyebrow: "Live RTS Command Center",
@@ -4042,7 +3934,7 @@ var I18N = {
     runtimeModeMicroSummary: "MicroMachine DSL blackboard is the default.",
     runtimeModeLegacySummary: "Legacy python-sc2 commander compatibility mode.",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "Chat/voice prefers LLM forced-tool DSL, then publishes a bounded web tactical fallback DSL if tactical tool-calling fails.",
+    microModeDescription: "Chat/voice uses LLM forced-tool DSL only and publishes only structurally validated commands to the MicroMachine blackboard.",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "Compatibility mode for the older demo path. It is not MicroMachine and requires an LLM key before posting to /api/command.",
     legacyModeWarning: "Legacy mode is not MicroMachine. SC2 launch/commands go through the python-sc2 demo path, so do not use it as MicroMachine QA evidence.",
@@ -4189,7 +4081,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL request was refused or needs clarification.",
     microMachineChatFailed: "MicroMachine DSL publish failed",
     saveLlm: "Save Local Key",
-    startupGuide: "🚀 Startup guide\\n1. The default mode is the MicroMachine policy cockpit. Chat/voice prefers LLM forced-tool DSL and publishes to the blackboard.\\n2. If the LLM misses tool-call/JSON output, tactical scout/attack/defend commands are published through the bounded web fallback DSL.\\n3. Use the MicroMachine panel to confirm or adjust the blackboard directory and semantic scope.\\n4. Legacy python-sc2 commander uses /api/command only when explicitly selected.\\n🎙️ Voice sends recognized speech through the currently selected mode."
+    startupGuide: "🚀 Startup guide\\n1. The default mode is the MicroMachine policy cockpit. Chat/voice uses LLM forced-tool DSL and publishes to the blackboard.\\n2. If the LLM misses the tool-call/JSON contract, the command is not published and the failure is shown.\\n3. Use the MicroMachine panel to confirm or adjust the blackboard directory and semantic scope.\\n4. Legacy python-sc2 commander uses /api/command only when explicitly selected.\\n🎙️ Voice sends recognized speech through the currently selected mode."
   },
   zh: {
     eyebrow: "实时 RTS 指挥中心",
@@ -4203,7 +4095,7 @@ var I18N = {
     runtimeModeMicroSummary: "默认使用 MicroMachine DSL blackboard。",
     runtimeModeLegacySummary: "Legacy python-sc2 commander 兼容模式。",
     microModeLabel: "MicroMachine policy cockpit",
-    microModeDescription: "聊天/语音优先使用 LLM forced-tool DSL；战术 tool-call 失败时会通过有界网页 fallback DSL 发布到 MicroMachine blackboard。",
+    microModeDescription: "聊天/语音仅使用 LLM forced-tool DSL，只有通过结构验证的命令才会发布到 MicroMachine blackboard。",
     legacyModeLabel: "Legacy python-sc2 commander",
     legacyModeDescription: "旧 demo 路径的兼容模式。它不是 MicroMachine，并且需要 LLM key 才会发送到 /api/command。",
     legacyModeWarning: "Legacy mode 不是 MicroMachine。SC2 启动/命令会走 python-sc2 demo 路径，不要把它当作 MicroMachine QA 证据。",
@@ -4350,7 +4242,7 @@ var I18N = {
     microMachineChatRefused: "MicroMachine DSL 请求被拒绝或需要进一步确认。",
     microMachineChatFailed: "MicroMachine DSL 发布失败",
     saveLlm: "保存本地 Key",
-    startupGuide: "🚀 启动指南\\n1. 默认模式是 MicroMachine policy cockpit。聊天/语音优先使用 LLM forced-tool DSL 并发布到 blackboard。\\n2. 如果 LLM 未返回 tool-call/JSON，侦察/攻击/防守等战术命令会通过有界网页 fallback DSL 发布。\\n3. 在 MicroMachine 面板确认或调整 blackboard directory 与 semantic scope。\\n4. Legacy python-sc2 commander 只有显式选择时才使用 /api/command。\\n🎙️ 语音会通过当前选择的模式发送。"
+    startupGuide: "🚀 启动指南\\n1. 默认模式是 MicroMachine policy cockpit。聊天/语音使用 LLM forced-tool DSL 并发布到 blackboard。\\n2. 如果 LLM 未满足 tool-call/JSON 契约，命令不会发布，并会显示失败状态。\\n3. 在 MicroMachine 面板确认或调整 blackboard directory 与 semantic scope。\\n4. Legacy python-sc2 commander 只有显式选择时才使用 /api/command。\\n🎙️ 语音会通过当前选择的模式发送。"
   }
 };
 
@@ -4687,18 +4579,52 @@ function compactRecentEventsIfNeeded() {
 function appendPendingCommand(text) {
   pendingCommandSeq += 1;
   var pendingId = "pending-" + pendingCommandSeq;
-  var entry = document.createElement("div");
-  entry.className = "log-entry pending-entry";
-  entry.id = pendingId;
+  if (!pendingNodes[text]) { pendingNodes[text] = []; }
+  pendingNodes[text].push(pendingId);
+  renderPendingAggregate(text);
+  updateAssistantPendingState();
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function pendingCommandTexts() {
+  var texts = [];
+  Object.keys(pendingNodes).forEach(function (key) {
+    var ids = pendingNodes[key] || [];
+    ids.forEach(function () { texts.push(key); });
+  });
+  return texts;
+}
+
+function renderPendingAggregate(latestText) {
+  var entry = document.getElementById(pendingAggregateId);
+  var texts = pendingCommandTexts();
+  if (!texts.length) {
+    if (entry) { entry.remove(); }
+    return;
+  }
+  var displayText = latestText || texts[texts.length - 1] || "";
+  if (!entry) {
+    entry = document.createElement("div");
+    entry.className = "log-entry pending-entry";
+    entry.id = pendingAggregateId;
+    logBox.appendChild(entry);
+  }
+  entry.textContent = "";
 
   var userMessage = document.createElement("div");
   userMessage.className = "message message-user";
-  userMessage.setAttribute("data-full-text", text);
+  userMessage.setAttribute("data-full-text", displayText);
   var userMeta = document.createElement("span");
   userMeta.className = "message-meta";
   userMeta.textContent = t("userLabel");
   userMessage.appendChild(userMeta);
-  appendCompactText(userMessage, text, "command-text");
+  appendCompactText(userMessage, displayText, "command-text");
+  if (texts.length > 1) {
+    var aggregateMeta = document.createElement("span");
+    aggregateMeta.className = "message-meta";
+    aggregateMeta.textContent = " · " + assistantPendingLabel(texts.length);
+    userMessage.appendChild(aggregateMeta);
+  }
   entry.appendChild(userMessage);
 
   var botMessage = document.createElement("div");
@@ -4724,24 +4650,14 @@ function appendPendingCommand(text) {
   }
   botMessage.appendChild(typingIndicator);
   entry.appendChild(botMessage);
-
-  if (!pendingNodes[text]) { pendingNodes[text] = []; }
-  pendingNodes[text].push(pendingId);
-  logBox.appendChild(entry);
   trimChatLog();
-  updateAssistantPendingState();
-  logBox.scrollTop = logBox.scrollHeight;
 }
 
 function clearPendingMicroMachinePlan() {
   Object.keys(pendingNodes).forEach(function (key) {
-    var ids = pendingNodes[key] || [];
-    ids.forEach(function (pendingId) {
-      var node = document.getElementById(pendingId);
-      if (node) { node.remove(); }
-    });
     delete pendingNodes[key];
   });
+  renderPendingAggregate();
   updateAssistantPendingState();
 }
 
@@ -4783,10 +4699,9 @@ function removeVoiceRecordingBubble() {
 function removePendingForCommand(text) {
   var pendingIds = pendingNodes[text];
   if (!pendingIds || !pendingIds.length) { return false; }
-  var pendingId = pendingIds.shift();
-  var node = document.getElementById(pendingId);
-  if (node) { node.remove(); }
+  pendingIds.shift();
   if (!pendingIds.length) { delete pendingNodes[text]; }
+  renderPendingAggregate();
   updateAssistantPendingState();
   return true;
 }
@@ -6147,6 +6062,7 @@ function pollMicroMachineStatus() {
     .then(parseJsonResponse)
     .then(renderMicroMachineStatus)
     .catch(function (error) {
+      expirePendingMicroMachineAsync();
       var node = document.getElementById("micromachine-status");
       if (node) { node.textContent = t("microMachineFailed") + ": " + error.message; }
     });
@@ -6202,17 +6118,13 @@ function looksLikeMicroMachineTacticalCommand(text) {
 
 function buildMicroMachineModulationPayload(text) {
   var blackboardInput = document.getElementById("micromachine-blackboard-dir");
-  var tacticalCommand = looksLikeMicroMachineTacticalCommand(text);
   var payload = {
     text: text,
     blackboard_dir: blackboardInput ? blackboardInput.value.trim() : "",
     ui_language: currentLang || "ko",
     response_language: detectMicroMachineResponseLanguage(text),
-    async_publish: !tacticalCommand
+    async_publish: true
   };
-  if (tacticalCommand) {
-    payload.allow_smoke_keyword_provider = true;
-  }
   var semanticScope = buildMicroMachineSemanticScopePayload();
   if (Object.keys(semanticScope).length) {
     payload.semantic_scope = semanticScope;
@@ -6230,6 +6142,30 @@ function rememberPendingMicroMachineAsync(text, data) {
     text: text,
     createdAt: Date.now()
   };
+}
+
+function microMachineAsyncTimeoutError() {
+  return new Error(
+    "MicroMachine LLM 컴파일/적용 상태가 " +
+    Math.round(MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS / 1000) +
+    "초 안에 완료되지 않았습니다. pending을 종료했습니다. 명령 적용 여부를 telemetry에서 확인한 뒤 다시 시도해 주세요."
+  );
+}
+
+function expirePendingMicroMachineAsync(nowMs) {
+  var currentTime = typeof nowMs === "number" ? nowMs : Date.now();
+  Object.keys(pendingMicroMachineAsyncUpdates || {}).forEach(function(updateId) {
+    var pending = pendingMicroMachineAsyncUpdates[updateId];
+    var createdAt = pending && Number(pending.createdAt);
+    if (!createdAt || currentTime - createdAt < MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS) {
+      return;
+    }
+    delete pendingMicroMachineAsyncUpdates[updateId];
+    safelyAppendMicroMachineChatFailure(
+      (pending && pending.text) || "",
+      microMachineAsyncTimeoutError()
+    );
+  });
 }
 
 function maybeAppendMicroMachineAsyncCompletion(data) {
@@ -6273,6 +6209,7 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
       narration: microMachineChatNarration(narrationData)
     });
   });
+  expirePendingMicroMachineAsync();
 }
 
 function microMachineAssistantMessage(compileResult, vector) {
@@ -6448,12 +6385,14 @@ function submitMicroMachineModulation(payload, options) {
     .then(parseJsonResponse)
     .then(function (data) {
       clearSubmitTimeout();
-      if (data && data.async_publish) { rememberPendingMicroMachineAsync(payload.text || "", data); }
+      if (!timedOut && data && data.async_publish) {
+        rememberPendingMicroMachineAsync(payload.text || "", data);
+      }
       if (options.appendChat && !timedOut && !(data && data.async_publish)) {
         safelyAppendMicroMachineChatResult(payload.text || "", data);
       }
       safeRenderMicroMachineStatus(data);
-      if (options.clearInput && data.ok) { options.clearInput.value = ""; }
+      if (!timedOut && options.clearInput && data.ok) { options.clearInput.value = ""; }
       return data;
     })
     .catch(function (error) {
@@ -7266,13 +7205,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
             self._send_internal_error(error)
             return
-        update = payload.get("update")
-        vector = update.get("vector") if isinstance(update, Mapping) else None
-        tags = _string_list(vector.get("tags", ())) if isinstance(vector, Mapping) else ()
-        llm_unavailable_fallback = "web_gui_llm_unavailable_fallback" in tags
         status = (
             HTTPStatus.OK
-            if llm_unavailable_fallback or not bool(payload.get("ok"))
+            if not bool(payload.get("ok"))
             else HTTPStatus.ACCEPTED
         )
         payload["accepted"] = bool(payload.get("ok"))

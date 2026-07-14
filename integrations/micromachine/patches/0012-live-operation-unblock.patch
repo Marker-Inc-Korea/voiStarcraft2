@@ -1,0 +1,475 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2656,6 +2656,41 @@ bool BuildingManager::isVoiAddonProducerEligible(sc2::Tag tag) const
+ 		|| m_bot.GetCurrentFrame() >= cooldownIt->second;
+ }
+ 
++int BuildingManager::countVoiEligibleAddonProducers(sc2::UNIT_TYPEID producerType) const
++{
++	int count = 0;
++	for (const auto & producer : m_bot.GetAllyUnits(producerType))
++	{
++		if (!producer.isValid()
++			|| !producer.isAlive()
++			|| !producer.isCompleted()
++			|| producer.isFlying()
++			|| producer.getAddonTag() != 0
++			|| isVoiProducerCommandOwned(producer.getTag())
++			|| !isVoiAddonProducerEligible(producer.getTag()))
++		{
++			continue;
++		}
++		count++;
++	}
++	return count;
++}
++
++bool BuildingManager::hasVoiBlockedAddonProducer(sc2::UNIT_TYPEID producerType) const
++{
++	const uint32_t currentFrame = m_bot.GetCurrentFrame();
++	for (const auto & producer : m_bot.GetAllyUnits(producerType))
++	{
++		const auto blockedIt = m_addonProducerCooldownUntil.find(producer.getTag());
++		if (blockedIt != m_addonProducerCooldownUntil.end()
++			&& currentFrame < blockedIt->second)
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
+ bool BuildingManager::isVoiAddonLandingSiteValid(const Building & b, const CCPosition & producerPosition)
+ {
+ 	if (producerPosition == CCPosition() || !b.builderUnit.isValid())
+@@ -3200,7 +3235,7 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 		return true;
+ 	}
+ 
+-	const uint32_t producerCooldown = 22u * 2u;
++	const uint32_t producerCooldown = 22u * 60u * 5u;
+ 	m_addonProducerCooldownUntil[producerTag] = currentFrame + producerCooldown;
+ 	m_addonPlacementRetries.erase(producerTag);
+ 	m_addonRelocations.erase(producerTag);
+@@ -3210,7 +3245,7 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 	b.unassign();
+ 	Util::Log(
+ 		__FUNCTION__,
+-		"VOI addon footprint stayed blocked; released the addon task for producer replanning without lifting the production building.",
++		"VOI addon footprint stayed blocked; quarantined this producer and released the addon task for replacement-facility replanning without lifting.",
+ 		m_bot);
+ 	return true;
+ }
+diff --git a/src/BuildingManager.h b/src/BuildingManager.h
+--- a/src/BuildingManager.h
++++ b/src/BuildingManager.h
+@@ -163,4 +163,6 @@ public:
+ 	bool				isVoiBuildingMobilityOwned(sc2::Tag tag) const;
+ 	bool				isVoiProducerCommandOwned(sc2::Tag tag) const;
+ 	bool				isVoiAddonProducerEligible(sc2::Tag tag) const;
++	int					countVoiEligibleAddonProducers(sc2::UNIT_TYPEID producerType) const;
++	bool				hasVoiBlockedAddonProducer(sc2::UNIT_TYPEID producerType) const;
+ };
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2200,6 +2200,17 @@ void CombatCommander::updateScoutSquad()
+ 		&& !m_bot.Map().isExplored(enemyStartingBase->getPosition());
+ 	const bool explicitPressureScope = tacticalTaskType == "pressure_with_main_army"
+ 		&& voiTacticalTaskWithinDuration(m_bot);
++	const std::string pressureScoutOperationKey = explicitPressureScope
++		? voiPressureOperationKey(m_bot)
++		: "";
++	if (m_voiScoutOperationKey != pressureScoutOperationKey)
++	{
++		m_voiScoutOperationKey = pressureScoutOperationKey;
++		m_voiScoutProgressTarget = CCPosition();
++		m_voiScoutBestTargetDistance = 0.0f;
++		m_voiScoutLastProgressFrame = 0;
++		m_voiStalledScoutTargets.clear();
++	}
+ 	const bool pressureNeedsScout = explicitPressureScope
+ 		&& requireFreshEnemyObservation
+ 		&& !voiHasObservedEnemyLocationEvidence(m_bot);
+@@ -2552,17 +2563,66 @@ void CombatCommander::updateScoutSquad()
+ 	}
+ 
+ 	const CCPosition defaultScoutTarget = GetNextBaseLocationToScout();
+-	const CCPosition scoutTarget = pressureNeedsScout
+-		? defaultScoutTarget
++	CCPosition scoutTarget = pressureNeedsScout
++		? GetNextEnemyStartCandidateToScout()
+ 		: activeScoutScope
+ 			? voiResolveCombatLocationIntent(m_bot, effectiveLocationIntent.empty() ? "enemy_main" : effectiveLocationIntent, defaultScoutTarget)
+ 			: defaultScoutTarget;
++	bool rotatedStalledTarget = false;
++	if (pressureNeedsScout && scoutTarget != CCPosition())
++	{
++		const Unit & scoutUnit = scoutSquad.getUnits().front();
++		const float targetDistance = Util::Dist(scoutUnit.getPosition(), scoutTarget);
++		const uint32_t currentFrame = m_bot.GetCurrentFrame();
++		const bool targetChanged = m_voiScoutProgressTarget == CCPosition()
++			|| Util::DistSq(m_voiScoutProgressTarget, scoutTarget) > 4.0f;
++		if (targetChanged)
++		{
++			m_voiScoutProgressTarget = scoutTarget;
++			m_voiScoutBestTargetDistance = targetDistance;
++			m_voiScoutLastProgressFrame = currentFrame;
++		}
++		else if (targetDistance + 1.5f < m_voiScoutBestTargetDistance)
++		{
++			m_voiScoutBestTargetDistance = targetDistance;
++			m_voiScoutLastProgressFrame = currentFrame;
++		}
++		else if (currentFrame >= m_voiScoutLastProgressFrame
++			&& currentFrame - m_voiScoutLastProgressFrame >= 22u * 12u)
++		{
++			m_voiStalledScoutTargets.push_back(scoutTarget);
++			for (const auto baseLocation : m_bot.Bases().getBaseLocations())
++			{
++				if (Util::DistSq(baseLocation->getPosition(), scoutTarget) <= 6.0f * 6.0f
++					&& !Util::Contains(baseLocation, m_visitedBaseLocations))
++				{
++					m_visitedBaseLocations.push_back(baseLocation);
++					break;
++				}
++			}
++			const CCPosition replacementTarget = GetNextEnemyStartCandidateToScout();
++			if (replacementTarget != CCPosition())
++			{
++				scoutTarget = replacementTarget;
++			}
++			m_voiScoutProgressTarget = scoutTarget;
++			m_voiScoutBestTargetDistance = Util::Dist(scoutUnit.getPosition(), scoutTarget);
++			m_voiScoutLastProgressFrame = currentFrame;
++			rotatedStalledTarget = true;
++			Util::Log(
++				__FUNCTION__,
++				"VOI combat scout made no route progress for 12 seconds; rotating away from the stalled base candidate.",
++				m_bot);
++		}
++	}
+ 	const SquadOrder scoutOrder(SquadOrderTypes::Scout, scoutTarget, ScoutOrderRadius, "Scout");
+ 	scoutSquad.setSquadOrder(scoutOrder);
+ 	m_lastVoiScoutAssignedUnitCount = static_cast<int>(scoutSquad.getUnits().size());
+ 	m_lastVoiScoutScopeStatus = activeScoutScope ? "Consumed" : "Default";
+ 	m_lastVoiScoutScopeReason = pressureNeedsScout
+-		? "Combat scout is searching base candidates before a fresh-observation attack"
++		? (rotatedStalledTarget
++			? "Combat scout rotated from a stalled enemy-start candidate"
++			: "Combat scout is checking an unobserved enemy-start candidate before attack")
+ 		: (tacticalScoutTask ? "Tactical task scout_with_units assigned to Scout squad" : (explicitScoutScope ? "Explicit VOI scout scope assigned to Scout squad" : (autonomousCombatScoutScope ? "Autonomous combat scout assigned because enemy start is unexplored" : "Default scout squad assigned")));
+ 	m_lastVoiScoutHomeDistance = voiSquadMaxHomeDistance(scoutSquad.getUnits(), m_bot);
+ 	m_maxVoiScoutHomeDistance = std::max(m_maxVoiScoutHomeDistance, m_lastVoiScoutHomeDistance);
+@@ -2677,6 +2737,9 @@ void CombatCommander::updateAttackSquads()
+ 		m_voiTacticalRegroupActive = false;
+ 		m_voiTacticalRegroupStartFrame = 0;
+ 		m_voiTacticalRelaunchGraceUntilFrame = 0;
++		m_voiFlankStageOperationKey = "";
++		m_voiFlankStageCompleted = false;
++		m_voiFlankStagePosition = CCPosition();
+ 		if (voiPressureOperationChanged)
+ 		{
+ 			m_winAttackSimulation = true;
+@@ -3018,6 +3081,11 @@ void CombatCommander::updateAttackSquads()
+ 	const bool voiAwaitingFreshEnemyObservation = voiRequiresFreshEnemyObservation
+ 		&& !voiHasFreshEnemyObservation
+ 		&& !m_voiRallyCompleted;
++	m_lastVoiTargetEvidence = voiHasFreshEnemyObservation
++		? "observed_enemy"
++		: (voiAwaitingFreshEnemyObservation
++			? "enemy_start_candidate_scouting"
++			: (explicitBlindAttack ? "explicit_blind_candidate" : "map_search"));
+ 	const bool voiSweepingAfterLostContact = tacticalPressureTask
+ 		&& voiRequiresFreshEnemyObservation
+ 		&& !voiHasFreshEnemyObservation
+@@ -3025,6 +3093,7 @@ void CombatCommander::updateAttackSquads()
+ 	if (voiSweepingAfterLostContact)
+ 	{
+ 		orderPosition = exploreMap();
++		m_lastVoiTargetEvidence = "observed_contact_lost_sweep";
+ 	}
+ 	const int voiScopeMinUnits = std::max(
+ 		0,
+@@ -3159,9 +3228,18 @@ void CombatCommander::updateAttackSquads()
+ 		}
+ 	}
+ 
++	const std::string voiFlankOperationKey = voiPressureOperationLatchKey
++		+ "|" + voiRouteIntent
++		+ "|" + voiEffectiveLocationIntent;
++	if (m_voiFlankStageOperationKey != voiFlankOperationKey)
++	{
++		m_voiFlankStageOperationKey = voiFlankOperationKey;
++		m_voiFlankStageCompleted = false;
++		m_voiFlankStagePosition = CCPosition();
++	}
+ 	if ((voiFlankBias > 0.0f || voiRouteIntent == "flank_left" || voiRouteIntent == "flank_right" || voiRouteIntent == "safe_path")
+ 		&& voiIsRemoteCombatTarget(m_bot, orderPosition)
+-		&& voiSquadMaxHomeDistance(mainAttackSquad.getUnits(), m_bot) < 70.0f)
++		&& !m_voiFlankStageCompleted)
+ 	{
+ 		const CCPosition home = voiHomePosition(m_bot);
+ 		const CCPosition homeToTarget = orderPosition - home;
+@@ -3181,11 +3259,31 @@ void CombatCommander::updateAttackSquads()
+ 				&& m_bot.Map().isWalkable(flankStage)
+ 				&& m_bot.Map().isConnected(home, flankStage))
+ 			{
+-				orderPosition = flankStage;
+-				flankStageSelected = true;
++				m_voiFlankStagePosition = flankStage;
++				const int stageRequiredUnits = std::max(
++					1,
++					static_cast<int>(std::ceil(
++						static_cast<float>(mainAttackSquad.getUnits().size()) * 0.60f)));
++				const bool stageReached = voiCountUnitsNearPosition(
++					mainAttackSquad.getUnits(),
++					flankStage,
++					10.0f) >= stageRequiredUnits;
++				if (stageReached)
++				{
++					m_voiFlankStageCompleted = true;
++					Util::Log(
++						__FUNCTION__,
++						"VOI flank stage completed; advancing the same operation to its final observed target.",
++						m_bot);
++				}
++				else
++				{
++					orderPosition = flankStage;
++					flankStageSelected = true;
++				}
+ 			}
+ 		}
+-		if (!flankStageSelected)
++		if (!flankStageSelected && !m_voiFlankStageCompleted)
+ 		{
+ 			const float routeBias = voiRouteIntent == "safe_path" ? 0.65f : 0.0f;
+ 			const float flankStageWeight = std::min(0.45f, std::max(routeBias, std::max(0.0f, voiFlankBias)) * 0.45f);
+@@ -4960,6 +5058,53 @@ CCPosition CombatCommander::GetNextBaseLocationToScout()
+ 	return targetBasePosition;
+ }
+ 
++CCPosition CombatCommander::GetNextEnemyStartCandidateToScout()
++{
++	auto & squad = m_squadData.getSquad("Scout");
++	if (squad.getUnits().empty())
++	{
++		return GetNextBaseLocationToScout();
++	}
++
++	const Unit & scoutUnit = squad.getUnits().front();
++	CCPosition selectedCandidate;
++	float selectedDistance = 0.0f;
++	for (const auto & candidate : m_bot.GetEnemyStartLocations())
++	{
++		if (m_bot.Map().isExplored(candidate))
++		{
++			continue;
++		}
++		bool stalled = false;
++		for (const auto & stalledTarget : m_voiStalledScoutTargets)
++		{
++			if (Util::DistSq(stalledTarget, candidate) <= 4.0f)
++			{
++				stalled = true;
++				break;
++			}
++		}
++		if (stalled)
++		{
++			continue;
++		}
++		if (!scoutUnit.isFlying()
++			&& m_bot.Map().getGroundDistance(candidate, scoutUnit.getPosition()) < 0)
++		{
++			continue;
++		}
++		const float distance = Util::DistSq(scoutUnit.getPosition(), candidate);
++		if (selectedCandidate == CCPosition() || distance < selectedDistance)
++		{
++			selectedCandidate = candidate;
++			selectedDistance = distance;
++		}
++	}
++	return selectedCandidate != CCPosition()
++		? selectedCandidate
++		: GetNextBaseLocationToScout();
++}
++
+ void CombatCommander::SetLogVikingActions(bool log)
+ {
+ 	m_logVikingActions = log;
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -175,6 +175,9 @@ class CombatCommander
+ 	bool m_voiTacticalRegroupActive = false;
+ 	uint32_t m_voiTacticalRegroupStartFrame = 0;
+ 	uint32_t m_voiTacticalRelaunchGraceUntilFrame = 0;
++	std::string m_voiFlankStageOperationKey = "";
++	bool m_voiFlankStageCompleted = false;
++	CCPosition m_voiFlankStagePosition = CCPosition();
+ 	bool m_lastVoiBoundedForceCommit = false;
+ 	int m_lastVoiMainAttackUnitCount = 0;
+ 	int m_lastVoiMainAttackScopeMinUnits = 0;
+@@ -203,6 +206,12 @@ class CombatCommander
+ 	uint64_t m_lastVoiScoutCommandedUnitTag = 0;
+ 	std::string m_lastVoiScoutCommandedUnitType = "";
+ 	std::map<sc2::Tag, std::string> m_voiScoutPreviousSquadByTag;
++	std::string m_voiScoutOperationKey = "";
++	CCPosition m_voiScoutProgressTarget = CCPosition();
++	float m_voiScoutBestTargetDistance = 0.0f;
++	uint32_t m_voiScoutLastProgressFrame = 0;
++	std::vector<CCPosition> m_voiStalledScoutTargets;
++	std::string m_lastVoiTargetEvidence = "none";
+ 	int m_lastVoiActionPlanCount = 0;
+ 	int m_lastVoiActionIssuedCount = 0;
+ 	int m_lastVoiActionSkippedCount = 0;
+@@ -287,6 +296,7 @@ class CombatCommander
+ 	CCPosition		exploreMap();
+ 	CCPosition		GetClosestEnemyBaseLocation();
+ 	CCPosition		GetNextBaseLocationToScout();
++	CCPosition		GetNextEnemyStartCandidateToScout();
+ 
+     bool            shouldWeStartAttacking();
+ 	
+@@ -382,6 +392,7 @@ public:
+ 	const std::string & getVoiScoutIssuedAction() const { return m_lastVoiScoutIssuedAction; }
+ 	uint64_t getVoiScoutCommandedUnitTag() const { return m_lastVoiScoutCommandedUnitTag; }
+ 	const std::string & getVoiScoutCommandedUnitType() const { return m_lastVoiScoutCommandedUnitType; }
++	const std::string & getVoiTargetEvidence() const { return m_lastVoiTargetEvidence; }
+ 	int getVoiActionPlanCount() const { return m_lastVoiActionPlanCount; }
+ 	int getVoiActionIssuedCount() const { return m_lastVoiActionIssuedCount; }
+ 	int getVoiActionSkippedCount() const { return m_lastVoiActionSkippedCount; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -551,6 +551,7 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"scout_last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutIssuedAction()) << "\","
+         << "\"scout_last_commanded_unit_tag\":" << m_combatCommander.getVoiScoutCommandedUnitTag() << ","
+         << "\"scout_last_commanded_unit_type\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutCommandedUnitType()) << "\","
++        << "\"target_evidence\":\"" << voiJsonEscape(m_combatCommander.getVoiTargetEvidence()) << "\","
+         << "\"action_plan_count\":" << m_combatCommander.getVoiActionPlanCount() << ","
+         << "\"actual_command_issued_count\":" << m_combatCommander.getVoiActionIssuedCount() << ","
+         << "\"action_skipped_count\":" << m_combatCommander.getVoiActionSkippedCount() << ","
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -2559,6 +2559,7 @@ void ProductionManager::refreshVoiDoctrinePolicyBaseline(const std::string & upd
+ 	m_lastVoiSupplyRecoveryReason = "none";
+ 	m_lastVoiSupplyProviderCommandKind = "none";
+ 	m_lastVoiSupplyProviderCommandUpdateId = "";
++	m_voiFactoryAddonReplacementQueued = false;
+ 
+ 	const std::vector<MetaType> baselineTypes = {
+ 		MetaTypeEnum::Barracks,
+@@ -2826,6 +2827,12 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		m_bot,
+ 		sc2::UNIT_TYPEID::TERRAN_FACTORY,
+ 		sc2::UNIT_TYPEID::TERRAN_FACTORYTECHLAB);
++	const bool factoryTechLabTaskActive = m_bot.Buildings().isBeingBuilt(
++		MetaTypeEnum::FactoryTechLab.getUnitType());
++	const int eligibleFactoryAddonProducers = m_bot.Buildings().countVoiEligibleAddonProducers(
++		sc2::UNIT_TYPEID::TERRAN_FACTORY);
++	const bool blockedFactoryAddonProducer = m_bot.Buildings().hasVoiBlockedAddonProducer(
++		sc2::UNIT_TYPEID::TERRAN_FACTORY);
+ 	const int starportCount = m_bot.UnitInfo().getUnitTypeCount(
+ 		Players::Self,
+ 		MetaTypeEnum::Starport.getUnitType(),
+@@ -2977,10 +2984,47 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
+-	if (wantsFactoryTechLab && completedFactoryCount > factoryTechLabCount && queueVoiDoctrineItem(MetaTypeEnum::FactoryTechLab, "factory_techlab", true))
++	if (factoryTechLabTaskActive && m_queue.contains(MetaTypeEnum::FactoryTechLab))
+ 	{
+-		return;
++		m_queue.removeAllOfType(MetaTypeEnum::FactoryTechLab);
++	}
++	const bool factoryReplacementPending =
++		m_queue.contains(MetaTypeEnum::Factory)
++		|| m_bot.Buildings().isBeingBuilt(MetaTypeEnum::Factory.getUnitType())
++		|| factoryCount > completedFactoryCount;
++	if (wantsFactoryTechLab
++		&& factoryTechLabCount == 0
++		&& eligibleFactoryAddonProducers == 0
++		&& blockedFactoryAddonProducer)
++	{
++		if (!m_voiFactoryAddonReplacementQueued && !factoryReplacementPending)
++		{
++			if (queueVoiDoctrineItem(
++				MetaTypeEnum::Factory,
++				"factory_addon_replacement",
++				true))
++			{
++				m_voiFactoryAddonReplacementQueued = true;
++				Util::Log(
++					__FUNCTION__,
++					"VOI queued one addon-clear replacement Factory after the existing producer was quarantined.",
++					m_bot);
++				return;
++			}
++		}
+ 	}
++	if (wantsFactoryTechLab
++		&& completedFactoryCount > factoryTechLabCount
++		&& eligibleFactoryAddonProducers > 0
++		&& !factoryTechLabTaskActive)
++	{
++		const bool factoryTechLabAlreadyQueued = m_queue.contains(MetaTypeEnum::FactoryTechLab);
++		if (queueVoiDoctrineItem(MetaTypeEnum::FactoryTechLab, "factory_techlab", true)
++			&& !factoryTechLabAlreadyQueued)
++		{
++			return;
++		}
++	}
+ 	if (wantsStarport && factoryCount > 0 && starportCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Starport, "starport_transition", true))
+ 	{
+ 		return;
+@@ -3951,23 +3995,20 @@ bool ProductionManager::hasProducer(const MetaType& metaType, bool checkInQueue)
+ 			return true;
+ 		if (metaType.isAddon())
+ 		{
+-			int count = m_bot.UnitInfo().getUnitTypeCount(Players::Self, producer, false, false);
+-			auto buildings = m_bot.Buildings().getBaseBuildings();
+-			for (auto building : buildings)
++			for (const auto & building : m_bot.GetAllyUnits(producer.getAPIUnitType()))
+ 			{
+-				if (building.getType() == producer)
++				if (!building.isValid()
++					|| !building.isAlive()
++					|| !building.isCompleted()
++					|| building.isFlying()
++					|| building.getAddonTag() != 0
++					|| m_bot.Buildings().isVoiProducerCommandOwned(building.getTag())
++					|| !m_bot.Buildings().isVoiAddonProducerEligible(building.getTag()))
+ 				{
+-					if (building.getAddonTag() == 0)
+-					{
+-						return true;
+-					}
+-					--count;
++					continue;
+ 				}
+-			}
+-			if (count > 0)	// This hack is because there is a moment where the building is purchased and removed from the queue but not yet in the buildings manager
+ 				return true;
+-			
+-			//Addons do not check further or else we could try to build an addon on a building with an addon already.
++			}
+ 			return checkInQueue && m_queue.contains(MetaType(producer, m_bot));
+ 		}
+ 		if (m_bot.UnitInfo().getUnitTypeCount(Players::Self, producer, false, true) > 0)
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -58,6 +58,7 @@ class ProductionManager
+ 	uint32_t m_voiDoctrineBaselineFrame = 0;
+ 	std::map<sc2::UNIT_TYPEID, bool> m_voiDoctrineQueueBaseline;
+ 	std::map<sc2::UNIT_TYPEID, int> m_voiDoctrineUnitCountBaseline;
++	bool m_voiFactoryAddonReplacementQueued = false;
+ 	std::map<sc2::UNIT_TYPEID, uint32_t> m_nextPlacementRetryFrame;
+ 	std::map<sc2::UNIT_TYPEID, int> m_placementRetryCount;
+ 	std::vector<sc2::UNIT_TYPEID> factoryUnitTypes = { sc2::UNIT_TYPEID::TERRAN_HELLION, sc2::UNIT_TYPEID::TERRAN_HELLIONTANK, sc2::UNIT_TYPEID::TERRAN_WIDOWMINE, sc2::UNIT_TYPEID::TERRAN_SIEGETANK, sc2::UNIT_TYPEID::TERRAN_CYCLONE, sc2::UNIT_TYPEID::TERRAN_THOR };

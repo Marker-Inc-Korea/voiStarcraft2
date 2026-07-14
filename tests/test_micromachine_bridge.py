@@ -29,6 +29,7 @@ from starcraft_commander.policy_modulation import (
     TacticalScopeModulation,
     TacticalTaskModulation,
     TechModulation,
+    LifetimeModulation,
     WeightedBiases,
     WorkerModulation,
 )
@@ -189,6 +190,24 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
             MicroMachineBridgeFailureMode.STALE_MODULATION,
             stale.failure_mode,
         )
+
+        semantic_update = MicroMachineBlackboardUpdate(
+            update_id="mod-semantic",
+            vector=PolicyModulationVector(
+                goal="complete the operation",
+                ttl_seconds=1,
+                lifetime=LifetimeModulation(
+                    mode="until_completed",
+                    completion_conditions=("target_reached",),
+                ),
+            ),
+            issued_at_frame=0,
+        )
+        semantic = validate_micromachine_blackboard_update(
+            semantic_update.to_dict(),
+            current_frame=semantic_update.expires_at_frame + 10_000,
+        )
+        self.assertTrue(semantic.accepted, semantic.to_dict())
 
         invalid = validate_micromachine_blackboard_update(
             {

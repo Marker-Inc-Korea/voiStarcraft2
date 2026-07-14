@@ -1,0 +1,912 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+index a6dde59..f396494 100644
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2301,6 +2301,255 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+ 	}
+ }
+ 
++bool BuildingManager::isVoiAddonFootprintClear(const Building & b, const CCPosition & producerPosition)
++{
++	for (int x = 2; x <= 3; ++x)
++	{
++		for (int y = -1; y <= 0; ++y)
++		{
++			const CCPosition addonTile = producerPosition + CCPosition(static_cast<float>(x), static_cast<float>(y));
++			if (!getBuildingPlacer().buildable(b.type, addonTile.x, addonTile.y, true))
++			{
++				return false;
++			}
++		}
++	}
++
++	const CCPosition addonCenter = producerPosition + CCPosition(2.5f, -0.5f);
++	for (const auto & unit : m_bot.GetUnits())
++	{
++		if (!unit.isValid()
++			|| !unit.isAlive()
++			|| unit.isFlying()
++			|| unit.getTag() == b.builderUnit.getTag())
++		{
++			continue;
++		}
++		if (Util::Dist(addonCenter, unit.getPosition()) <= 1.0f + unit.getUnitPtr()->radius)
++		{
++			return false;
++		}
++	}
++	return true;
++}
++
++bool BuildingManager::isVoiAddonLandingSiteValid(const Building & b, const CCPosition & producerPosition)
++{
++	if (producerPosition == CCPosition() || !b.builderUnit.isValid())
++	{
++		return false;
++	}
++	sc2::AbilityID landAbility = sc2::ABILITY_ID::LAND;
++	switch ((sc2::UNIT_TYPEID)b.builderUnit.getAPIUnitType())
++	{
++		case sc2::UNIT_TYPEID::TERRAN_BARRACKS:
++		case sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING:
++			landAbility = sc2::ABILITY_ID::LAND_BARRACKS;
++			break;
++		case sc2::UNIT_TYPEID::TERRAN_FACTORY:
++		case sc2::UNIT_TYPEID::TERRAN_FACTORYFLYING:
++			landAbility = sc2::ABILITY_ID::LAND_FACTORY;
++			break;
++		case sc2::UNIT_TYPEID::TERRAN_STARPORT:
++		case sc2::UNIT_TYPEID::TERRAN_STARPORTFLYING:
++			landAbility = sc2::ABILITY_ID::LAND_STARPORT;
++			break;
++		default:
++			break;
++	}
++	const sc2::Unit * queryUnit = b.builderUnit.isFlying() ? b.builderUnit.getUnitPtr() : nullptr;
++	if (!m_bot.Query()->Placement(landAbility, producerPosition, queryUnit))
++	{
++		return false;
++	}
++	return isVoiAddonFootprintClear(b, producerPosition);
++}
++
++CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
++{
++	const CCPosition origin = b.builderUnit.getPosition();
++	std::vector<CCPosition> candidates;
++	candidates.push_back(origin - CCPosition(2.0f, 0.0f));
++	for (float radius = 4.0f; radius <= 20.0f; radius += 4.0f)
++	{
++		candidates.push_back(origin + CCPosition(-radius, 0.0f));
++		candidates.push_back(origin + CCPosition(radius, 0.0f));
++		candidates.push_back(origin + CCPosition(0.0f, -radius));
++		candidates.push_back(origin + CCPosition(0.0f, radius));
++		candidates.push_back(origin + CCPosition(-radius, -radius));
++		candidates.push_back(origin + CCPosition(-radius, radius));
++		candidates.push_back(origin + CCPosition(radius, -radius));
++		candidates.push_back(origin + CCPosition(radius, radius));
++	}
++
++	const auto tempBuilding = Building(b.builderUnit.getType(), Util::GetTilePosition(origin));
++	const CCTilePosition nearbyTile = getBuildingPlacer().getBuildLocationNear(tempBuilding, false, true, true);
++	if (nearbyTile != CCTilePosition())
++	{
++		candidates.push_back(Util::GetPosition(nearbyTile));
++	}
++
++	for (const CCPosition & candidate : candidates)
++	{
++		if (isVoiAddonLandingSiteValid(b, candidate))
++		{
++			return candidate;
++		}
++	}
++	return CCPosition();
++}
++
++bool BuildingManager::handleVoiAddonTask(Building & b)
++{
++	if (!b.builderUnit.isValid() || !b.builderUnit.isCompleted())
++	{
++		return true;
++	}
++
++	const sc2::Tag producerTag = b.builderUnit.getTag();
++	const uint32_t currentFrame = m_bot.GetCurrentFrame();
++	const uint32_t commandCooldown = 64;
++	auto relocationIt = m_addonRelocations.find(producerTag);
++
++	if (b.builderUnit.getAddonTag() != 0)
++	{
++		m_addonRelocations.erase(producerTag);
++		m_addonLastCommandFrame.erase(producerTag);
++		return true;
++	}
++	if (b.builderUnit.isProducingAddon())
++	{
++		return true;
++	}
++
++	if (b.builderUnit.isFlying())
++	{
++		// A flying producer without our relocation state belongs to damage/proxy logic.
++		if (relocationIt == m_addonRelocations.end())
++		{
++			return true;
++		}
++
++		AddonRelocationState & state = relocationIt->second;
++		state.phase = AddonRelocationPhase::Flying;
++		if (!b.builderUnit.getUnitPtr()->orders.empty())
++		{
++			const auto & order = b.builderUnit.getUnitPtr()->orders[0];
++			if ((order.ability_id == sc2::ABILITY_ID::LAND || order.ability_id == sc2::ABILITY_ID::LAND_BARRACKS || order.ability_id == sc2::ABILITY_ID::LAND_FACTORY || order.ability_id == sc2::ABILITY_ID::LAND_STARPORT) && order.target_pos == state.target)
++			{
++				state.phase = AddonRelocationPhase::LandIssued;
++				return true;
++			}
++			if (order.ability_id == sc2::ABILITY_ID::LIFT)
++			{
++				return true;
++			}
++		}
++		if (currentFrame >= state.lastCommandFrame
++			&& currentFrame - state.lastCommandFrame < commandCooldown)
++		{
++			return true;
++		}
++
++		if (state.landAttempts >= 4 || !isVoiAddonLandingSiteValid(b, state.target))
++		{
++			const CCPosition replacement = findVoiAddonLandingSite(b);
++			if (replacement == CCPosition())
++			{
++				state.lastCommandFrame = currentFrame;
++				Util::Log(__FUNCTION__, "VOI addon relocation is waiting for a valid producer plus addon landing footprint.", m_bot);
++				return true;
++			}
++			state.target = replacement;
++			state.landAttempts = 0;
++		}
++
++		Micro::SmartAbility(b.builderUnit.getUnitPtr(), sc2::ABILITY_ID::LAND, state.target, m_bot);
++		state.phase = AddonRelocationPhase::LandIssued;
++		state.lastCommandFrame = currentFrame;
++		state.landAttempts++;
++		Util::Log(__FUNCTION__, "VOI addon relocation issued one LAND command after placement validation.", m_bot);
++		return true;
++	}
++
++	if (relocationIt != m_addonRelocations.end())
++	{
++		AddonRelocationState & state = relocationIt->second;
++		const std::vector<sc2::UNIT_TYPEID> flyingTypes = {
++			sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING,
++			sc2::UNIT_TYPEID::TERRAN_FACTORYFLYING,
++			sc2::UNIT_TYPEID::TERRAN_STARPORTFLYING
++		};
++		if (Util::Contains(b.builderUnit.getAPIUnitType(), flyingTypes))
++		{
++			return true;
++		}
++		if (Util::DistSq(b.builderUnit.getPosition(), state.target) > 2.25f)
++		{
++			Util::Log(__FUNCTION__, "VOI addon producer landed outside the reserved relocation target; resetting relocation ownership.", m_bot);
++			m_addonRelocations.erase(relocationIt);
++		}
++		else
++		{
++			state.phase = AddonRelocationPhase::LandedStable;
++			if (state.stableSinceFrame == 0)
++			{
++				state.stableSinceFrame = currentFrame;
++				return true;
++			}
++			if (currentFrame >= state.stableSinceFrame && currentFrame - state.stableSinceFrame < 24)
++			{
++				return true;
++			}
++			m_addonRelocations.erase(relocationIt);
++		}
++	}
++
++	const bool hasResources =
++		m_bot.GetMinerals() >= b.type.mineralPrice()
++		&& m_bot.GetGas() >= b.type.gasPrice();
++	if (!hasResources || b.builderUnit.isTraining())
++	{
++		return true;
++	}
++
++	if (isVoiAddonFootprintClear(b, b.builderUnit.getPosition()))
++	{
++		const auto lastCommand = m_addonLastCommandFrame.find(producerTag);
++		if (lastCommand != m_addonLastCommandFrame.end()
++			&& currentFrame >= lastCommand->second
++			&& currentFrame - lastCommand->second < 96)
++		{
++			return true;
++		}
++		Micro::SmartAbility(b.builderUnit.getUnitPtr(), m_bot.Data(b.type).buildAbility, m_bot);
++		m_bot.Commander().Production().recordVoiActualProductionCommand(b.type, "addon_build_command");
++		m_addonLastCommandFrame[producerTag] = currentFrame;
++		m_buildAddonCommandFrame[b.builderUnit.getUnitPtr()] = currentFrame;
++		b.lastOrderFrame = currentFrame;
++		b.buildCommandGiven = true;
++		Util::Log(__FUNCTION__, "VOI addon command issued without lifting a valid grounded producer.", m_bot);
++		return true;
++	}
++
++	const CCPosition landingTarget = findVoiAddonLandingSite(b);
++	if (landingTarget == CCPosition())
++	{
++		Util::Log(__FUNCTION__, "VOI addon relocation refused to lift because no producer plus addon footprint passed placement validation.", m_bot);
++		return true;
++	}
++
++	AddonRelocationState state;
++	state.phase = AddonRelocationPhase::LiftIssued;
++	state.target = landingTarget;
++	state.lastCommandFrame = currentFrame;
++	state.liftAttempts = 1;
++	m_addonRelocations[producerTag] = state;
++	Micro::SmartAbility(b.builderUnit.getUnitPtr(), sc2::ABILITY_ID::LIFT, m_bot);
++	Util::Log(__FUNCTION__, "VOI addon relocation acquired producer ownership and issued one LIFT command.", m_bot);
++	return true;
++}
++
+ // STEP 3: ISSUE CONSTRUCTION ORDERS TO ASSIGN BUILDINGS AS NEEDED
+ void BuildingManager::constructAssignedBuildings()
+ {
+@@ -2340,54 +2589,10 @@ void BuildingManager::constructAssignedBuildings()
+ 			if (b.type.isAddon() &&
+-				m_bot.Commander().Production().shouldUseVoiDirectAddonCommand(b.type) &&
+ 				b.builderUnit.isValid() &&
+ 				b.builderUnit.isCompleted() &&
+-				!b.builderUnit.isFlying() &&
+-				b.builderUnit.getAddonTag() == 0)
++				(m_addonRelocations.find(b.builderUnit.getTag()) != m_addonRelocations.end() || m_bot.Commander().Production().shouldUseVoiDirectAddonCommand(b.type)))
+ 			{
+-				const CCPosition addonCenter = b.builderUnit.getPosition() + CCPosition(2.5f, -0.5f);
+-				bool addonFootprintOccupied = false;
+-				for (const auto & unit : m_bot.GetUnits())
+-				{
+-					if (!unit.isValid() ||
+-						!unit.isAlive() ||
+-						unit.isFlying() ||
+-						unit.getTag() == b.builderUnit.getTag())
+-					{
+-						continue;
+-					}
+-					if (Util::Dist(addonCenter, unit.getPosition()) <= 1.0f + unit.getUnitPtr()->radius)
+-					{
+-						addonFootprintOccupied = true;
+-						break;
+-					}
+-				}
+-
+-				const bool hasResources =
+-					m_bot.GetMinerals() >= b.type.mineralPrice() &&
+-					m_bot.GetGas() >= b.type.gasPrice();
+-				if (!hasResources || b.builderUnit.isProducingAddon())
+-				{
+-					continue;
+-				}
+-				if (!addonFootprintOccupied && !b.buildCommandGiven)
+-				{
+-					Micro::SmartAbility(b.builderUnit.getUnitPtr(), m_bot.Data(b.type).buildAbility, m_bot);
+-					m_bot.Commander().Production().recordVoiActualProductionCommand(b.type, "addon_build_command");
+-					m_buildAddonCommandFrame[b.builderUnit.getUnitPtr()] = m_bot.GetCurrentFrame();
+-					b.lastOrderFrame = m_bot.GetCurrentFrame();
+-					b.buildCommandGiven = true;
+-					Util::Log(__FUNCTION__, "VOI addon command issued once with BuildingManager task retained for SC2 construction feedback: " + b.type.getName(), m_bot);
+-					continue;
+-				}
+-
+-				if (addonFootprintOccupied)
+-				{
+-					Util::DebugLog(__FUNCTION__, "VOI direct addon footprint is occupied; falling through to lift and relocation logic for " + b.type.getName() + ".", m_bot);
+-				}
+-				else if (b.buildCommandGiven)
+-				{
+-					Util::DebugLog(__FUNCTION__, "VOI direct addon received no SC2 construction feedback; falling through to lift and relocation logic for " + b.type.getName() + ".", m_bot);
+-				}
++				handleVoiAddonTask(b);
++				continue;
+ 			}
+ 
+             // if we haven't explored the build position, go there
+@@ -4315,6 +4520,21 @@ void BuildingManager::LiftOrLandDamagedBuildings()
+ 		sc2::UNIT_TYPEID::TERRAN_FACTORYFLYING,
+ 		sc2::UNIT_TYPEID::TERRAN_STARPORTFLYING
+ 	};
++	for (auto it = m_addonRelocations.begin(); it != m_addonRelocations.end();)
++	{
++		const auto unitIt = m_bot.GetAllyUnits().find(it->first);
++		if (unitIt == m_bot.GetAllyUnits().end()
++			|| !unitIt->second.isAlive()
++			|| unitIt->second.getAddonTag() != 0)
++		{
++			it = m_addonRelocations.erase(it);
++		}
++		else
++		{
++			++it;
++		}
++	}
++
+ 	for (const auto & unitPair : m_bot.GetAllyUnits())
+ 	{
+ 		const auto & unit = unitPair.second;
+@@ -4334,6 +4554,10 @@ void BuildingManager::LiftOrLandDamagedBuildings()
+ 		// If the unit can lift
+ 		if (Util::Contains(unit.getAPIUnitType(), liftingTypes))
+ 		{
++			if (m_addonRelocations.find(unit.getTag()) != m_addonRelocations.end())
++			{
++				continue;
++			}
+ 			// If the building is damaged
+ 			if (unit.getHitPointsPercentage() <= 50.f && unit.isCompleted())
+ 			{
+@@ -4368,6 +4592,10 @@ void BuildingManager::LiftOrLandDamagedBuildings()
+ 		// If the unit can land
+ 		else if (Util::Contains(unit.getAPIUnitType(), landingTypes))
+ 		{
++			if (m_addonRelocations.find(unit.getTag()) != m_addonRelocations.end())
++			{
++				continue;
++			}
+ 			CCPosition landingPosition;
+ 			if (m_bot.GetPlayerRace(Players::Self) == CCRace::Terran &&
+ 				(unit.getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_COMMANDCENTERFLYING || 
+diff --git a/src/BuildingManager.h b/src/BuildingManager.h
+index a877aca..a443d53 100644
+--- a/src/BuildingManager.h
++++ b/src/BuildingManager.h
+@@ -36,10 +36,32 @@ class BuildingManager
+ 	bool m_wallsBarracksPointsTowardBase = false;
+ 	std::map<sc2::Tag, CCPosition> m_commandCenterLandPosition;
+ 	std::map<const sc2::Unit *, long> m_buildAddonCommandFrame;
+-
+-    bool            m_debugMode;
+-
+-    bool            isBuildingPositionExplored(const Building & b) const;
++	enum class AddonRelocationPhase
++	{
++		LiftIssued,
++		Flying,
++		LandIssued,
++		LandedStable
++	};
++	struct AddonRelocationState
++	{
++		AddonRelocationPhase phase = AddonRelocationPhase::LiftIssued;
++		CCPosition target = CCPosition();
++		uint32_t lastCommandFrame = 0;
++		uint32_t stableSinceFrame = 0;
++		int liftAttempts = 0;
++		int landAttempts = 0;
++	};
++	std::map<sc2::Tag, AddonRelocationState> m_addonRelocations;
++	std::map<sc2::Tag, uint32_t> m_addonLastCommandFrame;
++
++	bool            m_debugMode;
++
++	bool            isBuildingPositionExplored(const Building & b) const;
++	bool			handleVoiAddonTask(Building & b);
++	bool			isVoiAddonFootprintClear(const Building & b, const CCPosition & producerPosition);
++	bool			isVoiAddonLandingSiteValid(const Building & b, const CCPosition & producerPosition);
++	CCPosition		findVoiAddonLandingSite(const Building & b);
+ 	void			castBuildingsAbilities();
+ 	void			RunProxyLogic();
+ 	void			LiftOrLandDamagedBuildings();
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 9611b58..8f3bacd 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -421,6 +421,69 @@ bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosit
+ 	}
+ 	return false;
+ }
++
++int voiCountUnitsNearPosition(const std::vector<Unit> & units, const CCPosition & position, float radius)
++{
++	int count = 0;
++	const float radiusSq = radius * radius;
++	for (const auto & unit : units)
++	{
++		if (unit.isValid() && Util::DistSq(unit.getPosition(), position) <= radiusSq)
++		{
++			++count;
++		}
++	}
++	return count;
++}
++
++bool voiHasVisibleEnemyNearSquad(const std::vector<Unit> & units, CCBot & bot, float radius)
++{
++	const float radiusSq = radius * radius;
++	for (const auto & enemy : bot.GetKnownEnemyUnits())
++	{
++		if (!enemy.isValid() || !enemy.isAlive() || !enemy.isVisible())
++		{
++			continue;
++		}
++		for (const auto & unit : units)
++		{
++			if (unit.isValid() && Util::DistSq(unit, enemy) <= radiusSq)
++			{
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
++bool voiTankIsNearProducerFootprint(const sc2::Unit * tank, CCBot & bot)
++{
++	if (tank == nullptr)
++	{
++		return true;
++	}
++	for (const auto & unitPair : bot.GetAllyUnits())
++	{
++		const Unit & unit = unitPair.second;
++		if (!unit.isValid() || !unit.getType().isBuilding())
++		{
++			continue;
++		}
++		const sc2::UNIT_TYPEID type = unit.getAPIUnitType();
++		const bool productionBuilding =
++			type == sc2::UNIT_TYPEID::TERRAN_BARRACKS
++			|| type == sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING
++			|| type == sc2::UNIT_TYPEID::TERRAN_FACTORY
++			|| type == sc2::UNIT_TYPEID::TERRAN_FACTORYFLYING
++			|| type == sc2::UNIT_TYPEID::TERRAN_STARPORT
++			|| type == sc2::UNIT_TYPEID::TERRAN_STARPORTFLYING;
++		if (productionBuilding && Util::DistSq(tank->pos, unit.getPosition()) <= 7.0f * 7.0f)
++		{
++			return true;
++		}
++	}
++	return false;
++}
+ }
+ 
+ CombatCommander::CombatCommander(CCBot & bot)
+@@ -1844,16 +1907,21 @@ void CombatCommander::updateScoutSquad()
+ 	const std::string tacticalTaskType = m_bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
+ 	const bool tacticalScoutTask = tacticalTaskType == "scout_with_units" && voiTacticalTaskWithinDuration(m_bot);
+ 	const std::string scopeArmyGroup = m_bot.Commander().getVoiPolicyString("scope.army_group", "");
++	const bool scopeTargetsScout = scopeArmyGroup == "scout";
+ 	const std::string scopeUnitClasses = m_bot.Commander().getVoiPolicyString("scope.unit_classes", "");
+ 	const std::string tacticalTaskUnitClasses = m_bot.Commander().getVoiPolicyString("tactical_task.unit_classes", "");
+-	const std::string effectiveScopeUnitClasses = tacticalScoutTask && !tacticalTaskUnitClasses.empty() ? tacticalTaskUnitClasses : scopeUnitClasses;
++	const std::string effectiveScopeUnitClasses = tacticalScoutTask && !tacticalTaskUnitClasses.empty()
++		? tacticalTaskUnitClasses
++		: (scopeTargetsScout ? scopeUnitClasses : "");
+ 	const std::string tacticalTaskLocationIntent = m_bot.Commander().getVoiPolicyString("tactical_task.location_intent", "");
+ 	const std::string scopeLocationIntent = m_bot.Commander().getVoiPolicyString("scope.location_intent", "");
+-	const std::string effectiveLocationIntent = tacticalScoutTask && !tacticalTaskLocationIntent.empty() ? tacticalTaskLocationIntent : scopeLocationIntent;
++	const std::string effectiveLocationIntent = tacticalScoutTask && !tacticalTaskLocationIntent.empty()
++		? tacticalTaskLocationIntent
++		: (scopeTargetsScout ? scopeLocationIntent : "");
+ 	const float scoutPriority = m_bot.Commander().getVoiPolicyFloat("scouting.scout_priority", 0.0f);
+ 	const float marineScoutBias = m_bot.Commander().getVoiPolicyFloat("squad.squad_role_biases.marine_scout", 0.0f);
+ 	const bool explicitScoutScope = m_bot.Commander().isVoiPolicyActive()
+-		&& (scopeArmyGroup == "scout" || tacticalScoutTask || scoutPriority >= 0.65f || marineScoutBias > 0.25f);
++		&& (scopeTargetsScout || tacticalScoutTask || scoutPriority >= 0.65f || marineScoutBias > 0.25f);
+ 	const BaseLocation * enemyStartingBase = m_bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
+ 	const bool enemyStartNeedsCombatScout = enemyStartingBase != nullptr
+ 		&& !m_bot.Map().isExplored(enemyStartingBase->getPosition());
+@@ -1862,10 +1930,10 @@ void CombatCommander::updateScoutSquad()
+ 		&& voiCountMobileAttackUnits(m_combatUnits) >= 2;
+ 	const bool activeScoutScope = explicitScoutScope || autonomousCombatScoutScope;
+ 	const int requestedMinUnits = std::max(
+-		std::max(0, m_bot.Commander().getVoiPolicyInt("scope.min_units", 0)),
++		scopeTargetsScout ? std::max(0, m_bot.Commander().getVoiPolicyInt("scope.min_units", 0)) : 0,
+ 		tacticalScoutTask ? std::max(0, m_bot.Commander().getVoiPolicyInt("tactical_task.min_units", 0)) : 0);
+ 	const int requestedMaxUnits = std::max(
+-		std::max(0, m_bot.Commander().getVoiPolicyInt("scope.max_units", 0)),
++		scopeTargetsScout ? std::max(0, m_bot.Commander().getVoiPolicyInt("scope.max_units", 0)) : 0,
+ 		tacticalScoutTask ? std::max(0, m_bot.Commander().getVoiPolicyInt("tactical_task.max_units", 0)) : 0);
+ 	const bool allowPartialScoutTask = m_bot.Commander().getVoiPolicyBool("tactical_task.allow_partial", true);
+ 	int desiredScoutUnits = activeScoutScope
+@@ -1880,6 +1948,17 @@ void CombatCommander::updateScoutSquad()
+ 	m_lastVoiScoutRequestedMinUnits = requestedMinUnits;
+ 	m_lastVoiScoutRequestedMaxUnits = requestedMaxUnits;
+ 	m_lastVoiScoutAssignedUnitCount = static_cast<int>(scoutSquad.getUnits().size());
++	if (scoutSquad.getUnits().size() > static_cast<size_t>(desiredScoutUnits))
++	{
++		Squad & backupSquad = m_squadData.getSquad("Backup");
++		std::vector<Unit> excessScoutUnits(
++			scoutSquad.getUnits().begin() + desiredScoutUnits,
++			scoutSquad.getUnits().end());
++		for (const auto & unit : excessScoutUnits)
++		{
++			m_squadData.assignUnitToSquad(unit, backupSquad);
++		}
++	}
+ 
+ 	// Scout for proxy against Protoss unless we ourselves do a proxy strategy or have already scouted the map once
+ 	bool scoutForProxy = m_bot.GetPlayerRace(Players::Enemy) == sc2::Race::Protoss && !m_bot.Strategy().isProxyStartingStrategy() && !m_scoutedMapOnce;
+@@ -2161,6 +2240,7 @@ void CombatCommander::updateAttackSquads()
+ 	const bool exactCompositionPressureTask = exactCompositionTaskType == "pressure_with_main_army"
+ 		&& voiTacticalTaskWithinDuration(m_bot)
+ 		&& (m_bot.Commander().hasVoiPolicyDomain("composition_requirements") || m_bot.Commander().hasVoiPolicyDomain("unit_roles"));
++	mainAttackSquad.setPriority(exactCompositionPressureTask ? BaseDefensePriority : AttackPriority);
+ 	bool exactCompositionBlocksAttack = false;
+ 	if (exactCompositionPressureTask)
+ 	{
+@@ -2304,10 +2384,9 @@ void CombatCommander::updateAttackSquads()
+ 				m_lastVoiCompositionRequirements += label;
+ 			}
+ 		}
+-		if (!allowPartialComposition && totalAssigned < totalRequired)
++		if (totalAssigned < totalRequired)
+ 		{
+ 			exactCompositionBlocksAttack = true;
+-			mainAttackSquad.clear();
+ 		}
+ 	}
+ 
+@@ -2332,6 +2411,10 @@ void CombatCommander::updateAttackSquads()
+ 	{
+ 		m_lastVoiMainAttackOrderStatus = "Waiting";
+ 		m_lastVoiMainAttackOrderReason = exactCompositionBlocksAttack ? m_lastVoiCompositionReason : "No main attack units";
++		m_lastVoiOperationPhase = exactCompositionPressureTask ? "Producing" : "Idle";
++		m_lastVoiRallyReadyUnits = 0;
++		m_lastVoiRallyRequiredUnits = exactCompositionPressureTask ? m_lastVoiCompositionRequired : 0;
++		m_lastVoiBoundedForceCommit = false;
+ 		m_lastVoiMainAttackUnitCount = 0;
+ 		m_lastVoiMainAttackScopeMinUnits = std::max(0, m_bot.Commander().getVoiPolicyInt("scope.min_units", 0));
+ 		m_lastVoiMainAttackScopeThresholdMet = m_lastVoiMainAttackScopeMinUnits == 0;
+@@ -2375,8 +2458,10 @@ void CombatCommander::updateAttackSquads()
+ 		: (voiTargetIntent == "enemy_main" || voiTargetIntent == "enemy_natural" ? voiTargetIntent : "");
+ 	const std::string voiRouteIntent = m_bot.Commander().getVoiPolicyString("route_intent.route_type", "");
+ 	const int voiScopeMinUnits = std::max(
+-		std::max(0, m_bot.Commander().getVoiPolicyInt("scope.min_units", 0)),
+-		tacticalPressureTask ? std::max(0, m_bot.Commander().getVoiPolicyInt("tactical_task.min_units", 0)) : 0);
++		std::max(
++			std::max(0, m_bot.Commander().getVoiPolicyInt("scope.min_units", 0)),
++			tacticalPressureTask ? std::max(0, m_bot.Commander().getVoiPolicyInt("tactical_task.min_units", 0)) : 0),
++		exactCompositionPressureTask ? m_lastVoiCompositionRequired : 0);
+ 	const int voiScopeMaxUnits = std::max(
+ 		std::max(0, m_bot.Commander().getVoiPolicyInt("scope.max_units", 0)),
+ 		tacticalPressureTask ? std::max(0, m_bot.Commander().getVoiPolicyInt("tactical_task.max_units", 0)) : 0);
+@@ -2398,12 +2483,8 @@ void CombatCommander::updateAttackSquads()
+ 		}
+ 		unitsToTransfer.clear();
+ 	}
+-	const bool voiPartialCompositionReady = exactCompositionPressureTask
+-		&& m_bot.Commander().getVoiPolicyBool("tactical_task.allow_partial", true)
+-		&& m_lastVoiCompositionAssigned > 0;
+ 	const bool voiScopeThresholdMet = voiScopeMinUnits == 0
+-		|| static_cast<int>(mainAttackSquad.getUnits().size()) >= voiScopeMinUnits
+-		|| voiPartialCompositionReady;
++		|| static_cast<int>(mainAttackSquad.getUnits().size()) >= voiScopeMinUnits;
+ 	const int autonomousAttackUnitCount = voiCountMobileAttackUnits(mainAttackSquad.getUnits());
+ 	const int autonomousAttackMinUnits = std::max(1, m_bot.Commander().getVoiPolicyInt("combat.autonomous_attack_min_units", 4));
+ 	const bool voiDefensivePolicyBlocksAutonomy =
+@@ -2416,8 +2497,24 @@ void CombatCommander::updateAttackSquads()
+ 		&& !voiDefensivePolicyBlocksAutonomy;
+ 	const bool voiForceAttackWhenReady =
+ 		voiScopeThresholdMet
+-		&& voiAttackOverride == "force_when_threshold_met"
+-		&& voiAggression + voiAttackTimingBias + voiCommitmentLevel >= 1.0f;
++		&& voiAttackOverride == "force_when_threshold_met";
++	const CCPosition voiRallyPosition = m_idlePosition != CCPosition() ? m_idlePosition : voiHomePosition(m_bot);
++	const int voiRallyRequiredUnits = tacticalPressureTask
++		? std::min(static_cast<int>(mainAttackSquad.getUnits().size()), std::max(1, voiScopeMinUnits))
++		: 0;
++	const int voiRallyReadyUnits = tacticalPressureTask
++		? voiCountUnitsNearPosition(mainAttackSquad.getUnits(), voiRallyPosition, 12.0f)
++		: 0;
++	const bool voiCompositionReady = !exactCompositionPressureTask
++		|| m_lastVoiCompositionAssigned >= m_lastVoiCompositionRequired;
++	const bool voiOperationProducing = tacticalPressureTask && (!voiScopeThresholdMet || !voiCompositionReady);
++	const bool voiOperationRallying = tacticalPressureTask
++		&& !voiOperationProducing
++		&& voiRallyRequiredUnits > 0
++		&& voiRallyReadyUnits < voiRallyRequiredUnits;
++	m_lastVoiRallyReadyUnits = voiRallyReadyUnits;
++	m_lastVoiRallyRequiredUnits = voiRallyRequiredUnits;
++	m_lastVoiBoundedForceCommit = false;
+ 	const float voiEngageMarginDelta = std::max(
+ 		-0.35f,
+ 		std::min(
+@@ -2453,9 +2550,34 @@ void CombatCommander::updateAttackSquads()
+ 		&& voiIsRemoteCombatTarget(m_bot, orderPosition)
+ 		&& voiSquadMaxHomeDistance(mainAttackSquad.getUnits(), m_bot) < 70.0f)
+ 	{
+-		const float routeBias = (voiRouteIntent == "flank_left" || voiRouteIntent == "flank_right" || voiRouteIntent == "safe_path") ? 0.65f : 0.0f;
+-		const float flankStageWeight = std::min(0.45f, std::max(routeBias, std::max(0.0f, voiFlankBias)) * 0.45f);
+-		orderPosition = orderPosition * (1.0f - flankStageWeight) + m_bot.Map().center() * flankStageWeight;
++		const CCPosition home = voiHomePosition(m_bot);
++		const CCPosition homeToTarget = orderPosition - home;
++		const float homeToTargetDistance = std::sqrt(
++			homeToTarget.x * homeToTarget.x + homeToTarget.y * homeToTarget.y);
++		bool flankStageSelected = false;
++		if ((voiRouteIntent == "flank_left" || voiRouteIntent == "flank_right")
++			&& homeToTargetDistance > 1.0f)
++		{
++			const CCPosition forward = homeToTarget / homeToTargetDistance;
++			const float flankSign = voiRouteIntent == "flank_left" ? 1.0f : -1.0f;
++			const CCPosition lateral(-forward.y * flankSign, forward.x * flankSign);
++			const float forwardDistance = std::min(42.0f, homeToTargetDistance * 0.55f);
++			const float lateralDistance = std::min(24.0f, std::max(10.0f, homeToTargetDistance * 0.22f));
++			const CCPosition flankStage = home + forward * forwardDistance + lateral * lateralDistance;
++			if (m_bot.Map().isValidPosition(flankStage)
++				&& m_bot.Map().isWalkable(flankStage)
++				&& m_bot.Map().isConnected(home, flankStage))
++			{
++				orderPosition = flankStage;
++				flankStageSelected = true;
++			}
++		}
++		if (!flankStageSelected)
++		{
++			const float routeBias = voiRouteIntent == "safe_path" ? 0.65f : 0.0f;
++			const float flankStageWeight = std::min(0.45f, std::max(routeBias, std::max(0.0f, voiFlankBias)) * 0.45f);
++			orderPosition = orderPosition * (1.0f - flankStageWeight) + m_bot.Map().center() * flankStageWeight;
++		}
+ 	}
+ 
+ 	if (voiForceRetreat)
+@@ -2463,6 +2585,16 @@ void CombatCommander::updateAttackSquads()
+ 		retreat = true;
+ 		retreatReason = "VOI force retreat";
+ 	}
++	if (!retreat && voiOperationProducing)
++	{
++		retreat = true;
++		retreatReason = "Producing requested combat composition";
++	}
++	if (!retreat && voiOperationRallying)
++	{
++		retreat = true;
++		retreatReason = "Rallying requested combat composition";
++	}
+ 	if (!retreat && voiAttackOverride == "never")
+ 	{
+ 		retreat = true;
+@@ -2497,9 +2629,12 @@ void CombatCommander::updateAttackSquads()
+ 			retreatReason = "Don't attack yet";
+ 		}
+ 	}
+-	// A retreat must last at least 5 seconds. VOI may lower timing thresholds,
+-	// but it must not bypass the combat simulation safety gate.
+-	if (!retreat && m_bot.GetCurrentFrame() >= m_lastRetreatFrame + 5 * 22.4)
++	const bool voiEngaging = !retreat && voiHasVisibleEnemyNearSquad(mainAttackSquad.getUnits(), m_bot, 16.0f);
++	const bool voiBoundedForceAdvance = !retreat && voiForceAttackWhenReady && !voiEngaging;
++	m_lastVoiBoundedForceCommit = voiBoundedForceAdvance;
++	// An explicit force command advances to contact despite stale global combat
++	// simulation, but normal safety simulation resumes as soon as enemies are near.
++	if (!retreat && !voiBoundedForceAdvance && m_bot.GetCurrentFrame() >= m_lastRetreatFrame + 5 * 22.4)
+ 	{
+ 		bool earlyCycloneRush = false;
+ 		if (m_bot.Strategy().getStartingStrategy() == PROXY_CYCLONES)
+@@ -2622,21 +2757,33 @@ void CombatCommander::updateAttackSquads()
+ 			}
+ 		}
+ 	}
+-	else
++	else if (!retreat && !voiBoundedForceAdvance)
+ 	{
+ 		retreat = true;
+ 		retreatReason = "Keep retreating";
+ 	}
+ 
+ 	std::string orderStatus = "Attack";
+-	std::string orderReason = autonomousAttackReady ? "Autonomous combat threshold met" : (voiForceAttackWhenReady ? "VOI force threshold met" : "Attack conditions met");
++	std::string orderReason = autonomousAttackReady ? "Autonomous combat threshold met" : (voiForceAttackWhenReady ? "VOI bounded force threshold met" : "Attack conditions met");
++	m_lastVoiOperationPhase = voiEngaging ? "Engaging" : "Advancing";
+ 	if (retreat)
+ 	{
+-		orderPosition = proxyStrategy ? Util::GetPosition(m_bot.Buildings().getProxyLocation()) : m_idlePosition;
+-		orderStatus = "Retreat";
+-		orderReason = retreatReason;
+-		backupSquad.getSquadOrder().setType(SquadOrderTypes::Retreat);
+-		backupSquad.getSquadOrder().setStatus(orderStatus);
++		if (voiOperationProducing || voiOperationRallying)
++		{
++			orderPosition = voiRallyPosition;
++			orderStatus = voiOperationProducing ? "Producing" : "Rallying";
++			orderReason = retreatReason;
++			m_lastVoiOperationPhase = orderStatus;
++		}
++		else
++		{
++			orderPosition = proxyStrategy ? Util::GetPosition(m_bot.Buildings().getProxyLocation()) : m_idlePosition;
++			orderStatus = "Retreat";
++			orderReason = retreatReason;
++			m_lastVoiOperationPhase = "Regrouping";
++			backupSquad.getSquadOrder().setType(SquadOrderTypes::Retreat);
++			backupSquad.getSquadOrder().setStatus(orderStatus);
++		}
+ 	}
+ 
+ 	if (mainAttackSquad.getSquadOrder().getPosition() != orderPosition
+@@ -4228,18 +4375,52 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ 			&& abilityPolicy != "never")
+ 		{
+ 			const bool abilityAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::MORPH_SIEGEMODE, unit, m_unitsAbilities);
++			const Unit roleUnit(unit, m_bot);
++			Squad * roleSquad = m_squadData.getUnitSquad(roleUnit);
++			const CCPosition roleObjective = roleSquad ? roleSquad->getSquadOrder().getPosition() : CCPosition();
++			const std::string roleOrderStatus = roleSquad ? roleSquad->getSquadOrder().getStatus() : "";
++			bool visibleEnemyInSiegeWindow = false;
++			for (const auto & enemy : m_bot.GetKnownEnemyUnits())
++			{
++				if (enemy.isValid()
++					&& enemy.isAlive()
++					&& enemy.isVisible()
++					&& !enemy.isFlying()
++					&& Util::DistSq(unit->pos, enemy.getPosition()) <= 13.0f * 13.0f)
++				{
++					visibleEnemyInSiegeWindow = true;
++					break;
++				}
++			}
++			const bool offensiveObjectiveReached = roleObjective != CCPosition()
++				&& voiIsRemoteCombatTarget(m_bot, roleObjective)
++				&& Util::DistSq(unit->pos, roleObjective) <= 14.0f * 14.0f;
++			const bool operationAllowsSiege = roleOrderStatus != "Producing"
++				&& roleOrderStatus != "Rallying"
++				&& roleOrderStatus != "Retreat";
++			const bool awayFromHomeEconomy = roleHomeDistance >= 12.0f;
++			const bool clearOfProducerFootprints = !voiTankIsNearProducerFootprint(unit, m_bot);
++			const bool siegeWindowOpen = visibleEnemyInSiegeWindow
++				|| (operationAllowsSiege
++					&& awayFromHomeEconomy
++					&& clearOfProducerFootprints
++					&& offensiveObjectiveReached);
+ 			if (abilityAvailable)
+ 			{
+ 				m_lastVoiUnitRoleAvailableCount++;
+ 			}
+-			if (abilityAvailable && (abilityPolicy == "if_available" || abilityPolicy == "commit"))
++			if (abilityAvailable
++				&& siegeWindowOpen
++				&& (abilityPolicy == "if_available" || abilityPolicy == "commit"))
+ 			{
+ 				action.microActionType = MicroActionType::Ability;
+ 				action.abilityID = sc2::ABILITY_ID::MORPH_SIEGEMODE;
+ 				action.prioritized = true;
+ 				action.description = "VoiRoleTankSiege|" + voiRole;
+ 				m_lastVoiUnitRoleStatus = "prepared";
+-				m_lastVoiUnitRoleReason = "Tank role prepared siege mode and ability is available";
++				m_lastVoiUnitRoleReason = visibleEnemyInSiegeWindow
++					? "Tank role prepared siege mode for a visible ground enemy in range"
++					: "Tank role prepared siege mode after reaching the remote operation objective";
+ 				m_lastVoiUnitRoleAbility = "MORPH_SIEGEMODE";
+ 				voiRoleBiasedAction = true;
+ 			}
+@@ -4249,6 +4430,12 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ 				m_lastVoiUnitRoleReason = "Tank siege role active but siege ability is unavailable";
+ 				m_lastVoiUnitRoleAbility = "MORPH_SIEGEMODE";
+ 			}
++			else
++			{
++				m_lastVoiUnitRoleStatus = "waiting";
++				m_lastVoiUnitRoleReason = "Tank siege held until contact/objective range and away from home production footprints";
++				m_lastVoiUnitRoleAbility = "MORPH_SIEGEMODE";
++			}
+ 		}
+ 		else if ((voiRole == "worker_harass" || voiRole == "cloak_if_available")
+ 			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_BANSHEE
+@@ -5011,4 +5198,3 @@ bool CombatCommander::GetUnitAbilities(const sc2::Unit * unit, sc2::AvailableAbi
+ 	}
+ 	return false;
+ }
+-
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 8c7d22a..5cad604 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -167,6 +167,10 @@ class CombatCommander
+ 	int m_lastRetreatFrame = -1000;
+ 	std::string m_lastVoiMainAttackOrderStatus = "Uninitialized";
+ 	std::string m_lastVoiMainAttackOrderReason = "No attack order evaluated yet";
++	std::string m_lastVoiOperationPhase = "Idle";
++	int m_lastVoiRallyReadyUnits = 0;
++	int m_lastVoiRallyRequiredUnits = 0;
++	bool m_lastVoiBoundedForceCommit = false;
+ 	int m_lastVoiMainAttackUnitCount = 0;
+ 	int m_lastVoiMainAttackScopeMinUnits = 0;
+ 	bool m_lastVoiMainAttackScopeThresholdMet = false;
+@@ -342,6 +346,10 @@ public:
+ 	bool winAttackSimulation() const { return m_winAttackSimulation; }
+ 	const std::string & getVoiMainAttackOrderStatus() const { return m_lastVoiMainAttackOrderStatus; }
+ 	const std::string & getVoiMainAttackOrderReason() const { return m_lastVoiMainAttackOrderReason; }
++	const std::string & getVoiOperationPhase() const { return m_lastVoiOperationPhase; }
++	int getVoiRallyReadyUnits() const { return m_lastVoiRallyReadyUnits; }
++	int getVoiRallyRequiredUnits() const { return m_lastVoiRallyRequiredUnits; }
++	bool getVoiBoundedForceCommit() const { return m_lastVoiBoundedForceCommit; }
+ 	int getVoiMainAttackUnitCount() const { return m_lastVoiMainAttackUnitCount; }
+ 	int getVoiMainAttackScopeMinUnits() const { return m_lastVoiMainAttackScopeMinUnits; }
+ 	bool getVoiMainAttackScopeThresholdMet() const { return m_lastVoiMainAttackScopeThresholdMet; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index 89497e9..7df92c6 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -516,9 +516,13 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"force_retreat\":" << (m_voiPolicyBlackboard.getBool("emergency.force_retreat", false) ? "true" : "false") << ","
+         << "\"bounded_intervention\":" << (m_voiPolicyActive && (m_voiPolicyBlackboard.getFloat("combat.defend_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.aggression", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.attack_timing_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("combat.commitment_level", 0.0f) != 0.0f || attackConditionOverride != "normal" || m_voiPolicyBlackboard.getBool("emergency.force_retreat", false)) ? "true" : "false") << ","
+         << "\"main_attack_order\":\"" << voiJsonEscape(m_combatCommander.getVoiMainAttackOrderStatus() + " " + m_combatCommander.getVoiMainAttackOrderReason()) << "\","
+-        << "\"main_attack_order_status\":\"" << voiJsonEscape(m_combatCommander.getVoiMainAttackOrderStatus()) << "\","
+-        << "\"main_attack_order_reason\":\"" << voiJsonEscape(m_combatCommander.getVoiMainAttackOrderReason()) << "\","
+-        << "\"main_attack_unit_count\":" << m_combatCommander.getVoiMainAttackUnitCount() << ","
++	        << "\"main_attack_order_status\":\"" << voiJsonEscape(m_combatCommander.getVoiMainAttackOrderStatus()) << "\","
++	        << "\"main_attack_order_reason\":\"" << voiJsonEscape(m_combatCommander.getVoiMainAttackOrderReason()) << "\","
++	        << "\"operation_phase\":\"" << voiJsonEscape(m_combatCommander.getVoiOperationPhase()) << "\","
++	        << "\"rally_ready_units\":" << m_combatCommander.getVoiRallyReadyUnits() << ","
++	        << "\"rally_required_units\":" << m_combatCommander.getVoiRallyRequiredUnits() << ","
++	        << "\"bounded_force_commit\":" << (m_combatCommander.getVoiBoundedForceCommit() ? "true" : "false") << ","
++	        << "\"main_attack_unit_count\":" << m_combatCommander.getVoiMainAttackUnitCount() << ","
+         << "\"main_attack_scope_min_units\":" << m_combatCommander.getVoiMainAttackScopeMinUnits() << ","
+         << "\"main_attack_scope_threshold_met\":" << (m_combatCommander.getVoiMainAttackScopeThresholdMet() ? "true" : "false") << ","
+         << "\"main_attack_simulation_won\":" << (m_combatCommander.getVoiMainAttackSimulationWon() ? "true" : "false") << ","
+diff --git a/src/RangedManager.cpp b/src/RangedManager.cpp
+index 87cf1c8..9adf25f 100644
+--- a/src/RangedManager.cpp
++++ b/src/RangedManager.cpp
+@@ -54,6 +54,33 @@ const std::vector<std::string> THREAT_FIGHTING_ACTION_DESCRIPTIONS = {
+ 	ACTION_DESCRIPTION_THREAT_FIGHT_MOVE_FARTHER_BEFORE_MORPH
+ };
+ 
++namespace
++{
++std::string voiVikingRole(CCBot & bot, const sc2::Unit * unit)
++{
++	if (unit == nullptr
++		|| (unit->unit_type != sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER
++			&& unit->unit_type != sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT))
++	{
++		return "";
++	}
++	for (const std::string domain : {"unit_roles", "composition_requirements"})
++	{
++		for (int i = 0; i < 8; ++i)
++		{
++			const std::string prefix = domain + "." + std::to_string(i);
++			const std::string unitType = bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");
++			const std::string role = bot.Commander().getVoiPolicyString(prefix + ".role", "");
++			if (unitType == "TERRAN_VIKINGFIGHTER" && !role.empty())
++			{
++				return role;
++			}
++		}
++	}
++	return "";
++}
++}
++
+ RangedManager::RangedManager(CCBot & bot) : MicroManager(bot)
+ {
+ }
+@@ -319,7 +346,13 @@ void RangedManager::HarassLogicForUnit(const sc2::Unit* rangedUnit, sc2::Units &
+ 	}
+ 	else
+ 	{
+-		if (!isCycloneHelper && (isMedivac || isRaven || ((/*isMarine ||*/ isViking || isHellion) && m_order.getType() != SquadOrderTypes::Defend)) && m_order.getType() != SquadOrderTypes::Clear)
++		const bool mainAttackViking = isViking && m_squad != nullptr && m_squad->getName() == "MainAttack";
++		const std::string vikingRole = mainAttackViking && m_bot.Commander().isVoiPolicyActive()
++			? voiVikingRole(m_bot, rangedUnit)
++			: "";
++		const bool mainAttackVikingSupportRole = vikingRole == "support" || vikingRole == "escort";
++		const bool vikingShouldSupport = isViking && (!mainAttackViking || mainAttackVikingSupportRole);
++		if (!isCycloneHelper && (isMedivac || isRaven || (((/*isMarine ||*/ vikingShouldSupport) || isHellion) && m_order.getType() != SquadOrderTypes::Defend)) && m_order.getType() != SquadOrderTypes::Clear)
+ 		{
+ 			goal = GetBestSupportPosition(rangedUnit, allCombatAllies);
+ 			goalDescription = "Support";
+@@ -331,7 +364,7 @@ void RangedManager::HarassLogicForUnit(const sc2::Unit* rangedUnit, sc2::Units &
+ 			if (Util::DistSq(rangedUnit->pos, goal) < 5 * 5 || !threats.empty() || (isCycloneHelper && cycloneFlyingHelperIt->second.goal == TRACK))
+ 				m_flyingBarracksShouldReachEnemyRamp = false;
+ 		}
+-		else if (isViking && !isCycloneHelper && !m_bot.Commander().Combat().hasEnoughVikingsAgainstTempests())
++		else if (isViking && !isCycloneHelper && !mainAttackViking && !m_bot.Commander().Combat().hasEnoughVikingsAgainstTempests())
+ 		{
+ 			goal = m_bot.GetStartLocation();
+ 			goalDescription = "VikingStart";

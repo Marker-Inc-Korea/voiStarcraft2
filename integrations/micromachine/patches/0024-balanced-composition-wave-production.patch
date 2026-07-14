@@ -1,0 +1,230 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -155,10 +155,16 @@ bool voiExactCompositionActive(CCBot & bot)
+ 		|| taskType == "tech_transition";
+ }
+ 
+-bool voiContinuousCompositionProductionActive(CCBot & bot)
++bool voiContinuousCompositionProductionConfigured(CCBot & bot)
+ {
+-	if (!voiExactCompositionActive(bot)
+-		|| bot.Commander().getVoiPolicyString("tactical_task.task_type", "") != "pressure_with_main_army"
+-		|| bot.Commander().getVoiPolicyFloat("production.production_continuity_bias", 0.0f) <= 0.25f)
++	return voiExactCompositionActive(bot)
++		&& bot.Commander().getVoiPolicyString("tactical_task.task_type", "") == "pressure_with_main_army"
++		&& bot.Commander().getVoiPolicyFloat("production.production_continuity_bias", 0.0f) > 0.25f;
++}
++
++bool voiContinuousCompositionProductionActive(CCBot & bot)
++{
++	if (!voiContinuousCompositionProductionConfigured(bot))
+ 	{
+ 		return false;
+ 	}
+@@ -170,25 +176,28 @@ bool voiContinuousCompositionProductionActive(CCBot & bot)
+ 
+ int voiCompositionProductionWaveMultiplier(CCBot & bot)
+ {
+-	int requestedTotal = 0;
+-	int representedTotal = 0;
++	int completedWaves = 0;
++	bool foundRequestedType = false;
+ 	for (const auto & entry : voiExactCompositionTypes())
+ 	{
+ 		const int requested = voiRequestedCompositionCount(bot, entry.first);
+ 		if (requested <= 0)
+ 		{
+ 			continue;
+ 		}
+-		requestedTotal += requested;
+-		representedTotal += voiRepresentedUnitCount(bot, entry.second);
++		const int represented = voiRepresentedUnitCount(bot, entry.second);
++		const int completedForType = represented / requested;
++		completedWaves = foundRequestedType
++			? std::min(completedWaves, completedForType)
++			: completedForType;
++		foundRequestedType = true;
+ 	}
+ 
+-	if (requestedTotal <= 0)
+-	{
+-		return 1;
+-	}
+-	return std::max(1, representedTotal / requestedTotal + 1);
++	// A surplus of one unit type must never inflate another type's target.
++	// Advance only after every requested type has completed the same wave.
++	return foundRequestedType ? std::max(1, completedWaves + 1) : 1;
+ }
+ 
+-int voiCompositionProductionTargetCount(CCBot & bot, const std::string & policyUnitType)
++int voiCompositionProductionTargetCount(CCBot & bot, const std::string & policyUnitType, int waveMultiplier)
+ {
+ 	const int requested = voiRequestedCompositionCount(bot, policyUnitType);
+ 	if (requested <= 0 || !voiContinuousCompositionProductionActive(bot))
+ 	{
+ 		return requested;
+ 	}
+-	return requested * voiCompositionProductionWaveMultiplier(bot);
++	return requested * std::max(1, waveMultiplier);
+ }
+ 
+ std::string voiExactCompositionTokenForType(const MetaType & type)
+@@ -218,7 +227,7 @@ std::string voiExactCompositionTokenForType(const MetaType & type)
+ 	return "";
+ }
+ 
+-bool voiExactCompositionAllowsTraining(CCBot & bot, const MetaType & type)
++bool voiExactCompositionAllowsTraining(CCBot & bot, const MetaType & type, int waveMultiplier)
+ {
+ 	if (!voiExactCompositionActive(bot))
+ 	{
+@@ -229,7 +238,11 @@ bool voiExactCompositionAllowsTraining(CCBot & bot, const MetaType & type)
+ 	{
+ 		return true;
+ 	}
+-	const int productionTargetCount = voiCompositionProductionTargetCount(bot, token);
++	const int productionTargetCount = voiCompositionProductionTargetCount(
++		bot,
++		token,
++		waveMultiplier);
+ 	return voiRepresentedUnitCount(bot, type) < productionTargetCount;
+ }
+ 
+@@ -647,11 +660,53 @@ void ProductionManager::onStart()
+ 	}
+ }
+ 
++void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
++{
++	if (!voiContinuousCompositionProductionConfigured(m_bot))
++	{
++		m_voiCompositionProductionOperationKey = "";
++		m_voiCompositionProductionWaveMultiplier = 1;
++		return;
++	}
++
++	std::string operationKey =
++		m_bot.Commander().getVoiPolicyString("update_id", "")
++		+ "|" + std::to_string(std::max(
++			0,
++			m_bot.Commander().getVoiPolicyInt("issued_at_frame", 0)));
++	for (const auto & entry : voiExactCompositionTypes())
++	{
++		const int requested = voiRequestedCompositionCount(m_bot, entry.first);
++		if (requested > 0)
++		{
++			operationKey += "|" + entry.first + ":" + std::to_string(requested);
++		}
++	}
++	if (m_voiCompositionProductionOperationKey != operationKey)
++	{
++		m_voiCompositionProductionOperationKey = operationKey;
++		m_voiCompositionProductionWaveMultiplier = 1;
++	}
++
++	// The latch is monotonic for the operation. Combat losses may require
++	// replacements, but they must not lower the cumulative target and strand
++	// an incomplete reinforcement wave at home.
++	const int observedWaveMultiplier =
++		voiCompositionProductionWaveMultiplier(m_bot);
++	if (observedWaveMultiplier > m_voiCompositionProductionWaveMultiplier)
++	{
++		m_voiCompositionProductionWaveMultiplier = observedWaveMultiplier;
++		Util::Log(
++			__FUNCTION__,
++			"VOI advanced balanced composition production wave multiplier="
++				+ std::to_string(m_voiCompositionProductionWaveMultiplier)
++				+ " operation=" + operationKey,
++			m_bot);
++	}
++}
++
+ void ProductionManager::onFrame(bool executeMacro)
+ {
+ 	if (executeMacro)
+ 	{
++		refreshVoiCompositionProductionWaveMultiplier();
+ 		m_bot.StartProfiling("0.10.2.1    lowPriorityChecks");
+ 		lowPriorityChecks();
+ 		validateUpgradesProgress();
+@@ -958,7 +1013,10 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 	for (const auto & entry : voiExactCompositionTypes())
+ 	{
+ 		const MetaType & type = entry.second;
+-		const int requestedCount = voiCompositionProductionTargetCount(m_bot, entry.first);
++		const int requestedCount = voiCompositionProductionTargetCount(
++			m_bot,
++			entry.first,
++			m_voiCompositionProductionWaveMultiplier);
+ 		const int representedCount = voiRepresentedUnitCount(m_bot, type);
+ 		const int allowedQueuedCount = std::max(0, requestedCount - representedCount);
+ 		const int queuedCount = m_queue.getCountOfType(type);
+@@ -2911,7 +2969,10 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		{
+ 			return false;
+ 		}
+-		const int requested = voiCompositionProductionTargetCount(m_bot, policyUnitType);
++		const int requested = voiCompositionProductionTargetCount(
++			m_bot,
++			policyUnitType,
++			m_voiCompositionProductionWaveMultiplier);
+ 		return requested > 0 && voiRepresentedUnitCount(type) >= requested;
+ 	};
+ 	const bool tankCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_SIEGETANK", MetaTypeEnum::SiegeTank);
+@@ -2931,7 +2992,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool reaperCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_REAPER", MetaTypeEnum::Reaper);
+ 	const int requestedMarineCount = voiCompositionProductionTargetCount(
+ 		m_bot,
+-		"TERRAN_MARINE");
++		"TERRAN_MARINE",
++		m_voiCompositionProductionWaveMultiplier);
+ 	const int representedMarineCount = voiRepresentedUnitCount(MetaTypeEnum::Marine);
+ 	const bool marineCompositionSatisfied = requestedMarineCount > 0 && representedMarineCount >= requestedMarineCount;
+@@ -3372,7 +3434,8 @@ void ProductionManager::enforceBarracksProductionContinuity()
+ 	{
+ 		return;
+ 	}
+ 	const int requestedMarineCount = voiCompositionProductionTargetCount(
+ 		m_bot,
+-		"TERRAN_MARINE");
++		"TERRAN_MARINE",
++		m_voiCompositionProductionWaveMultiplier);
+ 	int representedMarineCount = voiRepresentedUnitCount(m_bot, MetaTypeEnum::Marine);
+ 	if (m_queue.contains(MetaTypeEnum::Marine))
+@@ -4686,9 +4749,12 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+ 	}
+ 	if (item.type.isUnit()
+-		&& !item.type.getUnitType().isBuilding()
+-		&& !voiExactCompositionAllowsTraining(m_bot, item.type))
++		&& !item.type.getUnitType().isBuilding()
++		&& !voiExactCompositionAllowsTraining(
++			m_bot,
++			item.type,
++			m_voiCompositionProductionWaveMultiplier))
+ 	{
+ 		Util::Log(
+ 			__FUNCTION__,
+ 			"VOI exact composition rejected excess training command item=" + item.type.getName(),
+ 			m_bot);
+ 		return false;
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -62,6 +62,8 @@ class ProductionManager
+ 	std::map<sc2::UNIT_TYPEID, int> m_voiDoctrineUnitCountBaseline;
+ 	std::map<sc2::UNIT_TYPEID, uint32_t> m_nextPlacementRetryFrame;
+ 	std::map<sc2::UNIT_TYPEID, int> m_placementRetryCount;
++	std::string m_voiCompositionProductionOperationKey = "";
++	int m_voiCompositionProductionWaveMultiplier = 1;
+ 	std::vector<sc2::UNIT_TYPEID> factoryUnitTypes = { sc2::UNIT_TYPEID::TERRAN_HELLION, sc2::UNIT_TYPEID::TERRAN_HELLIONTANK, sc2::UNIT_TYPEID::TERRAN_WIDOWMINE, sc2::UNIT_TYPEID::TERRAN_SIEGETANK, sc2::UNIT_TYPEID::TERRAN_CYCLONE, sc2::UNIT_TYPEID::TERRAN_THOR };
+ 
+ 	void	validateUpgradesProgress();
+@@ -76,6 +78,7 @@ class ProductionManager
+ 	void	deferPlacementRetry(const MetaType & type, const std::string & reason);
+ 	void	putImportantBuildOrderItemsInQueue();
+ 	void	applyVoiDoctrineProductionBias();
++	void	refreshVoiCompositionProductionWaveMultiplier();
+ 	void	reconcileVoiExactCompositionQueue();
+ 	bool	isVoiExpandMacroActive() const;
+ 	bool	shouldReserveForVoiExpandCommandCenter() const;

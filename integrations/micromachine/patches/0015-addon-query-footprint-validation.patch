@@ -1,0 +1,134 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -322,53 +322,99 @@
+ }
+ 
+ bool isVoiSupplyRecoveryDepot(CCBot & bot, const UnitType & type)
+ {
+ 	return bot.Commander().isVoiPolicyActive() &&
+ 		type.getAPIUnitType() == sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT &&
+ 		bot.GetCurrentSupply() >= bot.GetMaxSupply() &&
+ 		bot.GetMaxSupply() < 200;
+ }
+ 
+-bool voiProductionAddonAreaHasStaticBlocker(
+-	CCBot & bot,
++std::vector<CCTilePosition> voiProductionAddonTiles(
+ 	const UnitType & type,
+ 	const CCTilePosition & position)
+ {
+ 	const auto apiType = type.getAPIUnitType();
+ 	if (apiType != sc2::UNIT_TYPEID::TERRAN_BARRACKS
+ 		&& apiType != sc2::UNIT_TYPEID::TERRAN_FACTORY
+ 		&& apiType != sc2::UNIT_TYPEID::TERRAN_STARPORT)
+ 	{
+-		return false;
++		return {};
+ 	}
+ 
+-	const CCPosition producerPosition = Util::GetPosition(position);
+-	const CCPosition addonCenter = producerPosition + CCPosition(2.5f, -0.5f);
++	// Terran production buildings are 3x3 around the center tile. Their addon
++	// occupies the two columns immediately to the right of the producer.
++	return {
++		CCTilePosition(position.x + 2, position.y - 1),
++		CCTilePosition(position.x + 2, position.y),
++		CCTilePosition(position.x + 3, position.y - 1),
++		CCTilePosition(position.x + 3, position.y),
++	};
++}
++
++bool voiStaticUnitOccupiesTile(const Unit & unit, const CCTilePosition & tile)
++{
++	// Use the same radius-derived bounds as CombatCommander's blocked-tile
++	// map. UnitType::tileWidth() depends on a build ability and is not reliable
++	// for every neutral or special map object.
++	CCTilePosition bottomLeft;
++	CCTilePosition topRight;
++	unit.getBuildingLimits(bottomLeft, topRight);
++	return tile.x >= bottomLeft.x
++		&& tile.x < topRight.x
++		&& tile.y >= bottomLeft.y
++		&& tile.y < topRight.y;
++}
++
++bool voiProductionAddonFootprintIsBuildable(
++	CCBot & bot,
++	const UnitType & type,
++	const CCTilePosition & position)
++{
++	const auto addonTiles = voiProductionAddonTiles(type, position);
++	for (const auto & tile : addonTiles)
++	{
++		if (!bot.Map().isValidTile(tile)
++			|| !bot.Map().isBuildable(tile.x, tile.y)
++			|| (!Util::IsZerg(bot.GetSelfRace())
++				&& bot.Observation()->HasCreep(CCPosition(tile.x, tile.y))))
++		{
++			return false;
++		}
++	}
++
++	if (addonTiles.empty())
++	{
++		return true;
++	}
++
+ 	for (const auto & unit : bot.GetUnits())
+ 	{
+ 		if (!unit.isValid() || !unit.isAlive() || unit.isFlying())
+ 		{
+ 			continue;
+ 		}
+ 		if (!unit.getType().isBuilding()
+ 			&& !unit.getType().isMineral()
+ 			&& !unit.getType().isGeyser())
+ 		{
+ 			continue;
+ 		}
+-		if (Util::Dist(addonCenter, unit.getPosition()) <= 1.0f + unit.getUnitPtr()->radius)
++		for (const auto & tile : addonTiles)
+ 		{
+-			return true;
++			if (voiStaticUnitOccupiesTile(unit, tile))
++			{
++				return false;
++			}
+ 		}
+ 	}
+-	return false;
++	return true;
+ }
+ 
+ bool isVoiSc2MacroPlacementSafeWithOptions(
+ 	CCBot & bot,
+ 	const UnitType & type,
+ 	const CCTilePosition & position,
+ 	bool ignoreReserved,
+ 	bool includeAddonTiles,
+ 	bool ignoreExtraBorder,
+ 	bool requireQueryPlacement,
+@@ -406,21 +450,21 @@
+ 		}
+ 		if (!allowCombatInfluence && Util::PathFinding::GetCombatInfluenceOnTile(tile, false, bot) > 0)
+ 		{
+ 			return false;
+ 		}
+ 	}
+ 	if (isVoiDepotFlowProtectedPlacement(bot, type, tiles))
+ 	{
+ 		return false;
+ 	}
+-	if (includeAddonTiles && voiProductionAddonAreaHasStaticBlocker(bot, type, position))
++	if (includeAddonTiles && !voiProductionAddonFootprintIsBuildable(bot, type, position))
+ 	{
+ 		return false;
+ 	}
+ 
+ 	return !requireQueryPlacement || queryCanPlaceVoiBuilding(bot, type, Util::GetPosition(position));
+ }
+ 
+ bool isVoiSc2MacroPlacementSafe(
+ 	CCBot & bot,
+ 	const UnitType & type,

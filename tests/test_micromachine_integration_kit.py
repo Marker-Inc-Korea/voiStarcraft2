@@ -11,6 +11,93 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = REPO_ROOT / "integrations" / "micromachine"
 PATCH_FILE = KIT_DIR / "patches" / "0001-macos-latest-s2client-policy-blackboard.patch"
+TACTICAL_PATCH_FILE = KIT_DIR / "patches" / "0002-live-tactical-operation-fixes.patch"
+PRODUCTION_FIX_PATCH_FILE = (
+    KIT_DIR / "patches" / "0003-production-live-qa-blockers.patch"
+)
+OPERATION_STATE_PATCH_FILE = (
+    KIT_DIR / "patches" / "0004-live-operation-state-machine.patch"
+)
+ADDON_RECOVERY_PATCH_FILE = (
+    KIT_DIR / "patches" / "0005-addon-relocation-recovery.patch"
+)
+GROUNDED_ADDON_CANDIDATE_PATCH_FILE = (
+    KIT_DIR / "patches" / "0006-grounded-addon-candidate-fix.patch"
+)
+GUARANTEED_PRODUCER_GROUNDING_PATCH_FILE = (
+    KIT_DIR / "patches" / "0007-guaranteed-producer-grounding.patch"
+)
+EMERGENCY_LAND_QUERY_FALLBACK_PATCH_FILE = (
+    KIT_DIR / "patches" / "0008-emergency-land-query-fallback.patch"
+)
+GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH_FILE = (
+    KIT_DIR / "patches" / "0009-grounded-production-and-observed-targeting.patch"
+)
+EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH_FILE = (
+    KIT_DIR / "patches" / "0010-exact-composition-production-progress.patch"
+)
+PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH_FILE = (
+    KIT_DIR / "patches" / "0011-production-resource-operation-persistence.patch"
+)
+LIVE_OPERATION_UNBLOCK_PATCH_FILE = (
+    KIT_DIR / "patches" / "0012-live-operation-unblock.patch"
+)
+STABLE_FLANK_STAGE_LATCH_PATCH_FILE = (
+    KIT_DIR / "patches" / "0013-stable-flank-stage-latch.patch"
+)
+PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH_FILE = (
+    KIT_DIR / "patches" / "0014-production-staging-and-observed-operation.patch"
+)
+ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH_FILE = (
+    KIT_DIR / "patches" / "0015-addon-query-footprint-validation.patch"
+)
+AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH_FILE = (
+    KIT_DIR / "patches" / "0016-authoritative-addon-placement-query.patch"
+)
+AUTHORITATIVE_ADDON_EXECUTION_PATCH_FILE = (
+    KIT_DIR / "patches" / "0017-authoritative-addon-execution.patch"
+)
+CONTINUOUS_ARMY_MACRO_PATCH_FILE = (
+    KIT_DIR / "patches" / "0018-continuous-army-macro.patch"
+)
+CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH_FILE = (
+    KIT_DIR / "patches" / "0019-continuous-army-economy-scaling.patch"
+)
+STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH_FILE = (
+    KIT_DIR / "patches" / "0020-standing-composition-reinforcement-waves.patch"
+)
+OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH_FILE = (
+    KIT_DIR / "patches" / "0021-offensive-sweep-self-base-exclusion.patch"
+)
+BOUNDED_PLACEMENT_QUERY_CACHE_PATCH_FILE = (
+    KIT_DIR / "patches" / "0022-bounded-placement-query-cache.patch"
+)
+PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0023-production-facility-stability-and-tank-recovery.patch"
+)
+BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH_FILE = (
+    KIT_DIR / "patches" / "0024-balanced-composition-wave-production.patch"
+)
+EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH_FILE = (
+    KIT_DIR / "patches" / "0025-exact-composition-production-unblock.patch"
+)
+CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH_FILE = (
+    KIT_DIR / "patches" / "0026-continuous-combat-production-relaunch.patch"
+)
+RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH_FILE = (
+    KIT_DIR / "patches" / "0027-resource-throughput-and-expansion-backoff.patch"
+)
+STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE = (
+    KIT_DIR / "patches" / "0028-startup-telemetry-initialization.patch"
+)
+GAS_WORKER_COMPLETION_CAP_PATCH_FILE = (
+    KIT_DIR / "patches" / "0029-gas-worker-completion-and-cap.patch"
+)
+STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE = (
+    KIT_DIR / "patches" / "0030-stable-offensive-sweep-target.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -28,6 +115,1053 @@ def _read_patch_text(path: Path) -> str:
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
+    def test_live_tactical_patch_locks_runtime_operation_invariants(self) -> None:
+        patch = _read_patch_text(TACTICAL_PATCH_FILE)
+
+        required_terms = (
+            "bool BuildingManager::handleVoiAddonTask(Building & b)",
+            "m_addonRelocations.find(unit.getTag())",
+            "m_addonRelocations.find(b.builderUnit.getTag())",
+            "order.ability_id == sc2::ABILITY_ID::LAND_BARRACKS",
+            'const bool scopeTargetsScout = scopeArmyGroup == "scout";',
+            "if (totalAssigned < totalRequired)",
+            "mainAttackSquad.setPriority(exactCompositionPressureTask ? BaseDefensePriority : AttackPriority);",
+            'm_lastVoiOperationPhase = exactCompositionPressureTask ? "Producing" : "Idle";',
+            "const bool voiOperationRallying",
+            "const bool voiBoundedForceAdvance",
+            "const bool siegeWindowOpen",
+            "const float flankSign = voiRouteIntent == \"flank_left\" ? 1.0f : -1.0f;",
+            "const CCPosition lateral(-forward.y * flankSign, forward.x * flankSign);",
+            'm_squad->getName() == "MainAttack"',
+            'vikingRole == "support" || vikingRole == "escort"',
+            '\\"operation_phase\\":\\"',
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertIn(
+            "currentFrame - state.lastCommandFrame < commandCooldown",
+            patch,
+        )
+        self.assertIn("state.landAttempts >= 4", patch)
+        self.assertIn("scoutSquad.getUnits().size() > static_cast<size_t>(desiredScoutUnits)", patch)
+
+    def test_production_fix_patch_closes_live_qa_blockers(self) -> None:
+        patch = _read_patch_text(PRODUCTION_FIX_PATCH_FILE)
+
+        required_terms = (
+            "const size_t ExplicitOperationPriority = 6;",
+            "mainAttackSquad.setPriority(exactCompositionPressureTask ? ExplicitOperationPriority : AttackPriority);",
+            "Requested composition atomically assigned to MainAttack",
+            "exactCompositionReady",
+            "partialOperationUnits",
+            "isSafeMainAttackSource",
+            "isSafeScoutSource",
+            'currentName == "MainAttack"',
+            "currentSquad->getPriority() < ExplicitOperationPriority",
+            "CCPosition voiForwardRallyPosition",
+            "m_voiScoutPreviousSquadByTag",
+            "Exact combat scout composition is not available yet",
+            'addScoutType("TERRAN_VIKINGFIGHTER"',
+            "const bool scoutViking",
+            "const bool preserveScoutOrder",
+            "Explicit MainAttack operation owns available combat units",
+            'currentName.find("Base Defense ") == 0',
+            "ScoutVikingFighterMode",
+            "voiOffensiveTankSiegeBlocked",
+            "const bool explicitOperationTank",
+            "VoiRoleTankSiegeApproved",
+            "RangedManager approved siege after operation and home-safety checks",
+            "m_voiFocusTarget",
+            'voiPolicyRoleForUnit(m_bot, rangedUnit) == "focus_fire"',
+            'getVoiPolicyFloat("combat.kite_bias", 0.0f)',
+            "VoiKiteMove",
+            "voiLandAbilityForProducer",
+            "voiIsLandOrderForTarget",
+            "voiIsBuildingMobilityOrder",
+            "tryIssueVoiBuildingMobilityCommand",
+            "releaseVoiBuildingMobilityOwnershipIfSettled",
+            "m_voiMobilityOwner",
+            "m_voiMobilityLastCommandFrame",
+            "isVoiBuildingMobilityOwned",
+            "isVoiBuildingMobilityOwned(barracks.getTag())",
+            'm_bot.Query()->Placement(ability, target, unit.getUnitPtr())',
+            '"addon_relocation"',
+            '"legacy_addon"',
+            '"proxy_cyclones"',
+            '"damaged_building"',
+            "currentFrame - state.lastCommandFrame < commandCooldown",
+            "const uint32_t groundedRetryDelay = 22u * 30u;",
+            "state.liftAttempts >= 2",
+            "m_liftedBuildingPositions.find",
+            "Refusing legacy addon LAND",
+            "Marine continuity ability query failed; deferring direct train command.",
+            "bool voiIsMorphAbility(sc2::AbilityID ability)",
+            "currentAction.executed && currentAction.finished && action.prioritized",
+            "const bool preserveScoutObjective = action.squad == \"Scout\";",
+            "&& !preserveScoutObjective",
+            "bool voiExplicitMainAttackUnitRequested",
+            'voiExplicitMainAttackUnitRequested(m_bot, "TERRAN_SIEGETANK")',
+            "-\t\t\t\t\tMicro::SmartHold(worker.getUnitPtr(), true, m_bot);",
+            "mineral_return_depot_direct_no_queue",
+            "mineral_distance_optimization_direct_no_queue",
+            "-\t\t\t\t\t\t\t\t\tworker.shiftRightClick(depot);",
+            "-\t\t\t\t\t\t\t\tworker.shiftRightClick(mineralTarget);",
+            "-\tconst float techSwitchUrgency = m_bot.Commander().getVoiPolicyFloat(\"production.tech_switch_urgency\", 0.0f);",
+            "const bool wantsFactory = taskTechTransition || wantsFactoryDoctrine || effectiveFactoryBias > 0.25f || effectiveTankBias > 0.25f || effectiveHellionBias > 0.25f || effectiveCycloneBias > 0.25f;",
+            "-\treturn techSwitchUrgency > 0.55f && (hasPendingFactoryTransition || hasPendingStarportTransition);",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+        self.assertNotIn("+\t\t\t\t\tMicro::SmartHold(worker.getUnitPtr(), true, m_bot);", patch)
+        self.assertNotIn("+\t\t\t\t\t\t\t\t\tworker.shiftRightClick(depot);", patch)
+        self.assertNotIn("+\t\t\t\t\t\t\t\tworker.shiftRightClick(mineralTarget);", patch)
+        self.assertNotIn(
+            "+\tconst bool wantsFactory = taskTechTransition || wantsFactoryDoctrine || effectiveFactoryBias > 0.25f || effectiveTankBias > 0.25f || effectiveHellionBias > 0.25f || effectiveCycloneBias > 0.25f || techSwitchUrgency > 0.55f;",
+            patch,
+        )
+        self.assertIn(
+            "-\t\t\t\taction.abilityID = sc2::ABILITY_ID::MORPH_SIEGEMODE;",
+            patch,
+        )
+        for source_path in (
+            "src/BuildingManager.cpp",
+            "src/BuildingManager.h",
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/GameCommander.cpp",
+            "src/ProductionManager.cpp",
+            "src/RangedManager.cpp",
+            "src/RangedManager.h",
+            "src/WorkerManager.cpp",
+        ):
+            with self.subTest(single_diff=source_path):
+                self.assertEqual(
+                    1,
+                patch.count(f"diff --git a/{source_path} b/{source_path}"),
+                )
+
+    def test_operation_state_patch_closes_live_state_machine_blockers(self) -> None:
+        patch = _read_patch_text(OPERATION_STATE_PATCH_FILE)
+
+        required_terms = (
+            "m_voiRallyLatchOperationKey",
+            "invalid_zero_position",
+            "m_lastVoiSkippedAction = \"morph_unavailable|\" + voiActionEvidence(action);",
+            "isVoiProducerCommandOwned",
+            "voiIsLandAbility",
+            "VOI kept the proxy Barracks grounded",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        for source_path in (
+            "src/BuildingManager.cpp",
+            "src/BuildingManager.h",
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/ProductionManager.cpp",
+            "src/RangedManager.cpp",
+            "src/Squad.cpp",
+        ):
+            with self.subTest(single_diff=source_path):
+                self.assertEqual(
+                    1,
+                    patch.count(f"diff --git a/{source_path} b/{source_path}"),
+                )
+
+    def test_addon_recovery_patch_closes_live_relocation_deadlock(self) -> None:
+        patch = _read_patch_text(ADDON_RECOVERY_PATCH_FILE)
+
+        required_terms = (
+            "isVoiProducerFootprintClear",
+            "if (!b.builderUnit.isFlying())",
+            "m_bot.Query()->Placement(landAbility, producerPosition, b.builderUnit.getUnitPtr())",
+            "const size_t queryBudget = 8;",
+            "AddonPlacementRetryState",
+            "state.nextRetryFrame",
+            "state.abortAfterLanding = true;",
+            "findVoiProducerLandingSite",
+            "VOI addon producer grounded safely; released addon ownership for producer replanning.",
+            "m_addonProducerCooldownUntil[producerTag] = currentFrame + 22u * 15u;",
+            "m_voiMobilityOwner.erase(producerTag);",
+            "b.unassign();",
+            "isVoiAddonProducerEligible",
+            "if (isTypeAddon && !m_bot.Buildings().isVoiAddonProducerEligible(unit.getTag()))",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn(
+            "+\tconst sc2::Unit * queryUnit = b.builderUnit.isFlying() ? b.builderUnit.getUnitPtr() : nullptr;",
+            patch,
+        )
+        for source_path in (
+            "src/BuildingManager.cpp",
+            "src/BuildingManager.h",
+            "src/ProductionManager.cpp",
+        ):
+            with self.subTest(single_diff=source_path):
+                self.assertEqual(
+                    1,
+                    patch.count(f"diff --git a/{source_path} b/{source_path}"),
+                )
+
+    def test_grounded_addon_candidate_patch_removes_second_live_blocker(self) -> None:
+        patch = _read_patch_text(GROUNDED_ADDON_CANDIDATE_PATCH_FILE)
+
+        for term in (
+            "if (!b.builderUnit.isFlying())",
+            "getBuildingPlacer().getBuildLocationNear(",
+            "false,\n+\t\t\tfalse,\n+\t\t\ttrue,\n+\t\t\ttrue);",
+            "BuildingPlacer already validated the producer plus addon footprint.",
+            "Dynamic unit occupancy is checked by the LAND query after lift.",
+            "return Util::GetPosition(nearbyTile);",
+            "return CCPosition();",
+            "const size_t queryBudget = 8;",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn(
+            "+\t\t\tcandidates.push_back(Util::GetPosition(nearbyTile));",
+            patch,
+        )
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp"),
+        )
+
+    def test_guaranteed_producer_grounding_patch_prevents_airborne_deadlock(self) -> None:
+        patch = _read_patch_text(GUARANTEED_PRODUCER_GROUNDING_PATCH_FILE)
+
+        for term in (
+            "originalPosition",
+            "liftFrame",
+            "producerOnlyRecovery",
+            "isVoiProducerLandingSiteValid",
+            "TERRAN_FACTORYFLYING",
+            "const UnitType groundedProducerType",
+            "voiLandAbilityCandidatesForProducer",
+            "voiAvailableLandAbility",
+            "voiResolveLandAbility",
+            "return {specializedAbility, sc2::ABILITY_ID::LAND};",
+            "resolvedAbility = voiResolveLandAbility",
+            'owner == "addon_relocation"',
+            "false-negative SC2 placement query",
+            "Micro::SmartAbility(unit.getUnitPtr(), resolvedAbility, target, m_bot);",
+            "getBuildingPlacer().getBuildLocationNear(",
+            "const size_t queryBudget = 16;",
+            "locallyValidatedFallbacks",
+            "rotating locally valid LAND fallback",
+            "maximumAddonFlightFrames",
+            "findVoiProducerLandingSite(b, state.originalPosition)",
+            "emergency grounding search has no valid LAND target yet",
+            "grounding the producer without an addon footprint",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn(
+            "+\treturn m_bot.Query()->Placement(landAbility, producerPosition, b.builderUnit.getUnitPtr());",
+            patch,
+        )
+        self.assertNotIn(
+            "+\t\treturn m_bot.Query()->Placement(landAbility, candidate, b.builderUnit.getUnitPtr());",
+            patch,
+        )
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp"),
+        )
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/BuildingManager.h b/src/BuildingManager.h"),
+        )
+
+    def test_emergency_land_query_fallback_removes_live_false_negatives(self) -> None:
+        patch = _read_patch_text(EMERGENCY_LAND_QUERY_FALLBACK_PATCH_FILE)
+
+        for term in (
+            "producerHalfExtent",
+            "m_bot.Map().isBuildable(tileX, tileY)",
+            "m_bot.Observation()->HasCreep",
+            "std::abs(delta.x) < collisionExtent",
+            "fallbackAbilities",
+            "(currentFrame / 64u) % fallbackAbilities.size()",
+            "locally validated nonqueued LAND",
+            "placement or availability queries",
+            "locallyValidatedFallbacks.push_back(candidate)",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn(
+            "+\t\t\tif (!getBuildingPlacer().buildable(",
+            patch,
+        )
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp"),
+        )
+
+    def test_grounded_production_and_observed_targeting_closes_live_blockers(
+        self,
+    ) -> None:
+        patch = _read_patch_text(GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH_FILE)
+
+        for term in (
+            "return {specializedAbility};",
+            "producer-specific nonqueued LAND",
+            "clearing the reserved addon tiles without lifting the producer",
+            "released the addon task for producer replanning without lifting",
+            "m_lastVoiDoctrineFrame < 48",
+            "queued_supply_and_continuing_plan",
+            "queued_worker_and_continuing_plan",
+            "voiObservedEnemyCombatTarget",
+            "voiHasObservedEnemyLocationEvidence",
+            "recentObservationWindowFrames",
+            "scouting.require_fresh_enemy_observation",
+            "Combat scout is searching base candidates before a fresh-observation attack",
+            "Waiting for combat scout enemy-location evidence",
+            "launchedExactOperation",
+            "Launched operation continuing with survivors",
+            "voiSweepingAfterLostContact",
+            "Continuing launched operation through base candidates",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn(
+            "+\treturn {specializedAbility, sc2::ABILITY_ID::LAND};",
+            patch,
+        )
+        for source_path in (
+            "src/BuildingManager.cpp",
+            "src/ProductionManager.cpp",
+            "src/CombatCommander.cpp",
+        ):
+            with self.subTest(single_diff=source_path):
+                self.assertEqual(
+                    1,
+                    patch.count(f"diff --git a/{source_path} b/{source_path}"),
+                )
+
+    def test_exact_composition_production_progress_closes_remaining_live_stalls(
+        self,
+    ) -> None:
+        patch = _read_patch_text(EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH_FILE)
+
+        for term in (
+            "voiRequestedCompositionCount",
+            "voiRepresentedUnitCount",
+            "wantsStarport",
+            "combat_scout_bootstrap",
+            "marineScoutBootstrapTarget",
+            "exactMarineCompositionPending",
+            "requestedMarineCount > 0 && !exactMarineCompositionPending",
+            "requestedMarineCount > representedMarineCount",
+            "voiCountMobileAttackUnits(m_combatUnits) >= 1",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertIn(
+            "wantsFactory = taskTechTransition || wantsFactoryDoctrine || wantsStarport",
+            patch,
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp"
+            ),
+        )
+
+    def test_production_resource_operation_patch_closes_live_control_gaps(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH_FILE
+        )
+
+        for term in (
+            "production.allow_building_relocation",
+            "VOI refused nonessential production-building LIFT",
+            "economy.gas_priority",
+            "economy.gas_worker_target_bias",
+            "voiCompletedProducersWithAttachedAddon",
+            "voiExactCompositionTypes",
+            "standingSustainProduction",
+            'lifetimeMode == "until_cancelled"',
+            "TERRAN_GHOST",
+            "TERRAN_WIDOWMINE",
+            "TERRAN_LIBERATOR",
+            "recentCombatObservationWindow",
+            "VOI tactical operation regroup completed",
+            "Regrouping surviving units for tactical relaunch",
+            "MORPH_LIBERATORAGMODE",
+            "BURROWDOWN_WIDOWMINE",
+            "EFFECT_GHOSTSNIPE",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        for source_path in (
+            "src/BuildingManager.cpp",
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/ProductionManager.cpp",
+            "src/ProductionManager.h",
+            "src/RangedManager.cpp",
+            "src/WorkerManager.cpp",
+        ):
+            with self.subTest(single_diff=source_path):
+                self.assertEqual(
+                    1,
+                    patch.count(f"diff --git a/{source_path} b/{source_path}"),
+                )
+
+    def test_live_operation_unblock_patch_closes_live_stalls(self) -> None:
+        patch = _read_patch_text(LIVE_OPERATION_UNBLOCK_PATCH_FILE)
+
+        for term in (
+            "countVoiEligibleAddonProducers",
+            "hasVoiBlockedAddonProducer",
+            "const uint32_t producerCooldown = 22u * 60u * 5u;",
+            "GetNextEnemyStartCandidateToScout",
+            "currentFrame - m_voiScoutLastProgressFrame >= 22u * 12u",
+            "m_voiStalledScoutTargets",
+            "enemy-start candidate",
+            "m_voiFactoryAddonReplacementQueued",
+            "factory_addon_replacement",
+            "factoryTechLabTaskActive",
+            "eligibleFactoryAddonProducers",
+            "m_queue.removeAllOfType(MetaTypeEnum::FactoryTechLab)",
+            "target_evidence",
+            "observed_enemy",
+            "enemy_start_candidate_scouting",
+            "explicit_blind_candidate",
+            "observed_contact_lost_sweep",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        for source_path in (
+            "src/BuildingManager.cpp",
+            "src/BuildingManager.h",
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/GameCommander.cpp",
+            "src/ProductionManager.cpp",
+            "src/ProductionManager.h",
+        ):
+            with self.subTest(single_diff=source_path):
+                self.assertEqual(
+                    1,
+                    patch.count(f"diff --git a/{source_path} b/{source_path}"),
+                )
+
+    def test_stable_flank_stage_patch_freezes_operation_waypoint(self) -> None:
+        patch = _read_patch_text(STABLE_FLANK_STAGE_LATCH_PATCH_FILE)
+
+        for term in (
+            "if (m_voiFlankStagePosition == CCPosition())",
+            "CCPosition candidateStage;",
+            "candidateStage = home + forward * forwardDistance + lateral * lateralDistance;",
+            "candidateStage = orderPosition * (1.0f - flankStageWeight) + m_bot.Map().center() * flankStageWeight;",
+            "if (m_voiFlankStagePosition != CCPosition())",
+            "static_cast<float>(mainAttackSquad.getUnits().size()) * 0.60f",
+            "orderPosition = m_voiFlankStagePosition;",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp"
+            ),
+        )
+
+    def test_production_staging_patch_closes_live_operation_leaks(self) -> None:
+        patch = _read_patch_text(PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH_FILE)
+
+        for term in (
+            "voiProductionStagingPosition",
+            "voiProductionAddonAreaHasStaticBlocker",
+            'const bool addonRelocation = owner == "legacy_addon" || owner == "addon_relocation";',
+            "VOI queued an addon-clear replacement Factory because every completed producer is quarantined.",
+            "autonomousNeedsEnemyEvidence",
+            "m_voiOperationObservedEnemy",
+            "No recently observed local combat threat is a safe advance",
+            "semanticLifetimeActive",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        for source_path in (
+            "src/BuildingManager.cpp",
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/GameCommander.cpp",
+            "src/ProductionManager.cpp",
+            "src/ProductionManager.h",
+        ):
+            with self.subTest(source_path=source_path):
+                self.assertEqual(
+                    1,
+                    patch.count(f"diff --git a/{source_path} b/{source_path}"),
+                )
+
+    def test_addon_query_footprint_patch_rejects_body_only_placements(self) -> None:
+        patch = _read_patch_text(ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH_FILE)
+
+        for term in (
+            "voiProductionAddonTiles",
+            "CCTilePosition(position.x + 2, position.y - 1)",
+            "CCTilePosition(position.x + 2, position.y)",
+            "CCTilePosition(position.x + 3, position.y - 1)",
+            "CCTilePosition(position.x + 3, position.y)",
+            "voiStaticUnitOccupiesTile",
+            "unit.getBuildingLimits(bottomLeft, topRight)",
+            "voiProductionAddonFootprintIsBuildable",
+            "!bot.Map().isBuildable(tile.x, tile.y)",
+            "bot.Observation()->HasCreep",
+            "unit.getType().isBuilding()",
+            "unit.getType().isMineral()",
+            "unit.getType().isGeyser()",
+            "includeAddonTiles && !voiProductionAddonFootprintIsBuildable",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn("unit.getType().tileWidth()", patch)
+        self.assertNotIn("unit.getType().tileHeight()", patch)
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp"),
+        )
+
+    def test_authoritative_addon_query_patch_uses_batched_sc2_placement(self) -> None:
+        patch = _read_patch_text(AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH_FILE)
+
+        for term in (
+            "isVoiProductionBuildingWithAddonFootprint",
+            "voiProductionAddonProbePosition",
+            "producerPosition.x + 3",
+            "queryCanPlaceVoiProductionAddonFootprint",
+            "TERRAN_SUPPLYDEPOT",
+            "std::vector<sc2::QueryInterface::PlacementQuery> addonQueries",
+            "addonQueries.emplace_back",
+            "addonResults = bot.Query()->Placement(addonQueries)",
+            "bodyAcceptedCount",
+            "addonAcceptedCount",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertNotIn("bot.Map().isBuildable", added_lines)
+        self.assertNotIn("voiStaticUnitOccupiesTile", added_lines)
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp"),
+        )
+
+    def test_authoritative_addon_execution_patch_closes_runtime_split_brain(
+        self,
+    ) -> None:
+        patch = _read_patch_text(AUTHORITATIVE_ADDON_EXECUTION_PATCH_FILE)
+
+        for term in (
+            "Util::GetTilePosition(producerPosition)",
+            "queryCanPlaceVoiProductionAddonFootprint(m_bot, producerTile)",
+            "const uint32_t producerCooldown = 22u * 15u;",
+            "&& factoryCount < 2",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertNotIn("getBuildingPlacer().buildable", added_lines)
+        self.assertNotIn("22u * 60u * 5u", added_lines)
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp"),
+        )
+
+    def test_continuous_army_macro_patch_spends_resources_after_minimum_composition(
+        self,
+    ) -> None:
+        patch = _read_patch_text(CONTINUOUS_ARMY_MACRO_PATCH_FILE)
+
+        required_terms = (
+            "voiContinuousCompositionProductionActive",
+            "voiCompositionProductionWaveMultiplier",
+            "voiCompositionProductionTargetCount",
+            'tacticalTaskType == "pressure_with_main_army"',
+            '"production.production_continuity_bias"',
+            "bot.GetMaxSupply() < 200 || bot.GetCurrentSupply() < 196",
+            '"army_macro_worker_continuity"',
+            "macroWorkerTarget",
+            '"army_macro_barracks"',
+            '"army_macro_factory"',
+            '"army_macro_starport"',
+            "std::min(3, desiredBarracksCount)",
+            "std::min(2, desiredFactoryCount)",
+            "std::min(2, desiredStarportCount)",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"),
+        )
+
+    def test_continuous_army_economy_scaling_patch_closes_gas_and_base_bottlenecks(
+        self,
+    ) -> None:
+        patch = _read_patch_text(CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH_FILE)
+
+        required_terms = (
+            "requestedCompositionGasPerWave",
+            "continuousGasComposition",
+            "desiredMacroRefineryCount",
+            "macroRefineryWorkerFloor",
+            "macroGasStarved",
+            '"army_macro_refinery"',
+            "macroExpansionWorkerFloor",
+            "macroExpansionMineralThreshold",
+            "getFreeBaseLocationCount() > 0",
+            '"army_macro_command_center"',
+            "totalTownHallCount < 3",
+            "refineryCount >= 2",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertNotIn("m_bot.GetFreeGas() >= 500", added_lines)
+        self.assertNotIn("m_bot.GetFreeGas() >= 600", added_lines)
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"),
+        )
+
+    def test_standing_composition_patch_joins_complete_uncapped_reinforcement_waves(
+        self,
+    ) -> None:
+        patch = _read_patch_text(STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH_FILE)
+
+        required_terms = (
+            "standingContinuousExactOperation",
+            '"production.production_continuity_bias"',
+            'voiOperationLifetimeMode == "until_cancelled"',
+            'voiOperationLifetimeMode == "standing_order"',
+            '"scope.max_units", 0) == 0',
+            '"tactical_task.max_units"',
+            "Preserve the launched army",
+            "Every standing reinforcement is an independent complete wave.",
+            "const int requestedForPass = requirement.second;",
+            "<= 32.0f * 32.0f",
+            "Complete reinforcement composition atomically joined MainAttack",
+            "&& !exactCompositionPressureTask",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn("selectedForType", patch)
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp"),
+        )
+
+    def test_offensive_sweep_patch_excludes_self_and_home_bases(self) -> None:
+        patch = _read_patch_text(OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH_FILE)
+
+        required_terms = (
+            "baseLocation == selfStartingBase",
+            "baseLocation->isOccupiedByPlayer(Players::Self)",
+            "getOccupiedBaseLocations(Players::Self)",
+            "voiIsRemoteCombatTarget(m_bot, candidatePosition, 32.0f)",
+            "< 18.0f * 18.0f",
+            "addCandidates(true, false)",
+            "addCandidates(false, true)",
+            "addCandidates(false, false)",
+            "m_currentBaseExplorationIndex %= offensiveCandidates.size()",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertNotIn(
+            "getBasePosition(Players::Enemy, m_currentBaseExplorationIndex)",
+            added_lines,
+        )
+
+    def test_bounded_placement_patch_caps_queries_and_removes_duplicate_search(
+        self,
+    ) -> None:
+        patch = _read_patch_text(BOUNDED_PLACEMENT_QUERY_CACHE_PATCH_FILE)
+
+        required_terms = (
+            "voiMacroPlacementCache",
+            "VOI SC2 Query macro placement reused validated cache",
+            "anchors.size() >= 8",
+            "supplyRecovery ? 192 : 96",
+            "supplyRecovery ? 640 : 320",
+            "radius <= 32",
+            "usedVoiQueryPlacement",
+            "m_bot.Commander().isVoiPolicyActive() ? 24 : 60",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+        self.assertEqual(
+            1,
+            patch.count(
+                '+\t\t\t\tbuildingLocation = m_buildingPlacer.getBuildLocationNear('
+            ),
+        )
+
+    def test_production_facility_stability_and_tank_recovery_patch(self) -> None:
+        patch = _read_patch_text(
+            PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH_FILE
+        )
+
+        for term in (
+            "groundedProductionFacility",
+            "production.allow_building_relocation=true",
+            "factoryAddonRecoveryCap",
+            "continuousCompositionProduction && taskTargetsSiegeTank ? 3 : 2",
+            "reserveGasForTankTech",
+            "VOI deferred queued Vikings until Factory Tech Lab recovery completes.",
+            "std::max(0.55f, productionContinuityBias)",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+    def test_balanced_composition_wave_patch_prevents_cross_type_inflation(
+        self,
+    ) -> None:
+        patch = _read_patch_text(BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH_FILE)
+
+        for term in (
+            "voiContinuousCompositionProductionConfigured",
+            "completedWaves",
+            "completedForType",
+            "std::min(completedWaves, completedForType)",
+            "A surplus of one unit type must never inflate another type's target.",
+            "m_voiCompositionProductionOperationKey",
+            "m_voiCompositionProductionWaveMultiplier",
+            "refreshVoiCompositionProductionWaveMultiplier",
+            "The latch is monotonic for the operation.",
+            "VOI advanced balanced composition production wave multiplier=",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        self.assertNotIn("requestedTotal", added_lines)
+        self.assertNotIn("representedTotal", added_lines)
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.h b/src/ProductionManager.h"
+            ),
+        )
+
+    def test_exact_composition_production_unblock_patch_closes_live_queue_stall(
+        self,
+    ) -> None:
+        patch = _read_patch_text(EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH_FILE)
+
+        for term in (
+            "voiExactCompositionFirstWaveComplete",
+            "return exactCompositionActive;",
+            "an exact composition must never queue an unrequested unit",
+            "exactCompositionFirstWaveIncomplete",
+            "!standingProductionNeedsRoom && !exactCompositionFirstWaveIncomplete",
+            "exact_composition_first_wave_incomplete=",
+            "m_voiMobilityRefusalLogFrame",
+            "currentFrame - lastLogFrame >= 224",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/BuildingManager.h b/src/BuildingManager.h"
+            ),
+        )
+
+    def test_continuous_combat_production_relaunch_patch_closes_post_launch_stall(
+        self,
+    ) -> None:
+        patch = _read_patch_text(CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH_FILE)
+
+        for term in (
+            "voiPostLaunchScopeThresholdMet",
+            "voiEffectiveScopeThresholdMet",
+            "VOI post-launch survivors cleared bounded relaunch gate",
+            "The VOI doctrine path owns combat-unit selection",
+            "if (voiExactCompositionActive(m_bot))",
+            "&& !voiExactCompositionActive(m_bot)",
+            "m_lastVoiExactCompositionReconciliationState",
+            "m_lastVoiExactCompositionReconciliationLogFrame",
+            ">= 224",
+            "taskTargetsArmory",
+            "production.queue_biases.TERRAN_ARMORY",
+            "effectiveArmoryBias",
+            "wantsArmory",
+            "thor_armory_transition",
+            "completedArmoryCount > 0",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.h b/src/ProductionManager.h"
+            ),
+        )
+        self.assertNotIn(
+            "diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp",
+            patch,
+        )
+
+    def test_resource_throughput_patch_sustains_mixed_army_macro(self) -> None:
+        patch = _read_patch_text(RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH_FILE)
+
+        for term in (
+            "voiCompositionProductionTargetCount(",
+            "m_voiCompositionProductionWaveMultiplier",
+            "m_queue.getCountOfType(MetaTypeEnum::Marine)",
+            "int BuildOrderQueue::getCountOfType(const MetaType & type) const",
+            "while (numAssigned < gasWorkersTarget)",
+            "getCompletedRefineryCount() * gasWorkersTarget",
+            "retryCount <= 2 ? 22 * 5 : 22 * 60",
+            "retryCount <= 2 ? 22 * 5 : 22 * 10",
+            "blocked_passive_expand_quarantine",
+            "m_queue.removeAllOfType(MetaTypeEnum::CommandCenter)",
+            '\\"free_minerals\\"',
+            '\\"free_gas\\"',
+            '\\"current_supply\\"',
+            '\\"max_supply\\"',
+            '\\"actual_gas_workers\\"',
+            '\\"total_gas_worker_target\\"',
+            '\\"command_center_placement_quarantined\\"',
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertEqual(
+            2,
+            patch.count("+\t\t\twhile (numAssigned < gasWorkersTarget)"),
+        )
+        self.assertEqual(
+            2,
+            patch.count(
+                "-\t\t\twhile (numAssigned < gasWorkersTarget && "
+                "m_workerData.getWorkerJobCount(WorkerJobs::Gas) < gasWorkersTarget)"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/WorkerManager.cpp b/src/WorkerManager.cpp"),
+        )
+
+    def test_startup_telemetry_patch_respects_manager_initialization(self) -> None:
+        patch = _read_patch_text(STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE)
+
+        for term in (
+            "void UnitInfoManager::onStart()",
+            "updateUnitInfo();",
+            "Publish only after every subordinate manager has initialized.",
+            "m_bot.GetAllyGeyserUnits()",
+            "-    writeVoiTelemetry();",
+            "+    writeVoiTelemetry();",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertLess(
+            patch.index("m_combatCommander.onStart();"),
+            patch.index("+    writeVoiTelemetry();"),
+        )
+
+    def test_gas_worker_patch_requires_completion_and_caps_each_refinery(
+        self,
+    ) -> None:
+        patch = _read_patch_text(GAS_WORKER_COMPLETION_CAP_PATCH_FILE)
+
+        for term in (
+            "if (numAssigned > gasWorkersTarget)",
+            "while (numAssigned > gasWorkersTarget)",
+            "capGasWorkersBeforeBaseLookup",
+            "m_workerData.setWorkerJob(gasWorker, WorkerJobs::Idle)",
+            "Trimmed excess gas workers before refinery base/depot lookup.",
+            "|| !refinery.isCompleted()",
+            "std::set<sc2::Tag> handledCompletedRefineryTags",
+            "!handledCompletedRefineryTags.insert(refinery.getTag()).second",
+            "Re-evaluate next frame so completion-time assignments cannot "
+            "oversubscribe gas.",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertLess(
+            patch.index("if (numAssigned > gasWorkersTarget)"),
+            patch.index("getBaseContainingPosition"),
+        )
+        self.assertLess(
+            patch.index(
+                "if (base == nullptr || !base->getResourceDepot().isValid() "
+                "|| !base->getResourceDepot().isCompleted())"
+            ),
+            patch.index(
+                "if (!handledCompletedRefineryTags.insert("
+                "refinery.getTag()).second)"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count("diff --git a/src/WorkerManager.cpp b/src/WorkerManager.cpp"),
+        )
+        self.assertEqual(
+            2,
+            patch.count(
+                "Re-evaluate next frame so completion-time assignments cannot "
+                "oversubscribe gas."
+            ),
+        )
+        self.assertNotIn("+\t\tif (ownCompletedRefinery)", patch)
+        self.assertNotIn(
+            "+\tfor (const auto & unit : "
+            "m_bot.UnitInfo().getUnits(Players::Self))",
+            patch,
+        )
+
+    def test_offensive_sweep_patch_latches_target_until_arrival_or_stall(
+        self,
+    ) -> None:
+        patch = _read_patch_text(STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE)
+
+        for term in (
+            'm_voiSweepOperationKey = "";',
+            "m_voiSweepTarget = CCPosition();",
+            "m_voiSweepBestTargetDistance = 0.0f;",
+            "m_voiSweepLastProgressFrame = 0;",
+            'voiPressureOperationLatchKey + "|lost_contact_sweep"',
+            "static_cast<float>(mainAttackSquad.getUnits().size())",
+            "* 0.60f",
+            "m_voiSweepTarget,",
+            "8.0f) >= sweepRequiredUnits",
+            "sweepFrame - m_voiSweepLastProgressFrame >= 22u * 15u",
+            "if (sweepTargetReached || sweepRouteStalled)",
+            "++m_currentBaseExplorationIndex;",
+            "m_voiSweepTarget = exploreMap();",
+            "orderPosition = m_voiSweepTarget;",
+            "VOI offensive sweep objective reached by the squad majority",
+            "VOI offensive sweep route made no progress for 15 seconds",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn("+\t\torderPosition = exploreMap();", patch)
+        self.assertLess(
+            patch.index("if (sweepTargetReached || sweepRouteStalled)"),
+            patch.index("++m_currentBaseExplorationIndex;"),
+        )
+        self.assertLess(
+            patch.index("++m_currentBaseExplorationIndex;"),
+            patch.index("selectNewSweepTarget = true;"),
+        )
+        self.assertNotIn(
+            "if (sweepRouteStalled && !sweepTargetReached)",
+            patch,
+        )
+        self.assertLess(
+            patch.index("if (selectNewSweepTarget)"),
+            patch.index("m_voiSweepTarget = exploreMap();"),
+        )
+        self.assertLess(
+            patch.index("m_voiSweepTarget = exploreMap();"),
+            patch.index("orderPosition = m_voiSweepTarget;"),
+        )
+
     def test_hook_manifest_covers_verified_upstream_manager_hooks(self) -> None:
         manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
 
@@ -37,6 +1171,106 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertEqual("src/GameCommander.cpp", manifest["central_polling_hook"]["source_path"])
         self.assertIn("GameCommander::onFrame", manifest["central_polling_hook"]["function"])
+        self.assertIn(
+            "patches/0004-live-operation-state-machine.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0005-addon-relocation-recovery.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0006-grounded-addon-candidate-fix.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0007-guaranteed-producer-grounding.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0008-emergency-land-query-fallback.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0009-grounded-production-and-observed-targeting.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0010-exact-composition-production-progress.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0011-production-resource-operation-persistence.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0012-live-operation-unblock.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0013-stable-flank-stage-latch.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0014-production-staging-and-observed-operation.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0015-addon-query-footprint-validation.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0016-authoritative-addon-placement-query.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0017-authoritative-addon-execution.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0018-continuous-army-macro.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0019-continuous-army-economy-scaling.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0020-standing-composition-reinforcement-waves.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0021-offensive-sweep-self-base-exclusion.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0022-bounded-placement-query-cache.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0023-production-facility-stability-and-tank-recovery.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0026-continuous-combat-production-relaunch.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0027-resource-throughput-and-expansion-backoff.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0028-startup-telemetry-initialization.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0029-gas-worker-completion-and-cap.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0030-stable-offensive-sweep-target.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
 
         hooks = manifest["manager_hooks"]
         domains = {hook["domain"] for hook in hooks}
@@ -76,6 +1310,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertIn("combat.pressure_window_frames", pending_keys)
         self.assertIn("squad.flank_bias", pending_keys)
         self.assertIn("emergency.prioritize_repair", pending_keys)
+        self.assertNotIn("combat.kite_bias", pending_keys)
         self.assertNotIn("strategy.doctrine", pending_keys)
         self.assertNotIn("production.queue_biases.*", pending_keys)
         self.assertNotIn("production.addon_biases.*", pending_keys)
@@ -94,6 +1329,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("target_intent.target_type", pending_keys)
         self.assertNotIn("scouting.scan_priority", pending_keys)
         self.assertNotIn("squad.reinforce_bias", pending_keys)
+        self.assertNotIn("lifetime.mode", pending_keys)
+        self.assertNotIn("lifetime.completion_state", pending_keys)
 
     def test_cpp_blackboard_header_is_header_only_and_uses_stdlib(self) -> None:
         header = (KIT_DIR / "voi_policy_blackboard.hpp").read_text()
@@ -313,7 +1550,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "\\\"available_count\\\":",
             "\\\"attempted_count\\\":",
             "\\\"executed_count\\\":",
-            "Role-biased action reached SC2 command issue path",
+            "Role-assigned unit action reached SC2 command issue path",
             "alreadyRequired",
             "route_intent.route_type",
             "target_intent.target_type",
@@ -363,11 +1600,22 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "addon placement is validated by producer state and relocation logic",
             "building.type.isAddon()",
             "shouldUseVoiDirectAddonCommand",
-            "VOI addon direct command bypassed exploration gate",
-            "voiAddonCommandCooldownElapsed",
-            "VOI addon direct command bypassed conservative placement precheck",
+            "VOI addon command issued once with BuildingManager task retained for SC2 construction feedback",
+            "addonFootprintOccupied",
+            "!addonFootprintOccupied && !b.buildCommandGiven",
+            "falling through to lift and relocation logic",
             "recordVoiActualProductionCommand(b.type, \"addon_build_command\")",
-            "continue;",
+            "voiRequestedCompositionCount",
+            "voiRepresentedUnitCount",
+            "voiCompositionRequirementSatisfied",
+            "producer.getUnitPtr()->orders",
+            "!tankCompositionSatisfied",
+            "!vikingCompositionSatisfied",
+            "BUILD_TECHLAB_FACTORY",
+            "BUILD_TECHLAB_STARPORT",
+            "BUILD_REACTOR_FACTORY",
+            "BUILD_REACTOR_STARPORT",
+            "const float effectiveRavenBias = ravenBias;",
             "Supply provider recovery queued after supply block.",
             "m_queue.queueAsHighestPriority(supplyProviderType, false)",
             "Path to completed refinery is not safe; assigning gas worker with refinery fallback.",
@@ -417,6 +1665,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         for term in required_terms:
             with self.subTest(term=term):
                 self.assertIn(term, patch)
+        self.assertNotIn("bool commandCooldownElapsed", patch)
+        self.assertNotIn("bool addonFootprintBuildable", patch)
         self.assertTrue((KIT_DIR / "voi_policy_blackboard.hpp").is_file())
         self.assertNotIn("-\t\t\t\t\t\t\t++neighborsBaseLocation[bl];", patch)
         self.assertIn(
@@ -433,6 +1683,15 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertNotIn(
             "+\t\treturn lhs.x < rhs.x || lhs.x == rhs.y && lhs.y < rhs.y;",
+            patch,
+        )
+        self.assertNotIn("VOI addon direct command bypassed exploration gate", patch)
+        self.assertNotIn(
+            "VOI addon direct command bypassed conservative placement precheck",
+            patch,
+        )
+        self.assertNotIn(
+            "const float effectiveRavenBias = std::max(ravenBias, compositionAntiAirBias);",
             patch,
         )
         self.assertNotIn(
@@ -481,6 +1740,71 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("requeued_highest", patch)
         self.assertNotIn("requeued_blocking", patch)
         self.assertIn('recordVoiDoctrineConsumption(type, action, "queued_existing");', patch)
+
+    def test_addon_relocation_bypasses_generic_build_position_exploration(self) -> None:
+        patch = _read_patch_text(PATCH_FILE)
+
+        self.assertIn(
+            "if (!b.type.isAddon() && !isBuildingPositionExplored(b))",
+            patch,
+        )
+        self.assertNotIn(
+            "\n             if (!isBuildingPositionExplored(b))",
+            patch,
+        )
+
+    def test_addon_relocation_does_not_claim_build_command_before_ability(self) -> None:
+        patch = _read_patch_text(PATCH_FILE)
+
+        self.assertIn(
+            "if (b.type.isAddon())\n \t\t\t\t\t{\n+\t\t\t\t\t\tsetCommandGiven = false;",
+            patch,
+        )
+        self.assertIn(
+            'recordVoiActualProductionCommand(b.type, "addon_build_command");'
+            "\n+\t\t\t\t\t\t\t\t\t\tsetCommandGiven = true;"
+            "\n+\t\t\t\t\t\t\t\t\t\tb.lastOrderFrame = m_bot.GetCurrentFrame();",
+            patch,
+        )
+
+    def test_explicit_tech_bias_bypasses_pre_expand_production_gate(self) -> None:
+        patch = _read_patch_text(PATCH_FILE)
+
+        for signal in (
+            'production.queue_biases.TERRAN_FACTORY',
+            'production.queue_biases.FACTORY_TECHLAB',
+            'production.queue_biases.TERRAN_SIEGETANK',
+            'production.queue_biases.TERRAN_STARPORT',
+            'production.queue_biases.TERRAN_VIKINGFIGHTER',
+            'production.composition_biases.siege',
+            'production.composition_biases.anti_air',
+        ):
+            with self.subTest(signal=signal):
+                self.assertIn(signal, patch)
+        self.assertIn(
+            "voiDoctrineRequestsTechTransition(m_bot, MetaTypeEnum::Factory)",
+            patch,
+        )
+        self.assertIn(
+            "voiDoctrineRequestsTechTransition(m_bot, MetaTypeEnum::Starport)",
+            patch,
+        )
+        self.assertIn(
+            "currentItem.type == MetaTypeEnum::Factory && voiFactoryTransitionRequested",
+            patch,
+        )
+        self.assertIn(
+            "currentItem.type == MetaTypeEnum::Starport && voiStarportTransitionRequested",
+            patch,
+        )
+        self.assertIn(
+            "taskTechTransition && (taskTargetsFactoryTechLab || taskTargetsSiegeTank)",
+            patch,
+        )
+        self.assertNotIn(
+            "const bool wantsFactoryTechLab = taskTechTransition ||",
+            patch,
+        )
 
     def test_patch_keeps_real_build_and_continuity_commands_from_live_blockers(self) -> None:
         patch = _read_patch_text(PATCH_FILE)
@@ -553,6 +1877,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     'elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" && "${SC2_USE_RUNTIME_DIR_ARGS}" == "1" ]]; then',
                     script,
                 )
+        for term in (
+            "--fresh-live-session",
+            'SMOKE_FRESH_LIVE_SESSION="${SMOKE_FRESH_LIVE_SESSION:-0}"',
+            '"${BLACKBOARD_DIR}/latest_modulation.json"',
+            '"${BLACKBOARD_DIR}/latest_modulation.kv"',
+            '"${BLACKBOARD_DIR}/latest_modulation_compile_result.json"',
+            "fresh live session cleared detached tactical command state",
+        ):
+            with self.subTest(smoke_fresh_session_term=term):
+                self.assertIn(term, smoke_script)
         self.assertIn(
             f'SOAK_MATRIX_DEFAULT_BUILD_DIR="${{MICROMACHINE_BUILD_DIR:-{DEFAULT_MICROMACHINE_BUILD_DIR}}}"',
             soak_matrix_script,
@@ -562,7 +1896,63 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "https://github.com/Blizzard/s2client-api",
             "https://github.com/RaphaelRoyerRivard/MicroMachine",
             "0001-macos-latest-s2client-policy-blackboard.patch",
+            "0002-live-tactical-operation-fixes.patch",
+            "0003-production-live-qa-blockers.patch",
+            "0004-live-operation-state-machine.patch",
+            "0005-addon-relocation-recovery.patch",
+            "0006-grounded-addon-candidate-fix.patch",
+            "0007-guaranteed-producer-grounding.patch",
+            "0008-emergency-land-query-fallback.patch",
+            "0009-grounded-production-and-observed-targeting.patch",
+            "0010-exact-composition-production-progress.patch",
+            "0011-production-resource-operation-persistence.patch",
+            "0012-live-operation-unblock.patch",
+            "0013-stable-flank-stage-latch.patch",
+            "0014-production-staging-and-observed-operation.patch",
+            "0015-addon-query-footprint-validation.patch",
+            "0016-authoritative-addon-placement-query.patch",
+            "0017-authoritative-addon-execution.patch",
+            "0018-continuous-army-macro.patch",
+            "0019-continuous-army-economy-scaling.patch",
+            "0020-standing-composition-reinforcement-waves.patch",
+            "0021-offensive-sweep-self-base-exclusion.patch",
+            "0022-bounded-placement-query-cache.patch",
+            "0023-production-facility-stability-and-tank-recovery.patch",
+            "0024-balanced-composition-wave-production.patch",
+            "0025-exact-composition-production-unblock.patch",
+            "0026-continuous-combat-production-relaunch.patch",
+            "0027-resource-throughput-and-expansion-backoff.patch",
+            "0028-startup-telemetry-initialization.patch",
+            "0029-gas-worker-completion-and-cap.patch",
+            "0030-stable-offensive-sweep-target.patch",
             "0001-s2client-macos-launchservices.patch",
+            "OPERATION_STATE_PATCH_FILE",
+            "ADDON_RECOVERY_PATCH_FILE",
+            "GROUNDED_ADDON_CANDIDATE_PATCH_FILE",
+            "GUARANTEED_PRODUCER_GROUNDING_PATCH_FILE",
+            "EMERGENCY_LAND_QUERY_FALLBACK_PATCH_FILE",
+            "GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH_FILE",
+            "EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH_FILE",
+            "PRODUCTION_RESOURCE_OPERATION_PERSISTENCE_PATCH_FILE",
+            "LIVE_OPERATION_UNBLOCK_PATCH_FILE",
+            "STABLE_FLANK_STAGE_LATCH_PATCH_FILE",
+            "PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH_FILE",
+            "ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH_FILE",
+            "AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH_FILE",
+            "AUTHORITATIVE_ADDON_EXECUTION_PATCH_FILE",
+            "CONTINUOUS_ARMY_MACRO_PATCH_FILE",
+            "CONTINUOUS_ARMY_ECONOMY_SCALING_PATCH_FILE",
+            "STANDING_COMPOSITION_REINFORCEMENT_WAVES_PATCH_FILE",
+            "OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH_FILE",
+            "BOUNDED_PLACEMENT_QUERY_CACHE_PATCH_FILE",
+            "PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH_FILE",
+            "BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH_FILE",
+            "EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH_FILE",
+            "CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH_FILE",
+            "RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH_FILE",
+            "STARTUP_TELEMETRY_INITIALIZATION_PATCH_FILE",
+            "GAS_WORKER_COMPLETION_CAP_PATCH_FILE",
+            "STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",
@@ -581,6 +1971,25 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "cmake --build",
             "MICROMACHINE_BUILD_IDENTITY_REPORT",
             "starcraft_commander.micromachine_build_identity",
+            "--micromachine-operation-state-patch",
+            "--micromachine-addon-recovery-patch",
+            "--micromachine-grounded-addon-candidate-patch",
+            "--micromachine-guaranteed-producer-grounding-patch",
+            "--micromachine-emergency-land-query-fallback-patch",
+            "--micromachine-grounded-production-observed-targeting-patch",
+            "--micromachine-live-operation-unblock-patch",
+            "--micromachine-stable-flank-stage-latch-patch",
+            "--micromachine-production-staging-observed-operation-patch",
+            "--micromachine-addon-query-footprint-validation-patch",
+            "--micromachine-authoritative-addon-execution-patch",
+            "--micromachine-continuous-army-macro-patch",
+            "--micromachine-continuous-army-economy-scaling-patch",
+            "--micromachine-production-facility-stability-tank-recovery-patch",
+            "--micromachine-balanced-composition-wave-production-patch",
+            "--micromachine-exact-composition-production-unblock-patch",
+            "--micromachine-continuous-combat-production-relaunch-patch",
+            "--micromachine-resource-throughput-expansion-backoff-patch",
+            "--micromachine-gas-worker-completion-cap-patch",
             "voi_build_identity.json",
             "BLACKBOARD_HEADER_FILE",
             "voi_policy_blackboard.hpp",
@@ -624,7 +2033,6 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "preserve_existing_live_modulation",
             "manual live mode preserved existing tactical blackboard command",
             'update_id.startswith(("smoke-", "soak-"))',
-            "web_gui_tactical_fallback",
             "PolicyModulationVector.from_mapping",
             "MicroMachineBlackboardUpdate(",
             "AGGRESSIVE_PROFILE_PUBLISHED=1",

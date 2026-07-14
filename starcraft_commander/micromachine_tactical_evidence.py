@@ -514,15 +514,17 @@ def _manager_reports_tactical_pressure_task(manager: str, payload: Mapping[str, 
 def _manager_reports_tactical_scout_task(manager: str, payload: Mapping[str, object]) -> bool:
     if manager != "TacticalTask":
         return False
-    # A ScoutSquadOrder/MoveToGoalOrder alone can still be invisible in live QA;
-    # require actual movement away from home before reporting the effect.
+    # A delegated Scout order is not proof that a Marine moved. The task may
+    # expose these fields directly in future telemetry; today CombatCommander
+    # normally provides the exact unit identity and displacement evidence.
     return (
         str(payload.get("task_type", "") or "") == "scout_with_units"
         and str(payload.get("status", "") or "") == "executing"
-        and _number(payload.get("actual_command_issued_count")) > 0
-        and "squad=Scout" in str(payload.get("last_actual_command", "") or "")
-        and _number(payload.get("scout_max_home_distance"))
-        >= _MIN_COMBAT_SCOUT_HOME_DISTANCE
+        and _payload_reports_marine_scout_command(
+            payload,
+            command_count_key="actual_command_issued_count",
+            command_key="last_actual_command",
+        )
     )
 
 
@@ -544,12 +546,39 @@ def _manager_reports_combat_scout_command(manager: str, payload: Mapping[str, ob
     if manager != "CombatCommander":
         return False
     return (
-        _number(payload.get("scout_actual_command_issued_count")) > 0
-        and _number(payload.get("scout_last_action_frame")) > 0
-        and "squad=Scout" in str(payload.get("scout_last_issued_action", "") or "")
-        and _number(payload.get("scout_max_home_distance"))
+        _number(payload.get("scout_last_action_frame")) > 0
+        and _payload_reports_marine_scout_command(
+            payload,
+            command_count_key="scout_actual_command_issued_count",
+            command_key="scout_last_issued_action",
+        )
+    )
+
+
+def _payload_reports_marine_scout_command(
+    payload: Mapping[str, object],
+    *,
+    command_count_key: str,
+    command_key: str,
+) -> bool:
+    return (
+        _number(payload.get(command_count_key)) > 0
+        and "squad=Scout" in str(payload.get(command_key, "") or "")
+        and _number(payload.get("scout_marine_assigned_count")) > 0
+        and _number(payload.get("scout_last_commanded_unit_tag")) > 0
+        and _is_marine_unit_type(payload.get("scout_last_commanded_unit_type"))
+        and _number(payload.get("scout_marine_max_home_distance"))
         >= _MIN_COMBAT_SCOUT_HOME_DISTANCE
     )
+
+
+def _is_marine_unit_type(value: object) -> bool:
+    normalized = re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+    return normalized in {
+        "MARINE",
+        "TERRANMARINE",
+        "UNITTYPEIDTERRANMARINE",
+    }
 
 
 def _actual_behavior_texts(payload: Mapping[str, object]) -> tuple[str, ...]:
@@ -602,7 +631,12 @@ def _telemetry_effect(
         "scout_last_action_frame",
         "scout_home_distance",
         "scout_max_home_distance",
+        "scout_marine_assigned_count",
+        "scout_marine_home_distance",
+        "scout_marine_max_home_distance",
         "scout_actual_command_issued_count",
+        "scout_last_commanded_unit_tag",
+        "scout_last_commanded_unit_type",
     )
     details = {
         key: payload.get(key)

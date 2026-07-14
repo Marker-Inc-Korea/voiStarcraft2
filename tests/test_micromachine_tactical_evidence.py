@@ -179,6 +179,11 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
                         "scout_last_issued_action": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
                         "scout_home_distance": 10.0,
                         "scout_max_home_distance": 16.0,
+                        "scout_marine_assigned_count": 1,
+                        "scout_marine_home_distance": 10.0,
+                        "scout_marine_max_home_distance": 16.0,
+                        "scout_last_commanded_unit_tag": 4242,
+                        "scout_last_commanded_unit_type": "TERRAN_MARINE",
                     },
                 },
             },
@@ -205,6 +210,42 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
                         "scout_last_issued_action": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
                         "scout_home_distance": 2.0,
                         "scout_max_home_distance": 3.0,
+                        "scout_marine_assigned_count": 1,
+                        "scout_marine_home_distance": 2.0,
+                        "scout_marine_max_home_distance": 3.0,
+                        "scout_last_commanded_unit_tag": 4242,
+                        "scout_last_commanded_unit_type": "Marine",
+                    },
+                },
+            },
+            expected_effects=("scout",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("scout",), evidence.missing_effects)
+        self.assertEqual((), evidence.observed_effects)
+
+    def test_scout_with_units_rejects_non_marine_scout_movement(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {
+                    "TacticalTask": {
+                        "task_type": "scout_with_units",
+                        "status": "executing",
+                        "actual_command_issued_count": 1,
+                        "last_actual_command": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                    },
+                    "CombatCommander": {
+                        "scout_actual_command_issued_count": 1,
+                        "scout_last_action_frame": 13000,
+                        "scout_last_issued_action": "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5",
+                        "scout_scope_assigned_unit_count": 1,
+                        "scout_marine_assigned_count": 0,
+                        "scout_max_home_distance": 16.0,
+                        "scout_marine_max_home_distance": 0.0,
+                        "scout_last_commanded_unit_tag": 5151,
+                        "scout_last_commanded_unit_type": "TERRAN_REAPER",
                     },
                 },
             },

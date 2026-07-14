@@ -9,6 +9,9 @@ while [[ $# -gt 0 ]]; do
       export SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-1}"
       export SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-0}"
       ;;
+    --fresh-live-session)
+      export SMOKE_FRESH_LIVE_SESSION=1
+      ;;
     --blackboard-dir)
       if [[ $# -lt 2 || -z "$2" ]]; then
         echo "MicroMachine smoke rejected: --blackboard-dir requires a value." >&2
@@ -221,6 +224,7 @@ SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
 SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-1}"
 SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-0}"
+SMOKE_FRESH_LIVE_SESSION="${SMOKE_FRESH_LIVE_SESSION:-0}"
 NO_START_UNITS_FRAME="${NO_START_UNITS_FRAME:-1200}"
 SMOKE_STRATEGY_PROFILE_NAME="${SMOKE_STRATEGY_PROFILE_NAME:-bio_pressure}"
 if [[ -z "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE:-}" ]]; then
@@ -792,7 +796,6 @@ if not isinstance(combat, dict):
 live_tags = {
     "live_text",
     "keyword_provider",
-    "web_gui_tactical_fallback",
     "scout_with_units",
     "aggressive_pressure",
     "marine_rush",
@@ -948,6 +951,13 @@ fi
 
 mkdir -p "${BLACKBOARD_DIR}"
 rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}" "${CLASSIFIER_BOT_LOG}" "${RUNTIME_LOG_BASELINE}"
+if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" && "${SMOKE_FRESH_LIVE_SESSION}" == "1" ]]; then
+  rm -f \
+    "${BLACKBOARD_DIR}/latest_modulation.json" \
+    "${BLACKBOARD_DIR}/latest_modulation.kv" \
+    "${BLACKBOARD_DIR}/latest_modulation_compile_result.json"
+  echo "MicroMachine fresh live session cleared detached tactical command state."
+fi
 touch "${RUNTIME_LOG_MARKER}"
 record_runtime_log_baseline
 if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]]; then

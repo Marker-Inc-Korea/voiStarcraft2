@@ -23,6 +23,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final
@@ -37,6 +38,10 @@ from starcraft_commander.runtime_deps import (
 from starcraft_commander.policy_modulation import (
     MICROMACHINE_DOCTRINES,
     MICROMACHINE_TACTICAL_TASK_TYPES,
+)
+from starcraft_commander.policy_modulation_provider import (
+    PolicyModulationCompileStatus,
+    compile_policy_modulation_provider_output,
 )
 from toycraft_commander.failure import build_parsing_failure_report
 from toycraft_commander.intents import (
@@ -739,6 +744,52 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
         },
         "additionalProperties": False,
     }
+    lifetime_schema = {
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": [
+                    "",
+                    "ttl",
+                    "until_completed",
+                    "until_cancelled",
+                    "standing_order",
+                    "emergency_window",
+                ],
+            },
+            "completion_conditions": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "unit_count_reached",
+                        "building_started",
+                        "building_completed",
+                        "order_issued",
+                        "target_reached",
+                        "enemy_observed",
+                        "retreat_confirmed",
+                        "cancelled_by_user",
+                        "ttl_expired",
+                    ],
+                },
+            },
+            "completion_state": {
+                "type": "string",
+                "enum": [
+                    "",
+                    "active",
+                    "completed",
+                    "expired",
+                    "cancelled",
+                    "failed",
+                ],
+            },
+            "reason": {"type": "string"},
+        },
+        "additionalProperties": False,
+    }
     emergency_schema = {
         "type": "object",
         "properties": {
@@ -772,6 +823,7 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
             "scouting": scouting_schema,
             "squad": squad_schema,
             "scope": scope_schema,
+            "lifetime": lifetime_schema,
             "tactical_task": tactical_task_schema,
             "emergency": emergency_schema,
             "tags": {"type": "array", "items": {"type": "string"}},
@@ -1203,6 +1255,7 @@ class LLMCommandInterpreter:
     def propose_policy_modulation(self, request: object) -> Mapping[str, object]:
         """Return bounded MicroMachine policy modulation provider output."""
 
+        started_at = time.monotonic()
         command_text = _read_field(request, "command_text")
         text = command_text if isinstance(command_text, str) else ""
         if not text.strip():
@@ -1219,72 +1272,115 @@ class LLMCommandInterpreter:
                     "LLM provider unavailable: MicroMachine production text "
                     "modulation requires a configured LLM provider."
                 ),
+                "failure_kind": "provider_unavailable",
+                "llm_attempt_count": 0,
             }
+
+        attempts = 0
+        repair_reason = ""
         try:
+            attempts += 1
             response = self._create_policy_modulation_message(request)
             tool_input = _extract_tool_input(response)
-            if tool_input is None:
-                response = self._create_policy_modulation_message(
-                    request,
-                    retry_after_missing_tool=True,
-                )
-                tool_input = _extract_tool_input(response)
-            if tool_input is None and _uses_openai_compatible_client(self.provider):
-                response = self._create_policy_modulation_json_message(request)
-                tool_input = _extract_openai_json_object_input(response)
         except Exception as error:  # noqa: BLE001 - provider boundary is fail-closed
-            return {
-                "source": "llm",
-                "status": "refused",
-                "refusal_reason": (
+            return _policy_modulation_failure_output(
+                kind="api_error",
+                reason=(
                     "LLM policy modulation failed with "
                     f"{_safe_llm_provider_error_detail(error)}"
                 ),
-            }
-        if tool_input is None:
-            return {
-                "source": "llm",
-                "status": "refused",
-                "refusal_reason": (
-                    "LLM policy modulation response had no forced-tool or "
-                    "structured JSON input."
-                ),
-            }
-        normalized = _normalize_policy_modulation_tool_output(tool_input, text)
-        if _policy_modulation_requires_tactical_task(text) and not _policy_modulation_has_tactical_task(normalized):
-            try:
-                response = self._create_policy_modulation_message(
-                    request,
-                    retry_after_missing_tactical_task=True,
+                attempts=attempts or 1,
+                started_at=started_at,
+            )
+
+        normalized: Mapping[str, object] | None = None
+        if tool_input is not None:
+            normalized = _normalize_policy_modulation_tool_output(tool_input, text)
+            if _policy_modulation_raw_terminal_status(tool_input):
+                return _with_policy_modulation_diagnostics(
+                    normalized,
+                    attempts=attempts,
+                    repair_reason="",
+                    started_at=started_at,
                 )
-                retry_tool_input = _extract_tool_input(response)
-                if retry_tool_input is None and _uses_openai_compatible_client(self.provider):
+            repair_reason = _policy_modulation_contract_error(normalized, text)
+        else:
+            repair_reason = (
+                "LLM policy modulation response had no forced-tool or "
+                "structured JSON input."
+            )
+
+        if repair_reason:
+            try:
+                attempts += 1
+                if tool_input is None and _uses_openai_compatible_client(self.provider):
                     response = self._create_policy_modulation_json_message(request)
                     retry_tool_input = _extract_openai_json_object_input(response)
-                if retry_tool_input is not None:
-                    normalized = _normalize_policy_modulation_tool_output(
-                        retry_tool_input,
-                        text,
+                else:
+                    response = self._create_policy_modulation_message(
+                        request,
+                        retry_after_contract_error=repair_reason,
                     )
+                    retry_tool_input = _extract_tool_input(response)
             except Exception as error:  # noqa: BLE001 - provider boundary is fail-closed
-                return {
-                    "source": "llm",
-                    "status": "refused",
-                    "refusal_reason": (
-                        "LLM policy modulation tactical-task retry failed with "
+                return _policy_modulation_failure_output(
+                    kind="api_error",
+                    reason=(
+                        "LLM policy modulation repair failed with "
                         f"{_safe_llm_provider_error_detail(error)}"
                     ),
-                }
-        if _policy_modulation_requires_tactical_task(text) and not _policy_modulation_has_tactical_task(normalized):
-            return {
-                "source": "llm",
-                "status": "refused",
-                "refusal_reason": (
-                    "LLM policy modulation omitted the required bounded tactical_task "
-                    "for a concrete scout/attack/production/tech/expand command."
-                ),
-            }
-        return normalized
+                    attempts=attempts or 1,
+                    started_at=started_at,
+                    repair_reason=repair_reason,
+                )
+
+            if retry_tool_input is None:
+                return _policy_modulation_failure_output(
+                    kind="contract_error",
+                    reason=(
+                        "LLM policy modulation response had no forced-tool or "
+                        "structured JSON input after one repair attempt."
+                    ),
+                    attempts=attempts,
+                    started_at=started_at,
+                    repair_reason=repair_reason,
+                )
+
+            normalized = _normalize_policy_modulation_tool_output(
+                retry_tool_input,
+                text,
+            )
+            if _policy_modulation_raw_terminal_status(retry_tool_input):
+                return _with_policy_modulation_diagnostics(
+                    normalized,
+                    attempts=attempts,
+                    repair_reason=repair_reason,
+                    started_at=started_at,
+                )
+            final_contract_error = _policy_modulation_contract_error(normalized, text)
+            if final_contract_error:
+                return _policy_modulation_failure_output(
+                    kind="contract_error",
+                    reason=final_contract_error,
+                    attempts=attempts,
+                    started_at=started_at,
+                    repair_reason=repair_reason,
+                )
+
+        if normalized is None:
+            return _policy_modulation_failure_output(
+                kind="contract_error",
+                reason="LLM policy modulation produced no normalized output.",
+                attempts=attempts,
+                started_at=started_at,
+                repair_reason=repair_reason,
+            )
+        return _with_policy_modulation_diagnostics(
+            normalized,
+            attempts=attempts,
+            repair_reason=repair_reason,
+            started_at=started_at,
+        )
 
     def interpret(self, command_text: str) -> CommandInterpretationResult:
         """Return a typed payload or a Korean clarification; never raises."""
@@ -1464,6 +1560,7 @@ class LLMCommandInterpreter:
         *,
         retry_after_missing_tool: bool = False,
         retry_after_missing_tactical_task: bool = False,
+        retry_after_contract_error: str = "",
     ) -> object:
         """Issue the forced-tool LLM call for MicroMachine policy modulation."""
 
@@ -1488,6 +1585,17 @@ class LLMCommandInterpreter:
                 "and expand_or_land_command_center for expansion or command-center "
                 "landing intent. Keep assistant_message in the user's language. "
                 "Do not output raw coordinates, unit tags, clicks, or API calls."
+            )
+        if retry_after_contract_error:
+            prompt += (
+                "\n\nThe previous response violated the bounded policy contract: "
+                f"{retry_after_contract_error} Retry once and respond only through "
+                f"{LLM_POLICY_MODULATION_TOOL_NAME} with a schema-valid JSON input. "
+                "For concrete scout, attack, production, tech, or expansion commands, "
+                "include exactly one bounded tactical_task. Preserve a valid "
+                "refused or clarification_required status instead of inventing an "
+                "executable command. Do not output prose, coordinates, unit tags, "
+                "clicks, or API calls."
             )
         client = self._build_client()
         if _uses_openai_compatible_client(self.provider):
@@ -2054,6 +2162,84 @@ def _normalize_policy_modulation_tool_output(
             "LLM policy modulation forced-tool output missing modulation object."
         ),
     }
+
+
+def _policy_modulation_raw_terminal_status(
+    tool_input: Mapping[str, object],
+) -> bool:
+    """Return whether the model intentionally produced a valid terminal status."""
+
+    status = str(tool_input.get("status", "") or "").strip().lower()
+    return status in {"clarification_required", "refused"}
+
+
+def _policy_modulation_contract_error(
+    output: Mapping[str, object],
+    command_text: str,
+) -> str:
+    """Return one repairable contract error after canonical DSL validation."""
+
+    if (
+        _policy_modulation_requires_tactical_task(command_text)
+        and not _policy_modulation_has_tactical_task(output)
+    ):
+        return (
+            "LLM policy modulation omitted the required bounded tactical_task "
+            "for a concrete scout/attack/production/tech/expand command."
+        )
+    compiled = compile_policy_modulation_provider_output(
+        output,
+        default_source="llm",
+        default_goal=command_text,
+    )
+    if compiled.status is PolicyModulationCompileStatus.COMPILED:
+        return ""
+    if compiled.status is PolicyModulationCompileStatus.CLARIFICATION_REQUIRED:
+        return (
+            compiled.clarification_prompt
+            or "LLM policy modulation unexpectedly requested clarification."
+        )
+    return compiled.refusal_reason or "LLM policy modulation failed schema validation."
+
+
+def _with_policy_modulation_diagnostics(
+    output: Mapping[str, object],
+    *,
+    attempts: int,
+    repair_reason: str,
+    started_at: float,
+) -> Mapping[str, object]:
+    """Attach bounded latency and retry diagnostics without changing the DSL."""
+
+    return {
+        **dict(output),
+        "llm_attempt_count": max(0, attempts),
+        "llm_repair_reason": repair_reason,
+        "llm_duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+    }
+
+
+def _policy_modulation_failure_output(
+    *,
+    kind: str,
+    reason: str,
+    attempts: int,
+    started_at: float,
+    repair_reason: str = "",
+) -> Mapping[str, object]:
+    """Build a typed non-terminal provider failure for web fallback routing."""
+
+    return _with_policy_modulation_diagnostics(
+        {
+            "source": "llm",
+            "status": "refused",
+            "refusal_reason": reason,
+            "failure_kind": kind,
+        },
+        attempts=attempts,
+        repair_reason=repair_reason,
+        started_at=started_at,
+    )
 
 
 _TACTICAL_TASK_REQUIRED_MARKERS = (

@@ -1,0 +1,95 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2617,18 +2617,24 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 	{
+ 		return false;
+ 	}
+-	const bool explicitRelocationAllowed = m_bot.Commander().isVoiPolicyActive()
++	const bool voiPolicyActive = m_bot.Commander().isVoiPolicyActive();
++	const bool explicitRelocationAllowed = voiPolicyActive
+ 		&& m_bot.Commander().getVoiPolicyBool("production.allow_building_relocation", false);
+-	const bool addonRelocation = owner == "legacy_addon" || owner == "addon_relocation";
+-	const bool policyOwnedProxyRelocation = owner == "proxy_cyclones"
+-		&& m_bot.Commander().isVoiPolicyActive();
++	const sc2::UNIT_TYPEID unitType =
++		(sc2::UNIT_TYPEID)unit.getAPIUnitType();
++	const bool groundedProductionFacility =
++		unitType == sc2::UNIT_TYPEID::TERRAN_BARRACKS
++		|| unitType == sc2::UNIT_TYPEID::TERRAN_FACTORY
++		|| unitType == sc2::UNIT_TYPEID::TERRAN_STARPORT;
+ 	if (ability == sc2::ABILITY_ID::LIFT
++		&& voiPolicyActive
+ 		&& !explicitRelocationAllowed
+-		&& (addonRelocation || policyOwnedProxyRelocation))
++		&& groundedProductionFacility)
+ 	{
+ 		Util::Log(
+ 			__FUNCTION__,
+-			"VOI refused nonessential production-building LIFT; production buildings remain grounded.",
++			"VOI refused production-building LIFT owner=" + owner
++				+ "; Barracks, Factory, and Starport remain grounded unless production.allow_building_relocation=true.",
+ 			m_bot);
+ 		return false;
+ 	}
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -2811,7 +2811,10 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		(taskTechTransition && taskTargetsFusionCore) ? tacticalTaskPriority : 0.0f);
+ 	const float starportReactorBias = voiMaxBias(m_bot, "production.addon_biases.STARPORT_REACTOR");
+ 	const float supplyProviderBias = std::max(
+-		voiMaxBias(m_bot, "production.queue_biases.TERRAN_SUPPLYDEPOT", "economy.supply_buffer_bias", "tech.structure_biases.TERRAN_SUPPLYDEPOT"),
++		std::max(
++			voiMaxBias(m_bot, "production.queue_biases.TERRAN_SUPPLYDEPOT", "economy.supply_buffer_bias", "tech.structure_biases.TERRAN_SUPPLYDEPOT"),
++			continuousCompositionProduction
++				? std::max(0.55f, productionContinuityBias) : 0.0f),
+ 		(taskSustainProduction || taskTargetsSupplyDepot) ? tacticalTaskPriority : 0.0f);
+ 
+ 	const bool wantsFactoryDoctrine = voiDoctrineIsOneOf(doctrine, "tank_defensive_hold", "siege_contain", "mech_transition", "drop_harassment")
+@@ -3083,10 +3086,12 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		|| m_bot.Buildings().isBeingBuilt(MetaTypeEnum::Factory.getUnitType())
+ 		|| factoryCount > completedFactoryCount;
++	const int factoryAddonRecoveryCap =
++		continuousCompositionProduction && taskTargetsSiegeTank ? 3 : 2;
+ 	if (wantsFactoryTechLab
+ 		&& factoryTechLabCount == 0
+ 		&& eligibleFactoryAddonProducers == 0
+ 		&& blockedFactoryAddonProducer
+-		&& factoryCount < 2
++		&& factoryCount < factoryAddonRecoveryCap
+ 		&& !factoryReplacementPending)
+ 	{
+ 		if (queueVoiDoctrineItem(
+@@ -3097,7 +3104,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		{
+ 			Util::Log(
+ 				__FUNCTION__,
+-				"VOI queued an addon-clear replacement Factory because every completed producer is quarantined.",
++				"VOI queued an addon-clear replacement Factory because every completed producer is quarantined; recovery_cap="
++					+ std::to_string(factoryAddonRecoveryCap) + ".",
+ 				m_bot);
+ 			return;
+ 		}
+@@ -3186,11 +3194,20 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
++	const bool reserveGasForTankTech =
++		taskTargetsSiegeTank
++		&& wantsFactoryTechLab
++		&& factoryTechLabCount == 0;
++	if (reserveGasForTankTech && m_queue.contains(MetaTypeEnum::Viking))
++	{
++		m_queue.removeAllOfType(MetaTypeEnum::Viking);
++		Util::Log(__FUNCTION__, "VOI deferred queued Vikings until Factory Tech Lab recovery completes.", m_bot);
++	}
+ 	if (effectiveMedivacBias > 0.25f && !medivacCompositionSatisfied && completedStarportCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Medivac, "medivac_drop_support", false))
+ 	{
+ 		return;
+ 	}
+-	if (effectiveVikingBias > 0.25f && !vikingCompositionSatisfied && completedStarportCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Viking, "anti_air_viking", true))
++	if (!reserveGasForTankTech && effectiveVikingBias > 0.25f && !vikingCompositionSatisfied && completedStarportCount > 0 && queueVoiDoctrineItem(MetaTypeEnum::Viking, "anti_air_viking", true))
+ 	{
+ 		return;
+ 	}

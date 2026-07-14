@@ -1,0 +1,105 @@
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -179,6 +179,10 @@ private:
+ 	std::string m_voiFlankStageOperationKey = "";
+ 	bool m_voiFlankStageCompleted = false;
+ 	CCPosition m_voiFlankStagePosition = CCPosition();
++	std::string m_voiSweepOperationKey = "";
++	CCPosition m_voiSweepTarget = CCPosition();
++	float m_voiSweepBestTargetDistance = 0.0f;
++	uint32_t m_voiSweepLastProgressFrame = 0;
+ 	bool m_lastVoiBoundedForceCommit = false;
+ 	int m_lastVoiMainAttackUnitCount = 0;
+ 	int m_lastVoiMainAttackScopeMinUnits = 0;
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2742,6 +2742,10 @@ void CombatCommander::updateAttackSquads()
+ 		m_voiFlankStageOperationKey = "";
+ 		m_voiFlankStageCompleted = false;
+ 		m_voiFlankStagePosition = CCPosition();
++		m_voiSweepOperationKey = "";
++		m_voiSweepTarget = CCPosition();
++		m_voiSweepBestTargetDistance = 0.0f;
++		m_voiSweepLastProgressFrame = 0;
+ 		if (voiPressureOperationChanged)
+ 		{
+ 			m_winAttackSimulation = true;
+@@ -3127,6 +3131,9 @@ void CombatCommander::updateAttackSquads()
+ 	if (voiHasFreshEnemyObservation)
+ 	{
+ 		m_voiOperationObservedEnemy = true;
++		m_voiSweepTarget = CCPosition();
++		m_voiSweepBestTargetDistance = 0.0f;
++		m_voiSweepLastProgressFrame = 0;
+ 	}
+ 	const bool voiAwaitingFreshEnemyObservation = voiRequiresFreshEnemyObservation
+ 		&& !voiHasFreshEnemyObservation
+@@ -3142,7 +3149,68 @@ void CombatCommander::updateAttackSquads()
+ 		&& m_voiOperationObservedEnemy;
+ 	if (voiSweepingAfterLostContact)
+ 	{
+-		orderPosition = exploreMap();
++		const uint32_t sweepFrame = m_bot.GetCurrentFrame();
++		const std::string sweepOperationKey =
++			voiPressureOperationLatchKey + "|lost_contact_sweep";
++		if (m_voiSweepOperationKey != sweepOperationKey)
++		{
++			m_voiSweepOperationKey = sweepOperationKey;
++			m_voiSweepTarget = CCPosition();
++			m_voiSweepBestTargetDistance = 0.0f;
++			m_voiSweepLastProgressFrame = 0;
++		}
++
++		bool selectNewSweepTarget = m_voiSweepTarget == CCPosition()
++			|| !voiIsRemoteCombatTarget(m_bot, m_voiSweepTarget, 32.0f);
++		if (!selectNewSweepTarget)
++		{
++			const float targetDistance = Util::Dist(
++				mainAttackSquad.calcCenter(),
++				m_voiSweepTarget);
++			if (m_voiSweepBestTargetDistance <= 0.0f
++				|| targetDistance + 1.0f < m_voiSweepBestTargetDistance)
++			{
++				m_voiSweepBestTargetDistance = targetDistance;
++				m_voiSweepLastProgressFrame = sweepFrame;
++			}
++			const int sweepRequiredUnits = std::max(
++				1,
++				static_cast<int>(std::ceil(
++					static_cast<float>(mainAttackSquad.getUnits().size())
++						* 0.60f)));
++			const bool sweepTargetReached =
++				voiCountUnitsNearPosition(
++					mainAttackSquad.getUnits(),
++					m_voiSweepTarget,
++					8.0f) >= sweepRequiredUnits;
++			const bool sweepRouteStalled =
++				m_voiSweepLastProgressFrame > 0
++				&& sweepFrame >= m_voiSweepLastProgressFrame
++				&& sweepFrame - m_voiSweepLastProgressFrame >= 22u * 15u;
++			if (sweepTargetReached || sweepRouteStalled)
++			{
++				++m_currentBaseExplorationIndex;
++				selectNewSweepTarget = true;
++				Util::Log(
++					__FUNCTION__,
++					sweepTargetReached
++						? "VOI offensive sweep objective reached by the squad majority; rotating to the next remote objective."
++						: "VOI offensive sweep route made no progress for 15 seconds; rotating away from the stalled objective.",
++					m_bot);
++			}
++		}
++		if (selectNewSweepTarget)
++		{
++			m_voiSweepTarget = exploreMap();
++			m_voiSweepBestTargetDistance = Util::Dist(
++				mainAttackSquad.calcCenter(),
++				m_voiSweepTarget);
++			m_voiSweepLastProgressFrame = sweepFrame;
++		}
++		orderPosition = m_voiSweepTarget;
+ 		m_lastVoiTargetEvidence = "observed_contact_lost_sweep";
+ 	}
+ 	const int voiScopeMinUnits = std::max(

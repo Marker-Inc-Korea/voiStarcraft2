@@ -2578,6 +2578,11 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             combat["scout_last_action_frame"] = 6_260
             combat["scout_home_distance"] = 10.0
             combat["scout_max_home_distance"] = 16.0
+            combat["scout_marine_assigned_count"] = 3
+            combat["scout_marine_home_distance"] = 10.0
+            combat["scout_marine_max_home_distance"] = 16.0
+            combat["scout_last_commanded_unit_tag"] = 4242
+            combat["scout_last_commanded_unit_type"] = "TERRAN_MARINE"
             self._write_runtime(
                 root,
                 log_text="\n".join((MACRO_LOG, "6260: Scout squad action issued")),
