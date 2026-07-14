@@ -11,9 +11,6 @@ requires-python = ">=3.10"
 license = "AGPL-3.0-or-later OR LicenseRef-Commercial"
 license-files = ["LICENSE", "LICENSES/AGPL-3.0-or-later.txt"]
 keywords = ["starcraft", "sc2", "natural-language", "voice", "commander"]
-classifiers = [
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-]
 # The core commander pipeline is pure stdlib; every runtime integration is optional.
 dependencies = []
 
