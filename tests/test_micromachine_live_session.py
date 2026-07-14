@@ -348,8 +348,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             ),
             unit_types,
         )
-        self.assertEqual(unit_types, vector.scope.unit_classes)
-        self.assertEqual(unit_types, vector.tactical_task.unit_classes)
+        self.assertEqual(set(unit_types), set(vector.scope.unit_classes))
+        self.assertEqual(set(unit_types), set(vector.tactical_task.unit_classes))
         self.assertTrue(set(unit_types) <= set(vector.tactical_task.production_targets))
         self.assertIn("TERRAN_FACTORY", vector.tactical_task.production_targets)
         self.assertIn("TERRAN_STARPORT", vector.tactical_task.production_targets)
@@ -1024,6 +1024,79 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             1,
             vector.goal.count("standing: 마린과 탱크로 좌측 우회 공격"),
         )
+
+    def test_standing_merge_does_not_repurpose_optional_correlation_task_id(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        tactical_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린과 탱크로 적진을 계속 압박",
+                    "combat": {"aggression": 0.8},
+                    "scope": {
+                        "army_group": "main",
+                        "location_intent": "enemy_main",
+                        "min_units": 5,
+                    },
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "unit_classes": ["marine", "tank"],
+                        "location_intent": "enemy_main",
+                        "min_units": 5,
+                        "priority": 0.9,
+                    },
+                    "composition_requirements": [
+                        {"unit_type": "marine", "count": 4, "role": "frontline"},
+                        {"unit_type": "tank", "count": 1, "role": "siege_support"},
+                    ],
+                }
+            ),
+        )
+        first = tactical_session.submit_text(
+            "마린과 탱크로 적진을 계속 압박해",
+            current_frame=100,
+            update_id="publication-a",
+        )
+
+        self.assertTrue(first.ok, first.to_dict())
+        assert first.update is not None
+        self.assertEqual("", first.update.vector.tactical_task.task_id)
+
+        production_session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "탱크와 바이킹을 계속 보충",
+                    "production": {
+                        "queue_biases": {
+                            "TERRAN_SIEGETANK": 0.9,
+                            "TERRAN_VIKINGFIGHTER": 0.9,
+                        }
+                    },
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["tank", "viking"],
+                        "priority": 0.9,
+                    },
+                }
+            ),
+        )
+        second = production_session.submit_text(
+            "탱크와 바이킹을 계속 보충해",
+            current_frame=160,
+            update_id="publication-b",
+        )
+
+        self.assertTrue(second.ok, second.to_dict())
+        self.assertEqual("merge_standing_orders", second.command_queue["action"])
+        assert second.update is not None
+        self.assertEqual(
+            "pressure_with_main_army",
+            second.update.vector.tactical_task.task_type,
+        )
+        self.assertEqual("", second.update.vector.tactical_task.task_id)
 
     def test_emergency_command_overwrites_active_tactical_command(self) -> None:
         backend = MicroMachineInMemoryBlackboard()

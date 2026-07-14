@@ -77,6 +77,31 @@ class LifetimeModulationTest(unittest.TestCase):
 
 
 class PolicyModulationVectorTest(unittest.TestCase):
+    def test_merges_duplicate_composition_and_role_entries_by_unit_type(self) -> None:
+        vector = PolicyModulationVector(
+            goal="마린 요구를 하나의 작전 조합으로 병합",
+            composition_requirements=(
+                CompositionRequirement("marine", count=2, role="frontline"),
+                CompositionRequirement("marine", count=3, role="focus_fire"),
+            ),
+            unit_roles=(
+                UnitRoleAssignment("marine", role="frontline", priority=0.4),
+                UnitRoleAssignment(
+                    "marine",
+                    role="focus_fire",
+                    priority=0.9,
+                    ability_policy="if_available",
+                ),
+            ),
+        )
+
+        self.assertEqual(1, len(vector.composition_requirements))
+        self.assertEqual(5, vector.composition_requirements[0].count)
+        self.assertEqual("focus_fire", vector.composition_requirements[0].role)
+        self.assertEqual(1, len(vector.unit_roles))
+        self.assertEqual("focus_fire", vector.unit_roles[0].role)
+        self.assertEqual("if_available", vector.unit_roles[0].ability_policy)
+
     def test_rich_micromachine_intent_round_trips(self) -> None:
         vector = PolicyModulationVector(
             goal="마린 4기랑 탱크 1기로 적진 공격",
@@ -386,6 +411,24 @@ class PolicyModulationVectorTest(unittest.TestCase):
         scope = TacticalScopeModulation(location_intent="third")
 
         self.assertEqual("third", scope.location_intent)
+
+    def test_tactical_unit_classes_have_order_independent_set_semantics(self) -> None:
+        scope = TacticalScopeModulation(
+            unit_classes=("siege_tank", "marine", "marine")
+        )
+        task = TacticalTaskModulation(
+            task_type="pressure_with_main_army",
+            unit_classes=("siege_tank", "marine", "marine"),
+        )
+
+        self.assertEqual(
+            ("marine", "siege_tank"),
+            scope.unit_classes,
+        )
+        self.assertEqual(
+            ("TERRAN_MARINE", "TERRAN_SIEGETANK"),
+            task.unit_classes,
+        )
 
     def test_rejects_raw_runtime_control_keys_at_any_depth(self) -> None:
         with self.assertRaisesRegex(ValueError, "raw runtime control"):

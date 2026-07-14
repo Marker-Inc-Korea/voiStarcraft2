@@ -1,0 +1,138 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -95,7 +95,7 @@
+ 		key = bot.Commander().getVoiPolicyString("update_id", "");
+ 	}
+-	for (int i = 0; i < 8; ++i)
++	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string label = voiCompositionRequirementLabel(bot, i);
+ 		if (!label.empty())
+ 		{
+ 			key += "|" + label;
+ 		}
+ 	}
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -173,7 +173,7 @@
+ 
+ std::string voiRoleForUnit(CCBot & bot, const sc2::Unit * unit)
+ {
+-	for (int i = 0; i < 8; ++i)
++	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string unitType = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
+ 		const std::string role = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".role", "");
+@@ -182,7 +182,7 @@
+ 			return role;
+ 		}
+ 	}
+-	for (int i = 0; i < 8; ++i)
++	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string unitType = bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".unit_type", "");
+ 		const std::string role = bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".role", "");
+@@ -196,7 +196,7 @@
+ 
+ std::string voiAbilityPolicyForUnit(CCBot & bot, const sc2::Unit * unit, const std::string & role)
+ {
+-	for (int i = 0; i < 8; ++i)
++	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string unitType = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
+ 		const std::string policy = bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".ability_policy", "");
+@@ -378,7 +378,7 @@
+ 	{
+ 		key = bot.Commander().getVoiPolicyString("update_id", "");
+ 	}
+-	for (int i = 0; i < 8; ++i)
++	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string label = voiCompositionRequirementLabel(bot, i);
+ 		if (!label.empty())
+@@ -2312,7 +2312,7 @@
+ 	std::vector<std::pair<std::string, int>> exactScoutRequirements;
+ 	if (tacticalScoutTask && m_bot.Commander().hasVoiPolicyDomain("composition_requirements"))
+ 	{
+-		for (int i = 0; i < 8; ++i)
++		for (int i = 0; i < 32; ++i)
+ 		{
+ 			const std::string unitType = m_bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".unit_type", "");
+ 			const int count = std::max(0, m_bot.Commander().getVoiPolicyInt("composition_requirements." + std::to_string(i) + ".count", 0));
+@@ -2845,7 +2845,7 @@
+ 		const bool continuousReinforcementOperation =
+ 			standingContinuousExactOperation && launchedExactOperation;
+ 		std::vector<std::pair<std::string, int>> requirements;
+-		for (int i = 0; i < 8; ++i)
++		for (int i = 0; i < 32; ++i)
+ 		{
+ 			const std::string unitType = m_bot.Commander().getVoiPolicyString("composition_requirements." + std::to_string(i) + ".unit_type", "");
+ 			const int count = std::max(0, m_bot.Commander().getVoiPolicyInt("composition_requirements." + std::to_string(i) + ".count", 0));
+@@ -2856,7 +2856,7 @@
+ 		}
+ 		if (m_bot.Commander().hasVoiPolicyDomain("unit_roles"))
+ 		{
+-			for (int i = 0; i < 8; ++i)
++			for (int i = 0; i < 32; ++i)
+ 			{
+ 				const std::string roleUnitType = m_bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".unit_type", "");
+ 				const std::string roleName = m_bot.Commander().getVoiPolicyString("unit_roles." + std::to_string(i) + ".role", "");
+@@ -2899,7 +2899,7 @@
+ 					18.0f);
+ 				return !baseUnderAttack && !visibleEnemyNearDefense;
+ 			}
+-			return currentName == "Scout"
++			return (currentName == "Scout" || currentName.find("Harass") == 0)
+ 				&& currentSquad->getPriority() < ExplicitOperationPriority;
+ 		};
+ 		const auto & adaptiveTargets =
+@@ -3109,7 +3109,7 @@
+ 		m_lastVoiCompositionMissing = missing.str();
+ 		m_lastVoiCompositionFrame = m_bot.GetGameLoop();
+ 		m_lastVoiCompositionRequirements = "";
+-		for (int i = 0; i < 8; ++i)
++		for (int i = 0; i < 32; ++i)
+ 		{
+ 			const std::string label = voiCompositionRequirementLabel(m_bot, i);
+ 			if (!label.empty())
+diff --git a/src/RangedManager.cpp b/src/RangedManager.cpp
+--- a/src/RangedManager.cpp
++++ b/src/RangedManager.cpp
+@@ -66,7 +66,7 @@
+ 	}
+ 	for (const std::string domain : {"unit_roles", "composition_requirements"})
+ 	{
+-		for (int i = 0; i < 8; ++i)
++		for (int i = 0; i < 32; ++i)
+ 		{
+ 			const std::string prefix = domain + "." + std::to_string(i);
+ 			const std::string unitType = bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");
+@@ -90,7 +90,7 @@
+ 	}
+ 	for (const std::string domain : {"unit_roles", "composition_requirements"})
+ 	{
+-		for (int i = 0; i < 8; ++i)
++		for (int i = 0; i < 32; ++i)
+ 		{
+ 			const std::string prefix = domain + "." + std::to_string(i);
+ 			const std::string unitType = bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");
+@@ -126,7 +126,7 @@
+ 	}
+ 	for (const std::string domain : {"composition_requirements", "unit_roles"})
+ 	{
+-		for (int i = 0; i < 8; ++i)
++		for (int i = 0; i < 32; ++i)
+ 		{
+ 			const std::string prefix = domain + "." + std::to_string(i);
+ 			if (bot.Commander().getVoiPolicyString(prefix + ".unit_type", "") != requestedType)
+@@ -168,7 +168,7 @@
+ {
+ 	for (const std::string domain : {"unit_roles", "composition_requirements"})
+ 	{
+-		for (int i = 0; i < 8; ++i)
++		for (int i = 0; i < 32; ++i)
+ 		{
+ 			const std::string prefix = domain + "." + std::to_string(i);
+ 			const std::string unitType = bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");

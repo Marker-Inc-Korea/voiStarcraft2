@@ -168,6 +168,21 @@
       "path": "patches/0032-operation-scoped-adaptive-combat-closure.patch",
       "order": 32,
       "scope": "operation-stable adaptive composition with completed-wave accounting, bounded observation lifetime and budget, addon prerequisite closure, and direct MainAttack ownership for produced support units"
+    },
+    {
+      "path": "patches/0033-review-closure-operation-identity-and-full-composition.patch",
+      "order": 33,
+      "scope": "review closure for Harass-to-MainAttack transfer and full 32-entry composition, role, ability-policy, identity, scout, launch, and telemetry consumption"
+    },
+    {
+      "path": "patches/0034-semantic-operation-production-closure.patch",
+      "order": 34,
+      "scope": "semantic operation identity independent of telemetry correlation ids, duplicate composition aggregation, and Barracks/refinery bootstrap for explicit bio unit production"
+    },
+    {
+      "path": "patches/0035-adaptive-pressure-stable-operation-key.patch",
+      "order": 35,
+      "scope": "adaptive counter production during one-shot and first-wave exact pressure, supply-cap protection, and order-independent semantic operation identity shared by production and combat"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

@@ -46,6 +46,9 @@ Verified upstream:
 | `patches/0030-stable-offensive-sweep-target.patch` | Keeps a lost-contact offensive sweep on one remote target until squad-majority arrival or a bounded route-stall timeout, instead of repointing every frame. |
 | `patches/0031-adaptive-support-composition.patch` | Preserves the first exact combat wave, then latches bounded counter-unit targets per operation so Marauders, Hellions, Widow Mines, Cyclones, Thors, Medivacs, Liberators, Banshees, Ravens, Vikings, and Battlecruisers can be selected from observed enemy and strategic conditions without queue oscillation. |
 | `patches/0032-operation-scoped-adaptive-combat-closure.patch` | Closes the adaptive path end to end: counts completed/training units once, shares the combat operation identity, expires stale observations under a bounded budget, treats support counts as additive, recovers occupied add-on producers, and assigns produced support units into the live MainAttack operation. |
+| `patches/0033-review-closure-operation-identity-and-full-composition.patch` | Lets explicit MainAttack operations reclaim required Reapers and Banshees from lower-priority Harass squads and consumes all 32 accepted composition and unit-role entries across production, scouting, combat launch, micro roles, operation identity, and telemetry. |
+| `patches/0034-semantic-operation-production-closure.patch` | Separates semantic operation state from telemetry `task_id`/publication IDs, aggregates duplicate unit counts defensively, and bootstraps Barracks, gas, and add-on prerequisites for exact Marauder/Reaper and other bio requests. |
+| `patches/0035-adaptive-pressure-stable-operation-key.patch` | Keeps observed-enemy counter production active for one-shot and first-wave exact MainAttack operations, blocks optional adaptive queue growth when the selected unit cannot fit under the completed 200-supply cap, and preserves operation state when composition, role, or unit-class entries arrive in a different order. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -116,12 +119,14 @@ how to act.
 
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
-clean build applies the MicroMachine patch bundle in order
-`0001` -> `0002` -> `0003` -> `0004` -> `0005` -> `0006` -> `0007` -> `0008` -> `0009` -> `0010` -> `0011` -> `0012` -> `0013` -> `0014` -> `0015` -> `0016` -> `0017` -> `0018` -> `0019` -> `0020` -> `0021` -> `0022` -> `0023` -> `0024` -> `0025` -> `0026` -> `0027` -> `0028` -> `0029`, then copies the blackboard header. The
+clean build applies the MicroMachine patch bundle in numeric order from `0001`
+through `0035`, then copies the blackboard header. The
 report includes pinned MicroMachine and `s2client-api` commits, every patch
-checksum, config/header checksums, binary path, and binary checksum. Matrix
-production signoff consumes that identity and blocks `unrecorded` or mismatched
-builds.
+checksum, config/header checksums, binary path, and binary checksum. A pre-build
+source attestation is finalized only after the executable exists, binding its
+hash and size to the attested source inputs; replacement or non-executable
+binaries fail identity verification. Matrix production signoff consumes that
+identity and blocks `unrecorded` or mismatched builds.
 
 ## Bootstrap Probe Gate
 

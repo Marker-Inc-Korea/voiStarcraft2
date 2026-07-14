@@ -704,8 +704,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
     def test_micromachine_modulation_accepts_string_unit_class_aliases(self):
         with tempfile.TemporaryDirectory() as directory:
             for raw_unit_classes, expected in (
-                ("siege_tank, workers", ["TERRAN_SIEGETANK", "TERRAN_SCV"]),
-                ("siege tank worker", ["TERRAN_SIEGETANK", "TERRAN_SCV"]),
+                ("siege_tank, workers", ["TERRAN_SCV", "TERRAN_SIEGETANK"]),
+                ("siege tank worker", ["TERRAN_SCV", "TERRAN_SIEGETANK"]),
             ):
                 with self.subTest(raw_unit_classes=raw_unit_classes):
                     status, _content_type, payload = self.post_micromachine_modulation(

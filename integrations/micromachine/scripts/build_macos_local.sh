@@ -43,6 +43,9 @@ GAS_WORKER_COMPLETION_CAP_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/pat
 STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0030-stable-offensive-sweep-target.patch"
 ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0031-adaptive-support-composition.patch"
 OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0032-operation-scoped-adaptive-combat-closure.patch"
+REVIEW_CLOSURE_OPERATION_IDENTITY_FULL_COMPOSITION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0033-review-closure-operation-identity-and-full-composition.patch"
+SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0034-semantic-operation-production-closure.patch"
+ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0035-adaptive-pressure-stable-operation-key.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 
@@ -126,6 +129,8 @@ require_disposable_checkout_mutation "${MICROMACHINE_DIR}" "${ROOT_DIR}" "mutate
 
 prepare_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}" https://github.com/Blizzard/s2client-api s2client-api
 git -C "${S2CLIENT_DIR}" fetch --tags
+git -C "${S2CLIENT_DIR}" reset --hard
+safe_clean_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}"
 git -C "${S2CLIENT_DIR}" checkout "${S2CLIENT_COMMIT}"
 git -C "${S2CLIENT_DIR}" reset --hard "${S2CLIENT_COMMIT}"
 safe_clean_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}"
@@ -139,6 +144,8 @@ cmake --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
 
 prepare_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}" https://github.com/RaphaelRoyerRivard/MicroMachine MicroMachine
 git -C "${MICROMACHINE_DIR}" fetch --tags
+git -C "${MICROMACHINE_DIR}" reset --hard
+safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
 git -C "${MICROMACHINE_DIR}" checkout "${MICROMACHINE_COMMIT}"
 git -C "${MICROMACHINE_DIR}" reset --hard "${MICROMACHINE_COMMIT}"
 safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
@@ -211,7 +218,27 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${REVIEW_CLOSURE_OPERATION_IDENTITY_FULL_COMPOSITION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${REVIEW_CLOSURE_OPERATION_IDENTITY_FULL_COMPOSITION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
+
+rm -f \
+  "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
+  "${MICROMACHINE_BUILD_DIR}/voi_source_attestation.json" \
+  "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"
+
+python3 -m starcraft_commander.micromachine_build_identity \
+  --micromachine-dir "${MICROMACHINE_DIR}" \
+  --s2client-dir "${S2CLIENT_DIR}" \
+  --s2client-build-dir "${S2CLIENT_BUILD_DIR}" \
+  --micromachine-build-dir "${MICROMACHINE_BUILD_DIR}" \
+  --micromachine-commit "${MICROMACHINE_COMMIT}" \
+  --s2client-commit "${S2CLIENT_COMMIT}" \
+  --initialize-source-attestation
 
 cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
@@ -229,6 +256,7 @@ cmake --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
 python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-dir "${MICROMACHINE_DIR}" \
   --s2client-dir "${S2CLIENT_DIR}" \
+  --s2client-build-dir "${S2CLIENT_BUILD_DIR}" \
   --micromachine-build-dir "${MICROMACHINE_BUILD_DIR}" \
   --micromachine-commit "${MICROMACHINE_COMMIT}" \
   --s2client-commit "${S2CLIENT_COMMIT}" \
@@ -264,7 +292,11 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-stable-offensive-sweep-target-patch "${STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE}" \
   --micromachine-adaptive-support-composition-patch "${ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE}" \
   --micromachine-operation-scoped-adaptive-combat-closure-patch "${OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE}" \
+  --micromachine-review-closure-operation-identity-full-composition-patch "${REVIEW_CLOSURE_OPERATION_IDENTITY_FULL_COMPOSITION_PATCH_FILE}" \
+  --micromachine-semantic-operation-production-closure-patch "${SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE}" \
+  --micromachine-adaptive-pressure-stable-operation-key-patch "${ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
+  --finalize-build-attestation \
   --output "${MICROMACHINE_BUILD_IDENTITY_REPORT}"
 
 printf 'MicroMachine executable: %s\n' "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"

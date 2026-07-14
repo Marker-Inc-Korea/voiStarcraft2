@@ -925,7 +925,9 @@ class TacticalScopeModulation:
         object.__setattr__(
             self,
             "unit_classes",
-            _validate_string_tuple("unit_classes", self.unit_classes),
+            _sorted_unique_tokens(
+                _validate_string_tuple("unit_classes", self.unit_classes)
+            ),
         )
         object.__setattr__(
             self,
@@ -1088,7 +1090,7 @@ class TacticalTaskModulation:
         object.__setattr__(
             self,
             "unit_classes",
-            _canonicalize_task_tokens(
+            _canonicalize_task_token_set(
                 _validate_string_tuple("unit_classes", self.unit_classes)
             ),
         )
@@ -1604,16 +1606,12 @@ class PolicyModulationVector:
         object.__setattr__(
             self,
             "composition_requirements",
-            _validate_object_sequence(
-                "composition_requirements",
-                self.composition_requirements,
-                CompositionRequirement,
-            ),
+            _validate_composition_requirements(self.composition_requirements),
         )
         object.__setattr__(
             self,
             "unit_roles",
-            _validate_object_sequence("unit_roles", self.unit_roles, UnitRoleAssignment),
+            _validate_unit_role_assignments(self.unit_roles),
         )
         object.__setattr__(
             self,
@@ -1824,6 +1822,52 @@ def _validate_object_sequence(
     return tuple(result)
 
 
+def _validate_composition_requirements(
+    values: object,
+) -> tuple[CompositionRequirement, ...]:
+    requirements = _validate_object_sequence(
+        "composition_requirements",
+        values,
+        CompositionRequirement,
+    )
+    merged: dict[str, CompositionRequirement] = {}
+    for requirement in requirements:
+        assert isinstance(requirement, CompositionRequirement)
+        previous = merged.get(requirement.unit_type)
+        if previous is None:
+            merged[requirement.unit_type] = requirement
+            continue
+        total_count = previous.count + requirement.count
+        if total_count > 200:
+            raise ValueError(
+                "combined composition requirement count cannot exceed 200 "
+                f"for {requirement.unit_type}."
+            )
+        merged[requirement.unit_type] = CompositionRequirement(
+            unit_type=requirement.unit_type,
+            count=total_count,
+            role=requirement.role or previous.role,
+        )
+    return tuple(merged.values())
+
+
+def _validate_unit_role_assignments(
+    values: object,
+) -> tuple[UnitRoleAssignment, ...]:
+    assignments = _validate_object_sequence(
+        "unit_roles",
+        values,
+        UnitRoleAssignment,
+    )
+    merged: dict[str, UnitRoleAssignment] = {}
+    for assignment in assignments:
+        assert isinstance(assignment, UnitRoleAssignment)
+        previous = merged.get(assignment.unit_type)
+        if previous is None or assignment.priority >= previous.priority:
+            merged[assignment.unit_type] = assignment
+    return tuple(merged.values())
+
+
 def _object_sequence_from_mapping(
     values: object,
     name: str,
@@ -1996,6 +2040,14 @@ def _validate_map_position(name: str, values: object) -> tuple[float, ...]:
 
 def _canonicalize_task_tokens(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(_canonicalize_task_token(value) for value in values)
+
+
+def _canonicalize_task_token_set(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(sorted({_canonicalize_task_token(value) for value in values}))
+
+
+def _sorted_unique_tokens(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(sorted(set(values)))
 
 
 def _canonicalize_allowed_task_tokens(

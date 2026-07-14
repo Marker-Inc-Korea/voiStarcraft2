@@ -28,6 +28,187 @@ class StaticModulationProvider:
 
 
 class PolicyModulationProviderCompilerTest(unittest.TestCase):
+    def test_exact_composition_lowers_every_supported_terran_combat_unit_chain(
+        self,
+    ) -> None:
+        prerequisite_chains = {
+            "marine": ("TERRAN_BARRACKS", "TERRAN_MARINE"),
+            "marauder": (
+                "TERRAN_BARRACKS",
+                "BARRACKS_TECHLAB",
+                "TERRAN_MARAUDER",
+            ),
+            "reaper": ("TERRAN_BARRACKS", "TERRAN_REAPER"),
+            "ghost": (
+                "TERRAN_BARRACKS",
+                "BARRACKS_TECHLAB",
+                "TERRAN_GHOSTACADEMY",
+                "TERRAN_GHOST",
+            ),
+            "hellion": ("TERRAN_FACTORY", "TERRAN_HELLION"),
+            "widow_mine": ("TERRAN_FACTORY", "TERRAN_WIDOWMINE"),
+            "cyclone": (
+                "TERRAN_FACTORY",
+                "FACTORY_TECHLAB",
+                "TERRAN_CYCLONE",
+            ),
+            "thor": (
+                "TERRAN_FACTORY",
+                "FACTORY_TECHLAB",
+                "TERRAN_ARMORY",
+                "TERRAN_THOR",
+            ),
+            "tank": (
+                "TERRAN_FACTORY",
+                "FACTORY_TECHLAB",
+                "TERRAN_SIEGETANK",
+            ),
+            "medivac": (
+                "TERRAN_FACTORY",
+                "TERRAN_STARPORT",
+                "TERRAN_MEDIVAC",
+            ),
+            "viking": (
+                "TERRAN_FACTORY",
+                "TERRAN_STARPORT",
+                "TERRAN_VIKINGFIGHTER",
+            ),
+            "liberator": (
+                "TERRAN_FACTORY",
+                "TERRAN_STARPORT",
+                "TERRAN_LIBERATOR",
+            ),
+            "banshee": (
+                "TERRAN_FACTORY",
+                "TERRAN_STARPORT",
+                "STARPORT_TECHLAB",
+                "TERRAN_BANSHEE",
+            ),
+            "raven": (
+                "TERRAN_FACTORY",
+                "TERRAN_STARPORT",
+                "STARPORT_TECHLAB",
+                "TERRAN_RAVEN",
+            ),
+            "battlecruiser": (
+                "TERRAN_FACTORY",
+                "TERRAN_STARPORT",
+                "STARPORT_TECHLAB",
+                "TERRAN_FUSIONCORE",
+                "TERRAN_BATTLECRUISER",
+            ),
+        }
+
+        for unit_type, expected_chain in prerequisite_chains.items():
+            with self.subTest(unit_type=unit_type):
+                result = compile_policy_modulation_provider_output(
+                    {
+                        "source": "llm",
+                        "goal": f"produce and field {unit_type}",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "priority": 0.85,
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": unit_type,
+                                "count": 1,
+                                "role": "support",
+                            }
+                        ],
+                    }
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                assert result.vector is not None
+                vector = result.vector
+                queue_biases = vector.production.queue_biases.to_dict()
+                for target in expected_chain:
+                    self.assertGreaterEqual(queue_biases[target], 0.85)
+                    self.assertIn(
+                        target,
+                        vector.tactical_task.production_targets,
+                    )
+                self.assertTrue(vector.production.allow_build_order_rewrite)
+                self.assertGreaterEqual(vector.economy.supply_buffer_bias, 0.55)
+
+    def test_exact_composition_lowers_prerequisite_production_without_plan(
+        self,
+    ) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "밴시 한 기를 주력 공격에 합류시켜",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "location_intent": "enemy_main",
+                    "priority": 0.9,
+                },
+                "unit_roles": [
+                    {
+                        "unit_type": "banshee",
+                        "role": "worker_harass",
+                        "priority": 0.9,
+                        "ability_policy": "if_available",
+                    }
+                ],
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual(1, len(vector.composition_requirements))
+        self.assertEqual(
+            "TERRAN_BANSHEE",
+            vector.composition_requirements[0].unit_type,
+        )
+        self.assertEqual(1, vector.composition_requirements[0].count)
+        queue_biases = vector.production.queue_biases.to_dict()
+        for target in (
+            "TERRAN_FACTORY",
+            "TERRAN_STARPORT",
+            "STARPORT_TECHLAB",
+            "TERRAN_BANSHEE",
+        ):
+            with self.subTest(target=target):
+                self.assertGreaterEqual(queue_biases[target], 0.9)
+                self.assertIn(target, vector.tactical_task.production_targets)
+        self.assertTrue(vector.production.allow_build_order_rewrite)
+        self.assertGreaterEqual(vector.production.tech_switch_urgency, 0.9)
+
+    def test_duplicate_composition_entries_merge_before_launch_floor(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "마린 두 묶음을 합쳐 공격",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "location_intent": "enemy_main",
+                },
+                "composition_requirements": [
+                    {"unit_type": "marine", "count": 2, "role": "frontline"},
+                    {"unit_type": "marine", "count": 2, "role": "focus_fire"},
+                ],
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        vector = result.vector
+        self.assertEqual(1, len(vector.composition_requirements))
+        self.assertEqual(4, vector.composition_requirements[0].count)
+        self.assertEqual(4, vector.scope.min_units)
+        self.assertEqual(4, vector.tactical_task.min_units)
+        self.assertGreaterEqual(
+            vector.production.queue_biases.to_dict()["TERRAN_MARINE"],
+            0.8,
+        )
+        self.assertGreaterEqual(
+            vector.production.queue_biases.to_dict()["TERRAN_BARRACKS"],
+            0.8,
+        )
+
     def test_declares_provider_sources_for_llm_ui_replay_and_neural(self) -> None:
         self.assertIn(PolicyModulationSource.LLM, POLICY_MODULATION_PROVIDER_SOURCES)
         self.assertIn(

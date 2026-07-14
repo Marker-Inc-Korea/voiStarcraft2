@@ -104,6 +104,17 @@ ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE = (
 OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE = (
     KIT_DIR / "patches" / "0032-operation-scoped-adaptive-combat-closure.patch"
 )
+REVIEW_CLOSURE_OPERATION_IDENTITY_FULL_COMPOSITION_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0033-review-closure-operation-identity-and-full-composition.patch"
+)
+SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE = (
+    KIT_DIR / "patches" / "0034-semantic-operation-production-closure.patch"
+)
+ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE = (
+    KIT_DIR / "patches" / "0035-adaptive-pressure-stable-operation-key.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -1259,6 +1270,152 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             ),
         )
 
+    def test_review_closure_patch_preserves_explicit_operations_and_32_entries(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            REVIEW_CLOSURE_OPERATION_IDENTITY_FULL_COMPOSITION_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn('currentName.find("Harass") == 0', added_lines)
+        self.assertEqual(13, added_lines.count("for (int i = 0; i < 32; ++i)"))
+        self.assertNotIn("for (int i = 0; i < 8; ++i)", added_lines)
+        for source in (
+            "src/ProductionManager.cpp",
+            "src/CombatCommander.cpp",
+            "src/RangedManager.cpp",
+        ):
+            with self.subTest(source=source):
+                self.assertIn(f"diff --git a/{source} b/{source}", patch)
+
+    def test_semantic_operation_patch_closes_identity_and_bio_production_gaps(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn(
+            '"task=" + bot.Commander().getVoiPolicyString("tactical_task.task_type", "")',
+            added_lines,
+        )
+        self.assertNotIn(
+            'getVoiPolicyString("tactical_task.task_id"',
+            added_lines,
+        )
+        self.assertNotIn('getVoiPolicyString("update_id"', added_lines)
+        for semantic_axis in (
+            '"|role="',
+            '"|task_min="',
+            '"|task_max="',
+            '"|army="',
+            '"|scope_units="',
+            '"|task_units="',
+            '"|partial="',
+            '"|task_partial="',
+            '"|scope_location="',
+            '"|target="',
+        ):
+            with self.subTest(semantic_axis=semantic_axis):
+                self.assertIn(semantic_axis, added_lines)
+        self.assertIn('"|route="', patch)
+        self.assertIn('"|location="', patch)
+        self.assertIn("requestedCount +=", added_lines)
+        self.assertIn("effectiveMarineBias > 0.25f", added_lines)
+        self.assertIn("effectiveMarauderBias > 0.25f", added_lines)
+        self.assertIn("effectiveReaperBias > 0.25f", added_lines)
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"
+            ),
+        )
+
+    def test_adaptive_pressure_patch_covers_one_shot_first_wave_and_stable_keys(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn("voiExactCompositionActive(bot)", added_lines)
+        self.assertIn('"pressure_with_main_army"', added_lines)
+        self.assertIn(
+            "entry.second.getUnitType().supplyRequired()",
+            added_lines,
+        )
+        self.assertIn(
+            "bot.GetMaxSupply() - bot.GetCurrentSupply()",
+            added_lines,
+        )
+        self.assertNotIn("bot.GetCurrentSupply() < 196", added_lines)
+        self.assertEqual(
+            5,
+            added_lines.count("voiAdaptiveSupportProductionActive("),
+        )
+        self.assertIn(
+            "voiAdaptiveSupportProductionActive(m_bot, entry.first)\n"
+            "\t\t\t\t? getVoiAdaptiveSupportTargetCount(entry.first)",
+            added_lines,
+        )
+        self.assertIn(
+            "voiAdaptiveSupportProductionActive(m_bot, policyUnitType)\n"
+            "\t\t\t\t? getVoiAdaptiveSupportTargetCount(policyUnitType)",
+            added_lines,
+        )
+        self.assertIn(
+            "if (voiContinuousCompositionProductionConfigured(m_bot))",
+            added_lines,
+        )
+        self.assertNotIn(
+            "if (!m_voiAdaptiveFirstWaveComplete)\n\t{\n\t\treturn;",
+            added_lines,
+        )
+        self.assertEqual(
+            2,
+            added_lines.count(
+                "std::sort(operationLabels.begin(), operationLabels.end());"
+            ),
+        )
+        self.assertEqual(2, added_lines.count("const auto appendUnitClasses"))
+        self.assertEqual(2, added_lines.count("std::unique("))
+        self.assertNotIn('"|scope_units="', added_lines)
+        self.assertNotIn('"|task_units="', added_lines)
+        for semantic_axis in (
+            '"|route_avoid="',
+            '"|lifetime="',
+            '"|continuity="',
+        ):
+            with self.subTest(semantic_axis=semantic_axis):
+                self.assertEqual(2, added_lines.count(semantic_axis))
+        for source in ("src/ProductionManager.cpp", "src/CombatCommander.cpp"):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    1,
+                    patch.count(f"diff --git a/{source} b/{source}"),
+                )
+
     def test_hook_manifest_covers_verified_upstream_manager_hooks(self) -> None:
         manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
 
@@ -1374,6 +1531,18 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertIn(
             "patches/0032-operation-scoped-adaptive-combat-closure.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0033-review-closure-operation-identity-and-full-composition.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0034-semantic-operation-production-closure.patch",
+            {patch["path"] for patch in manifest["patch_bundle"]},
+        )
+        self.assertIn(
+            "patches/0035-adaptive-pressure-stable-operation-key.patch",
             {patch["path"] for patch in manifest["patch_bundle"]},
         )
 
@@ -2032,6 +2201,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0030-stable-offensive-sweep-target.patch",
             "0031-adaptive-support-composition.patch",
             "0032-operation-scoped-adaptive-combat-closure.patch",
+            "0033-review-closure-operation-identity-and-full-composition.patch",
+            "0034-semantic-operation-production-closure.patch",
+            "0035-adaptive-pressure-stable-operation-key.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -2062,6 +2234,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "STABLE_OFFENSIVE_SWEEP_TARGET_PATCH_FILE",
             "ADAPTIVE_SUPPORT_COMPOSITION_PATCH_FILE",
             "OPERATION_SCOPED_ADAPTIVE_COMBAT_CLOSURE_PATCH_FILE",
+            "REVIEW_CLOSURE_OPERATION_IDENTITY_FULL_COMPOSITION_PATCH_FILE",
+            "SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE",
+            "ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",
@@ -2080,6 +2255,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "cmake --build",
             "MICROMACHINE_BUILD_IDENTITY_REPORT",
             "starcraft_commander.micromachine_build_identity",
+            "--s2client-build-dir",
+            "--initialize-source-attestation",
+            "--finalize-build-attestation",
             "--micromachine-operation-state-patch",
             "--micromachine-addon-recovery-patch",
             "--micromachine-grounded-addon-candidate-patch",
@@ -2103,9 +2281,34 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "BLACKBOARD_HEADER_FILE",
             "voi_policy_blackboard.hpp",
             'cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"',
+            '"${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"',
         ):
             with self.subTest(term=term):
                 self.assertIn(term, build_script)
+        self.assertLess(
+            build_script.index("--initialize-source-attestation"),
+            build_script.index('cmake -S "${MICROMACHINE_DIR}"'),
+        )
+        self.assertLess(
+            build_script.index('"${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"'),
+            build_script.index("--initialize-source-attestation"),
+        )
+        self.assertLess(
+            build_script.index('cmake --build "${MICROMACHINE_BUILD_DIR}"'),
+            build_script.index("--finalize-build-attestation"),
+        )
+        self.assertLess(
+            build_script.index('git -C "${MICROMACHINE_DIR}" reset --hard\n'),
+            build_script.index(
+                'git -C "${MICROMACHINE_DIR}" checkout "${MICROMACHINE_COMMIT}"'
+            ),
+        )
+        self.assertLess(
+            build_script.index('git -C "${S2CLIENT_DIR}" reset --hard\n'),
+            build_script.index(
+                'git -C "${S2CLIENT_DIR}" checkout "${S2CLIENT_COMMIT}"'
+            ),
+        )
 
         for term in (
             "voi_bootstrap_probe",

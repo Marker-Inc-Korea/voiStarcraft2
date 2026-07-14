@@ -632,6 +632,42 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
             text,
         )
 
+    def test_flatten_update_preserves_ninth_composition_and_role_entry(self) -> None:
+        unit_types = (
+            "marine",
+            "marauder",
+            "reaper",
+            "ghost",
+            "hellion",
+            "widow_mine",
+            "cyclone",
+            "thor",
+            "battlecruiser",
+        )
+        update = MicroMachineBlackboardUpdate(
+            update_id="wide-composition",
+            vector=PolicyModulationVector(
+                goal="exercise full composition contract",
+                composition_requirements=tuple(
+                    CompositionRequirement(unit_type, count=1, role="frontline")
+                    for unit_type in unit_types
+                ),
+                unit_roles=tuple(
+                    UnitRoleAssignment(unit_type, role="focus_fire")
+                    for unit_type in unit_types
+                ),
+            ),
+            issued_at_frame=22,
+        )
+
+        text = flatten_blackboard_update(update)
+
+        self.assertIn(
+            "composition_requirements.8.unit_type=TERRAN_BATTLECRUISER\n",
+            text,
+        )
+        self.assertIn("unit_roles.8.unit_type=TERRAN_BATTLECRUISER\n", text)
+
     def test_flatten_update_rejects_injected_kv_keys(self) -> None:
         update = MicroMachineBlackboardUpdate(
             update_id="unsafe-key",

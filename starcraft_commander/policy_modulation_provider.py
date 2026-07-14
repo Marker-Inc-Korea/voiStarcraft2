@@ -1208,9 +1208,11 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                     _canonicalize_micromachine_key(item) for item in targets
                 ]
     _canonicalize_rich_intent_sequences(payload)
+    _normalize_micromachine_composition_and_roles(payload)
     _repair_micromachine_schema_bounds(payload)
     _repair_micromachine_emergency_defaults(payload)
     _lower_micromachine_production_plan(payload)
+    _lower_micromachine_composition_production(payload)
     _lower_micromachine_building_tasks(payload)
     _repair_micromachine_tactical_task_defaults(payload)
 
@@ -1252,6 +1254,102 @@ def _canonicalize_rich_intent_sequences(payload: dict[str, object]) -> None:
                     )
             normalized_items.append(normalized)
         payload[key] = normalized_items
+
+
+def _normalize_micromachine_composition_and_roles(
+    payload: dict[str, object],
+) -> None:
+    """Merge duplicate unit intents and make role-only tactical units concrete."""
+
+    merged_requirements: dict[str, dict[str, object]] = {}
+    requirements = payload.get("composition_requirements")
+    if _is_non_text_sequence(requirements):
+        for item in requirements:
+            if not isinstance(item, Mapping):
+                continue
+            unit_type = str(item.get("unit_type", "") or "").strip()
+            count = item.get("count", 0)
+            if (
+                not unit_type
+                or type(count) is bool
+                or not isinstance(count, (int, float))
+            ):
+                continue
+            normalized_count = max(0, int(count))
+            if normalized_count <= 0:
+                continue
+            role = str(item.get("role", "") or "").strip()
+            existing = merged_requirements.get(unit_type)
+            if existing is None:
+                merged_requirements[unit_type] = {
+                    "unit_type": unit_type,
+                    "count": min(200, normalized_count),
+                    "role": role,
+                }
+                continue
+            existing["count"] = min(
+                200,
+                int(existing.get("count", 0) or 0) + normalized_count,
+            )
+            if role:
+                existing["role"] = role
+
+    merged_roles: dict[str, dict[str, object]] = {}
+    roles = payload.get("unit_roles")
+    if _is_non_text_sequence(roles):
+        for item in roles:
+            if not isinstance(item, Mapping):
+                continue
+            unit_type = str(item.get("unit_type", "") or "").strip()
+            role = str(item.get("role", "") or "").strip()
+            if not unit_type or not role:
+                continue
+            raw_priority = item.get("priority", 0.0)
+            priority = (
+                float(raw_priority)
+                if isinstance(raw_priority, (int, float))
+                and type(raw_priority) is not bool
+                else 0.0
+            )
+            normalized = {
+                "unit_type": unit_type,
+                "role": role,
+                "priority": max(0.0, min(1.0, priority)),
+                "ability_policy": str(item.get("ability_policy", "") or "").strip(),
+            }
+            existing = merged_roles.get(unit_type)
+            if existing is None or float(existing.get("priority", 0.0)) <= priority:
+                merged_roles[unit_type] = normalized
+
+    tactical_task = payload.get("tactical_task")
+    task_type = (
+        str(tactical_task.get("task_type", "") or "").strip()
+        if isinstance(tactical_task, Mapping)
+        else ""
+    )
+    if task_type in {"pressure_with_main_army", "scout_with_units"}:
+        for unit_type, role_assignment in merged_roles.items():
+            existing = merged_requirements.get(unit_type)
+            if existing is None:
+                merged_requirements[unit_type] = {
+                    "unit_type": unit_type,
+                    "count": 1,
+                    "role": str(role_assignment.get("role", "") or ""),
+                }
+            elif (
+                not str(existing.get("role", "") or "")
+                and role_assignment.get("role")
+            ):
+                existing["role"] = role_assignment["role"]
+
+    if merged_requirements:
+        payload["composition_requirements"] = list(merged_requirements.values())[:32]
+    elif _is_non_text_sequence(requirements):
+        payload["composition_requirements"] = []
+    if merged_roles:
+        payload["unit_roles"] = list(merged_roles.values())[:32]
+    elif _is_non_text_sequence(roles):
+        payload["unit_roles"] = []
 
 
 _LIFETIME_MODE_ALIASES = {
@@ -1486,6 +1584,128 @@ def _lower_micromachine_production_plan(payload: dict[str, object]) -> None:
         f"targets={','.join(final_targets)}; queued={','.join(queue_items)}"
     )
     payload["rationale"] = _append_rationale(payload.get("rationale"), evidence)
+
+
+def _lower_micromachine_composition_production(
+    payload: dict[str, object],
+) -> None:
+    """Lower exact tactical composition into prerequisite-aware production axes."""
+
+    requirements = payload.get("composition_requirements")
+    if not _is_non_text_sequence(requirements):
+        return
+    unit_targets = tuple(
+        str(item.get("unit_type", "") or "").strip()
+        for item in requirements
+        if isinstance(item, Mapping)
+        and str(item.get("unit_type", "") or "").strip()
+        in _PRODUCTION_PLAN_UNIT_TARGETS
+        and isinstance(item.get("count", 0), (int, float))
+        and type(item.get("count", 0)) is not bool
+        and int(item.get("count", 0)) > 0
+    )
+    if not unit_targets:
+        return
+
+    tactical_task = _ensure_micromachine_domain_dict(payload, "tactical_task")
+    raw_priority = tactical_task.get("priority", 0.0)
+    priority = (
+        _production_plan_priority(raw_priority)
+        if isinstance(raw_priority, (int, float))
+        and type(raw_priority) is not bool
+        and float(raw_priority) > 0.0
+        else 0.8
+    )
+    roles = payload.get("unit_roles")
+    if _is_non_text_sequence(roles):
+        for role in roles:
+            if not isinstance(role, Mapping):
+                continue
+            role_priority = role.get("priority", 0.0)
+            if (
+                isinstance(role_priority, (int, float))
+                and type(role_priority) is not bool
+                and float(role_priority) > 0.0
+            ):
+                priority = max(priority, _production_plan_priority(role_priority))
+
+    emergency = (
+        str(payload.get("override_level", "") or "").strip().lower()
+        == PolicyOverrideLevel.EMERGENCY.value
+    )
+    production = _ensure_micromachine_domain_dict(payload, "production")
+    tech = _ensure_micromachine_domain_dict(payload, "tech")
+    economy = _ensure_micromachine_domain_dict(payload, "economy")
+    queue_items: list[str] = []
+    for target in unit_targets:
+        chain = _production_plan_chain_for_target(
+            target,
+            allow_prerequisites=not emergency,
+        )
+        for item in chain:
+            if item not in queue_items:
+                queue_items.append(item)
+            _set_production_plan_bias(production, tech, item, priority)
+
+    if any(item in _PRODUCTION_PLAN_UNIT_TARGETS for item in queue_items):
+        _set_float_at_least(
+            economy,
+            "supply_buffer_bias",
+            max(0.55, min(1.0, priority)),
+        )
+    if any(item in _PRODUCTION_PLAN_GAS_TARGETS for item in queue_items):
+        high_gas = any(
+            item in _PRODUCTION_PLAN_HIGH_GAS_TARGETS for item in queue_items
+        )
+        _set_float_at_least(
+            economy,
+            "gas_priority",
+            max(0.75 if high_gas else 0.55, min(1.0, priority)),
+        )
+        _set_float_at_least(
+            economy,
+            "gas_worker_target_bias",
+            0.75 if high_gas else 0.55,
+        )
+
+    tactical_task["production_targets"] = list(
+        _merge_ordered_tokens(
+            tactical_task.get("production_targets", ()),
+            queue_items,
+        )[:32]
+    )
+    if not emergency:
+        production["allow_build_order_rewrite"] = True
+        if any(
+            item
+            in {
+                "TERRAN_FACTORY",
+                "FACTORY_TECHLAB",
+                "TERRAN_STARPORT",
+                "STARPORT_TECHLAB",
+                "TERRAN_ARMORY",
+                "TERRAN_FUSIONCORE",
+                "TERRAN_GHOSTACADEMY",
+            }
+            for item in queue_items
+        ):
+            _set_float_at_least(
+                production,
+                "tech_switch_urgency",
+                min(1.0, priority),
+            )
+
+    payload["tags"] = list(
+        _merge_ordered_tokens(
+            payload.get("tags", ()),
+            tuple(f"composition_production:{target}" for target in unit_targets),
+        )
+    )
+    payload["rationale"] = _append_rationale(
+        payload.get("rationale"),
+        "composition requirements lowered to prerequisite-aware production "
+        f"fields; targets={','.join(unit_targets)}; queued={','.join(queue_items)}",
+    )
 
 
 def _lower_micromachine_building_tasks(payload: dict[str, object]) -> None:
