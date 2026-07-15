@@ -1924,7 +1924,6 @@ for line in archive.read_text().splitlines():
         int(worker_entry.get("trace_event_count", 0)) <= 0
         or worker_trace_frame < 0
         or worker_trace_frame > worker_entry_frame
-        or worker_entry_frame - worker_trace_frame > 4096
         or str(worker_entry.get("last_trace_status", "") or "") in ("", "none", "unknown")
         or str(worker_entry.get("last_trace_reason", "") or "") in ("", "none", "unknown")
         or str(worker_entry.get("last_trace_target_kind", "") or "") in ("", "none", "unknown")

@@ -99,9 +99,6 @@ NON_PRODUCTION_STRATEGY_DOCTRINES: Final[frozenset[str]] = frozenset(
 MIN_MAIN_ATTACK_HOME_DISTANCE: Final[float] = 12.0
 """Minimum live distance from home required to prove a MainAttack moved."""
 
-MAX_WORKER_TRACE_AGE_FRAMES: Final[int] = 4096
-"""Maximum telemetry age for the latest bounded worker-command trace."""
-
 MIN_COMBAT_SCOUT_HOME_DISTANCE: Final[float] = 8.0
 """Minimum live distance from home required to prove a combat scout moved."""
 
@@ -1240,7 +1237,6 @@ def _classify_worker_root_cause_telemetry_contract(
             trace_event_count <= 0
             or last_trace_frame < 0
             or last_trace_frame > frame
-            or frame - last_trace_frame > MAX_WORKER_TRACE_AGE_FRAMES
             or last_trace_status in ("", "none", "unknown")
             or last_trace_reason in ("", "none", "unknown")
             or last_trace_target_kind in ("", "none", "unknown")
