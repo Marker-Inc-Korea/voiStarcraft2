@@ -99,6 +99,9 @@ NON_PRODUCTION_STRATEGY_DOCTRINES: Final[frozenset[str]] = frozenset(
 MIN_MAIN_ATTACK_HOME_DISTANCE: Final[float] = 12.0
 """Minimum live distance from home required to prove a MainAttack moved."""
 
+MAX_WORKER_TRACE_AGE_FRAMES: Final[int] = 4096
+"""Maximum telemetry age for the latest bounded worker-command trace."""
+
 MIN_COMBAT_SCOUT_HOME_DISTANCE: Final[float] = 8.0
 """Minimum live distance from home required to prove a combat scout moved."""
 
@@ -1218,7 +1221,12 @@ def _classify_worker_root_cause_telemetry_contract(
         frame = _int_value(telemetry.get("frame"))
         trace_contract_version = _int_value(workers.get("trace_contract_version"))
         trace_event_count = _int_value(workers.get("trace_event_count"))
-        last_trace_frame = _int_value(workers.get("last_trace_frame"))
+        last_trace_frame_value = workers.get("last_trace_frame")
+        last_trace_frame = (
+            last_trace_frame_value
+            if type(last_trace_frame_value) is int
+            else -1
+        )
         last_trace_status = str(workers.get("last_trace_status", "") or "")
         last_trace_reason = str(workers.get("last_trace_reason", "") or "")
         last_trace_target_kind = str(workers.get("last_trace_target_kind", "") or "")
@@ -1230,8 +1238,9 @@ def _classify_worker_root_cause_telemetry_contract(
             )
         if frame >= 512 and (
             trace_event_count <= 0
-            or last_trace_frame <= 0
+            or last_trace_frame < 0
             or last_trace_frame > frame
+            or frame - last_trace_frame > MAX_WORKER_TRACE_AGE_FRAMES
             or last_trace_status in ("", "none", "unknown")
             or last_trace_reason in ("", "none", "unknown")
             or last_trace_target_kind in ("", "none", "unknown")

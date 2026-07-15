@@ -3493,6 +3493,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(smoke_fresh_session_term=term):
                 self.assertIn(term, smoke_script)
+        for term in (
+            "type(last_trace_frame_value) is not int",
+            "last_trace_frame < 0",
+            "worker_trace_frame < 0",
+            "worker_entry_frame - worker_trace_frame > 4096",
+        ):
+            with self.subTest(worker_trace_frame_contract=term):
+                self.assertIn(term, smoke_script)
         self.assertIn(
             f'SOAK_MATRIX_DEFAULT_BUILD_DIR="${{MICROMACHINE_BUILD_DIR:-{DEFAULT_MICROMACHINE_BUILD_DIR}}}"',
             soak_matrix_script,

@@ -669,6 +669,71 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
 
             self.assert_failure_codes(report, {"worker_trace_contract_invalid"})
 
+    def test_accepts_real_worker_trace_at_frame_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            telemetry = _telemetry(512)
+            managers = telemetry["managers"]
+            assert isinstance(managers, dict)
+            workers = managers["WorkerManager"]
+            assert isinstance(workers, dict)
+            workers["trace_event_count"] = 1
+            workers["last_trace_frame"] = 0
+            workers["last_trace_status"] = "accepted_candidate"
+            workers["last_trace_reason"] = "scout_enemy_base_deep_entry_move"
+            workers["last_trace_target_kind"] = "unit_move_position"
+            self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+            report = classify_micromachine_soak(
+                MicroMachineSoakObservation(
+                    blackboard_dir=root,
+                    bot_log=root / "micromachine.log",
+                ),
+                MicroMachineSoakConfig(target_frame=12_000),
+            )
+
+            failure_codes = {failure.code for failure in report.failures}
+            self.assertNotIn(
+                "worker_trace_contract_invalid",
+                failure_codes,
+                report.to_dict(),
+            )
+
+    def test_rejects_invalid_or_stale_worker_trace_frames(self) -> None:
+        cases = (
+            ("negative", 512, -1),
+            ("future", 512, 513),
+            ("stale", 4_097, 0),
+            ("null", 512, None),
+            ("string", 512, "0"),
+            ("boolean", 512, False),
+        )
+        for label, telemetry_frame, trace_frame in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    telemetry = _telemetry(telemetry_frame)
+                    managers = telemetry["managers"]
+                    assert isinstance(managers, dict)
+                    workers = managers["WorkerManager"]
+                    assert isinstance(workers, dict)
+                    workers["trace_event_count"] = 1
+                    workers["last_trace_frame"] = trace_frame
+                    self._write_runtime(root, log_text=MACRO_LOG, telemetry=telemetry)
+
+                    report = classify_micromachine_soak(
+                        MicroMachineSoakObservation(
+                            blackboard_dir=root,
+                            bot_log=root / "micromachine.log",
+                        ),
+                        MicroMachineSoakConfig(target_frame=12_000),
+                    )
+
+                    self.assert_failure_codes(
+                        report,
+                        {"worker_trace_contract_invalid"},
+                    )
+
     def test_detects_missing_worker_manager_root_cause_telemetry_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

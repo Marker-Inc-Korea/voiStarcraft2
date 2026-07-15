@@ -1788,9 +1788,12 @@ if int(workers.get("trace_contract_version", 0)) != 1:
     raise SystemExit(f"invalid worker trace contract version: {workers!r}")
 if int(workers.get("trace_event_count", 0)) <= 0:
     raise SystemExit(f"worker trace did not observe any command candidates: {workers!r}")
-last_trace_frame = int(workers.get("last_trace_frame", 0) or 0)
+last_trace_frame_value = workers.get("last_trace_frame")
+if type(last_trace_frame_value) is not int:
+    raise SystemExit(f"worker trace frame is not an integer: {workers!r}")
+last_trace_frame = last_trace_frame_value
 latest_payload_frame = int(payload.get("frame", 0) or 0)
-if last_trace_frame <= 0 or last_trace_frame > latest_payload_frame:
+if last_trace_frame < 0 or last_trace_frame > latest_payload_frame:
     raise SystemExit(f"worker trace frame is invalid: {workers!r}")
 if latest_payload_frame - last_trace_frame > 4096:
     raise SystemExit(f"worker trace is stale relative to latest telemetry: {workers!r}")
@@ -1904,7 +1907,12 @@ for line in archive.read_text().splitlines():
     if worker_archive_violation is not None:
         break
     worker_entry_frame = int(entry.get("frame", 0) or 0)
-    worker_trace_frame = int(worker_entry.get("last_trace_frame", 0) or 0)
+    worker_trace_frame_value = worker_entry.get("last_trace_frame")
+    worker_trace_frame = (
+        worker_trace_frame_value
+        if type(worker_trace_frame_value) is int
+        else -1
+    )
     if int(worker_entry.get("trace_contract_version", 0)) != 1:
         worker_archive_violation = {
             "code": "invalid_worker_trace_contract",
@@ -1914,8 +1922,9 @@ for line in archive.read_text().splitlines():
         break
     if worker_entry_frame >= 512 and (
         int(worker_entry.get("trace_event_count", 0)) <= 0
-        or worker_trace_frame <= 0
+        or worker_trace_frame < 0
         or worker_trace_frame > worker_entry_frame
+        or worker_entry_frame - worker_trace_frame > 4096
         or str(worker_entry.get("last_trace_status", "") or "") in ("", "none", "unknown")
         or str(worker_entry.get("last_trace_reason", "") or "") in ("", "none", "unknown")
         or str(worker_entry.get("last_trace_target_kind", "") or "") in ("", "none", "unknown")
