@@ -8,6 +8,10 @@ while [[ $# -gt 0 ]]; do
       export SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-1}"
       export SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-1}"
       export SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-0}"
+      export SMOKE_ENEMY_DIFFICULTY="${SMOKE_ENEMY_DIFFICULTY:-7}"
+      ;;
+    --fresh-live-session)
+      export SMOKE_FRESH_LIVE_SESSION=1
       ;;
     --blackboard-dir)
       if [[ $# -lt 2 || -z "$2" ]]; then
@@ -25,6 +29,18 @@ while [[ $# -gt 0 ]]; do
       export SMOKE_MAX_ATTEMPTS="$2"
       shift
       ;;
+    --enemy-difficulty)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "MicroMachine smoke rejected: --enemy-difficulty requires a value." >&2
+        exit 2
+      fi
+      if [[ ! "$2" =~ ^([1-9]|10)$ ]]; then
+        echo "MicroMachine smoke rejected: --enemy-difficulty must be an integer from 1 to 10." >&2
+        exit 2
+      fi
+      export SMOKE_ENEMY_DIFFICULTY="$2"
+      shift
+      ;;
     --)
       shift
       break
@@ -36,6 +52,13 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+SMOKE_ENEMY_DIFFICULTY="${SMOKE_ENEMY_DIFFICULTY:-1}"
+if [[ ! "${SMOKE_ENEMY_DIFFICULTY}" =~ ^([1-9]|10)$ ]]; then
+  echo "MicroMachine smoke rejected: SMOKE_ENEMY_DIFFICULTY must be an integer from 1 to 10." >&2
+  exit 2
+fi
+export SMOKE_ENEMY_DIFFICULTY
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -221,6 +244,7 @@ SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
 SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-1}"
 SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-0}"
+SMOKE_FRESH_LIVE_SESSION="${SMOKE_FRESH_LIVE_SESSION:-0}"
 NO_START_UNITS_FRAME="${NO_START_UNITS_FRAME:-1200}"
 SMOKE_STRATEGY_PROFILE_NAME="${SMOKE_STRATEGY_PROFILE_NAME:-bio_pressure}"
 if [[ -z "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE:-}" ]]; then
@@ -728,14 +752,19 @@ import sys
 
 from starcraft_commander.micromachine_runtime import (
     MicroMachineFilesystemBlackboard,
+    build_manual_live_autonomy_profile,
     build_micromachine_strategy_profile,
 )
 
 directory, profile_name, update_id, frame_text = sys.argv[1:5]
 backend = MicroMachineFilesystemBlackboard(directory)
-if profile_name == "aggressive_pressure":
+if profile_name == "manual_live_autonomy":
+    vector = build_manual_live_autonomy_profile()
+elif profile_name == "aggressive_pressure":
     profile_name = "bio_pressure"
-vector = build_micromachine_strategy_profile(profile_name)
+    vector = build_micromachine_strategy_profile(profile_name)
+else:
+    vector = build_micromachine_strategy_profile(profile_name)
 backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_id)
 PY
 }
@@ -792,7 +821,6 @@ if not isinstance(combat, dict):
 live_tags = {
     "live_text",
     "keyword_provider",
-    "web_gui_tactical_fallback",
     "scout_with_units",
     "aggressive_pressure",
     "marine_rush",
@@ -948,6 +976,13 @@ fi
 
 mkdir -p "${BLACKBOARD_DIR}"
 rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}" "${CLASSIFIER_BOT_LOG}" "${RUNTIME_LOG_BASELINE}"
+if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" && "${SMOKE_FRESH_LIVE_SESSION}" == "1" ]]; then
+  rm -f \
+    "${BLACKBOARD_DIR}/latest_modulation.json" \
+    "${BLACKBOARD_DIR}/latest_modulation.kv" \
+    "${BLACKBOARD_DIR}/latest_modulation_compile_result.json"
+  echo "MicroMachine fresh live session cleared detached tactical command state."
+fi
 touch "${RUNTIME_LOG_MARKER}"
 record_runtime_log_baseline
 if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]]; then
@@ -958,7 +993,10 @@ if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]]; then
     AGGRESSIVE_PROFILE_PUBLISHED=1
     echo "MicroMachine manual live mode preserved existing tactical blackboard command: ${preserved_update_id}"
   else
-    publish_profile "defensive_hold" "${DEFENSIVE_UPDATE_ID}" "0"
+    DEFENSIVE_UPDATE_ID="smoke-manual-live-autonomy"
+    AGGRESSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID}"
+    SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${DEFENSIVE_UPDATE_ID}"
+    publish_profile "manual_live_autonomy" "${DEFENSIVE_UPDATE_ID}" "0"
   fi
 else
   SMOKE_ACTIVE_STRATEGY_UPDATE_ID="$(smoke_strategy_update_id "${SMOKE_STRATEGY_PROFILE_NAME}" "0")"
@@ -985,7 +1023,7 @@ config["SC2API"]["PlayAsHuman"] = False
 config["SC2API"]["ForceStepMode"] = bool(int(os.environ.get("SMOKE_FORCE_STEP_MODE", "0")))
 config["SC2API"]["MapFile"] = map_file
 config["SC2API"]["PlayVsItSelf"] = bool(int(os.environ.get("SMOKE_PLAY_VS_SELF", "0")))
-config["SC2API"]["EnemyDifficulty"] = int(os.environ.get("SMOKE_ENEMY_DIFFICULTY", "1"))
+config["SC2API"]["EnemyDifficulty"] = int(os.environ["SMOKE_ENEMY_DIFFICULTY"])
 config["SC2API"]["EnemyRace"] = "Zerg"
 config["SC2API"]["StepSize"] = 1
 config["Macro"]["SelectStartingBuildBasedOnHistory"] = False
@@ -1050,7 +1088,7 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
     if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${NO_START_UNITS_FRAME}" ]] && has_required_macro_evidence && has_live_hold_preflight_evidence; then
       print_bot_logs >/dev/null 2>&1
       echo "MicroMachine manual live hold preflight passed; keeping runtime alive for manual DSL commands."
-      echo "MicroMachine manual live hold active; automatic aggressive smoke profile is disabled."
+      echo "MicroMachine manual live autonomy active; automatic aggressive smoke profile is disabled."
       while kill -0 "${BOT_PID}" 2>/dev/null; do
         sleep 2
       done
@@ -1750,9 +1788,12 @@ if int(workers.get("trace_contract_version", 0)) != 1:
     raise SystemExit(f"invalid worker trace contract version: {workers!r}")
 if int(workers.get("trace_event_count", 0)) <= 0:
     raise SystemExit(f"worker trace did not observe any command candidates: {workers!r}")
-last_trace_frame = int(workers.get("last_trace_frame", 0) or 0)
+last_trace_frame_value = workers.get("last_trace_frame")
+if type(last_trace_frame_value) is not int:
+    raise SystemExit(f"worker trace frame is not an integer: {workers!r}")
+last_trace_frame = last_trace_frame_value
 latest_payload_frame = int(payload.get("frame", 0) or 0)
-if last_trace_frame <= 0 or last_trace_frame > latest_payload_frame:
+if last_trace_frame < 0 or last_trace_frame > latest_payload_frame:
     raise SystemExit(f"worker trace frame is invalid: {workers!r}")
 if latest_payload_frame - last_trace_frame > 4096:
     raise SystemExit(f"worker trace is stale relative to latest telemetry: {workers!r}")
@@ -1866,7 +1907,12 @@ for line in archive.read_text().splitlines():
     if worker_archive_violation is not None:
         break
     worker_entry_frame = int(entry.get("frame", 0) or 0)
-    worker_trace_frame = int(worker_entry.get("last_trace_frame", 0) or 0)
+    worker_trace_frame_value = worker_entry.get("last_trace_frame")
+    worker_trace_frame = (
+        worker_trace_frame_value
+        if type(worker_trace_frame_value) is int
+        else -1
+    )
     if int(worker_entry.get("trace_contract_version", 0)) != 1:
         worker_archive_violation = {
             "code": "invalid_worker_trace_contract",
@@ -1876,7 +1922,7 @@ for line in archive.read_text().splitlines():
         break
     if worker_entry_frame >= 512 and (
         int(worker_entry.get("trace_event_count", 0)) <= 0
-        or worker_trace_frame <= 0
+        or worker_trace_frame < 0
         or worker_trace_frame > worker_entry_frame
         or str(worker_entry.get("last_trace_status", "") or "") in ("", "none", "unknown")
         or str(worker_entry.get("last_trace_reason", "") or "") in ("", "none", "unknown")

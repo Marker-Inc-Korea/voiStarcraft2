@@ -25,9 +25,20 @@ index 4be20d1..0e53d40 100644
  if (NOT APPLE)
      set_target_properties(sc2renderer PROPERTIES FOLDER utilities)
 diff --git a/include/sc2api/sc2_unit.h b/include/sc2api/sc2_unit.h
-index 8c6c31b..3215b90 100644
+index 8c6c31b..f9378ea 100644
 --- a/include/sc2api/sc2_unit.h
 +++ b/include/sc2api/sc2_unit.h
+@@ -99,7 +99,9 @@ public:
+         //! No cloaking.
+         NotCloaked = 3,
++        //! Cloaked unit belonging to this player or an ally.
++        CloakedAllied = 4,
+         //! Could not determine cloaking state.
+-        Unknown = 4
++        Unknown = 5
+     };
+ 
+     //! If the unit is shown on screen or not.
 @@ -217,7 +217,7 @@ private:
      typedef std::pair<size_t, size_t> PoolIndex;
      // std::array<Unit, ENTRY_SIZE>
@@ -151,9 +162,18 @@ index 6e06e7a..7600bff 100644
          SC2APIProtocol::SpatialCameraSetup* setupProto = options->mutable_feature_layer();
          setupProto->set_width(settings.feature_layer_settings.camera_width);
 diff --git a/src/sc2api/sc2_proto_to_pods.cc b/src/sc2api/sc2_proto_to_pods.cc
-index 8c8f7c9..b1d682f 100644
+index 8c8f7c9..af54d23 100644
 --- a/src/sc2api/sc2_proto_to_pods.cc
 +++ b/src/sc2api/sc2_proto_to_pods.cc
+@@ -151,6 +151,8 @@ bool Convert(const SC2APIProtocol::CloakState& cloak_proto, Unit::CloakState& cl
++        case SC2APIProtocol::CloakState::CloakedUnknown:  cloak = Unit::Unknown; return true;
+         case SC2APIProtocol::CloakState::Cloaked:         cloak = Unit::Cloaked; return true;
+         case SC2APIProtocol::CloakState::CloakedDetected: cloak = Unit::CloakedDetected; return true;
+         case SC2APIProtocol::CloakState::NotCloaked:      cloak = Unit::NotCloaked; return true;
++        case SC2APIProtocol::CloakState::CloakedAllied:   cloak = Unit::CloakedAllied; return true;
+     }
+     return false;
+ }
 @@ -166,10 +166,16 @@ bool Convert(const ObservationRawPtr& observation_raw, UnitPool& unit_pool, uint
          }
  

@@ -1,0 +1,672 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -74,13 +74,52 @@ int voiRequestedCompositionCount(CCBot & bot, const std::string & policyUnitType
+ 	return 0;
+ }
+ 
++std::string voiCompositionRequirementLabel(CCBot & bot, int index)
++{
++	const std::string prefix = "composition_requirements." + std::to_string(index);
++	const std::string unitType = bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");
++	const int count = std::max(0, bot.Commander().getVoiPolicyInt(prefix + ".count", 0));
++	const std::string role = bot.Commander().getVoiPolicyString(prefix + ".role", "");
++	if (unitType.empty() || count <= 0)
++	{
++		return "";
++	}
++	return unitType + ":" + std::to_string(count) + (role.empty() ? "" : ":" + role);
++}
++
++std::string voiPressureOperationKey(CCBot & bot)
++{
++	std::string key = bot.Commander().getVoiPolicyString("tactical_task.task_id", "");
++	if (key.empty())
++	{
++		key = bot.Commander().getVoiPolicyString("update_id", "");
++	}
++	for (int i = 0; i < 8; ++i)
++	{
++		const std::string label = voiCompositionRequirementLabel(bot, i);
++		if (!label.empty())
++		{
++			key += "|" + label;
++		}
++	}
++	key += "|min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.min_units", 0)));
++	key += "|max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.max_units", 0)));
++	key += "|route=" + bot.Commander().getVoiPolicyString("route_intent.route_type", "");
++	key += "|location=" + bot.Commander().getVoiPolicyString("tactical_task.location_intent", "");
++	return key;
++}
++
++int voiCompletedUnitCount(CCBot & bot, const MetaType & type)
++{
++	return type.isUnit()
++		? static_cast<int>(bot.UnitInfo().getUnitTypeCount(
++			Players::Self,
++			type.getUnitType(),
++			true,
++			true,
++			true))
++		: 0;
++}
++
+ int voiRepresentedUnitCount(CCBot & bot, const MetaType & type)
+ {
+ 	if (!type.isUnit())
+ 	{
+ 		return 0;
+ 	}
+-	int represented = static_cast<int>(bot.UnitInfo().getUnitTypeCount(Players::Self, type.getUnitType(), false, true, true));
++	// GetUnitCount(completed=false) already includes the producer's first
++	// training order. Start from completed units, then count every order once.
++	int represented = voiCompletedUnitCount(bot, type);
+ 	const sc2::AbilityID buildAbility = bot.Data(type.getUnitType()).buildAbility;
+ 	for (const auto & producer : bot.GetUnits())
+ 	{
+@@ -165,7 +204,7 @@ bool voiExactCompositionFirstWaveComplete(CCBot & bot)
+ 	for (const auto & entry : voiExactCompositionTypes())
+ 	{
+ 		const int requested = voiRequestedCompositionCount(bot, entry.first);
+-		if (requested > 0 && voiRepresentedUnitCount(bot, entry.second) < requested)
++		if (requested > 0 && voiCompletedUnitCount(bot, entry.second) < requested)
+ 		{
+ 			return false;
+ 		}
+@@ -197,31 +236,73 @@ int voiObservedAdaptiveSupportTargetCount(CCBot & bot, const std::string & policy
+ {
+-	if (!voiContinuousCompositionProductionConfigured(bot))
++	if (!voiContinuousCompositionProductionActive(bot))
+ 	{
+ 		return 0;
+ 	}
+ 
+-	const int enemyAirSupply = std::max(0, bot.Analyzer().opponentAirSupply);
+-	const int enemyGroundSupply = std::max(0, bot.Analyzer().opponentGroundSupply);
+-	const int enemyLightGroundCount = std::max(0, bot.Analyzer().getEnemyLightGroundUnitCount());
+-	const bool enemyHasAir =
+-		bot.Analyzer().enemyHasCombatAirUnit()
+-		|| bot.Strategy().shouldProduceAntiAirOffense()
+-		|| enemyAirSupply >= 6;
+-	const bool enemyHasHighTechAir =
+-		bot.Strategy().enemyHasProtossHighTechAir()
+-		|| enemyAirSupply >= 16;
++	const uint32_t currentFrame = bot.GetCurrentFrame();
++	const uint32_t observationWindow = 22u * 90u;
++	int enemyAirSupply = 0;
++	int enemyGroundSupply = 0;
++	int enemyLightGroundCount = 0;
++	int enemyArmoredGroundCount = 0;
++	int enemySpellcasterCount = 0;
++	for (const auto & enemyEntry : bot.GetEnemyUnits())
++	{
++		const Unit & unit = enemyEntry.second;
++		if (!unit.isValid()
++			|| !unit.isAlive()
++			|| unit.getType().isWorker()
++			|| unit.getType().isBuilding()
++			|| unit.getUnitPtr()->last_seen_game_loop + observationWindow < currentFrame)
++		{
++			continue;
++		}
++		const int supply = std::max(0, unit.getType().supplyRequired());
++		if (unit.isFlying())
++		{
++			enemyAirSupply += supply;
++		}
++		else
++		{
++			enemyGroundSupply += supply;
++			if (unit.isLight())
++			{
++				enemyLightGroundCount++;
++			}
++			if (unit.isArmored())
++			{
++				enemyArmoredGroundCount++;
++			}
++		}
++		switch ((sc2::UNIT_TYPEID)unit.getAPIUnitType())
++		{
++			case sc2::UNIT_TYPEID::PROTOSS_HIGHTEMPLAR:
++			case sc2::UNIT_TYPEID::ZERG_INFESTOR:
++			case sc2::UNIT_TYPEID::ZERG_VIPER:
++			case sc2::UNIT_TYPEID::TERRAN_GHOST:
++			case sc2::UNIT_TYPEID::TERRAN_RAVEN:
++				enemySpellcasterCount++;
++				break;
++			default:
++				break;
++		}
++	}
++
++	const bool enemyHasAir = enemyAirSupply > 0;
++	const bool enemyHasHighTechAir = enemyAirSupply >= 16;
+ 	const bool enemyHasInvisible =
+ 		bot.Strategy().enemyCurrentlyHasInvisible()
+ 		|| bot.Strategy().enemyHasBurrowingUpgrade();
+-	const bool enemyHasMassLight =
+-		bot.Strategy().enemyHasMassZerglings()
+-		|| enemyLightGroundCount >= 8;
+-	const bool enemyHasArmored =
+-		bot.Strategy().enemyHasSeveralArmoredUnits();
++	const bool enemyHasMassLight = enemyLightGroundCount >= 8;
++	const bool enemyHasArmored = enemyArmoredGroundCount >= 3;
+ 	const bool enemyGroundHeavy =
+ 		enemyGroundSupply >= std::max(10, enemyAirSupply * 2);
++	const std::string doctrine =
++		bot.Commander().getVoiPolicyString("strategy.doctrine", "");
+ 
+ 	const auto representedCount = [&](const MetaType & type)
+ 	{
+@@ -231,6 +312,16 @@ int voiObservedAdaptiveSupportTargetCount(CCBot & bot, const std::string & policy
+ 	{
+ 		return 1;
+ 	}
++	if (policyUnitType == "TERRAN_GHOST" && enemySpellcasterCount >= 2)
++	{
++		return 2;
++	}
++	if (policyUnitType == "TERRAN_REAPER"
++		&& doctrine == "worker_line_harassment"
++		&& currentFrame <= 22u * 8u * 60u)
++	{
++		return 2;
++	}
+ 	if (policyUnitType == "TERRAN_VIKINGFIGHTER" && enemyHasAir)
+ 	{
+ 		return std::min(6, std::max(2, (enemyAirSupply + 2) / 3));
+@@ -269,7 +360,7 @@ int voiObservedAdaptiveSupportTargetCount(CCBot & bot, const std::string & policy
+ 	}
+ 	if (policyUnitType == "TERRAN_BANSHEE"
+-		&& bot.Commander().getVoiPolicyString("strategy.doctrine", "") == "worker_line_harassment"
++		&& doctrine == "worker_line_harassment"
+ 		&& !bot.Strategy().enemyHasFlyingDetector())
+ 	{
+ 		return 2;
+@@ -286,7 +377,10 @@ int voiObservedAdaptiveSupportTargetCount(CCBot & bot, const std::string & policy
+ 	return 0;
+ }
+ 
+-int voiCompositionProductionWaveMultiplier(CCBot & bot)
++int voiCompositionProductionWaveMultiplier(
++	CCBot & bot,
++	const std::map<std::string, int> & adaptiveSupportTargets)
+ {
+ 	int completedWaves = 0;
+ 	bool foundRequestedType = false;
+@@ -297,8 +391,12 @@ int voiCompositionProductionWaveMultiplier(CCBot & bot)
+ 		{
+ 			continue;
+ 		}
+-		const int represented = voiRepresentedUnitCount(bot, entry.second);
+-		const int completedForType = represented / requested;
++		const auto adaptiveTarget = adaptiveSupportTargets.find(entry.first);
++		const int adaptiveCount = adaptiveTarget == adaptiveSupportTargets.end()
++			? 0
++			: std::max(0, adaptiveTarget->second);
++		const int completedExactCount =
++			std::max(0, voiCompletedUnitCount(bot, entry.second) - adaptiveCount);
++		const int completedForType = completedExactCount / requested;
+ 		completedWaves = foundRequestedType
+ 			? std::min(completedWaves, completedForType)
+ 			: completedForType;
+@@ -356,7 +454,7 @@ bool voiExactCompositionAllowsTraining(
+ 	const int adaptiveTargetCount = std::max(
+ 		0,
+ 		adaptiveSupportTargetCount);
+ 	return voiRepresentedUnitCount(bot, type)
+-		< std::max(productionTargetCount, adaptiveTargetCount);
++		< std::max(0, productionTargetCount) + adaptiveTargetCount;
+ }
+ 
+ int voiCompletedGroundedProducerCount(CCBot & bot, sc2::UNIT_TYPEID producerType)
+@@ -784,26 +882,22 @@ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ 		m_voiCompositionProductionWaveMultiplier = 1;
+ 		m_voiAdaptiveFirstWaveComplete = false;
+ 		m_voiAdaptiveSupportTargets.clear();
++		m_voiAdaptiveObservedTargets.clear();
++		m_voiAdaptiveLastObservedFrame.clear();
+ 		return;
+ 	}
+ 
+-	std::string operationKey =
+-		m_bot.Commander().getVoiPolicyString("update_id", "")
+-		+ "|" + std::to_string(std::max(
+-			0,
+-			m_bot.Commander().getVoiPolicyInt("issued_at_frame", 0)));
+-	for (const auto & entry : voiExactCompositionTypes())
+-	{
+-		const int requested = voiRequestedCompositionCount(m_bot, entry.first);
+-		if (requested > 0)
+-		{
+-			operationKey += "|" + entry.first + ":" + std::to_string(requested);
+-		}
+-	}
++	const std::string operationKey = voiPressureOperationKey(m_bot);
+ 	if (m_voiCompositionProductionOperationKey != operationKey)
+ 	{
+ 		m_voiCompositionProductionOperationKey = operationKey;
+ 		m_voiCompositionProductionWaveMultiplier = 1;
+ 		m_voiAdaptiveFirstWaveComplete = false;
+ 		m_voiAdaptiveSupportTargets.clear();
++		m_voiAdaptiveObservedTargets.clear();
++		m_voiAdaptiveLastObservedFrame.clear();
+ 	}
+ 
+ 	// The latch is monotonic for the operation. Combat losses may require
+@@ -806,7 +896,9 @@ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ 	// an incomplete reinforcement wave at home.
+ 	const int observedWaveMultiplier =
+-		voiCompositionProductionWaveMultiplier(m_bot);
++		voiCompositionProductionWaveMultiplier(
++			m_bot,
++			m_voiAdaptiveSupportTargets);
+ 	if (observedWaveMultiplier > m_voiCompositionProductionWaveMultiplier)
+ 	{
+ 		m_voiCompositionProductionWaveMultiplier = observedWaveMultiplier;
+@@ -839,23 +931,98 @@ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ 		return;
+ 	}
+ 
++	const uint32_t currentFrame = m_bot.GetCurrentFrame();
++	const uint32_t targetHoldFrames = 22u * 90u;
+ 	for (const auto & entry : voiExactCompositionTypes())
+ 	{
+ 		const int observedTarget =
+ 			voiObservedAdaptiveSupportTargetCount(m_bot, entry.first);
+-		int & latchedTarget = m_voiAdaptiveSupportTargets[entry.first];
+-		if (observedTarget <= latchedTarget)
++		if (observedTarget > 0)
++		{
++			m_voiAdaptiveObservedTargets[entry.first] = observedTarget;
++			m_voiAdaptiveLastObservedFrame[entry.first] = currentFrame;
++			continue;
++		}
++		const auto lastObserved =
++			m_voiAdaptiveLastObservedFrame.find(entry.first);
++		if (lastObserved == m_voiAdaptiveLastObservedFrame.end()
++			|| currentFrame < lastObserved->second
++			|| currentFrame - lastObserved->second > targetHoldFrames)
+ 		{
+-			continue;
++			m_voiAdaptiveObservedTargets.erase(entry.first);
++			m_voiAdaptiveLastObservedFrame.erase(entry.first);
+ 		}
+-		latchedTarget = observedTarget;
+-		Util::Log(
+-			__FUNCTION__,
+-			"VOI selected adaptive support unit=" + entry.first
+-				+ " target=" + std::to_string(latchedTarget)
+-				+ " operation=" + operationKey,
+-			m_bot);
+ 	}
++
++	const std::vector<std::string> priority = {
++		"TERRAN_RAVEN",
++		"TERRAN_VIKINGFIGHTER",
++		"TERRAN_THOR",
++		"TERRAN_GHOST",
++		"TERRAN_MEDIVAC",
++		"TERRAN_MARAUDER",
++		"TERRAN_CYCLONE",
++		"TERRAN_HELLION",
++		"TERRAN_WIDOWMINE",
++		"TERRAN_LIBERATOR",
++		"TERRAN_BANSHEE",
++		"TERRAN_REAPER",
++		"TERRAN_BATTLECRUISER",
++	};
++	const int supportSupplyBudget = 40;
++	const int supportMineralBudget = 2400;
++	const int supportGasBudget = 1600;
++	int selectedSupply = 0;
++	int selectedMinerals = 0;
++	int selectedGas = 0;
++	std::map<std::string, int> selectedTargets;
++	for (const auto & token : priority)
++	{
++		const auto desiredTarget = m_voiAdaptiveObservedTargets.find(token);
++		if (desiredTarget == m_voiAdaptiveObservedTargets.end())
++		{
++			continue;
++		}
++		const MetaType * type = nullptr;
++		for (const auto & entry : voiExactCompositionTypes())
++		{
++			if (entry.first == token)
++			{
++				type = &entry.second;
++				break;
++			}
++		}
++		if (type == nullptr)
++		{
++			continue;
++		}
++		const int unitSupply = std::max(0, type->getUnitType().supplyRequired());
++		const int unitMinerals = std::max(0, type->getUnitType().mineralPrice());
++		const int unitGas = std::max(0, type->getUnitType().gasPrice());
++		for (int count = 0; count < desiredTarget->second; ++count)
++		{
++			if (selectedSupply + unitSupply > supportSupplyBudget
++				|| selectedMinerals + unitMinerals > supportMineralBudget
++				|| selectedGas + unitGas > supportGasBudget)
++			{
++				break;
++			}
++			selectedSupply += unitSupply;
++			selectedMinerals += unitMinerals;
++			selectedGas += unitGas;
++			selectedTargets[token]++;
++		}
++	}
++
++	for (const auto & entry : voiExactCompositionTypes())
++	{
++		const int previous = getVoiAdaptiveSupportTargetCount(entry.first);
++		const auto selected = selectedTargets.find(entry.first);
++		const int current = selected == selectedTargets.end()
++			? 0
++			: std::max(0, selected->second);
++		if (previous != current)
++		{
++			Util::Log(
++				__FUNCTION__,
++				"VOI adaptive support target changed unit=" + entry.first
++					+ " previous=" + std::to_string(previous)
++					+ " target=" + std::to_string(current)
++					+ " hold_frames=" + std::to_string(targetHoldFrames)
++					+ " budget_supply=" + std::to_string(selectedSupply)
++					+ " operation=" + operationKey,
++				m_bot);
++		}
++	}
++	m_voiAdaptiveSupportTargets = selectedTargets;
+ }
+ 
+ int ProductionManager::getVoiAdaptiveSupportTargetCount(
+@@ -1138,11 +1305,11 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 		const int adaptiveTargetCount =
+ 			getVoiAdaptiveSupportTargetCount(entry.first);
+ 		const int effectiveRequestedCount =
+-			std::max(requestedCount, adaptiveTargetCount);
++			std::max(0, requestedCount) + adaptiveTargetCount;
+ 		const int representedCount = voiRepresentedUnitCount(m_bot, type);
+ 		const int allowedQueuedCount =
+ 			std::max(0, effectiveRequestedCount - representedCount);
+@@ -3197,11 +3364,17 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float effectiveMarauderBias = std::max({
+ 		marauderBias,
+ 		bioMarauderSupportBias,
+ 		adaptiveSupportBias("TERRAN_MARAUDER") });
+-	const float effectiveGhostBias = ghostBias;
++	const float effectiveGhostBias = std::max(
++		ghostBias,
++		adaptiveSupportBias("TERRAN_GHOST"));
+ 	const float effectiveGhostAcademyBias = std::max(ghostAcademyBias, effectiveGhostBias);
+ 	const float effectiveBarracksTechLabBias = std::max({ barracksTechLabBias, effectiveMarauderBias, effectiveGhostBias });
+-	const float effectiveReaperBias = std::max({ reaperBias, compositionHarassBias, compositionWorkerLineBias });
++	const float effectiveReaperBias = std::max({
++		reaperBias,
++		compositionHarassBias,
++		compositionWorkerLineBias,
++		adaptiveSupportBias("TERRAN_REAPER") });
+ 	const float effectiveTankBias = std::max({ tankBias, compositionSiegeBias, compositionDefenseBias });
+@@ -3267,6 +3440,12 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		|| effectiveCycloneBias > 0.25f
+ 		|| effectiveThorBias > 0.25f;
+ 	const bool wantsArmory = effectiveArmoryBias > 0.25f;
++	const bool wantsBarracksTechLab =
++		doctrine == "bio_pressure"
++		|| effectiveBarracksTechLabBias > 0.25f;
+ 	const bool wantsStarportTechLab = effectiveStarportTechLabBias > 0.25f;
+ 	const bool wantsFusionCore = effectiveFusionCoreBias > 0.25f;
+-	const bool wantsBarracksTechLab = doctrine == "bio_pressure" || effectiveBarracksTechLabBias > 0.25f;
+ 	const bool wantsGhostAcademy = effectiveGhostAcademyBias > 0.25f;
+ 
+ 	const int barracksCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), false, true, true);
+@@ -3282,6 +3461,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		m_bot,
+ 		sc2::UNIT_TYPEID::TERRAN_BARRACKS,
+ 		sc2::UNIT_TYPEID::TERRAN_BARRACKSTECHLAB);
++	const int eligibleBarracksAddonProducers =
++		m_bot.Buildings().countVoiEligibleAddonProducers(
++			sc2::UNIT_TYPEID::TERRAN_BARRACKS);
+ 	const int ghostAcademyCount = m_bot.UnitInfo().getUnitTypeCount(
+ 		Players::Self,
+ 		MetaTypeEnum::GhostAcademy.getUnitType(),
+@@ -3302,8 +3484,6 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const int eligibleFactoryAddonProducers = m_bot.Buildings().countVoiEligibleAddonProducers(
+ 		sc2::UNIT_TYPEID::TERRAN_FACTORY);
+-	const bool blockedFactoryAddonProducer = m_bot.Buildings().hasVoiBlockedAddonProducer(
+-		sc2::UNIT_TYPEID::TERRAN_FACTORY);
+ 	const int armoryCount = m_bot.UnitInfo().getUnitTypeCount(
+ 		Players::Self,
+ 		MetaTypeEnum::Armory.getUnitType(),
+@@ -3325,6 +3507,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		m_bot,
+ 		sc2::UNIT_TYPEID::TERRAN_STARPORT,
+ 		sc2::UNIT_TYPEID::TERRAN_STARPORTREACTOR);
++	const int eligibleStarportAddonProducers =
++		m_bot.Buildings().countVoiEligibleAddonProducers(
++			sc2::UNIT_TYPEID::TERRAN_STARPORT);
+ 	const int fusionCoreCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::FusionCore.getUnitType(), false, true);
+@@ -3350,19 +3535,15 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			getVoiAdaptiveSupportTargetCount(policyUnitType);
+-		if (requested <= 0)
++		const int effectiveRequested =
++			std::max(0, requested) + std::max(0, adaptiveRequested);
++		if (effectiveRequested <= 0)
+ 		{
+-			// Keep the first exact wave atomic. Once it is complete, bounded
+-			// counter units selected from observed enemy composition may join
+-			// later reinforcement waves.
+-			return adaptiveRequested > 0
+-				? voiRepresentedUnitCount(type) >= adaptiveRequested
+-				: exactCompositionActive;
++			return exactCompositionActive;
+ 		}
+-		return voiRepresentedUnitCount(type)
+-			>= std::max(requested, adaptiveRequested);
++		return voiRepresentedUnitCount(type) >= effectiveRequested;
+ 	};
+@@ -3488,6 +3669,28 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		m_lastVoiDoctrineEvidence = "queued_macro_worker_and_continuing_plan";
+ 	}
++	const bool barracksReplacementPending =
++		m_queue.contains(MetaTypeEnum::Barracks)
++		|| m_bot.Buildings().isBeingBuilt(MetaTypeEnum::Barracks.getUnitType())
++		|| barracksCount > completedGroundedBarracksCount;
++	if (wantsBarracksTechLab
++		&& barracksTechLabCount == 0
++		&& completedGroundedBarracksCount > 0
++		&& eligibleBarracksAddonProducers == 0
++		&& barracksCount < 3
++		&& !barracksReplacementPending
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::Barracks,
++			"barracks_addon_replacement",
++			true))
++	{
++		Util::Log(
++			__FUNCTION__,
++			"VOI queued an addon-clear replacement Barracks because every grounded producer is occupied or cooling down.",
++			m_bot);
++		return;
++	}
+ 	if (wantsCommandCenter
+ 		&& needsFirstVoiExpansion
+@@ -3562,7 +3765,6 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool factoryReplacementPending =
+ 		m_queue.contains(MetaTypeEnum::Factory)
+ 		|| m_bot.Buildings().isBeingBuilt(MetaTypeEnum::Factory.getUnitType())
+ 		|| factoryCount > completedFactoryCount;
+@@ -3573,7 +3775,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		&& factoryTechLabCount == 0
++		&& completedFactoryCount > 0
+ 		&& eligibleFactoryAddonProducers == 0
+-		&& blockedFactoryAddonProducer
+ 		&& factoryCount < factoryAddonRecoveryCap
+ 		&& !factoryReplacementPending)
+ 	{
+@@ -3586,8 +3788,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			Util::Log(
+ 				__FUNCTION__,
+-				"VOI queued an addon-clear replacement Factory because every completed producer is quarantined; recovery_cap="
++				"VOI queued an addon-clear replacement Factory because every grounded producer is occupied or cooling down; recovery_cap="
+ 					+ std::to_string(factoryAddonRecoveryCap) + ".",
+ 				m_bot);
+ 			return;
+@@ -3614,6 +3816,28 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
++	const bool starportReplacementPending =
++		m_queue.contains(MetaTypeEnum::Starport)
++		|| m_bot.Buildings().isBeingBuilt(MetaTypeEnum::Starport.getUnitType())
++		|| starportCount > completedStarportCount;
++	if (wantsStarportTechLab
++		&& starportTechLabCount == 0
++		&& completedStarportCount > 0
++		&& eligibleStarportAddonProducers == 0
++		&& starportCount < 3
++		&& !starportReplacementPending
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::Starport,
++			"starport_addon_replacement",
++			true))
++	{
++		Util::Log(
++			__FUNCTION__,
++			"VOI queued an addon-clear replacement Starport because every grounded producer is occupied or cooling down.",
++			m_bot);
++		return;
++	}
+ 	if (wantsStarport && factoryCount > 0 && starportCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Starport, "starport_transition", true))
+ 	{
+ 		return;
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -66,6 +66,8 @@ class ProductionManager
+ 	int m_voiCompositionProductionWaveMultiplier = 1;
+ 	bool m_voiAdaptiveFirstWaveComplete = false;
+ 	std::map<std::string, int> m_voiAdaptiveSupportTargets;
++	std::map<std::string, int> m_voiAdaptiveObservedTargets;
++	std::map<std::string, uint32_t> m_voiAdaptiveLastObservedFrame;
+ 	std::map<sc2::UNIT_TYPEID, std::string> m_lastVoiExactCompositionReconciliationState;
+@@ -155,6 +157,10 @@ public:
+ 	void recordVoiActualProductionCommand(const UnitType & type, const std::string & kind);
+ 	bool shouldUseVoiDirectAddonCommand(const UnitType & type) const;
++	const std::map<std::string, int> & getVoiAdaptiveSupportTargets() const
++	{
++		return m_voiAdaptiveSupportTargets;
++	}
+ 	const std::string & getLastVoiDoctrine() const { return m_lastVoiDoctrine; }
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2909,6 +2909,65 @@ void CombatCommander::updateAttackSquads()
+ 			return currentName == "Scout"
+ 				&& currentSquad->getPriority() < ExplicitOperationPriority;
+ 		};
++		const auto & adaptiveTargets =
++			m_bot.Commander().Production().getVoiAdaptiveSupportTargets();
++		if (launchedExactOperation)
++		{
++			const CCPosition supportTarget = mainAttackSquad.getUnits().empty()
++				? voiHomePosition(m_bot)
++				: mainAttackSquad.calcCenter();
++			for (const auto & adaptive : adaptiveTargets)
++			{
++				if (adaptive.second <= 0)
++				{
++					continue;
++				}
++				int exactBaseCount = 0;
++				for (const auto & requirement : requirements)
++				{
++					if (requirement.first == adaptive.first)
++					{
++						exactBaseCount = requirement.second;
++						break;
++					}
++				}
++				const int desiredMainAttackCount =
++					exactBaseCount + adaptive.second;
++				int assignedCount = 0;
++				for (const auto & unit : mainAttackSquad.getUnits())
++				{
++					if (voiUnitMatchesCompositionToken(unit, adaptive.first))
++					{
++						assignedCount++;
++					}
++				}
++				if (assignedCount >= desiredMainAttackCount)
++				{
++					continue;
++				}
++				std::vector<Unit> supportCandidates;
++				for (const auto & unit : m_combatUnits)
++				{
++					if (m_squadData.getUnitSquad(unit) != &mainAttackSquad
++						&& voiUnitMatchesCompositionToken(unit, adaptive.first)
++						&& isSafeMainAttackSource(unit))
++					{
++						supportCandidates.push_back(unit);
++					}
++				}
++				std::sort(
++					supportCandidates.begin(),
++					supportCandidates.end(),
++					[&](const Unit & a, const Unit & b)
++					{
++						return Util::DistSq(a.getPosition(), supportTarget)
++							< Util::DistSq(b.getPosition(), supportTarget);
++					});
++				const int assignCount = std::min(
++					desiredMainAttackCount - assignedCount,
++					static_cast<int>(supportCandidates.size()));
++				for (int i = 0; i < assignCount; ++i)
++				{
++					m_squadData.assignUnitToSquad(
++						supportCandidates[i],
++						mainAttackSquad);
++				}
++			}
++		}
+ 		std::vector<Unit> selectedUnits;
+ 		std::set<sc2::Tag> selectedTags;
+@@ -2990,11 +3049,31 @@ void CombatCommander::updateAttackSquads()
+ 			if (!continuousReinforcementOperation)
+ 			{
+ 				std::vector<Unit> unitsToRelease;
++				std::map<std::string, int> retainedAdaptiveUnits;
+ 				for (const auto & unit : mainAttackSquad.getUnits())
+ 				{
+-					if (selectedTags.find(unit.getTag()) == selectedTags.end())
++					if (selectedTags.find(unit.getTag()) != selectedTags.end())
++					{
++						continue;
++					}
++					bool retainAdaptiveUnit = false;
++					for (const auto & adaptive : adaptiveTargets)
++					{
++						int & retainedCount =
++							retainedAdaptiveUnits[adaptive.first];
++						if (retainedCount < adaptive.second
++							&& voiUnitMatchesCompositionToken(
++								unit,
++								adaptive.first))
++						{
++							retainedCount++;
++							retainAdaptiveUnit = true;
++							break;
++						}
++					}
++					if (!retainAdaptiveUnit)
+ 					{
+ 						unitsToRelease.push_back(unit);
+ 					}

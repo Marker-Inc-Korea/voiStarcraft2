@@ -25,7 +25,7 @@ Current offline verification:
 
 ```bash
 python3 -m pytest -q
-# 820 passed, 4 skipped, 1763 subtests passed
+# 1649 passed, 5 skipped, 4509 subtests passed
 ```
 
 The suite does not require StarCraft II, `burnysc2`, BWAPI, LLM credentials,
@@ -36,7 +36,9 @@ or audio hardware.
 voiStarcraft2 is dual-licensed as `AGPL-3.0-or-later OR commercial`.
 Commercial closed-source use requires a paid commercial license from the
 copyright holder. If you do not obtain a commercial license, you must comply
-with the AGPL source-code disclosure obligations for the covered work.
+with the AGPL source-code disclosure obligations for the covered work. The
+project notice is in `LICENSE`; the complete AGPL text is included in
+`LICENSES/AGPL-3.0-or-later.txt`.
 
 ## Quickstart
 
@@ -149,11 +151,11 @@ text / voice
 ```
 
 This default path does not call python-sc2 and does not emulate the SC2 screen,
-keyboard, or mouse. The web cockpit prefers configured LLM forced-tool output,
-but tactical live-QA commands such as scout, attack, rush, pressure, defend, and
-hold are rescued by a bounded web fallback DSL when the LLM misses tool-call or
-JSON output. CLI keyword publishing remains explicit smoke/test-only and is
-labeled `source=smoke_keyword`, never `source=llm`.
+keyboard, or mouse. The web cockpit publishes only validated configured-LLM
+forced-tool output. Missing or invalid tool-call/JSON output fails closed and is
+not replaced by a rule-derived tactical command. CLI keyword publishing remains
+explicit smoke/test-only and is labeled `source=smoke_keyword`, never
+`source=llm`.
 
 Standalone local UI:
 
@@ -170,6 +172,8 @@ runtime from the same cockpit. In MicroMachine mode this calls
 `integrations/micromachine/scripts/smoke_macos_local.sh` with the current
 blackboard directory, so StarCraft II and patched MicroMachine can be started
 from the UI when the local SC2/MicroMachine build prerequisites are present.
+Each UI launch starts a fresh tactical command session, so a detached prior
+game's hold, production, or attack command cannot leak into the new game.
 
 CLI QA can keep that same MicroMachine runtime alive after the manual live
 preflight verifies worker guard telemetry:
@@ -253,10 +257,9 @@ Open the printed `http://0.0.0.0:PORT/?token=...` URL by replacing
 
 Legacy python-sc2 live mode requires the LLM interpreter. Every legacy user
 utterance goes through the selected provider before any mutating action can
-execute. The MicroMachine web cockpit is different: it uses the LLM first, then
-uses a bounded web fallback DSL for tactical live-QA commands if the provider
-does not return tool-call/JSON. The LLM is called once per user command, never
-per game frame.
+execute. The MicroMachine web cockpit also requires validated LLM tool-call/JSON
+output and fails closed when that contract is not met. The LLM is called once
+per user command, never per game frame.
 
 ```bash
 export OPENAI_API_KEY=...

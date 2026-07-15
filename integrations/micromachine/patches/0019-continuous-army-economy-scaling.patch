@@ -1,0 +1,91 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -2221,6 +2221,10 @@ bool ProductionManager::isVoiExpandMacroActive() const
+ 	if (!m_bot.Commander().isVoiPolicyActive())
+ 	{
+ 		return false;
++	}
++	if (voiContinuousCompositionProductionActive(m_bot))
++	{
++		return true;
+ 	}
+ 
+ 	const std::string doctrine = m_bot.Commander().getVoiPolicyString("strategy.doctrine", "");
+@@ -2701,6 +2705,17 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool continuousCompositionProduction = tacticalTaskActive
+ 		&& tacticalTaskType == "pressure_with_main_army"
+ 		&& productionContinuityBias > 0.25f;
++	int requestedCompositionGasPerWave = 0;
++	for (const auto & entry : voiExactCompositionTypes())
++	{
++		const int requestedCount = voiRequestedCompositionCount(m_bot, entry.first);
++		if (requestedCount > 0)
++		{
++			requestedCompositionGasPerWave += requestedCount * entry.second.getUnitType().gasPrice();
++		}
++	}
++	const bool continuousGasComposition =
++		continuousCompositionProduction && requestedCompositionGasPerWave > 0;
+ 	const std::string lifetimeMode = m_bot.Commander().getVoiPolicyString("lifetime.mode", "");
+ 	const bool standingSustainProduction = taskSustainProduction
+ 		&& (lifetimeMode == "until_cancelled" || lifetimeMode == "standing_order");
+@@ -2902,6 +2917,10 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const int engineeringBayCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::EngineeringBay.getUnitType(), false, true);
+ 	const int commandCenterCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::CommandCenter.getUnitType(), false, true, true);
+ 	const int orbitalCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::OrbitalCommand.getUnitType(), false, true, true);
++	const bool refineryTaskActive = m_bot.Buildings().isBeingBuilt(
++		MetaTypeEnum::Refinery.getUnitType());
++	const bool commandCenterTaskActive = m_bot.Buildings().isBeingBuilt(
++		MetaTypeEnum::CommandCenter.getUnitType());
+ 	const bool hasOpeningBarracks = barracksCount > 0;
+ 	const bool needsFirstVoiExpansion = commandCenterCount + orbitalCount < 2;
+ 	const auto voiRepresentedUnitCount = [&](const MetaType & type)
+@@ -3011,6 +3030,34 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
++	const int desiredMacroRefineryCount = std::min(6, completedTownHallCount * 2);
++	const int macroRefineryWorkerFloor = completedTownHallCount * 16 + refineryCount * 3 - 4;
++	const bool macroGasStarved =
++		m_bot.GetFreeGas() < std::max(200, requestedCompositionGasPerWave);
++	if (continuousGasComposition
++		&& refineryCount < desiredMacroRefineryCount
++		&& !refineryTaskActive
++		&& representedScvCount >= macroRefineryWorkerFloor
++		&& m_bot.GetFreeMinerals() >= 500
++		&& macroGasStarved
++		&& queueVoiDoctrineItem(MetaTypeEnum::Refinery, "army_macro_refinery", true, false))
++	{
++		return;
++	}
++	const int totalTownHallCount = commandCenterCount + orbitalCount;
++	const int macroExpansionWorkerFloor = totalTownHallCount * 16 + refineryCount * 3 - 4;
++	const int macroExpansionMineralThreshold = totalTownHallCount < 2 ? 1000 : 1600;
++	if (continuousCompositionProduction
++		&& totalTownHallCount < 3
++		&& !commandCenterTaskActive
++		&& !m_queue.contains(MetaTypeEnum::CommandCenter)
++		&& m_bot.Bases().getFreeBaseLocationCount() > 0
++		&& representedScvCount >= macroExpansionWorkerFloor
++		&& m_bot.GetFreeMinerals() >= macroExpansionMineralThreshold
++		&& queueVoiDoctrineItem(MetaTypeEnum::CommandCenter, "army_macro_command_center", true, false))
++	{
++		return;
++	}
+ 	if (wantsBarracksTechLab
+ 		&& completedGroundedBarracksCount > barracksTechLabCount
+ 		&& queueVoiDoctrineItem(MetaTypeEnum::BarracksTechLab, "bio_ghost_techlab", true))
+@@ -3083,10 +3130,10 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		? 1 + (m_bot.GetFreeMinerals() >= 800 ? 1 : 0) + (m_bot.GetFreeMinerals() >= 1800 ? 1 : 0)
+ 		: barracksCount;
+ 	const int desiredFactoryCount = continuousCompositionProduction && taskTargetsSiegeTank
+-		? 1 + ((m_bot.GetFreeMinerals() >= 1200 && m_bot.GetFreeGas() >= 500) ? 1 : 0)
++		? 1 + ((m_bot.GetFreeMinerals() >= 1200 && refineryCount >= 2) ? 1 : 0)
+ 		: factoryCount;
+ 	const int desiredStarportCount = continuousCompositionProduction && taskTargetsViking
+-		? 1 + ((m_bot.GetFreeMinerals() >= 1600 && m_bot.GetFreeGas() >= 600) ? 1 : 0)
++		? 1 + ((m_bot.GetFreeMinerals() >= 1600 && refineryCount >= 2) ? 1 : 0)
+ 		: starportCount;
+ 	if (barracksCount < std::min(3, desiredBarracksCount)
+ 		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, "army_macro_barracks", false))

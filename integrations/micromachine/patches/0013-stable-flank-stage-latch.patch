@@ -1,0 +1,105 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 0f7a022..6ef80d4 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -3242,52 +3242,57 @@ void CombatCommander::updateAttackSquads()
+ 		&& !m_voiFlankStageCompleted)
+ 	{
+ 		const CCPosition home = voiHomePosition(m_bot);
+-		const CCPosition homeToTarget = orderPosition - home;
+-		const float homeToTargetDistance = std::sqrt(
+-			homeToTarget.x * homeToTarget.x + homeToTarget.y * homeToTarget.y);
+-		bool flankStageSelected = false;
+-		if ((voiRouteIntent == "flank_left" || voiRouteIntent == "flank_right")
+-			&& homeToTargetDistance > 1.0f)
+-		{
+-			const CCPosition forward = homeToTarget / homeToTargetDistance;
+-			const float flankSign = voiRouteIntent == "flank_left" ? 1.0f : -1.0f;
+-			const CCPosition lateral(-forward.y * flankSign, forward.x * flankSign);
+-			const float forwardDistance = std::min(42.0f, homeToTargetDistance * 0.55f);
+-			const float lateralDistance = std::min(24.0f, std::max(10.0f, homeToTargetDistance * 0.22f));
+-			const CCPosition flankStage = home + forward * forwardDistance + lateral * lateralDistance;
+-			if (m_bot.Map().isValidPosition(flankStage)
+-				&& m_bot.Map().isWalkable(flankStage)
+-				&& m_bot.Map().isConnected(home, flankStage))
+-			{
+-				m_voiFlankStagePosition = flankStage;
+-				const int stageRequiredUnits = std::max(
+-					1,
+-					static_cast<int>(std::ceil(
+-						static_cast<float>(mainAttackSquad.getUnits().size()) * 0.60f)));
+-				const bool stageReached = voiCountUnitsNearPosition(
+-					mainAttackSquad.getUnits(),
+-					flankStage,
+-					10.0f) >= stageRequiredUnits;
+-				if (stageReached)
+-				{
+-					m_voiFlankStageCompleted = true;
+-					Util::Log(
+-						__FUNCTION__,
+-						"VOI flank stage completed; advancing the same operation to its final observed target.",
+-						m_bot);
+-				}
+-				else
+-				{
+-					orderPosition = flankStage;
+-					flankStageSelected = true;
+-				}
++		if (m_voiFlankStagePosition == CCPosition())
++		{
++			const CCPosition homeToTarget = orderPosition - home;
++			const float homeToTargetDistance = std::sqrt(
++				homeToTarget.x * homeToTarget.x + homeToTarget.y * homeToTarget.y);
++			CCPosition candidateStage;
++			if ((voiRouteIntent == "flank_left" || voiRouteIntent == "flank_right")
++				&& homeToTargetDistance > 1.0f)
++			{
++				const CCPosition forward = homeToTarget / homeToTargetDistance;
++				const float flankSign = voiRouteIntent == "flank_left" ? 1.0f : -1.0f;
++				const CCPosition lateral(-forward.y * flankSign, forward.x * flankSign);
++				const float forwardDistance = std::min(42.0f, homeToTargetDistance * 0.55f);
++				const float lateralDistance = std::min(24.0f, std::max(10.0f, homeToTargetDistance * 0.22f));
++				candidateStage = home + forward * forwardDistance + lateral * lateralDistance;
++			}
++			if (candidateStage == CCPosition())
++			{
++				const float routeBias = voiRouteIntent == "safe_path" ? 0.65f : 0.0f;
++				const float flankStageWeight = std::min(0.45f, std::max(routeBias, std::max(0.0f, voiFlankBias)) * 0.45f);
++				candidateStage = orderPosition * (1.0f - flankStageWeight) + m_bot.Map().center() * flankStageWeight;
++			}
++			if (m_bot.Map().isValidPosition(candidateStage)
++				&& m_bot.Map().isWalkable(candidateStage)
++				&& m_bot.Map().isConnected(home, candidateStage))
++			{
++				m_voiFlankStagePosition = candidateStage;
+ 			}
+ 		}
+-		if (!flankStageSelected && !m_voiFlankStageCompleted)
++		if (m_voiFlankStagePosition != CCPosition())
+ 		{
+-			const float routeBias = voiRouteIntent == "safe_path" ? 0.65f : 0.0f;
+-			const float flankStageWeight = std::min(0.45f, std::max(routeBias, std::max(0.0f, voiFlankBias)) * 0.45f);
+-			orderPosition = orderPosition * (1.0f - flankStageWeight) + m_bot.Map().center() * flankStageWeight;
++			const int stageRequiredUnits = std::max(
++				1,
++				static_cast<int>(std::ceil(
++					static_cast<float>(mainAttackSquad.getUnits().size()) * 0.60f)));
++			const bool stageReached = voiCountUnitsNearPosition(
++				mainAttackSquad.getUnits(),
++				m_voiFlankStagePosition,
++				10.0f) >= stageRequiredUnits;
++			if (stageReached)
++			{
++				m_voiFlankStageCompleted = true;
++				Util::Log(
++					__FUNCTION__,
++					"VOI flank stage completed; advancing the same operation to its final observed target.",
++					m_bot);
++			}
++			else
++			{
++				orderPosition = m_voiFlankStagePosition;
++			}
+ 		}
+ 	}
+ 

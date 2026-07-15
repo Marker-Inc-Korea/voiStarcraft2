@@ -6,10 +6,12 @@ import unittest
 from starcraft_commander.policy_modulation import (
     BuildingTask,
     CombatModulation,
+    CommandLayer,
     CompositionRequirement,
     EconomyModulation,
     EmergencyModulation,
     LifetimeModulation,
+    MICROMACHINE_TACTICAL_ABILITIES,
     MICROMACHINE_DOCTRINES,
     MICROMACHINE_TACTICAL_TASK_TYPES,
     PolicyModulationSource,
@@ -77,6 +79,200 @@ class LifetimeModulationTest(unittest.TestCase):
 
 
 class PolicyModulationVectorTest(unittest.TestCase):
+    def test_merges_duplicate_composition_and_role_entries_by_unit_type(self) -> None:
+        vector = PolicyModulationVector(
+            goal="마린 요구를 하나의 작전 조합으로 병합",
+            composition_requirements=(
+                CompositionRequirement("marine", count=2, role="frontline"),
+                CompositionRequirement("marine", count=3, role="focus_fire"),
+            ),
+            unit_roles=(
+                UnitRoleAssignment("marine", role="frontline", priority=0.4),
+                UnitRoleAssignment(
+                    "marine",
+                    role="focus_fire",
+                    priority=0.9,
+                    ability_policy="if_available",
+                ),
+            ),
+        )
+
+        self.assertEqual(1, len(vector.composition_requirements))
+        self.assertEqual(5, vector.composition_requirements[0].count)
+        self.assertEqual("focus_fire", vector.composition_requirements[0].role)
+        self.assertEqual(1, len(vector.unit_roles))
+        self.assertEqual("focus_fire", vector.unit_roles[0].role)
+        self.assertEqual("if_available", vector.unit_roles[0].ability_policy)
+
+    def test_command_layer_is_inferred_from_semantic_task_contract(self) -> None:
+        macro = PolicyModulationVector(goal="keep making marines")
+        operation = PolicyModulationVector(
+            goal="scout with one marine",
+            tactical_task=TacticalTaskModulation(
+                task_type="scout_with_units",
+                unit_classes=("marine",),
+            ),
+        )
+        micro = PolicyModulationVector(
+            goal="launch a tactical nuke",
+            tactical_task=TacticalTaskModulation(
+                task_type="execute_ability",
+                ability="tactical_nuke",
+                unit_classes=("ghost",),
+                production_targets=("nuke",),
+                location_intent="enemy_main",
+            ),
+        )
+        emergency = PolicyModulationVector(
+            goal="retreat now",
+            override_level="emergency",
+            ttl_seconds=45,
+        )
+
+        self.assertIs(CommandLayer.MACRO, macro.command_layer)
+        self.assertIs(CommandLayer.OPERATION, operation.command_layer)
+        self.assertIs(CommandLayer.MICRO, micro.command_layer)
+        self.assertIs(CommandLayer.EMERGENCY, emergency.command_layer)
+
+    def test_contextual_route_modifier_is_inferred_as_operation(self) -> None:
+        vector = PolicyModulationVector.from_mapping(
+            {
+                "goal": "flank harder with that force",
+                "command_layer": "operation",
+                "combat": {"aggression": 0.9},
+                "route_intent": {
+                    "route_type": "flank_right",
+                    "avoid_enemy_strength": True,
+                },
+            }
+        )
+
+        self.assertIs(CommandLayer.OPERATION, vector.command_layer)
+        self.assertEqual("flank_right", vector.route_intent.route_type)
+
+    def test_standing_production_with_passive_defense_context_is_macro(self) -> None:
+        vector = PolicyModulationVector.from_mapping(
+            {
+                "goal": (
+                    "게임 내내 SCV와 보급고를 유지하고 마린 8기와 "
+                    "공성전차 2기를 반복 생산하면서 본진을 수비해"
+                ),
+                "command_layer": "macro",
+                "combat": {
+                    "defend_bias": 0.8,
+                    "rally_before_attack_bias": 0.6,
+                },
+                "scope": {"location_intent": "home"},
+                "tactical_task": {
+                    "task_type": "sustain_production",
+                    "production_targets": [
+                        "TERRAN_SCV",
+                        "TERRAN_SUPPLYDEPOT",
+                        "TERRAN_MARINE",
+                        "TERRAN_SIEGETANK",
+                    ],
+                },
+            }
+        )
+
+        self.assertIs(CommandLayer.MACRO, vector.command_layer)
+        self.assertEqual("sustain_production", vector.tactical_task.task_type)
+        self.assertEqual("home", vector.scope.location_intent)
+        self.assertEqual(0.8, vector.combat.defend_bias)
+
+    def test_explicit_command_layer_must_match_semantic_task_contract(self) -> None:
+        cases = (
+            {
+                "goal": "launch a tactical nuke",
+                "command_layer": "macro",
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "tactical_nuke",
+                },
+            },
+            {
+                "goal": "keep making tanks",
+                "command_layer": "micro",
+                "tactical_task": {
+                    "task_type": "sustain_production",
+                    "production_targets": ["TERRAN_SIEGETANK"],
+                },
+            },
+            {
+                "goal": "pressure the enemy main",
+                "command_layer": "macro",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "location_intent": "enemy_main",
+                },
+            },
+            {
+                "goal": "retreat now",
+                "command_layer": "operation",
+                "override_level": "emergency",
+                "ttl_seconds": 45,
+            },
+        )
+
+        for payload in cases:
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "command_layer conflicts with semantic command content",
+                ):
+                    PolicyModulationVector.from_mapping(payload)
+
+    def test_execute_ability_round_trips_inside_tactical_task(self) -> None:
+        vector = PolicyModulationVector(
+            goal="적 본진에 전술 핵을 사용",
+            tactical_task=TacticalTaskModulation(
+                task_type="execute_ability",
+                ability="tactical_nuke",
+                unit_classes=("ghost",),
+                production_targets=("nuke",),
+                location_intent="enemy_main",
+                priority=0.95,
+            ),
+            lifetime=LifetimeModulation(
+                mode="until_completed",
+                completion_conditions=("ability_cast",),
+                completion_state="active",
+            ),
+        )
+
+        payload = vector.to_dict()
+        self.assertEqual("execute_ability", payload["tactical_task"]["task_type"])
+        self.assertEqual("tactical_nuke", payload["tactical_task"]["ability"])
+        self.assertEqual(
+            ["TERRAN_NUKE"],
+            payload["tactical_task"]["production_targets"],
+        )
+        self.assertNotIn("ability_cast", payload)
+        self.assertEqual(vector, PolicyModulationVector.from_mapping(payload))
+
+    def test_tactical_nuke_unit_role_contract_is_allow_listed(self) -> None:
+        assignment = UnitRoleAssignment(
+            "ghost",
+            role="execute_ability",
+            priority=0.95,
+            ability_policy="tactical_nuke",
+        )
+
+        self.assertEqual("TERRAN_GHOST", assignment.unit_type)
+        self.assertEqual("execute_ability", assignment.role)
+        self.assertEqual("tactical_nuke", assignment.ability_policy)
+
+    def test_all_explicit_ability_policies_are_allow_listed(self) -> None:
+        for ability in MICROMACHINE_TACTICAL_ABILITIES - {""}:
+            with self.subTest(ability=ability):
+                assignment = UnitRoleAssignment(
+                    "marine",
+                    role="execute_ability",
+                    priority=0.9,
+                    ability_policy=ability,
+                )
+                self.assertEqual(ability, assignment.ability_policy)
+
     def test_rich_micromachine_intent_round_trips(self) -> None:
         vector = PolicyModulationVector(
             goal="마린 4기랑 탱크 1기로 적진 공격",
@@ -386,6 +582,24 @@ class PolicyModulationVectorTest(unittest.TestCase):
         scope = TacticalScopeModulation(location_intent="third")
 
         self.assertEqual("third", scope.location_intent)
+
+    def test_tactical_unit_classes_have_order_independent_set_semantics(self) -> None:
+        scope = TacticalScopeModulation(
+            unit_classes=("siege_tank", "marine", "marine")
+        )
+        task = TacticalTaskModulation(
+            task_type="pressure_with_main_army",
+            unit_classes=("siege_tank", "marine", "marine"),
+        )
+
+        self.assertEqual(
+            ("marine", "siege_tank"),
+            scope.unit_classes,
+        )
+        self.assertEqual(
+            ("TERRAN_MARINE", "TERRAN_SIEGETANK"),
+            task.unit_classes,
+        )
 
     def test_rejects_raw_runtime_control_keys_at_any_depth(self) -> None:
         with self.assertRaisesRegex(ValueError, "raw runtime control"):

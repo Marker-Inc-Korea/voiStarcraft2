@@ -1,0 +1,147 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -373,11 +373,8 @@ std::string voiCompositionRequirementLabel(CCBot & bot, int index)
+ 
+ std::string voiPressureOperationKey(CCBot & bot)
+ {
+-	std::string key = bot.Commander().getVoiPolicyString("tactical_task.task_id", "");
+-	if (key.empty())
+-	{
+-		key = bot.Commander().getVoiPolicyString("update_id", "");
+-	}
++	std::string key =
++		"task=" + bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
+ 	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string label = voiCompositionRequirementLabel(bot, i);
+@@ -386,10 +383,32 @@ std::string voiPressureOperationKey(CCBot & bot)
+ 			key += "|" + label;
+ 		}
+ 	}
++	for (int i = 0; i < 32; ++i)
++	{
++		const std::string prefix = "unit_roles." + std::to_string(i);
++		const std::string unitType =
++			bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");
++		if (unitType.empty())
++		{
++			break;
++		}
++		key += "|role=" + unitType
++			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".role", "")
++			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".ability_policy", "");
++	}
+ 	key += "|min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.min_units", 0)));
+ 	key += "|max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.max_units", 0)));
++	key += "|task_min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("tactical_task.min_units", 0)));
++	key += "|task_max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("tactical_task.max_units", 0)));
++	key += "|army=" + bot.Commander().getVoiPolicyString("scope.army_group", "");
++	key += "|scope_units=" + bot.Commander().getVoiPolicyString("scope.unit_classes", "");
++	key += "|task_units=" + bot.Commander().getVoiPolicyString("tactical_task.unit_classes", "");
++	key += "|partial=" + bot.Commander().getVoiPolicyString("scope.allow_partial_scope", "");
++	key += "|task_partial=" + bot.Commander().getVoiPolicyString("tactical_task.allow_partial", "");
+ 	key += "|route=" + bot.Commander().getVoiPolicyString("route_intent.route_type", "");
+ 	key += "|location=" + bot.Commander().getVoiPolicyString("tactical_task.location_intent", "");
++	key += "|scope_location=" + bot.Commander().getVoiPolicyString("scope.location_intent", "");
++	key += "|target=" + bot.Commander().getVoiPolicyString("target_intent.target_type", "");
+ 	return key;
+ }
+ 
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -58,6 +58,7 @@ bool voiCommaListContains(const std::string & commaList, const std::string & nee
+ 
+ int voiRequestedCompositionCount(CCBot & bot, const std::string & policyUnitType)
+ {
++	int requestedCount = 0;
+ 	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string prefix = "composition_requirements." + std::to_string(i);
+@@ -68,10 +69,12 @@ int voiRequestedCompositionCount(CCBot & bot, const std::string & policyUnitType
+ 		}
+ 		if (requestedUnitType == policyUnitType)
+ 		{
+-			return std::max(0, bot.Commander().getVoiPolicyInt(prefix + ".count", 0));
++			requestedCount += std::max(
++				0,
++				bot.Commander().getVoiPolicyInt(prefix + ".count", 0));
+ 		}
+ 	}
+-	return 0;
++	return requestedCount;
+ }
+ 
+ std::string voiCompositionRequirementLabel(CCBot & bot, int index)
+@@ -89,11 +92,8 @@ std::string voiCompositionRequirementLabel(CCBot & bot, int index)
+ 
+ std::string voiPressureOperationKey(CCBot & bot)
+ {
+-	std::string key = bot.Commander().getVoiPolicyString("tactical_task.task_id", "");
+-	if (key.empty())
+-	{
+-		key = bot.Commander().getVoiPolicyString("update_id", "");
+-	}
++	std::string key =
++		"task=" + bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
+ 	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string label = voiCompositionRequirementLabel(bot, i);
+@@ -102,10 +102,32 @@ std::string voiPressureOperationKey(CCBot & bot)
+ 			key += "|" + label;
+ 		}
+ 	}
++	for (int i = 0; i < 32; ++i)
++	{
++		const std::string prefix = "unit_roles." + std::to_string(i);
++		const std::string unitType =
++			bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");
++		if (unitType.empty())
++		{
++			break;
++		}
++		key += "|role=" + unitType
++			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".role", "")
++			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".ability_policy", "");
++	}
+ 	key += "|min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.min_units", 0)));
+ 	key += "|max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.max_units", 0)));
++	key += "|task_min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("tactical_task.min_units", 0)));
++	key += "|task_max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("tactical_task.max_units", 0)));
++	key += "|army=" + bot.Commander().getVoiPolicyString("scope.army_group", "");
++	key += "|scope_units=" + bot.Commander().getVoiPolicyString("scope.unit_classes", "");
++	key += "|task_units=" + bot.Commander().getVoiPolicyString("tactical_task.unit_classes", "");
++	key += "|partial=" + bot.Commander().getVoiPolicyString("scope.allow_partial_scope", "");
++	key += "|task_partial=" + bot.Commander().getVoiPolicyString("tactical_task.allow_partial", "");
+ 	key += "|route=" + bot.Commander().getVoiPolicyString("route_intent.route_type", "");
+ 	key += "|location=" + bot.Commander().getVoiPolicyString("tactical_task.location_intent", "");
++	key += "|scope_location=" + bot.Commander().getVoiPolicyString("scope.location_intent", "");
++	key += "|target=" + bot.Commander().getVoiPolicyString("target_intent.target_type", "");
+ 	return key;
+ }
+ 
+@@ -3658,7 +3680,13 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		m_lastVoiDoctrineEvidence = "queued_supply_and_continuing_plan";
+ 	}
+ 	const bool needsTechBootstrapBarracks =
+-		(wantsFactory || wantsStarport || wantsGhostAcademy || effectiveGhostBias > 0.25f)
++		(wantsFactory
++			|| wantsStarport
++			|| wantsGhostAcademy
++			|| effectiveMarineBias > 0.25f
++			|| effectiveMarauderBias > 0.25f
++			|| effectiveReaperBias > 0.25f
++			|| effectiveGhostBias > 0.25f)
+ 		&& barracksCount == 0;
+ 	if (((wantsBioDoctrine && barracksCount < 2 && effectiveBarracksBias > 0.35f) || needsTechBootstrapBarracks)
+ 		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, needsTechBootstrapBarracks ? "tech_bootstrap_barracks" : "bio_facility", needsTechBootstrapBarracks))
+@@ -3680,6 +3708,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			|| wantsStarportTechLab
+ 			|| wantsFusionCore
+ 			|| wantsGhostAcademy
++			|| effectiveMarauderBias > 0.25f
++			|| effectiveReaperBias > 0.25f
+ 			|| effectiveGhostBias > 0.25f
+ 			|| effectiveTankBias > 0.25f
+ 			|| effectiveWidowMineBias > 0.25f

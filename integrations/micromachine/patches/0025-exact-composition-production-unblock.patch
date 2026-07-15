@@ -1,0 +1,156 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2627,6 +2627,7 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 		unitType == sc2::UNIT_TYPEID::TERRAN_BARRACKS
+ 		|| unitType == sc2::UNIT_TYPEID::TERRAN_FACTORY
+ 		|| unitType == sc2::UNIT_TYPEID::TERRAN_STARPORT;
++	const sc2::Tag tag = unit.getTag();
+ 	if (ability == sc2::ABILITY_ID::LIFT
+ 		&& voiPolicyActive
+ 		&& !explicitRelocationAllowed
+@@ -2634,18 +2635,23 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 		&& groundedProductionFacility)
+ 	{
+-		Util::Log(
+-			__FUNCTION__,
+-			"VOI refused production-building LIFT owner=" + owner
+-				+ "; Barracks, Factory, and Starport remain grounded unless production.allow_building_relocation=true.",
+-			m_bot);
++		const uint32_t currentFrame = m_bot.GetCurrentFrame();
++		uint32_t & lastLogFrame = m_voiMobilityRefusalLogFrame[tag];
++		if (lastLogFrame == 0 || currentFrame - lastLogFrame >= 224)
++		{
++			lastLogFrame = currentFrame;
++			Util::Log(
++				__FUNCTION__,
++				"VOI refused production-building LIFT owner=" + owner
++					+ "; Barracks, Factory, and Starport remain grounded unless production.allow_building_relocation=true.",
++				m_bot);
++		}
+ 		return false;
+ 	}
+ 	if (voiIsLandAbility(ability) && target == CCPosition())
+ 	{
+ 		Util::Log(__FUNCTION__, "VOI refused a LAND command without a valid target position.", m_bot);
+ 		return false;
+ 	}
+ 
+-	const sc2::Tag tag = unit.getTag();
+ 	const auto ownerIt = m_voiMobilityOwner.find(tag);
+diff --git a/src/BuildingManager.h b/src/BuildingManager.h
+--- a/src/BuildingManager.h
++++ b/src/BuildingManager.h
+@@ -68,6 +68,7 @@ class BuildingManager
+ 	std::map<sc2::Tag, uint32_t> m_addonProducerCooldownUntil;
+ 	std::map<sc2::Tag, uint32_t> m_addonLastCommandFrame;
+ 	std::map<sc2::Tag, uint32_t> m_voiMobilityLastCommandFrame;
++	std::map<sc2::Tag, uint32_t> m_voiMobilityRefusalLogFrame;
+ 	std::map<sc2::Tag, std::string> m_voiMobilityOwner;
+ 
+ 	bool            m_debugMode;
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -155,6 +155,22 @@ bool voiExactCompositionActive(CCBot & bot)
+ 		|| taskType == "tech_transition";
+ }
+ 
++bool voiExactCompositionFirstWaveComplete(CCBot & bot)
++{
++	if (!voiExactCompositionActive(bot))
++	{
++		return true;
++	}
++	for (const auto & entry : voiExactCompositionTypes())
++	{
++		const int requested = voiRequestedCompositionCount(bot, entry.first);
++		if (requested > 0 && voiRepresentedUnitCount(bot, entry.second) < requested)
++		{
++			return false;
++		}
++	}
++	return true;
++}
++
+ bool voiContinuousCompositionProductionConfigured(CCBot & bot)
+ {
+ 	return voiExactCompositionActive(bot)
+@@ -2326,6 +2342,10 @@ bool ProductionManager::shouldReserveForVoiExpandCommandCenter() const
+ 	{
+ 		return false;
+ 	}
++	if (!voiExactCompositionFirstWaveComplete(m_bot))
++	{
++		return false;
++	}
+ 
+ 	return m_bot.GetFreeMinerals() < MetaTypeEnum::CommandCenter.getUnitType().mineralPrice();
+ }
+@@ -2365,11 +2385,23 @@ void ProductionManager::prioritizeVoiExpandCommandCenter()
+ 	const bool standingProductionNeedsRoom =
+ 		std::max({ supplyBufferBias, workerProductionBias, marineBias }) > 0.25f
+ 		&& supplyWithQueuedProviders - m_bot.GetCurrentSupply() <= 6;
+-	m_queue.queueAsHighestPriority(MetaTypeEnum::CommandCenter, !standingProductionNeedsRoom);
++	const bool exactCompositionFirstWaveIncomplete =
++		!voiExactCompositionFirstWaveComplete(m_bot);
++	const bool blocking =
++		!standingProductionNeedsRoom && !exactCompositionFirstWaveIncomplete;
++	m_queue.queueAsHighestPriority(MetaTypeEnum::CommandCenter, blocking);
+ 	if (m_bot.GetCurrentFrame() - m_lastVoiExpandReserveLogFrame >= 224)
+ 	{
+ 		m_lastVoiExpandReserveLogFrame = m_bot.GetCurrentFrame();
+-		Util::Log(__FUNCTION__, "VOI prioritized expand_macro CommandCenter minerals=" + std::to_string(m_bot.GetFreeMinerals()) + " blocking=" + std::to_string(!standingProductionNeedsRoom), m_bot);
++		Util::Log(
++			__FUNCTION__,
++			"VOI prioritized expand_macro CommandCenter minerals="
++				+ std::to_string(m_bot.GetFreeMinerals())
++				+ " blocking=" + std::to_string(blocking)
++				+ " exact_composition_first_wave_incomplete="
++				+ std::to_string(exactCompositionFirstWaveIncomplete),
++			m_bot);
+ 	}
+ }
+ 
+@@ -2989,6 +3021,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		MetaTypeEnum::CommandCenter.getUnitType());
+ 	const bool hasOpeningBarracks = barracksCount > 0;
+ 	const bool needsFirstVoiExpansion = commandCenterCount + orbitalCount < 2;
++	const bool exactCompositionActive = voiExactCompositionActive(m_bot);
++	const bool exactCompositionFirstWaveReady =
++		voiExactCompositionFirstWaveComplete(m_bot);
+ 	const auto voiRepresentedUnitCount = [&](const MetaType & type)
+ 	{
+ 		return ::voiRepresentedUnitCount(m_bot, type) + m_queue.getCountOfType(type);
+@@ -3003,7 +3038,15 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			m_bot,
+ 			policyUnitType,
+ 			m_voiCompositionProductionWaveMultiplier);
+-		return requested > 0 && voiRepresentedUnitCount(type) >= requested;
++		if (requested <= 0)
++		{
++			// Broad doctrine biases may still request families such as "mech",
++			// but an exact composition must never queue an unrequested unit
++			// ahead of a requested Tank, Viking, or other combat unit.
++			return exactCompositionActive;
++		}
++		return voiRepresentedUnitCount(type) >= requested;
+ 	};
+ 	const bool tankCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_SIEGETANK", MetaTypeEnum::SiegeTank);
+ 	const bool ghostCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_GHOST", MetaTypeEnum::Ghost);
+@@ -3051,7 +3094,15 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	if (wantsCommandCenter
+ 		&& needsFirstVoiExpansion
+ 		&& hasOpeningBarracks
+-		&& queueVoiDoctrineItem(MetaTypeEnum::CommandCenter, "expand_macro", true, !(explicitSupplyBufferNeeded || workerProductionBias > 0.25f || effectiveMarineBias > 0.25f)))
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::CommandCenter,
++			"expand_macro",
++			true,
++			exactCompositionFirstWaveReady
++				&& !(explicitSupplyBufferNeeded
++					|| workerProductionBias > 0.25f
++					|| effectiveMarineBias > 0.25f)))
+ 	{
+ 		m_lastVoiDoctrineEvidence = "queued_expand_and_continuing_plan";
+ 	}

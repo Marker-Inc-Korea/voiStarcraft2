@@ -88,6 +88,12 @@ public:
     }
 
     bool isExpired(std::uint32_t currentFrame) const {
+        const std::string lifetimeMode = getString("lifetime.mode");
+        const std::string completionState = getString("lifetime.completion_state", "active");
+        if (completionState == "active"
+            && (lifetimeMode == "until_cancelled" || lifetimeMode == "standing_order")) {
+            return false;
+        }
         const int expiresAt = getInt("expires_at_frame", -1);
         return expiresAt >= 0 && currentFrame > static_cast<std::uint32_t>(expiresAt);
     }

@@ -1,0 +1,72 @@
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -310,6 +310,8 @@ class CombatCommander
+ 	std::string m_lastVoiExplicitAbilityConfirmationEffect = "";
+ 	std::string m_lastVoiExplicitAbilityLocationIntent = "";
+ 	uint64_t m_voiExplicitAbilityStagingActorTag = 0;
++	uint64_t m_voiExplicitAbilityStagingCommandActorTag = 0;
++	CCPosition m_voiExplicitAbilityStagingCommandPosition = CCPosition();
+ 	CCPosition m_lastVoiExplicitAbilityStagingPosition = CCPosition();
+ 	bool m_voiExplicitAbilityStagingPathConfirmed = false;
+ 	uint32_t m_nextVoiExplicitAbilityStagingRetryFrame = 0;
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2545,6 +2545,9 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		m_lastVoiExplicitAbilityConfirmationFrame = 0;
+ 		m_lastVoiExplicitAbilityLocationIntent = "";
+ 		m_voiExplicitAbilityStagingActorTag = 0;
++		m_voiExplicitAbilityStagingCommandActorTag = 0;
++		m_voiExplicitAbilityStagingCommandPosition =
++			CCPosition();
+ 		m_lastVoiExplicitAbilityStagingPosition = CCPosition();
+ 		m_voiExplicitAbilityStagingPathConfirmed = false;
+ 		m_nextVoiExplicitAbilityStagingRetryFrame = 0;
+@@ -3517,6 +3520,9 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 						}
+ 						m_voiExplicitAbilityRejectedStagingPositions.push_back(
+ 							stagingPosition);
+ 					}
++					m_voiExplicitAbilityStagingCommandActorTag = 0;
++					m_voiExplicitAbilityStagingCommandPosition =
++						CCPosition();
+ 					m_lastVoiExplicitAbilityStagingPosition =
+ 						CCPosition();
+@@ -3528,6 +3534,29 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 						"Locked caster made no staging progress; discarded the failed route and will resolve another SC2-authoritative path";
+ 					return;
+ 				}
++				const bool stagingCommandOwnsRoute =
++					m_voiExplicitAbilityStagingCommandActorTag
++						== stagingCaster->tag
++					&& m_voiExplicitAbilityStagingCommandPosition
++						!= CCPosition()
++					&& Util::DistSq(
++						m_voiExplicitAbilityStagingCommandPosition,
++						stagingPosition) <= 0.01f;
++				if (stagingCommandOwnsRoute)
++				{
++					m_lastVoiExplicitAbilityStatus = "staging";
++					m_lastVoiExplicitAbilityReason =
++						"Explicit ability staging Move is already in flight; progress and stalled-route observation own bounded recovery";
++					m_lastVoiExplicitAbilityPhase = "staging";
++					m_lastVoiExplicitAbilityFrame =
++						m_bot.GetGameLoop();
++					return;
++				}
+ 				UnitAction stagingAction(
+ 					MicroActionType::Move,
+ 					stagingPosition,
+ 					true,
+@@ -9495,6 +9524,10 @@ void CombatCommander::ExecuteActions()
+ 						rangedUnit->unit_type);
+ 				m_voiExplicitAbilityStagingActorTag =
+ 					rangedUnit->tag;
++				m_voiExplicitAbilityStagingCommandActorTag =
++					rangedUnit->tag;
++				m_voiExplicitAbilityStagingCommandPosition =
++					action.position;
+ 				m_lastVoiExplicitAbilityStagingPosition =
+ 					action.position;
+ 				m_lastVoiExplicitAbilityStagingCommandIssuedCount++;

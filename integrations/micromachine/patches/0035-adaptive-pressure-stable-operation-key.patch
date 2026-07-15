@@ -1,0 +1,314 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -94,12 +94,13 @@ std::string voiPressureOperationKey(CCBot & bot)
+ {
+ 	std::string key =
+ 		"task=" + bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
++	std::vector<std::string> operationLabels;
+ 	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string label = voiCompositionRequirementLabel(bot, i);
+ 		if (!label.empty())
+ 		{
+-			key += "|" + label;
++			operationLabels.push_back("composition=" + label);
+ 		}
+ 	}
+ 	for (int i = 0; i < 32; ++i)
+@@ -111,23 +112,59 @@ std::string voiPressureOperationKey(CCBot & bot)
+ 		{
+ 			break;
+ 		}
+-		key += "|role=" + unitType
++		operationLabels.push_back("role=" + unitType
+ 			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".role", "")
+-			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".ability_policy", "");
++			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".ability_policy", ""));
+ 	}
++	const auto appendUnitClasses = [&](const std::string & labelPrefix, const std::string & values)
++	{
++		size_t start = 0;
++		while (start <= values.size())
++		{
++			const size_t separator = values.find(',', start);
++			const size_t length = separator == std::string::npos
++				? std::string::npos
++				: separator - start;
++			const std::string token = values.substr(start, length);
++			if (!token.empty())
++			{
++				operationLabels.push_back(labelPrefix + token);
++			}
++			if (separator == std::string::npos)
++			{
++				break;
++			}
++			start = separator + 1;
++		}
++	};
++	appendUnitClasses(
++		"scope_unit=",
++		bot.Commander().getVoiPolicyString("scope.unit_classes", ""));
++	appendUnitClasses(
++		"task_unit=",
++		bot.Commander().getVoiPolicyString("tactical_task.unit_classes", ""));
++	std::sort(operationLabels.begin(), operationLabels.end());
++	operationLabels.erase(
++		std::unique(operationLabels.begin(), operationLabels.end()),
++		operationLabels.end());
++	for (const auto & label : operationLabels)
++	{
++		key += "|" + label;
++	}
+ 	key += "|min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.min_units", 0)));
+ 	key += "|max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.max_units", 0)));
+ 	key += "|task_min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("tactical_task.min_units", 0)));
+ 	key += "|task_max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("tactical_task.max_units", 0)));
+ 	key += "|army=" + bot.Commander().getVoiPolicyString("scope.army_group", "");
+-	key += "|scope_units=" + bot.Commander().getVoiPolicyString("scope.unit_classes", "");
+-	key += "|task_units=" + bot.Commander().getVoiPolicyString("tactical_task.unit_classes", "");
+ 	key += "|partial=" + bot.Commander().getVoiPolicyString("scope.allow_partial_scope", "");
+ 	key += "|task_partial=" + bot.Commander().getVoiPolicyString("tactical_task.allow_partial", "");
+ 	key += "|route=" + bot.Commander().getVoiPolicyString("route_intent.route_type", "");
++	key += "|route_avoid=" + bot.Commander().getVoiPolicyString("route_intent.avoid_enemy_strength", "");
+ 	key += "|location=" + bot.Commander().getVoiPolicyString("tactical_task.location_intent", "");
+ 	key += "|scope_location=" + bot.Commander().getVoiPolicyString("scope.location_intent", "");
+ 	key += "|target=" + bot.Commander().getVoiPolicyString("target_intent.target_type", "");
++	key += "|lifetime=" + bot.Commander().getVoiPolicyString("lifetime.mode", "");
++	key += "|continuity=" + bot.Commander().getVoiPolicyString("production.production_continuity_bias", "");
+ 	return key;
+ }
+ 
+@@ -262,13 +299,47 @@ bool voiContinuousCompositionProductionActive(CCBot & bot)
+ 	return bot.GetMaxSupply() < 200 || bot.GetCurrentSupply() < 196;
+ }
+ 
++bool voiAdaptiveSupportProductionActive(
++	CCBot & bot,
++	const std::string & policyUnitType)
++{
++	// Preserve already-produced adaptive units for squad ownership, but do not
++	// add an optional counter that cannot fit under the completed hard cap.
++	if (bot.GetMaxSupply() < 200)
++	{
++		return true;
++	}
++	for (const auto & entry : voiExactCompositionTypes())
++	{
++		if (entry.first == policyUnitType)
++		{
++			const int freeSupply =
++				std::max(0, bot.GetMaxSupply() - bot.GetCurrentSupply());
++			return freeSupply >= std::max(
++				0,
++				entry.second.getUnitType().supplyRequired());
++		}
++	}
++	return false;
++}
++
+ int voiObservedAdaptiveSupportTargetCount(CCBot & bot, const std::string & policyUnitType)
+ {
+-	if (!voiContinuousCompositionProductionActive(bot))
++	if (!voiExactCompositionActive(bot)
++		|| bot.Commander().getVoiPolicyString(
++			"tactical_task.task_type",
++			"") != "pressure_with_main_army")
+ 	{
+ 		return 0;
+ 	}
+ 
++	// Exact operations suppress the legacy strategy picker. Keep counter
++	// selection active for one-shot operations and while the first wave stages.
++	if (!voiAdaptiveSupportProductionActive(bot, policyUnitType))
++	{
++		return 0;
++	}
++
+ 	const uint32_t currentFrame = bot.GetCurrentFrame();
+ 	const uint32_t observationWindow = 22u * 90u;
+ 	int enemyAirSupply = 0;
+@@ -906,7 +977,10 @@ void ProductionManager::initAlternateUpgrades()
+ 
+ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ {
+-	if (!voiContinuousCompositionProductionConfigured(m_bot))
++	if (!voiExactCompositionActive(m_bot)
++		|| m_bot.Commander().getVoiPolicyString(
++			"tactical_task.task_type",
++			"") != "pressure_with_main_army")
+ 	{
+ 		m_voiCompositionProductionOperationKey = "";
+ 		m_voiCompositionProductionWaveMultiplier = 1;
+@@ -928,22 +1002,29 @@ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ 		m_voiAdaptiveLastObservedFrame.clear();
+ 	}
+ 
+-	// The latch is monotonic for the operation. Combat losses may require
+-	// replacements, but they must not lower the cumulative target and strand
+-	// an incomplete reinforcement wave at home.
+-	const int observedWaveMultiplier =
+-		voiCompositionProductionWaveMultiplier(
+-			m_bot,
+-			m_voiAdaptiveSupportTargets);
+-	if (observedWaveMultiplier > m_voiCompositionProductionWaveMultiplier)
++	// The wave latch applies only to standing reinforcement operations. A
++	// one-shot exact operation still receives adaptive counters, but its base
++	// composition target remains one wave.
++	if (voiContinuousCompositionProductionConfigured(m_bot))
+ 	{
+-		m_voiCompositionProductionWaveMultiplier = observedWaveMultiplier;
+-		Util::Log(
+-			__FUNCTION__,
+-			"VOI advanced balanced composition production wave multiplier="
+-				+ std::to_string(m_voiCompositionProductionWaveMultiplier)
+-				+ " operation=" + operationKey,
+-			m_bot);
++		const int observedWaveMultiplier =
++			voiCompositionProductionWaveMultiplier(
++				m_bot,
++				m_voiAdaptiveSupportTargets);
++		if (observedWaveMultiplier > m_voiCompositionProductionWaveMultiplier)
++		{
++			m_voiCompositionProductionWaveMultiplier = observedWaveMultiplier;
++			Util::Log(
++				__FUNCTION__,
++				"VOI advanced balanced composition production wave multiplier="
++					+ std::to_string(m_voiCompositionProductionWaveMultiplier)
++					+ " operation=" + operationKey,
++				m_bot);
++		}
++	}
++	else
++	{
++		m_voiCompositionProductionWaveMultiplier = 1;
+ 	}
+ 
+ 	if (!m_voiAdaptiveFirstWaveComplete
+@@ -955,12 +1036,7 @@ void ProductionManager::refreshVoiCompositionProductionWaveMultiplier()
+ 			"VOI exact first wave completed; adaptive support selection enabled operation="
+ 				+ operationKey,
+ 			m_bot);
+-	}
+-	if (!m_voiAdaptiveFirstWaveComplete)
+-	{
+-		return;
+ 	}
+-
+ 	const uint32_t currentFrame = m_bot.GetCurrentFrame();
+ 	const uint32_t targetHoldFrames = 22u * 90u;
+ 	for (const auto & entry : voiExactCompositionTypes())
+@@ -1393,7 +1469,9 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 			entry.first,
+ 			m_voiCompositionProductionWaveMultiplier);
+ 		const int adaptiveTargetCount =
+-			getVoiAdaptiveSupportTargetCount(entry.first);
++			voiAdaptiveSupportProductionActive(m_bot, entry.first)
++				? getVoiAdaptiveSupportTargetCount(entry.first)
++				: 0;
+ 		const int effectiveRequestedCount =
+ 			std::max(0, requestedCount) + adaptiveTargetCount;
+ 		const int representedCount = voiRepresentedUnitCount(m_bot, type);
+@@ -3402,7 +3480,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float effectiveMarineBias = std::max(marineBias, compositionBioBias);
+ 	const auto adaptiveSupportBias = [&](const std::string & unitType)
+ 	{
+-		return getVoiAdaptiveSupportTargetCount(unitType) > 0 ? 0.70f : 0.0f;
++		return voiAdaptiveSupportProductionActive(m_bot, unitType)
++			&& getVoiAdaptiveSupportTargetCount(unitType) > 0 ? 0.70f : 0.0f;
+ 	};
+ 	const float effectiveMarauderBias = std::max({
+ 		marauderBias,
+@@ -3579,7 +3658,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			policyUnitType,
+ 			m_voiCompositionProductionWaveMultiplier);
+ 		const int adaptiveRequested =
+-			getVoiAdaptiveSupportTargetCount(policyUnitType);
++			voiAdaptiveSupportProductionActive(m_bot, policyUnitType)
++				? getVoiAdaptiveSupportTargetCount(policyUnitType)
++				: 0;
+ 		const int effectiveRequested =
+ 			std::max(0, requested) + std::max(0, adaptiveRequested);
+ 		if (effectiveRequested <= 0)
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -375,12 +375,13 @@ std::string voiPressureOperationKey(CCBot & bot)
+ {
+ 	std::string key =
+ 		"task=" + bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
++	std::vector<std::string> operationLabels;
+ 	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string label = voiCompositionRequirementLabel(bot, i);
+ 		if (!label.empty())
+ 		{
+-			key += "|" + label;
++			operationLabels.push_back("composition=" + label);
+ 		}
+ 	}
+ 	for (int i = 0; i < 32; ++i)
+@@ -392,23 +393,59 @@ std::string voiPressureOperationKey(CCBot & bot)
+ 		{
+ 			break;
+ 		}
+-		key += "|role=" + unitType
++		operationLabels.push_back("role=" + unitType
+ 			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".role", "")
+-			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".ability_policy", "");
++			+ ":" + bot.Commander().getVoiPolicyString(prefix + ".ability_policy", ""));
+ 	}
++	const auto appendUnitClasses = [&](const std::string & labelPrefix, const std::string & values)
++	{
++		size_t start = 0;
++		while (start <= values.size())
++		{
++			const size_t separator = values.find(',', start);
++			const size_t length = separator == std::string::npos
++				? std::string::npos
++				: separator - start;
++			const std::string token = values.substr(start, length);
++			if (!token.empty())
++			{
++				operationLabels.push_back(labelPrefix + token);
++			}
++			if (separator == std::string::npos)
++			{
++				break;
++			}
++			start = separator + 1;
++		}
++	};
++	appendUnitClasses(
++		"scope_unit=",
++		bot.Commander().getVoiPolicyString("scope.unit_classes", ""));
++	appendUnitClasses(
++		"task_unit=",
++		bot.Commander().getVoiPolicyString("tactical_task.unit_classes", ""));
++	std::sort(operationLabels.begin(), operationLabels.end());
++	operationLabels.erase(
++		std::unique(operationLabels.begin(), operationLabels.end()),
++		operationLabels.end());
++	for (const auto & label : operationLabels)
++	{
++		key += "|" + label;
++	}
+ 	key += "|min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.min_units", 0)));
+ 	key += "|max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("scope.max_units", 0)));
+ 	key += "|task_min=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("tactical_task.min_units", 0)));
+ 	key += "|task_max=" + std::to_string(std::max(0, bot.Commander().getVoiPolicyInt("tactical_task.max_units", 0)));
+ 	key += "|army=" + bot.Commander().getVoiPolicyString("scope.army_group", "");
+-	key += "|scope_units=" + bot.Commander().getVoiPolicyString("scope.unit_classes", "");
+-	key += "|task_units=" + bot.Commander().getVoiPolicyString("tactical_task.unit_classes", "");
+ 	key += "|partial=" + bot.Commander().getVoiPolicyString("scope.allow_partial_scope", "");
+ 	key += "|task_partial=" + bot.Commander().getVoiPolicyString("tactical_task.allow_partial", "");
+ 	key += "|route=" + bot.Commander().getVoiPolicyString("route_intent.route_type", "");
++	key += "|route_avoid=" + bot.Commander().getVoiPolicyString("route_intent.avoid_enemy_strength", "");
+ 	key += "|location=" + bot.Commander().getVoiPolicyString("tactical_task.location_intent", "");
+ 	key += "|scope_location=" + bot.Commander().getVoiPolicyString("scope.location_intent", "");
+ 	key += "|target=" + bot.Commander().getVoiPolicyString("target_intent.target_type", "");
++	key += "|lifetime=" + bot.Commander().getVoiPolicyString("lifetime.mode", "");
++	key += "|continuity=" + bot.Commander().getVoiPolicyString("production.production_continuity_bias", "");
+ 	return key;
+ }

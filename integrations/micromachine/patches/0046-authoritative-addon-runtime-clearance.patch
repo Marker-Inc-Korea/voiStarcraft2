@@ -1,0 +1,55 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2452,31 +2452,11 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+ 	}
+ }
+ 
+-bool BuildingManager::isVoiAddonFootprintClear(const Building & b, const CCPosition & producerPosition)
++bool BuildingManager::isVoiAddonFootprintClear(const Building &, const CCPosition & producerPosition)
+ {
+ 	const CCTilePosition producerTile = Util::GetTilePosition(producerPosition);
+-	if (producerTile == CCTilePosition()
+-		|| !queryCanPlaceVoiProductionAddonFootprint(m_bot, producerTile))
+-	{
+-		return false;
+-	}
+-
+-	const CCPosition addonCenter = producerPosition + CCPosition(2.5f, -0.5f);
+-	for (const auto & unit : m_bot.GetUnits())
+-	{
+-		if (!unit.isValid()
+-			|| !unit.isAlive()
+-			|| unit.isFlying()
+-			|| unit.getTag() == b.builderUnit.getTag())
+-		{
+-			continue;
+-		}
+-		if (Util::Dist(addonCenter, unit.getPosition()) <= 1.0f + unit.getUnitPtr()->radius)
+-		{
+-			return false;
+-		}
+-	}
+-	return true;
++	return producerTile != CCTilePosition()
++		&& queryCanPlaceVoiProductionAddonFootprint(m_bot, producerTile);
+ }
+ 
+ bool BuildingManager::isVoiProducerFootprintClear(const Building & b, const CCPosition & producerPosition)
+@@ -3359,8 +3339,14 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 			|| unit.getPlayer() != Players::Self
+ 			|| unit.isFlying()
+ 			|| unit.getType().isBuilding()
+-			|| unit.getTag() == producerTag
+-			|| Util::Dist(addonCenter, unit.getPosition()) > 1.0f + unit.getUnitPtr()->radius)
++			|| unit.getTag() == producerTag)
++		{
++			continue;
++		}
++		const CCPosition delta = addonCenter - unit.getPosition();
++		const float collisionExtent = 1.0f + unit.getUnitPtr()->radius;
++		if (std::abs(delta.x) >= collisionExtent
++			|| std::abs(delta.y) >= collisionExtent)
+ 		{
+ 			continue;
+ 		}

@@ -1,0 +1,1446 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index bdd3c7b2db5fd7950fd5f903db2f7eaa5cf1f4e6..7bbfa3deea85591ca09a76b7c52d22508a4a180e 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -58,6 +58,145 @@ struct VoiTacticalNukeTarget
+ 	bool locationMatch = false;
+ };
+ 
++enum class VoiExplicitAbilityTargetKind
++{
++	None,
++	EnemyPosition,
++	EnemyUnit,
++	FriendlyUnit,
++	FriendlyPassenger,
++	StrategicPosition,
++	CasterPosition,
++	GhostEmp,
++	GhostSnipe,
++	YamatoTarget,
++	AutoTurretPosition,
++	LiberatorDefenderPosition,
++};
++
++struct VoiExplicitAbilitySpec
++{
++	sc2::AbilityID abilityId = sc2::AbilityID(0);
++	VoiExplicitAbilityTargetKind targetKind =
++		VoiExplicitAbilityTargetKind::None;
++};
++
++const sc2::AbilityID VoiRavenInterferenceMatrixAbility(3747);
++const sc2::AbilityID VoiRavenAntiArmorMissileAbility(3753);
++
++bool voiResolveExplicitAbilitySpec(
++	const std::string & abilityName,
++	VoiExplicitAbilitySpec & spec)
++{
++	if (abilityName == "stimpack")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_STIM, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "marine_stimpack")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_STIM_MARINE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "marauder_stimpack")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_STIM_MARAUDER, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "kd8_charge")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_KD8CHARGE, VoiExplicitAbilityTargetKind::EnemyPosition };
++	}
++	else if (abilityName == "emp")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_EMP, VoiExplicitAbilityTargetKind::GhostEmp };
++	}
++	else if (abilityName == "snipe")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_GHOSTSNIPE, VoiExplicitAbilityTargetKind::GhostSnipe };
++	}
++	else if (abilityName == "ghost_cloak")
++	{
++		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKON_GHOST, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "ghost_decloak")
++	{
++		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF_GHOST, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "widow_mine_burrow")
++	{
++		spec = { sc2::ABILITY_ID::BURROWDOWN_WIDOWMINE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "widow_mine_unburrow")
++	{
++		spec = { sc2::ABILITY_ID::BURROWUP_WIDOWMINE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "lock_on")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_LOCKON, VoiExplicitAbilityTargetKind::EnemyUnit };
++	}
++	else if (abilityName == "siege_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_SIEGEMODE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "unsiege")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_UNSIEGE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "hellbat_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_HELLBAT, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "hellion_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_HELLION, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "thor_high_impact_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_THORHIGHIMPACTMODE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "thor_explosive_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_THOREXPLOSIVEMODE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "medivac_afterburners")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_MEDIVACIGNITEAFTERBURNERS, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "medivac_heal")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_HEAL, VoiExplicitAbilityTargetKind::FriendlyUnit };
++	}
++	else if (abilityName == "medivac_load")
++	{
++		spec = { sc2::ABILITY_ID::LOAD_MEDIVAC, VoiExplicitAbilityTargetKind::FriendlyPassenger };
++	}
++	else if (abilityName == "medivac_unload_all")
++	{
++		spec = { sc2::ABILITY_ID::UNLOADALLAT_MEDIVAC, VoiExplicitAbilityTargetKind::CasterPosition };
++	}
++	else if (abilityName == "viking_fighter_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_VIKINGFIGHTERMODE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "viking_assault_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_VIKINGASSAULTMODE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "liberator_defender_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_LIBERATORAGMODE, VoiExplicitAbilityTargetKind::LiberatorDefenderPosition };
++	}
++	else if (abilityName == "liberator_fighter_mode")
++	{
++		spec = { sc2::ABILITY_ID::MORPH_LIBERATORAAMODE, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "banshee_cloak")
++	{
++		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKON, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "banshee_decloak")
++	{
++		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF, VoiExplicitAbilityTargetKind::None };
++	}
++	else if (abilityName == "auto_turret")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_AUTOTURRET, VoiExplicitAbilityTargetKind::AutoTurretPosition };
++	}
++	else if (abilityName == "interference_matrix")
++	{
++		spec = { VoiRavenInterferenceMatrixAbility, VoiExplicitAbilityTargetKind::EnemyUnit };
++	}
++	else if (abilityName == "anti_armor_missile")
++	{
++		spec = { VoiRavenAntiArmorMissileAbility, VoiExplicitAbilityTargetKind::EnemyUnit };
++	}
++	else if (abilityName == "yamato")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_YAMATOGUN, VoiExplicitAbilityTargetKind::YamatoTarget };
++	}
++	else if (abilityName == "tactical_jump")
++	{
++		spec = { sc2::ABILITY_ID::EFFECT_TACTICALJUMP, VoiExplicitAbilityTargetKind::StrategicPosition };
++	}
++	else
++	{
++		return false;
++	}
++	return true;
++}
++
+ bool voiTacticalTaskWithinDuration(CCBot & bot);
+ bool voiResolveTacticalNukeTargetAnchor(
+ 	CCBot & bot,
+@@ -427,7 +566,10 @@ bool voiIsMorphAbility(sc2::AbilityID ability)
+ 		case sc2::ABILITY_ID::MORPH_UNSIEGE:
+ 		case sc2::ABILITY_ID::MORPH_VIKINGFIGHTERMODE:
+ 		case sc2::ABILITY_ID::MORPH_VIKINGASSAULTMODE:
++		case sc2::ABILITY_ID::MORPH_HELLBAT:
++		case sc2::ABILITY_ID::MORPH_HELLION:
+ 		case sc2::ABILITY_ID::MORPH_THORHIGHIMPACTMODE:
++		case sc2::ABILITY_ID::MORPH_THOREXPLOSIVEMODE:
+ 		case sc2::ABILITY_ID::BURROWDOWN_WIDOWMINE:
+ 		case sc2::ABILITY_ID::BURROWUP_WIDOWMINE:
+ 		case sc2::ABILITY_ID::MORPH_LIBERATORAGMODE:
+@@ -512,6 +654,40 @@ bool voiUnitMatchesCompositionToken(const Unit & unit, const std::string & token
+ 		|| (token == "TERRAN_BATTLECRUISER" && type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER);
+ }
+ 
++bool voiUnitMatchesCompositionList(
++	const Unit & unit,
++	const std::string & unitClasses)
++{
++	if (unitClasses.empty())
++	{
++		return true;
++	}
++	for (const std::string & token : {
++		"TERRAN_MARINE",
++		"TERRAN_MARAUDER",
++		"TERRAN_REAPER",
++		"TERRAN_GHOST",
++		"TERRAN_HELLION",
++		"TERRAN_WIDOWMINE",
++		"TERRAN_CYCLONE",
++		"TERRAN_THOR",
++		"TERRAN_SIEGETANK",
++		"TERRAN_MEDIVAC",
++		"TERRAN_VIKINGFIGHTER",
++		"TERRAN_LIBERATOR",
++		"TERRAN_BANSHEE",
++		"TERRAN_RAVEN",
++		"TERRAN_BATTLECRUISER" })
++	{
++		if (voiCommaListContains(unitClasses, token)
++			&& voiUnitMatchesCompositionToken(unit, token))
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
+ bool voiSc2UnitMatchesRoleToken(const sc2::Unit * unit, const std::string & token)
+ {
+ 	if (unit == nullptr)
+@@ -1293,10 +1469,10 @@ void CombatCommander::onStart()
+ 	m_squadData.addSquad("Scout", Squad("Scout", scoutOrder, ScoutPriority, m_bot));
+ 
+ 	SquadOrder nukeOpsOrder(
+-		SquadOrderTypes::Idle,
++		SquadOrderTypes::Defend,
+ 		m_bot.GetStartLocation(),
+ 		DefaultOrderRadius,
+-		"Tactical nuke operation");
++		"Protect tactical nuke Ghost at home");
+ 	m_squadData.addSquad(
+ 		"NukeOps",
+ 		Squad(
+@@ -1394,10 +1570,10 @@ void CombatCommander::updateVoiTacticalNukeSquad()
+ 	m_lastVoiUnitRoleExecutedCount = 0;
+ 	m_lastVoiUnitRoleFrame = m_bot.GetCurrentFrame();
+ 	nukeOpsSquad.setSquadOrder(SquadOrder(
+-		SquadOrderTypes::Idle,
+-		selectedGhost.getPosition(),
++		SquadOrderTypes::Defend,
++		voiHomePosition(m_bot),
+ 		DefaultOrderRadius,
+-		"Tactical nuke Ghost reserved"));
++		"Protect reserved tactical nuke Ghost at home"));
+ }
+ 
+ void CombatCommander::updateVoiTacticalNukeAction()
+@@ -1777,6 +1953,470 @@ void CombatCommander::updateVoiTacticalNukeAction()
+ 		: "Canonical tactical_task Ghost is in verified cast range; EFFECT_NUKECALLDOWN is planned for command issue";
+ }
+ 
++void CombatCommander::updateVoiExplicitAbilityAction()
++{
++	const std::string updateId =
++		m_bot.Commander().getVoiPolicyString("update_id", "");
++	if (updateId != m_voiExplicitAbilityUpdateId)
++	{
++		m_voiExplicitAbilityUpdateId = updateId;
++		m_lastVoiExplicitAbilityName = "";
++		m_lastVoiExplicitAbilityStatus = "inactive";
++		m_lastVoiExplicitAbilityReason =
++			"No explicit ability task requested";
++		m_lastVoiExplicitAbilityActorTag = 0;
++		m_lastVoiExplicitAbilityActorType = "";
++		m_lastVoiExplicitAbilityTargetTag = 0;
++		m_lastVoiExplicitAbilityTargetPosition = CCPosition();
++		m_lastVoiExplicitAbilityAvailableCasterCount = 0;
++		m_lastVoiExplicitAbilityPlannedCount = 0;
++		m_lastVoiExplicitAbilitySubmittedCount = 0;
++		m_lastVoiExplicitAbilityFrame = 0;
++		m_lastVoiExplicitAbilityAction = "";
++	}
++
++	const std::string taskType =
++		m_bot.Commander().getVoiPolicyString(
++			"tactical_task.task_type",
++			"");
++	const std::string abilityName =
++		m_bot.Commander().getVoiPolicyString(
++			"tactical_task.ability",
++			"");
++	m_lastVoiExplicitAbilityName = abilityName;
++	if (!m_bot.Commander().isVoiPolicyActive()
++		|| !voiTacticalTaskWithinDuration(m_bot)
++		|| taskType != "execute_ability"
++		|| abilityName.empty()
++		|| abilityName == "tactical_nuke")
++	{
++		m_lastVoiExplicitAbilityStatus = "inactive";
++		m_lastVoiExplicitAbilityReason =
++			"No active non-nuke execute_ability request";
++		return;
++	}
++	if (m_lastVoiExplicitAbilitySubmittedCount > 0)
++	{
++		m_lastVoiExplicitAbilityStatus = "completed";
++		m_lastVoiExplicitAbilityReason =
++			"Explicit ability reached the SC2 command issue path for this update";
++		return;
++	}
++
++	VoiExplicitAbilitySpec spec;
++	if (!voiResolveExplicitAbilitySpec(abilityName, spec))
++	{
++		m_lastVoiExplicitAbilityStatus = "refused";
++		m_lastVoiExplicitAbilityReason =
++			"Unsupported tactical_task.ability";
++		return;
++	}
++
++	const std::string requestedUnitClasses =
++		m_bot.Commander().getVoiPolicyString(
++			"tactical_task.unit_classes",
++			"");
++	std::vector<const sc2::Unit *> availableCasters;
++	int matchingCasterCount = 0;
++	for (const auto & combatUnit : m_combatUnits)
++	{
++		if (!combatUnit.isValid()
++			|| !combatUnit.isAlive()
++			|| !voiUnitMatchesCompositionList(
++				combatUnit,
++				requestedUnitClasses))
++		{
++			continue;
++		}
++		matchingCasterCount++;
++		const sc2::Unit * unit = combatUnit.getUnitPtr();
++		if (Util::IsAbilityAvailable(
++			spec.abilityId,
++			unit,
++			m_unitsAbilities))
++		{
++			availableCasters.push_back(unit);
++		}
++	}
++	m_lastVoiExplicitAbilityAvailableCasterCount =
++		static_cast<int>(availableCasters.size());
++	if (matchingCasterCount == 0)
++	{
++		m_lastVoiExplicitAbilityStatus = "waiting_caster";
++		m_lastVoiExplicitAbilityReason =
++			"Waiting for ProductionManager to provide a matching caster";
++		return;
++	}
++	if (availableCasters.empty())
++	{
++		m_lastVoiExplicitAbilityStatus = "waiting_ability";
++		m_lastVoiExplicitAbilityReason =
++			"Matching caster exists but the requested ability is unavailable";
++		return;
++	}
++
++	const auto abilityRange =
++		[&](float fallback)
++		{
++			const auto rangeIt =
++				m_abilityCastingRanges.find(spec.abilityId);
++			return rangeIt != m_abilityCastingRanges.end()
++				&& rangeIt->second > 0.0f
++				? rangeIt->second
++				: fallback;
++		};
++	const auto bestVisibleEnemy =
++		[&](
++			const sc2::Unit * caster,
++			float fallbackRange,
++			bool groundOnly = false)
++		{
++			const sc2::Unit * bestTarget = nullptr;
++			float bestScore = 0.0f;
++			const float baseRange = abilityRange(fallbackRange);
++			for (const auto & enemyUnit :
++				m_bot.UnitInfo().getUnits(Players::Enemy))
++			{
++				const sc2::Unit * enemy = enemyUnit.getUnitPtr();
++				if (!voiIsVisibleLiveEnemy(enemy)
++					|| enemyUnit.getType().isBuilding())
++				{
++					continue;
++				}
++				if (groundOnly && enemy->is_flying)
++				{
++					continue;
++				}
++				if (abilityName == "interference_matrix"
++					&& !enemyUnit.isMechanical())
++				{
++					continue;
++				}
++				const float range =
++					baseRange + caster->radius + enemy->radius;
++				const float distanceSq =
++					Util::DistSq(caster->pos, enemy->pos);
++				if (distanceSq > range * range)
++				{
++					continue;
++				}
++				const float score =
++					(voiIsHighValueTarget(enemy) ? 100000.0f : 0.0f)
++					+ enemy->health_max
++					+ enemy->shield_max
++					+ enemy->energy
++					- distanceSq;
++				if (bestTarget == nullptr || score > bestScore)
++				{
++					bestTarget = enemy;
++					bestScore = score;
++				}
++			}
++			return bestTarget;
++		};
++	const auto bestHealTarget =
++		[&](const sc2::Unit * caster)
++		{
++			const sc2::Unit * bestTarget = nullptr;
++			float bestScore = 0.0f;
++			const float baseRange = abilityRange(4.0f);
++			for (const auto & allyUnit :
++				m_bot.UnitInfo().getUnits(Players::Self))
++			{
++				const sc2::Unit * ally = allyUnit.getUnitPtr();
++				if (ally == nullptr
++					|| !ally->is_alive
++					|| ally->tag == caster->tag
++					|| ally->health <= 0.0f
++					|| ally->health >= ally->health_max
++					|| allyUnit.getType().isBuilding()
++					|| allyUnit.getType().isWorker()
++					|| !allyUnit.isBiological())
++				{
++					continue;
++				}
++				const float range =
++					baseRange + caster->radius + ally->radius;
++				const float distanceSq =
++					Util::DistSq(caster->pos, ally->pos);
++				if (distanceSq > range * range)
++				{
++					continue;
++				}
++				const float score =
++					(ally->health_max - ally->health) * 100.0f
++					- distanceSq;
++				if (bestTarget == nullptr || score > bestScore)
++				{
++					bestTarget = ally;
++					bestScore = score;
++				}
++			}
++			return bestTarget;
++		};
++	const auto bestLoadTarget =
++		[&](const sc2::Unit * caster)
++		{
++			const sc2::Unit * bestTarget = nullptr;
++			float bestScore = 0.0f;
++			const float baseRange = abilityRange(5.0f);
++			for (const auto & allyUnit :
++				m_bot.UnitInfo().getUnits(Players::Self))
++			{
++				const sc2::Unit * ally = allyUnit.getUnitPtr();
++				if (ally == nullptr
++					|| !ally->is_alive
++					|| ally->tag == caster->tag
++					|| ally->is_flying
++					|| allyUnit.getType().isBuilding()
++					|| allyUnit.getType().isWorker())
++				{
++					continue;
++				}
++				const float range =
++					baseRange + caster->radius + ally->radius;
++				const float distanceSq =
++					Util::DistSq(caster->pos, ally->pos);
++				if (distanceSq > range * range)
++				{
++					continue;
++				}
++				const float score =
++					ally->health_max
++					+ ally->shield_max
++					- distanceSq;
++				if (bestTarget == nullptr || score > bestScore)
++				{
++					bestTarget = ally;
++					bestScore = score;
++				}
++			}
++			return bestTarget;
++		};
++	const auto bestYamatoTarget =
++		[&](const sc2::Unit * caster)
++		{
++			const sc2::Unit * bestTarget = nullptr;
++			float bestScore = 0.0f;
++			for (const auto & enemyUnit :
++				m_bot.UnitInfo().getUnits(Players::Enemy))
++			{
++				const sc2::Unit * enemy = enemyUnit.getUnitPtr();
++				if (!voiCanTargetYamato(caster, enemy))
++				{
++					continue;
++				}
++				const float score =
++					(voiIsHighValueTarget(enemy) ? 100000.0f : 0.0f)
++					+ enemy->health
++					+ enemy->shield
++					- Util::DistSq(caster->pos, enemy->pos);
++				if (bestTarget == nullptr || score > bestScore)
++				{
++					bestTarget = enemy;
++					bestScore = score;
++				}
++			}
++			return bestTarget;
++		};
++	const auto strategicPosition =
++		[&]()
++		{
++			const std::string locationIntent =
++				m_bot.Commander().getVoiPolicyString(
++					"tactical_task.location_intent",
++					"");
++			if (locationIntent == "home")
++			{
++				return voiHomePosition(m_bot);
++			}
++			if (locationIntent == "natural")
++			{
++				const BaseLocation * natural =
++					m_bot.Bases().getPlayerNat(Players::Self);
++				return natural
++					? natural->getDepotPosition()
++					: voiHomePosition(m_bot);
++			}
++			const CCPosition observedTarget =
++				voiObservedEnemyCombatTarget(m_bot);
++			if (locationIntent.empty()
++				|| locationIntent == "last_seen_enemy_army")
++			{
++				return observedTarget;
++			}
++			return voiResolveCombatLocationIntent(
++				m_bot,
++				locationIntent,
++				observedTarget);
++		};
++
++	const sc2::Unit * selectedCaster = nullptr;
++	const sc2::Unit * selectedTarget = nullptr;
++	CCPosition selectedPosition;
++	for (const sc2::Unit * caster : availableCasters)
++	{
++		const sc2::Unit * candidateTarget = nullptr;
++		CCPosition candidatePosition;
++		bool targetResolved = true;
++		switch (spec.targetKind)
++		{
++			case VoiExplicitAbilityTargetKind::None:
++				break;
++			case VoiExplicitAbilityTargetKind::EnemyPosition:
++				candidateTarget =
++					bestVisibleEnemy(caster, 5.0f);
++				if (candidateTarget != nullptr)
++				{
++					candidatePosition = candidateTarget->pos;
++				}
++				else
++				{
++					targetResolved = false;
++				}
++				break;
++			case VoiExplicitAbilityTargetKind::EnemyUnit:
++				candidateTarget =
++					bestVisibleEnemy(
++						caster,
++						abilityName == "lock_on"
++							? 7.0f
++							: (abilityName == "interference_matrix"
++								? 9.0f
++								: 10.0f));
++				targetResolved = candidateTarget != nullptr;
++				break;
++			case VoiExplicitAbilityTargetKind::FriendlyUnit:
++				candidateTarget = bestHealTarget(caster);
++				targetResolved = candidateTarget != nullptr;
++				break;
++			case VoiExplicitAbilityTargetKind::FriendlyPassenger:
++				candidateTarget = bestLoadTarget(caster);
++				targetResolved = candidateTarget != nullptr;
++				break;
++			case VoiExplicitAbilityTargetKind::StrategicPosition:
++				candidatePosition = strategicPosition();
++				targetResolved =
++					candidatePosition != CCPosition()
++					&& m_bot.Map().isValidPosition(candidatePosition);
++				break;
++			case VoiExplicitAbilityTargetKind::GhostEmp:
++				targetResolved =
++					voiBestGhostEmpPosition(
++						m_bot,
++						caster,
++						candidatePosition);
++				break;
++			case VoiExplicitAbilityTargetKind::GhostSnipe:
++				candidateTarget =
++					voiBestGhostSnipeTarget(m_bot, caster);
++				targetResolved = candidateTarget != nullptr;
++				break;
++			case VoiExplicitAbilityTargetKind::YamatoTarget:
++				candidateTarget = bestYamatoTarget(caster);
++				targetResolved = candidateTarget != nullptr;
++				break;
++			case VoiExplicitAbilityTargetKind::LiberatorDefenderPosition:
++				candidateTarget =
++					bestVisibleEnemy(caster, 5.0f, true);
++				if (candidateTarget != nullptr)
++				{
++					candidatePosition = candidateTarget->pos;
++				}
++				else
++				{
++					targetResolved = false;
++				}
++				break;
++			case VoiExplicitAbilityTargetKind::CasterPosition:
++				candidatePosition = caster->pos;
++				targetResolved =
++					m_bot.Map().isValidPosition(candidatePosition);
++				break;
++			case VoiExplicitAbilityTargetKind::AutoTurretPosition:
++			{
++				const sc2::Unit * threat =
++					bestVisibleEnemy(caster, 8.0f);
++				targetResolved = false;
++				if (threat == nullptr)
++				{
++					break;
++				}
++				const float baseAngle = std::atan2(
++					threat->pos.y - caster->pos.y,
++					threat->pos.x - caster->pos.x);
++				for (float radius : { 1.5f, 2.0f, 2.5f })
++				{
++					for (int angleIndex = 0;
++						angleIndex < 16;
++						++angleIndex)
++					{
++						const float angle =
++							baseAngle
++							+ static_cast<float>(angleIndex)
++								* 0.39269908f;
++						const CCPosition candidate =
++							caster->pos
++							+ CCPosition(
++								std::cos(angle),
++								std::sin(angle))
++								* radius;
++						if (m_bot.Map().isValidPosition(candidate)
++							&& m_bot.Query()->Placement(
++								spec.abilityId,
++								candidate,
++								caster))
++						{
++							candidatePosition = candidate;
++							targetResolved = true;
++							break;
++						}
++					}
++					if (targetResolved)
++					{
++						break;
++					}
++				}
++				break;
++			}
++		}
++		if (!targetResolved)
++		{
++			continue;
++		}
++		selectedCaster = caster;
++		selectedTarget = candidateTarget;
++		selectedPosition = candidatePosition;
++		break;
++	}
++
++	if (selectedCaster == nullptr)
++	{
++		m_lastVoiExplicitAbilityStatus = "waiting_target";
++		m_lastVoiExplicitAbilityReason =
++			"Ability is available but no safe valid target is currently visible";
++		return;
++	}
++
++	const std::string actionDescription =
++		"VoiExplicitAbility:" + abilityName;
++	UnitAction action;
++	if (spec.targetKind == VoiExplicitAbilityTargetKind::None)
++	{
++		action = UnitAction(
++			MicroActionType::Ability,
++			spec.abilityId,
++			true,
++			ACTION_REEXECUTION_FREQUENCY,
++			actionDescription,
++			"");
++	}
++	else if (selectedTarget != nullptr
++		&& spec.targetKind
++			!= VoiExplicitAbilityTargetKind::EnemyPosition
++		&& spec.targetKind
++			!= VoiExplicitAbilityTargetKind::LiberatorDefenderPosition)
++	{
++		action = UnitAction(
++			MicroActionType::AbilityTarget,
++			spec.abilityId,
++			selectedTarget,
++			true,
++			ACTION_REEXECUTION_FREQUENCY,
++			actionDescription,
++			"");
++	}
++	else
++	{
++		action = UnitAction(
++			MicroActionType::AbilityPosition,
++			spec.abilityId,
++			selectedPosition,
++			true,
++			ACTION_REEXECUTION_FREQUENCY,
++			actionDescription,
++			"");
++	}
++
++	if (!PlanAction(selectedCaster, action))
++	{
++		m_lastVoiExplicitAbilityStatus = "refused";
++		m_lastVoiExplicitAbilityReason =
++			"CombatCommander rejected the resolved explicit ability action";
++		return;
++	}
++	m_lastVoiExplicitAbilityActorTag = selectedCaster->tag;
++	m_lastVoiExplicitAbilityActorType =
++		sc2::UnitTypeToName(selectedCaster->unit_type);
++	m_lastVoiExplicitAbilityTargetTag =
++		selectedTarget != nullptr ? selectedTarget->tag : 0;
++	m_lastVoiExplicitAbilityTargetPosition =
++		selectedPosition != CCPosition()
++			? selectedPosition
++			: (selectedTarget != nullptr
++				? selectedTarget->pos
++				: CCPosition());
++	m_lastVoiExplicitAbilityPlannedCount++;
++	m_lastVoiExplicitAbilityFrame = m_bot.GetGameLoop();
++	m_lastVoiExplicitAbilityAction =
++		voiActionEvidence(action);
++	m_lastVoiExplicitAbilityStatus = "planned";
++	m_lastVoiExplicitAbilityReason =
++		"Resolved caster and target; prioritized UnitAction is ready for SC2 command issue";
++}
++
+ bool CombatCommander::isSquadUpdateFrame()
+ {
+     return true;
+@@ -1986,6 +2626,7 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
+ 	m_bot.StopProfiling("0.10.4.1    m_squadData.onFrame");
+ 
+ 	updateVoiTacticalNukeAction();
++	updateVoiExplicitAbilityAction();
+ 
+ 	m_bot.StartProfiling("0.10.4.6    ExecuteActions");
+ 	ExecuteActions();
+@@ -7040,6 +7681,17 @@ void CombatCommander::ExecuteActions()
+ 		std::stringstream ss;
+ 		bool skip = false;
+ 		bool issuedCommand = false;
++		const bool explicitAbilityAction =
++			action.description.rfind(
++				"VoiExplicitAbility:",
++				0) == 0;
++		const auto rejectExplicitAbility =
++			[&](const std::string & status, const std::string & reason)
++			{
++				skip = true;
++				m_lastVoiExplicitAbilityStatus = status;
++				m_lastVoiExplicitAbilityReason = reason;
++			};
+ 		if (m_bot.Config().ArchonMode && rangedUnit->is_selected)
+ 		{
+ 			skip = true;
+@@ -7109,10 +7761,17 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				break;
+ 			case MicroActionType::Ability:
+-				if (voiIsMorphAbility(action.abilityID)
++				if ((explicitAbilityAction
++						|| voiIsMorphAbility(action.abilityID))
+ 					&& !Util::IsAbilityAvailable((sc2::ABILITY_ID)action.abilityID, rangedUnit, m_unitsAbilities))
+ 				{
+ 					skip = true;
++					if (explicitAbilityAction)
++					{
++						rejectExplicitAbility(
++							"waiting_ability",
++							"SC2 ability query rejected the explicit ability before command submission");
++					}
+ 				}
+ 				else
+ 				{
+@@ -7121,6 +7780,50 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				break;
+ 			case MicroActionType::AbilityPosition:
++				if (explicitAbilityAction)
++				{
++					if (!Util::IsAbilityAvailable(
++							(sc2::ABILITY_ID)action.abilityID,
++							rangedUnit,
++							m_unitsAbilities))
++					{
++						rejectExplicitAbility(
++							"waiting_ability",
++							"SC2 ability query rejected the explicit position ability before command submission");
++					}
++					else if (action.position == CCPosition()
++						|| !m_bot.Map().isValidPosition(
++							action.position))
++					{
++						rejectExplicitAbility(
++							"waiting_target",
++							"Explicit position ability target became invalid before command submission");
++					}
++					else
++					{
++						const auto castRangeIt =
++							m_abilityCastingRanges.find(
++								action.abilityID);
++						if (castRangeIt
++								!= m_abilityCastingRanges.end()
++							&& castRangeIt->second > 0.0f
++							&& castRangeIt->second < 100.0f)
++						{
++							const float usableCastRange =
++								castRangeIt->second
++								+ rangedUnit->radius
++								+ 0.25f;
++							if (distToGoal
++								> usableCastRange
++									* usableCastRange)
++							{
++								rejectExplicitAbility(
++									"waiting_target",
++									"Explicit position ability target moved outside the verified cast range");
++							}
++						}
++					}
++				}
+ 				if (action.abilityID == sc2::ABILITY_ID::EFFECT_NUKECALLDOWN)
+ 				{
+ 					float castRange = TacticalNukeCastRange;
+@@ -7165,8 +7868,61 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				break;
+ 			case MicroActionType::AbilityTarget:
+-				Micro::SmartAbility(rangedUnit, action.abilityID, action.target, m_bot);
+-				issuedCommand = true;
++				if (explicitAbilityAction)
++				{
++					if (!Util::IsAbilityAvailable(
++							(sc2::ABILITY_ID)action.abilityID,
++							rangedUnit,
++							m_unitsAbilities))
++					{
++						rejectExplicitAbility(
++							"waiting_ability",
++							"SC2 ability query rejected the explicit target ability before command submission");
++					}
++					else if (action.target == nullptr
++						|| !action.target->is_alive)
++					{
++						rejectExplicitAbility(
++							"waiting_target",
++							"Explicit target ability target became invalid before command submission");
++					}
++					else
++					{
++						const auto castRangeIt =
++							m_abilityCastingRanges.find(
++								action.abilityID);
++						if (castRangeIt
++								!= m_abilityCastingRanges.end()
++							&& castRangeIt->second > 0.0f
++							&& castRangeIt->second < 100.0f)
++						{
++							const float usableCastRange =
++								castRangeIt->second
++								+ rangedUnit->radius
++								+ action.target->radius
++								+ 0.25f;
++							if (Util::DistSq(
++									rangedUnit->pos,
++									action.target->pos)
++								> usableCastRange
++									* usableCastRange)
++							{
++								rejectExplicitAbility(
++									"waiting_target",
++									"Explicit target ability target moved outside the verified cast range");
++							}
++						}
++					}
++				}
++				if (!skip)
++				{
++					Micro::SmartAbility(
++						rangedUnit,
++						action.abilityID,
++						action.target,
++						m_bot);
++					issuedCommand = true;
++				}
+ 				break;
+ 			case MicroActionType::Stop:
+ 				//Micro::SmartStop(rangedUnit, m_bot);
+@@ -7241,6 +7997,32 @@ void CombatCommander::ExecuteActions()
+ 				m_lastVoiTacticalNukeConfirmationState = "pending";
+ 				m_lastVoiTacticalNukeConfirmationEffect = "";
+ 			}
++			else if (explicitAbilityAction)
++			{
++				m_lastVoiExplicitAbilityStatus = "completed";
++				m_lastVoiExplicitAbilityReason =
++					"Explicit ability reached the SC2 command issue path";
++				m_lastVoiExplicitAbilityActorTag =
++					rangedUnit->tag;
++				m_lastVoiExplicitAbilityActorType =
++					sc2::UnitTypeToName(
++						rangedUnit->unit_type);
++				m_lastVoiExplicitAbilityTargetTag =
++					action.target != nullptr
++						? action.target->tag
++						: 0;
++				m_lastVoiExplicitAbilityTargetPosition =
++					action.position != CCPosition()
++						? action.position
++						: (action.target != nullptr
++							? action.target->pos
++							: CCPosition());
++				m_lastVoiExplicitAbilitySubmittedCount++;
++				m_lastVoiExplicitAbilityFrame =
++					m_bot.GetGameLoop();
++				m_lastVoiExplicitAbilityAction =
++					m_lastVoiIssuedAction;
++			}
+ 			const std::string executedVoiRole = m_bot.Commander().isVoiPolicyActive()
+ 				? voiRoleForUnit(m_bot, rangedUnit)
+ 				: "";
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 18fe4cbfce2baf81b2c03c36cbd5fb4b774add21..799576d4f64045740229fb7d689614c4ad504702 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -250,6 +250,19 @@ class CombatCommander
+ 	int m_lastVoiUnitRoleAttemptedCount = 0;
+ 	int m_lastVoiUnitRoleExecutedCount = 0;
+ 	uint32_t m_lastVoiUnitRoleFrame = 0;
++	std::string m_voiExplicitAbilityUpdateId = "";
++	std::string m_lastVoiExplicitAbilityName = "";
++	std::string m_lastVoiExplicitAbilityStatus = "inactive";
++	std::string m_lastVoiExplicitAbilityReason = "No explicit ability task requested";
++	uint64_t m_lastVoiExplicitAbilityActorTag = 0;
++	std::string m_lastVoiExplicitAbilityActorType = "";
++	uint64_t m_lastVoiExplicitAbilityTargetTag = 0;
++	CCPosition m_lastVoiExplicitAbilityTargetPosition = CCPosition();
++	int m_lastVoiExplicitAbilityAvailableCasterCount = 0;
++	int m_lastVoiExplicitAbilityPlannedCount = 0;
++	int m_lastVoiExplicitAbilitySubmittedCount = 0;
++	uint32_t m_lastVoiExplicitAbilityFrame = 0;
++	std::string m_lastVoiExplicitAbilityAction = "";
+ 	std::string m_voiTacticalNukeUpdateId = "";
+ 	std::string m_lastVoiTacticalNukeStatus = "inactive";
+ 	std::string m_lastVoiTacticalNukeReason = "No tactical nuke ability task requested";
+@@ -459,6 +472,19 @@ public:
+ 	int getVoiUnitRoleAttemptedCount() const { return m_lastVoiUnitRoleAttemptedCount; }
+ 	int getVoiUnitRoleExecutedCount() const { return m_lastVoiUnitRoleExecutedCount; }
+ 	uint32_t getVoiUnitRoleFrame() const { return m_lastVoiUnitRoleFrame; }
++	const std::string & getVoiExplicitAbilityUpdateId() const { return m_voiExplicitAbilityUpdateId; }
++	const std::string & getVoiExplicitAbilityName() const { return m_lastVoiExplicitAbilityName; }
++	const std::string & getVoiExplicitAbilityStatus() const { return m_lastVoiExplicitAbilityStatus; }
++	const std::string & getVoiExplicitAbilityReason() const { return m_lastVoiExplicitAbilityReason; }
++	uint64_t getVoiExplicitAbilityActorTag() const { return m_lastVoiExplicitAbilityActorTag; }
++	const std::string & getVoiExplicitAbilityActorType() const { return m_lastVoiExplicitAbilityActorType; }
++	uint64_t getVoiExplicitAbilityTargetTag() const { return m_lastVoiExplicitAbilityTargetTag; }
++	CCPosition getVoiExplicitAbilityTargetPosition() const { return m_lastVoiExplicitAbilityTargetPosition; }
++	int getVoiExplicitAbilityAvailableCasterCount() const { return m_lastVoiExplicitAbilityAvailableCasterCount; }
++	int getVoiExplicitAbilityPlannedCount() const { return m_lastVoiExplicitAbilityPlannedCount; }
++	int getVoiExplicitAbilitySubmittedCount() const { return m_lastVoiExplicitAbilitySubmittedCount; }
++	uint32_t getVoiExplicitAbilityFrame() const { return m_lastVoiExplicitAbilityFrame; }
++	const std::string & getVoiExplicitAbilityAction() const { return m_lastVoiExplicitAbilityAction; }
+ 	const std::string & getVoiTacticalNukeUpdateId() const { return m_voiTacticalNukeUpdateId; }
+ 	const std::string & getVoiTacticalNukeStatus() const { return m_lastVoiTacticalNukeStatus; }
+ 	const std::string & getVoiTacticalNukeReason() const { return m_lastVoiTacticalNukeReason; }
+@@ -500,6 +526,7 @@ public:
+ 	bool GetUnitAbilities(const sc2::Unit * unit, sc2::AvailableAbilities & outUnitAbilities) const;
+ 	void updateVoiTacticalNukeSquad();
+ 	void updateVoiTacticalNukeAction();
++	void updateVoiExplicitAbilityAction();
+ 	SquadData & getSquadData() { return m_squadData; }
+ 	const std::vector<CCTilePosition> & getMainBaseSiegePositions() const { return m_mainBaseSiegePositions; }
+ 	sc2::Units & getMainBaseSiegeTanks() { return m_mainBaseSiegeTanks; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index 09f10b746d6591453a756a549c5bec80c693901b..2e72e473f7529bff2cff3ffcfe82881096beaf4e 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -399,11 +399,19 @@ void GameCommander::writeVoiTelemetry() const
+         tacticalTaskConsumedBy = "CombatCommander";
+         const bool tacticalNukeRequested =
+             rawTacticalTaskAbility == "tactical_nuke";
++        const bool explicitAbilityRequested =
++            !rawTacticalTaskAbility.empty()
++            && !tacticalNukeRequested;
+         const bool nukeTelemetryMatchesUpdate =
+             !rawUpdateId.empty()
+             && m_combatCommander.getVoiTacticalNukeUpdateId() == rawUpdateId;
+-        tacticalTaskLastCommandFrame =
+-            m_combatCommander.getVoiTacticalNukeCastSubmissionFrame();
++        const bool explicitAbilityTelemetryMatchesUpdate =
++            !rawUpdateId.empty()
++            && m_combatCommander.getVoiExplicitAbilityUpdateId()
++                == rawUpdateId;
++        tacticalTaskLastCommandFrame = tacticalNukeRequested
++            ? m_combatCommander.getVoiTacticalNukeCastSubmissionFrame()
++            : m_combatCommander.getVoiExplicitAbilityFrame();
+         const bool castSubmissionFresh =
+             tacticalNukeRequested
+             && nukeTelemetryMatchesUpdate
+@@ -414,18 +422,50 @@ void GameCommander::writeVoiTelemetry() const
+             && m_combatCommander.getVoiTacticalNukeConfirmationCount() > 0
+             && isFreshTacticalTaskFrame(
+                 m_combatCommander.getVoiTacticalNukeConfirmationFrame());
+-        tacticalTaskActualCommandCount = castSubmissionFresh
+-            ? static_cast<uint32_t>(
+-                m_combatCommander.getVoiTacticalNukeCastSubmittedCount())
+-            : 0;
+-        tacticalTaskLastCommand = castSubmissionFresh
+-            ? m_combatCommander.getVoiTacticalNukeCastSubmittedAction()
+-            : "";
+-        if (!tacticalNukeRequested)
++        const bool explicitAbilitySubmissionFresh =
++            explicitAbilityRequested
++            && explicitAbilityTelemetryMatchesUpdate
++            && m_combatCommander.getVoiExplicitAbilitySubmittedCount() > 0
++            && isFreshTacticalTaskFrame(
++                m_combatCommander.getVoiExplicitAbilityFrame());
++        tacticalTaskActualCommandCount = tacticalNukeRequested
++            ? (castSubmissionFresh
++                ? static_cast<uint32_t>(
++                    m_combatCommander.getVoiTacticalNukeCastSubmittedCount())
++                : 0)
++            : (explicitAbilitySubmissionFresh
++                ? static_cast<uint32_t>(
++                    m_combatCommander.getVoiExplicitAbilitySubmittedCount())
++                : 0);
++        tacticalTaskLastCommand = tacticalNukeRequested
++            ? (castSubmissionFresh
++                ? m_combatCommander.getVoiTacticalNukeCastSubmittedAction()
++                : "")
++            : (explicitAbilitySubmissionFresh
++                ? m_combatCommander.getVoiExplicitAbilityAction()
++                : "");
++        if (explicitAbilitySubmissionFresh)
++        {
++            tacticalTaskStatus = "completed";
++            tacticalTaskReason =
++                "CombatCommander submitted the explicit ability through the SC2 command issue path";
++        }
++        else if (explicitAbilityRequested
++            && explicitAbilityTelemetryMatchesUpdate
++            && m_combatCommander.getVoiExplicitAbilityStatus()
++                == "refused")
+         {
+             tacticalTaskStatus = "refused";
+             tacticalTaskReason =
+-                "execute_ability currently supports tactical_task.ability=tactical_nuke";
++                m_combatCommander.getVoiExplicitAbilityReason();
++        }
++        else if (explicitAbilityRequested)
++        {
++            tacticalTaskStatus = "accepted";
++            tacticalTaskReason =
++                explicitAbilityTelemetryMatchesUpdate
++                ? m_combatCommander.getVoiExplicitAbilityReason()
++                : "Waiting for CombatCommander explicit ability evaluation";
+         }
+         else if (castConfirmationFresh)
+         {
+@@ -536,14 +576,59 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"active\":" << (m_voiPolicyActive && rawTacticalTaskType == "execute_ability" ? "true" : "false") << ","
+         << "\"task_id\":\"" << tacticalTaskId << "\","
+         << "\"ability\":\"" << tacticalTaskAbility << "\","
+-        << "\"ability_policy\":\"tactical_nuke\","
+-        << "\"status\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeStatus()) << "\","
+-        << "\"reason\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeReason()) << "\","
+-        << "\"update_id\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeUpdateId()) << "\","
+-        << "\"actor_tag\":" << m_combatCommander.getVoiTacticalNukeGhostTag() << ","
+-        << "\"location_intent\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeLocationIntent()) << "\","
+-        << "\"target_x\":" << m_combatCommander.getVoiTacticalNukeTarget().x << ","
+-        << "\"target_y\":" << m_combatCommander.getVoiTacticalNukeTarget().y << ","
++        << "\"ability_policy\":\"" << voiJsonEscape(rawTacticalTaskAbility) << "\","
++        << "\"status\":\"" << voiJsonEscape(
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeStatus()
++                : m_combatCommander.getVoiExplicitAbilityStatus()) << "\","
++        << "\"reason\":\"" << voiJsonEscape(
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeReason()
++                : m_combatCommander.getVoiExplicitAbilityReason()) << "\","
++        << "\"update_id\":\"" << voiJsonEscape(
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeUpdateId()
++                : m_combatCommander.getVoiExplicitAbilityUpdateId()) << "\","
++        << "\"actor_tag\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeGhostTag()
++                : m_combatCommander.getVoiExplicitAbilityActorTag()) << ","
++        << "\"actor_type\":\"" << voiJsonEscape(
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? "TERRAN_GHOST"
++                : m_combatCommander.getVoiExplicitAbilityActorType()) << "\","
++        << "\"target_tag\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? 0
++                : m_combatCommander.getVoiExplicitAbilityTargetTag()) << ","
++        << "\"available_caster_count\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeAvailableGhostCount()
++                : m_combatCommander.getVoiExplicitAbilityAvailableCasterCount()) << ","
++        << "\"planned_count\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeCastAttemptedCount()
++                : m_combatCommander.getVoiExplicitAbilityPlannedCount()) << ","
++        << "\"submitted_count\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeCastSubmittedCount()
++                : m_combatCommander.getVoiExplicitAbilitySubmittedCount()) << ","
++        << "\"last_action\":\"" << voiJsonEscape(
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeCastSubmittedAction()
++                : m_combatCommander.getVoiExplicitAbilityAction()) << "\","
++        << "\"location_intent\":\"" << voiJsonEscape(
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeLocationIntent()
++                : tacticalTaskLocationIntent) << "\","
++        << "\"target_x\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeTarget().x
++                : m_combatCommander.getVoiExplicitAbilityTargetPosition().x) << ","
++        << "\"target_y\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeTarget().y
++                : m_combatCommander.getVoiExplicitAbilityTargetPosition().y) << ","
+         << "\"target_anchor_x\":" << m_combatCommander.getVoiTacticalNukeTargetAnchor().x << ","
+         << "\"target_anchor_y\":" << m_combatCommander.getVoiTacticalNukeTargetAnchor().y << ","
+         << "\"target_anchor_distance\":" << m_combatCommander.getVoiTacticalNukeTargetAnchorDistance() << ","
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 879cec1ac87068c91ba42f690c2127ce9c1bc7fd..c80e8d72a08bca4d7adf5729763513a8e1ec383a 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -3489,6 +3489,12 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool taskSustainProduction = tacticalTaskActive && tacticalTaskType == "sustain_production";
+ 	const bool taskTechTransition = tacticalTaskActive && tacticalTaskType == "tech_transition";
+ 	const bool taskExpandCommandCenter = tacticalTaskActive && tacticalTaskType == "expand_or_land_command_center";
++	const bool taskExecuteExplicitAbility = tacticalTaskActive
++		&& tacticalTaskType == "execute_ability"
++		&& !tacticalTaskAbility.empty()
++		&& tacticalTaskAbility != "tactical_nuke";
++	const bool taskTechOrAbilityProduction =
++		taskTechTransition || taskExecuteExplicitAbility;
+ 	const float productionContinuityBias = m_bot.Commander().getVoiPolicyFloat("production.production_continuity_bias", 0.0f);
+ 	const bool continuousCompositionProduction = tacticalTaskActive
+ 		&& tacticalTaskType == "pressure_with_main_army"
+@@ -3510,6 +3516,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool taskTargetsScv = voiCommaListContains(tacticalProductionTargets, "TERRAN_SCV") || voiCommaListContains(tacticalProductionTargets, "SCV");
+ 	const bool taskTargetsSupplyDepot = voiCommaListContains(tacticalProductionTargets, "TERRAN_SUPPLYDEPOT");
+ 	const bool taskTargetsCommandCenter = voiCommaListContains(tacticalProductionTargets, "TERRAN_COMMANDCENTER");
++	const bool taskTargetsBarracks = voiCommaListContains(tacticalProductionTargets, "TERRAN_BARRACKS");
++	const bool taskTargetsBarracksTechLab = voiCommaListContains(tacticalProductionTargets, "BARRACKS_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_BARRACKSTECHLAB");
+ 	const bool taskTargetsGhostAcademy = voiCommaListContains(tacticalProductionTargets, "TERRAN_GHOSTACADEMY");
+ 	const bool taskTargetsFactory = voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORY");
+ 	const bool taskTargetsFactoryTechLab = voiCommaListContains(tacticalProductionTargets, "FACTORY_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORYTECHLAB");
+@@ -3518,6 +3526,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool taskTargetsStarportTechLab = voiCommaListContains(tacticalProductionTargets, "STARPORT_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORTTECHLAB");
+ 	const bool taskTargetsFusionCore = voiCommaListContains(tacticalProductionTargets, "TERRAN_FUSIONCORE");
+ 	const bool taskTargetsMarine = voiCommaListContains(tacticalProductionTargets, "TERRAN_MARINE");
++	const bool taskTargetsMarauder = voiCommaListContains(tacticalProductionTargets, "TERRAN_MARAUDER");
++	const bool taskTargetsReaper = voiCommaListContains(tacticalProductionTargets, "TERRAN_REAPER");
+ 	const bool taskTargetsGhost = voiCommaListContains(tacticalProductionTargets, "TERRAN_GHOST");
+ 	const bool taskTargetsNuke =
+ 		voiCommaListContains(tacticalProductionTargets, "TERRAN_NUKE")
+@@ -3527,13 +3537,19 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		&& tacticalTaskAbility == "tactical_nuke"
+ 		&& taskTargetsNuke;
+ 	const bool taskTargetsSiegeTank = voiCommaListContains(tacticalProductionTargets, "TERRAN_SIEGETANK");
++	const bool taskTargetsHellion = voiCommaListContains(tacticalProductionTargets, "TERRAN_HELLION");
+ 	const bool taskTargetsWidowMine = voiCommaListContains(tacticalProductionTargets, "TERRAN_WIDOWMINE");
++	const bool taskTargetsCyclone = voiCommaListContains(tacticalProductionTargets, "TERRAN_CYCLONE");
++	const bool taskTargetsThor = voiCommaListContains(tacticalProductionTargets, "TERRAN_THOR");
+ 	const bool taskTargetsMedivac = voiCommaListContains(tacticalProductionTargets, "TERRAN_MEDIVAC");
+ 	const bool taskTargetsViking = voiCommaListContains(tacticalProductionTargets, "TERRAN_VIKINGFIGHTER");
+ 	const bool taskTargetsLiberator = voiCommaListContains(tacticalProductionTargets, "TERRAN_LIBERATOR");
+ 	const bool taskTargetsBanshee = voiCommaListContains(tacticalProductionTargets, "TERRAN_BANSHEE");
+ 	const bool taskTargetsRaven = voiCommaListContains(tacticalProductionTargets, "TERRAN_RAVEN");
+ 	const bool taskTargetsBattlecruiser = voiCommaListContains(tacticalProductionTargets, "TERRAN_BATTLECRUISER");
++	const bool taskTargetsStimpack = voiCommaListContains(tacticalProductionTargets, "STIMPACK");
++	const bool taskTargetsGhostCloak = voiCommaListContains(tacticalProductionTargets, "GHOST_CLOAK");
++	const bool taskTargetsBansheeCloak = voiCommaListContains(tacticalProductionTargets, "BANSHEE_CLOAK");
++	const bool taskTargetsYamatoCannon = voiCommaListContains(tacticalProductionTargets, "YAMATO_CANNON");
+ 	const std::string doctrine = m_bot.Commander().getVoiPolicyString("strategy.doctrine", "");
+ 	const float compositionBioBias = m_bot.Commander().getVoiPolicyFloat("production.composition_biases.bio", 0.0f);
+ 	const float compositionMechBias = m_bot.Commander().getVoiPolicyFloat("production.composition_biases.mech", 0.0f);
+@@ -3551,67 +3567,81 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		(taskSustainProduction && taskTargetsScv) ? tacticalTaskPriority : 0.0f);
+ 	const float factoryBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_FACTORY", "production.production_facility_biases.TERRAN_FACTORY", "tech.structure_biases.TERRAN_FACTORY"),
+-		(taskTechTransition && taskTargetsFactory) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsFactory) ? tacticalTaskPriority : 0.0f);
+ 	const float starportBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_STARPORT", "production.production_facility_biases.TERRAN_STARPORT", "tech.structure_biases.TERRAN_STARPORT"),
+-		(taskTechTransition && taskTargetsStarport) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsStarport) ? tacticalTaskPriority : 0.0f);
+ 	const float commandCenterBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_COMMANDCENTER", "economy.expand_bias"),
+ 		(taskExpandCommandCenter || taskTargetsCommandCenter) ? tacticalTaskPriority : 0.0f);
+-	const float barracksBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_BARRACKS", "production.production_facility_biases.TERRAN_BARRACKS");
+-	const float barracksTechLabBias = voiMaxBias(m_bot, "production.queue_biases.BARRACKS_TECHLAB", "production.addon_biases.BARRACKS_TECHLAB");
++	const float barracksBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_BARRACKS", "production.production_facility_biases.TERRAN_BARRACKS"),
++		(taskTechOrAbilityProduction && taskTargetsBarracks) ? tacticalTaskPriority : 0.0f);
++	const float barracksTechLabBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.BARRACKS_TECHLAB", "production.addon_biases.BARRACKS_TECHLAB"),
++		(taskTechOrAbilityProduction && taskTargetsBarracksTechLab) ? tacticalTaskPriority : 0.0f);
+ 	const float marineBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_MARINE", "tech.unit_biases.TERRAN_MARINE"),
+-		(taskSustainProduction && taskTargetsMarine) ? tacticalTaskPriority : 0.0f);
+-	const float marauderBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_MARAUDER", "tech.unit_biases.TERRAN_MARAUDER");
+-	const float reaperBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_REAPER", "tech.unit_biases.TERRAN_REAPER");
++		((taskSustainProduction || taskTechOrAbilityProduction) && taskTargetsMarine) ? tacticalTaskPriority : 0.0f);
++	const float marauderBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_MARAUDER", "tech.unit_biases.TERRAN_MARAUDER"),
++		(taskTechOrAbilityProduction && taskTargetsMarauder) ? tacticalTaskPriority : 0.0f);
++	const float reaperBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_REAPER", "tech.unit_biases.TERRAN_REAPER"),
++		(taskTechOrAbilityProduction && taskTargetsReaper) ? tacticalTaskPriority : 0.0f);
+ 	const float ghostBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_GHOST", "tech.unit_biases.TERRAN_GHOST"),
+ 		std::max(
+-			(taskTechTransition && taskTargetsGhost) ? tacticalTaskPriority : 0.0f,
++			(taskTechOrAbilityProduction && taskTargetsGhost) ? tacticalTaskPriority : 0.0f,
+ 			taskExecuteTacticalNuke ? std::max(0.75f, tacticalTaskPriority) : 0.0f));
+ 	const float ghostAcademyBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_GHOSTACADEMY", "production.production_facility_biases.TERRAN_GHOSTACADEMY", "tech.structure_biases.TERRAN_GHOSTACADEMY"),
+ 		std::max(
+-			(taskTechTransition && taskTargetsGhostAcademy) ? tacticalTaskPriority : 0.0f,
++			(taskTechOrAbilityProduction && taskTargetsGhostAcademy) ? tacticalTaskPriority : 0.0f,
+ 			taskExecuteTacticalNuke ? std::max(0.75f, tacticalTaskPriority) : 0.0f));
+ 	const float tankBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_SIEGETANK", "tech.unit_biases.TERRAN_SIEGETANK"),
+-		(taskTechTransition && taskTargetsSiegeTank) ? tacticalTaskPriority : 0.0f);
+-	const float hellionBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_HELLION", "tech.unit_biases.TERRAN_HELLION");
++		(taskTechOrAbilityProduction && taskTargetsSiegeTank) ? tacticalTaskPriority : 0.0f);
++	const float hellionBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_HELLION", "tech.unit_biases.TERRAN_HELLION"),
++		(taskTechOrAbilityProduction && taskTargetsHellion) ? tacticalTaskPriority : 0.0f);
+ 	const float widowMineBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_WIDOWMINE", "tech.unit_biases.TERRAN_WIDOWMINE"),
+-		(taskTechTransition && taskTargetsWidowMine) ? tacticalTaskPriority : 0.0f);
+-	const float cycloneBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_CYCLONE", "tech.unit_biases.TERRAN_CYCLONE");
+-	const float thorBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_THOR", "tech.unit_biases.TERRAN_THOR");
++		(taskTechOrAbilityProduction && taskTargetsWidowMine) ? tacticalTaskPriority : 0.0f);
++	const float cycloneBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_CYCLONE", "tech.unit_biases.TERRAN_CYCLONE"),
++		(taskTechOrAbilityProduction && taskTargetsCyclone) ? tacticalTaskPriority : 0.0f);
++	const float thorBias = std::max(
++		voiMaxBias(m_bot, "production.queue_biases.TERRAN_THOR", "tech.unit_biases.TERRAN_THOR"),
++		(taskTechOrAbilityProduction && taskTargetsThor) ? tacticalTaskPriority : 0.0f);
+ 	const float medivacBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_MEDIVAC", "tech.unit_biases.TERRAN_MEDIVAC"),
+-		(taskTechTransition && taskTargetsMedivac) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsMedivac) ? tacticalTaskPriority : 0.0f);
+ 	const float vikingBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_VIKINGFIGHTER", "tech.unit_biases.TERRAN_VIKINGFIGHTER");
+ 	const float liberatorBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_LIBERATOR", "tech.unit_biases.TERRAN_LIBERATOR"),
+-		(taskTechTransition && taskTargetsLiberator) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsLiberator) ? tacticalTaskPriority : 0.0f);
+ 	const float bansheeBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_BANSHEE", "tech.unit_biases.TERRAN_BANSHEE"),
+-		(taskTechTransition && taskTargetsBanshee) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsBanshee) ? tacticalTaskPriority : 0.0f);
+ 	const float ravenBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_RAVEN", "tech.unit_biases.TERRAN_RAVEN"),
+-		(taskTechTransition && taskTargetsRaven) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsRaven) ? tacticalTaskPriority : 0.0f);
+ 	const float battlecruiserBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_BATTLECRUISER", "tech.unit_biases.TERRAN_BATTLECRUISER"),
+-		(taskTechTransition && taskTargetsBattlecruiser) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsBattlecruiser) ? tacticalTaskPriority : 0.0f);
+ 	const float factoryTechLabBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.FACTORY_TECHLAB", "production.addon_biases.FACTORY_TECHLAB"),
+-		(taskTechTransition && taskTargetsFactoryTechLab) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsFactoryTechLab) ? tacticalTaskPriority : 0.0f);
+ 	const float armoryBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_ARMORY", "production.production_facility_biases.TERRAN_ARMORY", "tech.structure_biases.TERRAN_ARMORY"),
+-		(taskTechTransition && taskTargetsArmory) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsArmory) ? tacticalTaskPriority : 0.0f);
+ 	const float starportTechLabBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.STARPORT_TECHLAB", "production.addon_biases.STARPORT_TECHLAB"),
+-		(taskTechTransition && taskTargetsStarportTechLab) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsStarportTechLab) ? tacticalTaskPriority : 0.0f);
+ 	const float fusionCoreBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_FUSIONCORE", "production.production_facility_biases.TERRAN_FUSIONCORE", "tech.structure_biases.TERRAN_FUSIONCORE"),
+-		(taskTechTransition && taskTargetsFusionCore) ? tacticalTaskPriority : 0.0f);
++		(taskTechOrAbilityProduction && taskTargetsFusionCore) ? tacticalTaskPriority : 0.0f);
+ 	const float starportReactorBias = voiMaxBias(m_bot, "production.addon_biases.STARPORT_REACTOR");
+ 	const float supplyProviderBias = std::max(
+ 		std::max(
+@@ -3682,7 +3712,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float effectiveVikingBias = std::max({
+ 		vikingBias,
+ 		compositionAntiAirBias,
+-		(taskTechTransition && taskTargetsViking) ? tacticalTaskPriority : 0.0f,
++		(taskTechOrAbilityProduction && taskTargetsViking) ? tacticalTaskPriority : 0.0f,
+ 		adaptiveSupportBias("TERRAN_VIKINGFIGHTER") });
+ 	const float effectiveLiberatorBias = std::max({
+ 		liberatorBias,
+@@ -3709,7 +3739,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool wantsFactory = taskTechTransition || taskExecuteTacticalNuke || wantsFactoryDoctrine || wantsStarport || effectiveFactoryBias > 0.25f || effectiveTankBias > 0.25f || effectiveHellionBias > 0.25f || effectiveWidowMineBias > 0.25f || effectiveCycloneBias > 0.25f || effectiveThorBias > 0.25f;
+ 	const bool wantsCommandCenter = taskExpandCommandCenter || wantsMacroDoctrine || effectiveCommandCenterBias > 0.45f;
+ 	const bool wantsFactoryTechLab =
+-		(taskTechTransition && (taskTargetsFactoryTechLab || taskTargetsSiegeTank))
++		(taskTechOrAbilityProduction && (taskTargetsFactoryTechLab || taskTargetsSiegeTank))
+ 		|| wantsFactoryTechLabDoctrine
+ 		|| effectiveFactoryTechLabBias > 0.25f
+ 		|| effectiveTankBias > 0.25f
+@@ -3719,6 +3749,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool wantsBarracksTechLab =
+ 		doctrine == "bio_pressure"
+ 		|| effectiveBarracksTechLabBias > 0.25f
++		|| (taskExecuteExplicitAbility
++			&& (taskTargetsStimpack
++				|| taskTargetsGhost
++				|| taskTargetsGhostCloak))
+ 		|| taskExecuteTacticalNuke;
+ 	const bool wantsStarportTechLab = effectiveStarportTechLabBias > 0.25f;
+ 	const bool wantsFusionCore = effectiveFusionCoreBias > 0.25f;
+@@ -4230,6 +4263,40 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
++	if (taskTargetsStimpack
++		&& barracksTechLabCount > 0
++		&& !isTechQueuedOrStarted(MetaTypeEnum::Stimpack)
++		&& !m_bot.Strategy().isUpgradeCompleted(sc2::UPGRADE_ID::STIMPACK)
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::Stimpack,
++			"explicit_ability_stimpack_upgrade",
++			true))
++	{
++		return;
++	}
++	if (taskTargetsGhostCloak
++		&& ghostAcademyCount > 0
++		&& !isTechQueuedOrStarted(MetaTypeEnum::PersonalCloaking)
++		&& !m_bot.Strategy().isUpgradeCompleted(
++			sc2::UPGRADE_ID::PERSONALCLOAKING)
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::PersonalCloaking,
++			"explicit_ability_ghost_cloak_upgrade",
++			true))
++	{
++		return;
++	}
++	if (taskTargetsBansheeCloak
++		&& starportTechLabCount > 0
++		&& !isTechQueuedOrStarted(MetaTypeEnum::BansheeCloak)
++		&& !m_bot.Strategy().isUpgradeCompleted(sc2::UPGRADE_ID::BANSHEECLOAK)
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::BansheeCloak,
++			"explicit_ability_banshee_cloak_upgrade",
++			true))
++	{
++		return;
++	}
++	if (taskTargetsYamatoCannon
++		&& fusionCoreCount > 0
++		&& !isTechQueuedOrStarted(MetaTypeEnum::YamatoCannon)
++		&& !m_bot.Strategy().isUpgradeCompleted(
++			sc2::UPGRADE_ID::BATTLECRUISERENABLESPECIALIZATIONS)
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::YamatoCannon,
++			"explicit_ability_yamato_upgrade",
++			true))
++	{
++		return;
++	}
+ 	const int desiredBarracksCount = continuousCompositionProduction && taskTargetsMarine
+ 		? 1 + (m_bot.GetFreeMinerals() >= 800 ? 1 : 0) + (m_bot.GetFreeMinerals() >= 1800 ? 1 : 0)
+ 		: barracksCount;
+diff --git a/src/MetaTypeEnum.h b/src/MetaTypeEnum.h
+index 12fc77c..b9c972e 100644
+--- a/src/MetaTypeEnum.h
++++ b/src/MetaTypeEnum.h
+@@ -67,6 +67,7 @@ namespace MetaTypeEnum
+ 		static MetaType TerranVehicleAndShipArmorsLevel3;
+ 		static MetaType Stimpack;
++		static MetaType PersonalCloaking;
+ 		static MetaType CombatShield;
+ 		static MetaType InfernalPreIgniter;
+ 		static MetaType BansheeCloak;
+diff --git a/src/MetaTypeEnum.cpp b/src/MetaTypeEnum.cpp
+index 2caf6b2..383dc36 100644
+--- a/src/MetaTypeEnum.cpp
++++ b/src/MetaTypeEnum.cpp
+@@ -61,6 +61,7 @@ MetaType MetaTypeEnum::TerranVehicleAndShipArmorsLevel2;
+ MetaType MetaTypeEnum::TerranVehicleAndShipArmorsLevel3;
+ MetaType MetaTypeEnum::Stimpack;
++MetaType MetaTypeEnum::PersonalCloaking;
+ MetaType MetaTypeEnum::CombatShield;
+ MetaType MetaTypeEnum::InfernalPreIgniter;
+ MetaType MetaTypeEnum::BansheeCloak;
+@@ -173,6 +174,7 @@ void MetaTypeEnum::initialize(CCBot & m_bot)
+ 	MetaTypeEnum::TerranVehicleAndShipArmorsLevel2 = MetaType("TerranVehicleAndShipArmorsLevel2", m_bot);
+ 	MetaTypeEnum::TerranVehicleAndShipArmorsLevel3 = MetaType("TerranVehicleAndShipArmorsLevel3", m_bot);
+ 	MetaTypeEnum::Stimpack = MetaType("Stimpack", m_bot);
++	MetaTypeEnum::PersonalCloaking = MetaType("PersonalCloaking", m_bot);
+ 	MetaTypeEnum::CombatShield = MetaType("ShieldWall", m_bot);
+ 	MetaTypeEnum::InfernalPreIgniter = MetaType("HighCapacityBarrels", m_bot);
+ 	MetaTypeEnum::BansheeCloak = MetaType("BansheeCloak", m_bot);

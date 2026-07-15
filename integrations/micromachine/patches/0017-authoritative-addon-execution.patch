@@ -1,0 +1,47 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2384,16 +2384,11 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+ 
+ bool BuildingManager::isVoiAddonFootprintClear(const Building & b, const CCPosition & producerPosition)
+ {
+-	for (int x = 2; x <= 3; ++x)
++	const CCTilePosition producerTile = Util::GetTilePosition(producerPosition);
++	if (producerTile == CCTilePosition()
++		|| !queryCanPlaceVoiProductionAddonFootprint(m_bot, producerTile))
+ 	{
+-		for (int y = -1; y <= 0; ++y)
+-		{
+-			const CCPosition addonTile = producerPosition + CCPosition(static_cast<float>(x), static_cast<float>(y));
+-			if (!getBuildingPlacer().buildable(b.type, addonTile.x, addonTile.y, true))
+-			{
+-				return false;
+-			}
+-		}
++		return false;
+ 	}
+ 
+ 	const CCPosition addonCenter = producerPosition + CCPosition(2.5f, -0.5f);
+@@ -3318,7 +3313,10 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 		return true;
+ 	}
+ 
+-	const uint32_t producerCooldown = 22u * 60u * 5u;
++	// A blocked producer may become usable after a mobile unit or temporary
++	// reservation clears. Keep the retry bounded, but do not quarantine it for
++	// most of the game and continuously replace it with more factories.
++	const uint32_t producerCooldown = 22u * 15u;
+ 	m_addonProducerCooldownUntil[producerTag] = currentFrame + producerCooldown;
+ 	m_addonPlacementRetries.erase(producerTag);
+ 	m_addonRelocations.erase(producerTag);
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -2995,6 +2995,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		&& factoryTechLabCount == 0
+ 		&& eligibleFactoryAddonProducers == 0
+ 		&& blockedFactoryAddonProducer
++		&& factoryCount < 2
+ 		&& !factoryReplacementPending)
+ 	{
+ 		if (queueVoiDoctrineItem(

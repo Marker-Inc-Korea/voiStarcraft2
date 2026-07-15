@@ -39,11 +39,23 @@ class PolicyModulationSource(str, Enum):
     SYSTEM = "system"
 
 
+class CommandLayer(str, Enum):
+    """Commander intent layer used to reduce concurrent live commands."""
+
+    MACRO = "macro"
+    OPERATION = "operation"
+    MICRO = "micro"
+    EMERGENCY = "emergency"
+
+
 POLICY_OVERRIDE_LEVELS: Final[frozenset[str]] = frozenset(
     level.value for level in PolicyOverrideLevel
 )
 POLICY_MODULATION_SOURCES: Final[frozenset[str]] = frozenset(
     source.value for source in PolicyModulationSource
+)
+MICROMACHINE_COMMAND_LAYERS: Final[frozenset[str]] = frozenset(
+    layer.value for layer in CommandLayer
 )
 
 POLICY_MODULATION_TTL_MIN_SECONDS: Final[int] = 1
@@ -77,9 +89,50 @@ MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
         "sustain_production",
         "tech_transition",
         "expand_or_land_command_center",
+        "execute_ability",
     }
 )
 """Bounded task labels consumed by MicroMachine managers, never raw commands."""
+
+MICROMACHINE_TACTICAL_ABILITIES: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "stimpack",
+        "marine_stimpack",
+        "marauder_stimpack",
+        "kd8_charge",
+        "emp",
+        "snipe",
+        "ghost_cloak",
+        "ghost_decloak",
+        "tactical_nuke",
+        "widow_mine_burrow",
+        "widow_mine_unburrow",
+        "lock_on",
+        "siege_mode",
+        "unsiege",
+        "hellbat_mode",
+        "hellion_mode",
+        "thor_high_impact_mode",
+        "thor_explosive_mode",
+        "medivac_afterburners",
+        "medivac_heal",
+        "medivac_load",
+        "medivac_unload_all",
+        "viking_fighter_mode",
+        "viking_assault_mode",
+        "liberator_defender_mode",
+        "liberator_fighter_mode",
+        "banshee_cloak",
+        "banshee_decloak",
+        "auto_turret",
+        "interference_matrix",
+        "anti_armor_missile",
+        "yamato",
+        "tactical_jump",
+    }
+)
+"""Semantic ability names consumed through ``tactical_task.ability``."""
 
 MICROMACHINE_LIFETIME_MODES: Final[frozenset[str]] = frozenset(
     {
@@ -107,6 +160,7 @@ MICROMACHINE_COMPLETION_CONDITIONS: Final[frozenset[str]] = frozenset(
         "target_reached",
         "enemy_observed",
         "retreat_confirmed",
+        "ability_cast",
         "cancelled_by_user",
         "ttl_expired",
     }
@@ -119,6 +173,9 @@ MICROMACHINE_UNIT_ROLES: Final[frozenset[str]] = frozenset(
         "frontline",
         "kite",
         "focus_fire",
+        "spellcaster",
+        "ambush",
+        "zone_control",
         "siege_support",
         "contain",
         "defensive_hold",
@@ -134,6 +191,7 @@ MICROMACHINE_UNIT_ROLES: Final[frozenset[str]] = frozenset(
         "capital_pressure",
         "yamato_high_value",
         "tactical_jump_escape",
+        "execute_ability",
         "support",
         "evac",
         "transport",
@@ -142,7 +200,15 @@ MICROMACHINE_UNIT_ROLES: Final[frozenset[str]] = frozenset(
 """Safe semantic unit roles; managers still resolve exact unit tags/actions."""
 
 MICROMACHINE_ABILITY_POLICIES: Final[frozenset[str]] = frozenset(
-    {"", "never", "if_available", "high_value_target", "escape", "commit"}
+    {
+        "",
+        "never",
+        "if_available",
+        "high_value_target",
+        "escape",
+        "commit",
+        *MICROMACHINE_TACTICAL_ABILITIES,
+    }
 )
 """Bounded ability-use policies; C++ managers still gate availability and target validity."""
 
@@ -247,9 +313,22 @@ MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "reaper": "TERRAN_REAPER",
     "reapers": "TERRAN_REAPER",
     "사신": "TERRAN_REAPER",
+    "ghost": "TERRAN_GHOST",
+    "ghosts": "TERRAN_GHOST",
+    "유령": "TERRAN_GHOST",
+    "ghostacademy": "TERRAN_GHOSTACADEMY",
+    "유령사관학교": "TERRAN_GHOSTACADEMY",
+    "ghostcloak": "GHOST_CLOAK",
+    "personalcloaking": "GHOST_CLOAK",
+    "유령은폐": "GHOST_CLOAK",
+    "개인은폐": "GHOST_CLOAK",
     "hellion": "TERRAN_HELLION",
     "hellions": "TERRAN_HELLION",
     "화염차": "TERRAN_HELLION",
+    "widowmine": "TERRAN_WIDOWMINE",
+    "widowmines": "TERRAN_WIDOWMINE",
+    "땅거미지뢰": "TERRAN_WIDOWMINE",
+    "지뢰": "TERRAN_WIDOWMINE",
     "cyclone": "TERRAN_CYCLONE",
     "cyclones": "TERRAN_CYCLONE",
     "사이클론": "TERRAN_CYCLONE",
@@ -267,6 +346,9 @@ MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "viking": "TERRAN_VIKINGFIGHTER",
     "vikings": "TERRAN_VIKINGFIGHTER",
     "바이킹": "TERRAN_VIKINGFIGHTER",
+    "liberator": "TERRAN_LIBERATOR",
+    "liberators": "TERRAN_LIBERATOR",
+    "해방선": "TERRAN_LIBERATOR",
     "banshee": "TERRAN_BANSHEE",
     "banshees": "TERRAN_BANSHEE",
     "밴시": "TERRAN_BANSHEE",
@@ -281,6 +363,19 @@ MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "fusioncore": "TERRAN_FUSIONCORE",
     "fusion": "TERRAN_FUSIONCORE",
     "융합로": "TERRAN_FUSIONCORE",
+    "nuke": "TERRAN_NUKE",
+    "nuclearstrike": "TERRAN_NUKE",
+    "tacticalnuke": "TERRAN_NUKE",
+    "핵": "TERRAN_NUKE",
+    "핵미사일": "TERRAN_NUKE",
+    "bansheecloak": "BANSHEE_CLOAK",
+    "cloakingfield": "BANSHEE_CLOAK",
+    "밴시은폐": "BANSHEE_CLOAK",
+    "은폐장": "BANSHEE_CLOAK",
+    "yamatocannon": "YAMATO_CANNON",
+    "yamato": "YAMATO_CANNON",
+    "야마토": "YAMATO_CANNON",
+    "야마토포": "YAMATO_CANNON",
     "factorytechlab": "FACTORY_TECHLAB",
     "factorylab": "FACTORY_TECHLAB",
     "factoryreactor": "FACTORY_REACTOR",
@@ -296,6 +391,10 @@ MICROMACHINE_ALLOWED_TASK_TOKENS: Final[frozenset[str]] = frozenset(
         *MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES.values(),
         "STIMPACK",
         "COMBATSHIELD",
+        "GHOST_CLOAK",
+        "BANSHEE_CLOAK",
+        "YAMATO_CANNON",
+        "TERRAN_NUKE",
     }
 )
 """Allow-list for rich DSL unit/building/addon/upgrade tokens."""
@@ -306,12 +405,15 @@ MICROMACHINE_ALLOWED_UNIT_TOKENS: Final[frozenset[str]] = frozenset(
         "TERRAN_MARINE",
         "TERRAN_MARAUDER",
         "TERRAN_REAPER",
+        "TERRAN_GHOST",
         "TERRAN_HELLION",
+        "TERRAN_WIDOWMINE",
         "TERRAN_CYCLONE",
         "TERRAN_THOR",
         "TERRAN_SIEGETANK",
         "TERRAN_MEDIVAC",
         "TERRAN_VIKINGFIGHTER",
+        "TERRAN_LIBERATOR",
         "TERRAN_BANSHEE",
         "TERRAN_RAVEN",
         "TERRAN_BATTLECRUISER",
@@ -328,6 +430,7 @@ MICROMACHINE_ALLOWED_BUILDING_TOKENS: Final[frozenset[str]] = frozenset(
         "TERRAN_STARPORT",
         "TERRAN_ENGINEERINGBAY",
         "TERRAN_ARMORY",
+        "TERRAN_GHOSTACADEMY",
         "TERRAN_FUSIONCORE",
         "TERRAN_BUNKER",
         "BARRACKS_TECHLAB",
@@ -906,7 +1009,9 @@ class TacticalScopeModulation:
         object.__setattr__(
             self,
             "unit_classes",
-            _validate_string_tuple("unit_classes", self.unit_classes),
+            _sorted_unique_tokens(
+                _validate_string_tuple("unit_classes", self.unit_classes)
+            ),
         )
         object.__setattr__(
             self,
@@ -1040,6 +1145,7 @@ class TacticalTaskModulation:
 
     task_type: str = ""
     task_id: str = ""
+    ability: str = ""
     unit_classes: tuple[str, ...] = ()
     production_targets: tuple[str, ...] = ()
     location_intent: str = ""
@@ -1068,8 +1174,17 @@ class TacticalTaskModulation:
             )
         object.__setattr__(
             self,
+            "ability",
+            _optional_choice(
+                "ability",
+                self.ability,
+                set(MICROMACHINE_TACTICAL_ABILITIES),
+            ),
+        )
+        object.__setattr__(
+            self,
             "unit_classes",
-            _canonicalize_task_tokens(
+            _canonicalize_task_token_set(
                 _validate_string_tuple("unit_classes", self.unit_classes)
             ),
         )
@@ -1149,11 +1264,18 @@ class TacticalTaskModulation:
         )
         if not self.task_type and self._has_task_payload():
             raise ValueError("task_type is required when tactical_task payload is set.")
+        if self.task_type == "execute_ability" and not self.ability:
+            raise ValueError("ability is required for execute_ability tactical tasks.")
+        if self.ability and self.task_type != "execute_ability":
+            raise ValueError(
+                "tactical_task.ability requires task_type='execute_ability'."
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "task_type": self.task_type,
             "task_id": self.task_id,
+            "ability": self.ability,
             "unit_classes": list(self.unit_classes),
             "production_targets": list(self.production_targets),
             "location_intent": self.location_intent,
@@ -1168,6 +1290,7 @@ class TacticalTaskModulation:
     def _has_task_payload(self) -> bool:
         return (
             bool(self.task_id)
+            or bool(self.ability)
             or bool(self.unit_classes)
             or bool(self.production_targets)
             or bool(self.location_intent)
@@ -1504,6 +1627,7 @@ class PolicyModulationVector:
     goal: str
     source: PolicyModulationSource | str = PolicyModulationSource.HUMAN
     override_level: PolicyOverrideLevel | str = PolicyOverrideLevel.BIAS
+    command_layer: CommandLayer | str = ""
     confidence: float = 1.0
     ttl_seconds: int = 120
     strategy: StrategyModulation = field(default_factory=StrategyModulation)
@@ -1585,16 +1709,12 @@ class PolicyModulationVector:
         object.__setattr__(
             self,
             "composition_requirements",
-            _validate_object_sequence(
-                "composition_requirements",
-                self.composition_requirements,
-                CompositionRequirement,
-            ),
+            _validate_composition_requirements(self.composition_requirements),
         )
         object.__setattr__(
             self,
             "unit_roles",
-            _validate_object_sequence("unit_roles", self.unit_roles, UnitRoleAssignment),
+            _validate_unit_role_assignments(self.unit_roles),
         )
         object.__setattr__(
             self,
@@ -1621,6 +1741,14 @@ class PolicyModulationVector:
             object.__setattr__(self, "rationale", _require_text("rationale", self.rationale))
         if self.override_level is PolicyOverrideLevel.EMERGENCY and self.ttl_seconds > 60:
             raise ValueError("emergency modulation ttl_seconds cannot exceed 60.")
+        object.__setattr__(
+            self,
+            "command_layer",
+            _coerce_command_layer(
+                self.command_layer,
+                inferred=_infer_command_layer(self),
+            ),
+        )
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> "PolicyModulationVector":
@@ -1633,6 +1761,7 @@ class PolicyModulationVector:
             goal=_text_from_mapping(mapping, "goal"),
             source=mapping.get("source", PolicyModulationSource.HUMAN.value),
             override_level=mapping.get("override_level", PolicyOverrideLevel.BIAS.value),
+            command_layer=mapping.get("command_layer", ""),
             confidence=mapping.get("confidence", 1.0),
             ttl_seconds=_int_from_mapping(mapping, "ttl_seconds", 120),
             strategy=_domain_from_mapping(mapping, "strategy", StrategyModulation),
@@ -1693,6 +1822,7 @@ class PolicyModulationVector:
             "goal": self.goal,
             "source": self.source.value,
             "override_level": self.override_level.value,
+            "command_layer": self.command_layer.value,
             "confidence": self.confidence,
             "ttl_seconds": self.ttl_seconds,
             "strategy": self.strategy.to_dict(),
@@ -1751,6 +1881,73 @@ def _coerce_override_level(value: object) -> PolicyOverrideLevel:
         ) from exc
 
 
+def _coerce_command_layer(
+    value: object,
+    *,
+    inferred: CommandLayer,
+) -> CommandLayer:
+    if value in ("", None):
+        return inferred
+    if isinstance(value, CommandLayer):
+        normalized_layer = value
+    elif type(value) is not str:
+        raise ValueError("command_layer must be a string.")
+    else:
+        normalized = value.strip().lower()
+        try:
+            normalized_layer = CommandLayer(normalized)
+        except ValueError as exc:
+            raise ValueError(
+                "unsupported command_layer: "
+                f"{value!r}. Supported: {', '.join(sorted(MICROMACHINE_COMMAND_LAYERS))}."
+            ) from exc
+    if normalized_layer is not inferred:
+        raise ValueError(
+            "command_layer conflicts with semantic command content: "
+            f"declared={normalized_layer.value}, inferred={inferred.value}."
+        )
+    return normalized_layer
+
+
+def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
+    emergency = vector.emergency.to_dict()
+    if (
+        vector.override_level is PolicyOverrideLevel.EMERGENCY
+        or any(emergency.values())
+    ):
+        return CommandLayer.EMERGENCY
+    if vector.tactical_task.task_type == "execute_ability":
+        return CommandLayer.MICRO
+    if vector.tactical_task.task_type in {
+        "scout_with_units",
+        "pressure_with_main_army",
+    }:
+        return CommandLayer.OPERATION
+    if vector.tactical_task.task_type in {
+        "sustain_production",
+        "tech_transition",
+        "expand_or_land_command_center",
+    }:
+        # These tasks are owned by the strategy/production pipeline. Passive
+        # defense, rally, or placement context may accompany the standing
+        # order without turning it into a finite army operation.
+        return CommandLayer.MACRO
+    if (
+        vector.route_intent.route_type
+        or vector.route_intent.avoid_enemy_strength
+        or vector.target_intent.target_type
+        or vector.target_intent.priority > 0.0
+        or vector.scope.army_group
+        or vector.scope.unit_classes
+        or vector.scope.location_intent
+        or vector.scope.min_units > 0
+        or vector.scope.max_units > 0
+        or vector.scope.require_safety_margin > 0.0
+    ):
+        return CommandLayer.OPERATION
+    return CommandLayer.MACRO
+
+
 def _coerce_biases(value: object) -> WeightedBiases:
     if isinstance(value, WeightedBiases):
         return value
@@ -1803,6 +2000,52 @@ def _validate_object_sequence(
         else:
             raise ValueError(f"{name} must contain mappings or {item_type.__name__}.")
     return tuple(result)
+
+
+def _validate_composition_requirements(
+    values: object,
+) -> tuple[CompositionRequirement, ...]:
+    requirements = _validate_object_sequence(
+        "composition_requirements",
+        values,
+        CompositionRequirement,
+    )
+    merged: dict[str, CompositionRequirement] = {}
+    for requirement in requirements:
+        assert isinstance(requirement, CompositionRequirement)
+        previous = merged.get(requirement.unit_type)
+        if previous is None:
+            merged[requirement.unit_type] = requirement
+            continue
+        total_count = previous.count + requirement.count
+        if total_count > 200:
+            raise ValueError(
+                "combined composition requirement count cannot exceed 200 "
+                f"for {requirement.unit_type}."
+            )
+        merged[requirement.unit_type] = CompositionRequirement(
+            unit_type=requirement.unit_type,
+            count=total_count,
+            role=requirement.role or previous.role,
+        )
+    return tuple(merged.values())
+
+
+def _validate_unit_role_assignments(
+    values: object,
+) -> tuple[UnitRoleAssignment, ...]:
+    assignments = _validate_object_sequence(
+        "unit_roles",
+        values,
+        UnitRoleAssignment,
+    )
+    merged: dict[str, UnitRoleAssignment] = {}
+    for assignment in assignments:
+        assert isinstance(assignment, UnitRoleAssignment)
+        previous = merged.get(assignment.unit_type)
+        if previous is None or assignment.priority >= previous.priority:
+            merged[assignment.unit_type] = assignment
+    return tuple(merged.values())
 
 
 def _object_sequence_from_mapping(
@@ -1979,6 +2222,14 @@ def _canonicalize_task_tokens(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(_canonicalize_task_token(value) for value in values)
 
 
+def _canonicalize_task_token_set(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(sorted({_canonicalize_task_token(value) for value in values}))
+
+
+def _sorted_unique_tokens(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(sorted(set(values)))
+
+
 def _canonicalize_allowed_task_tokens(
     field_name: str,
     values: tuple[str, ...],
@@ -2019,6 +2270,9 @@ def _canonicalize_task_token(value: str) -> str:
         "STARPORT_REACTOR",
         "STIMPACK",
         "COMBATSHIELD",
+        "GHOST_CLOAK",
+        "BANSHEE_CLOAK",
+        "YAMATO_CANNON",
     }:
         return upper
     normalized = "".join(character for character in token.lower() if character.isalnum())

@@ -1,0 +1,360 @@
+diff --git a/src/BuildOrderQueue.cpp b/src/BuildOrderQueue.cpp
+--- a/src/BuildOrderQueue.cpp
++++ b/src/BuildOrderQueue.cpp
+@@ -39,7 +39,7 @@ MM::BuildOrderItem BuildOrderQueue::getNextHighestPriorityItem()
+     return m_queue[m_queue.size() - 1 - m_numSkippedItems];
+ }
+ 
+-int BuildOrderQueue::getCountOfType(const MetaType & type)
++int BuildOrderQueue::getCountOfType(const MetaType & type) const
+ {
+ 	int count = 0;
+ 	for (auto item : m_queue)
+@@ -247,4 +247,4 @@ bool MM::BuildOrderItem::operator < (const MM::BuildOrderItem & x) const
+ bool MM::BuildOrderItem::operator == (const MM::BuildOrderItem & x) const
+ {
+ 	return type.getUnitType().getAPIUnitType() == x.type.getUnitType().getAPIUnitType() && priority == x.priority;
+-}
+\ No newline at end of file
++}
+diff --git a/src/BuildOrderQueue.h b/src/BuildOrderQueue.h
+--- a/src/BuildOrderQueue.h
++++ b/src/BuildOrderQueue.h
+@@ -47,7 +47,7 @@ public:
+     bool isEmpty();
+     MM::BuildOrderItem getHighestPriorityItem();	// returns the highest priority item
+     MM::BuildOrderItem getNextHighestPriorityItem();	// returns the highest priority item
+-	int getCountOfType(const MetaType & type);	// returns the number of items of a type in the queue
++	int getCountOfType(const MetaType & type) const;	// returns the number of items of a type in the queue
+ 
+     bool canSkipItem();
+     std::string getQueueInformation() const;
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -656,6 +656,13 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"last_supply_provider_command_frame\":" << m_productionManager.getLastVoiSupplyProviderCommandFrame() << ","
+         << "\"last_supply_provider_command_kind\":\"" << voiJsonEscape(m_productionManager.getLastVoiSupplyProviderCommandKind()) << "\","
+         << "\"last_supply_provider_command_update_id\":\"" << voiJsonEscape(m_productionManager.getLastVoiSupplyProviderCommandUpdateId()) << "\","
++        << "\"free_minerals\":" << m_bot.GetFreeMinerals() << ","
++        << "\"free_gas\":" << m_bot.GetFreeGas() << ","
++        << "\"current_supply\":" << m_bot.GetCurrentSupply() << ","
++        << "\"max_supply\":" << m_bot.GetMaxSupply() << ","
++        << "\"command_center_placement_retry_count\":" << m_productionManager.getVoiCommandCenterPlacementRetryCount() << ","
++        << "\"command_center_next_placement_retry_frame\":" << m_productionManager.getVoiCommandCenterNextPlacementRetryFrame() << ","
++        << "\"command_center_placement_quarantined\":" << (m_productionManager.isVoiCommandCenterPlacementQuarantined() ? "true" : "false") << ","
+         << "\"bounded_intervention\":" << (m_voiPolicyActive && productionDoctrineFresh ? "true" : "false") << ","
+         << "\"consumed_axes\":\"strategy.doctrine,production.queue_biases.*,production.queue_biases.TERRAN_SUPPLYDEPOT,economy.supply_buffer_bias,production.composition_biases.*,production.production_facility_biases.*,production.addon_biases.*,production.tech_switch_urgency,tech.unit_biases.*,tech.structure_biases.*,tactical_task.task_type,tactical_task.production_targets,tactical_task.priority\""
+         << "},"
+@@ -699,6 +706,10 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"last_trace_current_order_target_tag\":" << m_voiWorkerLastTraceCurrentOrderTargetTag << ","
+         << "\"last_trace_current_order_target_x\":" << m_voiWorkerLastTraceCurrentOrderTargetX << ","
+         << "\"last_trace_current_order_target_y\":" << m_voiWorkerLastTraceCurrentOrderTargetY << ","
++        << "\"gas_workers_per_refinery_target\":" << m_bot.Workers().getGasWorkersTarget() << ","
++        << "\"completed_refinery_count\":" << m_bot.Workers().getCompletedRefineryCount() << ","
++        << "\"total_gas_worker_target\":" << m_bot.Workers().getTotalGasWorkersTarget() << ","
++        << "\"actual_gas_workers\":" << m_bot.Workers().getNumGasWorkers() << ","
+         << "\"bounded_intervention\":" << (workerRepeatGuardActive && m_voiWorkerRepeatedCommandSuppressions > 0 ? "true" : "false") << ","
+         << "\"consumed_axes\":\"" << workerConsumedAxes << "\""
+         << "},"
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -1446,12 +1446,17 @@ void ProductionManager::deferPlacementRetry(const MetaType & type, const std::st
+ 	const int retryCount = ++m_placementRetryCount[unitType];
+ 	const bool isVoiTransitionBuilding = voiDoctrineRequestsTechTransition(m_bot, type);
+ 	const bool isVoiExpandCommandCenter = type == MetaTypeEnum::CommandCenter && isVoiExpandMacroActive();
++	const bool isExplicitVoiExpandCommandCenter =
++		isVoiExpandCommandCenter && isVoiExplicitExpandCommandCenterRequested();
+ 	uint32_t retryDelayFrames = 22 * 15;
+ 	if (isVoiExpandCommandCenter)
+ 	{
+-		// Expansion placement can fail transiently while base/path safety data catches up.
+-		// Do not push VOI macro intent into a multi-minute generic building cooldown.
+-		retryDelayFrames = retryCount <= 2 ? 22 * 5 : 22 * 10;
++		// Explicit user expansion orders retain short retries. Passive continuous
++		// macro expansion is quarantined after three failures so it cannot churn
++		// the queue or steal attention from supply and army production.
++		retryDelayFrames = isExplicitVoiExpandCommandCenter
++			? (retryCount <= 2 ? 22 * 5 : 22 * 10)
++			: (retryCount <= 2 ? 22 * 5 : 22 * 60);
+ 	}
+ 	else if (isVoiTransitionBuilding)
+ 	{
+@@ -1466,7 +1471,21 @@ void ProductionManager::deferPlacementRetry(const MetaType & type, const std::st
+ 		retryDelayFrames = 22 * 240;
+ 	}
+ 	m_nextPlacementRetryFrame[unitType] = currentFrame + retryDelayFrames;
+-	Util::Log(__FUNCTION__, "Deferring placement retry for " + type.getName() + " until frame " + std::to_string(m_nextPlacementRetryFrame[unitType]) + " after " + reason + " count=" + std::to_string(retryCount) + " voi_expand_macro_short_retry=" + std::to_string(isVoiExpandCommandCenter) + ".", m_bot);
++	Util::Log(
++		__FUNCTION__,
++		"Deferring placement retry for " + type.getName()
++			+ " until frame " + std::to_string(m_nextPlacementRetryFrame[unitType])
++			+ " after " + reason
++			+ " count=" + std::to_string(retryCount)
++			+ " voi_expand_macro=" + std::to_string(isVoiExpandCommandCenter)
++			+ " explicit_expand=" + std::to_string(isExplicitVoiExpandCommandCenter)
++			+ " passive_expand_quarantine="
++			+ std::to_string(
++				isVoiExpandCommandCenter
++				&& !isExplicitVoiExpandCommandCenter
++				&& retryCount >= 3)
++			+ ".",
++		m_bot);
+ }
+ 
+ void ProductionManager::putImportantBuildOrderItemsInQueue()
+@@ -2343,6 +2362,40 @@ bool ProductionManager::isVoiExpandMacroActive() const
+ 	return std::max(commandCenterBias, macroBias) > 0.45f;
+ }
+ 
++bool ProductionManager::isVoiExplicitExpandCommandCenterRequested() const
++{
++	if (!m_bot.Commander().isVoiPolicyActive())
++	{
++		return false;
++	}
++
++	const std::string tacticalTaskType =
++		m_bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
++	const std::string tacticalProductionTargets =
++		m_bot.Commander().getVoiPolicyString("tactical_task.production_targets", "");
++	const std::string buildingTaskType =
++		m_bot.Commander().getVoiPolicyString("building_tasks.0.building_type", "");
++	return (tacticalTaskType == "expand_or_land_command_center"
++			&& voiTacticalTaskWithinDuration(m_bot))
++		|| m_bot.Commander().getVoiPolicyString("strategy.doctrine", "") == "expand_macro"
++		|| voiCommaListContains(tacticalProductionTargets, "TERRAN_COMMANDCENTER")
++		|| buildingTaskType == "TERRAN_COMMANDCENTER";
++}
++
++bool ProductionManager::isVoiPassiveExpandCommandCenterQuarantined() const
++{
++	if (isVoiExplicitExpandCommandCenterRequested())
++	{
++		return false;
++	}
++
++	const auto unitType = sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER;
++	const auto retryCountIt = m_placementRetryCount.find(unitType);
++	return retryCountIt != m_placementRetryCount.end()
++		&& retryCountIt->second >= 3
++		&& isPlacementRetryCoolingDown(MetaTypeEnum::CommandCenter);
++}
++
+ bool ProductionManager::shouldReserveForVoiExpandCommandCenter() const
+ {
+ 	if (!isVoiExpandMacroActive() || !m_queue.contains(MetaTypeEnum::CommandCenter))
+@@ -2369,13 +2422,38 @@ bool ProductionManager::shouldReserveForVoiExpandCommandCenter() const
+ 	{
+ 		return false;
+ 	}
++	if (isVoiPassiveExpandCommandCenterQuarantined())
++	{
++		return false;
++	}
+ 
+ 	return m_bot.GetFreeMinerals() < MetaTypeEnum::CommandCenter.getUnitType().mineralPrice();
+ }
+ 
+ void ProductionManager::prioritizeVoiExpandCommandCenter()
+ {
+-	if (!isVoiExpandMacroActive() || !m_queue.contains(MetaTypeEnum::CommandCenter))
++	if (!isVoiExpandMacroActive())
++	{
++		return;
++	}
++	if (isVoiPassiveExpandCommandCenterQuarantined())
++	{
++		m_queue.removeAllOfType(MetaTypeEnum::CommandCenter);
++		if (m_bot.GetCurrentFrame() - m_lastVoiExpandReserveLogFrame >= 224)
++		{
++			m_lastVoiExpandReserveLogFrame = m_bot.GetCurrentFrame();
++			Util::Log(
++				__FUNCTION__,
++				"VOI quarantined passive expand_macro CommandCenter until frame "
++					+ std::to_string(getVoiCommandCenterNextPlacementRetryFrame())
++					+ " after placement failures="
++					+ std::to_string(getVoiCommandCenterPlacementRetryCount())
++					+ "; standing army production remains unblocked.",
++				m_bot);
++		}
++		return;
++	}
++	if (!m_queue.contains(MetaTypeEnum::CommandCenter))
+ 	{
+ 		return;
+ 	}
+@@ -2432,6 +2510,13 @@ void ProductionManager::prioritizeVoiExpandCommandCenter()
+ 
+ bool ProductionManager::queueVoiDoctrineItem(const MetaType & type, const std::string & action, bool highestPriority, bool blocking)
+ {
++	if (type == MetaTypeEnum::CommandCenter
++		&& isVoiPassiveExpandCommandCenterQuarantined())
++	{
++		m_queue.removeAllOfType(type);
++		recordVoiDoctrineConsumption(type, action, "blocked_passive_expand_quarantine");
++		return false;
++	}
+ 	if (m_queue.contains(type))
+ 	{
+ 		const std::string doctrine = m_bot.Commander().getVoiPolicyString("strategy.doctrine", "");
+@@ -3547,11 +3632,9 @@ void ProductionManager::enforceBarracksProductionContinuity()
+ 		m_bot,
+ 		"TERRAN_MARINE",
+ 		m_voiCompositionProductionWaveMultiplier);
+-	int representedMarineCount = voiRepresentedUnitCount(m_bot, MetaTypeEnum::Marine);
+-	if (m_queue.contains(MetaTypeEnum::Marine))
+-	{
+-		representedMarineCount++;
+-	}
++	const int representedMarineCount =
++		voiRepresentedUnitCount(m_bot, MetaTypeEnum::Marine)
++		+ m_queue.getCountOfType(MetaTypeEnum::Marine);
+ 	const bool exactMarineCompositionPending = requestedMarineCount > representedMarineCount;
+ 	if (requestedMarineCount > 0 && !exactMarineCompositionPending)
+ 	{
+@@ -3659,12 +3742,13 @@ bool ProductionManager::shouldHoldBarracksContinuityForVoiTechTransition() const
+ 	{
+ 		return false;
+ 	}
+-	const int requestedMarineCount = voiRequestedCompositionCount(m_bot, "TERRAN_MARINE");
+-	int representedMarineCount = voiRepresentedUnitCount(m_bot, MetaTypeEnum::Marine);
+-	if (m_queue.contains(MetaTypeEnum::Marine))
+-	{
+-		representedMarineCount++;
+-	}
++	const int requestedMarineCount = voiCompositionProductionTargetCount(
++		m_bot,
++		"TERRAN_MARINE",
++		m_voiCompositionProductionWaveMultiplier);
++	const int representedMarineCount =
++		voiRepresentedUnitCount(m_bot, MetaTypeEnum::Marine)
++		+ m_queue.getCountOfType(MetaTypeEnum::Marine);
+ 	if (requestedMarineCount > representedMarineCount)
+ 	{
+ 		return false;
+@@ -3724,6 +3808,25 @@ bool ProductionManager::shouldHoldBarracksContinuityForVoiTechTransition() const
+ 	return false;
+ }
+ 
++int ProductionManager::getVoiCommandCenterPlacementRetryCount() const
++{
++	const auto retryIt =
++		m_placementRetryCount.find(sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER);
++	return retryIt == m_placementRetryCount.end() ? 0 : retryIt->second;
++}
++
++uint32_t ProductionManager::getVoiCommandCenterNextPlacementRetryFrame() const
++{
++	const auto retryIt =
++		m_nextPlacementRetryFrame.find(sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER);
++	return retryIt == m_nextPlacementRetryFrame.end() ? 0 : retryIt->second;
++}
++
++bool ProductionManager::isVoiCommandCenterPlacementQuarantined() const
++{
++	return isVoiPassiveExpandCommandCenterQuarantined();
++}
++
+ std::vector<sc2::UNIT_TYPEID> ProductionManager::getIdleImportantProductionBuildingTypes(bool underConstructionConsideredIdle, bool constructingAddonConsideredIdle)
+ {
+ 	std::vector<sc2::UNIT_TYPEID> idleImportantProductionBuildingTypes;
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -83,6 +83,8 @@ class ProductionManager
+ 	void	refreshVoiCompositionProductionWaveMultiplier();
+ 	void	reconcileVoiExactCompositionQueue();
+ 	bool	isVoiExpandMacroActive() const;
++	bool	isVoiExplicitExpandCommandCenterRequested() const;
++	bool	isVoiPassiveExpandCommandCenterQuarantined() const;
+ 	bool	shouldReserveForVoiExpandCommandCenter() const;
+ 	void	prioritizeVoiExpandCommandCenter();
+ 	void	recordVoiDoctrineConsumption(const MetaType & type, const std::string & action, const std::string & evidence);
+@@ -165,4 +167,7 @@ public:
+ 	const std::string & getLastVoiSupplyRecoveryReason() const { return m_lastVoiSupplyRecoveryReason; }
+ 	const std::string & getLastVoiSupplyProviderCommandKind() const { return m_lastVoiSupplyProviderCommandKind; }
+ 	const std::string & getLastVoiSupplyProviderCommandUpdateId() const { return m_lastVoiSupplyProviderCommandUpdateId; }
++	int getVoiCommandCenterPlacementRetryCount() const;
++	uint32_t getVoiCommandCenterNextPlacementRetryFrame() const;
++	bool isVoiCommandCenterPlacementQuarantined() const;
+ };
+diff --git a/src/WorkerManager.cpp b/src/WorkerManager.cpp
+--- a/src/WorkerManager.cpp
++++ b/src/WorkerManager.cpp
+@@ -1091,7 +1091,7 @@ void WorkerManager::handleGasWorkers()
+ 			}
+ 
+ 			int numAssigned = m_workerData.getNumAssignedWorkers(refinery);
+-			while (numAssigned < gasWorkersTarget && m_workerData.getWorkerJobCount(WorkerJobs::Gas) < gasWorkersTarget)
++			while (numAssigned < gasWorkersTarget)
+ 			{
+ 				auto mineralWorker = getMineralWorker(refinery);
+ 				if (!mineralWorker.isValid())
+@@ -1124,7 +1124,7 @@ void WorkerManager::handleGasWorkers()
+ 			}
+ 
+ 			int numAssigned = m_workerData.getNumAssignedWorkers(refinery);
+-			while (numAssigned < gasWorkersTarget && m_workerData.getWorkerJobCount(WorkerJobs::Gas) < gasWorkersTarget)
++			while (numAssigned < gasWorkersTarget)
+ 			{
+ 				auto mineralWorker = getMineralWorker(refinery);
+ 				if (!mineralWorker.isValid())
+@@ -2405,6 +2405,26 @@ int WorkerManager::getGasWorkersTarget() const
+ 	return gasWorkersTarget;
+ }
+ 
++int WorkerManager::getCompletedRefineryCount() const
++{
++	int completedRefineries = 0;
++	for (const auto & unit : m_bot.UnitInfo().getUnits(Players::Self))
++	{
++		if (unit.isValid()
++			&& unit.isCompleted()
++			&& unit.getType().isRefinery())
++		{
++			completedRefineries++;
++		}
++	}
++	return completedRefineries;
++}
++
++int WorkerManager::getTotalGasWorkersTarget() const
++{
++	return getCompletedRefineryCount() * gasWorkersTarget;
++}
++
+ Unit WorkerManager::getDepotAtBasePosition(CCPosition basePosition) const
+ {
+ 	for (auto & unit : m_bot.UnitInfo().getUnits(Players::Self))
+@@ -2676,7 +2696,7 @@ int WorkerManager::getNumMineralWorkers()
+     return m_workerData.getWorkerJobCount(WorkerJobs::Minerals);
+ }
+ 
+-int WorkerManager::getNumGasWorkers()
++int WorkerManager::getNumGasWorkers() const
+ {
+     return m_workerData.getWorkerJobCount(WorkerJobs::Gas);
+ }
+diff --git a/src/WorkerManager.h b/src/WorkerManager.h
+--- a/src/WorkerManager.h
++++ b/src/WorkerManager.h
+@@ -79,7 +79,7 @@ public:
+     void stopRepairing(const Unit & worker);
+ 
+     int  getNumMineralWorkers();
+-    int  getNumGasWorkers();
++    int  getNumGasWorkers() const;
+     int  getNumWorkers();
+ 	const std::set<Unit> & getWorkers() const;
+ 	WorkerData & getWorkerData() const;
+@@ -98,6 +98,8 @@ public:
+ 	Unit getMineralWorker(Unit refinery) const;
+ 	Unit getGasWorker(Unit refinery, bool checkReturningCargo, bool checkInsideRefinery) const;
+ 	int  getGasWorkersTarget() const;
++	int  getCompletedRefineryCount() const;
++	int  getTotalGasWorkersTarget() const;
+ 	Unit getDepotAtBasePosition(CCPosition basePosition) const;
+ 	int  getWorkerCountAtBasePosition(CCPosition basePosition) const;
+     Unit getClosestDepot(Unit worker) const;

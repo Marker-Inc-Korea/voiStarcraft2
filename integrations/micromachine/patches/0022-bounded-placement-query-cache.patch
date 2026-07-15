@@ -1,0 +1,173 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -588,6 +588,31 @@ int voiMacroTileKey(const CCTilePosition & position)
+ 	return (position.x * 10000) + position.y;
+ }
+ 
++std::map<std::string, CCTilePosition> & voiMacroPlacementCache()
++{
++	static std::map<std::string, CCTilePosition> cache;
++	return cache;
++}
++
++std::string voiMacroPlacementCacheKey(
++	const Building & building,
++	bool includeAddonTiles,
++	bool ignoreExtraBorder,
++	bool forceSameHeight)
++{
++	return Util::GetMapName()
++		+ "|" + std::to_string(static_cast<int>(building.type.getAPIUnitType()))
++		+ "|" + std::to_string(building.desiredPosition.x)
++		+ "," + std::to_string(building.desiredPosition.y)
++		+ "|addon=" + (includeAddonTiles ? "1" : "0")
++		+ "|border=" + (ignoreExtraBorder ? "1" : "0")
++		+ "|height=" + (forceSameHeight ? "1" : "0");
++}
++
+ bool findVoiSc2QueryMacroPlacement(
+ 	CCBot & bot,
+ 	const Building & building,
+@@ -606,6 +631,29 @@ bool findVoiSc2QueryMacroPlacement(
+ 		return false;
+ 	}
+ 
++	const std::string cacheKey = voiMacroPlacementCacheKey(
++		building,
++		includeAddonTiles,
++		ignoreExtraBorder,
++		forceSameHeight);
++	auto & placementCache = voiMacroPlacementCache();
++	auto cached = placementCache.find(cacheKey);
++	if (cached != placementCache.end())
++	{
++		if (isVoiSc2MacroPlacementSafe(
++			bot,
++			building.type,
++			cached->second,
++			false,
++			includeAddonTiles,
++			ignoreExtraBorder,
++			true))
++		{
++			selected = cached->second;
++			Util::Log(source, "VOI SC2 Query macro placement reused validated cache for " + building.type.getName() + " final_x=" + std::to_string(selected.x) + " final_y=" + std::to_string(selected.y), bot);
++			return true;
++		}
++		placementCache.erase(cached);
++	}
++
+ 	std::vector<CCTilePosition> anchors;
+ 	std::set<int> seenAnchors;
+ 	auto addAnchor = [&](const CCTilePosition & anchor) {
+@@ -613,6 +661,10 @@ bool findVoiSc2QueryMacroPlacement(
+ 		{
+ 			return;
+ 		}
++		if (anchors.size() >= 8)
++		{
++			return;
++		}
+ 		const int key = voiMacroTileKey(anchor);
+ 		if (seenAnchors.insert(key).second)
+ 		{
+@@ -668,8 +720,10 @@ bool findVoiSc2QueryMacroPlacement(
+ 	const CCPosition desiredPosition = Util::GetPosition(building.desiredPosition);
+ 	const float desiredHeight = forceSameHeight ? Util::TerrainHeight(building.desiredPosition) : 0.0f;
+-	constexpr size_t maxQueries = 900;
+-	const size_t maxTilesPerAnchor = isVoiSupplyRecoveryDepot(bot, building.type) ? 5000 : 2200;
++	const bool supplyRecovery = isVoiSupplyRecoveryDepot(bot, building.type);
++	const size_t maxQueries = supplyRecovery ? 192 : 96;
++	const size_t maxTilesPerAnchor = supplyRecovery ? 640 : 320;
+ 
+ 	auto tryAddCandidate = [&](const CCTilePosition & candidate, bool allowCombatInfluence, bool ignoreReservedForCandidate) {
+ 		if (candidate == CCTilePosition() ||
+@@ -736,7 +790,7 @@ bool findVoiSc2QueryMacroPlacement(
+ 	auto collectSpiralCandidates = [&](bool allowCombatInfluence, bool ignoreReservedForCandidate) {
+ 		for (const auto & anchor : anchors)
+ 		{
+-			for (int radius = 2; radius <= 72 && queries.size() < maxQueries; radius += 2)
++			for (int radius = 2; radius <= 32 && queries.size() < maxQueries; radius += 2)
+ 			{
+ 				for (int dx = -radius; dx <= radius && queries.size() < maxQueries; dx += 2)
+ 				{
+@@ -864,6 +918,7 @@ bool findVoiSc2QueryMacroPlacement(
+ 	}
+ 
+ 	selected = best.finalPosition;
++	placementCache[cacheKey] = selected;
+ 	Util::Log(source,
+ 		"VOI SC2 Query macro placement selected " + building.type.getName() +
+ 		" final_x=" + std::to_string(selected.x) +
+@@ -4547,17 +4602,10 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool ch
+     }
+ 	else
+ 	{
+-		// get a position within our region
+-		// TODO: put back in special pylon / cannon spacing
+-		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
+-		buildingLocation = m_buildingPlacer.getBuildLocationNear(b, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
+-		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
+-		m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
+ 		Building placementBuilding = b;
+ 		CCTilePosition voiBuildingTaskAnchor;
+ 		bool voiBuildingTaskAllowNearestFallback = true;
+ 		const bool hasVoiBuildingTaskPlacement = resolveVoiBuildingTaskPlacement(m_bot, b, voiBuildingTaskAnchor, voiBuildingTaskAllowNearestFallback, __FUNCTION__);
+ 		const bool voiBuildingTaskBlocksFallback = !voiBuildingTaskAllowNearestFallback;
++		bool usedVoiQueryPlacement = false;
+ 		if (hasVoiBuildingTaskPlacement)
+ 		{
+ 			placementBuilding.desiredPosition = voiBuildingTaskAnchor;
+@@ -4573,24 +4621,27 @@ CCTilePosition BuildingManager::getBuildingLocation(const Building & b, bool ch
+ 		}
+ 		else
+ 		{
+-			buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
+-		}
+-		m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
+-		if (!voiBuildingTaskBlocksFallback &&
+-			shouldUseVoiSc2MacroPlacement(m_bot, b.type) &&
+-			(!m_bot.Map().isValidTile(buildingLocation) ||
+-			 buildingLocation == CCTilePosition() ||
+-			 !isVoiSc2MacroPlacementSafe(m_bot, b.type, buildingLocation, false, includeAddonTiles, ignoreExtraBorder, true)))
+-		{
+-			CCTilePosition queryLocation;
+-			if (findVoiSc2QueryMacroPlacement(m_bot, placementBuilding, includeAddonTiles, ignoreExtraBorder, forceSameHeight, queryLocation, __FUNCTION__))
++			if (shouldUseVoiSc2MacroPlacement(m_bot, b.type))
+ 			{
+-				buildingLocation = queryLocation;
++				CCTilePosition queryLocation;
++				usedVoiQueryPlacement = findVoiSc2QueryMacroPlacement(
++					m_bot,
++					placementBuilding,
++					includeAddonTiles,
++					ignoreExtraBorder,
++					forceSameHeight,
++					queryLocation,
++					__FUNCTION__);
++				if (usedVoiQueryPlacement)
++				{
++					buildingLocation = queryLocation;
++				}
++			}
++			if (!usedVoiQueryPlacement)
++			{
++				m_bot.StartProfiling("0.8.3.1.3 getBuildLocationNear");
++				buildingLocation = m_buildingPlacer.getBuildLocationNear(placementBuilding, false, checkInfluenceMap, includeAddonTiles, ignoreExtraBorder, forceSameHeight);
++				m_bot.StopProfiling("0.8.3.1.3 getBuildLocationNear");
+ 			}
+ 		}
+ 	}
+diff --git a/src/BuildingPlacer.cpp b/src/BuildingPlacer.cpp
+--- a/src/BuildingPlacer.cpp
++++ b/src/BuildingPlacer.cpp
+@@ -307,7 +307,7 @@ CCTilePosition BuildingPlacer::getBuildLocationNear(const Building & b, bool ig
+ {
+ 	//If the space is not walkable, look around for a walkable space. The result may not be the most optimal location.
+ 	const bool effectiveCheckInfluenceMap = checkInfluenceMap && m_bot.GetCurrentFrame() > 224;
+-	const int LOCAL_SEARCH_RADIUS = 60;
++	const int LOCAL_SEARCH_RADIUS = m_bot.Commander().isVoiPolicyActive() ? 24 : 60;
+ 	const bool canUsePlacementQuery = !b.type.isGeyser() && !b.type.isAddon() && !b.type.isResourceDepot();
+ 	float desiredHeight = 0.0f;
+ 	if (forceSameHeight)

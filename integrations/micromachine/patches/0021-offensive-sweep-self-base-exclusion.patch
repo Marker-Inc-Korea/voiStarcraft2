@@ -1,0 +1,99 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -5020,18 +5020,103 @@ CCPosition CombatCommander::exploreMap()
+ 	if (!m_bot.Strategy().shouldProduceAntiAirOffense())
+ 		m_bot.Strategy().setShouldProduceAntiAirOffense(true);
+ 
+-	const CCPosition basePosition = Util::GetPosition(m_bot.Bases().getBasePosition(Players::Enemy, m_currentBaseExplorationIndex));
++	const auto & baseLocations = m_bot.Bases().getBaseLocations();
++	if (baseLocations.empty())
++	{
++		return voiFarthestEnemyStartPosition(m_bot);
++	}
++
++	const BaseLocation * selfStartingBase =
++		m_bot.Bases().getPlayerStartingBaseLocation(Players::Self);
++	const auto & selfOccupiedBases =
++		m_bot.Bases().getOccupiedBaseLocations(Players::Self);
++	std::vector<BaseLocation *> offensiveCandidates;
++	std::set<BaseLocation *> selectedCandidates;
++
++	auto isOffensiveCandidate = [&](BaseLocation * baseLocation)
++	{
++		if (baseLocation == nullptr
++			|| baseLocation == selfStartingBase
++			|| baseLocation->isOccupiedByPlayer(Players::Self))
++		{
++			return false;
++		}
++
++		const CCPosition candidatePosition = baseLocation->getPosition();
++		if (!voiIsRemoteCombatTarget(m_bot, candidatePosition, 32.0f))
++		{
++			return false;
++		}
++		for (const auto selfBase : selfOccupiedBases)
++		{
++			if (selfBase != nullptr
++				&& Util::DistSq(candidatePosition, selfBase->getPosition())
++					< 18.0f * 18.0f)
++			{
++				return false;
++			}
++		}
++		return true;
++	};
++	auto addCandidates = [&](bool requireEnemyOccupied, bool requireUnexplored)
++	{
++		for (auto baseLocation : baseLocations)
++		{
++			if (!isOffensiveCandidate(baseLocation)
++				|| selectedCandidates.find(baseLocation) != selectedCandidates.end()
++				|| (requireEnemyOccupied
++					&& !baseLocation->isOccupiedByPlayer(Players::Enemy))
++				|| (requireUnexplored && baseLocation->isExplored()))
++			{
++				continue;
++			}
++			offensiveCandidates.push_back(baseLocation);
++			selectedCandidates.insert(baseLocation);
++		}
++	};
++
++	// Base locations are already ordered from the enemy side. Preserve that
++	// ordering while preferring real enemy occupancy, then unexplored remote
++	// bases, and only then previously explored remote cleanup positions.
++	addCandidates(true, false);
++	addCandidates(false, true);
++	addCandidates(false, false);
++
++	if (offensiveCandidates.empty())
++	{
++		const CCPosition enemyStart = voiFarthestEnemyStartPosition(m_bot);
++		if (voiIsRemoteCombatTarget(m_bot, enemyStart, 32.0f))
++		{
++			return enemyStart;
++		}
++		return m_bot.Map().center();
++	}
++
++	m_currentBaseExplorationIndex %= offensiveCandidates.size();
++	CCPosition basePosition =
++		offensiveCandidates[m_currentBaseExplorationIndex]->getPosition();
+ 	for (auto & unit : m_combatUnits)
+ 	{
+ 		if (Util::DistSq(unit.getPosition(), basePosition) < 3.f * 3.f)
+ 		{
+-			m_currentBaseExplorationIndex = (m_currentBaseExplorationIndex + 1) % m_bot.Bases().getBaseLocations().size();
+-			return Util::GetPosition(m_bot.Bases().getBasePosition(Players::Enemy, m_currentBaseExplorationIndex));
++			m_currentBaseExplorationIndex =
++				(m_currentBaseExplorationIndex + 1)
++				% offensiveCandidates.size();
++			basePosition =
++				offensiveCandidates[m_currentBaseExplorationIndex]->getPosition();
++			break;
+ 		}
+ 	}
+ 	return basePosition;
+ }

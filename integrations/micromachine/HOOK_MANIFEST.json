@@ -8,6 +8,258 @@
     "kv": "latest_modulation.kv",
     "telemetry": "latest_telemetry.json"
   },
+  "patch_bundle": [
+    {
+      "path": "patches/0001-macos-latest-s2client-policy-blackboard.patch",
+      "order": 1,
+      "scope": "s2client-api linkage, libvoxelbot build bridge, and VOI blackboard runtime hook"
+    },
+    {
+      "path": "patches/0002-live-tactical-operation-fixes.patch",
+      "order": 2,
+      "scope": "live tactical operation ownership, rally/launch, siege, scout, and Viking fixes"
+    },
+    {
+      "path": "patches/0003-production-live-qa-blockers.patch",
+      "order": 3,
+      "scope": "production, mobility, worker-order, focus-fire, kiting, and live QA blocker fixes"
+    },
+    {
+      "path": "patches/0004-live-operation-state-machine.patch",
+      "order": 4,
+      "scope": "operation state-machine latch, invalid action, morph availability, producer ownership, LAND target, and proxy Barracks grounding fixes"
+    },
+    {
+      "path": "patches/0005-addon-relocation-recovery.patch",
+      "order": 5,
+      "scope": "grounded LAND-query prevention, bounded addon relocation search, safe producer recovery landing, ownership cleanup, and addon-only producer cooldown"
+    },
+    {
+      "path": "patches/0006-grounded-addon-candidate-fix.patch",
+      "order": 6,
+      "scope": "trust BuildingPlacer producer-plus-addon validation before lift, remove redundant grounded unit-distance rejection, and reserve SC2 LAND queries for flying producers"
+    },
+    {
+      "path": "patches/0007-guaranteed-producer-grounding.patch",
+      "order": 7,
+      "scope": "grounded producer type validation, specialized/generic LAND ability resolution, bounded local-footprint fallback for SC2 query false negatives, original-position fallback, finite addon-flight timeout, producer-only emergency LAND search, and post-landing ownership release"
+    },
+    {
+      "path": "patches/0008-emergency-land-query-fallback.patch",
+      "order": 8,
+      "scope": "landing-specific static footprint validation, exact dynamic collision checks, and alternating nonqueued LAND commands when SC2 placement and availability queries both report false negatives"
+    },
+    {
+      "path": "patches/0009-grounded-production-and-observed-targeting.patch",
+      "order": 9,
+      "scope": "producer-specific LAND only, grounded addon-footprint clearance, continuous macro planning after supply or worker queueing, observed-enemy targeting with combat-scout gating, and launched-operation continuity after casualties or temporary target loss"
+    },
+    {
+      "path": "patches/0010-exact-composition-production-progress.patch",
+      "order": 10,
+      "scope": "exact Marine composition progress capped at requested count, two-unit combat-scout bootstrap, single-unit fresh-observation scouting, and Factory prerequisite closure for Starport unit production"
+    },
+    {
+      "path": "patches/0011-production-resource-operation-persistence.patch",
+      "order": 11,
+      "scope": "grounded production buildings, consumed gas policy, exact all-Terran combat compositions, producer-specific addon requirements, observed-target combat, bounded regroup/relaunch, and Ghost/Widow Mine/Liberator role micro"
+    },
+    {
+      "path": "patches/0012-live-operation-unblock.patch",
+      "order": 12,
+      "scope": "blocked addon-producer quarantine, one-shot addon-clear Factory replacement, enemy-start candidate combat scouting with stalled-route rotation, target-evidence classification, and flank completion transition"
+    },
+    {
+      "path": "patches/0013-stable-flank-stage-latch.patch",
+      "order": 13,
+      "scope": "operation-stable flank and safe-path stage selection with a 60-percent arrival gate before advancing to the final observed target"
+    },
+    {
+      "path": "patches/0014-production-staging-and-observed-operation.patch",
+      "order": 14,
+      "scope": "home production staging, static addon-footprint validation, repeatable Factory replacement, semantic operation lifetime, autonomous combat scouting, observed-enemy operation latching, and safe advance through temporary local contact loss"
+    },
+    {
+      "path": "patches/0015-addon-query-footprint-validation.patch",
+      "order": 15,
+      "scope": "exact Terran production-addon tile validation for terrain buildability, creep, structures, minerals, and geysers before SC2 body-placement queries"
+    },
+    {
+      "path": "patches/0016-authoritative-addon-placement-query.patch",
+      "order": 16,
+      "scope": "SC2-authoritative batched body and 2x2 addon-footprint placement queries for Barracks, Factory, and Starport macro construction"
+    },
+    {
+      "path": "patches/0017-authoritative-addon-execution.patch",
+      "order": 17,
+      "scope": "SC2-authoritative addon-footprint validation at command execution, short producer retry quarantine, and bounded addon-clear Factory replacement"
+    },
+    {
+      "path": "patches/0018-continuous-army-macro.patch",
+      "order": 18,
+      "scope": "continuous composition-ratio production waves, macro worker continuity, proactive supply use, and hard-capped Barracks, Factory, and Starport scaling"
+    },
+    {
+      "path": "patches/0019-continuous-army-economy-scaling.patch",
+      "order": 19,
+      "scope": "gas-demand-aware Refinery scaling, worker-saturation Command Center expansion, and gas-flow-based Factory and Starport scaling for continuous mixed armies"
+    },
+    {
+      "path": "patches/0020-standing-composition-reinforcement-waves.patch",
+      "order": 20,
+      "scope": "standing exact-composition operations preserve launched MainAttack units and atomically add complete home-staged reinforcement waves without an implicit permanent unit cap"
+    },
+    {
+      "path": "patches/0021-offensive-sweep-self-base-exclusion.patch",
+      "order": 21,
+      "scope": "offensive sweep candidate selection excludes self starting, self occupied, and home-adjacent bases while preferring observed enemy and remote unexplored bases"
+    },
+    {
+      "path": "patches/0022-bounded-placement-query-cache.patch",
+      "order": 22,
+      "scope": "validated macro placement cache, bounded authoritative SC2 query budgets, one placement pass, and bounded legacy fallback search"
+    },
+    {
+      "path": "patches/0023-production-facility-stability-and-tank-recovery.patch",
+      "order": 23,
+      "scope": "policy-wide Barracks/Factory/Starport no-lift guard, continuous-army supply buffering, third Factory addon recovery, and tank-tech gas priority over Vikings"
+    },
+    {
+      "path": "patches/0024-balanced-composition-wave-production.patch",
+      "order": 24,
+      "scope": "per-unit minimum completed-wave production with an operation-scoped monotonic latch so surplus Marines cannot inflate Tank targets and combat losses cannot strand incomplete home reinforcements"
+    },
+    {
+      "path": "patches/0025-exact-composition-production-unblock.patch",
+      "order": 25,
+      "scope": "exact-composition off-target unit suppression, nonblocking expansion until the first requested wave is represented, and rate-limited production-building lift refusal diagnostics"
+    },
+    {
+      "path": "patches/0026-continuous-combat-production-relaunch.patch",
+      "order": 26,
+      "scope": "legacy strategy unit-picker isolation for exact compositions, nonblocking expansion throughout standing army production, bounded reconciliation diagnostics, survivor relaunch after tactical regroup, and explicit Thor Armory prerequisite consumption"
+    },
+    {
+      "path": "patches/0027-resource-throughput-and-expansion-backoff.patch",
+      "order": 27,
+      "scope": "cumulative Marine wave accounting, per-refinery gas saturation, passive expansion placement quarantine, and resource/supply/gas telemetry for sustained mixed-army production"
+    },
+    {
+      "path": "patches/0028-startup-telemetry-initialization.patch",
+      "order": 28,
+      "scope": "startup-safe UnitInfo seeding, manager initialization ordering before telemetry, and refinery telemetry independent of the first UnitInfo frame"
+    },
+    {
+      "path": "patches/0029-gas-worker-completion-and-cap.patch",
+      "order": 29,
+      "scope": "completed-refinery-only gas assignment and per-refinery gas worker caps enforced before base/depot fallback"
+    },
+    {
+      "path": "patches/0030-stable-offensive-sweep-target.patch",
+      "order": 30,
+      "scope": "operation-stable lost-contact offensive sweep target with majority-arrival and bounded stalled-route rotation"
+    },
+    {
+      "path": "patches/0031-adaptive-support-composition.patch",
+      "order": 31,
+      "scope": "operation-latched adaptive Terran support composition selected from observed enemy air, cloak, armor, light-ground, bio-support, harassment, and late-game capital-ship conditions"
+    },
+    {
+      "path": "patches/0032-operation-scoped-adaptive-combat-closure.patch",
+      "order": 32,
+      "scope": "operation-stable adaptive composition with completed-wave accounting, bounded observation lifetime and budget, addon prerequisite closure, and direct MainAttack ownership for produced support units"
+    },
+    {
+      "path": "patches/0033-review-closure-operation-identity-and-full-composition.patch",
+      "order": 33,
+      "scope": "review closure for Harass-to-MainAttack transfer and full 32-entry composition, role, ability-policy, identity, scout, launch, and telemetry consumption"
+    },
+    {
+      "path": "patches/0034-semantic-operation-production-closure.patch",
+      "order": 34,
+      "scope": "semantic operation identity independent of telemetry correlation ids, duplicate composition aggregation, and Barracks/refinery bootstrap for explicit bio unit production"
+    },
+    {
+      "path": "patches/0035-adaptive-pressure-stable-operation-key.patch",
+      "order": 35,
+      "scope": "adaptive counter production during one-shot and first-wave exact pressure, supply-cap protection, and order-independent semantic operation identity shared by production and combat"
+    },
+    {
+      "path": "patches/0036-tactical-nuke-command-hierarchy.patch",
+      "order": 36,
+      "scope": "tactical nuke MetaType and full Factory/Ghost prerequisite production, four-Marine target-acquisition scope with separate defensive escort production, authoritative Ghost Academy/Factory/Armory/Fusion Core placement with bounded tactical-prerequisite retry, completed-Factory/state/resource-gated direct BUILD_NUKE submission with SC2-observed accepted/rejected state, duplicate-payload protection, retry cooldown, and rate-limited ability diagnostics, stale Nuke queue removal, dedicated NukeOps squad ownership, blast-radius MainAttack containment, safe recently observed enemy targeting, dense terrain-connected staging selection, retry-safe EFFECT_NUKECALLDOWN submission, SC2-observed cast/effect confirmation, and dedicated production/AbilityTask telemetry"
+    },
+    {
+      "path": "patches/0037-location-intent-target-lock.patch",
+      "order": 37,
+      "scope": "requested enemy-location anchor locking for combat scouts and tactical-nuke target selection, observed-enemy anchor promotion inside the enemy-main area, home-adjacent fallback rejection, route-stall retention, and target-anchor match telemetry"
+    },
+    {
+      "path": "patches/0038-explicit-terran-ability-execution.patch",
+      "order": 38,
+      "scope": "SC2-availability-checked execution for explicit Terran abilities and mode changes, including Marine/Marauder-specific stim, Ghost cloak/decloak, Medivac load/unload, caster and target resolution from tactical_task unit classes and location intent, target liveness and cast-range submission guards, generic AbilityTask actor/action telemetry, authoritative production prerequisites and upgrades including Personal Cloaking, and protected home defense ownership for the reserved tactical-nuke Ghost"
+    },
+    {
+      "path": "patches/0039-explicit-scout-command-epoch.patch",
+      "order": 39,
+      "scope": "update-id-scoped explicit combat-scout command epochs that prefer a fresh matching unit, invalidate stale planned actions and command cooldowns, submit one prioritized MOVE even when the same SC2 order already exists, then restore ordinary duplicate suppression with planned/submitted telemetry"
+    },
+    {
+      "path": "patches/0040-standing-production-continuity-closure.patch",
+      "order": 40,
+      "scope": "standing production targets remain authoritative under operation-layer overlays, Marine continuity runs alongside requested Factory and Tank tech, standing gas and facility scaling stays active without exact composition entries, and ground siege bias no longer creates an unrequested Liberator and Starport transition"
+    },
+    {
+      "path": "patches/0041-explicit-ability-caster-production-priority.patch",
+      "order": 41,
+      "scope": "explicit execute_ability unit classes become authoritative caster production requests for all supported Terran bio, mech, air, and capital units; required add-ons and tech structures are reconstructed in ProductionManager, unrelated doctrine and expansion work is deferred only while no caster is represented, Starport transition waits for a completed Factory, and standing macro resumes after caster production is queued, training, or complete"
+    },
+    {
+      "path": "patches/0042-explicit-ability-observation-confirmation.patch",
+      "order": 42,
+      "scope": "non-nuke explicit ability submissions remain executing until subsequent SC2 observations confirm ability-specific unit-type, cloak, buff, cargo, target-state, destination, or spawned-unit effects; SC2 pathing queries are bounded into API-safe batches, stalled staging routes are rejected and re-resolved, and bounded confirmation timeout reopens safe retry, while location-derived target staging and AbilityTask submission/confirmation telemetry distinguish planned, submitted, pending, and observed completion"
+    },
+    {
+      "path": "patches/0043-explicit-ability-production-isolation.patch",
+      "order": 43,
+      "scope": "while an explicit non-nuke ability caster is absent, isolate its prerequisite production lane from unrelated legacy Starport/Banshee tech, bound build-queue inspection to the queue snapshot, and trust already SC2-validated VOI macro placements instead of entering an additional unbounded path-safety search"
+    },
+    {
+      "path": "patches/0044-explicit-ability-attempt-lifecycle.patch",
+      "order": 44,
+      "scope": "bind each explicit ability action and telemetry record to the exact update, task, ability, and attempt generation; separate planned, submitted, observed-accepted, and effect-observed phases; suppress stale or irreversible duplicate submissions; recognize already-satisfied unit states; and confirm effects from actor type, cloak, buff, cargo, spawned-unit, destination, order, energy, and ability-availability observations"
+    },
+    {
+      "path": "patches/0045-explicit-ability-review-closure.patch",
+      "order": 45,
+      "scope": "resolve Marine and Marauder stim through the SC2 capability ID actually exposed by unit queries, require every scoped Medivac to be empty before treating unload-all as already satisfied, and preserve active explicit siege, burrow, cloak, vehicle, Viking, and Liberator state commands by rejecting autonomous inverse mode changes for their full policy TTL"
+    },
+    {
+      "path": "patches/0046-authoritative-addon-runtime-clearance.patch",
+      "order": 46,
+      "scope": "trust the authoritative SC2 placement query for a grounded producer's exact 2x2 addon footprint instead of rejecting valid adjacent structures through a broad radius heuristic, and clear only friendly mobile units whose collision boxes actually overlap the addon tiles"
+    },
+    {
+      "path": "patches/0047-banshee-unit-specific-cloak-command.patch",
+      "order": 47,
+      "scope": "submit Banshee cloak and decloak through the unit-specific SC2 executable ability IDs while accepting generic capability-query remaps, and use the corrected IDs in explicit DSL execution, unit-role micro, inverse-action ownership, and autonomous RangedManager cloak logic"
+    },
+    {
+      "path": "patches/0048-allied-cloak-observation-confirmation.patch",
+      "order": 48,
+      "scope": "preserve protocol CloakedUnknown and CloakedAllied observations through s2client-api without per-frame unsupported-state log flooding, recognize allied Banshee cloak in autonomous uncloak and cloaked-combat safety decisions, and allow explicit cloak tasks to reach effect_observed confirmation from the actual SC2 unit state"
+    },
+    {
+      "path": "patches/0049-explicit-ability-caster-ownership.patch",
+      "order": 49,
+      "scope": "reserve the selected explicit-ability caster from Squad and unit-manager autonomous actions while staging or awaiting confirmation, keep direct explicit actions and tactical-nuke ownership unchanged, and release the caster immediately when the exact attempt becomes terminal"
+    },
+    {
+      "path": "patches/0050-explicit-ability-staging-single-flight.patch",
+      "order": 50,
+      "scope": "bind an issued explicit-ability staging Move to its exact caster and staging target for the full route lifetime, suppress duplicate submissions while position observations show progress, and release that ownership only when the existing stalled-route detector rejects and re-resolves the route"
+    }
+  ],
   "python_lowered_to_cpp_consumed_axes": {
     "production_plan.targets": [
       "tactical_task.production_targets",
@@ -22,18 +274,15 @@
   "python_blackboard_emitted_but_not_consumed_by_current_cpp_patch": [
     "strategy.timing_biases.*",
     "strategy.transition_biases.*",
-    "economy.gas_worker_target_bias",
     "economy.mineral_saturation_bias",
     "economy.expansion_safety_bias",
     "economy.mule_priority",
     "economy.worker_production_bias",
     "economy.repair_priority",
-    "economy.gas_priority",
     "production.max_tech_deviation",
     "production.allow_build_order_rewrite",
     "combat.pressure_window_frames",
     "combat.siege_position_bias",
-    "combat.kite_bias",
     "combat.flank_bias",
     "combat.combat_sim_confidence_margin",
     "combat.engage_threshold_delta",
@@ -44,9 +293,7 @@
     "scope.duration_seconds",
     "scope.require_safety_margin",
     "scope.allow_partial_scope",
-    "lifetime.mode",
     "lifetime.completion_conditions",
-    "lifetime.completion_state",
     "lifetime.reason",
     "production_plan.targets",
     "production_plan.allow_prerequisite_buildings",
@@ -68,13 +315,16 @@
       "source_path": "src/ProductionManager.cpp",
       "header_path": "src/ProductionManager.h",
       "function": "ProductionManager::onFrame(bool executeMacro)",
-      "secondary_function": "ProductionManager::manageBuildOrderQueue()",
+      "secondary_function": "ProductionManager::refreshVoiDoctrinePolicyBaseline() / ProductionManager::applyVoiDoctrineProductionBias() / ProductionManager::putImportantBuildOrderItemsInQueue() / ProductionManager::manageBuildOrderQueue() / ProductionManager::queueVoiDoctrineItem()",
       "status": "verified_consumed_with_actual_command_telemetry",
       "keys": [
         "strategy.doctrine",
         "tactical_task.task_type",
+        "tactical_task.ability",
+        "tactical_task.unit_classes",
         "tactical_task.production_targets",
         "tactical_task.priority",
+        "tactical_task.duration_seconds",
         "production.queue_biases.*",
         "production.composition_biases.*",
         "production.addon_biases.*",
@@ -105,19 +355,29 @@
         "tech_structure_bias_fusion_core",
         "actual_production_command_issued_count",
         "last_actual_production_command",
-        "last_actual_production_command_frame"
+        "last_actual_production_command_frame",
+        "tactical_nuke_payload_status",
+        "tactical_nuke_payload_update_id",
+        "tactical_nuke_payload_producer_tag",
+        "tactical_nuke_payload_submission_count",
+        "tactical_nuke_payload_accepted_count",
+        "tactical_nuke_payload_rejected_count",
+        "tactical_nuke_payload_submission_frame",
+        "tactical_nuke_payload_accepted_frame",
+        "tactical_nuke_payload_next_retry_frame"
       ],
-      "intended_effect": "Bias doctrine-specific queue, facility, addon, unit, expansion, and continuity choices while preserving MicroMachine build execution."
+      "intended_effect": "Bias doctrine-specific queue, facility, addon, unit, expansion, and continuity choices while preserving MicroMachine build execution; tactical nuke requests close and wait for the completed Factory prerequisite before Ghost/payload work, BUILD_NUKE uses completed-idle Academy, completed Factory, resource, existing-payload, pending-submission, and retry-cooldown state gates instead of treating an omitted ability query as authoritative, and becomes an actual production command only after the Ghost Academy order is observed; while a non-nuke explicit ability caster is absent, isolate its prerequisite lane from unrelated legacy Starport/Banshee work and bound each build-queue inspection pass to the initial queue snapshot."
     },
     {
       "domain": "tactical_task",
       "source_path": "src/GameCommander.cpp",
       "header_path": "src/GameCommander.h",
       "function": "GameCommander::writeVoiTelemetry()",
-      "secondary_function": "CombatCommander::updateScoutSquad() / CombatCommander::updateAttackSquads() / ProductionManager::applyVoiDoctrineProductionBias()",
-      "status": "verified_consumed_with_task_lifecycle_telemetry",
+      "secondary_function": "CombatCommander::updateVoiTacticalNukeSquad() / CombatCommander::updateVoiTacticalNukeAction() / CombatCommander::updateVoiExplicitAbilityAction() / CombatCommander::ExecuteActions() / CombatCommander::updateScoutSquad() / CombatCommander::updateAttackSquads() / ProductionManager::applyVoiDoctrineProductionBias()",
+      "status": "verified_consumed_with_observation_confirmed_ability_staging_telemetry",
       "keys": [
         "tactical_task.task_type",
+        "tactical_task.ability",
         "tactical_task.task_id",
         "tactical_task.unit_classes",
         "tactical_task.production_targets",
@@ -127,24 +387,82 @@
         "tactical_task.max_units",
         "tactical_task.duration_seconds",
         "tactical_task.allow_partial",
-        "tactical_task.safety_margin"
+        "tactical_task.safety_margin",
+        "unit_roles.*.unit_type",
+        "unit_roles.*.role",
+        "unit_roles.*.ability_policy"
       ],
       "telemetry_fields": [
+        "TacticalTask.active",
+        "TacticalTask.task_type",
+        "TacticalTask.ability",
+        "TacticalTask.task_id",
         "TacticalTask.status",
         "TacticalTask.reason",
         "TacticalTask.consumed_by",
         "TacticalTask.actual_command_issued_count",
         "TacticalTask.last_actual_command",
-        "TacticalTask.last_actual_command_frame"
+        "TacticalTask.last_actual_command_frame",
+        "TacticalTask.consumed_axes",
+        "AbilityTask.active",
+        "AbilityTask.task_id",
+        "AbilityTask.ability",
+        "AbilityTask.ability_policy",
+        "AbilityTask.status",
+        "AbilityTask.reason",
+        "AbilityTask.phase",
+        "AbilityTask.update_id",
+        "AbilityTask.attempt_generation",
+        "AbilityTask.submitted_attempt_generation",
+        "AbilityTask.observed_accepted_frame",
+        "AbilityTask.observed_accepted_attempt_generation",
+        "AbilityTask.observed_accepted_evidence",
+        "AbilityTask.terminal_attempt_generation",
+        "AbilityTask.actor_tag",
+        "AbilityTask.actor_type",
+        "AbilityTask.target_tag",
+        "AbilityTask.location_intent",
+        "AbilityTask.target_x",
+        "AbilityTask.target_y",
+        "AbilityTask.target_anchor_x",
+        "AbilityTask.target_anchor_y",
+        "AbilityTask.target_anchor_distance",
+        "AbilityTask.target_location_match",
+        "AbilityTask.target_observation_frame",
+        "AbilityTask.staging_x",
+        "AbilityTask.staging_y",
+        "AbilityTask.available_ghost_count",
+        "AbilityTask.available_caster_count",
+        "AbilityTask.planned_count",
+        "AbilityTask.staging_command_issued_count",
+        "AbilityTask.staging_command_frame",
+        "AbilityTask.staging_arrival_frame",
+        "AbilityTask.staging_issued_action",
+        "AbilityTask.actor_home_distance",
+        "AbilityTask.actor_max_home_distance",
+        "AbilityTask.cast_attempted_count",
+        "AbilityTask.cast_submitted_count",
+        "AbilityTask.cast_submission_frame",
+        "AbilityTask.cast_submitted_action",
+        "AbilityTask.submitted_count",
+        "AbilityTask.last_action",
+        "AbilityTask.payload_count_at_submission",
+        "AbilityTask.confirmation_state",
+        "AbilityTask.confirmation_count",
+        "AbilityTask.confirmation_frame",
+        "AbilityTask.confirmation_effect",
+        "AbilityTask.consumed_role_axis",
+        "AbilityTask.consumed_ability_policy_axis",
+        "AbilityTask.consumed_axes"
       ],
-      "intended_effect": "Turns LLM/user intent into a bounded task ticket consumed by existing MicroMachine managers with accepted/executing/refused lifecycle evidence."
+      "intended_effect": "Turns LLM/user intent into a bounded compound operation, closes production and upgrade prerequisites for requested Terran casters, executes explicit unit abilities and mode changes only after SC2 availability, target-liveness, placement, and cast-range checks, records the actual actor and submitted action, closes Factory, Ghost Academy, Ghost, four-Marine target-acquisition, and defensive escort production prerequisites for tactical nukes, keeps explicit multi-unit scout scope instead of collapsing target acquisition to one expendable unit, pins target-acquisition scouts to the requested enemy location instead of home-adjacent fallback bases, removes stale duplicate payload work, reserves and protects one Ghost from ordinary Scout/MainAttack ownership, restricts tactical-nuke candidates to the requested enemy-main or enemy-natural anchor, selects a safe staging point from a dense terrain-connected annulus instead of cached dynamic BFS reachability, holds friendly forces outside the blast radius, binds non-nuke execution and telemetry to the exact update, task, ability, and attempt generation, suppresses stale and irreversible duplicate submissions, separates SC2 submission, observed acceptance, and concrete effect confirmation, and reports location target/staging coordinates and staging-command telemetry separately from lifecycle phase, confirmation state, count, frame, and effect."
     },
     {
       "domain": "building_tasks",
       "source_path": "src/BuildingManager.cpp",
       "header_path": "src/BuildingManager.h",
       "function": "BuildingManager::getBuildingLocation(const Building &, bool, bool, bool, bool, bool)",
-      "secondary_function": "resolveVoiBuildingTaskPlacement() / BuildingPlacer::getBuildLocationNear() / findVoiSc2QueryMacroPlacement()",
+      "secondary_function": "resolveVoiBuildingTaskPlacement() / BuildingPlacer::getBuildLocationNear() / findVoiSc2QueryMacroPlacement() / BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
       "status": "verified_consumed_with_semantic_placement_telemetry",
       "keys": [
         "building_tasks.0.building_type",
@@ -166,7 +484,7 @@
         "BuildingTask.status",
         "BuildingTask.reason"
       ],
-      "intended_effect": "Turns semantic building placement tasks into a bounded desired-position anchor consumed by BuildingManager, then lets existing SC2 placement validation choose the nearest valid fallback."
+      "intended_effect": "Turns semantic building placement tasks into a bounded desired-position anchor consumed by BuildingManager, then lets existing SC2 placement validation choose the nearest valid fallback; assignments using an already SC2-validated uncontested VOI macro placement bypass the redundant unbounded path-safety search."
     },
     {
       "domain": "composition",
@@ -214,7 +532,8 @@
       "source_path": "src/CombatCommander.cpp",
       "header_path": "src/CombatCommander.h",
       "function": "CombatCommander::onFrame(const std::vector<Unit> & combatUnits)",
-      "secondary_function": "CombatCommander::shouldWeStartAttacking()",
+      "secondary_function": "CombatCommander::shouldWeStartAttacking() / CombatCommander::updateScoutSquad() / CombatCommander::ExecuteActions()",
+      "status": "verified_consumed_with_explicit_scout_command_epoch_telemetry",
       "keys": [
         "combat.aggression",
         "combat.defend_bias",
@@ -224,6 +543,7 @@
         "combat.attack_condition_override",
         "combat.retreat_patience_bias",
         "combat.rally_before_attack_bias",
+        "combat.kite_bias",
         "scope.min_units",
         "scope.max_units",
         "scope.army_group",
@@ -239,7 +559,19 @@
         "emergency.cancel_attacks",
         "emergency.force_retreat"
       ],
-      "intended_effect": "Bias attack/hold/retreat posture and explicit scout-scope assignment without issuing direct unit orders."
+      "telemetry_fields": [
+        "scout_explicit_update_id",
+        "scout_explicit_reissue_status",
+        "scout_explicit_reissue_reason",
+        "scout_explicit_reissue_planned_count",
+        "scout_explicit_reissue_frame",
+        "scout_actual_command_issued_count",
+        "scout_last_action_frame",
+        "scout_last_issued_action",
+        "scout_last_commanded_unit_tag",
+        "scout_last_commanded_unit_type"
+      ],
+      "intended_effect": "Bias attack/hold/retreat posture, assign explicit scout scope, treat each explicit scout update_id as a one-shot command epoch that reaches the SC2 MOVE submission path even when an autonomous scout already has the same order, and preserve ordinary duplicate suppression and ranged-unit cooldown kiting afterward."
     },
     {
       "domain": "scouting",
@@ -262,11 +594,12 @@
       "source_path": "src/WorkerManager.cpp",
       "header_path": "src/WorkerManager.h",
       "function": "WorkerManager::onFrame(bool executeMacro)",
-      "secondary_function": "WorkerManager::handleRepairWorkers()",
-      "status": "pending_cpp_hook_not_counted_as_consumed",
+      "secondary_function": "WorkerManager::handleGasWorkers() / WorkerManager::handleRepairWorkers()",
+      "status": "verified_consumed_for_gas_worker_targets",
       "keys": [
         "economy.repair_priority",
         "economy.gas_priority",
+        "economy.gas_worker_target_bias",
         "emergency.pull_workers_for_defense",
         "emergency.evacuate_workers"
       ],

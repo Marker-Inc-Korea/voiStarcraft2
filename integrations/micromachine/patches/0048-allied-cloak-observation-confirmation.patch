@@ -1,0 +1,38 @@
+diff --git a/src/RangedManager.cpp b/src/RangedManager.cpp
+--- a/src/RangedManager.cpp
++++ b/src/RangedManager.cpp
+@@ -1392,5 +1392,6 @@ bool RangedManager::ShouldBansheeUncloak(const sc2::Unit * banshee, CCPosition
+ {
+-	if (banshee->cloak != sc2::Unit::Cloaked)
++	if (banshee->cloak != sc2::Unit::Cloaked
++		&& banshee->cloak != sc2::Unit::CloakedAllied)
+ 		return false;
+ 
+ 	if (!unitShouldHeal)
+@@ -2243,7 +2244,10 @@ bool RangedManager::ShouldAttack(const sc2::Unit * rangedUnit, const sc2::Unit *
+ 
+ 	// Check if unit can fight cloaked
+ 	m_bot.StartProfiling("0.10.4.1.5.1.5.c          CloakedAttack");
+-	if(rangedUnit->energy >= 5 && (rangedUnit->cloak == sc2::Unit::Cloaked || (rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_BANSHEE && ShouldBansheeCloak(rangedUnit, false))))
++	if(rangedUnit->energy >= 5
++		&& (rangedUnit->cloak == sc2::Unit::Cloaked
++			|| rangedUnit->cloak == sc2::Unit::CloakedAllied
++			|| (rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_BANSHEE && ShouldBansheeCloak(rangedUnit, false))))
+ 	{
+ 		// If the unit is at an undetected position
+ 		if (!Util::IsPositionUnderDetection(rangedUnit->pos, m_bot))
+diff --git a/src/Util.cpp b/src/Util.cpp
+--- a/src/Util.cpp
++++ b/src/Util.cpp
+@@ -2627,7 +2627,10 @@ bool Util::IsPositionUnderDetection(const CCPosition & position, CCBot & bot)
+ 
+ bool Util::IsUnitCloakedAndSafe(const sc2::Unit * unit, CCBot & bot)
+ {
+-	return unit->cloak == sc2::Unit::Cloaked && !Util::IsPositionUnderDetection(unit->pos, bot) && unit->energy >= 5 && bot.Analyzer().getUnitState(unit).GetRecentDamageTaken() == 0;
++	return (unit->cloak == sc2::Unit::Cloaked
++			|| unit->cloak == sc2::Unit::CloakedAllied)
++		&& !Util::IsPositionUnderDetection(unit->pos, bot) && unit->energy >= 5
++		&& bot.Analyzer().getUnitState(unit).GetRecentDamageTaken() == 0;
+ }
+ 
+ bool Util::IsAbilityAvailable(sc2::ABILITY_ID abilityId, const sc2::Unit * unit, const std::vector<sc2::AvailableAbilities> & availableAbilitiesForUnits)

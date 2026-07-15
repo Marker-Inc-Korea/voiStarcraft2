@@ -1,0 +1,341 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 42713a6..f8cb875 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -3483,6 +3483,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 
+ 	const std::string tacticalTaskType = m_bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
+ 	const std::string tacticalTaskAbility = m_bot.Commander().getVoiPolicyString("tactical_task.ability", "");
++	const std::string tacticalTaskUnitClasses = m_bot.Commander().getVoiPolicyString("tactical_task.unit_classes", "");
+ 	const std::string tacticalProductionTargets = m_bot.Commander().getVoiPolicyString("tactical_task.production_targets", "");
+ 	const float tacticalTaskPriority = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("tactical_task.priority", 0.0f));
+ 	const bool tacticalTaskActive = voiTacticalTaskWithinDuration(m_bot);
+@@ -3566,6 +3567,66 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool taskTargetsGhostCloak = voiCommaListContains(tacticalProductionTargets, "GHOST_CLOAK");
+ 	const bool taskTargetsBansheeCloak = voiCommaListContains(tacticalProductionTargets, "BANSHEE_CLOAK");
+ 	const bool taskTargetsYamatoCannon = voiCommaListContains(tacticalProductionTargets, "YAMATO_CANNON");
++	const bool taskCasterMarine = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_MARINE");
++	const bool taskCasterMarauder = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_MARAUDER");
++	const bool taskCasterReaper = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_REAPER");
++	const bool taskCasterGhost = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_GHOST");
++	const bool taskCasterHellion = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_HELLION");
++	const bool taskCasterWidowMine = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_WIDOWMINE");
++	const bool taskCasterCyclone = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_CYCLONE");
++	const bool taskCasterThor = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_THOR");
++	const bool taskCasterSiegeTank = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_SIEGETANK");
++	const bool taskCasterMedivac = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_MEDIVAC");
++	const bool taskCasterViking = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_VIKINGFIGHTER");
++	const bool taskCasterLiberator = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_LIBERATOR");
++	const bool taskCasterBanshee = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_BANSHEE");
++	const bool taskCasterRaven = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_RAVEN");
++	const bool taskCasterBattlecruiser = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_BATTLECRUISER");
++	const bool explicitAbilityNeedsBarracksTechLab = taskExecuteExplicitAbility
++		&& (taskTargetsBarracksTechLab
++			|| taskTargetsStimpack
++			|| taskTargetsGhostCloak
++			|| taskCasterMarauder
++			|| taskCasterGhost);
++	const bool explicitAbilityNeedsGhostAcademy = taskExecuteExplicitAbility
++		&& (taskTargetsGhostAcademy || taskCasterGhost);
++	const bool explicitAbilityNeedsFactory = taskExecuteExplicitAbility
++		&& (taskTargetsFactory
++			|| taskCasterHellion
++			|| taskCasterWidowMine
++			|| taskCasterCyclone
++			|| taskCasterThor
++			|| taskCasterSiegeTank
++			|| taskCasterMedivac
++			|| taskCasterViking
++			|| taskCasterLiberator
++			|| taskCasterBanshee
++			|| taskCasterRaven
++			|| taskCasterBattlecruiser);
++	const bool explicitAbilityNeedsFactoryTechLab = taskExecuteExplicitAbility
++		&& (taskTargetsFactoryTechLab
++			|| taskCasterCyclone
++			|| taskCasterThor
++			|| taskCasterSiegeTank);
++	const bool explicitAbilityNeedsArmory = taskExecuteExplicitAbility
++		&& (taskTargetsArmory
++			|| taskCasterThor
++			|| tacticalTaskAbility == "hellbat_mode");
++	const bool explicitAbilityNeedsStarport = taskExecuteExplicitAbility
++		&& (taskTargetsStarport
++			|| taskCasterMedivac
++			|| taskCasterViking
++			|| taskCasterLiberator
++			|| taskCasterBanshee
++			|| taskCasterRaven
++			|| taskCasterBattlecruiser);
++	const bool explicitAbilityNeedsStarportTechLab = taskExecuteExplicitAbility
++		&& (taskTargetsStarportTechLab
++			|| taskCasterBanshee
++			|| taskCasterRaven
++			|| taskCasterBattlecruiser);
++	const bool explicitAbilityNeedsFusionCore = taskExecuteExplicitAbility
++		&& (taskTargetsFusionCore || taskCasterBattlecruiser);
+ 	const std::string doctrine = m_bot.Commander().getVoiPolicyString("strategy.doctrine", "");
+ 	const float compositionBioBias = m_bot.Commander().getVoiPolicyFloat("production.composition_biases.bio", 0.0f);
+ 	const float compositionMechBias = m_bot.Commander().getVoiPolicyFloat("production.composition_biases.mech", 0.0f);
+@@ -3916,6 +3977,38 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return ::voiRepresentedUnitCount(m_bot, type) + m_queue.getCountOfType(type);
+ 	};
++	bool explicitAbilityHasCasterClass = false;
++	bool explicitAbilityCasterRepresented = false;
++	const auto observeExplicitAbilityCaster = [&](bool requested, const MetaType & type)
++	{
++		if (!requested)
++		{
++			return;
++		}
++		explicitAbilityHasCasterClass = true;
++		explicitAbilityCasterRepresented =
++			explicitAbilityCasterRepresented
++			|| voiRepresentedUnitCount(type) > 0;
++	};
++	observeExplicitAbilityCaster(taskCasterMarine, MetaTypeEnum::Marine);
++	observeExplicitAbilityCaster(taskCasterMarauder, MetaTypeEnum::Marauder);
++	observeExplicitAbilityCaster(taskCasterReaper, MetaTypeEnum::Reaper);
++	observeExplicitAbilityCaster(taskCasterGhost, MetaTypeEnum::Ghost);
++	observeExplicitAbilityCaster(taskCasterHellion, MetaTypeEnum::Hellion);
++	observeExplicitAbilityCaster(taskCasterWidowMine, MetaTypeEnum::WidowMine);
++	observeExplicitAbilityCaster(taskCasterCyclone, MetaTypeEnum::Cyclone);
++	observeExplicitAbilityCaster(taskCasterThor, MetaTypeEnum::Thor);
++	observeExplicitAbilityCaster(taskCasterSiegeTank, MetaTypeEnum::SiegeTank);
++	observeExplicitAbilityCaster(taskCasterMedivac, MetaTypeEnum::Medivac);
++	observeExplicitAbilityCaster(taskCasterViking, MetaTypeEnum::Viking);
++	observeExplicitAbilityCaster(taskCasterLiberator, MetaTypeEnum::Liberator);
++	observeExplicitAbilityCaster(taskCasterBanshee, MetaTypeEnum::Banshee);
++	observeExplicitAbilityCaster(taskCasterRaven, MetaTypeEnum::Raven);
++	observeExplicitAbilityCaster(taskCasterBattlecruiser, MetaTypeEnum::Battlecruiser);
++	const bool explicitAbilityCasterPending =
++		taskExecuteExplicitAbility
++		&& explicitAbilityHasCasterClass
++		&& !explicitAbilityCasterRepresented;
+ 	const auto voiCompositionRequirementSatisfied = [&](const std::string & policyUnitType, const MetaType & type)
+ 	{
+ 		if (standingSustainProduction
+@@ -3995,7 +4088,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		m_queue.contains(MetaTypeEnum::Barracks)
+ 		|| m_bot.Buildings().isBeingBuilt(MetaTypeEnum::Barracks.getUnitType())
+ 		|| barracksCount > completedGroundedBarracksCount;
+-	if (wantsBarracksTechLab
++	if ((wantsBarracksTechLab || explicitAbilityNeedsBarracksTechLab)
++		&& (!explicitAbilityCasterPending
++			|| explicitAbilityNeedsBarracksTechLab)
+ 		&& barracksTechLabCount == 0
+ 		&& completedGroundedBarracksCount > 0
+ 		&& eligibleBarracksAddonProducers == 0
+@@ -4037,18 +4132,26 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		(wantsFactory
+ 			|| wantsStarport
+ 			|| wantsGhostAcademy
++			|| explicitAbilityNeedsFactory
++			|| explicitAbilityNeedsStarport
++			|| explicitAbilityNeedsGhostAcademy
+ 			|| effectiveMarineBias > 0.25f
+ 			|| effectiveMarauderBias > 0.25f
+ 			|| effectiveReaperBias > 0.25f
+ 			|| effectiveGhostBias > 0.25f)
+ 		&& barracksCount == 0;
+-	if (((wantsBioDoctrine && barracksCount < 2 && effectiveBarracksBias > 0.35f) || needsTechBootstrapBarracks)
++	if (((wantsBioDoctrine
++				&& !explicitAbilityCasterPending
++				&& barracksCount < 2
++				&& effectiveBarracksBias > 0.35f)
++			|| needsTechBootstrapBarracks)
+ 		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, needsTechBootstrapBarracks ? "tech_bootstrap_barracks" : "bio_facility", needsTechBootstrapBarracks))
+ 	{
+ 		return;
+ 	}
+ 	const int marineScoutBootstrapTarget = std::min(2, requestedMarineCount);
+-	if (marineScoutBootstrapTarget > 0
++	if ((!explicitAbilityCasterPending || taskCasterMarine)
++		&& marineScoutBootstrapTarget > 0
+ 		&& representedMarineCount < marineScoutBootstrapTarget
+ 		&& queueVoiDoctrineItem(MetaTypeEnum::Marine, "combat_scout_bootstrap", true, true))
+ 	{
+@@ -4062,6 +4165,13 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			|| wantsStarportTechLab
+ 			|| wantsFusionCore
+ 			|| wantsGhostAcademy
++			|| explicitAbilityNeedsFactory
++			|| explicitAbilityNeedsFactoryTechLab
++			|| explicitAbilityNeedsArmory
++			|| explicitAbilityNeedsStarport
++			|| explicitAbilityNeedsStarportTechLab
++			|| explicitAbilityNeedsFusionCore
++			|| explicitAbilityNeedsGhostAcademy
+ 			|| effectiveMarauderBias > 0.25f
+ 			|| effectiveReaperBias > 0.25f
+ 			|| effectiveGhostBias > 0.25f
+@@ -4078,7 +4188,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const int macroRefineryWorkerFloor = completedTownHallCount * 16 + refineryCount * 3 - 4;
+ 	const bool macroGasStarved =
+ 		m_bot.GetFreeGas() < std::max(200, requestedCompositionGasPerWave);
+-	if (continuousGasComposition
++	if (!explicitAbilityCasterPending
++		&& continuousGasComposition
+ 		&& refineryCount < desiredMacroRefineryCount
+ 		&& !refineryTaskActive
+ 		&& representedScvCount >= macroRefineryWorkerFloor
+@@ -4091,7 +4202,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const int totalTownHallCount = commandCenterCount + orbitalCount;
+ 	const int macroExpansionWorkerFloor = totalTownHallCount * 16 + refineryCount * 3 - 4;
+ 	const int macroExpansionMineralThreshold = totalTownHallCount < 2 ? 1000 : 1600;
+-	if (continuousCompositionProduction
++	if (!explicitAbilityCasterPending
++		&& continuousCompositionProduction
+ 		&& totalTownHallCount < 3
+ 		&& !commandCenterTaskActive
+ 		&& !m_queue.contains(MetaTypeEnum::CommandCenter)
+@@ -4102,13 +4214,17 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
+-	if (wantsBarracksTechLab
++	if ((wantsBarracksTechLab || explicitAbilityNeedsBarracksTechLab)
++		&& (!explicitAbilityCasterPending
++			|| explicitAbilityNeedsBarracksTechLab)
+ 		&& completedGroundedBarracksCount > barracksTechLabCount
+ 		&& queueVoiDoctrineItem(MetaTypeEnum::BarracksTechLab, "bio_ghost_techlab", true))
+ 	{
+ 		return;
+ 	}
+-	if (wantsGhostAcademy
++	if ((wantsGhostAcademy || explicitAbilityNeedsGhostAcademy)
++		&& (!explicitAbilityCasterPending
++			|| explicitAbilityNeedsGhostAcademy)
+ 		&& completedBarracksCount > 0
+ 		&& ghostAcademyCount == 0
+ 		&& queueVoiDoctrineItem(MetaTypeEnum::GhostAcademy, "ghost_academy_transition", true))
+@@ -4194,7 +4310,12 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			return;
+ 		}
+ 	}
+-	if (wantsFactory && completedBarracksCount > 0 && refineryCount > 0 && factoryCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Factory, "factory_transition", true))
++	if ((wantsFactory || explicitAbilityNeedsFactory)
++		&& (!explicitAbilityCasterPending || explicitAbilityNeedsFactory)
++		&& completedBarracksCount > 0
++		&& refineryCount > 0
++		&& factoryCount == 0
++		&& queueVoiDoctrineItem(MetaTypeEnum::Factory, "factory_transition", true))
+ 	{
+ 		return;
+ 	}
+@@ -4208,7 +4329,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		|| factoryCount > completedFactoryCount;
+ 	const int factoryAddonRecoveryCap =
+ 		continuousCompositionProduction && taskTargetsSiegeTank ? 3 : 2;
+-	if (wantsFactoryTechLab
++	if ((wantsFactoryTechLab || explicitAbilityNeedsFactoryTechLab)
++		&& (!explicitAbilityCasterPending
++			|| explicitAbilityNeedsFactoryTechLab)
+ 		&& factoryTechLabCount == 0
+ 		&& completedFactoryCount > 0
+ 		&& eligibleFactoryAddonProducers == 0
+@@ -4228,7 +4351,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			return;
+ 		}
+ 	}
+-	if (wantsFactoryTechLab
++	if ((wantsFactoryTechLab || explicitAbilityNeedsFactoryTechLab)
++		&& (!explicitAbilityCasterPending
++			|| explicitAbilityNeedsFactoryTechLab)
+ 		&& completedFactoryCount > factoryTechLabCount
+ 		&& eligibleFactoryAddonProducers > 0
+ 		&& !factoryTechLabTaskActive)
+@@ -4240,7 +4365,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			return;
+ 		}
+ 	}
+-	if (wantsArmory
++	if ((wantsArmory || explicitAbilityNeedsArmory)
++		&& (!explicitAbilityCasterPending || explicitAbilityNeedsArmory)
+ 		&& completedFactoryCount > 0
+ 		&& armoryCount == 0
+ 		&& queueVoiDoctrineItem(
+@@ -4254,7 +4380,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		m_queue.contains(MetaTypeEnum::Starport)
+ 		|| m_bot.Buildings().isBeingBuilt(MetaTypeEnum::Starport.getUnitType())
+ 		|| starportCount > completedStarportCount;
+-	if (wantsStarportTechLab
++	if ((wantsStarportTechLab || explicitAbilityNeedsStarportTechLab)
++		&& (!explicitAbilityCasterPending
++			|| explicitAbilityNeedsStarportTechLab)
+ 		&& starportTechLabCount == 0
+ 		&& completedStarportCount > 0
+ 		&& eligibleStarportAddonProducers == 0
+@@ -4271,15 +4399,28 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			m_bot);
+ 		return;
+ 	}
+-	if (wantsStarport && factoryCount > 0 && starportCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Starport, "starport_transition", true))
++	if ((wantsStarport || explicitAbilityNeedsStarport)
++		&& (!explicitAbilityCasterPending || explicitAbilityNeedsStarport)
++		&& completedFactoryCount > 0
++		&& starportCount == 0
++		&& queueVoiDoctrineItem(MetaTypeEnum::Starport, "starport_transition", true))
+ 	{
+ 		return;
+ 	}
+-	if (wantsStarportTechLab && completedStarportCount > starportTechLabCount && queueVoiDoctrineItem(MetaTypeEnum::StarportTechLab, "starport_techlab", true))
++	if ((wantsStarportTechLab || explicitAbilityNeedsStarportTechLab)
++		&& (!explicitAbilityCasterPending
++			|| explicitAbilityNeedsStarportTechLab)
++		&& completedStarportCount > starportTechLabCount
++		&& queueVoiDoctrineItem(MetaTypeEnum::StarportTechLab, "starport_techlab", true))
+ 	{
+ 		return;
+ 	}
+-	if (wantsFusionCore && starportTechLabCount > 0 && fusionCoreCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::FusionCore, "fusion_core_transition", true))
++	if ((wantsFusionCore || explicitAbilityNeedsFusionCore)
++		&& (!explicitAbilityCasterPending
++			|| explicitAbilityNeedsFusionCore)
++		&& starportTechLabCount > 0
++		&& fusionCoreCount == 0
++		&& queueVoiDoctrineItem(MetaTypeEnum::FusionCore, "fusion_core_transition", true))
+ 	{
+ 		return;
+ 	}
+@@ -4329,6 +4470,39 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
++	if (explicitAbilityCasterPending)
++	{
++		const auto queueExplicitCaster =
++			[&](bool requested, const MetaType & type)
++		{
++			return requested
++				&& queueVoiDoctrineItem(
++					type,
++					"explicit_ability_caster",
++					true);
++		};
++		if (queueExplicitCaster(taskCasterMarine, MetaTypeEnum::Marine)
++			|| queueExplicitCaster(taskCasterMarauder, MetaTypeEnum::Marauder)
++			|| queueExplicitCaster(taskCasterReaper, MetaTypeEnum::Reaper)
++			|| queueExplicitCaster(taskCasterGhost, MetaTypeEnum::Ghost)
++			|| queueExplicitCaster(taskCasterHellion, MetaTypeEnum::Hellion)
++			|| queueExplicitCaster(taskCasterWidowMine, MetaTypeEnum::WidowMine)
++			|| queueExplicitCaster(taskCasterCyclone, MetaTypeEnum::Cyclone)
++			|| queueExplicitCaster(taskCasterThor, MetaTypeEnum::Thor)
++			|| queueExplicitCaster(taskCasterSiegeTank, MetaTypeEnum::SiegeTank)
++			|| queueExplicitCaster(taskCasterMedivac, MetaTypeEnum::Medivac)
++			|| queueExplicitCaster(taskCasterViking, MetaTypeEnum::Viking)
++			|| queueExplicitCaster(taskCasterLiberator, MetaTypeEnum::Liberator)
++			|| queueExplicitCaster(taskCasterBanshee, MetaTypeEnum::Banshee)
++			|| queueExplicitCaster(taskCasterRaven, MetaTypeEnum::Raven)
++			|| queueExplicitCaster(taskCasterBattlecruiser, MetaTypeEnum::Battlecruiser))
++		{
++			return;
++		}
++		// A failed caster enqueue already records the concrete prerequisite
++		// blocker. Do not let unrelated standing production hide that result.
++		return;
++	}
+ 	const int desiredBarracksCount = continuousCompositionProduction && taskTargetsMarine
+ 		? 1 + (m_bot.GetFreeMinerals() >= 800 ? 1 : 0) + (m_bot.GetFreeMinerals() >= 1800 ? 1 : 0)
+ 		: barracksCount;

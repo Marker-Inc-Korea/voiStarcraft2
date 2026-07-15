@@ -1,0 +1,235 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index dbdeb82..e358bc4 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -101,11 +101,11 @@ bool voiResolveExplicitAbilitySpec(
+ 	}
+ 	else if (abilityName == "marine_stimpack")
+ 	{
+-		spec = { sc2::ABILITY_ID::EFFECT_STIM_MARINE, VoiExplicitAbilityTargetKind::None };
++		spec = { sc2::ABILITY_ID::EFFECT_STIM, VoiExplicitAbilityTargetKind::None };
+ 	}
+ 	else if (abilityName == "marauder_stimpack")
+ 	{
+-		spec = { sc2::ABILITY_ID::EFFECT_STIM_MARAUDER, VoiExplicitAbilityTargetKind::None };
++		spec = { sc2::ABILITY_ID::EFFECT_STIM, VoiExplicitAbilityTargetKind::None };
+ 	}
+ 	else if (abilityName == "kd8_charge")
+ 	{
+@@ -252,6 +252,79 @@ bool voiExplicitAbilityIsIrreversible(
+ 		&& abilityName != "banshee_decloak";
+ }
+ 
++bool voiExplicitAbilityBlocksAutonomousAction(
++	const std::string & abilityName,
++	const UnitAction & action)
++{
++	sc2::AbilityID blockedAbility = sc2::AbilityID(0);
++	if (abilityName == "siege_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_UNSIEGE;
++	}
++	else if (abilityName == "unsiege")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_SIEGEMODE;
++	}
++	else if (abilityName == "widow_mine_burrow")
++	{
++		blockedAbility = sc2::ABILITY_ID::BURROWUP_WIDOWMINE;
++	}
++	else if (abilityName == "widow_mine_unburrow")
++	{
++		blockedAbility = sc2::ABILITY_ID::BURROWDOWN_WIDOWMINE;
++	}
++	else if (abilityName == "ghost_cloak")
++	{
++		blockedAbility = sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF_GHOST;
++	}
++	else if (abilityName == "ghost_decloak")
++	{
++		blockedAbility = sc2::ABILITY_ID::BEHAVIOR_CLOAKON_GHOST;
++	}
++	else if (abilityName == "hellbat_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_HELLION;
++	}
++	else if (abilityName == "hellion_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_HELLBAT;
++	}
++	else if (abilityName == "thor_high_impact_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_THOREXPLOSIVEMODE;
++	}
++	else if (abilityName == "thor_explosive_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_THORHIGHIMPACTMODE;
++	}
++	else if (abilityName == "viking_fighter_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_VIKINGASSAULTMODE;
++	}
++	else if (abilityName == "viking_assault_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_VIKINGFIGHTERMODE;
++	}
++	else if (abilityName == "liberator_defender_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_LIBERATORAAMODE;
++	}
++	else if (abilityName == "liberator_fighter_mode")
++	{
++		blockedAbility = sc2::ABILITY_ID::MORPH_LIBERATORAGMODE;
++	}
++	else if (abilityName == "banshee_cloak")
++	{
++		blockedAbility = sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF;
++	}
++	else if (abilityName == "banshee_decloak")
++	{
++		blockedAbility = sc2::ABILITY_ID::BEHAVIOR_CLOAKON;
++	}
++	return blockedAbility != sc2::AbilityID(0)
++		&& action.abilityID == blockedAbility;
++}
++
+ bool voiExplicitAbilityAcceptanceIsTerminal(
+ 	const std::string & abilityName)
+ {
+@@ -2793,6 +2866,28 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 
+ 	std::vector<const sc2::Unit *> availableCasters;
+ 	int matchingCasterCount = 0;
++	const sc2::Unit * alreadySatisfiedCaster = nullptr;
++	std::string alreadySatisfiedEvidence;
++	bool allMatchingCastersSatisfied = true;
++	const auto completeAlreadySatisfied =
++		[&](const sc2::Unit * unit, const std::string & evidence)
++	{
++		m_lastVoiExplicitAbilityActorTag = unit->tag;
++		m_lastVoiExplicitAbilityActorType =
++			sc2::UnitTypeToName(unit->unit_type);
++		m_lastVoiExplicitAbilityStatus = "completed";
++		m_lastVoiExplicitAbilityReason =
++			"Requested explicit ability state was already satisfied in SC2 observation";
++		m_lastVoiExplicitAbilityPhase = "effect_observed";
++		m_lastVoiExplicitAbilityConfirmationState = "confirmed";
++		m_lastVoiExplicitAbilityConfirmationCount++;
++		m_lastVoiExplicitAbilityConfirmationFrame =
++			m_bot.GetGameLoop();
++		m_lastVoiExplicitAbilityConfirmationEffect =
++			"already_satisfied:" + evidence;
++		m_lastVoiExplicitAbilityTerminalAttemptGeneration =
++			m_voiExplicitAbilityAttemptGeneration;
++	};
+ 	for (const auto & combatUnit : m_combatUnits)
+ 	{
+ 		if (!combatUnit.isValid()
+@@ -2806,26 +2901,27 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		matchingCasterCount++;
+ 		const sc2::Unit * unit = combatUnit.getUnitPtr();
+ 		std::string satisfiedEvidence;
+-		if (voiExplicitAbilityDesiredStateSatisfied(
++		const bool desiredStateSatisfied =
++			voiExplicitAbilityDesiredStateSatisfied(
+ 				abilityName,
+ 				unit,
+-				satisfiedEvidence))
++				satisfiedEvidence);
++		if (abilityName == "medivac_unload_all")
+ 		{
+-			m_lastVoiExplicitAbilityActorTag = unit->tag;
+-			m_lastVoiExplicitAbilityActorType =
+-				sc2::UnitTypeToName(unit->unit_type);
+-			m_lastVoiExplicitAbilityStatus = "completed";
+-			m_lastVoiExplicitAbilityReason =
+-				"Requested explicit ability state was already satisfied in SC2 observation";
+-			m_lastVoiExplicitAbilityPhase = "effect_observed";
+-			m_lastVoiExplicitAbilityConfirmationState = "confirmed";
+-			m_lastVoiExplicitAbilityConfirmationCount++;
+-			m_lastVoiExplicitAbilityConfirmationFrame =
+-				m_bot.GetGameLoop();
+-			m_lastVoiExplicitAbilityConfirmationEffect =
+-				"already_satisfied:" + satisfiedEvidence;
+-			m_lastVoiExplicitAbilityTerminalAttemptGeneration =
+-				m_voiExplicitAbilityAttemptGeneration;
++			if (desiredStateSatisfied)
++			{
++				if (alreadySatisfiedCaster == nullptr)
++				{
++					alreadySatisfiedCaster = unit;
++					alreadySatisfiedEvidence = satisfiedEvidence;
++				}
++				continue;
++			}
++			allMatchingCastersSatisfied = false;
++		}
++		else if (desiredStateSatisfied)
++		{
++			completeAlreadySatisfied(unit, satisfiedEvidence);
+ 			return;
+ 		}
+ 		if (Util::IsAbilityAvailable(
+@@ -2836,6 +2932,16 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			availableCasters.push_back(unit);
+ 		}
+ 	}
++	if (abilityName == "medivac_unload_all"
++		&& matchingCasterCount > 0
++		&& allMatchingCastersSatisfied
++		&& alreadySatisfiedCaster != nullptr)
++	{
++		completeAlreadySatisfied(
++			alreadySatisfiedCaster,
++			alreadySatisfiedEvidence);
++		return;
++	}
+ 	m_lastVoiExplicitAbilityAvailableCasterCount =
+ 		static_cast<int>(availableCasters.size());
+ 	if (matchingCasterCount == 0)
+@@ -8465,7 +8571,34 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ {
+ 	if (unit == nullptr || !unit->is_alive)
++	{
++		return false;
++	}
++	const bool directExplicitAction =
++		action.description.rfind("VoiExplicitAbility:", 0) == 0
++		|| action.description.rfind(
++			"VoiExplicitAbilityStage:",
++			0) == 0;
++	const std::string activeExplicitAbility =
++		m_bot.Commander().getVoiPolicyString(
++			"tactical_task.ability",
++			"");
++	if (!directExplicitAction
++		&& m_bot.Commander().isVoiPolicyActive()
++		&& voiTacticalTaskWithinDuration(m_bot)
++		&& m_bot.Commander().getVoiPolicyString(
++			"tactical_task.task_type",
++			"") == "execute_ability"
++		&& voiExplicitAbilityBlocksAutonomousAction(
++			activeExplicitAbility,
++			action))
+ 	{
++		m_lastVoiActionSkippedCount++;
++		m_lastVoiActionFrame = m_bot.GetGameLoop();
++		m_lastVoiSkippedAction =
++			"explicit_state_ownership|ability="
++			+ activeExplicitAbility + "|"
++			+ voiActionEvidence(action);
+ 		return false;
+ 	}
+ 	const bool positionAction = action.microActionType == MicroActionType::Move
+@@ -8500,11 +8633,6 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ 		unitActions.erase(existingActionIt);
+ 	}
+ 
+-	const bool directExplicitAction =
+-		action.description.rfind("VoiExplicitAbility:", 0) == 0
+-		|| action.description.rfind(
+-			"VoiExplicitAbilityStage:",
+-			0) == 0;
+ 	const std::string voiRole =
+ 		m_bot.Commander().isVoiPolicyActive()
+ 			&& !directExplicitAction

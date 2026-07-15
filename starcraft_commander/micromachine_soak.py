@@ -1218,7 +1218,12 @@ def _classify_worker_root_cause_telemetry_contract(
         frame = _int_value(telemetry.get("frame"))
         trace_contract_version = _int_value(workers.get("trace_contract_version"))
         trace_event_count = _int_value(workers.get("trace_event_count"))
-        last_trace_frame = _int_value(workers.get("last_trace_frame"))
+        last_trace_frame_value = workers.get("last_trace_frame")
+        last_trace_frame = (
+            last_trace_frame_value
+            if type(last_trace_frame_value) is int
+            else -1
+        )
         last_trace_status = str(workers.get("last_trace_status", "") or "")
         last_trace_reason = str(workers.get("last_trace_reason", "") or "")
         last_trace_target_kind = str(workers.get("last_trace_target_kind", "") or "")
@@ -1230,7 +1235,7 @@ def _classify_worker_root_cause_telemetry_contract(
             )
         if frame >= 512 and (
             trace_event_count <= 0
-            or last_trace_frame <= 0
+            or last_trace_frame < 0
             or last_trace_frame > frame
             or last_trace_status in ("", "none", "unknown")
             or last_trace_reason in ("", "none", "unknown")

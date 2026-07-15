@@ -1,0 +1,156 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2749,6 +2749,19 @@
+ 	}
+ 	const bool exactCompositionPressureTask = voiPressureOperation
+ 		&& (m_bot.Commander().hasVoiPolicyDomain("composition_requirements") || m_bot.Commander().hasVoiPolicyDomain("unit_roles"));
++	const std::string voiOperationLifetimeMode = m_bot.Commander().getVoiPolicyString(
++		"lifetime.mode",
++		"");
++	const bool standingContinuousExactOperation = exactCompositionPressureTask
++		&& m_bot.Commander().getVoiPolicyFloat(
++			"production.production_continuity_bias",
++			0.0f) > 0.25f
++		&& (voiOperationLifetimeMode == "until_cancelled"
++			|| voiOperationLifetimeMode == "standing_order")
++		&& m_bot.Commander().getVoiPolicyInt("scope.max_units", 0) == 0
++		&& m_bot.Commander().getVoiPolicyInt(
++			"tactical_task.max_units",
++			0) == 0;
+ 	mainAttackSquad.setPriority(exactCompositionPressureTask ? ExplicitOperationPriority : AttackPriority);
+ 
+ 	// Worker rush strategy is not used anymore
+@@ -2825,6 +2838,8 @@
+ 	if (exactCompositionPressureTask)
+ 	{
+ 		const bool launchedExactOperation = m_voiRallyCompleted;
++		const bool continuousReinforcementOperation =
++			standingContinuousExactOperation && launchedExactOperation;
+ 		std::vector<std::pair<std::string, int>> requirements;
+ 		for (int i = 0; i < 8; ++i)
+ 		{
+@@ -2885,6 +2900,17 @@
+ 		};
+ 		std::vector<Unit> selectedUnits;
+ 		std::set<sc2::Tag> selectedTags;
++		if (continuousReinforcementOperation)
++		{
++			// Preserve the launched army. Subsequent exact-composition
++			// waves are added atomically instead of replacing the current
++			// squad with only the original minimum composition.
++			for (const auto & unit : mainAttackSquad.getUnits())
++			{
++				selectedUnits.push_back(unit);
++				selectedTags.insert(unit.getTag());
++			}
++		}
+ 		std::stringstream missing;
+ 		int totalRequired = 0;
+ 		int totalAvailable = 0;
+@@ -2894,12 +2920,33 @@
+ 		for (const auto & requirement : requirements)
+ 		{
+ 			totalRequired += requirement.second;
++			// Every standing reinforcement is an independent complete wave.
++			// Survivors at the front never reduce the staged wave requirement.
++			const int requestedForPass = requirement.second;
+ 			std::vector<Unit> candidates;
+ 			for (const auto & unit : m_combatUnits)
+ 			{
+ 				if (selectedTags.find(unit.getTag()) == selectedTags.end()
+ 					&& voiUnitMatchesCompositionToken(unit, requirement.first)
+-					&& isSafeMainAttackSource(unit))
++					&& isSafeMainAttackSource(unit)
++					&& (!continuousReinforcementOperation
++						|| Util::DistSq(unit.getPosition(), basePosition)
++							<= 32.0f * 32.0f))
+ 				{
+ 					candidates.push_back(unit);
+ 				}
+@@ -2914,19 +2961,26 @@
+ 				}
+ 				return Util::DistSq(a.getPosition(), basePosition) < Util::DistSq(b.getPosition(), basePosition);
+ 			});
+-			const int availableForType = std::min(static_cast<int>(candidates.size()), requirement.second);
+-			totalAvailable += availableForType;
+-			if (availableForType < requirement.second)
++			const int availableForPass = std::min(
++				static_cast<int>(candidates.size()),
++				requestedForPass);
++			totalAvailable += availableForPass;
++			if (availableForPass < requestedForPass)
+ 			{
+ 				exactCompositionReady = false;
+ 				if (missing.tellp() > 0)
+ 				{
+ 					missing << ",";
+ 				}
+-				missing << requirement.first << ":" << availableForType << "/" << requirement.second;
++				missing << requirement.first << ":" << availableForPass
++					<< "/" << requestedForPass;
+ 				continue;
+ 			}
+-			for (int i = 0; i < requirement.second; ++i)
++			for (int i = 0; i < requestedForPass; ++i)
+ 			{
+ 				selectedUnits.push_back(candidates[i]);
+ 				selectedTags.insert(candidates[i].getTag());
+@@ -2934,18 +2988,21 @@
+ 		}
+ 		if (exactCompositionReady)
+ 		{
+-			std::vector<Unit> unitsToRelease;
+-			for (const auto & unit : mainAttackSquad.getUnits())
++			if (!continuousReinforcementOperation)
+ 			{
+-				if (selectedTags.find(unit.getTag()) == selectedTags.end())
++				std::vector<Unit> unitsToRelease;
++				for (const auto & unit : mainAttackSquad.getUnits())
+ 				{
+-					unitsToRelease.push_back(unit);
++					if (selectedTags.find(unit.getTag()) == selectedTags.end())
++					{
++						unitsToRelease.push_back(unit);
++					}
+ 				}
++				for (const auto & unit : unitsToRelease)
++				{
++					m_squadData.assignUnitToSquad(unit, backupSquad);
++				}
+ 			}
+-			for (const auto & unit : unitsToRelease)
+-			{
+-				m_squadData.assignUnitToSquad(unit, backupSquad);
+-			}
+ 			for (const auto & unit : selectedUnits)
+ 			{
+ 				if (m_squadData.getUnitSquad(unit) != &mainAttackSquad)
+@@ -2969,9 +3026,13 @@
+ 			? "Satisfied"
+ 			: (launchedExactOperation ? "Degraded" : "Waiting");
+ 		m_lastVoiCompositionReason = exactCompositionReady
+-			? "Requested composition atomically assigned to MainAttack"
++			? (continuousReinforcementOperation
++				? "Complete reinforcement composition atomically joined MainAttack"
++				: "Requested composition atomically assigned to MainAttack")
+ 			: (launchedExactOperation
+-				? "Launched operation continuing with survivors while replacements are produced: " + missing.str()
++				? (continuousReinforcementOperation
++					? "Launched operation continuing while the next complete reinforcement composition stages at home: " + missing.str()
++					: "Launched operation continuing with survivors while replacements are produced: " + missing.str())
+ 				: "Missing composition units " + missing.str());
+ 		m_lastVoiCompositionRequired = totalRequired;
+ 		m_lastVoiCompositionAssigned = exactCompositionReady ? totalRequired : totalAvailable;
+@@ -2993,7 +3054,10 @@
+ 		exactCompositionBlocksAttack = !exactCompositionReady && !launchedExactOperation;
+ 	}
+ 
+-	if (mainAttackSquad.getUnits().empty() && m_attackStarted && !exactCompositionBlocksAttack)
++	if (mainAttackSquad.getUnits().empty()
++		&& m_attackStarted
++		&& !exactCompositionBlocksAttack
++		&& !exactCompositionPressureTask)
+ 	{
+ 		Squad & idleSquad = m_squadData.getSquad("Idle");
+ 		for (const auto & idleUnit : idleSquad.getUnits())

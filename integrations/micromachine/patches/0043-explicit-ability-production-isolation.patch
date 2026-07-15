@@ -1,0 +1,203 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -1,3 +1,4 @@
++#include <initializer_list>
+ #include "ProductionManager.h"
+ #include "Util.h"
+ #include "CCBot.h"
+@@ -817,7 +818,70 @@ bool voiDoctrineRequestsTechTransition(CCBot & bot, const MetaType & type)
+ 				|| dropBias > 0.25f
+ 				|| voiDoctrineIsOneOf(doctrine, "drop_harassment", "worker_line_harassment")));
+ }
+ 
++bool voiExplicitAbilityCasterPending(CCBot & bot)
++{
++	if (!bot.Commander().isVoiPolicyActive()
++		|| !voiTacticalTaskWithinDuration(bot)
++		|| bot.Commander().getVoiPolicyString(
++			"tactical_task.task_type",
++			"") != "execute_ability")
++	{
++		return false;
++	}
++
++	const std::string ability =
++		bot.Commander().getVoiPolicyString(
++			"tactical_task.ability",
++			"");
++	if (ability.empty() || ability == "tactical_nuke")
++	{
++		return false;
++	}
++
++	const std::string requestedUnitClasses =
++		bot.Commander().getVoiPolicyString(
++			"tactical_task.unit_classes",
++			"");
++	bool hasCasterClass = false;
++	bool casterRepresented = false;
++	const auto observeCaster =
++		[&](
++			const std::string & policyUnitType,
++			const MetaType & type)
++		{
++			if (!voiCommaListContains(
++					requestedUnitClasses,
++					policyUnitType))
++			{
++				return;
++			}
++			hasCasterClass = true;
++			casterRepresented =
++				casterRepresented
++				|| voiRepresentedUnitCount(bot, type) > 0;
++		};
++
++	observeCaster("TERRAN_MARINE", MetaTypeEnum::Marine);
++	observeCaster("TERRAN_MARAUDER", MetaTypeEnum::Marauder);
++	observeCaster("TERRAN_REAPER", MetaTypeEnum::Reaper);
++	observeCaster("TERRAN_GHOST", MetaTypeEnum::Ghost);
++	observeCaster("TERRAN_HELLION", MetaTypeEnum::Hellion);
++	observeCaster("TERRAN_WIDOWMINE", MetaTypeEnum::WidowMine);
++	observeCaster("TERRAN_CYCLONE", MetaTypeEnum::Cyclone);
++	observeCaster("TERRAN_THOR", MetaTypeEnum::Thor);
++	observeCaster("TERRAN_SIEGETANK", MetaTypeEnum::SiegeTank);
++	observeCaster("TERRAN_MEDIVAC", MetaTypeEnum::Medivac);
++	observeCaster("TERRAN_VIKINGFIGHTER", MetaTypeEnum::Viking);
++	observeCaster("TERRAN_LIBERATOR", MetaTypeEnum::Liberator);
++	observeCaster("TERRAN_BANSHEE", MetaTypeEnum::Banshee);
++	observeCaster("TERRAN_RAVEN", MetaTypeEnum::Raven);
++	observeCaster(
++		"TERRAN_BATTLECRUISER",
++		MetaTypeEnum::Battlecruiser);
++	return hasCasterClass && !casterRepresented;
++}
++
+ bool voiWantsSiegeTank(CCBot & bot)
+ {
+ 	if (!bot.Commander().isVoiPolicyActive())
+@@ -1249,7 +1313,8 @@ void ProductionManager::manageBuildOrderQueue()
+ 	bool isSupplyCap = false;
+ 	
+     // while there is still something left in the queue
+-    while (!m_queue.isEmpty())
++	size_t queueInspectionBudget = m_queue.size();
++    while (!m_queue.isEmpty() && queueInspectionBudget-- > 0)
+     {
+ #ifdef NO_BUILDING
+ 		if (currentItem.type.isBuilding())
+@@ -2107,10 +2172,78 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+ 			}
+ 		}
+ 
+-		// The VOI doctrine path owns combat-unit selection and prerequisite
+-		// production for exact compositions. Running the legacy strategy picker
+-		// as well repeatedly injects unrequested Reapers, Marauders, Banshees,
+-		// and their addons, then reconciliation removes them on the same frame.
++		// The VOI command path owns combat-unit selection while an explicit
++		// ability caster is missing. Legacy strategy tech can otherwise inject
++		// a blocking Banshee/Starport chain ahead of the requested caster.
++		if (voiExplicitAbilityCasterPending(m_bot))
++		{
++			const std::string requestedTargets =
++				m_bot.Commander().getVoiPolicyString(
++					"tactical_task.production_targets",
++					"");
++			const std::string requestedUnitClasses =
++				m_bot.Commander().getVoiPolicyString(
++					"tactical_task.unit_classes",
++					"");
++			const bool casterNeedsStarport =
++				voiCommaListContains(requestedUnitClasses, "TERRAN_MEDIVAC")
++				|| voiCommaListContains(requestedUnitClasses, "TERRAN_VIKINGFIGHTER")
++				|| voiCommaListContains(requestedUnitClasses, "TERRAN_LIBERATOR")
++				|| voiCommaListContains(requestedUnitClasses, "TERRAN_BANSHEE")
++				|| voiCommaListContains(requestedUnitClasses, "TERRAN_RAVEN")
++				|| voiCommaListContains(requestedUnitClasses, "TERRAN_BATTLECRUISER");
++			const bool casterNeedsStarportTechLab =
++				voiCommaListContains(requestedUnitClasses, "TERRAN_BANSHEE")
++				|| voiCommaListContains(requestedUnitClasses, "TERRAN_RAVEN")
++				|| voiCommaListContains(requestedUnitClasses, "TERRAN_BATTLECRUISER");
++			const auto removeIfUnrequested =
++				[&](
++					const MetaType & type,
++					const std::initializer_list<std::string> & tokens,
++					bool requiredByCaster = false)
++				{
++					if (requiredByCaster)
++					{
++						return;
++					}
++					for (const auto & token : tokens)
++					{
++						if (voiCommaListContains(
++								requestedTargets,
++								token))
++						{
++							return;
++						}
++					}
++					m_queue.removeAllOfType(type);
++				};
++			removeIfUnrequested(
++				MetaTypeEnum::Starport,
++				{"TERRAN_STARPORT"},
++				casterNeedsStarport);
++			removeIfUnrequested(
++				MetaTypeEnum::StarportTechLab,
++				{"STARPORT_TECHLAB", "TERRAN_STARPORTTECHLAB"},
++				casterNeedsStarportTechLab);
++			removeIfUnrequested(
++				MetaTypeEnum::StarportReactor,
++				{"STARPORT_REACTOR", "TERRAN_STARPORTREACTOR"});
++			removeIfUnrequested(
++				MetaTypeEnum::Banshee,
++				{"TERRAN_BANSHEE"},
++				voiCommaListContains(
++					requestedUnitClasses,
++					"TERRAN_BANSHEE"));
++			removeIfUnrequested(
++				MetaTypeEnum::BansheeCloak,
++				{"BANSHEE_CLOAK"});
++			removeIfUnrequested(
++				MetaTypeEnum::HyperflightRotors,
++				{"BANSHEE_SPEED"});
++			return;
++		}
++
++		// Exact compositions also own legacy combat-unit selection.
+ 		if (voiExactCompositionActive(m_bot))
+ 		{
+ 			return;
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2323,9 +2323,24 @@ bool BuildingManager::assignWorkerToUnassignedBuilding(Building & b, bool filter
+ 
+ 		if (!isEarlyWallBuilding)
+ 		{
+-			m_bot.StartProfiling("0.8.3.2 IsPathToGoalSafe");
+-			const auto isPathToGoalSafe = Util::PathFinding::IsPathToGoalSafe(builderUnit.getUnitPtr(), Util::GetPosition(b.finalPosition), b.type.isRefinery(), m_bot);
+-			m_bot.StopProfiling("0.8.3.2 IsPathToGoalSafe");
++			const bool trustedVoiMacroPlacement =
++				b.canBeBuiltElseWhere
++				&& canTrustSafeMacroPlacement(
++					m_bot,
++					b.type,
++					b.finalPosition);
++			bool isPathToGoalSafe = trustedVoiMacroPlacement;
++			if (!trustedVoiMacroPlacement)
++			{
++				m_bot.StartProfiling("0.8.3.2 IsPathToGoalSafe");
++				isPathToGoalSafe =
++					Util::PathFinding::IsPathToGoalSafe(
++						builderUnit.getUnitPtr(),
++						Util::GetPosition(b.finalPosition),
++						b.type.isRefinery(),
++						m_bot);
++				m_bot.StopProfiling("0.8.3.2 IsPathToGoalSafe");
++			}
+ 
+ 				if (!isPathToGoalSafe && b.canBeBuiltElseWhere && canTrustVoiExpansionDepotPlacement(m_bot, b.type, b.finalPosition))
+ 				{

@@ -291,7 +291,13 @@ class MicroMachineBlackboardUpdate:
         )
 
     def is_stale(self, current_frame: int) -> bool:
-        return _non_negative_int("current_frame", current_frame) > self.expires_at_frame
+        frame = _non_negative_int("current_frame", current_frame)
+        persistent_lifetime_active = (
+            self.vector.lifetime.completion_state == "active"
+            and self.vector.lifetime.mode
+            in {"until_cancelled", "standing_order"}
+        )
+        return frame > self.expires_at_frame and not persistent_lifetime_active
 
     def to_dict(self) -> dict[str, object]:
         return {

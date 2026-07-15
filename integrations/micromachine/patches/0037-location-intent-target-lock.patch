@@ -1,0 +1,485 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -40,6 +40,8 @@
+ constexpr float TacticalNukeCastRange = 12.0f;
+ constexpr float TacticalNukeDamageRadius = 8.0f;
+ constexpr float TacticalNukeDefaultStagingRadius = 10.5f;
++constexpr float TacticalNukeEnemyMainIntentRadius = 28.0f;
++constexpr float TacticalNukeEnemyNaturalIntentRadius = 18.0f;
+ constexpr uint32_t TacticalNukeRecentMobileObservationWindowFrames = 22u * 20u;
+ constexpr uint32_t TacticalNukeKnownBuildingObservationWindowFrames = 22u * 120u;
+ constexpr uint32_t TacticalNukeConfirmationRetryFrames = 22u * 2u;
+@@ -48,11 +50,20 @@
+ struct VoiTacticalNukeTarget
+ {
+ 	CCPosition position = CCPosition();
++	CCPosition anchor = CCPosition();
++	std::string locationIntent = "";
+ 	uint32_t observationFrame = 0;
++	float anchorDistance = 0.0f;
+ 	float score = 0.0f;
++	bool locationMatch = false;
+ };
+ 
+ bool voiTacticalTaskWithinDuration(CCBot & bot);
++bool voiResolveTacticalNukeTargetAnchor(
++	CCBot & bot,
++	const std::string & locationIntent,
++	CCPosition & anchor,
++	float & radius);
+ 
+ bool voiCommaListContains(const std::string & values, const std::string & target)
+ {
+@@ -104,6 +115,29 @@
+ 		&& bot.Commander().getVoiPolicyString("tactical_task.ability", "") == "tactical_nuke";
+ }
+ 
++std::string voiEffectiveTacticalNukeLocationIntent(CCBot & bot)
++{
++	const std::string taskLocationIntent =
++		bot.Commander().getVoiPolicyString(
++			"tactical_task.location_intent",
++			"");
++	if (!taskLocationIntent.empty())
++	{
++		return taskLocationIntent;
++	}
++	const std::string scopeLocationIntent =
++		bot.Commander().getVoiPolicyString(
++			"scope.location_intent",
++			"");
++	if (!scopeLocationIntent.empty())
++	{
++		return scopeLocationIntent;
++	}
++	return bot.Commander().getVoiPolicyString(
++		"target_intent.target_type",
++		"");
++}
++
+ bool voiGhostHasTacticalNukeOrder(CCBot & bot, uint64_t ghostTag)
+ {
+ 	if (ghostTag == 0)
+@@ -255,6 +289,23 @@
+ 		bot.Commander().getVoiPolicyFloat("tactical_task.safety_margin", 0.0f));
+ 	const float friendlyExclusionRadius =
+ 		TacticalNukeDamageRadius + safetyMargin;
++	const std::string locationIntent =
++		voiEffectiveTacticalNukeLocationIntent(bot);
++	CCPosition targetAnchor;
++	float targetAnchorRadius = 0.0f;
++	const bool locationConstrained =
++		voiResolveTacticalNukeTargetAnchor(
++			bot,
++			locationIntent,
++			targetAnchor,
++			targetAnchorRadius);
++	selectedTarget.locationIntent = locationIntent;
++	selectedTarget.anchor = targetAnchor;
++	selectedTarget.locationMatch = !locationConstrained;
++	if (locationConstrained && targetAnchor == CCPosition())
++	{
++		return false;
++	}
+ 	bool found = false;
+ 
+ 	for (const auto & candidateUnit : bot.UnitInfo().getUnits(Players::Enemy))
+@@ -283,6 +334,14 @@
+ 		{
+ 			continue;
+ 		}
++		const float targetAnchorDistance = locationConstrained
++			? Util::Dist(targetAnchor, candidate->pos)
++			: 0.0f;
++		if (locationConstrained
++			&& targetAnchorDistance > targetAnchorRadius)
++		{
++			continue;
++		}
+ 
+ 		int clusterCount = 0;
+ 		float clusterValue = 0.0f;
+@@ -336,6 +395,12 @@
+ 		float score = clusterValue
+ 			+ static_cast<float>(clusterCount) * 150.0f
+ 			- static_cast<float>(mobileFriendlyCount) * 800.0f;
++		if (locationConstrained)
++		{
++			score += std::max(
++				0.0f,
++				targetAnchorRadius - targetAnchorDistance) * 100.0f;
++		}
+ 		if (preferredPosition != CCPosition()
+ 			&& Util::DistSq(preferredPosition, candidate->pos) <= 6.0f * 6.0f)
+ 		{
+@@ -346,7 +411,9 @@
+ 			found = true;
+ 			selectedTarget.position = candidate->pos;
+ 			selectedTarget.observationFrame = newestObservationFrame;
++			selectedTarget.anchorDistance = targetAnchorDistance;
+ 			selectedTarget.score = score;
++			selectedTarget.locationMatch = true;
+ 		}
+ 	}
+ 	return found;
+@@ -960,6 +1027,34 @@
+ 		return enemyMain + Util::Normalized(center - enemyMain) * 12.0f;
+ 	}
+ 	return enemyMain;
++}
++
++bool voiResolveTacticalNukeTargetAnchor(
++	CCBot & bot,
++	const std::string & locationIntent,
++	CCPosition & anchor,
++	float & radius)
++{
++	if (locationIntent == "enemy_main"
++		|| locationIntent == "enemy_base"
++		|| locationIntent == "enemy_start"
++		|| locationIntent == "enemy_start_location")
++	{
++		anchor = voiEnemyMainCombatTarget(bot);
++		radius = TacticalNukeEnemyMainIntentRadius;
++		const CCPosition observedTarget = voiObservedEnemyCombatTarget(bot);
++		if (observedTarget != CCPosition()
++			&& (anchor == CCPosition()
++				|| Util::Dist(anchor, observedTarget) <= radius))
++		{
++			anchor = observedTarget;
++		}
++		return true;
++	}
++	if (locationIntent == "enemy_natural"
++		|| locationIntent == "contain_enemy_natural"
++		|| locationIntent == "enemy_front")
++	{
++		anchor = voiEnemyNaturalCombatTarget(bot);
++		radius = TacticalNukeEnemyNaturalIntentRadius;
++		return true;
++	}
++	anchor = CCPosition();
++	radius = 0.0f;
++	return false;
+ }
+ 
+ CCPosition voiResolveCombatLocationIntent(CCBot & bot, const std::string & locationIntent, const CCPosition & fallbackPosition)
+@@ -1309,8 +1404,12 @@
+ 		m_lastVoiTacticalNukeReason = "No tactical nuke ability task requested";
+ 		m_lastVoiTacticalNukeGhostTag = 0;
+ 		m_lastVoiTacticalNukeTarget = CCPosition();
++		m_lastVoiTacticalNukeTargetAnchor = CCPosition();
+ 		m_lastVoiTacticalNukeStagingPosition = CCPosition();
++		m_lastVoiTacticalNukeLocationIntent = "";
+ 		m_lastVoiTacticalNukeTargetObservationFrame = 0;
++		m_lastVoiTacticalNukeTargetAnchorDistance = 0.0f;
++		m_lastVoiTacticalNukeTargetLocationMatch = false;
+ 		m_lastVoiTacticalNukeReservedGhostCount = 0;
+ 		m_lastVoiTacticalNukeAvailableGhostCount = 0;
+ 		m_lastVoiTacticalNukeStagingCommandIssuedCount = 0;
+@@ -1417,17 +1516,32 @@
+ 			m_lastVoiTacticalNukeTarget,
+ 			selectedTarget))
+ 	{
++		m_lastVoiTacticalNukeLocationIntent =
++			selectedTarget.locationIntent;
++		m_lastVoiTacticalNukeTargetAnchor =
++			selectedTarget.anchor;
++		m_lastVoiTacticalNukeTargetAnchorDistance = 0.0f;
++		m_lastVoiTacticalNukeTargetLocationMatch = false;
+ 		m_lastVoiTacticalNukeStatus = "waiting_target";
+ 		m_lastVoiTacticalNukeReason =
+-			"Waiting for a safe recently observed high-value or clustered enemy target";
++			selectedTarget.anchor != CCPosition()
++				? "Waiting for a safe recently observed high-value or clustered enemy target inside the requested location anchor"
++				: "Waiting for a safe recently observed high-value or clustered enemy target";
+ 		m_lastVoiTacticalNukeTarget = CCPosition();
+ 		m_lastVoiTacticalNukeStagingPosition = CCPosition();
+ 		m_lastVoiTacticalNukeTargetObservationFrame = 0;
+ 		return;
+ 	}
++	m_lastVoiTacticalNukeLocationIntent =
++		selectedTarget.locationIntent;
+ 	m_lastVoiTacticalNukeTarget = selectedTarget.position;
++	m_lastVoiTacticalNukeTargetAnchor = selectedTarget.anchor;
+ 	m_lastVoiTacticalNukeTargetObservationFrame =
+ 		selectedTarget.observationFrame;
++	m_lastVoiTacticalNukeTargetAnchorDistance =
++		selectedTarget.anchorDistance;
++	m_lastVoiTacticalNukeTargetLocationMatch =
++		selectedTarget.locationMatch;
+ 
+ 	float castRange = TacticalNukeCastRange;
+ 	const auto castRangeIt =
+@@ -3431,6 +3545,9 @@
+ 		m_lastVoiScoutScopeStatus = activeScoutScope ? "Waiting" : "Default";
+ 		m_lastVoiScoutScopeReason = activeScoutScope ? "No eligible combat scout units" : "No scout units assigned";
+ 		m_lastVoiScoutAssignedUnitCount = 0;
++		m_lastVoiScoutResolvedTarget = CCPosition();
++		m_lastVoiScoutTargetHomeDistance = 0.0f;
++		m_lastVoiScoutTargetEnemyMainDistance = 0.0f;
+ 		m_lastVoiScoutHomeDistance = 0.0f;
+ 		m_lastVoiScoutMarineAssignedCount = 0;
+ 		m_lastVoiScoutMarineHomeDistance = 0.0f;
+@@ -3442,6 +3559,9 @@
+ 		m_lastVoiScoutScopeStatus = "Waiting";
+ 		m_lastVoiScoutScopeReason = "Tactical task scout_with_units waiting for requested min_units";
+ 		m_lastVoiScoutAssignedUnitCount = 0;
++		m_lastVoiScoutResolvedTarget = CCPosition();
++		m_lastVoiScoutTargetHomeDistance = 0.0f;
++		m_lastVoiScoutTargetEnemyMainDistance = 0.0f;
+ 		m_lastVoiScoutHomeDistance = 0.0f;
+ 		m_lastVoiScoutMarineAssignedCount = 0;
+ 		m_lastVoiScoutMarineHomeDistance = 0.0f;
+@@ -3455,6 +3575,17 @@
+ 			? voiResolveCombatLocationIntent(m_bot, effectiveLocationIntent.empty() ? "enemy_main" : effectiveLocationIntent, defaultScoutTarget)
+ 			: defaultScoutTarget;
+ 	bool rotatedStalledTarget = false;
++	bool retainedPinnedTarget = false;
++	CCPosition requestedNukeAnchor;
++	float requestedNukeAnchorRadius = 0.0f;
++	const bool retainRequestedNukeTarget =
++		tacticalNukeNeedsTargetObservation
++		&& voiResolveTacticalNukeTargetAnchor(
++			m_bot,
++			voiEffectiveTacticalNukeLocationIntent(m_bot),
++			requestedNukeAnchor,
++			requestedNukeAnchorRadius)
++		&& requestedNukeAnchor != CCPosition();
+ 	if (enemyEvidenceScoutRequested && scoutTarget != CCPosition())
+ 	{
+ 		const Unit & scoutUnit = scoutSquad.getUnits().front();
+@@ -3476,37 +3607,61 @@
+ 		else if (currentFrame >= m_voiScoutLastProgressFrame
+ 			&& currentFrame - m_voiScoutLastProgressFrame >= 22u * 12u)
+ 		{
+-			m_voiStalledScoutTargets.push_back(scoutTarget);
+-			for (const auto baseLocation : m_bot.Bases().getBaseLocations())
++			if (retainRequestedNukeTarget)
+ 			{
+-				if (Util::DistSq(baseLocation->getPosition(), scoutTarget) <= 6.0f * 6.0f
+-					&& !Util::Contains(baseLocation, m_visitedBaseLocations))
++				m_voiScoutLastProgressFrame = currentFrame;
++				retainedPinnedTarget = true;
++				Util::Log(
++					__FUNCTION__,
++					"VOI tactical nuke scout made no route progress for 12 seconds; retaining the requested location anchor.",
++					m_bot);
++			}
++			else
++			{
++				m_voiStalledScoutTargets.push_back(scoutTarget);
++				for (const auto baseLocation : m_bot.Bases().getBaseLocations())
+ 				{
+-					m_visitedBaseLocations.push_back(baseLocation);
+-					break;
++					if (Util::DistSq(baseLocation->getPosition(), scoutTarget) <= 6.0f * 6.0f
++						&& !Util::Contains(baseLocation, m_visitedBaseLocations))
++					{
++						m_visitedBaseLocations.push_back(baseLocation);
++						break;
++					}
+ 				}
++				const CCPosition replacementTarget = GetNextEnemyStartCandidateToScout();
++				if (replacementTarget != CCPosition())
++				{
++					scoutTarget = replacementTarget;
++				}
++				m_voiScoutProgressTarget = scoutTarget;
++				m_voiScoutBestTargetDistance = Util::Dist(scoutUnit.getPosition(), scoutTarget);
++				m_voiScoutLastProgressFrame = currentFrame;
++				rotatedStalledTarget = true;
++				Util::Log(
++					__FUNCTION__,
++					"VOI combat scout made no route progress for 12 seconds; rotating away from the stalled base candidate.",
++					m_bot);
+ 			}
+-			const CCPosition replacementTarget = GetNextEnemyStartCandidateToScout();
+-			if (replacementTarget != CCPosition())
+-			{
+-				scoutTarget = replacementTarget;
+-			}
+-			m_voiScoutProgressTarget = scoutTarget;
+-			m_voiScoutBestTargetDistance = Util::Dist(scoutUnit.getPosition(), scoutTarget);
+-			m_voiScoutLastProgressFrame = currentFrame;
+-			rotatedStalledTarget = true;
+-			Util::Log(
+-				__FUNCTION__,
+-				"VOI combat scout made no route progress for 12 seconds; rotating away from the stalled base candidate.",
+-				m_bot);
+ 		}
+ 	}
+ 	const SquadOrder scoutOrder(SquadOrderTypes::Scout, scoutTarget, ScoutOrderRadius, "Scout");
+ 	scoutSquad.setSquadOrder(scoutOrder);
++	m_lastVoiScoutResolvedTarget = scoutTarget;
++	m_lastVoiScoutTargetHomeDistance =
++		scoutTarget == CCPosition()
++			? 0.0f
++			: Util::Dist(voiHomePosition(m_bot), scoutTarget);
++	const CCPosition enemyMainTarget = voiEnemyMainCombatTarget(m_bot);
++	m_lastVoiScoutTargetEnemyMainDistance =
++		scoutTarget == CCPosition() || enemyMainTarget == CCPosition()
++			? 0.0f
++			: Util::Dist(enemyMainTarget, scoutTarget);
+ 	m_lastVoiScoutAssignedUnitCount = static_cast<int>(scoutSquad.getUnits().size());
+ 	m_lastVoiScoutScopeStatus = activeScoutScope ? "Consumed" : "Default";
+ 	m_lastVoiScoutScopeReason = tacticalNukeNeedsTargetObservation
+-		? (rotatedStalledTarget
++		? (retainedPinnedTarget
++			? "Tactical nuke observation scout retained the requested location anchor after route stall"
++			: rotatedStalledTarget
+ 			? "Tactical nuke observation scout rotated from a stalled enemy-start candidate"
+ 			: "Tactical nuke is waiting for a recently observed enemy target")
+ 		: pressureNeedsScout
+@@ -6284,11 +6439,34 @@
+ 	}
+ 
+ 	const Unit & scoutUnit = squad.getUnits().front();
++	CCPosition requestedNukeAnchor;
++	float requestedNukeAnchorRadius = 0.0f;
++	const bool hasRequestedNukeAnchor =
++		voiTacticalNukeTaskRequested(m_bot)
++		&& voiResolveTacticalNukeTargetAnchor(
++			m_bot,
++			voiEffectiveTacticalNukeLocationIntent(m_bot),
++			requestedNukeAnchor,
++			requestedNukeAnchorRadius)
++		&& requestedNukeAnchor != CCPosition();
++	if (hasRequestedNukeAnchor
++		&& voiIsRemoteCombatTarget(m_bot, requestedNukeAnchor)
++		&& (scoutUnit.isFlying()
++			|| m_bot.Map().getGroundDistance(
++				requestedNukeAnchor,
++				scoutUnit.getPosition()) >= 0))
++	{
++		return requestedNukeAnchor;
++	}
++
+ 	CCPosition selectedCandidate;
+ 	float selectedDistance = 0.0f;
++	const bool singleEnemyStartCandidate =
++		m_bot.GetEnemyStartLocations().size() == 1;
+ 	for (const auto & candidate : m_bot.GetEnemyStartLocations())
+ 	{
+-		if (m_bot.Map().isExplored(candidate))
++		if (m_bot.Map().isExplored(candidate)
++			&& !singleEnemyStartCandidate)
+ 		{
+ 			continue;
+ 		}
+@@ -6301,7 +6479,7 @@
+ 				break;
+ 			}
+ 		}
+-		if (stalled)
++		if (stalled && !singleEnemyStartCandidate)
+ 		{
+ 			continue;
+ 		}
+@@ -6317,9 +6495,25 @@
+ 			selectedDistance = distance;
+ 		}
+ 	}
+-	return selectedCandidate != CCPosition()
+-		? selectedCandidate
+-		: GetNextBaseLocationToScout();
++	if (selectedCandidate != CCPosition())
++	{
++		return selectedCandidate;
++	}
++	const CCPosition enemyMainTarget =
++		voiEnemyMainCombatTarget(m_bot);
++	if (voiIsRemoteCombatTarget(m_bot, enemyMainTarget)
++		&& (scoutUnit.isFlying()
++			|| m_bot.Map().getGroundDistance(
++				enemyMainTarget,
++				scoutUnit.getPosition()) >= 0))
++	{
++		return enemyMainTarget;
++	}
++	const CCPosition fallbackTarget =
++		GetNextBaseLocationToScout();
++	return voiIsRemoteCombatTarget(m_bot, fallbackTarget)
++		? fallbackTarget
++		: CCPosition();
+ }
+ 
+ void CombatCommander::SetLogVikingActions(bool log)
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -205,6 +205,9 @@
+ 	float m_maxVoiScoutHomeDistance = 0.0f;
+ 	float m_lastVoiScoutMarineHomeDistance = 0.0f;
+ 	float m_maxVoiScoutMarineHomeDistance = 0.0f;
++	CCPosition m_lastVoiScoutResolvedTarget = CCPosition();
++	float m_lastVoiScoutTargetHomeDistance = 0.0f;
++	float m_lastVoiScoutTargetEnemyMainDistance = 0.0f;
+ 	int m_lastVoiScoutActionIssuedCount = 0;
+ 	uint32_t m_lastVoiScoutActionFrame = 0;
+ 	std::string m_lastVoiScoutIssuedAction = "";
+@@ -252,8 +255,12 @@
+ 	std::string m_lastVoiTacticalNukeReason = "No tactical nuke ability task requested";
+ 	uint64_t m_lastVoiTacticalNukeGhostTag = 0;
+ 	CCPosition m_lastVoiTacticalNukeTarget = CCPosition();
++	CCPosition m_lastVoiTacticalNukeTargetAnchor = CCPosition();
+ 	CCPosition m_lastVoiTacticalNukeStagingPosition = CCPosition();
++	std::string m_lastVoiTacticalNukeLocationIntent = "";
+ 	uint32_t m_lastVoiTacticalNukeTargetObservationFrame = 0;
++	float m_lastVoiTacticalNukeTargetAnchorDistance = 0.0f;
++	bool m_lastVoiTacticalNukeTargetLocationMatch = false;
+ 	int m_lastVoiTacticalNukeReservedGhostCount = 0;
+ 	int m_lastVoiTacticalNukeAvailableGhostCount = 0;
+ 	int m_lastVoiTacticalNukeStagingCommandIssuedCount = 0;
+@@ -413,6 +420,9 @@
+ 	float getVoiScoutMaxHomeDistance() const { return m_maxVoiScoutHomeDistance; }
+ 	float getVoiScoutMarineHomeDistance() const { return m_lastVoiScoutMarineHomeDistance; }
+ 	float getVoiScoutMarineMaxHomeDistance() const { return m_maxVoiScoutMarineHomeDistance; }
++	CCPosition getVoiScoutResolvedTarget() const { return m_lastVoiScoutResolvedTarget; }
++	float getVoiScoutTargetHomeDistance() const { return m_lastVoiScoutTargetHomeDistance; }
++	float getVoiScoutTargetEnemyMainDistance() const { return m_lastVoiScoutTargetEnemyMainDistance; }
+ 	int getVoiScoutActionIssuedCount() const { return m_lastVoiScoutActionIssuedCount; }
+ 	uint32_t getVoiScoutActionFrame() const { return m_lastVoiScoutActionFrame; }
+ 	const std::string & getVoiScoutIssuedAction() const { return m_lastVoiScoutIssuedAction; }
+@@ -454,8 +464,12 @@
+ 	const std::string & getVoiTacticalNukeReason() const { return m_lastVoiTacticalNukeReason; }
+ 	uint64_t getVoiTacticalNukeGhostTag() const { return m_lastVoiTacticalNukeGhostTag; }
+ 	CCPosition getVoiTacticalNukeTarget() const { return m_lastVoiTacticalNukeTarget; }
++	CCPosition getVoiTacticalNukeTargetAnchor() const { return m_lastVoiTacticalNukeTargetAnchor; }
+ 	CCPosition getVoiTacticalNukeStagingPosition() const { return m_lastVoiTacticalNukeStagingPosition; }
++	const std::string & getVoiTacticalNukeLocationIntent() const { return m_lastVoiTacticalNukeLocationIntent; }
+ 	uint32_t getVoiTacticalNukeTargetObservationFrame() const { return m_lastVoiTacticalNukeTargetObservationFrame; }
++	float getVoiTacticalNukeTargetAnchorDistance() const { return m_lastVoiTacticalNukeTargetAnchorDistance; }
++	bool getVoiTacticalNukeTargetLocationMatch() const { return m_lastVoiTacticalNukeTargetLocationMatch; }
+ 	int getVoiTacticalNukeReservedGhostCount() const { return m_lastVoiTacticalNukeReservedGhostCount; }
+ 	int getVoiTacticalNukeAvailableGhostCount() const { return m_lastVoiTacticalNukeAvailableGhostCount; }
+ 	int getVoiTacticalNukeStagingCommandIssuedCount() const { return m_lastVoiTacticalNukeStagingCommandIssuedCount; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -541,8 +541,13 @@
+         << "\"reason\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeReason()) << "\","
+         << "\"update_id\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeUpdateId()) << "\","
+         << "\"actor_tag\":" << m_combatCommander.getVoiTacticalNukeGhostTag() << ","
++        << "\"location_intent\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeLocationIntent()) << "\","
+         << "\"target_x\":" << m_combatCommander.getVoiTacticalNukeTarget().x << ","
+         << "\"target_y\":" << m_combatCommander.getVoiTacticalNukeTarget().y << ","
++        << "\"target_anchor_x\":" << m_combatCommander.getVoiTacticalNukeTargetAnchor().x << ","
++        << "\"target_anchor_y\":" << m_combatCommander.getVoiTacticalNukeTargetAnchor().y << ","
++        << "\"target_anchor_distance\":" << m_combatCommander.getVoiTacticalNukeTargetAnchorDistance() << ","
++        << "\"target_location_match\":" << (m_combatCommander.getVoiTacticalNukeTargetLocationMatch() ? "true" : "false") << ","
+         << "\"target_observation_frame\":" << m_combatCommander.getVoiTacticalNukeTargetObservationFrame() << ","
+         << "\"staging_x\":" << m_combatCommander.getVoiTacticalNukeStagingPosition().x << ","
+         << "\"staging_y\":" << m_combatCommander.getVoiTacticalNukeStagingPosition().y << ","
+@@ -651,6 +656,10 @@
+         << "\"scout_max_home_distance\":" << m_combatCommander.getVoiScoutMaxHomeDistance() << ","
+         << "\"scout_marine_home_distance\":" << m_combatCommander.getVoiScoutMarineHomeDistance() << ","
+         << "\"scout_marine_max_home_distance\":" << m_combatCommander.getVoiScoutMarineMaxHomeDistance() << ","
++        << "\"scout_resolved_target_x\":" << m_combatCommander.getVoiScoutResolvedTarget().x << ","
++        << "\"scout_resolved_target_y\":" << m_combatCommander.getVoiScoutResolvedTarget().y << ","
++        << "\"scout_target_home_distance\":" << m_combatCommander.getVoiScoutTargetHomeDistance() << ","
++        << "\"scout_target_enemy_main_distance\":" << m_combatCommander.getVoiScoutTargetEnemyMainDistance() << ","
+         << "\"scout_actual_command_issued_count\":" << m_combatCommander.getVoiScoutActionIssuedCount() << ","
+         << "\"scout_last_action_frame\":" << m_combatCommander.getVoiScoutActionFrame() << ","
+         << "\"scout_last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutIssuedAction()) << "\","

@@ -14,6 +14,7 @@ from typing import Final
 
 from starcraft_commander.micromachine_tactical_evidence import (
     MicroMachineTacticalEvidence,
+    explicit_ability_terminal_is_valid,
 )
 
 
@@ -31,11 +32,19 @@ COMMAND_EXECUTION_STAGES: Final[tuple[str, ...]] = (
 LIVE_QA_SCENARIOS: Final[tuple[str, ...]] = (
     "marine_scout",
     "four_marine_attack",
+    "requested_combat_composition_attack",
     "flank_attack",
     "tank_production_prerequisite_chain",
+    "bio_support_production_prerequisite_chain",
+    "mech_support_production_prerequisite_chain",
+    "air_support_production_prerequisite_chain",
+    "capital_air_production_prerequisite_chain",
+    "special_unit_role_micro",
     "bunker_placement_intent",
     "retreat_interrupt",
     "standing_production_merge",
+    "tactical_nuke_prerequisite_chain",
+    "tactical_nuke_ability_cast",
 )
 
 ACTUAL_PRODUCTION_ITEM_ALIASES: Final[Mapping[str, str]] = {
@@ -48,20 +57,106 @@ ACTUAL_PRODUCTION_ITEM_ALIASES: Final[Mapping[str, str]] = {
     "TERRAN_STARPORTREACTOR": "StarportReactor",
     "TERRAN_COMMANDCENTER": "CommandCenter",
     "TERRAN_ENGINEERINGBAY": "EngineeringBay",
+    "TERRAN_ARMORY": "Armory",
     "TERRAN_BUNKER": "Bunker",
+    "TERRAN_FUSIONCORE": "FusionCore",
+    "TERRAN_GHOSTACADEMY": "GhostAcademy",
     "TERRAN_MARINE": "Marine",
     "TERRAN_MARAUDER": "Marauder",
     "TERRAN_REAPER": "Reaper",
+    "TERRAN_GHOST": "Ghost",
+    "TERRAN_NUKE": "Nuke",
     "TERRAN_HELLION": "Hellion",
     "TERRAN_CYCLONE": "Cyclone",
     "TERRAN_THOR": "Thor",
     "TERRAN_SIEGETANK": "SiegeTank",
     "TERRAN_MEDIVAC": "Medivac",
     "TERRAN_VIKINGFIGHTER": "Viking",
+    "TERRAN_BANSHEE": "Banshee",
+    "TERRAN_RAVEN": "Raven",
+    "TERRAN_BATTLECRUISER": "Battlecruiser",
+    "BARRACKS_TECHLAB": "BarracksTechLab",
+    "BARRACKS_REACTOR": "BarracksReactor",
+    "FACTORY_TECHLAB": "FactoryTechLab",
+    "FACTORY_REACTOR": "FactoryReactor",
+    "STARPORT_TECHLAB": "StarportTechLab",
+    "STARPORT_REACTOR": "StarportReactor",
 }
 
 PRODUCTION_PREREQUISITE_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
-    {"FactoryTechLab", "SiegeTank"}
+    {
+        "Armory",
+        "Banshee",
+        "BarracksTechLab",
+        "Battlecruiser",
+        "Cyclone",
+        "Factory",
+        "FactoryReactor",
+        "FactoryTechLab",
+        "FusionCore",
+        "Ghost",
+        "GhostAcademy",
+        "Hellion",
+        "Marauder",
+        "Medivac",
+        "Raven",
+        "Reaper",
+        "SiegeTank",
+        "Starport",
+        "StarportReactor",
+        "StarportTechLab",
+        "Thor",
+        "Viking",
+        "Nuke",
+    }
+)
+
+TACTICAL_NUKE_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
+    {"BarracksTechLab", "GhostAcademy", "Ghost", "Nuke"}
+)
+TACTICAL_NUKE_CONFIRMATION_EFFECTS: Final[frozenset[str]] = frozenset(
+    {
+        "ghost_order:effect_nukecalldown",
+        "persistent_effect:nukepersistent",
+        "payload_consumed:terran_nuke",
+    }
+)
+
+BIO_SUPPORT_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
+    {"BarracksTechLab", "BarracksReactor", "Marauder", "Reaper", "Medivac"}
+)
+MECH_SUPPORT_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
+    {"Factory", "FactoryTechLab", "FactoryReactor", "Hellion", "Cyclone", "SiegeTank", "Thor"}
+)
+AIR_SUPPORT_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
+    {
+        "Battlecruiser",
+        "Banshee",
+        "Medivac",
+        "Raven",
+        "Starport",
+        "StarportReactor",
+        "StarportTechLab",
+        "Viking",
+    }
+)
+CAPITAL_AIR_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
+    {"Starport", "StarportTechLab", "FusionCore", "Battlecruiser"}
+)
+SPECIAL_MICRO_ROLES: Final[frozenset[str]] = frozenset(
+    {
+        "anti_air",
+        "air_superiority",
+        "capital_pressure",
+        "capital_ship",
+        "capital_ship_focus",
+        "cloak_if_available",
+        "contain",
+        "defensive_hold",
+        "siege_support",
+        "worker_harass",
+        "yamato_high_value",
+    }
 )
 
 TACTICAL_EFFECT_FRAME_KEY_RE: Final[re.Pattern[str]] = re.compile(
@@ -174,7 +269,9 @@ def classify_micromachine_command_execution(
     active_plan = _active_plan(update)
     latest_frame = max(latest_frame, _latest_frame(telemetry_entries))
     expires_at_frame = _int_value(update.get("expires_at_frame"))
-    expired = bool(command_id and expires_at_frame and latest_frame > expires_at_frame)
+    effective_expected_production_items = tuple(expected_production_items)
+    if not effective_expected_production_items and isinstance(vector, Mapping):
+        effective_expected_production_items = _expected_production_items(vector)
 
     stages = _build_stages(
         command_id=command_id,
@@ -185,13 +282,37 @@ def classify_micromachine_command_execution(
         telemetry_entries=telemetry_entries,
         tactical_evidence=tactical_evidence,
         expected_tactical_effects=expected_tactical_effects,
-        expected_production_items=expected_production_items,
+        expected_production_items=effective_expected_production_items,
     )
     stage_by_name = {stage.name: stage for stage in stages}
-    effect_observed = stage_by_name["effect_observed"].ok
-    lifecycle_complete = all(stage.ok for stage in stages)
+    scenarios = _build_scenario_results(
+        stages=stage_by_name,
+        latest_update=update,
+        telemetry_entries=telemetry_entries,
+        tactical_evidence=tactical_evidence,
+        expected_production_items=effective_expected_production_items,
+    )
+    required_scenario_names = _required_scenario_names(
+        vector if isinstance(vector, Mapping) else {}
+    )
+    scenario_by_name = {scenario.name: scenario for scenario in scenarios}
+    scenario_blocker = next(
+        (
+            scenario_by_name[name]
+            for name in required_scenario_names
+            if name in scenario_by_name and not scenario_by_name[name].ok
+        ),
+        None,
+    )
+    lifecycle_complete = all(stage.ok for stage in stages) and scenario_blocker is None
+    expired = bool(
+        command_id
+        and expires_at_frame
+        and latest_frame > expires_at_frame
+        and not lifecycle_complete
+    )
     failed = bool(target_frame and latest_frame >= target_frame and not lifecycle_complete)
-    completed = lifecycle_complete and not expired
+    completed = lifecycle_complete
     first_blocker = next((stage for stage in stages if not stage.ok), None)
     if expired:
         blocker_manager = "GameCommander"
@@ -205,22 +326,23 @@ def classify_micromachine_command_execution(
         blocker_manager = first_blocker.manager
         blocker_reason = first_blocker.reason
         state = "failed"
+    elif failed and scenario_blocker is not None:
+        blocker_manager = _scenario_blocker_manager(scenario_blocker.name)
+        blocker_reason = _scenario_blocker_reason(scenario_blocker)
+        state = "failed"
     elif first_blocker is not None:
         blocker_manager = first_blocker.manager
         blocker_reason = first_blocker.reason
         state = first_blocker.name
+    elif scenario_blocker is not None:
+        blocker_manager = _scenario_blocker_manager(scenario_blocker.name)
+        blocker_reason = _scenario_blocker_reason(scenario_blocker)
+        state = scenario_blocker.name
     else:
         blocker_manager = ""
         blocker_reason = ""
         state = "completed"
 
-    scenarios = _build_scenario_results(
-        stages=stage_by_name,
-        latest_update=update,
-        telemetry_entries=telemetry_entries,
-        tactical_evidence=tactical_evidence,
-        expected_production_items=expected_production_items,
-    )
     return MicroMachineCommandExecutionReport(
         command_id=command_id,
         state=state,
@@ -235,6 +357,57 @@ def classify_micromachine_command_execution(
     )
 
 
+def _required_scenario_names(vector: Mapping[str, object]) -> tuple[str, ...]:
+    required: list[str] = []
+    task_type = _nested_string(vector, ("tactical_task", "task_type"))
+    tags = set(_string_list(vector.get("tags")))
+    requested_items = _requested_combat_items(vector)
+    scout_unit_items = set(requested_items)
+    if task_type == "scout_with_units":
+        for path in (("tactical_task", "unit_classes"), ("scope", "unit_classes")):
+            for unit_type in _nested_string_list(vector, path):
+                item = _canonical_unit_item(unit_type)
+                if item:
+                    scout_unit_items.add(item)
+    requested_non_marine_items = {
+        item for item in requested_items if item not in {"Marine", "SCV"}
+    }
+    if task_type == "scout_with_units" and "Marine" in scout_unit_items:
+        required.append("marine_scout")
+    if (
+        task_type == "pressure_with_main_army" or "pressure" in tags
+    ) and requested_non_marine_items:
+        required.append("requested_combat_composition_attack")
+    if (
+        task_type == "pressure_with_main_army" or "pressure" in tags
+    ) and _requested_special_unit_items(vector):
+        required.append("special_unit_role_micro")
+    if (
+        task_type == "execute_ability"
+        and _nested_string(vector, ("tactical_task", "ability"))
+        == "tactical_nuke"
+    ):
+        required.append("tactical_nuke_ability_cast")
+    return tuple(required)
+
+
+def _scenario_blocker_manager(name: str) -> str:
+    if name == "marine_scout":
+        return "CombatCommander"
+    if name == "requested_combat_composition_attack":
+        return "CompositionTask"
+    if name == "tactical_nuke_ability_cast":
+        return "AbilityTask"
+    return "Telemetry"
+
+
+def _scenario_blocker_reason(
+    scenario: MicroMachineLiveQAScenarioResult,
+) -> str:
+    missing = ", ".join(scenario.missing_evidence) or "required evidence"
+    return f"Required scenario {scenario.name} is incomplete: {missing}."
+
+
 def _build_stages(
     *,
     command_id: str,
@@ -247,6 +420,24 @@ def _build_stages(
     expected_tactical_effects: Sequence[str],
     expected_production_items: Sequence[str],
 ) -> list[MicroMachineCommandStage]:
+    effective_expected_tactical_effects = tuple(expected_tactical_effects)
+    if (
+        not effective_expected_tactical_effects
+        and _nested_string(vector, ("tactical_task", "task_type"))
+        == "execute_ability"
+    ):
+        effective_expected_tactical_effects = ("ability_cast",)
+    ability_task_requested = (
+        _nested_string(vector, ("tactical_task", "task_type"))
+        == "execute_ability"
+    )
+    requested_ability = _nested_string(
+        vector,
+        ("tactical_task", "ability"),
+    ).strip().lower()
+    queue_managers, order_managers, action_managers = _command_stage_managers(
+        vector
+    )
     parsed = bool(command_id and vector)
     reduced = parsed and bool(manager_domains or _vector_domains(vector))
     published = parsed and _int_value(update.get("issued_at_frame")) >= 0
@@ -255,25 +446,64 @@ def _build_stages(
         command_id,
         issued_at_frame,
         telemetry_entries,
+        manager_names=queue_managers,
     )
     order_issued, order_manager, order_evidence = _order_issued(
         command_id,
         issued_at_frame,
         telemetry_entries,
+        manager_names=order_managers,
     )
+    if ability_task_requested and not order_issued:
+        order_manager = "AbilityTask"
     action_issued, action_manager, action_evidence = _action_issued(
         command_id,
         issued_at_frame,
         telemetry_entries,
+        manager_names=action_managers,
     )
+    if ability_task_requested and not action_issued:
+        action_manager = "AbilityTask"
     effect_observed, effect_manager, effect_evidence = _effect_observed(
         command_id=command_id,
         issued_at_frame=issued_at_frame,
         telemetry_entries=telemetry_entries,
         tactical_evidence=tactical_evidence,
-        expected_tactical_effects=expected_tactical_effects,
+        expected_tactical_effects=effective_expected_tactical_effects,
         expected_production_items=expected_production_items,
+        requested_ability=requested_ability,
     )
+    ability_already_satisfied = False
+    if ability_task_requested and requested_ability != "tactical_nuke":
+        ability_payload = _latest_manager_payload_for_command(
+            telemetry_entries,
+            "AbilityTask",
+            command_id,
+            issued_at_frame,
+        )
+        ability_already_satisfied = (
+            _number(ability_payload.get("submitted_count")) == 0
+            and str(
+                ability_payload.get("confirmation_effect", "") or ""
+            )
+            .strip()
+            .lower()
+            .startswith("already_satisfied:")
+            and _ability_task_reports_explicit_ability_confirmation(
+                ability_payload,
+                requested_ability=requested_ability,
+                issued_at_frame=issued_at_frame,
+            )
+        )
+        if ability_already_satisfied:
+            order_issued = True
+            order_manager = "AbilityTask"
+            order_evidence = dict(ability_payload)
+            action_issued = True
+            action_manager = "AbilityTask"
+            action_evidence = dict(ability_payload)
+    if ability_task_requested and not effect_observed:
+        effect_manager = "AbilityTask"
     latest_frame = _latest_frame(telemetry_entries)
     return [
         MicroMachineCommandStage(
@@ -320,7 +550,15 @@ def _build_stages(
             "order_issued",
             order_issued,
             order_manager,
-            "A manager issued a concrete order." if order_issued else "No concrete manager order was issued.",
+            (
+                "Requested SC2 state was already satisfied; no duplicate order was required."
+                if ability_already_satisfied
+                else (
+                    "A manager issued a concrete order."
+                    if order_issued
+                    else "No concrete manager order was issued."
+                )
+            ),
             latest_frame,
             order_evidence,
         ),
@@ -328,7 +566,15 @@ def _build_stages(
             "action_issued",
             action_issued,
             action_manager,
-            "Telemetry reached the SC2 command/action issue path." if action_issued else "No SC2 action issue evidence.",
+            (
+                "Requested SC2 state was already satisfied; no duplicate action was required."
+                if ability_already_satisfied
+                else (
+                    "Telemetry reached the SC2 command/action issue path."
+                    if action_issued
+                    else "No SC2 action issue evidence."
+                )
+            ),
             latest_frame,
             action_evidence,
         ),
@@ -341,6 +587,61 @@ def _build_stages(
             effect_evidence,
         ),
     ]
+
+
+def _command_stage_managers(
+    vector: Mapping[str, object],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Keep lifecycle evidence inside the managers responsible for this command."""
+
+    task_type = _nested_string(vector, ("tactical_task", "task_type"))
+    if task_type == "execute_ability":
+        return (
+            ("AbilityTask", "ProductionManager"),
+            ("AbilityTask",),
+            ("AbilityTask",),
+        )
+    if task_type == "scout_with_units":
+        return (
+            ("TacticalTask", "CombatCommander"),
+            ("CombatCommander",),
+            ("CombatCommander",),
+        )
+    if task_type == "pressure_with_main_army":
+        return (
+            (
+                "TacticalTask",
+                "CompositionTask",
+                "UnitRoleTask",
+                "CombatCommander",
+            ),
+            ("CombatCommander", "UnitRoleTask"),
+            ("CombatCommander", "UnitRoleTask"),
+        )
+    if (
+        task_type == "expand_or_land_command_center"
+        or _mapping_sequence(vector.get("building_tasks"))
+    ):
+        return (
+            ("BuildingTask", "ProductionManager"),
+            ("BuildingTask", "ProductionManager"),
+            ("BuildingTask", "ProductionManager"),
+        )
+    if task_type in {"sustain_production", "tech_transition"} or _expected_production_items(
+        vector
+    ):
+        return (
+            ("ProductionManager",),
+            ("ProductionManager",),
+            ("ProductionManager",),
+        )
+    if _mapping_has_true_value(vector.get("emergency")):
+        return (
+            ("CombatCommander",),
+            ("CombatCommander",),
+            ("CombatCommander",),
+        )
+    return (), (), ()
 
 
 def _build_scenario_results(
@@ -383,19 +684,67 @@ def _build_scenario_results(
         command_id,
         issued_at_frame,
     )
+    latest_unit_role = _latest_manager_payload_for_command(
+        telemetry_entries,
+        "UnitRoleTask",
+        command_id,
+        issued_at_frame,
+    )
+    latest_ability = _latest_manager_payload_for_command(
+        telemetry_entries,
+        "AbilityTask",
+        command_id,
+        issued_at_frame,
+    )
+    requested_items = _requested_combat_items(vector)
+    requested_roles = _requested_unit_roles(vector)
+    requested_special_items = _requested_special_unit_items(vector)
+    exact_unit_role_evidence = _exact_unit_role_evidence_by_item(
+        telemetry_entries,
+        command_id=command_id,
+        issued_at_frame=issued_at_frame,
+    )
+    requested_required_count = _requested_composition_count(vector)
+    requested_non_marine_items = tuple(
+        item for item in requested_items if item not in {"Marine", "SCV"}
+    )
+    scout_marine_type = _is_marine_unit_type(
+        latest_combat.get("scout_last_commanded_unit_type")
+    )
+    scout_marine_tag = _number(
+        latest_combat.get("scout_last_commanded_unit_tag")
+    ) > 0
+    requested_scout_count = _requested_exact_scout_count(vector, latest_combat)
+    scout_marine_assigned_count = int(
+        _number(latest_combat.get("scout_marine_assigned_count"))
+    )
+    scout_marine_assigned = scout_marine_assigned_count > 0 and (
+        requested_scout_count <= 0
+        or scout_marine_assigned_count == requested_scout_count
+    )
     scout_action = (
         _number(latest_combat.get("scout_actual_command_issued_count")) > 0
-        or _combat_action_mentions_scout(latest_combat)
+        and "squad=Scout"
+        in str(latest_combat.get("scout_last_issued_action", "") or "")
+        and scout_marine_type
+        and scout_marine_tag
     )
-    scout_displaced = max(
-        _number(latest_combat.get("scout_max_home_distance")),
-        _number(latest_combat.get("combat_scout_max_home_distance")),
-    ) >= 8.0
+    scout_displaced = (
+        _number(latest_combat.get("scout_marine_max_home_distance")) >= 8.0
+    )
     attack_action = _number(latest_combat.get("main_attack_actual_command_issued_count")) > 0
     attack_displaced = _number(latest_combat.get("main_attack_max_home_distance")) >= 12.0
     assigned_four = _number(latest_composition.get("assigned_count")) >= 4 or _number(
         latest_combat.get("main_attack_assigned_unit_count")
     ) >= 4
+    requested_composition_assigned = _requested_composition_assigned(
+        latest_composition,
+        requested_required_count,
+    )
+    special_role_requested = bool(requested_special_items)
+    special_role_consumed = special_role_requested and all(
+        item in exact_unit_role_evidence for item in requested_special_items
+    )
     actual_production_command = _manager_has_actual_production_command(
         latest_production,
         command_id,
@@ -411,12 +760,28 @@ def _build_scenario_results(
     scenarios = [
         _scenario(
             "marine_scout",
-            ("scout_actual_command", "scout_unit_displacement"),
-            scout_action and scout_displaced and "scout" in observed_effects,
+            (
+                "marine_assignment",
+                "marine_scout_actual_command",
+                "marine_scout_displacement",
+            ),
+            scout_marine_assigned
+            and scout_action
+            and scout_displaced
+            and "scout" in observed_effects,
             {
                 "observed_effects": sorted(observed_effects),
                 "scout_actual_command": scout_action,
-                "scout_displaced": scout_displaced,
+                "scout_marine_assigned": scout_marine_assigned,
+                "scout_marine_assigned_count": scout_marine_assigned_count,
+                "requested_scout_count": requested_scout_count,
+                "scout_marine_unit_type": str(
+                    latest_combat.get("scout_last_commanded_unit_type", "") or ""
+                ),
+                "scout_marine_unit_tag": _int_value(
+                    latest_combat.get("scout_last_commanded_unit_tag")
+                ),
+                "scout_marine_displaced": scout_displaced,
             },
         ),
         _scenario(
@@ -426,6 +791,29 @@ def _build_scenario_results(
             {
                 "observed_effects": sorted(observed_effects),
                 "assigned_four": assigned_four,
+                "main_attack_action": attack_action,
+                "main_attack_displaced": attack_displaced,
+            },
+        ),
+        _scenario(
+            "requested_combat_composition_attack",
+            (
+                "requested_non_marine_composition",
+                "composition_assignment",
+                "main_attack_action",
+                "main_attack_displacement",
+            ),
+            bool(requested_non_marine_items)
+            and requested_composition_assigned
+            and attack_action
+            and attack_displaced
+            and "pressure" in observed_effects,
+            {
+                "requested_items": list(requested_items),
+                "requested_non_marine_items": list(requested_non_marine_items),
+                "requested_required_count": requested_required_count,
+                "composition_assignment": latest_composition,
+                "observed_effects": sorted(observed_effects),
                 "main_attack_action": attack_action,
                 "main_attack_displaced": attack_displaced,
             },
@@ -459,6 +847,78 @@ def _build_scenario_results(
             {"observed_production_items": sorted(production_items)},
         ),
         _scenario(
+            "bio_support_production_prerequisite_chain",
+            ("production_command", "bio_support_item"),
+            actual_production_command
+            and _production_group_requested_or_observed(
+                requested_items,
+                production_items,
+                BIO_SUPPORT_EFFECT_ITEMS,
+            ),
+            {
+                "requested_items": list(requested_items),
+                "observed_production_items": sorted(production_items),
+                "required_group": sorted(BIO_SUPPORT_EFFECT_ITEMS),
+            },
+        ),
+        _scenario(
+            "mech_support_production_prerequisite_chain",
+            ("production_command", "mech_support_item"),
+            actual_production_command
+            and _production_group_requested_or_observed(
+                requested_items,
+                production_items,
+                MECH_SUPPORT_EFFECT_ITEMS,
+            ),
+            {
+                "requested_items": list(requested_items),
+                "observed_production_items": sorted(production_items),
+                "required_group": sorted(MECH_SUPPORT_EFFECT_ITEMS),
+            },
+        ),
+        _scenario(
+            "air_support_production_prerequisite_chain",
+            ("production_command", "air_support_item"),
+            actual_production_command
+            and _production_group_requested_or_observed(
+                requested_items,
+                production_items,
+                AIR_SUPPORT_EFFECT_ITEMS,
+            ),
+            {
+                "requested_items": list(requested_items),
+                "observed_production_items": sorted(production_items),
+                "required_group": sorted(AIR_SUPPORT_EFFECT_ITEMS),
+            },
+        ),
+        _scenario(
+            "capital_air_production_prerequisite_chain",
+            ("production_command", "capital_air_item"),
+            actual_production_command
+            and _production_group_requested_or_observed(
+                requested_items,
+                production_items,
+                CAPITAL_AIR_EFFECT_ITEMS,
+            ),
+            {
+                "requested_items": list(requested_items),
+                "observed_production_items": sorted(production_items),
+                "required_group": sorted(CAPITAL_AIR_EFFECT_ITEMS),
+            },
+        ),
+        _scenario(
+            "special_unit_role_micro",
+            ("special_unit_role_request", "unit_role_task_consumed", "unit_role_action"),
+            special_role_requested and special_role_consumed,
+            {
+                "requested_roles": list(requested_roles),
+                "requested_items": list(requested_items),
+                "requested_special_items": list(requested_special_items),
+                "exact_unit_role_evidence": exact_unit_role_evidence,
+                "unit_role_task": latest_unit_role,
+            },
+        ),
+        _scenario(
             "bunker_placement_intent",
             ("building_task_consumed", "building_command_or_placement"),
             building_action,
@@ -476,8 +936,367 @@ def _build_scenario_results(
             stages["queued_or_assigned"].ok and actual_production_command and bool(production_items),
             {"observed_production_items": sorted(production_items)},
         ),
+        _scenario(
+            "tactical_nuke_prerequisite_chain",
+            ("production_command", "ghost_academy_ghost_or_nuke_item"),
+            actual_production_command
+            and bool(TACTICAL_NUKE_EFFECT_ITEMS & production_items),
+            {
+                "observed_production_items": sorted(production_items),
+                "required_group": sorted(TACTICAL_NUKE_EFFECT_ITEMS),
+            },
+        ),
+        _scenario(
+            "tactical_nuke_ability_cast",
+            (
+                "execute_ability_task",
+                "tactical_nuke_cast_submission",
+                "sc2_observation_confirmation",
+            ),
+            _nested_string(vector, ("tactical_task", "task_type"))
+            == "execute_ability"
+            and _nested_string(vector, ("tactical_task", "ability"))
+            == "tactical_nuke"
+            and _ability_task_reports_tactical_nuke_cast(latest_ability)
+            and "ability_cast" in observed_effects,
+            {
+                "observed_effects": sorted(observed_effects),
+                "ability_task": latest_ability,
+                "unit_role_task": latest_unit_role,
+            },
+        ),
     ]
     return scenarios
+
+
+def _ability_task_reports_tactical_nuke_cast(
+    payload: Mapping[str, object],
+) -> bool:
+    if str(payload.get("ability", "") or "") != "tactical_nuke":
+        return False
+    submitted_action = str(payload.get("cast_submitted_action", "") or "")
+    submitted_count = _number(payload.get("cast_submitted_count"))
+    submission_frame = _number(payload.get("cast_submission_frame"))
+    confirmation_state = str(
+        payload.get("confirmation_state", "") or ""
+    ).strip().lower()
+    confirmation_effect = str(
+        payload.get("confirmation_effect", "") or ""
+    ).strip().lower()
+    confirmation_count = _number(payload.get("confirmation_count"))
+    confirmation_frame = _number(payload.get("confirmation_frame"))
+    return (
+        submitted_count > 0
+        and submission_frame > 0
+        and _action_reports_ability(
+            submitted_action,
+            "EFFECT_NUKECALLDOWN",
+        )
+        and confirmation_state == "confirmed"
+        and confirmation_effect in TACTICAL_NUKE_CONFIRMATION_EFFECTS
+        and confirmation_count > 0
+        and confirmation_frame >= submission_frame
+    )
+
+
+def _action_reports_ability(action: object, ability: str) -> bool:
+    expected = f"ability={ability}".lower()
+    return any(
+        field.strip().lower() == expected
+        for field in str(action or "").split("|")
+    )
+
+
+def _requested_combat_items(vector: Mapping[str, object]) -> tuple[str, ...]:
+    items: list[str] = []
+    for requirement in _mapping_sequence(vector.get("composition_requirements")):
+        item = _canonical_unit_item(requirement.get("unit_type"))
+        if item:
+            items.append(item)
+    for role in _mapping_sequence(vector.get("unit_roles")):
+        item = _canonical_unit_item(role.get("unit_type"))
+        if item:
+            items.append(item)
+    tags = set(_string_list(vector.get("tags")))
+    if "explicit_composition" in tags:
+        for path in (("scope", "unit_classes"), ("tactical_task", "unit_classes")):
+            for unit_type in _nested_string_list(vector, path):
+                item = _canonical_unit_item(unit_type)
+                if item:
+                    items.append(item)
+    return tuple(dict.fromkeys(items))
+
+
+def _expected_production_items(vector: Mapping[str, object]) -> tuple[str, ...]:
+    """Infer concrete production evidence expected by a production-facing DSL."""
+
+    items: list[str] = []
+    for path in (
+        ("production_plan", "targets"),
+        ("tactical_task", "production_targets"),
+    ):
+        for raw_item in _nested_string_list(vector, path):
+            item = _canonical_production_item(raw_item)
+            if item:
+                items.append(item)
+    task_type = _nested_string(vector, ("tactical_task", "task_type"))
+    if task_type in {"sustain_production", "tech_transition"}:
+        for raw_item in _nested_string_list(
+            vector,
+            ("tactical_task", "unit_classes"),
+        ):
+            item = _canonical_production_item(raw_item)
+            if item:
+                items.append(item)
+    for domain_name, field_names in (
+        ("production", ("queue_biases", "production_facility_biases", "addon_biases")),
+        ("tech", ("unit_biases", "structure_biases", "upgrade_biases")),
+    ):
+        domain = vector.get(domain_name)
+        if not isinstance(domain, Mapping):
+            continue
+        for field_name in field_names:
+            biases = domain.get(field_name)
+            if not isinstance(biases, Mapping):
+                continue
+            for raw_item, value in biases.items():
+                if _number(value) <= 0:
+                    continue
+                item = _canonical_production_item(raw_item)
+                if item:
+                    items.append(item)
+    for task in _mapping_sequence(vector.get("building_tasks")):
+        item = _canonical_production_item(task.get("building_type"))
+        if item:
+            items.append(item)
+    return tuple(dict.fromkeys(items))
+
+
+def _requested_unit_roles(vector: Mapping[str, object]) -> tuple[str, ...]:
+    roles = [
+        str(role.get("role", "") or "")
+        for role in _mapping_sequence(vector.get("unit_roles"))
+        if str(role.get("role", "") or "")
+    ]
+    for requirement in _mapping_sequence(vector.get("composition_requirements")):
+        role = str(requirement.get("role", "") or "")
+        if role:
+            roles.append(role)
+    return tuple(dict.fromkeys(roles))
+
+
+def _requested_special_unit_items(vector: Mapping[str, object]) -> tuple[str, ...]:
+    items: list[str] = []
+    for role in _mapping_sequence(vector.get("unit_roles")):
+        role_name = str(role.get("role", "") or "")
+        item = _canonical_unit_item(role.get("unit_type"))
+        if role_name in SPECIAL_MICRO_ROLES and item:
+            items.append(item)
+    for requirement in _mapping_sequence(vector.get("composition_requirements")):
+        role_name = str(requirement.get("role", "") or "")
+        item = _canonical_unit_item(requirement.get("unit_type"))
+        if role_name in SPECIAL_MICRO_ROLES and item:
+            items.append(item)
+    return tuple(dict.fromkeys(items))
+
+
+def _exact_unit_role_evidence_by_item(
+    telemetry_entries: Sequence[Mapping[str, object]],
+    *,
+    command_id: str,
+    issued_at_frame: int,
+) -> dict[str, dict[str, object]]:
+    evidence: dict[str, dict[str, object]] = {}
+    for entry in telemetry_entries:
+        managers = entry.get("managers")
+        if not isinstance(managers, Mapping):
+            continue
+        payload = managers.get("UnitRoleTask")
+        if not isinstance(payload, Mapping):
+            continue
+        if not _payload_can_belong_to_command(
+            "UnitRoleTask",
+            payload,
+            command_id,
+            issued_at_frame,
+        ):
+            continue
+        item = _canonical_unit_item(payload.get("unit_type"))
+        actor_tag = _int_value(payload.get("actor_tag"))
+        issued_action = str(payload.get("issued_action", "") or "")
+        role_frame = max(
+            _int_value(payload.get("frame")),
+            _int_value(payload.get("last_action_frame")),
+        )
+        if (
+            not item
+            or actor_tag <= 0
+            or role_frame < issued_at_frame
+            or str(payload.get("status", "") or "") != "executed"
+            or _number(payload.get("executed_count")) <= 0
+            or not issued_action
+            or _number(payload.get("max_home_distance")) < 8.0
+        ):
+            continue
+        evidence[item] = {
+            "actor_tag": actor_tag,
+            "unit_type": str(payload.get("unit_type", "") or ""),
+            "role": str(payload.get("role", "") or ""),
+            "ability": str(payload.get("ability", "") or ""),
+            "issued_action": issued_action,
+            "home_distance": _number(payload.get("home_distance")),
+            "max_home_distance": _number(payload.get("max_home_distance")),
+            "frame": role_frame,
+        }
+    return evidence
+
+
+def _requested_composition_count(vector: Mapping[str, object]) -> int:
+    count = 0
+    for requirement in _mapping_sequence(vector.get("composition_requirements")):
+        count += int(_number(requirement.get("count")))
+    scoped_min_units = 0
+    tactical_task = vector.get("tactical_task")
+    if isinstance(tactical_task, Mapping):
+        scoped_min_units = int(_number(tactical_task.get("min_units")))
+    scope = vector.get("scope")
+    if isinstance(scope, Mapping):
+        scoped_min_units = max(scoped_min_units, int(_number(scope.get("min_units"))))
+    return max(count, scoped_min_units)
+
+
+def _requested_exact_scout_count(
+    vector: Mapping[str, object],
+    combat_payload: Mapping[str, object],
+) -> int:
+    requested_counts: list[int] = []
+    for domain_name in ("tactical_task", "scope"):
+        domain = vector.get(domain_name)
+        if not isinstance(domain, Mapping):
+            continue
+        minimum = int(_number(domain.get("min_units")))
+        maximum = int(_number(domain.get("max_units")))
+        if minimum > 0 and minimum == maximum:
+            requested_counts.append(minimum)
+    telemetry_minimum = int(
+        _number(combat_payload.get("scout_scope_requested_min_units"))
+    )
+    telemetry_maximum = int(
+        _number(combat_payload.get("scout_scope_requested_max_units"))
+    )
+    if telemetry_minimum > 0 and telemetry_minimum == telemetry_maximum:
+        requested_counts.append(telemetry_minimum)
+    return max(requested_counts, default=0)
+
+
+def _requested_composition_assigned(
+    composition_payload: Mapping[str, object],
+    requested_required_count: int,
+) -> bool:
+    if not composition_payload:
+        return False
+    status = str(composition_payload.get("status", "") or "")
+    assigned_count = _number(composition_payload.get("assigned_count"))
+    required_count = max(
+        _number(composition_payload.get("required_count")),
+        float(requested_required_count),
+    )
+    if required_count > 0:
+        return assigned_count >= required_count
+    return status in {"assigned", "partial", "completed"} or assigned_count > 0
+
+
+def _unit_role_task_consumed(
+    payload: Mapping[str, object],
+    *,
+    requested_roles: Sequence[str],
+    requested_items: Sequence[str],
+) -> bool:
+    if not payload:
+        return False
+    role = str(payload.get("role", "") or "")
+    unit_type = _canonical_unit_item(payload.get("unit_type"))
+    status = str(payload.get("status", "") or "")
+    role_matches = not requested_roles or role in set(requested_roles)
+    unit_matches = not requested_items or unit_type in set(requested_items)
+    action_count = max(
+        _number(payload.get("attempted_count")),
+        _number(payload.get("executed_count")),
+        _number(payload.get("actual_command_issued_count")),
+    )
+    return bool(
+        role_matches
+        and unit_matches
+        and (
+            action_count > 0
+            or status in {"attempted", "executed", "command_issued", "completed"}
+        )
+    )
+
+
+def _production_group_requested_or_observed(
+    requested_items: Sequence[str],
+    production_items: set[str],
+    group_items: frozenset[str],
+) -> bool:
+    requested_group = set(requested_items) & group_items
+    observed_group = production_items & group_items
+    if requested_group:
+        return bool(observed_group)
+    return bool(observed_group)
+
+
+def _mapping_sequence(value: object) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _mapping_has_true_value(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return any(_mapping_has_true_value(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return any(_mapping_has_true_value(item) for item in value)
+    return value is True
+
+
+def _nested_string_list(payload: Mapping[str, object], path: tuple[str, ...]) -> tuple[str, ...]:
+    current: object = payload
+    for key in path:
+        if not isinstance(current, Mapping):
+            return ()
+        current = current.get(key)
+    return _string_list(current)
+
+
+def _canonical_unit_item(unit_type: object) -> str:
+    item = _canonical_production_item(unit_type)
+    if item.startswith("TERRAN_"):
+        item = _canonical_production_item(item)
+    normalized = item.strip().lower().replace("_", "").replace("-", "")
+    aliases = {
+        "scv": "SCV",
+        "marine": "Marine",
+        "marauder": "Marauder",
+        "reaper": "Reaper",
+        "hellion": "Hellion",
+        "cyclone": "Cyclone",
+        "thor": "Thor",
+        "siegetank": "SiegeTank",
+        "tank": "SiegeTank",
+        "medivac": "Medivac",
+        "viking": "Viking",
+        "vikingfighter": "Viking",
+        "banshee": "Banshee",
+        "raven": "Raven",
+        "battlecruiser": "Battlecruiser",
+        "bc": "Battlecruiser",
+        "ghost": "Ghost",
+    }
+    return aliases.get(normalized, item)
 
 
 def _scenario(
@@ -534,20 +1353,24 @@ def _queued_or_assigned(
     command_id: str,
     issued_at_frame: int,
     telemetry_entries: Sequence[Mapping[str, object]],
+    *,
+    manager_names: Sequence[str] = (),
 ) -> tuple[bool, str, dict[str, object]]:
+    candidates = tuple(manager_names) or (
+        "ProductionManager",
+        "CombatCommander",
+        "ScoutManager",
+        "TacticalTask",
+        "CompositionTask",
+        "UnitRoleTask",
+        "AbilityTask",
+        "BuildingTask",
+    )
     for entry in reversed(tuple(telemetry_entries)):
         managers = entry.get("managers")
         if not isinstance(managers, Mapping):
             continue
-        for manager_name in (
-            "ProductionManager",
-            "CombatCommander",
-            "ScoutManager",
-            "TacticalTask",
-            "CompositionTask",
-            "UnitRoleTask",
-            "BuildingTask",
-        ):
+        for manager_name in candidates:
             payload = managers.get(manager_name)
             if not isinstance(payload, Mapping):
                 continue
@@ -560,19 +1383,31 @@ def _queued_or_assigned(
                 continue
             if _manager_has_queue_or_assignment(payload):
                 return True, manager_name, dict(payload)
-    return False, "ProductionManager", {"expected_update_id": command_id}
+    return False, (
+        str(manager_names[0]) if manager_names else "ProductionManager"
+    ), {"expected_update_id": command_id}
 
 
 def _order_issued(
     command_id: str,
     issued_at_frame: int,
     telemetry_entries: Sequence[Mapping[str, object]],
+    *,
+    manager_names: Sequence[str] = (),
 ) -> tuple[bool, str, dict[str, object]]:
     for entry in reversed(tuple(telemetry_entries)):
         managers = entry.get("managers")
         if not isinstance(managers, Mapping):
             continue
-        for manager_name, payload in managers.items():
+        candidates = (
+            (
+                (manager_name, managers.get(manager_name))
+                for manager_name in manager_names
+            )
+            if manager_names
+            else managers.items()
+        )
+        for manager_name, payload in candidates:
             if (
                 isinstance(payload, Mapping)
                 and _payload_can_belong_to_command(
@@ -581,22 +1416,42 @@ def _order_issued(
                     command_id,
                     issued_at_frame,
                 )
-                and _manager_has_order(payload)
+                and (
+                    _manager_has_actual_production_command(
+                        payload,
+                        command_id,
+                        issued_at_frame,
+                    )
+                    if manager_name == "ProductionManager"
+                    else _manager_has_order(payload)
+                )
             ):
                 return True, str(manager_name), dict(payload)
-    return False, "CombatCommander", {"expected_update_id": command_id}
+    return False, (
+        str(manager_names[0]) if manager_names else "CombatCommander"
+    ), {"expected_update_id": command_id}
 
 
 def _action_issued(
     command_id: str,
     issued_at_frame: int,
     telemetry_entries: Sequence[Mapping[str, object]],
+    *,
+    manager_names: Sequence[str] = (),
 ) -> tuple[bool, str, dict[str, object]]:
     for entry in reversed(tuple(telemetry_entries)):
         managers = entry.get("managers")
         if not isinstance(managers, Mapping):
             continue
-        for manager_name, payload in managers.items():
+        candidates = (
+            (
+                (manager_name, managers.get(manager_name))
+                for manager_name in manager_names
+            )
+            if manager_names
+            else managers.items()
+        )
+        for manager_name, payload in candidates:
             if (
                 isinstance(payload, Mapping)
                 and _payload_can_belong_to_command(
@@ -605,10 +1460,20 @@ def _action_issued(
                     command_id,
                     issued_at_frame,
                 )
-                and _manager_has_action(payload)
+                and (
+                    _manager_has_actual_production_command(
+                        payload,
+                        command_id,
+                        issued_at_frame,
+                    )
+                    if manager_name == "ProductionManager"
+                    else _manager_has_action(payload)
+                )
             ):
                 return True, str(manager_name), dict(payload)
-    return False, "ActionDispatcher", {"expected_update_id": command_id}
+    return False, (
+        str(manager_names[0]) if manager_names else "ActionDispatcher"
+    ), {"expected_update_id": command_id}
 
 
 def _effect_observed(
@@ -619,7 +1484,42 @@ def _effect_observed(
     tactical_evidence: MicroMachineTacticalEvidence | None,
     expected_tactical_effects: Sequence[str],
     expected_production_items: Sequence[str],
+    requested_ability: str = "",
 ) -> tuple[bool, str, dict[str, object]]:
+    if requested_ability and requested_ability != "tactical_nuke":
+        ability_payload = _latest_manager_payload_for_command(
+            telemetry_entries,
+            "AbilityTask",
+            command_id,
+            issued_at_frame,
+        )
+        if not _ability_task_reports_explicit_ability_confirmation(
+            ability_payload,
+            requested_ability=requested_ability,
+            issued_at_frame=issued_at_frame,
+        ):
+            return False, "AbilityTask", {
+                "expected_update_id": command_id,
+                "requested_ability": requested_ability,
+                "ability_task": ability_payload,
+            }
+        if _tactical_effect_observed_current(
+            tactical_evidence,
+            issued_at_frame,
+            expected_tactical_effects,
+        ):
+            return True, "AbilityTask", {
+                "ability_task": ability_payload,
+                "tactical_evidence": tactical_evidence.to_dict(),
+            }
+        return False, "AbilityTask", {
+            "expected_update_id": command_id,
+            "requested_ability": requested_ability,
+            "ability_task": ability_payload,
+            "tactical_evidence": (
+                tactical_evidence.to_dict() if tactical_evidence else None
+            ),
+        }
     if _tactical_effect_observed_current(
         tactical_evidence,
         issued_at_frame,
@@ -636,7 +1536,7 @@ def _effect_observed(
         for item in expected_production_items
         if _canonical_production_item(item)
     }
-    if expected_items and expected_items <= production_items:
+    if expected_items and expected_items & production_items:
         return True, "ProductionManager", {"observed_production_items": sorted(production_items)}
     if not expected_tactical_effects and not expected_items and production_items:
         return True, "ProductionManager", {"observed_production_items": sorted(production_items)}
@@ -644,6 +1544,24 @@ def _effect_observed(
         "tactical_evidence": tactical_evidence.to_dict() if tactical_evidence else None,
         "observed_production_items": sorted(production_items),
     }
+
+
+def _ability_task_reports_explicit_ability_confirmation(
+    payload: Mapping[str, object],
+    *,
+    requested_ability: str,
+    issued_at_frame: int,
+) -> bool:
+    ability = str(payload.get("ability", "") or "").strip().lower()
+    return (
+        bool(payload)
+        and ability == requested_ability
+        and ability != "tactical_nuke"
+        and explicit_ability_terminal_is_valid(
+            payload,
+            issued_at_frame=issued_at_frame,
+        )
+    )
 
 
 def _manager_has_queue_or_assignment(payload: Mapping[str, object]) -> bool:
@@ -656,6 +1574,10 @@ def _manager_has_queue_or_assignment(payload: Mapping[str, object]) -> bool:
             "actual_production_command_issued_count",
             "requested_count",
             "actual_command_issued_count",
+            "cast_attempted_count",
+            "cast_submitted_count",
+            "submitted_count",
+            "confirmation_count",
             "main_attack_actual_command_issued_count",
             "scout_actual_command_issued_count",
         )
@@ -665,6 +1587,7 @@ def _manager_has_queue_or_assignment(payload: Mapping[str, object]) -> bool:
             "last_doctrine_queue_item",
             "last_doctrine_action",
             "task_type",
+            "ability",
             "last_actual_production_command_item",
             "placement_intent",
         )
@@ -673,12 +1596,16 @@ def _manager_has_queue_or_assignment(payload: Mapping[str, object]) -> bool:
 
 def _manager_has_order(payload: Mapping[str, object]) -> bool:
     return any(
-        str(payload.get(key, "") or "")
+        str(payload.get(key, "") or "").strip().lower()
+        not in ("", "none", "none|none")
         for key in (
             "main_attack_order_status",
             "last_actual_command",
             "last_actual_production_command",
             "last_issued_action",
+            "issued_action",
+            "last_action",
+            "cast_submitted_action",
             "main_attack_last_issued_action",
             "scout_last_issued_action",
             "last_building_command",
@@ -696,6 +1623,11 @@ def _manager_has_action(payload: Mapping[str, object]) -> bool:
             "main_attack_actual_command_issued_count",
             "scout_actual_command_issued_count",
             "executed_count",
+            "ability_cast_count",
+            "cast_count",
+            "cast_submitted_count",
+            "submitted_count",
+            "confirmation_count",
             "actual_production_command_issued_count",
         )
     )
@@ -844,12 +1776,13 @@ def _normalized_expected_tactical_effects(
     return {str(effect) for effect in expected_tactical_effects if str(effect)}
 
 
-def _combat_action_mentions_scout(payload: Mapping[str, object]) -> bool:
-    for key in ("scout_last_issued_action", "last_issued_action", "main_attack_last_issued_action"):
-        action = str(payload.get(key, "") or "")
-        if "scout" in action.lower():
-            return True
-    return False
+def _is_marine_unit_type(value: object) -> bool:
+    normalized = re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+    return normalized in {
+        "MARINE",
+        "TERRANMARINE",
+        "UNITTYPEIDTERRANMARINE",
+    }
 
 
 def _building_task_payload_effect(payload: Mapping[str, object]) -> bool:
@@ -920,6 +1853,7 @@ def _payload_has_current_frame(
 
 
 def _relevant_payload_frames(payload: Mapping[str, object]) -> list[int]:
+    event_frame = _int_value(payload.get("frame"))
     if _number(payload.get("main_attack_actual_command_issued_count")) > 0 or str(
         payload.get("main_attack_last_issued_action", "") or ""
     ):
@@ -944,23 +1878,44 @@ def _relevant_payload_frames(payload: Mapping[str, object]) -> list[int]:
     ) > 0:
         return [
             max(
+                event_frame,
                 _int_value(payload.get("assigned_frame")),
                 _int_value(payload.get("last_assignment_frame")),
             )
         ]
-    if _number(payload.get("actual_command_issued_count")) > 0 or str(
-        payload.get("last_actual_command", "") or ""
+    if _number(payload.get("confirmation_count")) > 0 or str(
+        payload.get("confirmation_effect", "") or ""
     ):
         return [
             max(
+                event_frame,
+                _int_value(payload.get("confirmation_frame")),
+                _int_value(payload.get("observed_accepted_frame")),
+            )
+        ]
+    if (
+        _number(payload.get("actual_command_issued_count")) > 0
+        or str(payload.get("last_actual_command", "") or "")
+        or _number(payload.get("cast_submitted_count")) > 0
+        or str(payload.get("cast_submitted_action", "") or "")
+        or _number(payload.get("submitted_count")) > 0
+        or str(payload.get("last_action", "") or "")
+    ):
+        return [
+            max(
+                event_frame,
                 _int_value(payload.get("last_actual_command_frame")),
                 _int_value(payload.get("last_action_frame")),
                 _int_value(payload.get("last_issued_action_frame")),
+                _int_value(payload.get("ability_cast_frame")),
+                _int_value(payload.get("cast_submission_frame")),
+                _int_value(payload.get("submission_frame")),
             )
         ]
     return [
         frame
         for frame in (
+            event_frame,
             _int_value(payload.get("last_doctrine_frame")),
             _int_value(payload.get("last_action_frame")),
             _int_value(payload.get("last_issued_action_frame")),
@@ -1002,6 +1957,7 @@ def _manager_update_ids(payload: Mapping[str, object]) -> set[str]:
             "last_actual_production_command_update_id",
             "task_update_id",
             "last_building_command_update_id",
+            "ability_task_update_id",
         )
         if str(payload.get(key, "") or "")
     }

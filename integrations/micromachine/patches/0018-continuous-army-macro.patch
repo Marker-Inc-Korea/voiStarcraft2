@@ -1,0 +1,190 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -155,6 +155,52 @@ bool voiExactCompositionActive(CCBot & bot)
+ 		|| taskType == "tech_transition";
+ }
+ 
++bool voiContinuousCompositionProductionActive(CCBot & bot)
++{
++	if (!voiExactCompositionActive(bot)
++		|| bot.Commander().getVoiPolicyString("tactical_task.task_type", "") != "pressure_with_main_army"
++		|| bot.Commander().getVoiPolicyFloat("production.production_continuity_bias", 0.0f) <= 0.25f)
++	{
++		return false;
++	}
++
++	// Do not leave an oversized unit queued forever once the hard supply cap is
++	// nearly full. Production resumes automatically as combat losses free room.
++	return bot.GetMaxSupply() < 200 || bot.GetCurrentSupply() < 196;
++}
++
++int voiCompositionProductionWaveMultiplier(CCBot & bot)
++{
++	int requestedTotal = 0;
++	int representedTotal = 0;
++	for (const auto & entry : voiExactCompositionTypes())
++	{
++		const int requested = voiRequestedCompositionCount(bot, entry.first);
++		if (requested <= 0)
++		{
++			continue;
++		}
++		requestedTotal += requested;
++		representedTotal += voiRepresentedUnitCount(bot, entry.second);
++	}
++
++	if (requestedTotal <= 0)
++	{
++		return 1;
++	}
++	return std::max(1, representedTotal / requestedTotal + 1);
++}
++
++int voiCompositionProductionTargetCount(CCBot & bot, const std::string & policyUnitType)
++{
++	const int requested = voiRequestedCompositionCount(bot, policyUnitType);
++	if (requested <= 0 || !voiContinuousCompositionProductionActive(bot))
++	{
++		return requested;
++	}
++	return requested * voiCompositionProductionWaveMultiplier(bot);
++}
++
+ std::string voiExactCompositionTokenForType(const MetaType & type)
+ {
+ 	if (!type.isUnit())
+@@ -183,8 +229,8 @@ bool voiExactCompositionAllowsTraining(CCBot & bot, const MetaType & type)
+ 	{
+ 		return true;
+ 	}
+-	const int requestedCount = voiRequestedCompositionCount(bot, token);
+-	return voiRepresentedUnitCount(bot, type) < requestedCount;
++	const int productionTargetCount = voiCompositionProductionTargetCount(bot, token);
++	return voiRepresentedUnitCount(bot, type) < productionTargetCount;
+ }
+ 
+ int voiCompletedGroundedProducerCount(CCBot & bot, sc2::UNIT_TYPEID producerType)
+@@ -912,7 +958,7 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 	for (const auto & entry : voiExactCompositionTypes())
+ 	{
+ 		const MetaType & type = entry.second;
+-		const int requestedCount = voiRequestedCompositionCount(m_bot, entry.first);
++		const int requestedCount = voiCompositionProductionTargetCount(m_bot, entry.first);
+ 		const int representedCount = voiRepresentedUnitCount(m_bot, type);
+ 		const int allowedQueuedCount = std::max(0, requestedCount - representedCount);
+ 		const int queuedCount = m_queue.getCountOfType(type);
+@@ -2651,6 +2697,10 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool taskSustainProduction = tacticalTaskActive && tacticalTaskType == "sustain_production";
+ 	const bool taskTechTransition = tacticalTaskActive && tacticalTaskType == "tech_transition";
+ 	const bool taskExpandCommandCenter = tacticalTaskActive && tacticalTaskType == "expand_or_land_command_center";
++	const float productionContinuityBias = m_bot.Commander().getVoiPolicyFloat("production.production_continuity_bias", 0.0f);
++	const bool continuousCompositionProduction = tacticalTaskActive
++		&& tacticalTaskType == "pressure_with_main_army"
++		&& productionContinuityBias > 0.25f;
+ 	const std::string lifetimeMode = m_bot.Commander().getVoiPolicyString("lifetime.mode", "");
+ 	const bool standingSustainProduction = taskSustainProduction
+ 		&& (lifetimeMode == "until_cancelled" || lifetimeMode == "standing_order");
+@@ -2854,23 +2904,6 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const int orbitalCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::OrbitalCommand.getUnitType(), false, true, true);
+ 	const bool hasOpeningBarracks = barracksCount > 0;
+ 	const bool needsFirstVoiExpansion = commandCenterCount + orbitalCount < 2;
+-	const auto voiRequestedCompositionCount = [&](const std::string & policyUnitType)
+-	{
+-		for (int i = 0; i < 32; ++i)
+-		{
+-			const std::string prefix = "composition_requirements." + std::to_string(i);
+-			const std::string requestedUnitType = m_bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");
+-			if (requestedUnitType.empty())
+-			{
+-				break;
+-			}
+-			if (requestedUnitType == policyUnitType)
+-			{
+-				return std::max(0, m_bot.Commander().getVoiPolicyInt(prefix + ".count", 0));
+-			}
+-		}
+-		return 0;
+-	};
+ 	const auto voiRepresentedUnitCount = [&](const MetaType & type)
+ 	{
+ 		return ::voiRepresentedUnitCount(m_bot, type) + m_queue.getCountOfType(type);
+@@ -2881,7 +2914,7 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		{
+ 			return false;
+ 		}
+-		const int requested = voiRequestedCompositionCount(policyUnitType);
++		const int requested = voiCompositionProductionTargetCount(m_bot, policyUnitType);
+ 		return requested > 0 && voiRepresentedUnitCount(type) >= requested;
+ 	};
+ 	const bool tankCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_SIEGETANK", MetaTypeEnum::SiegeTank);
+@@ -2898,7 +2931,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool battlecruiserCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_BATTLECRUISER", MetaTypeEnum::Battlecruiser);
+ 	const bool marauderCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_MARAUDER", MetaTypeEnum::Marauder);
+ 	const bool reaperCompositionSatisfied = voiCompositionRequirementSatisfied("TERRAN_REAPER", MetaTypeEnum::Reaper);
+-	const int requestedMarineCount = voiRequestedCompositionCount("TERRAN_MARINE");
++	const int requestedMarineCount = voiCompositionProductionTargetCount(
++		m_bot,
++		"TERRAN_MARINE");
+ 	const int representedMarineCount = voiRepresentedUnitCount(MetaTypeEnum::Marine);
+ 	const bool marineCompositionSatisfied = requestedMarineCount > 0 && representedMarineCount >= requestedMarineCount;
+ 
+@@ -2920,6 +2955,16 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		m_lastVoiDoctrineEvidence = "queued_worker_and_continuing_plan";
+ 	}
++	const int representedScvCount = ::voiRepresentedUnitCount(m_bot, workerMetatype) + m_queue.getCountOfType(workerMetatype);
++	const int completedTownHallCount = std::max(1, commandCenterCount + orbitalCount);
++	const int macroWorkerTarget = std::min(70, completedTownHallCount * 16 + refineryCount * 3);
++	if (continuousCompositionProduction
++		&& representedScvCount < macroWorkerTarget
++		&& m_bot.GetCurrentSupply() < supplyWithQueuedProviders
++		&& queueVoiDoctrineItem(workerMetatype, "army_macro_worker_continuity", false))
++	{
++		m_lastVoiDoctrineEvidence = "queued_macro_worker_and_continuing_plan";
++	}
+ 	if (wantsCommandCenter
+ 		&& needsFirstVoiExpansion
+ 		&& hasOpeningBarracks
+@@ -3034,6 +3079,30 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
++	const int desiredBarracksCount = continuousCompositionProduction && taskTargetsMarine
++		? 1 + (m_bot.GetFreeMinerals() >= 800 ? 1 : 0) + (m_bot.GetFreeMinerals() >= 1800 ? 1 : 0)
++		: barracksCount;
++	const int desiredFactoryCount = continuousCompositionProduction && taskTargetsSiegeTank
++		? 1 + ((m_bot.GetFreeMinerals() >= 1200 && m_bot.GetFreeGas() >= 500) ? 1 : 0)
++		: factoryCount;
++	const int desiredStarportCount = continuousCompositionProduction && taskTargetsViking
++		? 1 + ((m_bot.GetFreeMinerals() >= 1600 && m_bot.GetFreeGas() >= 600) ? 1 : 0)
++		: starportCount;
++	if (barracksCount < std::min(3, desiredBarracksCount)
++		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, "army_macro_barracks", false))
++	{
++		return;
++	}
++	if (factoryCount < std::min(2, desiredFactoryCount)
++		&& queueVoiDoctrineItem(MetaTypeEnum::Factory, "army_macro_factory", false))
++	{
++		return;
++	}
++	if (starportCount < std::min(2, desiredStarportCount)
++		&& queueVoiDoctrineItem(MetaTypeEnum::Starport, "army_macro_starport", false))
++	{
++		return;
++	}
+ 	if ((doctrine == "drop_harassment" || doctrine == "worker_line_harassment") && completedStarportCount > starportReactorCount && effectiveStarportReactorBias > 0.25f && queueVoiDoctrineItem(MetaTypeEnum::StarportReactor, "drop_reactor", true))
+ 	{
+ 		return;
+@@ -3241,7 +3310,9 @@ void ProductionManager::enforceBarracksProductionContinuity()
+ 	{
+ 		return;
+ 	}
+-	const int requestedMarineCount = voiRequestedCompositionCount(m_bot, "TERRAN_MARINE");
++	const int requestedMarineCount = voiCompositionProductionTargetCount(
++		m_bot,
++		"TERRAN_MARINE");
+ 	int representedMarineCount = voiRepresentedUnitCount(m_bot, MetaTypeEnum::Marine);
+ 	if (m_queue.contains(MetaTypeEnum::Marine))
+ 	{

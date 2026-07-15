@@ -23,6 +23,7 @@ from starcraft_commander.micromachine_runtime import (
     MICROMACHINE_STRATEGY_PROFILE_KEYS,
     build_aggressive_pressure_profile,
     build_defensive_hold_profile,
+    build_manual_live_autonomy_profile,
     build_micromachine_strategy_profile,
     flatten_blackboard_update,
     micromachine_strategy_profile_catalog,
@@ -147,6 +148,19 @@ class MicroMachineRuntimePathsTest(unittest.TestCase):
 
 
 class MicroMachineInterventionProfileTest(unittest.TestCase):
+    def test_manual_live_autonomy_profile_does_not_hold_combat(self) -> None:
+        profile = build_manual_live_autonomy_profile()
+
+        self.assertEqual("micromachine_manual_live_autonomy", profile.goal)
+        self.assertEqual("macro", profile.command_layer.value)
+        self.assertEqual(32, profile.workers.repeat_order_guard_frames)
+        self.assertEqual("standing_order", profile.lifetime.mode)
+        self.assertFalse(profile.emergency.hold_position)
+        self.assertEqual(0.0, profile.combat.aggression)
+        self.assertEqual(0.0, profile.combat.defend_bias)
+        self.assertEqual(0.0, profile.scouting.scout_priority)
+        self.assertEqual(0.0, profile.squad.defense_bias)
+
     def test_defensive_and_aggressive_profiles_bias_managers_without_raw_control(self) -> None:
         defensive = build_defensive_hold_profile()
         aggressive = build_aggressive_pressure_profile()
@@ -229,6 +243,7 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         drop = doctrine_vectors["drop_harassment"]
         macro = doctrine_vectors["expand_macro"]
         anti_air = doctrine_vectors["anti_air_response"]
+        scouting = doctrine_vectors["scouting_map_control"]
 
         self.assertGreater(
             marine.production.queue_biases.to_dict()["TERRAN_MARINE"],
@@ -260,6 +275,14 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         self.assertGreater(
             anti_air.production.queue_biases.to_dict()["TERRAN_VIKINGFIGHTER"],
             marine.production.queue_biases.to_dict().get("TERRAN_VIKINGFIGHTER", -1.0),
+        )
+        self.assertGreater(
+            scouting.production.queue_biases.to_dict()["TERRAN_MARINE"],
+            0,
+        )
+        self.assertIn(
+            "TERRAN_MARINE",
+            scouting.tactical_task.production_targets,
         )
         self.assertLess(
             mech.production.production_continuity_bias,
@@ -352,7 +375,10 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             blackboard = MicroMachineFilesystemBlackboard(directory)
             update = MicroMachineBlackboardUpdate(
                 update_id="stale",
-                vector=_vector(ttl_seconds=1),
+                vector=PolicyModulationVector(
+                    goal="short bounded bias",
+                    ttl_seconds=1,
+                ),
                 issued_at_frame=0,
             )
             blackboard.publish_update(update, current_frame=0)
@@ -365,6 +391,26 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             (Path(directory) / LATEST_UPDATE_JSON_NAME).write_text(json.dumps(raw_payload))
             with self.assertRaisesRegex(ValueError, "raw runtime control"):
                 blackboard.read_latest_update(current_frame=1)
+
+    def test_read_latest_update_expires_unfinished_semantic_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard = MicroMachineFilesystemBlackboard(directory)
+            vector = PolicyModulationVector(
+                goal="produce the requested composition and attack",
+                ttl_seconds=1,
+                lifetime=LifetimeModulation(
+                    mode="until_completed",
+                    completion_conditions=("unit_count_reached", "target_reached"),
+                ),
+            )
+            blackboard.publish_vector(
+                vector,
+                current_frame=0,
+                update_id="semantic-operation",
+            )
+
+            with self.assertRaisesRegex(ValueError, "stale"):
+                blackboard.read_latest_update(current_frame=10_000)
 
     def test_ingests_telemetry_and_builds_dashboard_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -605,6 +651,42 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
             "manager_bias_domains=strategy,economy,workers,tech,production,combat,scouting,squad,scope,lifetime,tactical_task,emergency,production_plan,composition_requirements,unit_roles,building_tasks,route_intent,target_intent\n",
             text,
         )
+
+    def test_flatten_update_preserves_ninth_composition_and_role_entry(self) -> None:
+        unit_types = (
+            "marine",
+            "marauder",
+            "reaper",
+            "ghost",
+            "hellion",
+            "widow_mine",
+            "cyclone",
+            "thor",
+            "battlecruiser",
+        )
+        update = MicroMachineBlackboardUpdate(
+            update_id="wide-composition",
+            vector=PolicyModulationVector(
+                goal="exercise full composition contract",
+                composition_requirements=tuple(
+                    CompositionRequirement(unit_type, count=1, role="frontline")
+                    for unit_type in unit_types
+                ),
+                unit_roles=tuple(
+                    UnitRoleAssignment(unit_type, role="focus_fire")
+                    for unit_type in unit_types
+                ),
+            ),
+            issued_at_frame=22,
+        )
+
+        text = flatten_blackboard_update(update)
+
+        self.assertIn(
+            "composition_requirements.8.unit_type=TERRAN_BATTLECRUISER\n",
+            text,
+        )
+        self.assertIn("unit_roles.8.unit_type=TERRAN_BATTLECRUISER\n", text)
 
     def test_flatten_update_rejects_injected_kv_keys(self) -> None:
         update = MicroMachineBlackboardUpdate(

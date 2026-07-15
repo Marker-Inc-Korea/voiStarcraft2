@@ -1,0 +1,395 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+index 786a681..9207d4c 100644
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -2333,6 +2333,41 @@ bool BuildingManager::isVoiAddonFootprintClear(const Building & b, const CCPosit
+ 	return true;
+ }
+ 
++bool BuildingManager::isVoiProducerFootprintClear(const Building & b, const CCPosition & producerPosition)
++{
++	for (int x = -1; x <= 1; ++x)
++	{
++		for (int y = -1; y <= 1; ++y)
++		{
++			const CCPosition producerTile = producerPosition + CCPosition(static_cast<float>(x), static_cast<float>(y));
++			if (!getBuildingPlacer().buildable(
++				b.builderUnit.getType(),
++				static_cast<int>(producerTile.x),
++				static_cast<int>(producerTile.y),
++				true))
++			{
++				return false;
++			}
++		}
++	}
++
++	for (const auto & unit : m_bot.GetUnits())
++	{
++		if (!unit.isValid()
++			|| !unit.isAlive()
++			|| unit.isFlying()
++			|| unit.getTag() == b.builderUnit.getTag())
++		{
++			continue;
++		}
++		if (Util::Dist(producerPosition, unit.getPosition()) <= 2.15f + unit.getUnitPtr()->radius)
++		{
++			return false;
++		}
++	}
++	return true;
++}
++
+ namespace
+ {
+ sc2::AbilityID voiLandAbilityForProducer(const Unit & producer)
+@@ -2511,26 +2546,51 @@ bool BuildingManager::isVoiProducerCommandOwned(sc2::Tag tag) const
+ 	return false;
+ }
+ 
++bool BuildingManager::isVoiAddonProducerEligible(sc2::Tag tag) const
++{
++	const auto cooldownIt = m_addonProducerCooldownUntil.find(tag);
++	return cooldownIt == m_addonProducerCooldownUntil.end()
++		|| m_bot.GetCurrentFrame() >= cooldownIt->second;
++}
++
+ bool BuildingManager::isVoiAddonLandingSiteValid(const Building & b, const CCPosition & producerPosition)
+ {
+ 	if (producerPosition == CCPosition() || !b.builderUnit.isValid())
+ 	{
+ 		return false;
+ 	}
+-	const sc2::AbilityID landAbility = voiLandAbilityForProducer(b.builderUnit);
+-	const sc2::Unit * queryUnit = b.builderUnit.isFlying() ? b.builderUnit.getUnitPtr() : nullptr;
+-	if (!m_bot.Query()->Placement(landAbility, producerPosition, queryUnit))
++	if (!isVoiProducerFootprintClear(b, producerPosition)
++		|| !isVoiAddonFootprintClear(b, producerPosition))
+ 	{
+ 		return false;
+ 	}
+-	return isVoiAddonFootprintClear(b, producerPosition);
++	// LAND placement queries are only meaningful after SC2 has transitioned the
++	// producer to its flying unit type. Before lift, local footprint validation
++	// avoids rejecting every candidate and blocking the addon forever.
++	if (!b.builderUnit.isFlying())
++	{
++		return true;
++	}
++	const sc2::AbilityID landAbility = voiLandAbilityForProducer(b.builderUnit);
++	return m_bot.Query()->Placement(landAbility, producerPosition, b.builderUnit.getUnitPtr());
+ }
+ 
+ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+ {
+ 	const CCPosition origin = b.builderUnit.getPosition();
+ 	std::vector<CCPosition> candidates;
+-	candidates.push_back(origin - CCPosition(2.0f, 0.0f));
++
++	if (!b.builderUnit.isFlying())
++	{
++		const auto tempBuilding = Building(b.builderUnit.getType(), Util::GetTilePosition(origin));
++		const CCTilePosition nearbyTile = getBuildingPlacer().getBuildLocationNear(tempBuilding, false, true, true);
++		if (nearbyTile != CCTilePosition())
++		{
++			candidates.push_back(Util::GetPosition(nearbyTile));
++		}
++	}
++
++	candidates.push_back(origin - CCPosition(4.0f, 0.0f));
+ 	for (float radius = 4.0f; radius <= 20.0f; radius += 4.0f)
+ 	{
+ 		candidates.push_back(origin + CCPosition(-radius, 0.0f));
+@@ -2543,15 +2603,29 @@ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+ 		candidates.push_back(origin + CCPosition(radius, radius));
+ 	}
+ 
+-	const auto tempBuilding = Building(b.builderUnit.getType(), Util::GetTilePosition(origin));
+-	const CCTilePosition nearbyTile = getBuildingPlacer().getBuildLocationNear(tempBuilding, false, true, true);
+-	if (nearbyTile != CCTilePosition())
++	if (candidates.empty())
+ 	{
+-		candidates.push_back(Util::GetPosition(nearbyTile));
++		return CCPosition();
+ 	}
+ 
+-	for (const CCPosition & candidate : candidates)
++	const bool requiresSc2Query = b.builderUnit.isFlying();
++	const size_t queryBudget = 8;
++	const size_t startIndex = requiresSc2Query
++		? ((m_bot.GetCurrentFrame() / 64u) * queryBudget) % candidates.size()
++		: 0;
++	size_t queryChecks = 0;
++	for (size_t offset = 0; offset < candidates.size(); ++offset)
+ 	{
++		const CCPosition & candidate = candidates[(startIndex + offset) % candidates.size()];
++		if (!isVoiProducerFootprintClear(b, candidate)
++			|| !isVoiAddonFootprintClear(b, candidate))
++		{
++			continue;
++		}
++		if (requiresSc2Query && queryChecks++ >= queryBudget)
++		{
++			break;
++		}
+ 		if (isVoiAddonLandingSiteValid(b, candidate))
+ 		{
+ 			return candidate;
+@@ -2560,6 +2634,49 @@ CCPosition BuildingManager::findVoiAddonLandingSite(const Building & b)
+ 	return CCPosition();
+ }
+ 
++CCPosition BuildingManager::findVoiProducerLandingSite(const Building & b)
++{
++	const CCPosition origin = b.builderUnit.getPosition();
++	std::vector<CCPosition> candidates;
++	for (float radius = 4.0f; radius <= 24.0f; radius += 4.0f)
++	{
++		candidates.push_back(origin + CCPosition(-radius, 0.0f));
++		candidates.push_back(origin + CCPosition(radius, 0.0f));
++		candidates.push_back(origin + CCPosition(0.0f, -radius));
++		candidates.push_back(origin + CCPosition(0.0f, radius));
++		candidates.push_back(origin + CCPosition(-radius, -radius));
++		candidates.push_back(origin + CCPosition(-radius, radius));
++		candidates.push_back(origin + CCPosition(radius, -radius));
++		candidates.push_back(origin + CCPosition(radius, radius));
++	}
++	if (candidates.empty())
++	{
++		return CCPosition();
++	}
++
++	const size_t queryBudget = 8;
++	const size_t startIndex = ((m_bot.GetCurrentFrame() / 64u) * queryBudget) % candidates.size();
++	size_t queryChecks = 0;
++	const sc2::AbilityID landAbility = voiLandAbilityForProducer(b.builderUnit);
++	for (size_t offset = 0; offset < candidates.size(); ++offset)
++	{
++		const CCPosition & candidate = candidates[(startIndex + offset) % candidates.size()];
++		if (!isVoiProducerFootprintClear(b, candidate))
++		{
++			continue;
++		}
++		if (queryChecks++ >= queryBudget)
++		{
++			break;
++		}
++		if (m_bot.Query()->Placement(landAbility, candidate, b.builderUnit.getUnitPtr()))
++		{
++			return candidate;
++		}
++	}
++	return CCPosition();
++}
++
+ bool BuildingManager::handleVoiAddonTask(Building & b)
+ {
+ 	if (!b.builderUnit.isValid() || !b.builderUnit.isCompleted())
+@@ -2576,11 +2693,15 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 	if (b.builderUnit.getAddonTag() != 0)
+ 	{
+ 		m_addonRelocations.erase(producerTag);
++		m_addonPlacementRetries.erase(producerTag);
++		m_addonProducerCooldownUntil.erase(producerTag);
+ 		m_addonLastCommandFrame.erase(producerTag);
+ 		return true;
+ 	}
+ 	if (b.builderUnit.isProducingAddon())
+ 	{
++		m_addonPlacementRetries.erase(producerTag);
++		m_addonProducerCooldownUntil.erase(producerTag);
+ 		return true;
+ 	}
+ 
+@@ -2594,6 +2715,10 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 
+ 		AddonRelocationState & state = relocationIt->second;
+ 		state.phase = AddonRelocationPhase::Flying;
++		if (currentFrame < state.nextRetryFrame)
++		{
++			return true;
++		}
+ 		if (!b.builderUnit.getUnitPtr()->orders.empty())
+ 		{
+ 			const auto & order = b.builderUnit.getUnitPtr()->orders[0];
+@@ -2618,12 +2743,31 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 			const CCPosition replacement = findVoiAddonLandingSite(b);
+ 			if (replacement == CCPosition())
+ 			{
+-				state.lastCommandFrame = currentFrame;
+-				Util::Log(__FUNCTION__, "VOI addon relocation is waiting for a valid producer plus addon landing footprint.", m_bot);
+-				return true;
++				state.noSiteAttempts++;
++				const uint32_t retryDelay = 64u << std::min(2, state.noSiteAttempts - 1);
++				state.nextRetryFrame = currentFrame + retryDelay;
++				if (state.noSiteAttempts < 2)
++				{
++					Util::Log(__FUNCTION__, "VOI addon relocation is backing off before one more bounded addon-footprint search.", m_bot);
++					return true;
++				}
++				const CCPosition producerOnlyTarget = findVoiProducerLandingSite(b);
++				if (producerOnlyTarget == CCPosition())
++				{
++					return true;
++				}
++				state.target = producerOnlyTarget;
++				state.landAttempts = 0;
++				state.abortAfterLanding = true;
++				Util::Log(__FUNCTION__, "VOI addon relocation is grounding the producer without an addon footprint before task replanning.", m_bot);
++			}
++			else
++			{
++				state.target = replacement;
++				state.landAttempts = 0;
++				state.noSiteAttempts = 0;
++				state.nextRetryFrame = 0;
+ 			}
+-			state.target = replacement;
+-			state.landAttempts = 0;
+ 		}
+ 
+ 		if (!tryIssueVoiBuildingMobilityCommand(
+@@ -2637,6 +2781,7 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 		}
+ 		state.phase = AddonRelocationPhase::LandIssued;
+ 		state.lastCommandFrame = currentFrame;
++		state.nextRetryFrame = 0;
+ 		state.landAttempts++;
+ 		Util::Log(__FUNCTION__, "VOI addon relocation issued one LAND command after placement validation.", m_bot);
+ 		return true;
+@@ -2668,6 +2813,26 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 		{
+ 			return true;
+ 		}
++		if (state.abortAfterLanding)
++		{
++			const bool mobilityOrderActive = !b.builderUnit.getUnitPtr()->orders.empty()
++				&& voiIsBuildingMobilityOrder(b.builderUnit.getUnitPtr()->orders[0]);
++			if (mobilityOrderActive
++				|| (currentFrame >= state.lastCommandFrame
++					&& currentFrame - state.lastCommandFrame < commandCooldown))
++			{
++				return true;
++			}
++			m_addonProducerCooldownUntil[producerTag] = currentFrame + 22u * 15u;
++			m_addonRelocations.erase(relocationIt);
++			m_addonPlacementRetries.erase(producerTag);
++			m_addonLastCommandFrame.erase(producerTag);
++			m_voiMobilityOwner.erase(producerTag);
++			m_voiMobilityLastCommandFrame.erase(producerTag);
++			b.unassign();
++			Util::Log(__FUNCTION__, "VOI addon producer grounded safely; released addon ownership for producer replanning.", m_bot);
++			return true;
++		}
+ 		if (Util::DistSq(b.builderUnit.getPosition(), state.target) > 2.25f)
+ 		{
+ 			if (isVoiAddonFootprintClear(b, b.builderUnit.getPosition()))
+@@ -2740,6 +2905,8 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 
+ 	if (isVoiAddonFootprintClear(b, b.builderUnit.getPosition()))
+ 	{
++		m_addonPlacementRetries.erase(producerTag);
++		m_addonProducerCooldownUntil.erase(producerTag);
+ 		const auto lastCommand = m_addonLastCommandFrame.find(producerTag);
+ 		if (lastCommand != m_addonLastCommandFrame.end()
+ 			&& currentFrame >= lastCommand->second
+@@ -2757,12 +2924,43 @@ bool BuildingManager::handleVoiAddonTask(Building & b)
+ 		return true;
+ 	}
+ 
++	auto & retryState = m_addonPlacementRetries[producerTag];
++	if (currentFrame < retryState.nextRetryFrame)
++	{
++		return true;
++	}
+ 	const CCPosition landingTarget = findVoiAddonLandingSite(b);
+ 	if (landingTarget == CCPosition())
+ 	{
+-		Util::Log(__FUNCTION__, "VOI addon relocation refused to lift because no producer plus addon footprint passed placement validation.", m_bot);
++		retryState.failures++;
++		const uint32_t retryDelay = 64u << std::min(1, retryState.failures - 1);
++		retryState.nextRetryFrame = currentFrame + retryDelay;
++		if (retryState.failures >= 2)
++		{
++			const uint32_t producerCooldown = 22u * 15u;
++			m_addonProducerCooldownUntil[producerTag] = currentFrame + producerCooldown;
++			m_addonPlacementRetries.erase(producerTag);
++			m_addonRelocations.erase(producerTag);
++			m_addonLastCommandFrame.erase(producerTag);
++			m_voiMobilityOwner.erase(producerTag);
++			m_voiMobilityLastCommandFrame.erase(producerTag);
++			b.unassign();
++			Util::Log(
++				__FUNCTION__,
++				"VOI addon placement exhausted bounded retries; released the producer and will replan with another eligible producer.",
++				m_bot);
++		}
++		else
++		{
++			Util::Log(
++				__FUNCTION__,
++				"VOI addon placement found no safe producer plus addon footprint; backing off before one bounded retry.",
++				m_bot);
++		}
+ 		return true;
+ 	}
++	m_addonPlacementRetries.erase(producerTag);
++	m_addonProducerCooldownUntil.erase(producerTag);
+ 	const auto lastRelocationCommand = m_addonLastCommandFrame.find(producerTag);
+ 	if (lastRelocationCommand != m_addonLastCommandFrame.end()
+ 		&& currentFrame >= lastRelocationCommand->second
+diff --git a/src/BuildingManager.h b/src/BuildingManager.h
+index 692aa59..5e16df5 100644
+--- a/src/BuildingManager.h
++++ b/src/BuildingManager.h
+@@ -49,10 +49,20 @@ class BuildingManager
+ 		CCPosition target = CCPosition();
+ 		uint32_t lastCommandFrame = 0;
+ 		uint32_t stableSinceFrame = 0;
++		uint32_t nextRetryFrame = 0;
+ 		int liftAttempts = 0;
+ 		int landAttempts = 0;
++		int noSiteAttempts = 0;
++		bool abortAfterLanding = false;
++	};
++	struct AddonPlacementRetryState
++	{
++		uint32_t nextRetryFrame = 0;
++		int failures = 0;
+ 	};
+ 	std::map<sc2::Tag, AddonRelocationState> m_addonRelocations;
++	std::map<sc2::Tag, AddonPlacementRetryState> m_addonPlacementRetries;
++	std::map<sc2::Tag, uint32_t> m_addonProducerCooldownUntil;
+ 	std::map<sc2::Tag, uint32_t> m_addonLastCommandFrame;
+ 	std::map<sc2::Tag, uint32_t> m_voiMobilityLastCommandFrame;
+ 	std::map<sc2::Tag, std::string> m_voiMobilityOwner;
+@@ -64,8 +74,10 @@ class BuildingManager
+ 	void			releaseVoiBuildingMobilityOwnershipIfSettled(const Unit & unit);
+ 	bool			handleVoiAddonTask(Building & b);
+ 	bool			isVoiAddonFootprintClear(const Building & b, const CCPosition & producerPosition);
++	bool			isVoiProducerFootprintClear(const Building & b, const CCPosition & producerPosition);
+ 	bool			isVoiAddonLandingSiteValid(const Building & b, const CCPosition & producerPosition);
+ 	CCPosition		findVoiAddonLandingSite(const Building & b);
++	CCPosition		findVoiProducerLandingSite(const Building & b);
+ 	void			castBuildingsAbilities();
+ 	void			RunProxyLogic();
+ 	void			LiftOrLandDamagedBuildings();
+@@ -146,4 +158,5 @@ public:
+ 	bool				hasEnergyForScan() const;
+ 	bool				isVoiBuildingMobilityOwned(sc2::Tag tag) const;
+ 	bool				isVoiProducerCommandOwned(sc2::Tag tag) const;
++	bool				isVoiAddonProducerEligible(sc2::Tag tag) const;
+ };
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 7875b11..9aef658 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -3709,6 +3709,7 @@ Unit ProductionManager::getProducer(const MetaType & type, bool allowTraining, C
+ 			if (!unit.isCompleted()) { continue; }
+ 			if (unit.isFlying()) { continue; }
+ 			if (m_bot.Buildings().isVoiProducerCommandOwned(unit.getTag())) { continue; }
++			if (isTypeAddon && !m_bot.Buildings().isVoiAddonProducerEligible(unit.getTag())) { continue; }
+ 
+ 			bool isBuilding = m_bot.Data(unit).isBuilding;
+ 			if (!allowTraining && isBuilding && unit.isTraining() && unit.getAddonTag() == 0) { continue; }//TODO might break other races
