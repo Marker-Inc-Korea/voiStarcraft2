@@ -1,0 +1,169 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -197,11 +197,11 @@ bool voiResolveExplicitAbilitySpec(
+ 	}
+ 	else if (abilityName == "banshee_cloak")
+ 	{
+-		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKON, VoiExplicitAbilityTargetKind::None };
++		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKON_BANSHEE, VoiExplicitAbilityTargetKind::None };
+ 	}
+ 	else if (abilityName == "banshee_decloak")
+ 	{
+-		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF, VoiExplicitAbilityTargetKind::None };
++		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF_BANSHEE, VoiExplicitAbilityTargetKind::None };
+ 	}
+ 	else if (abilityName == "auto_turret")
+ 	{
+@@ -211,6 +211,34 @@ bool voiResolveExplicitAbilitySpec(
+ 	return true;
+ }
+ 
++bool voiIsAbilityAvailableForCommand(
++	sc2::AbilityID abilityId,
++	const sc2::Unit * unit,
++	const std::vector<sc2::AvailableAbilities> & availableAbilities)
++{
++	const auto commandAbility =
++		static_cast<sc2::ABILITY_ID>(abilityId);
++	if (Util::IsAbilityAvailable(
++		commandAbility,
++		unit,
++		availableAbilities))
++	{
++		return true;
++	}
++	// SC2 ability queries may expose the generic remap while UnitCommand
++	// requires the Banshee-specific executable ability.
++	if (commandAbility
++		== sc2::ABILITY_ID::BEHAVIOR_CLOAKON_BANSHEE)
++	{
++		return Util::IsAbilityAvailable(
++			sc2::ABILITY_ID::BEHAVIOR_CLOAKON,
++			unit,
++			availableAbilities);
++	}
++	if (commandAbility
++		== sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF_BANSHEE)
++	{
++		return Util::IsAbilityAvailable(
++			sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF,
++			unit,
++			availableAbilities);
++	}
++	return false;
++}
++
+ bool voiExplicitAbilityIsIrreversible(
+ 	const std::string & abilityName)
+ {
+@@ -315,11 +343,11 @@ bool voiExplicitAbilityBlocksAutonomousAction(
+ 	}
+ 	else if (abilityName == "banshee_cloak")
+ 	{
+-		blockedAbility = sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF;
++		blockedAbility = sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF_BANSHEE;
+ 	}
+ 	else if (abilityName == "banshee_decloak")
+ 	{
+-		blockedAbility = sc2::ABILITY_ID::BEHAVIOR_CLOAKON;
++		blockedAbility = sc2::ABILITY_ID::BEHAVIOR_CLOAKON_BANSHEE;
+ 	}
+ 	return blockedAbility != sc2::AbilityID(0)
+ 		&& action.abilityID == blockedAbility;
+@@ -2924,10 +2952,10 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			completeAlreadySatisfied(unit, satisfiedEvidence);
+ 			return;
+ 		}
+-		if (Util::IsAbilityAvailable(
++		if (voiIsAbilityAvailableForCommand(
+ 			spec.abilityId,
+ 			unit,
+-			m_unitsAbilities))
++			m_unitsAbilities))
+ 		{
+ 			availableCasters.push_back(unit);
+ 		}
+@@ -8742,7 +8770,10 @@ void CombatCommander::applyVoiUnitRoleBias(
+ 			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_BANSHEE
+ 			&& abilityPolicy != "never")
+ 		{
+-			const bool abilityAvailable = Util::IsAbilityAvailable(sc2::ABILITY_ID::BEHAVIOR_CLOAKON, unit, m_unitsAbilities);
++			const bool abilityAvailable =
++				voiIsAbilityAvailableForCommand(
++					sc2::ABILITY_ID::BEHAVIOR_CLOAKON_BANSHEE,
++					unit, m_unitsAbilities);
+ 			if (abilityAvailable)
+ 			{
+ 				m_lastVoiUnitRoleAvailableCount++;
+@@ -8750,19 +8781,19 @@ void CombatCommander::applyVoiUnitRoleBias(
+ 			if (abilityAvailable && (abilityPolicy == "if_available" || abilityPolicy == "commit"))
+ 			{
+ 				action.microActionType = MicroActionType::Ability;
+-				action.abilityID = sc2::ABILITY_ID::BEHAVIOR_CLOAKON;
++				action.abilityID = sc2::ABILITY_ID::BEHAVIOR_CLOAKON_BANSHEE;
+ 				action.prioritized = true;
+ 				action.description = "VoiRoleBansheeCloak";
+ 				m_lastVoiUnitRoleStatus = "prepared";
+ 				m_lastVoiUnitRoleReason = "Banshee harass role prepared cloak and ability is available";
+-				m_lastVoiUnitRoleAbility = "BEHAVIOR_CLOAKON";
++				m_lastVoiUnitRoleAbility = "BEHAVIOR_CLOAKON_BANSHEE";
+ 				voiRoleBiasedAction = true;
+ 			}
+ 			else if (!abilityAvailable)
+ 			{
+ 				m_lastVoiUnitRoleStatus = "unavailable";
+ 				m_lastVoiUnitRoleReason = "Banshee cloak role active but cloak ability is unavailable";
+-				m_lastVoiUnitRoleAbility = "BEHAVIOR_CLOAKON";
++				m_lastVoiUnitRoleAbility = "BEHAVIOR_CLOAKON_BANSHEE";
+ 			}
+ 		}
+ 		else if (voiRole == "spellcaster"
+@@ -9209,7 +9240,7 @@ void CombatCommander::ExecuteActions(const std::vector<Unit> & combatUnits)
+ 			case MicroActionType::Ability:
+ 				if ((explicitAbilityAction
+ 						|| voiIsMorphAbility(action.abilityID))
+-					&& !Util::IsAbilityAvailable((sc2::ABILITY_ID)action.abilityID, rangedUnit, m_unitsAbilities))
++					&& !voiIsAbilityAvailableForCommand(action.abilityID, rangedUnit, m_unitsAbilities))
+ 				{
+ 					skip = true;
+ 					if (explicitAbilityAction)
+@@ -9228,7 +9259,7 @@ void CombatCommander::ExecuteActions(const std::vector<Unit> & combatUnits)
+ 			case MicroActionType::AbilityPosition:
+ 				if (explicitAbilityAction)
+ 				{
+-					if (!Util::IsAbilityAvailable(
++					if (!voiIsAbilityAvailableForCommand(
+ 							(sc2::ABILITY_ID)action.abilityID,
+ 							rangedUnit,
+ 							m_unitsAbilities))
+@@ -9283,7 +9314,7 @@ void CombatCommander::ExecuteActions(const std::vector<Unit> & combatUnits)
+ 			case MicroActionType::AbilityTarget:
+ 				if (explicitAbilityAction)
+ 				{
+-					if (!Util::IsAbilityAvailable(
++					if (!voiIsAbilityAvailableForCommand(
+ 							(sc2::ABILITY_ID)action.abilityID,
+ 							rangedUnit,
+ 							m_unitsAbilities))
+diff --git a/src/RangedManager.cpp b/src/RangedManager.cpp
+--- a/src/RangedManager.cpp
++++ b/src/RangedManager.cpp
+@@ -1382,7 +1382,7 @@ bool RangedManager::ExecuteBansheeCloakLogic(const sc2::Unit * banshee, bool inD
+ {
+ 	if (ShouldBansheeCloak(banshee, inDanger))
+ 	{
+-		const auto action = UnitAction(MicroActionType::Ability, sc2::ABILITY_ID::BEHAVIOR_CLOAKON, true, 0, "CloakOn", m_squad->getName());
++		const auto action = UnitAction(MicroActionType::Ability, sc2::ABILITY_ID::BEHAVIOR_CLOAKON_BANSHEE, true, 0, "CloakOn", m_squad->getName());
+ 		m_bot.Commander().Combat().PlanAction(banshee, action);
+ 		return true;
+ 	}
+@@ -1410,7 +1410,7 @@ bool RangedManager::ExecuteBansheeUncloakLogic(const sc2::Unit * banshee, CCPosi
+ {
+ 	if (ShouldBansheeUncloak(banshee, goal, threats, unitShouldHeal))
+ 	{
+-		const auto action = UnitAction(MicroActionType::Ability, sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF, true, 0, "CloakOff", m_squad->getName());
++		const auto action = UnitAction(MicroActionType::Ability, sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF_BANSHEE, true, 0, "CloakOff", m_squad->getName());
+ 		m_bot.Commander().Combat().PlanAction(banshee, action);
+ 		return true;
+ 	}

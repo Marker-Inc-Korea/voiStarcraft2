@@ -7,6 +7,7 @@ hard deadline instead of fixed sleeps.
 """
 
 import contextlib
+import concurrent.futures
 import http.client
 import inspect
 import io
@@ -28,6 +29,9 @@ from starcraft_commander.micromachine_bridge import (
 from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.llm_interpreter import LocalLLMControl
+from starcraft_commander.policy_modulation_provider import (
+    PolicyModulationProviderRequest,
+)
 from starcraft_commander.web_gui import (
     DEFAULT_WEB_GUI_PORT,
     WEB_GUI_TOKEN_HEADER,
@@ -454,6 +458,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "live-open-button",
             "runtime-start-button",
             "runtime-refresh-button",
+            "micromachine-enemy-difficulty",
+            "수동 live-hold 적 난이도 (1..10)",
             "llm-provider-choice",
             "llm-model-select",
             "handleProviderChoiceChange",
@@ -581,7 +587,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 connection.close()
 
             self.assertLess(elapsed, 0.5)
-            self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
+            self.assertEqual(
+                HTTPStatus.ACCEPTED,
+                HTTPStatus(response.status),
+                payload,
+            )
             self.assertTrue(payload["accepted"], payload)
             self.assertTrue(payload["async_publish"], payload)
             self.assertEqual("queued", payload["status"])
@@ -1301,8 +1311,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
 
             execution = document["intervention"]["command_execution"]
-            self.assertEqual("failed", execution["state"], execution)
+            self.assertEqual("effect_observed", execution["state"], execution)
             self.assertFalse(execution["ok"], execution)
+            self.assertFalse(execution["failed"], execution)
             self.assertEqual("web-execution-1", execution["command_id"])
             stages = {stage["name"]: stage for stage in execution["stages"]}
             self.assertTrue(stages["action_issued"]["ok"])
@@ -2175,15 +2186,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
     def test_runtime_start_routes_micromachine_mode_to_launcher(self):
         class FakeMicroMachineLauncher:
             def __init__(self):
-                self.started_blackboards = []
+                self.started = []
 
-            def start(self, blackboard_dir=""):
-                self.started_blackboards.append(blackboard_dir)
+            def start(self, blackboard_dir="", enemy_difficulty=7):
+                self.started.append((blackboard_dir, enemy_difficulty))
                 return {
                     "enabled": True,
                     "mode": "micromachine",
                     "status": "starting",
                     "blackboard_dir": blackboard_dir,
+                    "enemy_difficulty": enemy_difficulty,
                     "pid": 1234,
                 }
 
@@ -2201,7 +2213,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.server._http.micromachine_launcher = launcher
 
         body = json.dumps(
-            {"mode": "micromachine", "blackboard_dir": "/tmp/voi-mm-runtime-test"}
+            {
+                "mode": "micromachine",
+                "blackboard_dir": "/tmp/voi-mm-runtime-test",
+                "enemy_difficulty": 9,
+            }
         ).encode("utf-8")
         status, content_type, payload = self.request(
             "POST",
@@ -2214,7 +2230,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         document = json.loads(payload.decode("utf-8"))
         self.assertTrue(document["accepted"], document)
         self.assertEqual(document["status"], "starting")
-        self.assertEqual(launcher.started_blackboards, ["/tmp/voi-mm-runtime-test"])
+        self.assertEqual(
+            launcher.started,
+            [("/tmp/voi-mm-runtime-test", 9)],
+        )
+        self.assertEqual(document["enemy_difficulty"], 9)
 
         status, _content_type, payload = self.request(
             "GET",
@@ -2224,6 +2244,28 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         document = json.loads(payload.decode("utf-8"))
         self.assertEqual(document["status"], "connected")
         self.assertEqual(document["telemetry_frame"], 42)
+
+    def test_runtime_start_rejects_invalid_micromachine_enemy_difficulty(self):
+        for difficulty in (0, 11, 7.5, True, "7"):
+            with self.subTest(difficulty=difficulty):
+                body = json.dumps(
+                    {
+                        "mode": "micromachine",
+                        "blackboard_dir": "/tmp/voi-mm-runtime-test",
+                        "enemy_difficulty": difficulty,
+                    }
+                ).encode("utf-8")
+                status, content_type, payload = self.request(
+                    "POST",
+                    "/api/runtime/start",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(HTTPStatus.BAD_REQUEST, HTTPStatus(status))
+                self.assertIn("application/json", content_type)
+                document = json.loads(payload.decode("utf-8"))
+                self.assertFalse(document["accepted"], document)
+                self.assertIn("1..10", document["error"])
 
     def test_micromachine_launcher_default_script_is_repo_relative_not_cwd(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2238,6 +2280,22 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 launcher._script_path.startswith(web_gui._REPO_ROOT)  # noqa: SLF001
             )
             self.assertFalse(launcher._script_path.startswith(directory))  # noqa: SLF001
+
+    def test_micromachine_smoke_cli_rejects_enemy_difficulty_outside_1_to_10(self):
+        script = os.path.join(
+            web_gui._REPO_ROOT,  # noqa: SLF001 - repo-local smoke CLI contract.
+            "integrations/micromachine/scripts/smoke_macos_local.sh",
+        )
+        for value in ("0", "11", "7.5", "hard"):
+            with self.subTest(value=value):
+                result = subprocess.run(
+                    ["bash", script, "--enemy-difficulty", value],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2, result)
+                self.assertIn("integer from 1 to 10", result.stderr)
 
     def test_micromachine_launcher_starts_fresh_tactical_session(self):
         class FakeProcess:
@@ -2259,11 +2317,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 return_value=FakeProcess(),
             ) as popen:
                 launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
-                launcher.start(directory)
+                launcher.start(directory, enemy_difficulty=9)
 
             argv = popen.call_args.args[0]
+            env = popen.call_args.kwargs["env"]
             self.assertIn("--live-hold", argv)
             self.assertIn("--fresh-live-session", argv)
+            self.assertEqual(argv[argv.index("--enemy-difficulty") + 1], "9")
+            self.assertEqual(env["SMOKE_ENEMY_DIFFICULTY"], "9")
             self.assertLess(
                 argv.index("--fresh-live-session"),
                 argv.index("--blackboard-dir"),
@@ -2288,7 +2349,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(payload["accepted"])
             self.assertEqual(old_dir, payload["blackboard_dir"])
             self.assertEqual(new_dir, payload["requested_blackboard_dir"])
-            self.assertIn("different blackboard_dir", payload["error"])
+            self.assertIn("already running", payload["error"])
 
     def test_micromachine_launcher_does_not_mark_stale_telemetry_connected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2731,6 +2792,810 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertTrue(EXECUTED_FAMILY_STATUSES.intersection(statuses))
         self.assertEqual(bridge.history_since(bridge.latest_seq()), ())
 
+    def test_micromachine_emergency_supersedes_inflight_publish_and_runs_next(self):
+        started = threading.Event()
+        release = threading.Event()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=BlockingPolicyModulationLLMControl(
+                started=started,
+                release=release,
+            ),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = bridge.submit_micromachine_modulation_background(
+                "탱크로 수비해",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="slow-normal",
+            )
+            self.assertEqual("queued", first["status"])
+            self.assertTrue(started.wait(1))
+
+            emergency = bridge.submit_micromachine_modulation_background(
+                "긴급 즉시 후퇴",
+                blackboard_dir=directory,
+                provider_output={
+                    "goal": "긴급 즉시 후퇴",
+                    "override_level": "emergency",
+                    "command_layer": "emergency",
+                    "ttl_seconds": 45,
+                    "emergency": {
+                        "cancel_attacks": True,
+                        "force_retreat": True,
+                    },
+                },
+                current_frame=11,
+                update_id="urgent-retreat",
+            )
+            self.assertEqual("queued", emergency["status"])
+
+            deadline = time.monotonic() + 3
+            latest = {}
+            while time.monotonic() < deadline:
+                path = os.path.join(directory, "latest_modulation.json")
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as handle:
+                        latest = json.load(handle)
+                    if latest.get("update_id") == "urgent-retreat":
+                        break
+                time.sleep(0.02)
+
+            self.assertEqual("urgent-retreat", latest.get("update_id"))
+            self.assertFalse(
+                release.is_set(),
+                "emergency waited for the blocked normal LLM request",
+            )
+            release.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with bridge._micromachine_request_lock:
+                    pending = "slow-normal" in bridge._micromachine_requests
+                if not pending:
+                    break
+                time.sleep(0.02)
+            archive_path = os.path.join(directory, "modulation_updates.jsonl")
+            with open(archive_path, encoding="utf-8") as handle:
+                archive_ids = [
+                    json.loads(line)["update_id"]
+                    for line in handle
+                    if line.strip()
+                ]
+            self.assertEqual(["urgent-retreat"], archive_ids)
+
+            status = bridge.micromachine_status(blackboard_dir=directory)
+            stream = {
+                item.get("compile_result", {}).get("update_id"): item
+                for item in status["modulation_results"]
+            }
+            self.assertEqual("superseded", stream["slow-normal"]["status"])
+            self.assertEqual("published", stream["urgent-retreat"]["status"])
+
+    def test_emergency_commit_blocks_normal_publish_from_stale_snapshot(self):
+        normal_snapshot_ready = threading.Event()
+        release_normal = threading.Event()
+        emergency_publish_ready = threading.Event()
+        release_emergency = threading.Event()
+        self.addCleanup(release_normal.set)
+        self.addCleanup(release_emergency.set)
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=BlockingPolicyModulationLLMControl(
+                started=normal_snapshot_ready,
+                release=release_normal,
+            ),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        original_publish_vector = web_gui._GuardedMicroMachineBackend.publish_vector
+
+        def gate_emergency_publish(backend, *args, **kwargs):
+            if backend._request.update_id == "urgent-retreat":
+                emergency_publish_ready.set()
+                if not release_emergency.wait(2):
+                    raise TimeoutError("test emergency publish release was not set")
+            return original_publish_vector(backend, *args, **kwargs)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                web_gui._GuardedMicroMachineBackend,
+                "publish_vector",
+                autospec=True,
+                side_effect=gate_emergency_publish,
+            ),
+        ):
+            bridge.submit_micromachine_modulation_background(
+                "긴급 즉시 후퇴",
+                blackboard_dir=directory,
+                provider_output={
+                    "goal": "긴급 즉시 후퇴",
+                    "override_level": "emergency",
+                    "command_layer": "emergency",
+                    "ttl_seconds": 45,
+                    "emergency": {
+                        "cancel_attacks": True,
+                        "force_retreat": True,
+                    },
+                },
+                current_frame=11,
+                update_id="urgent-retreat",
+            )
+            self.assertTrue(emergency_publish_ready.wait(1))
+
+            bridge.submit_micromachine_modulation_background(
+                "탱크로 수비해",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="stale-normal",
+            )
+            self.assertTrue(
+                normal_snapshot_ready.wait(1),
+                "normal request did not capture its pre-emergency snapshot",
+            )
+
+            release_emergency.set()
+            deadline = time.monotonic() + 2
+            latest = {}
+            while time.monotonic() < deadline:
+                path = os.path.join(directory, "latest_modulation.json")
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as handle:
+                        latest = json.load(handle)
+                    if latest.get("update_id") == "urgent-retreat":
+                        break
+                time.sleep(0.02)
+            self.assertEqual("urgent-retreat", latest.get("update_id"))
+
+            release_normal.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with bridge._micromachine_request_lock:
+                    pending = "stale-normal" in bridge._micromachine_requests
+                if not pending:
+                    break
+                time.sleep(0.02)
+
+            with open(
+                os.path.join(directory, "latest_modulation.json"),
+                encoding="utf-8",
+            ) as handle:
+                latest = json.load(handle)
+            self.assertEqual("urgent-retreat", latest.get("update_id"))
+
+            with open(
+                os.path.join(directory, "modulation_updates.jsonl"),
+                encoding="utf-8",
+            ) as handle:
+                archive_ids = [
+                    json.loads(line)["update_id"]
+                    for line in handle
+                    if line.strip()
+                ]
+            self.assertEqual(["urgent-retreat"], archive_ids)
+
+            status = bridge.micromachine_status(blackboard_dir=directory)
+            stream = {
+                item.get("compile_result", {}).get("update_id"): item
+                for item in status["modulation_results"]
+            }
+            self.assertEqual("superseded", stream["stale-normal"]["status"])
+            self.assertEqual("published", stream["urgent-retreat"]["status"])
+
+    def test_emergency_safety_path_bypasses_llm_and_keeps_latest_runnable(self):
+        class RejectEmergencyLLMControl(FakeConfiguredLLMControl):
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._call_count = 0
+
+            def is_available(self):
+                return True
+
+            def propose_policy_modulation(self, request):
+                with self._lock:
+                    self._call_count += 1
+                raise AssertionError("safety emergency must not call the LLM")
+
+        control = RejectEmergencyLLMControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session, llm_control=control)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge.submit_micromachine_modulation_background(
+                "긴급 후퇴",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="blocked-emergency",
+            )
+            bridge.submit_micromachine_modulation_background(
+                "공격 취소하고 즉시 복귀",
+                blackboard_dir=directory,
+                current_frame=11,
+                update_id="replacement-emergency",
+            )
+
+            deadline = time.monotonic() + 3
+            latest = {}
+            while time.monotonic() < deadline:
+                path = os.path.join(directory, "latest_modulation.json")
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as handle:
+                        latest = json.load(handle)
+                    if latest.get("update_id") == "replacement-emergency":
+                        break
+                time.sleep(0.02)
+
+            self.assertEqual("replacement-emergency", latest.get("update_id"))
+            self.assertEqual(0, control._call_count)
+            archive_path = os.path.join(directory, "modulation_updates.jsonl")
+            with open(archive_path, encoding="utf-8") as handle:
+                archive_ids = [
+                    json.loads(line)["update_id"]
+                    for line in handle
+                    if line.strip()
+                ]
+            self.assertEqual("replacement-emergency", archive_ids[-1])
+            self.assertLessEqual(len(archive_ids), 2)
+
+    def test_micromachine_emergency_cancellation_is_scoped_to_blackboard(self):
+        started = threading.Event()
+        release = threading.Event()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=BlockingPolicyModulationLLMControl(
+                started=started,
+                release=release,
+            ),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with (
+            tempfile.TemporaryDirectory() as blackboard_a,
+            tempfile.TemporaryDirectory() as blackboard_b,
+        ):
+            bridge.submit_micromachine_modulation_background(
+                "탱크로 수비해",
+                blackboard_dir=blackboard_b,
+                current_frame=10,
+                update_id="blackboard-b-normal",
+            )
+            self.assertTrue(started.wait(1))
+            bridge.submit_micromachine_modulation_background(
+                "긴급 즉시 후퇴",
+                blackboard_dir=blackboard_a,
+                provider_output={
+                    "goal": "긴급 즉시 후퇴",
+                    "override_level": "emergency",
+                    "command_layer": "emergency",
+                    "ttl_seconds": 45,
+                    "emergency": {
+                        "cancel_attacks": True,
+                        "force_retreat": True,
+                    },
+                },
+                current_frame=11,
+                update_id="blackboard-a-emergency",
+            )
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                path = os.path.join(blackboard_a, "latest_modulation.json")
+                if os.path.isfile(path):
+                    break
+                time.sleep(0.02)
+            with bridge._micromachine_request_lock:
+                normal_request = bridge._micromachine_requests[
+                    "blackboard-b-normal"
+                ]
+                self.assertFalse(normal_request.cancel_event.is_set())
+
+            release.set()
+            deadline = time.monotonic() + 2
+            latest_b = {}
+            while time.monotonic() < deadline:
+                path = os.path.join(blackboard_b, "latest_modulation.json")
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as handle:
+                        latest_b = json.load(handle)
+                    break
+                time.sleep(0.02)
+            self.assertEqual("blackboard-b-normal", latest_b.get("update_id"))
+
+    def test_micromachine_emergency_classifier_ignores_negated_commands(self):
+        for command in (
+            "공격을 취소하지 말고 계속 압박해",
+            "후퇴하지 말고 버텨",
+            "철수하지 말고 계속 공격해",
+            "공격을 중단하지 말고 계속 압박해",
+            "작전을 중단하지 마",
+            "공격 중단 없이 계속 밀어",
+            "공격 중단 금지",
+            "후퇴 금지",
+            "철수 없이 압박 유지",
+            "후퇴 말고 공격해",
+            "no retreat",
+            "retreat is not an option",
+            "do not stop the attack",
+            "never retreat; hold the line",
+            "不要撤退，继续进攻",
+            "긴급 공격 시작",
+            "emergency attack now",
+            "마린 생산 중단하고 탱크 생산해",
+            "stop producing marines and build tanks",
+            "배럭 건설 취소하고 팩토리 지어",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(
+                    web_gui._micromachine_request_is_emergency(command, None)
+                )
+        for command in (
+            "긴급 후퇴",
+            "후퇴해",
+            "공격 취소하고 복귀",
+            "emergency retreat",
+            "fall back now",
+            "stop the attack and regroup",
+            "立即撤退",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(
+                    web_gui._micromachine_request_is_emergency(command, None)
+                )
+
+    def test_production_cancellation_stays_on_llm_macro_path(self):
+        class RecordingPolicyControl(FakePolicyModulationLLMControl):
+            def __init__(self):
+                self.commands = []
+
+            def propose_policy_modulation(self, request):
+                self.commands.append(request.command_text)
+                return super().propose_policy_modulation(request)
+
+        control = RecordingPolicyControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session, llm_control=control)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = bridge.submit_micromachine_modulation(
+                "마린 생산 중단하고 탱크 생산해",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="production-transition",
+            )
+
+        self.assertEqual(["마린 생산 중단하고 탱크 생산해"], control.commands)
+        vector = result["update"]["vector"]
+        self.assertNotEqual("emergency", vector["command_layer"])
+        self.assertFalse(vector["emergency"]["cancel_attacks"])
+        self.assertFalse(vector["emergency"]["force_retreat"])
+
+    def test_negated_attack_cancellation_stays_on_llm_operation_path(self):
+        class RecordingPolicyControl(FakePolicyModulationLLMControl):
+            def __init__(self):
+                self.commands = []
+
+            def propose_policy_modulation(self, request):
+                self.commands.append(request.command_text)
+                return super().propose_policy_modulation(request)
+
+        control = RecordingPolicyControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session, llm_control=control)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = bridge.submit_micromachine_modulation(
+                "공격을 중단하지 말고 계속 압박해",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="continue-pressure",
+            )
+
+        self.assertEqual(["공격을 중단하지 말고 계속 압박해"], control.commands)
+        vector = result["update"]["vector"]
+        self.assertNotEqual("emergency", vector["command_layer"])
+        self.assertFalse(vector["emergency"]["cancel_attacks"])
+        self.assertFalse(vector["emergency"]["force_retreat"])
+
+    def test_attack_cancel_prohibition_stays_on_llm_operation_path(self):
+        class RecordingPolicyControl(FakePolicyModulationLLMControl):
+            def __init__(self):
+                self.commands = []
+
+            def propose_policy_modulation(self, request):
+                self.commands.append(request.command_text)
+                return super().propose_policy_modulation(request)
+
+        control = RecordingPolicyControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session, llm_control=control)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = bridge.submit_micromachine_modulation(
+                "공격 중단 없이 계속 밀어",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="no-attack-cancel",
+            )
+
+        self.assertEqual(["공격 중단 없이 계속 밀어"], control.commands)
+        vector = result["update"]["vector"]
+        self.assertNotEqual("emergency", vector["command_layer"])
+        self.assertFalse(vector["emergency"]["cancel_attacks"])
+        self.assertFalse(vector["emergency"]["force_retreat"])
+
+    def test_prohibitive_retreat_stays_on_llm_operation_path(self):
+        class RecordingPolicyControl(FakePolicyModulationLLMControl):
+            def __init__(self):
+                self.commands = []
+
+            def propose_policy_modulation(self, request):
+                self.commands.append(request.command_text)
+                return super().propose_policy_modulation(request)
+
+        control = RecordingPolicyControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session, llm_control=control)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = bridge.submit_micromachine_modulation(
+                "후퇴 말고 공격해",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="no-retreat-pressure",
+            )
+
+        self.assertEqual(["후퇴 말고 공격해"], control.commands)
+        vector = result["update"]["vector"]
+        self.assertNotEqual("emergency", vector["command_layer"])
+        self.assertFalse(vector["emergency"]["cancel_attacks"])
+        self.assertFalse(vector["emergency"]["force_retreat"])
+
+    def test_synchronous_timeout_cancels_late_blackboard_publish(self):
+        started = threading.Event()
+        release = threading.Event()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=BlockingPolicyModulationLLMControl(
+                started=started,
+                release=release,
+            ),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                web_gui,
+                "_MICROMACHINE_REQUEST_TIMEOUT_SECONDS",
+                0.1,
+            ),
+            mock.patch.object(
+                web_gui,
+                "_MICROMACHINE_SYNC_PUBLISH_DEADLINE_SECONDS",
+                0.05,
+            ),
+        ):
+            with self.assertRaises(concurrent.futures.TimeoutError):
+                bridge.submit_micromachine_modulation(
+                    "탱크로 수비해",
+                    blackboard_dir=directory,
+                    current_frame=10,
+                    update_id="sync-timeout",
+                )
+            self.assertTrue(started.is_set())
+            release.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with bridge._micromachine_request_lock:
+                    pending = "sync-timeout" in bridge._micromachine_requests
+                if not pending:
+                    break
+                time.sleep(0.02)
+
+            self.assertFalse(
+                os.path.exists(os.path.join(directory, "latest_modulation.json"))
+            )
+
+    def test_compile_result_persistence_failures_do_not_reverse_committed_publish(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        original_atomic_write = web_gui._atomic_write_json
+
+        for failure_target in ("latest", "history"):
+            with self.subTest(failure_target=failure_target):
+                with tempfile.TemporaryDirectory() as directory:
+                    update_id = f"post-commit-{failure_target}-failure"
+                    latest_path = web_gui._micromachine_compile_result_path(directory)
+                    history_path = web_gui._micromachine_compile_result_history_path(
+                        directory,
+                        update_id,
+                    )
+
+                    def flaky_atomic_write(path, payload):
+                        should_fail = (
+                            failure_target == "latest" and path == latest_path
+                        ) or (
+                            failure_target == "history" and path == history_path
+                        )
+                        if should_fail:
+                            raise OSError(f"scripted {failure_target} persistence failure")
+                        return original_atomic_write(path, payload)
+
+                    with mock.patch.object(
+                        web_gui,
+                        "_atomic_write_json",
+                        side_effect=flaky_atomic_write,
+                    ):
+                        result = bridge.submit_micromachine_modulation(
+                            "마린 생산 유지",
+                            blackboard_dir=directory,
+                            provider_output={
+                                "goal": "마린 생산 유지",
+                                "override_level": "bias",
+                                "command_layer": "macro",
+                                "ttl_seconds": 120,
+                                "production": {
+                                    "queue_biases": {"TERRAN_MARINE": 0.8},
+                                },
+                            },
+                            current_frame=10,
+                            update_id=update_id,
+                        )
+
+                    self.assertEqual("published", result["status"])
+                    self.assertTrue(result["ok"])
+                    self.assertTrue(
+                        os.path.isfile(
+                            os.path.join(directory, "latest_modulation.json")
+                        )
+                    )
+                    warnings = result.get("persistence_warnings", [])
+                    self.assertEqual(1, len(warnings), warnings)
+                    self.assertIn(failure_target, warnings[0])
+                    self.assertNotEqual("publish_failed", result["status"])
+
+    def test_micromachine_status_returns_bounded_per_update_result_stream(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        with tempfile.TemporaryDirectory() as directory:
+            for index in range(2):
+                update_id = f"stream-{index}"
+                compile_result = {
+                    "status": "refused",
+                    "update_id": update_id,
+                    "refusal_reason": f"failure-{index}",
+                }
+                result = {
+                    "status": "publish_failed",
+                    "compile_result": compile_result,
+                    "update": None,
+                }
+                web_gui._write_micromachine_compile_result(
+                    directory,
+                    {
+                        "command_text": f"command-{index}",
+                        "status": "publish_failed",
+                        "compile_result": compile_result,
+                        "update_id": update_id,
+                        "result": result,
+                        "written_at_unix": time.time() + index * 0.001,
+                    },
+                )
+
+            status = bridge.micromachine_status(blackboard_dir=directory)
+
+        self.assertEqual(
+            ["stream-0", "stream-1"],
+            [
+                item["compile_result"]["update_id"]
+                for item in status["modulation_results"]
+            ],
+        )
+
+    def test_micromachine_recent_commands_are_bounded_and_isolated_per_blackboard(self):
+        class RecordingPolicyModulationControl(FakePolicyModulationLLMControl):
+            def __init__(self):
+                self.requests = []
+
+            def propose_policy_modulation(self, request):
+                self.requests.append(
+                    (
+                        request.command_text,
+                        json.loads(
+                            json.dumps(
+                                request.commander_context,
+                                ensure_ascii=False,
+                            )
+                        ),
+                    )
+                )
+                result = dict(super().propose_policy_modulation(request))
+                modulation = dict(result["modulation"])
+                strategy = dict(modulation["strategy"])
+                strategy["doctrine"] = "bio_pressure"
+                modulation.update(
+                    {
+                        "command_layer": "operation",
+                        "strategy": strategy,
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "min_units": 4,
+                            "max_units": 4,
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 4,
+                                "role": "frontline",
+                            }
+                        ],
+                        "route_intent": {
+                            "route_type": "flank_right",
+                            "avoid_enemy_strength": True,
+                        },
+                        "target_intent": {
+                            "target_type": "enemy_main",
+                            "priority": 0.9,
+                        },
+                    }
+                )
+                result["modulation"] = modulation
+                return result
+
+        control = RecordingPolicyModulationControl()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session, llm_control=control)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with (
+            tempfile.TemporaryDirectory() as blackboard_a,
+            tempfile.TemporaryDirectory() as blackboard_b,
+        ):
+            for index in range(1, 11):
+                if index == 3:
+                    bridge.submit_micromachine_modulation(
+                        "B 명령 1",
+                        blackboard_dir=blackboard_b,
+                        current_frame=1,
+                        update_id="context-b-1",
+                    )
+                bridge.submit_micromachine_modulation(
+                    f"A 명령 {index}",
+                    blackboard_dir=blackboard_a,
+                    current_frame=index,
+                    update_id=f"context-a-{index}",
+                )
+
+        contexts = {
+            command_text: context for command_text, context in control.requests
+        }
+        self.assertEqual(contexts["A 명령 1"]["recent_commands"], [])
+        self.assertEqual(contexts["B 명령 1"]["recent_commands"], [])
+        self.assertEqual(
+            [entry["command_text"] for entry in contexts["A 명령 10"]["recent_commands"]],
+            [f"A 명령 {index}" for index in range(2, 10)],
+        )
+        self.assertTrue(
+            contexts["A 명령 2"]["recent_commands"][0]["assistant_message"]
+        )
+        first_entry = contexts["A 명령 2"]["recent_commands"][0]
+        self.assertEqual(first_entry["update_id"], "context-a-1")
+        self.assertEqual(first_entry["command_layer"], "operation")
+        self.assertEqual(first_entry["category"], "tactical")
+        self.assertEqual(first_entry["reducer_action"], "activate")
+        self.assertEqual(first_entry["goal"], "A 명령 1")
+        self.assertEqual(first_entry["doctrine"], "bio_pressure")
+        self.assertEqual(
+            first_entry["tactical_task"],
+            {
+                "type": "pressure_with_main_army",
+                "ability": "",
+                "units": ["TERRAN_MARINE"],
+                "count": {"min": 4, "max": 4, "requested": 4},
+            },
+        )
+        self.assertEqual(first_entry["route"], "flank_right")
+        self.assertEqual(first_entry["target"], "enemy_main")
+        self.assertEqual(first_entry["consumption_status"], "pending_telemetry")
+        self.assertEqual(first_entry["execution_status"], "consumed_by_manager")
+        self.assertLessEqual(
+            len(first_entry["tactical_task"]["units"]),
+            web_gui._MICROMACHINE_RECENT_COMMAND_LIST_LIMIT,  # noqa: SLF001
+        )
+
+    def test_llm_provider_preserves_blackboard_context_after_web_history_loss(self):
+        class RecordingControl(FakePolicyModulationLLMControl):
+            def __init__(self):
+                self.request = None
+
+            def propose_policy_modulation(self, request):
+                self.request = request
+                return super().propose_policy_modulation(request)
+
+        control = RecordingControl()
+        provider = web_gui._LocalLLMPolicyModulationProvider(  # noqa: SLF001
+            control,
+            recent_commands=[
+                {
+                    "update_id": "web-old",
+                    "command_text": "마린 중심으로 가",
+                    "command_layer": "macro",
+                }
+            ],
+        )
+        provider.propose_policy_modulation(
+            PolicyModulationProviderRequest(
+                command_text="그 병력으로 더 강하게 공격해",
+                commander_context={
+                    "recent_commands": [
+                        {
+                            "update_id": "blackboard-current",
+                            "goal": "마린 4기로 적 본진 압박",
+                            "command_layer": "operation",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "min_units": 4,
+                                "max_units": 4,
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+
+        self.assertIsNotNone(control.request)
+        recent = control.request.commander_context["recent_commands"]
+        self.assertEqual(
+            ["web-old", "blackboard-current"],
+            [item["update_id"] for item in recent],
+        )
+        self.assertEqual(
+            "pressure_with_main_army",
+            recent[-1]["tactical_task"]["task_type"],
+        )
+
+        empty_memory_provider = web_gui._LocalLLMPolicyModulationProvider(  # noqa: SLF001
+            control,
+            recent_commands=[],
+        )
+        empty_memory_provider.propose_policy_modulation(
+            PolicyModulationProviderRequest(
+                command_text="계속 진행해",
+                commander_context={"recent_commands": recent[-1:]},
+            )
+        )
+        self.assertEqual(
+            ["blackboard-current"],
+            [
+                item["update_id"]
+                for item in control.request.commander_context["recent_commands"]
+            ],
+        )
+
     def test_session_exception_recorded_as_blocked_outcome(self):
         submitted_key = "sk-" + "test-session-secret-123456789"
 
@@ -2845,6 +3710,126 @@ class SessionLoopBridgeTest(unittest.TestCase):
             bridge.submit_command("상황 보고해줘")
         # Pending commands submitted before stop() were drained, not dropped.
         self.assertGreaterEqual(bridge.latest_seq(), 1)
+
+    def test_stop_timeout_prevents_restart_until_old_worker_terminates(self):
+        started = threading.Event()
+        release = threading.Event()
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=BlockingPolicyModulationLLMControl(
+                started=started,
+                release=release,
+            ),
+        )
+        bridge.start()
+        self.addCleanup(release.set)
+        self.addCleanup(bridge.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge.submit_micromachine_modulation_background(
+                "탱크로 수비해",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="stop-blocked-normal",
+            )
+            self.assertTrue(started.wait(1))
+            old_thread = bridge._thread
+            self.assertIsNotNone(old_thread)
+            with bridge._micromachine_request_lock:
+                blocked_request = bridge._micromachine_requests[
+                    "stop-blocked-normal"
+                ]
+
+            bridge.stop(timeout=0.01)
+
+            self.assertTrue(old_thread.is_alive())
+            self.assertFalse(bridge.is_running)
+            self.assertTrue(blocked_request.cancel_event.is_set())
+            self.assertTrue(blocked_request.future.done())
+            self.assertIsInstance(blocked_request.future.exception(), RuntimeError)
+            with self.assertRaisesRegex(RuntimeError, "not running"):
+                bridge.submit_micromachine_modulation_background(
+                    "종료 중에는 받지 마",
+                    blackboard_dir=directory,
+                    current_frame=10,
+                    update_id="rejected-during-stopping",
+                )
+            with bridge._micromachine_request_lock:
+                self.assertNotIn(
+                    "rejected-during-stopping",
+                    bridge._micromachine_requests,
+                )
+            with self.assertRaisesRegex(RuntimeError, "still stopping"):
+                bridge.start()
+
+            release.set()
+            old_thread.join(timeout=2)
+            self.assertFalse(old_thread.is_alive())
+
+            bridge.start()
+            self.assertTrue(bridge.is_running)
+            result = bridge.submit_micromachine_modulation(
+                "마린 생산 유지",
+                blackboard_dir=directory,
+                provider_output={
+                    "goal": "마린 생산 유지",
+                    "override_level": "bias",
+                    "command_layer": "macro",
+                    "ttl_seconds": 120,
+                    "production": {
+                        "queue_biases": {"TERRAN_MARINE": 0.8},
+                    },
+                },
+                current_frame=11,
+                update_id="restart-after-stop",
+            )
+            self.assertEqual("published", result["status"])
+
+    def test_stop_during_initialization_never_exposes_a_running_bridge(self):
+        entered = threading.Event()
+        release = threading.Event()
+        session, _bot = build_dry_run_session()
+
+        class DelayedStartBridge(SessionLoopBridge):
+            def _run_loop(self):
+                entered.set()
+                release.wait(2)
+                super()._run_loop()
+
+        bridge = DelayedStartBridge(session=session)
+        start_errors = []
+
+        def start_bridge():
+            try:
+                bridge.start()
+            except Exception as error:  # noqa: BLE001 - asserted below.
+                start_errors.append(error)
+
+        starter = threading.Thread(target=start_bridge)
+        starter.start()
+        self.assertTrue(entered.wait(1))
+
+        bridge.stop(timeout=0.01)
+        self.assertFalse(bridge.is_running)
+        self.assertEqual(
+            web_gui._BRIDGE_LIFECYCLE_STOPPING,
+            bridge._lifecycle_state,
+        )
+
+        release.set()
+        starter.join(timeout=2)
+        self.assertFalse(starter.is_alive())
+        self.assertEqual(1, len(start_errors))
+        self.assertIsInstance(start_errors[0], RuntimeError)
+        self.assertFalse(bridge.is_running)
+        self.assertEqual(
+            web_gui._BRIDGE_LIFECYCLE_STOPPED,
+            bridge._lifecycle_state,
+        )
+        self.assertIsNone(bridge._thread)
+        self.assertIsNone(bridge._loop)
+        self.assertIsNone(bridge._queue)
 
     def test_injected_history_store_is_duck_typed(self):
         recorded = []
@@ -3549,6 +4534,8 @@ var nodes = {
   "runtime-refresh-button": element("runtime-refresh-button", "button"),
   "runtime-mode-summary": element("runtime-mode-summary"),
   "legacy-mode-warning": element("legacy-mode-warning"),
+  "micromachine-enemy-difficulty-control": element("micromachine-enemy-difficulty-control"),
+  "micromachine-enemy-difficulty": element("micromachine-enemy-difficulty", "input"),
   "connection-status": element("connection-status"),
   "state-minerals": element("state-minerals"),
   "state-vespene": element("state-vespene"),
@@ -3589,6 +4576,7 @@ var nodes = {
 nodes["log"] = logBox;
 nodes["llm-model-select"].value = "gpt-test";
 nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-js-test";
+nodes["micromachine-enemy-difficulty"].value = "10";
 nodes["micromachine-ttl-seconds"].value = "600";
 
 var providerRadios = [
@@ -3675,6 +4663,29 @@ function deferred() {
   return { promise: promise, resolve: resolve, reject: reject };
 }
 function response(status, data) {
+  if (data && typeof data === "object" && !data.blackboard_scope_id) {
+    data.blackboard_scope_id = "server-blackboard-scope-a";
+    var compileResult = data.compile_result || {};
+    var update = data.update || {};
+    var intervention = data.intervention || {};
+    var execution = intervention.command_execution || {};
+    var updateId = String(
+      data.update_id ||
+      update.update_id ||
+      compileResult.update_id ||
+      execution.command_id ||
+      ""
+    );
+    if (updateId) {
+      data.result_id = data.result_id || (
+        "server-result-server-blackboard-scope-a-" + updateId
+      );
+      if (data.compile_result && typeof data.compile_result === "object") {
+        data.compile_result.blackboard_scope_id = data.blackboard_scope_id;
+        data.compile_result.result_id = data.result_id;
+      }
+    }
+  }
   return {
     ok: status >= 200 && status < 300,
     status: status,
@@ -3693,6 +4704,60 @@ function flushPromises() {
         scenario = r"""
 const assert = require("assert");
 (async function () {
+  var SERVER_SCOPE_A = "server-blackboard-scope-a";
+  var SERVER_SCOPE_B = "server-blackboard-scope-b";
+  function serverResult(data, scopeId) {
+    if (!data || typeof data !== "object") { return data; }
+    var scope = scopeId || data.blackboard_scope_id || SERVER_SCOPE_A;
+    data.blackboard_scope_id = scope;
+    var compileResult = data.compile_result || {};
+    var update = data.update || {};
+    var intervention = data.intervention || {};
+    var execution = intervention.command_execution || {};
+    var updateId = String(
+      data.update_id ||
+      update.update_id ||
+      compileResult.update_id ||
+      execution.command_id ||
+      ""
+    );
+    if (updateId) {
+      data.result_id = data.result_id || (
+        "server-result-" + scope + "-" + updateId
+      );
+      if (data.compile_result && typeof data.compile_result === "object") {
+        data.compile_result.blackboard_scope_id = scope;
+        data.compile_result.result_id = data.result_id;
+      }
+    }
+    if (Array.isArray(data.modulation_results)) {
+      data.modulation_results.forEach(function(item) {
+        serverResult(item, scope);
+      });
+    }
+    return data;
+  }
+  function pendingFor(scopeId, updateId) {
+    return pendingMicroMachineRecord(scopeId || SERVER_SCOPE_A, updateId);
+  }
+  function hasPending(scopeId, updateId) {
+    return Boolean(pendingFor(scopeId, updateId));
+  }
+  function rememberServerPending(text, updateId, scopeId) {
+    var pendingId = appendPendingCommand(text);
+    rememberPendingMicroMachineAsync(
+      text,
+      serverResult(
+        {
+          async_publish: true,
+          update_id: updateId
+        },
+        scopeId || SERVER_SCOPE_A
+      ),
+      pendingId
+    );
+    return pendingId;
+  }
   pollState();
   await flushPromises();
   assert.strictEqual(requests.length, 0);
@@ -3727,6 +4792,13 @@ const assert = require("assert");
   assert.strictEqual(buildMicroMachineModulationPayload("marine rush").allow_smoke_keyword_provider, undefined);
   assert.strictEqual(buildMicroMachineModulationPayload("마린 러쉬").allow_smoke_keyword_provider, undefined);
   assert.strictEqual(buildMicroMachineModulationPayload("hello").allow_smoke_keyword_provider, undefined);
+  assert.strictEqual(runtimeStartPayload().enemy_difficulty, 10);
+  nodes["micromachine-enemy-difficulty"].value = "7.5";
+  assert.throws(function () { runtimeStartPayload(); }, /integer from 1 to 10/);
+  startSelectedRuntime();
+  assert.strictEqual(requests.length, 0);
+  assert(nodes["live-status"].textContent.includes("integer from 1 to 10"));
+  nodes["micromachine-enemy-difficulty"].value = "7";
 
   nodes["command-input"].value = "enemy natural 압박하고 탱크는 안전하게";
   nodes["command-form"].dispatchEvent({
@@ -3783,23 +4855,11 @@ const assert = require("assert");
   assert(!logBox.textContent.includes("attack_gate="));
   assert.strictEqual(nodes["command-input"].value, "");
 
-  rememberPendingMicroMachineAsync("active A consumed", {
-    async_publish: true,
-    update_id: "race-active-a"
-  });
-  rememberPendingMicroMachineAsync("latest B refused", {
-    async_publish: true,
-    update_id: "race-failed-b"
-  });
-  assert(Object.prototype.hasOwnProperty.call(
-    pendingMicroMachineAsyncUpdates,
-    "race-active-a"
-  ));
-  assert(Object.prototype.hasOwnProperty.call(
-    pendingMicroMachineAsyncUpdates,
-    "race-failed-b"
-  ));
-  renderMicroMachineStatus({
+  rememberServerPending("active A consumed", "race-active-a");
+  rememberServerPending("latest B refused", "race-failed-b");
+  assert(hasPending(SERVER_SCOPE_A, "race-active-a"));
+  assert(hasPending(SERVER_SCOPE_A, "race-failed-b"));
+  renderMicroMachineStatus(serverResult({
     ok: true,
     accepted: true,
     status: "published",
@@ -3841,15 +4901,9 @@ const assert = require("assert");
         { update_id: "race-active-a", manager_bias_domains: ["combat"] }
       ]
     }
-  });
-  assert(!Object.prototype.hasOwnProperty.call(
-    pendingMicroMachineAsyncUpdates,
-    "race-active-a"
-  ));
-  assert(!Object.prototype.hasOwnProperty.call(
-    pendingMicroMachineAsyncUpdates,
-    "race-failed-b"
-  ));
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "race-active-a"));
+  assert(!hasPending(SERVER_SCOPE_A, "race-failed-b"));
   assert(logBox.textContent.includes("active A consumed"));
   assert(logBox.textContent.includes("latest B refused"));
   assert(logBox.textContent.includes("active pressure"));
@@ -3862,15 +4916,100 @@ const assert = require("assert");
   assert(activeEntry);
   assert(!activeEntry.textContent.includes("provider auth failed"));
 
-  rememberPendingMicroMachineAsync("LLM 경계 완료 테스트", {
-    async_publish: true,
-    update_id: "async-boundary-complete"
+  rememberServerPending("스트림 결과 A", "stream-result-a");
+  rememberServerPending("스트림 결과 B", "stream-result-b");
+  renderMicroMachineStatus(serverResult({
+    enabled: true,
+    status: "idle",
+    modulation_results: [
+      {
+        status: "publish_failed",
+        compile_result: {
+          status: "refused",
+          update_id: "stream-result-a",
+          refusal_reason: "stream failure A"
+        }
+      },
+      {
+        status: "publish_failed",
+        compile_result: {
+          status: "refused",
+          update_id: "stream-result-b",
+          refusal_reason: "stream failure B"
+        }
+      }
+    ],
+    dashboard: { active_updates: [] },
+    intervention: {}
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "stream-result-a"));
+  assert(!hasPending(SERVER_SCOPE_A, "stream-result-b"));
+  assert(logBox.textContent.includes("stream failure A"));
+  assert(logBox.textContent.includes("stream failure B"));
+
+  rememberServerPending("소비 후 효과 대기 테스트", "consumed-still-running");
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "consumed-still-running",
+      source: "llm",
+      assistant_message: "공격 명령을 전술 큐에 반영했습니다."
+    },
+    update: { update_id: "consumed-still-running" },
+    intervention: {
+      latest_update_id: "consumed-still-running",
+      command_execution: {
+      command_id: "consumed-still-running",
+      state: "consumed_by_manager",
+      completed: false,
+      failed: false,
+      expired: false,
+      blocker_manager: "CombatCommander",
+      blocker_reason: "Manager consumed the update; assignment is still pending."
+      }
+    }
+  }));
+  assert(hasPending(SERVER_SCOPE_A, "consumed-still-running"));
+  assert.strictEqual(pendingCommandCount(), 1);
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "consumed-still-running",
+      source: "llm",
+      assistant_message: "공격 명령을 전술 큐에 반영했습니다."
+    },
+    update: { update_id: "consumed-still-running" },
+    intervention: {
+      latest_update_id: "consumed-still-running",
+      command_execution: {
+        command_id: "consumed-still-running",
+        state: "failed",
+        completed: false,
+        failed: true,
+        expired: false,
+        blocker_manager: "TacticalEvidence",
+        blocker_reason: "No observed tactical effect before the QA deadline."
+      }
+    }
+  }));
+  var failedExecutionEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
+    return entry.textContent.includes("소비 후 효과 대기 테스트");
   });
-  pendingMicroMachineAsyncUpdates["async-boundary-complete"].createdAt -= (
+  assert(failedExecutionEntry);
+  assert(failedExecutionEntry.textContent.includes("공격 명령을 전술 큐에 반영했습니다."));
+  assert(failedExecutionEntry.textContent.includes("실행 상태: failed"));
+  assert(failedExecutionEntry.textContent.includes("TacticalEvidence"));
+  assert.strictEqual(pendingCommandCount(), 0);
+
+  rememberServerPending("LLM 경계 완료 테스트", "async-boundary-complete");
+  pendingFor(SERVER_SCOPE_A, "async-boundary-complete").createdAt -= (
     MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS + 1
   );
-  appendPendingCommand("LLM 경계 완료 테스트");
-  renderMicroMachineStatus({
+  renderMicroMachineStatus(serverResult({
     ok: true,
     consumption_status: "consumed",
     compile_result: {
@@ -3879,32 +5018,36 @@ const assert = require("assert");
       source: "llm",
       assistant_message: "경계에서도 정상 완료"
     },
-    update: { update_id: "async-boundary-complete" }
-  });
+    update: { update_id: "async-boundary-complete" },
+    intervention: {
+      latest_update_id: "async-boundary-complete",
+      command_execution: {
+        command_id: "async-boundary-complete",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false
+      }
+    }
+  }));
   var boundaryEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
     return entry.textContent.includes("LLM 경계 완료 테스트");
   });
   assert(boundaryEntry);
   assert(boundaryEntry.textContent.includes("경계에서도 정상 완료"));
+  assert(boundaryEntry.textContent.includes("실행 상태: completed"));
   assert(!boundaryEntry.textContent.includes("120초 안에 완료되지 않았습니다"));
 
-  rememberPendingMicroMachineAsync("LLM 응답 만료 테스트", {
-    async_publish: true,
-    update_id: "async-timeout"
-  });
-  var asyncCreatedAt = pendingMicroMachineAsyncUpdates["async-timeout"].createdAt;
-  appendPendingCommand("LLM 응답 만료 테스트");
+  rememberServerPending("LLM 응답 만료 테스트", "async-timeout");
+  var asyncCreatedAt = pendingFor(SERVER_SCOPE_A, "async-timeout").createdAt;
   expirePendingMicroMachineAsync(
     asyncCreatedAt + MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS + 1
   );
-  assert(!Object.prototype.hasOwnProperty.call(
-    pendingMicroMachineAsyncUpdates,
-    "async-timeout"
-  ));
+  assert(!hasPending(SERVER_SCOPE_A, "async-timeout"));
   assert.strictEqual(pendingCommandCount(), 0);
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
   assert(logBox.textContent.includes("120초 안에 완료되지 않았습니다"));
-  renderMicroMachineStatus({
+  renderMicroMachineStatus(serverResult({
     ok: true,
     consumption_status: "consumed",
     compile_result: {
@@ -3913,7 +5056,7 @@ const assert = require("assert");
       source: "llm"
     },
     update: { update_id: "async-timeout" }
-  });
+  }));
   assert.strictEqual(
     logBox.querySelectorAll(".log-entry").filter(function (entry) {
       return entry.textContent.includes("LLM 응답 만료 테스트");
@@ -3971,6 +5114,7 @@ const assert = require("assert");
     1
   );
 
+  renderMicroMachineStatus = originalRenderMicroMachineStatus;
   nodes["command-input"].value = "마린으로 앞마당 압박해";
   nodes["command-form"].dispatchEvent({
     type: "submit",
@@ -3984,15 +5128,17 @@ const assert = require("assert");
     preventDefault: function () {}
   });
   assert.strictEqual(requests.length, 5);
-  assert.strictEqual(pendingCommandCount(), 1);
+  assert.strictEqual(pendingCommandCount(), 2);
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
   assert(!logBox.textContent.includes("마린으로 앞마당 압박해"));
   assert(logBox.textContent.includes("아니 4마린으로 적 본진 우회 공격해"));
   requests[3].deferred.resolve(response(202, {
     ok: true,
     accepted: true,
-    status: "published",
-    consumption_status: "pending_consumption",
+    async_publish: true,
+    status: "queued",
+    consumption_status: "pending_compile",
+    update_id: "stale-pressure",
     command_queue: {
       category: "tactical",
       action: "supersede_tactical",
@@ -4008,17 +5154,20 @@ const assert = require("assert");
   }));
   await flushPromises();
   await flushPromises();
-  assert.strictEqual(pendingCommandCount(), 1);
+  assert.strictEqual(pendingCommandCount(), 2);
   assert(!logBox.textContent.includes("stale pressure"));
   requests[4].deferred.resolve(response(202, {
     ok: true,
     accepted: true,
-    status: "published",
-    consumption_status: "pending_consumption",
+    async_publish: true,
+    status: "queued",
+    consumption_status: "pending_compile",
+    update_id: "latest-flank",
     command_queue: {
       category: "tactical",
       action: "supersede_tactical",
-      superseded_previous: true
+      superseded_previous: true,
+      superseded_update_ids: ["stale-pressure"]
     },
     compile_result: {
       status: "compiled",
@@ -4046,10 +5195,494 @@ const assert = require("assert");
   }));
   await flushPromises();
   await flushPromises();
+  assert(!hasPending(SERVER_SCOPE_A, "stale-pressure"));
+  assert(hasPending(SERVER_SCOPE_A, "latest-flank"));
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert(!logBox.textContent.includes("stale pressure"));
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    command_queue: {
+      category: "tactical",
+      action: "supersede_tactical",
+      superseded_previous: true
+    },
+    compile_result: {
+      status: "compiled",
+      source: "llm",
+      update_id: "latest-flank",
+      assistant_message: "최신 우회 공격 명령으로 steering했습니다.",
+      vector: { goal: "latest flank" }
+    },
+    update: { update_id: "latest-flank" },
+    intervention: {
+      latest_update_id: "latest-flank",
+      goal: "latest flank",
+      command_execution: {
+        command_id: "latest-flank",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false
+      },
+      lifetime: {
+        mode: "until_completed",
+        completion_state: "completed",
+        completion_conditions: ["order_issued", "target_reached", "ttl_expired"]
+      }
+    }
+  }));
   assert.strictEqual(pendingCommandCount(), 0);
   assert(logBox.textContent.includes("latest flank"));
+  assert(logBox.textContent.includes("최신 우회 공격 명령으로 steering했습니다."));
+  assert(logBox.textContent.includes("실행 상태: completed"));
   assert(logBox.textContent.includes("command_queue | category=tactical | action=supersede_tactical"));
   assert(logBox.textContent.includes("lifetime=mode=until_completed"));
+
+  rememberServerPending("마린 중심 생산 유지", "preserved-macro");
+  rememberServerPending("4마린으로 우회 공격", "merged-operation");
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    command_queue: {
+      category: "tactical",
+      action: "merge_standing_orders",
+      layer_action: "merge_cross_layer",
+      parent_command_ids: ["preserved-macro"],
+      preserved_command_layers: ["macro"],
+      merged_command_count: 2
+    },
+    compile_result: {
+      status: "compiled",
+      source: "llm",
+      update_id: "merged-operation",
+      assistant_message: "생산 방침을 유지하면서 우회 공격을 시작합니다.",
+      vector: { goal: "marine macro plus flank operation" }
+    },
+    update: { update_id: "merged-operation" },
+    intervention: {
+      latest_update_id: "merged-operation",
+      command_execution: {
+        command_id: "merged-operation",
+        state: "consumed_by_manager",
+        completed: false,
+        failed: false,
+        expired: false
+      }
+    }
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "preserved-macro"));
+  assert(hasPending(SERVER_SCOPE_A, "merged-operation"));
+  assert.deepStrictEqual(
+    pendingFor(SERVER_SCOPE_A, "merged-operation").preservedUpdateIds,
+    ["preserved-macro"]
+  );
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert.deepStrictEqual(pendingCommandTexts(), ["4마린으로 우회 공격"]);
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    command_queue: {
+      category: "tactical",
+      action: "merge_standing_orders",
+      layer_action: "merge_cross_layer",
+      parent_command_ids: ["preserved-macro"],
+      preserved_command_layers: ["macro"],
+      merged_command_count: 2
+    },
+    compile_result: {
+      status: "compiled",
+      source: "llm",
+      update_id: "merged-operation",
+      assistant_message: "생산 방침을 유지하면서 우회 공격을 시작합니다.",
+      vector: { goal: "marine macro plus flank operation" }
+    },
+    update: { update_id: "merged-operation" },
+    intervention: {
+      latest_update_id: "merged-operation",
+      command_execution: {
+        command_id: "merged-operation",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false
+      }
+    }
+  }));
+  assert.strictEqual(pendingCommandCount(), 0);
+  var mergedOperationEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
+    return entry.textContent.includes("4마린으로 우회 공격");
+  });
+  assert(mergedOperationEntry);
+  assert(mergedOperationEntry.textContent.includes("preserved_ids=preserved-macro"));
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function (entry) {
+      return entry.textContent.includes("마린 중심 생산 유지");
+    }).length,
+    0
+  );
+
+  rememberServerPending("보존되면 안 되는 이전 명령", "overlap-predecessor");
+  rememberServerPending("중복 edge 교체 명령", "overlap-replacement");
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    command_queue: {
+      parent_command_ids: ["overlap-predecessor"],
+      superseded_update_ids: ["overlap-predecessor"]
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: "overlap-replacement"
+    },
+    update: { update_id: "overlap-replacement" },
+    intervention: {
+      command_execution: {
+        command_id: "overlap-replacement",
+        state: "consumed_by_manager",
+        completed: false,
+        failed: false,
+        expired: false
+      }
+    }
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "overlap-predecessor"));
+  assert.deepStrictEqual(
+    pendingFor(SERVER_SCOPE_A, "overlap-replacement").supersededUpdateIds,
+    ["overlap-predecessor"]
+  );
+  assert.deepStrictEqual(
+    pendingFor(SERVER_SCOPE_A, "overlap-replacement").preservedUpdateIds,
+    []
+  );
+  assert.deepStrictEqual(
+    pendingFor(SERVER_SCOPE_A, "overlap-replacement").preservedCommandTexts,
+    []
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "overlap-replacement"
+    },
+    update: { update_id: "overlap-replacement" },
+    intervention: {
+      command_execution: {
+        command_id: "overlap-replacement",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false
+      }
+    }
+  }));
+  var overlapEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
+    return entry.textContent.includes("중복 edge 교체 명령");
+  });
+  assert(overlapEntry);
+  assert(overlapEntry.textContent.includes("superseded_ids=overlap-predecessor"));
+  assert(!overlapEntry.textContent.includes("preserved_ids=overlap-predecessor"));
+  assert.strictEqual(pendingCommandCount(), 0);
+
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("공격을 취소하지 말고 계속 압박해"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("후퇴하지 말고 버텨"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("철수하지 말고 계속 공격해"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("공격을 중단하지 말고 계속 압박해"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("작전을 중단하지 마"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("공격 중단 없이 계속 밀어"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("공격 중단 금지"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("후퇴 금지"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("철수 없이 압박 유지"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("후퇴 말고 공격해"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("no retreat"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("retreat is not an option"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("do not stop the attack"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("긴급 공격 시작"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("emergency attack now"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("마린 생산 중단하고 탱크 생산해"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("stop producing marines and build tanks"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("배럭 건설 취소하고 팩토리 지어"),
+    false
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("긴급 후퇴"),
+    true
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("후퇴해"),
+    true
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("fall back now"),
+    true
+  );
+  assert.strictEqual(
+    looksLikeMicroMachineEmergencyCommand("stop the attack and regroup"),
+    true
+  );
+
+  rememberServerPending("오래된 일반 공격", "stale-before-emergency");
+  pendingFor(SERVER_SCOPE_A, "stale-before-emergency").supersededUpdateIds.push(
+    "older-root-command"
+  );
+  rememberServerPending("긴급 즉시 후퇴", "urgent-retreat");
+  assert(hasPending(SERVER_SCOPE_A, "stale-before-emergency"));
+  assert(hasPending(SERVER_SCOPE_A, "urgent-retreat"));
+  // Text alone cannot sweep pending commands, including emergency-looking text.
+  assert.strictEqual(pendingCommandCount(), 2);
+  renderMicroMachineStatus(serverResult({
+    enabled: true,
+    status: "superseded",
+    command_queue: {
+      action: "superseded_by_emergency",
+      superseded_by_update_id: "urgent-retreat"
+    },
+    compile_result: {
+      status: "refused",
+      update_id: "stale-before-emergency",
+      refusal_reason: "superseded by emergency"
+    },
+    dashboard: { active_updates: [] },
+    intervention: {}
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "stale-before-emergency"));
+  assert(hasPending(SERVER_SCOPE_A, "urgent-retreat"));
+  assert.deepStrictEqual(
+    pendingFor(SERVER_SCOPE_A, "urgent-retreat").supersededUpdateIds,
+    ["stale-before-emergency", "older-root-command"]
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      source: "llm",
+      update_id: "urgent-retreat",
+      assistant_message: "긴급 후퇴를 최우선 명령으로 적용했습니다."
+    },
+    update: { update_id: "urgent-retreat" },
+    intervention: {
+      latest_update_id: "urgent-retreat",
+      command_execution: {
+        command_id: "urgent-retreat",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false
+      }
+    }
+  }));
+  assert.strictEqual(pendingCommandCount(), 0);
+  var emergencyEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
+    return entry.textContent.includes("긴급 즉시 후퇴");
+  });
+  assert(emergencyEntry);
+  assert(emergencyEntry.textContent.includes("긴급 후퇴를 최우선 명령으로 적용했습니다."));
+  assert(emergencyEntry.textContent.includes("superseded_previous=true"));
+  assert(emergencyEntry.textContent.includes("stale-before-emergency"));
+  assert(emergencyEntry.textContent.includes("older-root-command"));
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function (entry) {
+      return entry.textContent.includes("오래된 일반 공격");
+    }).length,
+    0
+  );
+
+  // Replay must not append a second terminal chat result for one immutable ID.
+  rememberServerPending("replay once", "replay-once");
+  var replayResult = serverResult({
+    ok: true,
+    status: "published",
+    compile_result: { status: "compiled", update_id: "replay-once" },
+    update: { update_id: "replay-once" },
+    intervention: {
+      command_execution: {
+        command_id: "replay-once",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false
+      }
+    }
+  });
+  renderMicroMachineStatus(replayResult);
+  renderMicroMachineStatus(replayResult);
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function(entry) {
+      return entry.textContent.includes("replay once");
+    }).length,
+    1
+  );
+
+  // Out-of-order C, B, A processing follows only their explicit edges.
+  rememberServerPending("chain A", "chain-a");
+  rememberServerPending("chain B", "chain-b");
+  rememberServerPending("chain C", "chain-c");
+  renderMicroMachineStatus(serverResult({
+    status: "published",
+    command_queue: { superseded_update_ids: ["chain-b"] },
+    compile_result: { status: "compiled", update_id: "chain-c" },
+    update: { update_id: "chain-c" },
+    intervention: {
+      command_execution: {
+        command_id: "chain-c",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false
+      }
+    }
+  }));
+  assert(hasPending(SERVER_SCOPE_A, "chain-a"));
+  assert(!hasPending(SERVER_SCOPE_A, "chain-b"));
+  renderMicroMachineStatus(serverResult({
+    status: "superseded",
+    command_queue: { superseded_update_ids: ["chain-a"] },
+    compile_result: {
+      status: "refused",
+      update_id: "chain-b",
+      refusal_reason: "replaced by C"
+    }
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "chain-a"));
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function(entry) {
+      return entry.textContent.includes("chain A") ||
+        entry.textContent.includes("chain B");
+    }).length,
+    0
+  );
+
+  // A predecessor result may arrive before the replacement HTTP 202. Keep the
+  // predecessor pending until the replacement record exists, then transfer it.
+  rememberServerPending("early predecessor", "early-predecessor");
+  renderMicroMachineStatus(serverResult({
+    status: "superseded",
+    command_queue: {
+      superseded_by_update_id: "late-replacement"
+    },
+    compile_result: {
+      status: "refused",
+      update_id: "early-predecessor",
+      refusal_reason: "replacement accepted before its 202 response"
+    }
+  }));
+  assert(hasPending(SERVER_SCOPE_A, "early-predecessor"));
+  assert.strictEqual(
+    pendingCommandCount(),
+    1,
+    "deferred predecessor remains pending"
+  );
+  assert.deepStrictEqual(pendingCommandTexts(), ["early predecessor"]);
+  rememberServerPending(
+    "late replacement command",
+    "late-replacement",
+    SERVER_SCOPE_A
+  );
+  assert(!hasPending(SERVER_SCOPE_A, "early-predecessor"));
+  assert(hasPending(SERVER_SCOPE_A, "late-replacement"));
+  assert.deepStrictEqual(
+    pendingFor(SERVER_SCOPE_A, "late-replacement").supersededUpdateIds,
+    ["early-predecessor"]
+  );
+  assert.strictEqual(
+    pendingCommandCount(),
+    1,
+    "replacement owns one pending bubble"
+  );
+  renderMicroMachineStatus(serverResult({
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "late-replacement"
+    },
+    update: { update_id: "late-replacement" },
+    intervention: {
+      command_execution: {
+        command_id: "late-replacement",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false
+      }
+    }
+  }));
+  assert.strictEqual(
+    pendingCommandCount(),
+    0,
+    "replacement terminal result clears pending"
+  );
+
+  // Equal update IDs in two server scopes remain isolated.
+  rememberServerPending("scope A pending", "shared-id", SERVER_SCOPE_A);
+  rememberServerPending("scope B pending", "shared-id", SERVER_SCOPE_B);
+  renderMicroMachineStatus(serverResult({
+    status: "superseded",
+    compile_result: {
+      status: "refused",
+      update_id: "shared-id",
+      refusal_reason: "scope A only"
+    }
+  }, SERVER_SCOPE_A));
+  assert(!hasPending(SERVER_SCOPE_A, "shared-id"));
+  assert(hasPending(SERVER_SCOPE_B, "shared-id"));
 })().catch(function (error) {
   console.error(error && error.stack ? error.stack : error);
   process.exit(1);

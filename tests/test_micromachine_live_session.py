@@ -91,6 +91,993 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual("smoke_keyword", result.to_dict()["provider_source"])
         self.assertIn("전술 의도", result.compile_result.clarification_prompt)
 
+    def test_keyword_provider_keeps_marine_centric_order_as_macro(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(
+            backend,
+            KeywordPolicyModulationProvider(),
+        )
+
+        result = session.submit_text(
+            "마린 중심으로 가라",
+            current_frame=100,
+            update_id="marine-centric-macro",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("macro", vector.command_layer.value)
+        self.assertEqual("sustain_production", vector.tactical_task.task_type)
+        self.assertIn("TERRAN_MARINE", vector.tactical_task.production_targets)
+        self.assertGreaterEqual(
+            vector.production.queue_biases.to_dict()["TERRAN_MARINE"],
+            0.9,
+        )
+        self.assertIn(vector.lifetime.mode, {"standing_order", "until_cancelled"})
+        self.assertEqual("production", result.command_queue["category"])
+
+    def test_keyword_provider_tactical_nuke_uses_bounded_ability_contract(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(
+            backend,
+            KeywordPolicyModulationProvider(),
+        )
+
+        result = session.submit_text(
+            "적 본진에 전술핵을 사용해",
+            current_frame=100,
+            update_id="keyword-nuke",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("micro", vector.command_layer.value)
+        self.assertEqual("execute_ability", vector.tactical_task.task_type)
+        self.assertEqual("tactical_nuke", vector.tactical_task.ability)
+        self.assertEqual(900, vector.tactical_task.duration_seconds)
+        self.assertFalse(vector.scope.allow_partial_scope)
+        self.assertFalse(vector.tactical_task.allow_partial)
+        self.assertEqual(900, vector.ttl_seconds)
+        self.assertEqual(900, result.command_queue["ttl_seconds"])
+        for target in (
+            "TERRAN_BARRACKS",
+            "BARRACKS_TECHLAB",
+            "TERRAN_GHOSTACADEMY",
+            "TERRAN_GHOST",
+            "TERRAN_FACTORY",
+            "TERRAN_NUKE",
+            "TERRAN_MARINE",
+            "TERRAN_MARAUDER",
+        ):
+            with self.subTest(target=target):
+                self.assertIn(target, vector.tactical_task.production_targets)
+        roles = {role.unit_type: role for role in vector.unit_roles}
+        self.assertEqual("scout", roles["TERRAN_MARINE"].role)
+        self.assertEqual("defensive_hold", roles["TERRAN_MARAUDER"].role)
+        self.assertEqual("execute_ability", roles["TERRAN_GHOST"].role)
+        self.assertEqual(
+            "tactical_nuke",
+            roles["TERRAN_GHOST"].ability_policy,
+        )
+        self.assertGreaterEqual(vector.scouting.scout_priority, 0.8)
+        self.assertTrue(vector.scouting.require_fresh_enemy_observation)
+        self.assertEqual("scout", vector.scope.army_group)
+        self.assertEqual(4, vector.scope.min_units)
+        self.assertEqual(4, vector.scope.max_units)
+        requirements = {
+            (requirement.unit_type, requirement.role): requirement.count
+            for requirement in vector.composition_requirements
+        }
+        self.assertEqual(4, requirements[("TERRAN_MARINE", "scout")])
+        self.assertEqual(
+            2,
+            requirements[("TERRAN_MARAUDER", "defensive_hold")],
+        )
+        self.assertGreaterEqual(
+            vector.squad.squad_role_biases.to_dict()["marine_scout"],
+            0.8,
+        )
+        self.assertEqual("until_completed", vector.lifetime.mode)
+
+    def test_llm_nuke_payload_is_extended_and_exact_before_publish(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "source": "llm",
+                    "goal": "적 본진에 전술핵",
+                    "command_layer": "micro",
+                    "ttl_seconds": 120,
+                    "scope": {"allow_partial_scope": True},
+                    "tactical_task": {
+                        "task_type": "execute_ability",
+                        "ability": "tactical_nuke",
+                        "location_intent": "enemy_main",
+                        "allow_partial": True,
+                    },
+                }
+            ),
+        )
+
+        result = session.submit_text(
+            "적 본진에 전술핵",
+            current_frame=100,
+            update_id="llm-nuke-normalized",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual(900, vector.ttl_seconds)
+        self.assertEqual(19_900, result.update.expires_at_frame)
+        self.assertFalse(vector.scope.allow_partial_scope)
+        self.assertFalse(vector.tactical_task.allow_partial)
+        self.assertEqual("until_completed", vector.lifetime.mode)
+        self.assertEqual(
+            ("ability_cast",),
+            vector.lifetime.completion_conditions,
+        )
+        self.assertEqual(900, result.command_queue["ttl_seconds"])
+        self.assertIn("ability_cast", vector.lifetime.completion_conditions)
+
+    def test_keyword_provider_does_not_turn_negated_nuke_into_cast(self) -> None:
+        for command in (
+            "핵은 절대 쓰지 마",
+            "핵 사용 금지",
+            "do not nuke the enemy",
+        ):
+            with self.subTest(command=command):
+                result = MicroMachineLiveTextSession(
+                    MicroMachineInMemoryBlackboard(),
+                    KeywordPolicyModulationProvider(),
+                ).submit_text(command, current_frame=100)
+
+                self.assertFalse(result.ok, result.to_dict())
+                self.assertEqual("clarification_required", result.status.value)
+                self.assertIsNone(result.update)
+
+    def test_provider_cannot_reverse_explicit_nuke_ban(self) -> None:
+        for command in (
+            "핵은 절대 쓰지 마",
+            "핵은 사용하면 안 돼",
+            "핵 발사는 하지 마",
+            "전술핵을 절대로 발사하면 안 된다",
+            "핵을 쏘면 안 됩니다",
+            "핵 발사하지 말아 주세요",
+            "never use a tactical nuke",
+            "don't launch a nuke",
+            "avoid using tactical nukes",
+            "under no circumstances launch a nuke",
+            "refrain from using nukes",
+            "nukes are not allowed",
+        ):
+            with self.subTest(command=command):
+                backend = MicroMachineInMemoryBlackboard()
+                result = MicroMachineLiveTextSession(
+                    backend,
+                    StaticJsonPolicyModulationProvider(
+                        {
+                            "goal": "적 본진에 전술핵",
+                            "command_layer": "micro",
+                            "tactical_task": {
+                                "task_type": "execute_ability",
+                                "ability": "tactical_nuke",
+                                "production_targets": ["TERRAN_NUKE"],
+                                "location_intent": "enemy_main",
+                            },
+                        }
+                    ),
+                ).submit_text(command, current_frame=100)
+
+                self.assertFalse(result.ok, result.to_dict())
+                self.assertIs(LiveModulationStatus.REFUSED, result.status)
+                self.assertIsNone(result.update)
+                self.assertEqual([], backend.update_archive)
+                self.assertIn(
+                    "explicit tactical-nuke ban",
+                    result.compile_result.refusal_reason,
+                )
+
+    def test_provider_cannot_prepare_nuke_payload_under_explicit_ban(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        result = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "핵 payload 준비",
+                    "command_layer": "macro",
+                    "tactical_task": {
+                        "task_type": "tech_transition",
+                        "production_targets": ["TERRAN_NUKE"],
+                    },
+                }
+            ),
+        ).submit_text("핵 사용 금지", current_frame=100)
+
+        self.assertFalse(result.ok, result.to_dict())
+        self.assertIs(LiveModulationStatus.REFUSED, result.status)
+        self.assertIsNone(result.update)
+        self.assertEqual([], backend.update_archive)
+
+    def test_provider_cannot_hide_nuke_request_in_direct_biases(self) -> None:
+        for domain in ("production", "tech"):
+            with self.subTest(domain=domain):
+                backend = MicroMachineInMemoryBlackboard()
+                result = MicroMachineLiveTextSession(
+                    backend,
+                    StaticJsonPolicyModulationProvider(
+                        {
+                            "goal": "핵 payload bias",
+                            "command_layer": "macro",
+                            domain: {
+                                (
+                                    "queue_biases"
+                                    if domain == "production"
+                                    else "unit_biases"
+                                ): {"TERRAN_NUKE": 0.9}
+                            },
+                        }
+                    ),
+                ).submit_text("never use a tactical nuke", current_frame=100)
+
+                self.assertFalse(result.ok, result.to_dict())
+                self.assertIs(LiveModulationStatus.REFUSED, result.status)
+                self.assertIsNone(result.update)
+                self.assertEqual([], backend.update_archive)
+
+    def test_command_layers_merge_supersede_and_emergency_overwrite(self) -> None:
+        class CapturingProvider:
+            source = "llm"
+
+            def __init__(self, output: dict[str, object]) -> None:
+                self.output = output
+                self.request = None
+
+            def propose_policy_modulation(self, request):
+                self.request = request
+                return self.output
+
+        backend = MicroMachineInMemoryBlackboard()
+        macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 생산 유지",
+                    "command_layer": "macro",
+                    "production": {
+                        "queue_biases": {"TERRAN_MARINE": 0.85},
+                    },
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_MARINE"],
+                    },
+                }
+            ),
+        ).submit_text("마린 생산 유지", current_frame=100, update_id="macro-a")
+        self.assertTrue(macro.ok, macro.to_dict())
+
+        capturing = CapturingProvider(
+            {
+                "goal": "적 앞마당 압박",
+                "command_layer": "operation",
+                "combat": {"aggression": 0.6},
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "location_intent": "enemy_natural",
+                },
+            }
+        )
+        operation = MicroMachineLiveTextSession(
+            backend,
+            capturing,
+        ).submit_text("적 앞마당 압박", current_frame=120, update_id="operation-a")
+        self.assertTrue(operation.ok, operation.to_dict())
+        self.assertEqual("merge_cross_layer", operation.command_queue["layer_action"])
+        self.assertEqual(
+            ["macro", "operation"],
+            operation.command_queue["active_command_layers"],
+        )
+        self.assertIsNotNone(capturing.request)
+        self.assertEqual(
+            "macro-a",
+            capturing.request.commander_context["recent_commands"][-1]["update_id"],
+        )
+
+        operation_b = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 본진 압박",
+                    "command_layer": "operation",
+                    "combat": {"aggression": 0.75},
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "location_intent": "enemy_main",
+                    },
+                }
+            ),
+        ).submit_text("적 본진 압박", current_frame=140, update_id="operation-b")
+        self.assertTrue(operation_b.ok, operation_b.to_dict())
+        self.assertEqual(
+            "supersede_same_layer",
+            operation_b.command_queue["layer_action"],
+        )
+        self.assertEqual(
+            ["macro", "operation"],
+            operation_b.command_queue["active_command_layers"],
+        )
+        assert operation_b.update is not None
+        self.assertGreaterEqual(
+            operation_b.update.vector.production.queue_biases.to_dict()[
+                "TERRAN_MARINE"
+            ],
+            0.85,
+        )
+
+        macro_b = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "탱크 중심으로 전환",
+                    "command_layer": "macro",
+                    "production": {
+                        "queue_biases": {"TERRAN_SIEGETANK": 0.9},
+                    },
+                    "tactical_task": {
+                        "task_type": "tech_transition",
+                        "production_targets": ["TERRAN_SIEGETANK"],
+                    },
+                }
+            ),
+        ).submit_text("탱크 중심으로 전환", current_frame=150, update_id="macro-b")
+        self.assertTrue(macro_b.ok, macro_b.to_dict())
+        self.assertEqual(
+            "supersede_same_layer",
+            macro_b.command_queue["layer_action"],
+        )
+        self.assertEqual(
+            ["macro", "operation"],
+            macro_b.command_queue["active_command_layers"],
+        )
+        assert macro_b.update is not None
+        queue_biases = macro_b.update.vector.production.queue_biases.to_dict()
+        self.assertNotIn("TERRAN_MARINE", queue_biases)
+        self.assertGreaterEqual(queue_biases["TERRAN_SIEGETANK"], 0.9)
+        self.assertEqual(
+            "pressure_with_main_army",
+            macro_b.update.vector.tactical_task.task_type,
+        )
+
+        micro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 본진에 전술핵",
+                    "command_layer": "micro",
+                    "tactical_task": {
+                        "task_type": "execute_ability",
+                        "ability": "tactical_nuke",
+                        "location_intent": "enemy_main",
+                    },
+                }
+            ),
+        ).submit_text("적 본진에 전술핵", current_frame=160, update_id="micro-a")
+        self.assertTrue(micro.ok, micro.to_dict())
+        self.assertEqual("merge_cross_layer", micro.command_queue["layer_action"])
+        self.assertEqual(
+            ["macro", "operation", "micro"],
+            micro.command_queue["active_command_layers"],
+        )
+        assert micro.update is not None
+        self.assertEqual("execute_ability", micro.update.vector.tactical_task.task_type)
+        self.assertGreaterEqual(micro.update.vector.combat.aggression, 0.75)
+        self.assertGreaterEqual(
+            micro.update.vector.production.queue_biases.to_dict()[
+                "TERRAN_SIEGETANK"
+            ],
+            0.9,
+        )
+        self.assertGreaterEqual(
+            micro.update.vector.production.queue_biases.to_dict()[
+                "TERRAN_MARINE"
+            ],
+            0.95,
+        )
+
+        emergency = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "즉시 후퇴",
+                    "override_level": "emergency",
+                    "ttl_seconds": 45,
+                    "emergency": {
+                        "cancel_attacks": True,
+                        "force_retreat": True,
+                    },
+                }
+            ),
+        ).submit_text("즉시 후퇴", current_frame=180, update_id="emergency-a")
+        self.assertTrue(emergency.ok, emergency.to_dict())
+        self.assertEqual(
+            "overwrite_all_layers",
+            emergency.command_queue["layer_action"],
+        )
+        self.assertEqual(
+            ["emergency"],
+            emergency.command_queue["active_command_layers"],
+        )
+
+    def test_second_micro_replaces_only_micro_and_preserves_operation(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        operation = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 본진 압박",
+                    "command_layer": "operation",
+                    "combat": {
+                        "aggression": 0.75,
+                        "kite_bias": 0.2,
+                    },
+                    "scope": {
+                        "army_group": "main",
+                        "unit_classes": ["marine", "siege_tank"],
+                        "location_intent": "enemy_main",
+                        "min_units": 6,
+                    },
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "task_id": "operation-main-pressure",
+                        "location_intent": "enemy_main",
+                        "min_units": 6,
+                    },
+                }
+            ),
+        ).submit_text(
+            "적 본진 압박",
+            current_frame=100,
+            update_id="operation-main-pressure",
+        )
+        self.assertTrue(operation.ok, operation.to_dict())
+        assert operation.update is not None
+        operation_combat = operation.update.vector.combat
+        operation_scope = operation.update.vector.scope
+
+        first_micro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 본진에 전술핵",
+                    "command_layer": "micro",
+                    "combat": {"kite_bias": 0.95},
+                    "tactical_task": {
+                        "task_type": "execute_ability",
+                        "task_id": "micro-nuke-main",
+                        "ability": "tactical_nuke",
+                        "location_intent": "enemy_main",
+                    },
+                }
+            ),
+        ).submit_text(
+            "적 본진에 전술핵",
+            current_frame=120,
+            update_id="micro-nuke-main",
+        )
+        self.assertTrue(first_micro.ok, first_micro.to_dict())
+        assert first_micro.update is not None
+        self.assertGreaterEqual(first_micro.update.vector.combat.kite_bias, 0.95)
+
+        second_micro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 앞마당에 전술핵",
+                    "command_layer": "micro",
+                    "tactical_task": {
+                        "task_type": "execute_ability",
+                        "task_id": "micro-nuke-natural",
+                        "ability": "tactical_nuke",
+                        "location_intent": "enemy_natural",
+                    },
+                }
+            ),
+        ).submit_text(
+            "적 앞마당에 전술핵",
+            current_frame=140,
+            update_id="micro-nuke-natural",
+        )
+
+        self.assertTrue(second_micro.ok, second_micro.to_dict())
+        self.assertEqual(
+            "supersede_same_layer",
+            second_micro.command_queue["layer_action"],
+        )
+        self.assertEqual(
+            ["operation"],
+            second_micro.command_queue["preserved_command_layers"],
+        )
+        self.assertEqual(
+            ["micro"],
+            second_micro.command_queue["superseded_command_layers"],
+        )
+        self.assertEqual(
+            ["operation", "micro"],
+            second_micro.command_queue["active_command_layers"],
+        )
+        self.assertEqual(
+            ["micro-nuke-main"],
+            second_micro.command_queue["superseded_update_ids"],
+        )
+        assert second_micro.update is not None
+        vector = second_micro.update.vector
+        self.assertNotEqual(operation_scope, vector.scope)
+        self.assertEqual("scout", vector.scope.army_group)
+        self.assertEqual(("TERRAN_MARINE",), vector.scope.unit_classes)
+        self.assertEqual("enemy_natural", vector.scope.location_intent)
+        self.assertEqual(4, vector.scope.min_units)
+        self.assertEqual(4, vector.scope.max_units)
+        self.assertFalse(vector.scope.allow_partial_scope)
+        self.assertEqual(operation_combat.aggression, vector.combat.aggression)
+        self.assertEqual(operation_combat.kite_bias, vector.combat.kite_bias)
+        self.assertEqual("execute_ability", vector.tactical_task.task_type)
+        self.assertEqual("micro-nuke-natural", vector.tactical_task.task_id)
+        self.assertEqual("enemy_natural", vector.tactical_task.location_intent)
+
+    def test_same_layer_operation_modifier_preserves_existing_task_context(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        initial = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 4기로 적 본진 공격",
+                    "command_layer": "operation",
+                    "combat": {"aggression": 0.6},
+                    "scope": {
+                        "army_group": "main",
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": "enemy_main",
+                        "min_units": 4,
+                        "max_units": 4,
+                    },
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "task_id": "contextual-operation",
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": "enemy_main",
+                        "min_units": 4,
+                        "max_units": 4,
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 4기로 적 본진 공격해",
+            current_frame=100,
+            update_id="contextual-operation",
+        )
+        self.assertTrue(initial.ok, initial.to_dict())
+
+        followup = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "더 강하게 우회",
+                    "command_layer": "operation",
+                    "combat": {"aggression": 0.9},
+                    "route_intent": {
+                        "route_type": "flank_right",
+                        "avoid_enemy_strength": True,
+                    },
+                }
+            ),
+        ).submit_text(
+            "그 병력으로 더 강하게 우회해",
+            current_frame=120,
+            update_id="contextual-operation-followup",
+        )
+
+        self.assertTrue(followup.ok, followup.to_dict())
+        self.assertEqual(
+            "supersede_same_layer",
+            followup.command_queue["layer_action"],
+        )
+        assert followup.update is not None
+        vector = followup.update.vector
+        self.assertEqual(
+            "pressure_with_main_army",
+            vector.tactical_task.task_type,
+        )
+        self.assertEqual(
+            "contextual-operation",
+            vector.tactical_task.task_id,
+        )
+        self.assertEqual(
+            ("TERRAN_MARINE",),
+            vector.tactical_task.unit_classes,
+        )
+        self.assertEqual("enemy_main", vector.tactical_task.location_intent)
+        self.assertEqual(4, vector.tactical_task.min_units)
+        self.assertEqual(4, vector.tactical_task.max_units)
+        self.assertGreaterEqual(vector.combat.aggression, 0.9)
+        self.assertEqual("flank_right", vector.route_intent.route_type)
+        self.assertEqual(300, vector.tactical_task.duration_seconds)
+
+    def test_same_layer_macro_modifier_preserves_existing_production_context(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        initial = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 중심 생산 유지",
+                    "command_layer": "macro",
+                    "production": {
+                        "queue_biases": {"TERRAN_MARINE": 0.9},
+                        "production_continuity_bias": 0.8,
+                    },
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_MARINE"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 중심 생산 유지",
+            current_frame=100,
+            update_id="contextual-macro",
+        )
+        self.assertTrue(initial.ok, initial.to_dict())
+
+        followup = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "보급을 더 여유롭게",
+                    "command_layer": "macro",
+                    "economy": {"supply_buffer_bias": 0.95},
+                }
+            ),
+        ).submit_text(
+            "보급을 더 여유롭게 해",
+            current_frame=120,
+            update_id="contextual-macro-followup",
+        )
+
+        self.assertTrue(followup.ok, followup.to_dict())
+        self.assertEqual(
+            "supersede_same_layer",
+            followup.command_queue["layer_action"],
+        )
+        assert followup.update is not None
+        vector = followup.update.vector
+        self.assertEqual("until_cancelled", vector.lifetime.mode)
+        self.assertEqual("sustain_production", vector.tactical_task.task_type)
+        self.assertIn(
+            "TERRAN_MARINE",
+            vector.tactical_task.production_targets,
+        )
+        self.assertGreaterEqual(
+            vector.production.queue_biases.to_dict()["TERRAN_MARINE"],
+            0.9,
+        )
+        self.assertGreaterEqual(vector.economy.supply_buffer_bias, 0.95)
+        self.assertEqual(0, vector.tactical_task.duration_seconds)
+
+    def test_expired_operation_layer_is_not_revived_by_later_macro(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        operation = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 본진 압박",
+                    "command_layer": "operation",
+                    "ttl_seconds": 300,
+                    "combat": {"aggression": 0.8},
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "task_id": "expired-operation",
+                        "location_intent": "enemy_main",
+                    },
+                }
+            ),
+        ).submit_text(
+            "적 본진 압박",
+            current_frame=120,
+            update_id="expired-operation",
+        )
+        self.assertTrue(operation.ok, operation.to_dict())
+
+        macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "탱크 중심 생산",
+                    "command_layer": "macro",
+                    "production": {
+                        "queue_biases": {"TERRAN_SIEGETANK": 0.9},
+                    },
+                    "tactical_task": {
+                        "task_type": "tech_transition",
+                        "task_id": "fresh-macro",
+                        "production_targets": ["TERRAN_SIEGETANK"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "탱크 중심 생산",
+            current_frame=8_000,
+            update_id="fresh-macro",
+        )
+
+        self.assertTrue(macro.ok, macro.to_dict())
+        self.assertEqual(["macro"], macro.command_queue["active_command_layers"])
+        assert macro.update is not None
+        self.assertEqual("tech_transition", macro.update.vector.tactical_task.task_type)
+        self.assertNotIn("enemy_main", macro.update.vector.goal)
+
+    def test_completed_operation_layer_is_not_revived_by_later_macro(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        operation = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 앞마당 압박",
+                    "command_layer": "operation",
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "task_id": "completed-operation",
+                        "location_intent": "enemy_natural",
+                    },
+                }
+            ),
+        ).submit_text(
+            "적 앞마당 압박",
+            current_frame=120,
+            update_id="completed-operation",
+        )
+        self.assertTrue(operation.ok, operation.to_dict())
+        backend.ingest_telemetry(
+            {
+                "protocol_version": "voi-mm-bridge/v1",
+                "frame": 200,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "TacticalTask": {
+                        "update_id": "completed-operation",
+                        "status": "completed",
+                    }
+                },
+                "active_modulation_ids": [],
+            }
+        )
+
+        macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 생산 유지",
+                    "command_layer": "macro",
+                    "production": {"queue_biases": {"TERRAN_MARINE": 0.9}},
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_MARINE"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 생산 유지",
+            current_frame=210,
+            update_id="fresh-macro-after-completion",
+        )
+
+        self.assertTrue(macro.ok, macro.to_dict())
+        self.assertEqual(["macro"], macro.command_queue["active_command_layers"])
+        assert macro.update is not None
+        self.assertEqual(
+            "sustain_production",
+            macro.update.vector.tactical_task.task_type,
+        )
+
+    def test_confirmed_ability_task_closes_tactical_nuke_micro_layer(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        initial_macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 생산 유지",
+                    "command_layer": "macro",
+                    "production": {"queue_biases": {"TERRAN_MARINE": 0.9}},
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_MARINE"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 생산 유지",
+            current_frame=100,
+            update_id="macro-before-nuke",
+        )
+        self.assertTrue(initial_macro.ok, initial_macro.to_dict())
+
+        nuke = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 본진에 전술핵",
+                    "command_layer": "micro",
+                    "tactical_task": {
+                        "task_type": "execute_ability",
+                        "ability": "tactical_nuke",
+                        "location_intent": "enemy_main",
+                    },
+                }
+            ),
+        ).submit_text(
+            "적 본진에 전술핵",
+            current_frame=120,
+            update_id="confirmed-nuke-micro",
+        )
+        self.assertTrue(nuke.ok, nuke.to_dict())
+        self.assertEqual(
+            ["macro", "micro"],
+            nuke.command_queue["active_command_layers"],
+        )
+
+        telemetry = {
+            "protocol_version": "voi-mm-bridge/v1",
+            "frame": 200,
+            "bot_name": "MicroMachine",
+            "race": "Terran",
+            "managers": {
+                "AbilityTask": {
+                    "ability_task_update_id": "confirmed-nuke-micro",
+                    "ability": "tactical_nuke",
+                    "status": "confirmed",
+                }
+            },
+            "active_modulation_ids": [],
+        }
+        self.assertNotIn("TacticalTask", telemetry["managers"])
+        backend.ingest_telemetry(telemetry)
+
+        followup_macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "탱크 생산으로 전환",
+                    "command_layer": "macro",
+                    "production": {
+                        "queue_biases": {"TERRAN_SIEGETANK": 0.9},
+                    },
+                    "tactical_task": {
+                        "task_type": "tech_transition",
+                        "production_targets": ["TERRAN_SIEGETANK"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "탱크 생산으로 전환",
+            current_frame=210,
+            update_id="macro-after-confirmed-nuke",
+        )
+
+        self.assertTrue(followup_macro.ok, followup_macro.to_dict())
+        self.assertEqual(
+            ["macro"],
+            followup_macro.command_queue["active_command_layers"],
+        )
+        assert followup_macro.update is not None
+        vector = followup_macro.update.vector
+        self.assertEqual("tech_transition", vector.tactical_task.task_type)
+        self.assertEqual("", vector.tactical_task.ability)
+        self.assertNotIn("전술핵", vector.goal)
+
+    def test_generated_update_id_closes_completed_operation_layer(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        operation = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 앞마당 압박",
+                    "command_layer": "operation",
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "task_id": "generated-id-operation",
+                        "location_intent": "enemy_natural",
+                    },
+                }
+            ),
+        ).submit_text(
+            "적 앞마당 압박",
+            current_frame=120,
+        )
+        self.assertTrue(operation.ok, operation.to_dict())
+        assert operation.update is not None
+        generated_operation_id = operation.update.update_id
+
+        backend.ingest_telemetry(
+            {
+                "protocol_version": "voi-mm-bridge/v1",
+                "frame": 200,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {
+                    "TacticalTask": {
+                        "update_id": generated_operation_id,
+                        "status": "completed",
+                    }
+                },
+                "active_modulation_ids": [],
+            }
+        )
+
+        macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 생산 유지",
+                    "command_layer": "macro",
+                    "production": {"queue_biases": {"TERRAN_MARINE": 0.9}},
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_MARINE"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 생산 유지",
+            current_frame=210,
+        )
+
+        self.assertTrue(macro.ok, macro.to_dict())
+        self.assertEqual(["macro"], macro.command_queue["active_command_layers"])
+        assert macro.update is not None
+        self.assertEqual(
+            "sustain_production",
+            macro.update.vector.tactical_task.task_type,
+        )
+        self.assertNotIn("enemy_natural", macro.update.vector.goal)
+
+    def test_conflicting_explicit_command_layer_is_not_published(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        result = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 본진에 전술핵",
+                    "command_layer": "macro",
+                    "tactical_task": {
+                        "task_type": "execute_ability",
+                        "ability": "tactical_nuke",
+                        "location_intent": "enemy_main",
+                    },
+                }
+            ),
+        ).submit_text(
+            "적 본진에 전술핵",
+            current_frame=100,
+            update_id="invalid-layer",
+        )
+
+        self.assertFalse(result.ok, result.to_dict())
+        self.assertIs(LiveModulationStatus.REFUSED, result.status)
+        self.assertIsNone(result.update)
+        self.assertEqual([], backend.update_archive)
+        self.assertIn(
+            "command_layer conflicts with semantic command content",
+            result.compile_result.refusal_reason,
+        )
+
     def test_keyword_provider_maps_attack_intent_to_offensive_gate_biases(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
@@ -116,7 +1103,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual("main", vector.scope.army_group)
         self.assertEqual("enemy_natural", vector.scope.location_intent)
         self.assertEqual(1, vector.scope.min_units)
-        self.assertGreaterEqual(vector.ttl_seconds, 600)
+        self.assertEqual(300, vector.ttl_seconds)
+        self.assertEqual(300, vector.tactical_task.duration_seconds)
         self.assertEqual(
             "pressure_with_main_army",
             vector.tactical_task.task_type,
@@ -317,8 +1305,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertIn("TERRAN_FACTORY", vector.production_plan.targets)
         self.assertIn("FACTORY_TECHLAB", vector.production_plan.targets)
         self.assertIn("TERRAN_STARPORT", vector.production_plan.targets)
-        self.assertEqual(600, vector.ttl_seconds)
-        self.assertEqual(0, vector.tactical_task.duration_seconds)
+        self.assertEqual(300, vector.ttl_seconds)
+        self.assertEqual(300, vector.tactical_task.duration_seconds)
         roles = {item.unit_type: item.role for item in vector.unit_roles}
         self.assertEqual("siege_support", roles["TERRAN_SIEGETANK"])
         self.assertEqual("anti_air", roles["TERRAN_VIKINGFIGHTER"])
@@ -647,9 +1635,36 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             ("enemy_observed", "target_reached"),
             vector.lifetime.completion_conditions,
         )
-        self.assertEqual(0, vector.tactical_task.duration_seconds)
+        self.assertEqual(180, vector.tactical_task.duration_seconds)
         self.assertEqual(180, result.command_queue["ttl_seconds"])
         self.assertEqual("until_completed", result.command_queue["lifetime_mode"])
+
+    def test_keyword_provider_maps_exact_one_marine_scout_command(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        session = MicroMachineLiveTextSession(
+            backend,
+            KeywordPolicyModulationProvider(),
+        )
+
+        result = session.submit_text(
+            "마린 한 마리 정찰해",
+            current_frame=100,
+            update_id="one-marine-scout",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("operation", vector.command_layer.value)
+        self.assertEqual("scout_with_units", vector.tactical_task.task_type)
+        self.assertEqual(("TERRAN_MARINE",), vector.tactical_task.unit_classes)
+        self.assertEqual(1, vector.scope.min_units)
+        self.assertEqual(1, vector.scope.max_units)
+        self.assertFalse(vector.scope.allow_partial_scope)
+        self.assertEqual(1, vector.tactical_task.min_units)
+        self.assertEqual(1, vector.tactical_task.max_units)
+        self.assertFalse(vector.tactical_task.allow_partial)
+        self.assertEqual("until_completed", vector.lifetime.mode)
 
     def test_explicit_tactical_task_drops_stale_defensive_tactical_standing_order(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
@@ -765,9 +1780,16 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             backend,
             StaticJsonPolicyModulationProvider(
                 {
-                    "goal": "공격적으로 압박해",
-                    "combat": {"aggression": 0.5},
-                    "workers": {"repeat_order_guard_frames": 4},
+                    "status": "compiled",
+                    "assistant_message": "압박 정책을 적용했습니다.",
+                    "llm_attempt_count": 2,
+                    "llm_repair_reason": "first forced-tool payload needed repair",
+                    "llm_duration_ms": 321,
+                    "modulation": {
+                        "goal": "공격적으로 압박해",
+                        "combat": {"aggression": 0.5},
+                        "workers": {"repeat_order_guard_frames": 4},
+                    },
                 }
             ),
         )
@@ -781,6 +1803,19 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertIn("workers", result.update.manager_bias_domains)
         self.assertIn(
             "live_worker_repeat_order_guard_frames_clamped=4->32",
+            result.compile_result.warnings,
+        )
+        self.assertEqual(2, result.compile_result.llm_attempt_count)
+        self.assertEqual(
+            "first forced-tool payload needed repair",
+            result.compile_result.llm_repair_reason,
+        )
+        self.assertEqual(321, result.compile_result.llm_duration_ms)
+        self.assertFalse(
+            any(
+                warning.startswith("ignored provider field: llm_")
+                for warning in result.compile_result.warnings
+            ),
             result.compile_result.warnings,
         )
 
@@ -904,7 +1939,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(900, second.command_queue["update_ttl_seconds"])
         self.assertEqual("until_cancelled", vector.lifetime.mode)
         self.assertEqual(900, vector.ttl_seconds)
-        self.assertEqual(0, vector.tactical_task.duration_seconds)
+        self.assertEqual(180, vector.tactical_task.duration_seconds)
         self.assertIn("live_command_reducer_applied", second.compile_result.warnings)
         self.assertIn("command_category:scouting", vector.tags)
         self.assertIn("command_action:merge_standing_orders", vector.tags)
@@ -1024,6 +2059,267 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             1,
             vector.goal.count("standing: 마린과 탱크로 좌측 우회 공격"),
         )
+        self.assertEqual(300, vector.tactical_task.duration_seconds)
+
+    def test_cross_layer_macro_attack_keeps_operation_duration_bounded(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 생산 유지",
+                    "command_layer": "macro",
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_MARINE"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 생산 유지",
+            current_frame=100,
+            update_id="macro-before-attack",
+        )
+        self.assertTrue(macro.ok, macro.to_dict())
+
+        attack = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 4기로 적 본진 공격",
+                    "command_layer": "operation",
+                    "scope": {
+                        "army_group": "main",
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": "enemy_main",
+                        "min_units": 4,
+                        "max_units": 4,
+                    },
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": "enemy_main",
+                        "min_units": 4,
+                        "max_units": 4,
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 4기로 적 본진 공격해",
+            current_frame=120,
+            update_id="bounded-attack",
+        )
+
+        self.assertTrue(attack.ok, attack.to_dict())
+        assert attack.update is not None
+        self.assertEqual("until_cancelled", attack.update.vector.lifetime.mode)
+        self.assertEqual(
+            300,
+            attack.update.vector.tactical_task.duration_seconds,
+        )
+        self.assertEqual(
+            ["macro", "operation"],
+            attack.command_queue["active_command_layers"],
+        )
+
+    def test_rich_cross_layer_flank_ignores_provider_wide_macro_ttl(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 중심 생산과 보급 운영 유지",
+                    "command_layer": "macro",
+                    "ttl_seconds": 900,
+                    "lifetime": {
+                        "mode": "until_cancelled",
+                        "completion_conditions": ["cancelled_by_user"],
+                    },
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_MARINE"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 중심 생산은 내가 취소할 때까지 유지해",
+            current_frame=100,
+            update_id="rich-flank-macro",
+        )
+        self.assertTrue(macro.ok, macro.to_dict())
+
+        attack = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "마린 4기 우측 우회 적 일꾼 라인 공격",
+                    "command_layer": "operation",
+                    "ttl_seconds": 900,
+                    "scope": {
+                        "army_group": "harass",
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": "enemy_natural",
+                        "min_units": 4,
+                        "max_units": 4,
+                        "allow_partial_scope": False,
+                    },
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "task_id": "four-marine-right-flank",
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": "enemy_natural",
+                        "min_units": 4,
+                        "max_units": 4,
+                        "priority": 0.95,
+                        "allow_partial": False,
+                    },
+                    "composition_requirements": [
+                        {
+                            "unit_type": "TERRAN_MARINE",
+                            "count": 4,
+                            "role": "flanker",
+                        }
+                    ],
+                    "unit_roles": [
+                        {
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "flanker",
+                            "priority": 0.95,
+                        }
+                    ],
+                    "route_intent": {
+                        "type": "flank_right",
+                        "avoid_enemy_strength": True,
+                    },
+                    "target_intent": {
+                        "type": "worker_line",
+                        "priority": 0.95,
+                    },
+                }
+            ),
+        ).submit_text(
+            "마린 4기로 오른쪽 우회해서 적 일꾼 라인을 공격해",
+            current_frame=120,
+            update_id="rich-flank-operation",
+        )
+
+        self.assertTrue(attack.ok, attack.to_dict())
+        assert attack.update is not None
+        vector = attack.update.vector
+        self.assertEqual("until_cancelled", vector.lifetime.mode)
+        self.assertEqual(900, vector.ttl_seconds)
+        self.assertEqual(300, vector.scope.duration_seconds)
+        self.assertEqual(300, vector.tactical_task.duration_seconds)
+        self.assertEqual("ambush", vector.composition_requirements[0].role)
+        self.assertEqual("ambush", vector.unit_roles[0].role)
+        self.assertEqual(300, attack.command_queue["ttl_seconds"])
+        self.assertEqual(900, attack.command_queue["update_ttl_seconds"])
+        self.assertEqual(
+            ["macro", "operation"],
+            attack.command_queue["active_command_layers"],
+        )
+
+    def test_cross_layer_macro_ability_keeps_micro_duration_bounded(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        macro = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "탱크 생산 유지",
+                    "command_layer": "macro",
+                    "tactical_task": {
+                        "task_type": "sustain_production",
+                        "production_targets": ["TERRAN_SIEGETANK"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "탱크 생산 유지",
+            current_frame=100,
+            update_id="macro-before-cloak",
+        )
+        self.assertTrue(macro.ok, macro.to_dict())
+
+        cloak = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "고스트 은폐",
+                    "command_layer": "micro",
+                    "tactical_task": {
+                        "task_type": "execute_ability",
+                        "ability": "ghost_cloak",
+                        "unit_classes": ["TERRAN_GHOST"],
+                    },
+                }
+            ),
+        ).submit_text(
+            "고스트 은폐해",
+            current_frame=120,
+            update_id="bounded-cloak",
+        )
+
+        self.assertTrue(cloak.ok, cloak.to_dict())
+        assert cloak.update is not None
+        self.assertEqual("until_cancelled", cloak.update.vector.lifetime.mode)
+        self.assertEqual(
+            900,
+            cloak.update.vector.tactical_task.duration_seconds,
+        )
+        self.assertEqual(
+            ["macro", "micro"],
+            cloak.command_queue["active_command_layers"],
+        )
+
+    def test_non_nuke_ability_gets_bounded_prerequisite_budget(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        result = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "고스트 은폐",
+                    "command_layer": "micro",
+                    "ttl_seconds": 900,
+                    "tactical_task": {
+                        "task_type": "execute_ability",
+                        "ability": "ghost_cloak",
+                        "unit_classes": ["TERRAN_GHOST"],
+                    },
+                    "unit_roles": [
+                        {
+                            "unit_type": "TERRAN_GHOST",
+                            "role": "caster",
+                            "ability_policy": "when_available",
+                        }
+                    ],
+                }
+            ),
+        ).submit_text(
+            "고스트 은폐해",
+            current_frame=120,
+            update_id="bounded-provider-cloak",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        self.assertEqual(900, result.update.vector.ttl_seconds)
+        self.assertEqual(
+            900,
+            result.update.vector.tactical_task.duration_seconds,
+        )
+        self.assertEqual(
+            "execute_ability",
+            result.update.vector.unit_roles[0].role,
+        )
+        self.assertEqual(
+            "ghost_cloak",
+            result.update.vector.unit_roles[0].ability_policy,
+        )
+        self.assertEqual(900, result.command_queue["ttl_seconds"])
 
     def test_standing_merge_does_not_repurpose_optional_correlation_task_id(
         self,
@@ -1267,6 +2563,85 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                     vector.tactical_task.task_type,
                 )
                 self.assertNotIn("cancel_attack", vector.tags)
+
+    def test_until_cancelled_macro_is_not_inverted_into_emergency(self) -> None:
+        for command in (
+            "마린 중심 생산을 내가 취소할 때까지 유지해",
+            "마린 중심 생산을 취소하기 전까지 유지해",
+            "keep marine production until I cancel",
+            "keep marine production until cancelled",
+        ):
+            with self.subTest(command=command):
+                backend = MicroMachineInMemoryBlackboard()
+                result = MicroMachineLiveTextSession(
+                    backend,
+                    StaticJsonPolicyModulationProvider(
+                        {
+                            "goal": "maintain marine production",
+                            "command_layer": "macro",
+                            "override_level": "directive",
+                            "production": {
+                                "queue_biases": {"TERRAN_MARINE": 0.9},
+                            },
+                            "tactical_task": {
+                                "task_type": "sustain_production",
+                                "production_targets": ["TERRAN_MARINE"],
+                            },
+                        }
+                    ),
+                ).submit_text(
+                    command,
+                    current_frame=100,
+                    update_id=f"until-cancelled-{len(command)}",
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                self.assertEqual("production", result.command_queue["category"])
+                self.assertEqual("activate", result.command_queue["action"])
+                assert result.update is not None
+                vector = result.update.vector
+                self.assertEqual("macro", vector.command_layer.value)
+                self.assertEqual("directive", vector.override_level.value)
+                self.assertEqual("until_cancelled", vector.lifetime.mode)
+                self.assertEqual(0, vector.tactical_task.duration_seconds)
+
+    def test_reducer_does_not_invert_negated_retreat_into_emergency(self) -> None:
+        for command in (
+            "후퇴 말고 공격해",
+            "후퇴 금지, 계속 압박해",
+            "no retreat; keep attacking",
+            "retreat is not an option; keep attacking",
+        ):
+            with self.subTest(command=command):
+                backend = MicroMachineInMemoryBlackboard()
+                session = MicroMachineLiveTextSession(
+                    backend,
+                    StaticJsonPolicyModulationProvider(
+                        {
+                            "goal": command,
+                            "override_level": "bias",
+                            "combat": {"aggression": 0.45},
+                        }
+                    ),
+                )
+
+                result = session.submit_text(
+                    command,
+                    current_frame=100,
+                    update_id=f"negated-retreat-{len(command)}",
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                self.assertEqual("tactical", result.command_queue["category"])
+                self.assertNotEqual(
+                    "overwrite_emergency",
+                    result.command_queue["action"],
+                )
+                assert result.update is not None
+                vector = result.update.vector
+                self.assertNotEqual("emergency", vector.command_layer.value)
+                self.assertNotEqual("emergency", vector.override_level.value)
+                self.assertFalse(vector.emergency.force_retreat)
 
     def test_keyword_provider_cancel_attack_uses_short_emergency_lifetime(self) -> None:
         backend = MicroMachineInMemoryBlackboard()

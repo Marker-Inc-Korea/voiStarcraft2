@@ -30,7 +30,7 @@ from starcraft_commander.policy_modulation import (
     CombatModulation,
     EconomyModulation,
     EmergencyModulation,
-    MICROMACHINE_DOCTRINES,
+    LifetimeModulation,
     PolicyModulationSource,
     PolicyModulationVector,
     PolicyOverrideLevel,
@@ -217,6 +217,41 @@ def build_defensive_hold_profile(
     )
 
 
+def build_manual_live_autonomy_profile(
+    *,
+    ttl_seconds: int = 900,
+    source: PolicyModulationSource | str = PolicyModulationSource.SYSTEM,
+) -> PolicyModulationVector:
+    """Keep manual live QA neutral while retaining runtime safety guards."""
+
+    return PolicyModulationVector(
+        goal="micromachine_manual_live_autonomy",
+        source=source,
+        override_level=PolicyOverrideLevel.BIAS,
+        confidence=1.0,
+        ttl_seconds=ttl_seconds,
+        workers=WorkerModulation(repeat_order_guard_frames=32),
+        lifetime=LifetimeModulation(
+            mode="standing_order",
+            completion_conditions=("cancelled_by_user",),
+            completion_state="active",
+            reason="neutral manual live bootstrap remains until a user command replaces it",
+        ),
+        constraints=(
+            PolicySafetyConstraint(
+                key="no_raw_unit_control",
+                value=True,
+                reason="Manual live QA preserves autonomous manager ownership.",
+            ),
+        ),
+        tags=("micromachine", "manual_live_autonomy", "standing_order"),
+        rationale=(
+            "Do not bias combat, scouting, production, or squads before the user "
+            "issues a command."
+        ),
+    )
+
+
 def build_aggressive_pressure_profile(
     *,
     ttl_seconds: int = 600,
@@ -347,6 +382,10 @@ def build_scouting_map_control_profile(
         ),
         combat=CombatModulation(aggression=0.15, defend_bias=0.35, harassment_bias=0.25),
         workers=WorkerModulation(repeat_order_guard_frames=32),
+        production=ProductionModulation(
+            production_continuity_bias=0.45,
+            queue_biases=WeightedBiases({"TERRAN_MARINE": 0.7}),
+        ),
         scouting=ScoutingModulation(
             scout_priority=0.9,
             risk_tolerance=0.25,
@@ -358,6 +397,7 @@ def build_scouting_map_control_profile(
             task_type="scout_with_units",
             task_id="profile-scouting-map-control",
             unit_classes=("TERRAN_MARINE",),
+            production_targets=("TERRAN_MARINE",),
             location_intent="enemy_main",
             priority=0.8,
             min_units=1,

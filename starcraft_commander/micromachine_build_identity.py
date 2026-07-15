@@ -15,6 +15,9 @@ from typing import Final
 
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = (
+    "bin/BotConfig.txt",
+)
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"
 DEFAULT_S2CLIENT_COMMIT: Final[str] = "614acc00abb5355e4c94a1b0279b46e9d845b7ce"
 DEFAULT_MICROMACHINE_PATCH: Final[Path] = (
@@ -266,6 +269,115 @@ DEFAULT_MICROMACHINE_ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH: Final[Path] =
     / "patches"
     / "0035-adaptive-pressure-stable-operation-key.patch"
 )
+DEFAULT_MICROMACHINE_TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0036-tactical-nuke-command-hierarchy.patch"
+)
+DEFAULT_MICROMACHINE_LOCATION_INTENT_TARGET_LOCK_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0037-location-intent-target-lock.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0038-explicit-terran-ability-execution.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0039-explicit-scout-command-epoch.patch"
+)
+DEFAULT_MICROMACHINE_STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0040-standing-production-continuity-closure.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH: Final[
+    Path
+] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0041-explicit-ability-caster-production-priority.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH: Final[
+    Path
+] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0042-explicit-ability-observation-confirmation.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0043-explicit-ability-production-isolation.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0044-explicit-ability-attempt-lifecycle.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0045-explicit-ability-review-closure.patch"
+)
+DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0046-authoritative-addon-runtime-clearance.patch"
+)
+DEFAULT_MICROMACHINE_BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0047-banshee-unit-specific-cloak-command.patch"
+)
+DEFAULT_MICROMACHINE_ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0048-allied-cloak-observation-confirmation.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0049-explicit-ability-caster-ownership.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0050-explicit-ability-staging-single-flight.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -395,6 +507,51 @@ class MicroMachineBuildIdentityConfig:
     micromachine_adaptive_pressure_stable_operation_key_patch: Path = (
         DEFAULT_MICROMACHINE_ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH
     )
+    micromachine_tactical_nuke_command_hierarchy_patch: Path = (
+        DEFAULT_MICROMACHINE_TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH
+    )
+    micromachine_location_intent_target_lock_patch: Path = (
+        DEFAULT_MICROMACHINE_LOCATION_INTENT_TARGET_LOCK_PATCH
+    )
+    micromachine_explicit_terran_ability_execution_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH
+    )
+    micromachine_explicit_scout_command_epoch_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH
+    )
+    micromachine_standing_production_continuity_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH
+    )
+    micromachine_explicit_ability_caster_production_priority_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH
+    )
+    micromachine_explicit_ability_observation_confirmation_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH
+    )
+    micromachine_explicit_ability_production_isolation_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH
+    )
+    micromachine_explicit_ability_attempt_lifecycle_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH
+    )
+    micromachine_explicit_ability_review_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH
+    )
+    micromachine_authoritative_addon_runtime_clearance_patch: Path = (
+        DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH
+    )
+    micromachine_banshee_unit_specific_cloak_command_patch: Path = (
+        DEFAULT_MICROMACHINE_BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH
+    )
+    micromachine_allied_cloak_observation_confirmation_patch: Path = (
+        DEFAULT_MICROMACHINE_ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH
+    )
+    micromachine_explicit_ability_caster_ownership_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH
+    )
+    micromachine_explicit_ability_staging_single_flight_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH
+    )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
     map_pool: Path = DEFAULT_MAP_POOL
@@ -426,6 +583,7 @@ def build_micromachine_build_identity(
     observed_micro_source_state = _git_source_state_sha256(
         config.micromachine_dir,
         excluded_roots=(config.micromachine_build_dir,),
+        excluded_paths=MICROMACHINE_RUNTIME_MUTABLE_PATHS,
     )
     observed_s2_source_state = _git_source_state_sha256(
         config.s2client_dir,
@@ -638,6 +796,81 @@ def build_micromachine_build_identity(
                 config.micromachine_adaptive_pressure_stable_operation_key_patch
             )
         ),
+        "micromachine_tactical_nuke_command_hierarchy_patch_sha256": (
+            _sha256_file(
+                config.micromachine_tactical_nuke_command_hierarchy_patch
+            )
+        ),
+        "micromachine_location_intent_target_lock_patch_sha256": (
+            _sha256_file(
+                config.micromachine_location_intent_target_lock_patch
+            )
+        ),
+        "micromachine_explicit_terran_ability_execution_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_terran_ability_execution_patch
+            )
+        ),
+        "micromachine_explicit_scout_command_epoch_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_scout_command_epoch_patch
+            )
+        ),
+        "micromachine_standing_production_continuity_closure_patch_sha256": (
+            _sha256_file(
+                config.micromachine_standing_production_continuity_closure_patch
+            )
+        ),
+        "micromachine_explicit_ability_caster_production_priority_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_ability_caster_production_priority_patch
+            )
+        ),
+        "micromachine_explicit_ability_observation_confirmation_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_ability_observation_confirmation_patch
+            )
+        ),
+        "micromachine_explicit_ability_production_isolation_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_ability_production_isolation_patch
+            )
+        ),
+        "micromachine_explicit_ability_attempt_lifecycle_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_ability_attempt_lifecycle_patch
+            )
+        ),
+        "micromachine_explicit_ability_review_closure_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_ability_review_closure_patch
+            )
+        ),
+        "micromachine_authoritative_addon_runtime_clearance_patch_sha256": (
+            _sha256_file(
+                config.micromachine_authoritative_addon_runtime_clearance_patch
+            )
+        ),
+        "micromachine_banshee_unit_specific_cloak_command_patch_sha256": (
+            _sha256_file(
+                config.micromachine_banshee_unit_specific_cloak_command_patch
+            )
+        ),
+        "micromachine_allied_cloak_observation_confirmation_patch_sha256": (
+            _sha256_file(
+                config.micromachine_allied_cloak_observation_confirmation_patch
+            )
+        ),
+        "micromachine_explicit_ability_caster_ownership_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_ability_caster_ownership_patch
+            )
+        ),
+        "micromachine_explicit_ability_staging_single_flight_patch_sha256": (
+            _sha256_file(
+                config.micromachine_explicit_ability_staging_single_flight_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -727,7 +960,7 @@ def build_micromachine_build_identity(
     }
     identity = "sha256:" + _sha256_json(identity_material)
     return {
-        "schema_version": 36,
+        "schema_version": 50,
         "identity": identity,
         "ok": not failures,
         "failures": failures,
@@ -852,6 +1085,51 @@ def build_micromachine_build_identity(
             "micromachine_adaptive_pressure_stable_operation_key_patch": str(
                 config.micromachine_adaptive_pressure_stable_operation_key_patch
             ),
+            "micromachine_tactical_nuke_command_hierarchy_patch": str(
+                config.micromachine_tactical_nuke_command_hierarchy_patch
+            ),
+            "micromachine_location_intent_target_lock_patch": str(
+                config.micromachine_location_intent_target_lock_patch
+            ),
+            "micromachine_explicit_terran_ability_execution_patch": str(
+                config.micromachine_explicit_terran_ability_execution_patch
+            ),
+            "micromachine_explicit_scout_command_epoch_patch": str(
+                config.micromachine_explicit_scout_command_epoch_patch
+            ),
+            "micromachine_standing_production_continuity_closure_patch": str(
+                config.micromachine_standing_production_continuity_closure_patch
+            ),
+            "micromachine_explicit_ability_caster_production_priority_patch": str(
+                config.micromachine_explicit_ability_caster_production_priority_patch
+            ),
+            "micromachine_explicit_ability_observation_confirmation_patch": str(
+                config.micromachine_explicit_ability_observation_confirmation_patch
+            ),
+            "micromachine_explicit_ability_production_isolation_patch": str(
+                config.micromachine_explicit_ability_production_isolation_patch
+            ),
+            "micromachine_explicit_ability_attempt_lifecycle_patch": str(
+                config.micromachine_explicit_ability_attempt_lifecycle_patch
+            ),
+            "micromachine_explicit_ability_review_closure_patch": str(
+                config.micromachine_explicit_ability_review_closure_patch
+            ),
+            "micromachine_authoritative_addon_runtime_clearance_patch": str(
+                config.micromachine_authoritative_addon_runtime_clearance_patch
+            ),
+            "micromachine_banshee_unit_specific_cloak_command_patch": str(
+                config.micromachine_banshee_unit_specific_cloak_command_patch
+            ),
+            "micromachine_allied_cloak_observation_confirmation_patch": str(
+                config.micromachine_allied_cloak_observation_confirmation_patch
+            ),
+            "micromachine_explicit_ability_caster_ownership_patch": str(
+                config.micromachine_explicit_ability_caster_ownership_patch
+            ),
+            "micromachine_explicit_ability_staging_single_flight_patch": str(
+                config.micromachine_explicit_ability_staging_single_flight_patch
+            ),
             "s2client_patch": str(config.s2client_patch),
             "hook_manifest": str(config.hook_manifest),
             "map_pool": str(config.map_pool),
@@ -887,6 +1165,7 @@ def write_micromachine_source_attestation(
     micromachine_source_state = _git_source_state_sha256(
         config.micromachine_dir,
         excluded_roots=(config.micromachine_build_dir,),
+        excluded_paths=MICROMACHINE_RUNTIME_MUTABLE_PATHS,
     )
     s2client_source_state = _git_source_state_sha256(
         config.s2client_dir,
@@ -943,6 +1222,7 @@ def write_micromachine_build_attestation(
     observed_micro_source_state = _git_source_state_sha256(
         config.micromachine_dir,
         excluded_roots=(config.micromachine_build_dir,),
+        excluded_paths=MICROMACHINE_RUNTIME_MUTABLE_PATHS,
     )
     observed_s2_source_state = _git_source_state_sha256(
         config.s2client_dir,
@@ -1187,6 +1467,96 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-tactical-nuke-command-hierarchy-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-location-intent-target-lock-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_LOCATION_INTENT_TARGET_LOCK_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-terran-ability-execution-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-scout-command-epoch-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-standing-production-continuity-closure-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-ability-caster-production-priority-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-ability-observation-confirmation-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-ability-production-isolation-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-ability-attempt-lifecycle-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-ability-review-closure-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-authoritative-addon-runtime-clearance-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-banshee-unit-specific-cloak-command-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-allied-cloak-observation-confirmation-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-ability-caster-ownership-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-ability-staging-single-flight-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -1331,6 +1701,51 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             micromachine_adaptive_pressure_stable_operation_key_patch=Path(
                 args.micromachine_adaptive_pressure_stable_operation_key_patch
+            ),
+            micromachine_tactical_nuke_command_hierarchy_patch=Path(
+                args.micromachine_tactical_nuke_command_hierarchy_patch
+            ),
+            micromachine_location_intent_target_lock_patch=Path(
+                args.micromachine_location_intent_target_lock_patch
+            ),
+            micromachine_explicit_terran_ability_execution_patch=Path(
+                args.micromachine_explicit_terran_ability_execution_patch
+            ),
+            micromachine_explicit_scout_command_epoch_patch=Path(
+                args.micromachine_explicit_scout_command_epoch_patch
+            ),
+            micromachine_standing_production_continuity_closure_patch=Path(
+                args.micromachine_standing_production_continuity_closure_patch
+            ),
+            micromachine_explicit_ability_caster_production_priority_patch=Path(
+                args.micromachine_explicit_ability_caster_production_priority_patch
+            ),
+            micromachine_explicit_ability_observation_confirmation_patch=Path(
+                args.micromachine_explicit_ability_observation_confirmation_patch
+            ),
+            micromachine_explicit_ability_production_isolation_patch=Path(
+                args.micromachine_explicit_ability_production_isolation_patch
+            ),
+            micromachine_explicit_ability_attempt_lifecycle_patch=Path(
+                args.micromachine_explicit_ability_attempt_lifecycle_patch
+            ),
+            micromachine_explicit_ability_review_closure_patch=Path(
+                args.micromachine_explicit_ability_review_closure_patch
+            ),
+            micromachine_authoritative_addon_runtime_clearance_patch=Path(
+                args.micromachine_authoritative_addon_runtime_clearance_patch
+            ),
+            micromachine_banshee_unit_specific_cloak_command_patch=Path(
+                args.micromachine_banshee_unit_specific_cloak_command_patch
+            ),
+            micromachine_allied_cloak_observation_confirmation_patch=Path(
+                args.micromachine_allied_cloak_observation_confirmation_patch
+            ),
+            micromachine_explicit_ability_caster_ownership_patch=Path(
+                args.micromachine_explicit_ability_caster_ownership_patch
+            ),
+            micromachine_explicit_ability_staging_single_flight_patch=Path(
+                args.micromachine_explicit_ability_staging_single_flight_patch
             ),
             s2client_patch=Path(args.s2client_patch),
             hook_manifest=Path(args.hook_manifest),
@@ -1537,12 +1952,32 @@ def _git_source_state_sha256(
     path: Path,
     *,
     excluded_roots: Sequence[Path] = (),
+    excluded_paths: Sequence[str] = (),
 ) -> str | None:
     if not (path / ".git").exists():
         return None
+    normalized_excluded_paths = tuple(
+        item.strip().strip("/")
+        for item in excluded_paths
+        if isinstance(item, str) and item.strip().strip("/")
+    )
+    diff_command = [
+        "git",
+        "-C",
+        str(path),
+        "diff",
+        "--binary",
+        "HEAD",
+        "--",
+        ".",
+    ]
+    diff_command.extend(
+        f":(exclude){relative_path}"
+        for relative_path in normalized_excluded_paths
+    )
     try:
         tracked = subprocess.run(
-            ["git", "-C", str(path), "diff", "--binary", "HEAD", "--"],
+            diff_command,
             check=True,
             capture_output=True,
         ).stdout
@@ -1567,6 +2002,13 @@ def _git_source_state_sha256(
     resolved_excluded_roots = tuple(root.resolve() for root in excluded_roots)
     for raw_path in sorted(filter(None, untracked_output.split(b"\0"))):
         relative_path = raw_path.decode("utf-8", errors="surrogateescape")
+        normalized_relative_path = relative_path.strip("/")
+        if any(
+            normalized_relative_path == excluded
+            or normalized_relative_path.startswith(excluded + "/")
+            for excluded in normalized_excluded_paths
+        ):
+            continue
         candidate = path / relative_path
         resolved_candidate = candidate.resolve()
         if any(

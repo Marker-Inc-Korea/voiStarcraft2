@@ -1,0 +1,33 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -8583,6 +8583,29 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ 	const std::string activeExplicitAbility =
+ 		m_bot.Commander().getVoiPolicyString(
+ 			"tactical_task.ability",
+ 			"");
++	const bool explicitCasterOwned =
++		!directExplicitAction
++		&& m_bot.Commander().isVoiPolicyActive()
++		&& voiTacticalTaskWithinDuration(m_bot)
++		&& m_bot.Commander().getVoiPolicyString(
++			"tactical_task.task_type",
++			"") == "execute_ability"
++		&& activeExplicitAbility != "tactical_nuke"
++		&& m_lastVoiExplicitAbilityTerminalAttemptGeneration
++			!= m_voiExplicitAbilityAttemptGeneration
++		&& (unit->tag == m_voiExplicitAbilityStagingActorTag
++			|| unit->tag == m_lastVoiExplicitAbilityActorTag);
++	if (explicitCasterOwned)
++	{
++		m_lastVoiActionSkippedCount++;
++		m_lastVoiActionFrame = m_bot.GetGameLoop();
++		m_lastVoiSkippedAction =
++			"explicit_caster_ownership|ability="
++			+ activeExplicitAbility + "|"
++			+ voiActionEvidence(action);
++		return false;
++	}
+ 	if (!directExplicitAction
+ 		&& m_bot.Commander().isVoiPolicyActive()
+ 		&& voiTacticalTaskWithinDuration(m_bot)

@@ -49,6 +49,21 @@ Verified upstream:
 | `patches/0033-review-closure-operation-identity-and-full-composition.patch` | Lets explicit MainAttack operations reclaim required Reapers and Banshees from lower-priority Harass squads and consumes all 32 accepted composition and unit-role entries across production, scouting, combat launch, micro roles, operation identity, and telemetry. |
 | `patches/0034-semantic-operation-production-closure.patch` | Separates semantic operation state from telemetry `task_id`/publication IDs, aggregates duplicate unit counts defensively, and bootstraps Barracks, gas, and add-on prerequisites for exact Marauder/Reaper and other bio requests. |
 | `patches/0035-adaptive-pressure-stable-operation-key.patch` | Keeps observed-enemy counter production active for one-shot and first-wave exact MainAttack operations, blocks optional adaptive queue growth when the selected unit cannot fit under the completed 200-supply cap, and preserves operation state when composition, role, or unit-class entries arrive in a different order. |
+| `patches/0036-tactical-nuke-command-hierarchy.patch` | Closes tactical-nuke prerequisites and execution from Factory/Ghost Academy/Ghost/payload production through Ghost reservation, safe staging, SC2 command submission, and observed cast confirmation. |
+| `patches/0037-location-intent-target-lock.patch` | Pins tactical-nuke combat scouts to the requested enemy location, forbids fallback to home-adjacent scout targets, restricts nuke candidates to the requested enemy-main or enemy-natural anchor, and reports target/anchor distance and match telemetry. |
+| `patches/0038-explicit-terran-ability-execution.patch` | Executes explicit Terran abilities and mode changes through CombatCommander with SC2 availability, target, placement, and range guards; closes requested caster/upgrade prerequisites; emits generic actor/action telemetry; and protects the reserved tactical-nuke Ghost at home. |
+| `patches/0039-explicit-scout-command-epoch.patch` | Treats each explicit combat-scout update as a fresh command epoch and forces one matching SC2 MOVE submission before ordinary duplicate suppression resumes. |
+| `patches/0040-standing-production-continuity-closure.patch` | Keeps standing unit production active while operation-layer scout/attack commands are overlaid, prevents Marine continuity from being held behind requested Tank tech, scales gas/facilities from standing targets, and stops ground siege bias from creating an unrequested Liberator/Starport transition. |
+| `patches/0041-explicit-ability-caster-production-priority.patch` | Treats explicit ability unit classes as authoritative caster requests across supported Terran bio, mech, air, and capital units; builds their prerequisite lane before unrelated doctrine work, waits for a completed Factory before Starport transition, and releases the priority hold once the caster is queued, training, or complete. |
+| `patches/0042-explicit-ability-observation-confirmation.patch` | Keeps non-nuke explicit abilities executing after SC2 submission until a subsequent observation confirms the effect, retries safely after a bounded confirmation timeout, and preserves location-derived target/staging plus AbilityTask submission and confirmation telemetry so planned, submitted, pending, and observed completion remain distinct. |
+| `patches/0043-explicit-ability-production-isolation.patch` | Isolates missing explicit-ability caster production from unrelated legacy Starport/Banshee tech, bounds build-queue inspection, and skips the redundant unbounded path-safety search after authoritative SC2 macro-placement validation. |
+| `patches/0044-explicit-ability-attempt-lifecycle.patch` | Binds each explicit ability action to its exact update, task, ability, and attempt generation; separates planned, submitted, observed-accepted, and effect-observed phases; suppresses stale or irreversible duplicate submissions; and confirms actual unit state through type, cloak, buff, cargo, spawn, destination, order, energy, and availability observations. |
+| `patches/0045-explicit-ability-review-closure.patch` | Uses the SC2 capability-query Stim ID for Marine/Marauder explicit casts, prevents an empty Medivac from falsely completing unload-all while another scoped Medivac still carries passengers, and gives active explicit siege, burrow, cloak, vehicle, Viking, and Liberator state commands ownership over inverse autonomous mode changes for the full policy TTL. |
+| `patches/0046-authoritative-addon-runtime-clearance.patch` | Trusts the authoritative SC2 query for the exact 2x2 add-on footprint instead of rejecting valid adjacent production structures through a broad radius heuristic, while clearing only friendly mobile units whose collision boxes actually overlap those tiles. |
+| `patches/0047-banshee-unit-specific-cloak-command.patch` | Submits Banshee cloak and decloak with the SC2 unit-specific executable ability IDs while retaining generic capability-query remap fallback, across explicit DSL execution, unit-role micro, and autonomous RangedManager logic. |
+| `patches/0048-allied-cloak-observation-confirmation.patch` | Preserves SC2 `CloakedUnknown` and `CloakedAllied` observations through the patched client SDK, removes per-frame unsupported-cloak log flooding, and teaches Banshee autonomous micro to treat the allied state as cloaked, so explicit cloak commands are confirmed from observed unit state rather than timing out after a successful cast. |
+| `patches/0049-explicit-ability-caster-ownership.patch` | Gives the selected explicit-ability caster exclusive movement/action ownership during staging and confirmation, preventing Squad or unit micro from overwriting the order and causing per-frame SC2 command resubmission; direct explicit actions and completed attempts remain unblocked. |
+| `patches/0050-explicit-ability-staging-single-flight.patch` | Binds an issued explicit-ability staging MOVE to its caster and target for the route lifetime, suppressing duplicate submissions while position observations show progress and releasing ownership only when bounded stalled-route recovery rejects the route. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -100,7 +115,9 @@ Use `HOOK_MANIFEST.json` as the source of truth. The central polling point is
 the manager calls. Manager-domain reads should then be attached around:
 
 - `ProductionManager::onFrame(bool executeMacro)`
+- `ProductionManager::putImportantBuildOrderItemsInQueue()`
 - `ProductionManager::manageBuildOrderQueue()`
+- `BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)`
 - `CombatCommander::onFrame(const std::vector<Unit> & combatUnits)`
 - `CombatCommander::shouldWeStartAttacking()`
 - `ScoutManager::onFrame()` / `ScoutManager::moveScouts()`
@@ -120,7 +137,7 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0035`, then copies the blackboard header. The
+through `0050`, then copies the blackboard header. The
 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its

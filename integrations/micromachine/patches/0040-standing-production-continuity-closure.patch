@@ -1,0 +1,107 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -3496,23 +3496,38 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool taskTechOrAbilityProduction =
+ 		taskTechTransition || taskExecuteExplicitAbility;
+ 	const float productionContinuityBias = m_bot.Commander().getVoiPolicyFloat("production.production_continuity_bias", 0.0f);
+-	const bool continuousCompositionProduction = tacticalTaskActive
+-		&& tacticalTaskType == "pressure_with_main_army"
+-		&& productionContinuityBias > 0.25f;
++	const std::string lifetimeMode = m_bot.Commander().getVoiPolicyString("lifetime.mode", "");
++	const bool standingSustainProduction = taskSustainProduction
++		&& (lifetimeMode == "until_cancelled" || lifetimeMode == "standing_order");
++	const bool standingProductionOrder =
++		(lifetimeMode == "until_cancelled" || lifetimeMode == "standing_order")
++		&& productionContinuityBias > 0.25f
++		&& !tacticalProductionTargets.empty();
++	const auto isStandingProductionTarget = [&](const std::string & unitType)
++	{
++		return standingProductionOrder
++			&& voiCommaListContains(tacticalProductionTargets, unitType);
++	};
++	const bool continuousCompositionProduction =
++		productionContinuityBias > 0.25f
++		&& ((tacticalTaskActive
++				&& tacticalTaskType == "pressure_with_main_army")
++			|| standingProductionOrder);
+ 	int requestedCompositionGasPerWave = 0;
+ 	for (const auto & entry : voiExactCompositionTypes())
+ 	{
+ 		const int requestedCount = voiRequestedCompositionCount(m_bot, entry.first);
+-		if (requestedCount > 0)
++		const int targetCount = requestedCount > 0
++			? requestedCount
++			: (isStandingProductionTarget(entry.first) ? 1 : 0);
++		if (targetCount > 0)
+ 		{
+-			requestedCompositionGasPerWave += requestedCount * entry.second.getUnitType().gasPrice();
++			requestedCompositionGasPerWave +=
++				targetCount * entry.second.getUnitType().gasPrice();
+ 		}
+ 	}
+ 	const bool continuousGasComposition =
+ 		continuousCompositionProduction && requestedCompositionGasPerWave > 0;
+-	const std::string lifetimeMode = m_bot.Commander().getVoiPolicyString("lifetime.mode", "");
+-	const bool standingSustainProduction = taskSustainProduction
+-		&& (lifetimeMode == "until_cancelled" || lifetimeMode == "standing_order");
+ 	const bool taskTargetsScv = voiCommaListContains(tacticalProductionTargets, "TERRAN_SCV") || voiCommaListContains(tacticalProductionTargets, "SCV");
+ 	const bool taskTargetsSupplyDepot = voiCommaListContains(tacticalProductionTargets, "TERRAN_SUPPLYDEPOT");
+ 	const bool taskTargetsCommandCenter = voiCommaListContains(tacticalProductionTargets, "TERRAN_COMMANDCENTER");
+@@ -3718,7 +3733,6 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float effectiveLiberatorBias = std::max({
+ 		liberatorBias,
+ 		compositionAntiAirBias,
+-		compositionSiegeBias,
+ 		adaptiveSupportBias("TERRAN_LIBERATOR") });
+ 	const float effectiveBansheeBias = std::max({
+ 		bansheeBias,
+@@ -3904,7 +3918,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	};
+ 	const auto voiCompositionRequirementSatisfied = [&](const std::string & policyUnitType, const MetaType & type)
+ 	{
+-		if (standingSustainProduction)
++		if (standingSustainProduction
++			|| isStandingProductionTarget(policyUnitType))
+ 		{
+ 			return false;
+ 		}
+@@ -3943,7 +3958,10 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		"TERRAN_MARINE",
+ 		m_voiCompositionProductionWaveMultiplier);
+ 	const int representedMarineCount = voiRepresentedUnitCount(MetaTypeEnum::Marine);
+-	const bool marineCompositionSatisfied = requestedMarineCount > 0 && representedMarineCount >= requestedMarineCount;
++	const bool marineCompositionSatisfied =
++		!isStandingProductionTarget("TERRAN_MARINE")
++		&& requestedMarineCount > 0
++		&& representedMarineCount >= requestedMarineCount;
+ 
+ 	m_lastVoiDoctrine = doctrine;
+ 
+@@ -4681,6 +4699,27 @@ bool ProductionManager::shouldHoldBarracksContinuityForVoiTechTransition() const
+ {
+ 	if (!m_bot.Commander().isVoiPolicyActive())
++	{
++		return false;
++	}
++	const std::string tacticalProductionTargets =
++		m_bot.Commander().getVoiPolicyString(
++			"tactical_task.production_targets",
++			"");
++	const std::string lifetimeMode =
++		m_bot.Commander().getVoiPolicyString("lifetime.mode", "");
++	const float continuityBias =
++		m_bot.Commander().getVoiPolicyFloat(
++			"production.production_continuity_bias",
++			0.0f);
++	const bool standingMarineProduction =
++		(lifetimeMode == "until_cancelled"
++			|| lifetimeMode == "standing_order")
++		&& continuityBias > 0.25f
++		&& voiCommaListContains(
++			tacticalProductionTargets,
++			"TERRAN_MARINE");
++	if (standingMarineProduction)
+ 	{
+ 		return false;
+ 	}

@@ -130,6 +130,7 @@ class PolicyModulationCompileResult:
     failure_kind: str = ""
     llm_attempt_count: int = 0
     llm_repair_reason: str = ""
+    llm_transient_retry_reason: str = ""
     llm_duration_ms: int = 0
     primary_refusal_reason: str = ""
 
@@ -168,6 +169,7 @@ class PolicyModulationCompileResult:
         for field_name in (
             "failure_kind",
             "llm_repair_reason",
+            "llm_transient_retry_reason",
             "primary_refusal_reason",
         ):
             value = getattr(self, field_name)
@@ -194,6 +196,7 @@ class PolicyModulationCompileResult:
             "failure_kind": self.failure_kind,
             "llm_attempt_count": self.llm_attempt_count,
             "llm_repair_reason": self.llm_repair_reason,
+            "llm_transient_retry_reason": self.llm_transient_retry_reason,
             "llm_duration_ms": self.llm_duration_ms,
             "primary_refusal_reason": self.primary_refusal_reason,
         }
@@ -300,6 +303,7 @@ _VECTOR_WRAPPER_KEYS = (
 _WRAPPER_METADATA_KEYS = {
     "source",
     "override_level",
+    "command_layer",
     "level",
     "override",
     "confidence",
@@ -312,6 +316,7 @@ _WRAPPER_METADATA_KEYS = {
     "failure_kind",
     "llm_attempt_count",
     "llm_repair_reason",
+    "llm_transient_retry_reason",
     "llm_duration_ms",
     "primary_refusal_reason",
 }
@@ -451,6 +456,7 @@ _DOMAIN_ALIASES = {
     "avoid_enemy_strength": ("route_intent", "avoid_enemy_strength"),
     "target_type": ("target_intent", "target_type"),
     "target_intent_priority": ("target_intent", "priority"),
+    "ability": ("tactical_task", "ability"),
     "cancel_attacks": ("emergency", "cancel_attacks"),
     "pull_workers_for_defense": ("emergency", "pull_workers_for_defense"),
     "pull_workers_for_defense_bias": ("emergency", "pull_workers_for_defense"),
@@ -480,6 +486,7 @@ _DOMAIN_FIELD_ALIASES = {
     ),
     ("tactical_task", "type"): ("tactical_task", "task_type"),
     ("tactical_task", "id"): ("tactical_task", "task_id"),
+    ("tactical_task", "ability_name"): ("tactical_task", "ability"),
     ("tactical_task", "units"): ("tactical_task", "unit_classes"),
     ("tactical_task", "unit_types"): ("tactical_task", "unit_classes"),
     ("tactical_task", "targets"): ("tactical_task", "production_targets"),
@@ -601,6 +608,255 @@ _TACTICAL_TASK_TYPE_ALIASES = {
     "land_command_center": "expand_or_land_command_center",
     "expand_or_land_command_center": "expand_or_land_command_center",
     "command_center_landing": "expand_or_land_command_center",
+    "ability": "execute_ability",
+    "cast_ability": "execute_ability",
+    "execute_ability": "execute_ability",
+    "nuke": "execute_ability",
+    "nuclear_strike": "execute_ability",
+    "tactical_nuke": "execute_ability",
+}
+
+_TACTICAL_ABILITY_ALIASES = {
+    "stim": "stimpack",
+    "stimpack": "stimpack",
+    "전투_자극제": "stimpack",
+    "전투자극제": "stimpack",
+    "marine_stim": "marine_stimpack",
+    "marine_stimpack": "marine_stimpack",
+    "마린_전투자극제": "marine_stimpack",
+    "마린전투자극제": "marine_stimpack",
+    "marauder_stim": "marauder_stimpack",
+    "marauder_stimpack": "marauder_stimpack",
+    "불곰_전투자극제": "marauder_stimpack",
+    "불곰전투자극제": "marauder_stimpack",
+    "kd8": "kd8_charge",
+    "kd8_charge": "kd8_charge",
+    "kd8_폭탄": "kd8_charge",
+    "emp": "emp",
+    "전자기_펄스": "emp",
+    "저격": "snipe",
+    "snipe": "snipe",
+    "ghost_cloak": "ghost_cloak",
+    "ghostcloak": "ghost_cloak",
+    "유령_은폐": "ghost_cloak",
+    "유령은폐": "ghost_cloak",
+    "ghost_decloak": "ghost_decloak",
+    "ghostdecloak": "ghost_decloak",
+    "유령_은폐_해제": "ghost_decloak",
+    "유령은폐해제": "ghost_decloak",
+    "nuke": "tactical_nuke",
+    "nuclear_strike": "tactical_nuke",
+    "tactical_nuke": "tactical_nuke",
+    "전술핵": "tactical_nuke",
+    "핵": "tactical_nuke",
+    "widow_mine_burrow": "widow_mine_burrow",
+    "mine_burrow": "widow_mine_burrow",
+    "지뢰_매설": "widow_mine_burrow",
+    "widow_mine_unburrow": "widow_mine_unburrow",
+    "mine_unburrow": "widow_mine_unburrow",
+    "지뢰_해제": "widow_mine_unburrow",
+    "lock_on": "lock_on",
+    "lockon": "lock_on",
+    "록온": "lock_on",
+    "siege": "siege_mode",
+    "siege_mode": "siege_mode",
+    "공성_모드": "siege_mode",
+    "공성모드": "siege_mode",
+    "unsiege": "unsiege",
+    "공성_해제": "unsiege",
+    "공성해제": "unsiege",
+    "hellbat": "hellbat_mode",
+    "hellbat_mode": "hellbat_mode",
+    "화염기갑병": "hellbat_mode",
+    "hellion_mode": "hellion_mode",
+    "화염차_모드": "hellion_mode",
+    "화염차모드": "hellion_mode",
+    "thor_high_impact": "thor_high_impact_mode",
+    "thor_high_impact_mode": "thor_high_impact_mode",
+    "고충격탄": "thor_high_impact_mode",
+    "thor_explosive": "thor_explosive_mode",
+    "thor_explosive_mode": "thor_explosive_mode",
+    "폭발탄": "thor_explosive_mode",
+    "afterburners": "medivac_afterburners",
+    "medivac_afterburners": "medivac_afterburners",
+    "의료선_가속": "medivac_afterburners",
+    "heal": "medivac_heal",
+    "medivac_heal": "medivac_heal",
+    "치료": "medivac_heal",
+    "medivac_load": "medivac_load",
+    "load_medivac": "medivac_load",
+    "의료선_탑승": "medivac_load",
+    "의료선탑승": "medivac_load",
+    "medivac_unload": "medivac_unload_all",
+    "medivac_unload_all": "medivac_unload_all",
+    "unload_medivac": "medivac_unload_all",
+    "의료선_하차": "medivac_unload_all",
+    "의료선하차": "medivac_unload_all",
+    "viking_fighter": "viking_fighter_mode",
+    "viking_fighter_mode": "viking_fighter_mode",
+    "바이킹_전투기": "viking_fighter_mode",
+    "viking_assault": "viking_assault_mode",
+    "viking_assault_mode": "viking_assault_mode",
+    "바이킹_돌격": "viking_assault_mode",
+    "liberator_defender": "liberator_defender_mode",
+    "liberator_defender_mode": "liberator_defender_mode",
+    "해방선_수호기": "liberator_defender_mode",
+    "liberator_fighter": "liberator_fighter_mode",
+    "liberator_fighter_mode": "liberator_fighter_mode",
+    "해방선_전투기": "liberator_fighter_mode",
+    "cloak": "banshee_cloak",
+    "banshee_cloak": "banshee_cloak",
+    "밴시_은폐": "banshee_cloak",
+    "decloak": "banshee_decloak",
+    "banshee_decloak": "banshee_decloak",
+    "밴시_은폐_해제": "banshee_decloak",
+    "auto_turret": "auto_turret",
+    "자동_포탑": "auto_turret",
+    "interference_matrix": "interference_matrix",
+    "방해_매트릭스": "interference_matrix",
+    "anti_armor_missile": "anti_armor_missile",
+    "대장갑_미사일": "anti_armor_missile",
+    "yamato": "yamato",
+    "yamato_cannon": "yamato",
+    "야마토": "yamato",
+    "tactical_jump": "tactical_jump",
+    "전술_차원_도약": "tactical_jump",
+    "전술차원도약": "tactical_jump",
+}
+
+_TACTICAL_ABILITY_DEFAULTS: dict[str, dict[str, object]] = {
+    "stimpack": {
+        "unit_classes": ("TERRAN_MARINE", "TERRAN_MARAUDER"),
+        "production_targets": (
+            "TERRAN_MARINE",
+            "TERRAN_MARAUDER",
+            "STIMPACK",
+        ),
+    },
+    "marine_stimpack": {
+        "unit_classes": ("TERRAN_MARINE",),
+        "production_targets": ("TERRAN_MARINE", "STIMPACK"),
+    },
+    "marauder_stimpack": {
+        "unit_classes": ("TERRAN_MARAUDER",),
+        "production_targets": ("TERRAN_MARAUDER", "STIMPACK"),
+    },
+    "kd8_charge": {
+        "unit_classes": ("TERRAN_REAPER",),
+        "production_targets": ("TERRAN_REAPER",),
+    },
+    "emp": {
+        "unit_classes": ("TERRAN_GHOST",),
+        "production_targets": ("TERRAN_GHOST",),
+    },
+    "snipe": {
+        "unit_classes": ("TERRAN_GHOST",),
+        "production_targets": ("TERRAN_GHOST",),
+    },
+    "ghost_cloak": {
+        "unit_classes": ("TERRAN_GHOST",),
+        "production_targets": ("TERRAN_GHOST", "GHOST_CLOAK"),
+    },
+    "ghost_decloak": {
+        "unit_classes": ("TERRAN_GHOST",),
+        "production_targets": ("TERRAN_GHOST",),
+    },
+    "widow_mine_burrow": {
+        "unit_classes": ("TERRAN_WIDOWMINE",),
+        "production_targets": ("TERRAN_WIDOWMINE",),
+    },
+    "widow_mine_unburrow": {
+        "unit_classes": ("TERRAN_WIDOWMINE",),
+        "production_targets": ("TERRAN_WIDOWMINE",),
+    },
+    "lock_on": {
+        "unit_classes": ("TERRAN_CYCLONE",),
+        "production_targets": ("TERRAN_CYCLONE",),
+    },
+    "siege_mode": {
+        "unit_classes": ("TERRAN_SIEGETANK",),
+        "production_targets": ("TERRAN_SIEGETANK",),
+    },
+    "unsiege": {
+        "unit_classes": ("TERRAN_SIEGETANK",),
+        "production_targets": ("TERRAN_SIEGETANK",),
+    },
+    "hellbat_mode": {
+        "unit_classes": ("TERRAN_HELLION",),
+        "production_targets": ("TERRAN_HELLION", "TERRAN_ARMORY"),
+    },
+    "hellion_mode": {
+        "unit_classes": ("TERRAN_HELLION",),
+        "production_targets": ("TERRAN_HELLION",),
+    },
+    "thor_high_impact_mode": {
+        "unit_classes": ("TERRAN_THOR",),
+        "production_targets": ("TERRAN_THOR",),
+    },
+    "thor_explosive_mode": {
+        "unit_classes": ("TERRAN_THOR",),
+        "production_targets": ("TERRAN_THOR",),
+    },
+    "medivac_afterburners": {
+        "unit_classes": ("TERRAN_MEDIVAC",),
+        "production_targets": ("TERRAN_MEDIVAC",),
+    },
+    "medivac_heal": {
+        "unit_classes": ("TERRAN_MEDIVAC",),
+        "production_targets": ("TERRAN_MEDIVAC", "TERRAN_MARINE"),
+    },
+    "medivac_load": {
+        "unit_classes": ("TERRAN_MEDIVAC",),
+        "production_targets": ("TERRAN_MEDIVAC", "TERRAN_MARINE"),
+    },
+    "medivac_unload_all": {
+        "unit_classes": ("TERRAN_MEDIVAC",),
+        "production_targets": ("TERRAN_MEDIVAC",),
+    },
+    "viking_fighter_mode": {
+        "unit_classes": ("TERRAN_VIKINGFIGHTER",),
+        "production_targets": ("TERRAN_VIKINGFIGHTER",),
+    },
+    "viking_assault_mode": {
+        "unit_classes": ("TERRAN_VIKINGFIGHTER",),
+        "production_targets": ("TERRAN_VIKINGFIGHTER",),
+    },
+    "liberator_defender_mode": {
+        "unit_classes": ("TERRAN_LIBERATOR",),
+        "production_targets": ("TERRAN_LIBERATOR",),
+    },
+    "liberator_fighter_mode": {
+        "unit_classes": ("TERRAN_LIBERATOR",),
+        "production_targets": ("TERRAN_LIBERATOR",),
+    },
+    "banshee_cloak": {
+        "unit_classes": ("TERRAN_BANSHEE",),
+        "production_targets": ("TERRAN_BANSHEE", "BANSHEE_CLOAK"),
+    },
+    "banshee_decloak": {
+        "unit_classes": ("TERRAN_BANSHEE",),
+        "production_targets": ("TERRAN_BANSHEE",),
+    },
+    "auto_turret": {
+        "unit_classes": ("TERRAN_RAVEN",),
+        "production_targets": ("TERRAN_RAVEN",),
+    },
+    "interference_matrix": {
+        "unit_classes": ("TERRAN_RAVEN",),
+        "production_targets": ("TERRAN_RAVEN",),
+    },
+    "anti_armor_missile": {
+        "unit_classes": ("TERRAN_RAVEN",),
+        "production_targets": ("TERRAN_RAVEN",),
+    },
+    "yamato": {
+        "unit_classes": ("TERRAN_BATTLECRUISER",),
+        "production_targets": ("TERRAN_BATTLECRUISER", "YAMATO_CANNON"),
+    },
+    "tactical_jump": {
+        "unit_classes": ("TERRAN_BATTLECRUISER",),
+        "production_targets": ("TERRAN_BATTLECRUISER",),
+    },
 }
 
 _LOCATION_INTENT_ALIASES = {
@@ -686,6 +942,41 @@ _BUILDING_PLACEMENT_DIRECTION_ALIASES = {
     "중앙": "center",
 }
 
+_UNIT_ROLE_ALIASES = {
+    "assault": "frontline",
+    "attacker": "frontline",
+    "attack": "frontline",
+    "flank": "ambush",
+    "flanker": "ambush",
+    "flanking": "ambush",
+    "recon": "scout",
+    "reconnaissance": "scout",
+    "spotter": "scout",
+    "siege": "siege_support",
+    "tank_support": "siege_support",
+    "aa": "anti_air",
+    "anti-air": "anti_air",
+    "antiair": "anti_air",
+    "harassment": "harass",
+    "worker_line": "worker_harass",
+    "worker_line_harass": "worker_harass",
+    "caster": "spellcaster",
+    "spell_caster": "spellcaster",
+    "healer": "support",
+    "healing": "support",
+    "medical_support": "support",
+    "evacuate": "evac",
+    "evacuation": "evac",
+}
+
+_ABILITY_POLICY_ALIASES = {
+    "always": "commit",
+    "available": "if_available",
+    "when_available": "if_available",
+    "on_high_value_target": "high_value_target",
+    "high_value": "high_value_target",
+}
+
 _TACTICAL_SCOPE_LOCATION_INTENTS = {
     "home",
     "natural",
@@ -702,6 +993,7 @@ _VECTOR_KEYS = {
     "goal",
     "source",
     "override_level",
+    "command_layer",
     "confidence",
     "ttl_seconds",
     "constraints",
@@ -769,6 +1061,10 @@ _CANONICAL_MICROMACHINE_KEY_ALIASES = {
     "유령": "TERRAN_GHOST",
     "ghostacademy": "TERRAN_GHOSTACADEMY",
     "유령사관학교": "TERRAN_GHOSTACADEMY",
+    "ghostcloak": "GHOST_CLOAK",
+    "personalcloaking": "GHOST_CLOAK",
+    "유령은폐": "GHOST_CLOAK",
+    "개인은폐": "GHOST_CLOAK",
     "hellion": "TERRAN_HELLION",
     "hellions": "TERRAN_HELLION",
     "화염차": "TERRAN_HELLION",
@@ -810,6 +1106,11 @@ _CANONICAL_MICROMACHINE_KEY_ALIASES = {
     "fusioncore": "TERRAN_FUSIONCORE",
     "fusion": "TERRAN_FUSIONCORE",
     "융합로": "TERRAN_FUSIONCORE",
+    "nuke": "TERRAN_NUKE",
+    "nuclearstrike": "TERRAN_NUKE",
+    "tacticalnuke": "TERRAN_NUKE",
+    "핵": "TERRAN_NUKE",
+    "핵미사일": "TERRAN_NUKE",
     "barrackstechlab": "BARRACKS_TECHLAB",
     "raxtechlab": "BARRACKS_TECHLAB",
     "병영기술실": "BARRACKS_TECHLAB",
@@ -835,6 +1136,14 @@ _CANONICAL_MICROMACHINE_KEY_ALIASES = {
     "전투자극제": "STIMPACK",
     "combatshield": "COMBATSHIELD",
     "방패업": "COMBATSHIELD",
+    "bansheecloak": "BANSHEE_CLOAK",
+    "cloakingfield": "BANSHEE_CLOAK",
+    "밴시은폐": "BANSHEE_CLOAK",
+    "은폐장": "BANSHEE_CLOAK",
+    "yamatocannon": "YAMATO_CANNON",
+    "yamato": "YAMATO_CANNON",
+    "야마토": "YAMATO_CANNON",
+    "야마토포": "YAMATO_CANNON",
 }
 
 _CANONICAL_BIAS_FIELDS = {
@@ -858,6 +1167,21 @@ _PRODUCTION_PLAN_PREREQUISITE_CHAINS: dict[str, tuple[str, ...]] = {
         "BARRACKS_TECHLAB",
         "TERRAN_GHOSTACADEMY",
         "TERRAN_GHOST",
+    ),
+    "TERRAN_NUKE": (
+        "TERRAN_BARRACKS",
+        "BARRACKS_TECHLAB",
+        "TERRAN_GHOSTACADEMY",
+        "TERRAN_GHOST",
+        "TERRAN_FACTORY",
+        "TERRAN_NUKE",
+    ),
+    "GHOST_CLOAK": (
+        "TERRAN_BARRACKS",
+        "BARRACKS_TECHLAB",
+        "TERRAN_GHOSTACADEMY",
+        "TERRAN_GHOST",
+        "GHOST_CLOAK",
     ),
     "TERRAN_HELLION": ("TERRAN_FACTORY", "TERRAN_HELLION"),
     "TERRAN_WIDOWMINE": ("TERRAN_FACTORY", "TERRAN_WIDOWMINE"),
@@ -907,6 +1231,24 @@ _PRODUCTION_PLAN_PREREQUISITE_CHAINS: dict[str, tuple[str, ...]] = {
         "TERRAN_FUSIONCORE",
         "TERRAN_BATTLECRUISER",
     ),
+    "STIMPACK": (
+        "TERRAN_BARRACKS",
+        "BARRACKS_TECHLAB",
+        "STIMPACK",
+    ),
+    "BANSHEE_CLOAK": (
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "STARPORT_TECHLAB",
+        "BANSHEE_CLOAK",
+    ),
+    "YAMATO_CANNON": (
+        "TERRAN_FACTORY",
+        "TERRAN_STARPORT",
+        "STARPORT_TECHLAB",
+        "TERRAN_FUSIONCORE",
+        "YAMATO_CANNON",
+    ),
 }
 
 _PRODUCTION_PLAN_UNIT_TARGETS = frozenset(
@@ -929,6 +1271,16 @@ _PRODUCTION_PLAN_UNIT_TARGETS = frozenset(
     }
 )
 
+_PRODUCTION_PLAN_ABILITY_TARGETS = frozenset(
+    {
+        "TERRAN_NUKE",
+        "STIMPACK",
+        "GHOST_CLOAK",
+        "BANSHEE_CLOAK",
+        "YAMATO_CANNON",
+    }
+)
+
 _PRODUCTION_PLAN_GAS_TARGETS = frozenset(
     {
         "BARRACKS_TECHLAB",
@@ -944,6 +1296,8 @@ _PRODUCTION_PLAN_GAS_TARGETS = frozenset(
         "TERRAN_MARAUDER",
         "TERRAN_REAPER",
         "TERRAN_GHOST",
+        "TERRAN_NUKE",
+        "GHOST_CLOAK",
         "TERRAN_WIDOWMINE",
         "TERRAN_CYCLONE",
         "TERRAN_THOR",
@@ -954,6 +1308,9 @@ _PRODUCTION_PLAN_GAS_TARGETS = frozenset(
         "TERRAN_BANSHEE",
         "TERRAN_RAVEN",
         "TERRAN_BATTLECRUISER",
+        "STIMPACK",
+        "BANSHEE_CLOAK",
+        "YAMATO_CANNON",
     }
 )
 
@@ -963,10 +1320,14 @@ _PRODUCTION_PLAN_HIGH_GAS_TARGETS = frozenset(
         "TERRAN_THOR",
         "TERRAN_SIEGETANK",
         "TERRAN_GHOST",
+        "TERRAN_NUKE",
+        "GHOST_CLOAK",
         "TERRAN_LIBERATOR",
         "TERRAN_BANSHEE",
         "TERRAN_RAVEN",
         "TERRAN_BATTLECRUISER",
+        "BANSHEE_CLOAK",
+        "YAMATO_CANNON",
     }
 )
 
@@ -1056,6 +1417,11 @@ def _normalize_provider_mapping(
     for key, value in mapping.items():
         canonical_key = _TOP_LEVEL_ALIASES.get(key, key)
         if canonical_key in _CONTROL_KEYS:
+            continue
+        if (
+            canonical_key in _WRAPPER_METADATA_KEYS
+            and canonical_key not in _VECTOR_KEYS
+        ):
             continue
         if canonical_key in _REPRESENTATION_KEYS:
             _apply_representation_axes(result, value)
@@ -1165,9 +1531,17 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
                 aliases=_ATTACK_CONDITION_OVERRIDE_ALIASES,
             )
         if domain_name == "tactical_task" and "task_type" in domain_value:
+            raw_task_type = str(domain_value["task_type"] or "").strip().lower()
             domain_value["task_type"] = _canonicalize_enum_alias(
                 domain_value["task_type"],
                 aliases=_TACTICAL_TASK_TYPE_ALIASES,
+            )
+            if raw_task_type in {"nuke", "nuclear_strike", "tactical_nuke"}:
+                domain_value.setdefault("ability", "tactical_nuke")
+        if domain_name == "tactical_task" and "ability" in domain_value:
+            domain_value["ability"] = _canonicalize_enum_alias(
+                domain_value["ability"],
+                aliases=_TACTICAL_ABILITY_ALIASES,
             )
         if domain_name in {"scope", "tactical_task"} and "location_intent" in domain_value:
             domain_value["location_intent"] = _canonicalize_enum_alias(
@@ -1211,6 +1585,8 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
     _normalize_micromachine_composition_and_roles(payload)
     _repair_micromachine_schema_bounds(payload)
     _repair_micromachine_emergency_defaults(payload)
+    _repair_micromachine_ability_task_defaults(payload)
+    _repair_micromachine_marine_centric_macro_defaults(payload)
     _lower_micromachine_production_plan(payload)
     _lower_micromachine_composition_production(payload)
     _lower_micromachine_building_tasks(payload)
@@ -1235,6 +1611,20 @@ def _canonicalize_rich_intent_sequences(payload: dict[str, object]) -> None:
             if field_name in normalized:
                 normalized[field_name] = _canonicalize_micromachine_key(
                     normalized[field_name]
+                )
+            if key in {"composition_requirements", "unit_roles"} and "role" in normalized:
+                normalized["role"] = _canonicalize_enum_alias(
+                    normalized["role"],
+                    aliases=_UNIT_ROLE_ALIASES,
+                )
+            if key == "unit_roles" and "ability_policy" in normalized:
+                ability_policy = _canonicalize_enum_alias(
+                    normalized["ability_policy"],
+                    aliases=_ABILITY_POLICY_ALIASES,
+                )
+                normalized["ability_policy"] = _canonicalize_enum_alias(
+                    ability_policy,
+                    aliases=_TACTICAL_ABILITY_ALIASES,
                 )
             if key == "building_tasks":
                 if "placement_intent" in normalized:
@@ -1779,6 +2169,9 @@ def _set_production_plan_bias(
         return
     if item in _PRODUCTION_PLAN_UNIT_TARGETS:
         _set_nested_float_at_least(tech, ("unit_biases", item), priority)
+        return
+    if item in _PRODUCTION_PLAN_ABILITY_TARGETS:
+        _set_nested_float_at_least(production, ("queue_biases", item), priority)
 
 
 def _merge_ordered_tokens(*sequences: object) -> tuple[str, ...]:
@@ -1831,10 +2224,40 @@ def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> N
             tactical_task,
             default=("TERRAN_MARINE",),
         )
-        _set_if_zero_or_empty(scope, "min_units", 1)
-        _set_if_zero_or_empty(scope, "max_units", 2)
-        _set_if_zero_or_empty(tactical_task, "min_units", 1)
-        _set_if_zero_or_empty(tactical_task, "max_units", 2)
+        marine_scout = "TERRAN_MARINE" in {
+            str(unit_type)
+            for unit_type in (
+                *(
+                    tactical_task.get("unit_classes", ())
+                    if _is_non_text_sequence(tactical_task.get("unit_classes"))
+                    else ()
+                ),
+                *(
+                    scope.get("unit_classes", ())
+                    if _is_non_text_sequence(scope.get("unit_classes"))
+                    else ()
+                ),
+            )
+        }
+        if marine_scout:
+            exact_units = _micromachine_exact_composition_unit_count(payload)
+            if exact_units <= 0:
+                exact_units = max(
+                    _positive_int(scope.get("min_units")),
+                    _positive_int(tactical_task.get("min_units")),
+                    1,
+                )
+            scope["min_units"] = exact_units
+            scope["max_units"] = exact_units
+            scope["allow_partial_scope"] = False
+            tactical_task["min_units"] = exact_units
+            tactical_task["max_units"] = exact_units
+            tactical_task["allow_partial"] = False
+        else:
+            _set_if_zero_or_empty(scope, "min_units", 1)
+            _set_if_zero_or_empty(scope, "max_units", 2)
+            _set_if_zero_or_empty(tactical_task, "min_units", 1)
+            _set_if_zero_or_empty(tactical_task, "max_units", 2)
         _set_if_zero_or_empty(tactical_task, "duration_seconds", 180)
         _set_if_zero_or_empty(tactical_task, "priority", 0.85)
         scouting = _ensure_micromachine_domain_dict(payload, "scouting")
@@ -1915,6 +2338,336 @@ def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> N
     if task_type == "expand_or_land_command_center":
         _set_if_empty(tactical_task, "location_intent", "safe_expansion")
         _set_if_zero_or_empty(tactical_task, "priority", 0.75)
+
+
+def _repair_micromachine_ability_task_defaults(
+    payload: dict[str, object],
+) -> None:
+    """Normalize semantic ability tickets and lower caster prerequisites."""
+
+    tactical_task = _ensure_micromachine_domain_dict(payload, "tactical_task")
+    task_type = str(tactical_task.get("task_type", "") or "").strip()
+    ability = str(tactical_task.get("ability", "") or "").strip()
+    is_nuke = ability == "tactical_nuke"
+    if not task_type and ability:
+        task_type = "execute_ability"
+        tactical_task["task_type"] = task_type
+    if task_type != "execute_ability":
+        return
+    if is_nuke:
+        target_intent = _first_non_empty_text(
+            tactical_task.get("location_intent"),
+            "enemy_main",
+        )
+        _set_if_empty(tactical_task, "location_intent", target_intent)
+        _set_if_empty(tactical_task, "unit_classes", ["TERRAN_GHOST"])
+        tactical_task["production_targets"] = list(
+            _merge_ordered_tokens(
+                tactical_task.get("production_targets", ()),
+                ("TERRAN_NUKE", "TERRAN_MARINE", "TERRAN_MARAUDER"),
+            )
+        )
+        production_plan = _ensure_micromachine_domain_dict(
+            payload,
+            "production_plan",
+        )
+        production_plan["targets"] = list(
+            _merge_ordered_tokens(
+                production_plan.get("targets", ()),
+                ("TERRAN_NUKE", "TERRAN_MARINE", "TERRAN_MARAUDER"),
+            )
+        )
+        production_plan["allow_prerequisite_buildings"] = True
+        _set_float_at_least(production_plan, "priority", 0.95)
+        combat = _ensure_micromachine_domain_dict(payload, "combat")
+        _set_float_at_least(combat, "defend_bias", 0.45)
+        _set_float_at_least(combat, "preserve_army_bias", 0.5)
+        scouting = _ensure_micromachine_domain_dict(payload, "scouting")
+        _set_float_at_least(scouting, "scout_priority", 0.8)
+        _set_float_at_least(scouting, "scout_cadence_bias", 0.65)
+        _set_float_at_least(scouting, "risk_tolerance", 0.55)
+        _set_float_at_least(scouting, "hidden_tech_scout_bias", 0.45)
+        scouting["require_fresh_enemy_observation"] = True
+        squad = _ensure_micromachine_domain_dict(payload, "squad")
+        _set_nested_float_at_least(
+            squad,
+            ("squad_role_biases", "marine_scout"),
+            0.8,
+        )
+        _set_float_at_least(squad, "defense_bias", 0.4)
+        _set_float_at_least(squad, "regroup_bias", 0.3)
+        scope = _ensure_micromachine_domain_dict(payload, "scope")
+        scope["army_group"] = "scout"
+        scope["unit_classes"] = ["TERRAN_MARINE"]
+        scope["location_intent"] = target_intent
+        scope["min_units"] = max(4, _positive_int(scope.get("min_units")))
+        scope["max_units"] = 4
+        scope["allow_partial_scope"] = False
+        tactical_task["allow_partial"] = False
+        composition_requirements = [
+            dict(item)
+            for item in (
+                payload.get("composition_requirements", ())
+                if _is_non_text_sequence(payload.get("composition_requirements"))
+                else ()
+            )
+            if isinstance(item, Mapping)
+            and not (
+                str(item.get("unit_type", "") or "") == "TERRAN_MARINE"
+                and str(item.get("role", "") or "") == "scout"
+            )
+            and not (
+                str(item.get("unit_type", "") or "") == "TERRAN_MARAUDER"
+                and str(item.get("role", "") or "") == "defensive_hold"
+            )
+        ]
+        composition_requirements.extend(
+            (
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": 4,
+                    "role": "scout",
+                },
+                {
+                    "unit_type": "TERRAN_MARAUDER",
+                    "count": 2,
+                    "role": "defensive_hold",
+                },
+            )
+        )
+        payload["composition_requirements"] = composition_requirements[:32]
+        unit_roles = [
+            dict(item)
+            for item in (
+                payload.get("unit_roles", ())
+                if _is_non_text_sequence(payload.get("unit_roles"))
+                else ()
+            )
+            if isinstance(item, Mapping)
+            and str(item.get("unit_type", "") or "") != "TERRAN_GHOST"
+        ]
+        if not any(
+            str(item.get("unit_type", "") or "") == "TERRAN_MARINE"
+            and str(item.get("role", "") or "") == "scout"
+            for item in unit_roles
+        ):
+            unit_roles.append(
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "role": "scout",
+                    "priority": 0.8,
+                    "ability_policy": "",
+                }
+            )
+        if not any(
+            str(item.get("unit_type", "") or "") == "TERRAN_MARAUDER"
+            and str(item.get("role", "") or "") == "defensive_hold"
+            for item in unit_roles
+        ):
+            unit_roles.append(
+                {
+                    "unit_type": "TERRAN_MARAUDER",
+                    "role": "defensive_hold",
+                    "priority": 0.75,
+                    "ability_policy": "if_available",
+                }
+            )
+        unit_roles.append(
+            {
+                "unit_type": "TERRAN_GHOST",
+                "role": "execute_ability",
+                "priority": 0.95,
+                "ability_policy": "tactical_nuke",
+            }
+        )
+        payload["unit_roles"] = unit_roles[:32]
+    elif ability:
+        ability_defaults = _TACTICAL_ABILITY_DEFAULTS.get(ability)
+        if ability_defaults is None:
+            raise ValueError(f"unsupported tactical_task.ability: {ability!r}.")
+        default_unit_classes = tuple(ability_defaults["unit_classes"])
+        requested_unit_classes = tactical_task.get("unit_classes")
+        if not _is_non_text_sequence(requested_unit_classes):
+            requested_unit_classes = ()
+        unit_classes = _merge_ordered_tokens(
+            requested_unit_classes,
+            default_unit_classes if not requested_unit_classes else (),
+        )
+        tactical_task["unit_classes"] = list(unit_classes)
+        production_targets = _merge_ordered_tokens(
+            tactical_task.get("production_targets", ()),
+            unit_classes,
+            ability_defaults["production_targets"],
+        )
+        tactical_task["production_targets"] = list(production_targets)
+        production_plan = _ensure_micromachine_domain_dict(
+            payload,
+            "production_plan",
+        )
+        production_plan["targets"] = list(
+            _merge_ordered_tokens(
+                production_plan.get("targets", ()),
+                production_targets,
+            )
+        )
+        production_plan["allow_prerequisite_buildings"] = True
+        _set_float_at_least(production_plan, "priority", 0.9)
+        existing_roles = [
+            dict(item)
+            for item in (
+                payload.get("unit_roles", ())
+                if _is_non_text_sequence(payload.get("unit_roles"))
+                else ()
+            )
+            if isinstance(item, Mapping)
+            and str(item.get("unit_type", "") or "") not in unit_classes
+        ]
+        existing_roles.extend(
+            {
+                "unit_type": unit_type,
+                "role": "execute_ability",
+                "priority": 0.9,
+                "ability_policy": ability,
+            }
+            for unit_type in unit_classes
+        )
+        payload["unit_roles"] = existing_roles[:32]
+    else:
+        raise ValueError(
+            "tactical_task.ability is required for execute_ability tactical tasks."
+        )
+
+    _set_float_at_least(tactical_task, "priority", 0.9)
+    if is_nuke:
+        tactical_task["duration_seconds"] = 0
+    else:
+        _set_if_zero_or_empty(tactical_task, "duration_seconds", 180)
+    lifetime = _ensure_micromachine_domain_dict(payload, "lifetime")
+    _set_if_empty(lifetime, "mode", "until_completed")
+    lifetime["completion_conditions"] = list(
+        _merge_ordered_tokens(
+            lifetime.get("completion_conditions", ()),
+            ("ability_cast",),
+        )
+    )
+    _set_if_empty(lifetime, "completion_state", "active")
+    _set_if_empty(lifetime, "reason", "semantic ability task completes on cast evidence")
+
+
+def _repair_micromachine_marine_centric_macro_defaults(
+    payload: dict[str, object],
+) -> None:
+    """Keep Marine-centric doctrine persistent without erasing explicit tech."""
+
+    goal = " ".join(str(payload.get("goal", "") or "").lower().split())
+    compact = "".join(goal.split())
+    marine_centric = any(
+        marker in goal or marker in compact
+        for marker in (
+            "마린 중심",
+            "마린중심",
+            "해병 중심",
+            "해병중심",
+            "marine-centric",
+            "marine centric",
+            "marine-focused",
+            "marine focused",
+            "focus on marines",
+        )
+    )
+    operation_intent = any(
+        marker in goal
+        for marker in (
+            "공격",
+            "러시",
+            "러쉬",
+            "압박",
+            "견제",
+            "정찰",
+            "탐색",
+            "attack",
+            "rush",
+            "pressure",
+            "harass",
+            "scout",
+        )
+    )
+    if not marine_centric or operation_intent:
+        return
+
+    payload["command_layer"] = "macro"
+    payload["ttl_seconds"] = 900
+    strategy = _ensure_micromachine_domain_dict(payload, "strategy")
+    _set_if_empty(strategy, "posture", "balanced")
+    strategy["doctrine"] = "marine_rush"
+    production = _ensure_micromachine_domain_dict(payload, "production")
+    _set_nested_float_at_least(
+        production,
+        ("queue_biases", "TERRAN_MARINE"),
+        0.9,
+    )
+    _set_nested_float_at_least(
+        production,
+        ("composition_biases", "bio"),
+        0.8,
+    )
+    _set_float_at_least(production, "production_continuity_bias", 0.8)
+
+    production_plan = _ensure_micromachine_domain_dict(
+        payload,
+        "production_plan",
+    )
+    production_plan["targets"] = list(
+        _merge_ordered_tokens(
+            ("TERRAN_MARINE",),
+            production_plan.get("targets", ()),
+        )
+    )
+    production_plan["allow_prerequisite_buildings"] = True
+    _set_float_at_least(production_plan, "priority", 0.9)
+
+    current_task = payload.get("tactical_task")
+    current_task_mapping = (
+        current_task if isinstance(current_task, Mapping) else {}
+    )
+    production_targets = _merge_ordered_tokens(
+        ("TERRAN_MARINE",),
+        current_task_mapping.get("production_targets", ()),
+        production_plan.get("targets", ()),
+    )
+    payload["tactical_task"] = {
+        "task_type": "sustain_production",
+        "production_targets": list(production_targets),
+        "priority": max(
+            0.9,
+            float(current_task_mapping.get("priority", 0.0) or 0.0),
+        ),
+        "duration_seconds": 0,
+        "allow_partial": True,
+    }
+
+    # A doctrine-only macro must not inherit an accidental attack destination.
+    payload["scope"] = {}
+    payload["route_intent"] = {}
+    payload["target_intent"] = {}
+    payload["lifetime"] = {
+        "mode": "standing_order",
+        "completion_conditions": ["cancelled_by_user"],
+        "completion_state": "active",
+        "reason": "Marine-centric macro persists until superseded or cancelled",
+    }
+    payload["tags"] = list(
+        _merge_ordered_tokens(
+            payload.get("tags", ()),
+            ("marine_centric_macro", "standing_order"),
+        )
+    )
+
+
+def _positive_int(value: object) -> int:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
 
 
 def _micromachine_exact_composition_unit_count(payload: Mapping[str, object]) -> int:
@@ -2148,6 +2901,8 @@ def _canonicalize_micromachine_key(value: object) -> str:
         "STARPORT_REACTOR",
         "STIMPACK",
         "COMBATSHIELD",
+        "BANSHEE_CLOAK",
+        "YAMATO_CANNON",
     }:
         return upper
     return _CANONICAL_MICROMACHINE_KEY_ALIASES.get(
@@ -2213,6 +2968,7 @@ def _extract_provider_diagnostics(
     for field_name in (
         "failure_kind",
         "llm_repair_reason",
+        "llm_transient_retry_reason",
         "primary_refusal_reason",
     ):
         value = mapping.get(field_name, "")
@@ -2235,6 +2991,7 @@ def _refused(
     failure_kind: str = "",
     llm_attempt_count: int = 0,
     llm_repair_reason: str = "",
+    llm_transient_retry_reason: str = "",
     llm_duration_ms: int = 0,
     primary_refusal_reason: str = "",
 ) -> PolicyModulationCompileResult:
@@ -2246,6 +3003,7 @@ def _refused(
         failure_kind=failure_kind,
         llm_attempt_count=llm_attempt_count,
         llm_repair_reason=llm_repair_reason,
+        llm_transient_retry_reason=llm_transient_retry_reason,
         llm_duration_ms=llm_duration_ms,
         primary_refusal_reason=primary_refusal_reason,
     )

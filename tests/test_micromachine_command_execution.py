@@ -113,6 +113,134 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         self.assertEqual(tuple(LIVE_QA_SCENARIOS), tuple(scenarios))
         self.assertEqual("passed", scenarios["four_marine_attack"].status)
 
+    def test_observed_effect_remains_completed_after_policy_ttl(self) -> None:
+        update = _update()
+        update["expires_at_frame"] = 700
+        telemetry = _telemetry(action=True, moved=True)
+        tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("pressure",),
+        )
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=tactical,
+            expected_tactical_effects=("pressure",),
+            latest_frame=1_200,
+        )
+
+        self.assertTrue(report.ok, report.to_dict())
+        self.assertTrue(report.completed)
+        self.assertFalse(report.expired)
+        self.assertEqual("completed", report.state)
+
+    def test_production_command_ignores_unrelated_combat_actions(self) -> None:
+        update = {
+            "update_id": "qa-marine-standing",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 20_000,
+            "manager_bias_domains": ["production", "tactical_task"],
+            "vector": {
+                "goal": "keep producing marines",
+                "production": {
+                    "queue_biases": {"TERRAN_MARINE": 1.0},
+                },
+                "tactical_task": {
+                    "task_type": "sustain_production",
+                    "production_targets": ["TERRAN_MARINE"],
+                },
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["qa-marine-standing"],
+            "managers": {
+                "GameCommander": {"update_id": "qa-marine-standing"},
+                "ProductionManager": {
+                    "policy_update_id": "qa-marine-standing",
+                    "last_doctrine_action": "marine_continuity",
+                    "last_doctrine_queue_item": "Marine",
+                    "last_doctrine_update_id": "qa-marine-standing",
+                    "last_doctrine_frame": 1_100,
+                    "actual_production_command_issued_count": 0,
+                    "last_actual_production_command": "none|none",
+                    "last_actual_production_command_item": "none",
+                    "last_actual_production_command_update_id": "",
+                    "last_actual_production_command_frame": 0,
+                },
+                "CombatCommander": {
+                    "policy_update_id": "qa-marine-standing",
+                    "main_attack_order_status": "Attack",
+                    "main_attack_actual_command_issued_count": 4,
+                    "main_attack_last_action_frame": 1_150,
+                    "main_attack_last_issued_action": (
+                        "MoveToGoalOrder|squad=MainAttack|type=2|x=90|y=90"
+                    ),
+                    "main_attack_max_home_distance": 20.0,
+                },
+            },
+        }
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=1_200,
+        )
+
+        self.assertFalse(report.ok, report.to_dict())
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertTrue(stages["queued_or_assigned"].ok)
+        self.assertFalse(stages["order_issued"].ok)
+        self.assertFalse(stages["action_issued"].ok)
+        self.assertEqual("ProductionManager", stages["order_issued"].manager)
+
+    def test_inferred_production_target_completes_on_current_command(self) -> None:
+        update = {
+            "update_id": "qa-marine-standing",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 20_000,
+            "manager_bias_domains": ["production", "tactical_task"],
+            "vector": {
+                "goal": "keep producing marines",
+                "production": {
+                    "queue_biases": {"TERRAN_MARINE": 1.0},
+                },
+                "tactical_task": {
+                    "task_type": "sustain_production",
+                    "production_targets": ["TERRAN_MARINE"],
+                },
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["qa-marine-standing"],
+            "managers": {
+                "GameCommander": {"update_id": "qa-marine-standing"},
+                "ProductionManager": {
+                    "policy_update_id": "qa-marine-standing",
+                    "last_doctrine_action": "marine_continuity",
+                    "last_doctrine_queue_item": "Marine",
+                    "last_doctrine_update_id": "qa-marine-standing",
+                    "last_doctrine_frame": 1_100,
+                    "actual_production_command_issued_count": 1,
+                    "last_actual_production_command": "train_command|Marine",
+                    "last_actual_production_command_item": "Marine",
+                    "last_actual_production_command_update_id": "qa-marine-standing",
+                    "last_actual_production_command_frame": 1_100,
+                },
+            },
+        }
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=1_200,
+        )
+
+        self.assertTrue(report.ok, report.to_dict())
+        self.assertEqual("completed", report.state)
+
     def test_tactical_alias_uses_normalized_effect_for_completion(self) -> None:
         telemetry = _telemetry(action=True, moved=True)
         tactical = classify_micromachine_tactical_evidence(
@@ -1150,6 +1278,529 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         self.assertFalse(report.ok, report.to_dict())
         self.assertTrue(report.failed)
         self.assertEqual("CombatCommander", report.blocker_manager)
+
+    def test_exact_marine_scout_rejects_partial_assignment(self) -> None:
+        update = {
+            "update_id": "scout-three",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 2_000,
+            "manager_bias_domains": ["scouting", "scope", "tactical_task"],
+            "vector": {
+                "goal": "scout with exactly three marines",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 3,
+                    "max_units": 3,
+                },
+                "scope": {
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 3,
+                    "max_units": 3,
+                },
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["scout-three"],
+            "managers": {
+                "GameCommander": {"update_id": "scout-three", "frame": 1_100},
+                "CombatCommander": {
+                    "policy_update_id": "scout-three",
+                    "scout_actual_command_issued_count": 1,
+                    "scout_last_action_frame": 1_100,
+                    "scout_last_issued_action": (
+                        "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5"
+                    ),
+                    "scout_scope_requested_min_units": 3,
+                    "scout_scope_requested_max_units": 3,
+                    "scout_marine_assigned_count": 2,
+                    "scout_marine_max_home_distance": 14.0,
+                    "scout_last_commanded_unit_tag": 4242,
+                    "scout_last_commanded_unit_type": "TERRAN_MARINE",
+                },
+            },
+        }
+        tactical = MicroMachineTacticalEvidence(
+            status="passed",
+            observed_effects=("scout",),
+            missing_effects=(),
+            expected_effects=("scout",),
+            latest_frame=1_200,
+            effects=(
+                MicroMachineTacticalEffect(
+                    tag="scout",
+                    source="test",
+                    detail="scout_last_action_frame: 1100",
+                    frame=1_100,
+                    manager="CombatCommander",
+                ),
+            ),
+        )
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=tactical,
+            expected_tactical_effects=("scout",),
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        scenarios = {item.name: item for item in report.scenarios}
+        self.assertEqual("missing", scenarios["marine_scout"].status)
+        self.assertEqual(
+            3,
+            scenarios["marine_scout"].details["requested_scout_count"],
+        )
+        self.assertFalse(report.ok, report.to_dict())
+
+    def test_generic_ability_completes_only_after_current_sc2_confirmation(
+        self,
+    ) -> None:
+        update = {
+            "update_id": "ability-current",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 30_000,
+            "manager_bias_domains": ["tactical_task", "unit_roles"],
+            "vector": {
+                "goal": "use stimpack",
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "stimpack",
+                },
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "role": "execute_ability",
+                        "ability_policy": "stimpack",
+                    }
+                ],
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["ability-current"],
+            "managers": {
+                "GameCommander": {"update_id": "ability-current"},
+                "AbilityTask": {
+                    "update_id": "ability-current",
+                    "task_type": "execute_ability",
+                    "ability": "stimpack",
+                    "status": "executing",
+                    "submitted_count": 1,
+                    "last_action": "VoiExplicitAbility:stimpack",
+                    "submission_frame": 1_100,
+                    "confirmation_state": "pending",
+                    "confirmation_count": 0,
+                    "confirmation_frame": 0,
+                    "confirmation_effect": "",
+                },
+            },
+        }
+        tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("ability_cast",),
+        )
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=tactical,
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        self.assertFalse(report.ok, report.to_dict())
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertTrue(stages["order_issued"].ok)
+        self.assertTrue(stages["action_issued"].ok)
+        self.assertFalse(stages["effect_observed"].ok)
+        self.assertEqual("AbilityTask", stages["effect_observed"].manager)
+
+        telemetry["managers"]["AbilityTask"] = {
+            "update_id": "ability-current",
+            "task_type": "execute_ability",
+            "ability": "stimpack",
+            "status": "completed",
+            "phase": "effect_observed",
+            "attempt_generation": 3,
+            "submitted_attempt_generation": 3,
+            "terminal_attempt_generation": 3,
+            "submitted_count": 1,
+            "last_actual_command": "VoiExplicitAbility:stimpack",
+            "last_actual_command_frame": 1_100,
+            "confirmation_state": "confirmed",
+            "confirmation_count": 1,
+            "confirmation_frame": 1_120,
+            "confirmation_effect": "actor_buff:STIMPACK",
+        }
+        confirmed_tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("ability_cast",),
+        )
+        confirmed_report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=confirmed_tactical,
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        self.assertTrue(confirmed_report.ok, confirmed_report.to_dict())
+        self.assertEqual("completed", confirmed_report.state)
+
+    def test_generic_ability_accepts_observed_accepted_terminal(self) -> None:
+        update = {
+            "update_id": "ability-current",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 30_000,
+            "manager_bias_domains": ["tactical_task", "unit_roles"],
+            "vector": {
+                "goal": "lock on",
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "lock_on",
+                },
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_CYCLONE",
+                        "role": "execute_ability",
+                        "ability_policy": "lock_on",
+                    }
+                ],
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["ability-current"],
+            "managers": {
+                "GameCommander": {"update_id": "ability-current"},
+                "AbilityTask": {
+                    "update_id": "ability-current",
+                    "task_type": "execute_ability",
+                    "ability": "lock_on",
+                    "status": "completed",
+                    "phase": "observed_accepted",
+                    "attempt_generation": 4,
+                    "submitted_attempt_generation": 4,
+                    "observed_accepted_attempt_generation": 4,
+                    "terminal_attempt_generation": 4,
+                    "submitted_count": 1,
+                    "last_action": (
+                        "VoiExplicitAbility:lock_on|ability=EFFECT_LOCKON"
+                    ),
+                    "submission_frame": 1_100,
+                    "observed_accepted_frame": 1_104,
+                    "observed_accepted_evidence": (
+                        "actor_order:EFFECT_LOCKON"
+                    ),
+                    "confirmation_state": "accepted",
+                    "confirmation_count": 0,
+                    "confirmation_frame": 0,
+                    "confirmation_effect": "actor_order:EFFECT_LOCKON",
+                },
+            },
+        }
+        tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("ability_cast",),
+        )
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=tactical,
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        self.assertTrue(report.ok, report.to_dict())
+        self.assertEqual("completed", report.state)
+
+    def test_generic_ability_accepts_already_satisfied_terminal(self) -> None:
+        update = {
+            "update_id": "ability-current",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 30_000,
+            "manager_bias_domains": ["tactical_task", "unit_roles"],
+            "vector": {
+                "goal": "fighter mode",
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "viking_fighter_mode",
+                },
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_VIKINGFIGHTER",
+                        "role": "execute_ability",
+                        "ability_policy": "viking_fighter_mode",
+                    }
+                ],
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["ability-current"],
+            "managers": {
+                "GameCommander": {"update_id": "ability-current"},
+                "AbilityTask": {
+                    "update_id": "ability-current",
+                    "task_type": "execute_ability",
+                    "ability": "viking_fighter_mode",
+                    "status": "completed",
+                    "phase": "effect_observed",
+                    "attempt_generation": 5,
+                    "submitted_attempt_generation": 0,
+                    "terminal_attempt_generation": 5,
+                    "submitted_count": 0,
+                    "last_action": "",
+                    "submission_frame": 0,
+                    "confirmation_state": "confirmed",
+                    "confirmation_count": 1,
+                    "confirmation_frame": 1_120,
+                    "confirmation_effect": (
+                        "already_satisfied:"
+                        "unit_type:TERRAN_VIKINGFIGHTER"
+                    ),
+                },
+            },
+        }
+        tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("ability_cast",),
+        )
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=tactical,
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        self.assertTrue(report.ok, report.to_dict())
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertTrue(stages["order_issued"].ok)
+        self.assertTrue(stages["action_issued"].ok)
+        self.assertIn(
+            "already satisfied",
+            stages["action_issued"].reason,
+        )
+
+    def test_generic_ability_rejects_confirmed_stale_update(self) -> None:
+        update = {
+            "update_id": "ability-current",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 30_000,
+            "manager_bias_domains": ["tactical_task"],
+            "vector": {
+                "goal": "use stimpack",
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "stimpack",
+                },
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["ability-current"],
+            "managers": {
+                "GameCommander": {"update_id": "ability-current"},
+                "AbilityTask": {
+                    "update_id": "ability-stale",
+                    "task_type": "execute_ability",
+                    "ability": "stimpack",
+                    "status": "completed",
+                    "phase": "effect_observed",
+                    "attempt_generation": 3,
+                    "submitted_attempt_generation": 3,
+                    "terminal_attempt_generation": 3,
+                    "submitted_count": 1,
+                    "last_action": "VoiExplicitAbility:stimpack",
+                    "submission_frame": 1_100,
+                    "confirmation_state": "confirmed",
+                    "confirmation_count": 1,
+                    "confirmation_frame": 1_120,
+                    "confirmation_effect": "actor_buff:STIMPACK",
+                },
+            },
+        }
+        tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("ability_cast",),
+        )
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=tactical,
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        self.assertFalse(tactical.ok, tactical.to_dict())
+        self.assertFalse(report.ok, report.to_dict())
+        self.assertEqual("AbilityTask", report.blocker_manager)
+
+    def test_generic_ability_rejects_unrelated_confirmation_effect(self) -> None:
+        update = {
+            "update_id": "ability-current",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 30_000,
+            "manager_bias_domains": ["tactical_task"],
+            "vector": {
+                "goal": "use stimpack",
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "stimpack",
+                },
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["ability-current"],
+            "managers": {
+                "GameCommander": {"update_id": "ability-current"},
+                "AbilityTask": {
+                    "update_id": "ability-current",
+                    "task_type": "execute_ability",
+                    "ability": "stimpack",
+                    "status": "completed",
+                    "submitted_count": 1,
+                    "last_action": (
+                        "VoiExplicitAbility:stimpack|ability=EFFECT_STIM"
+                    ),
+                    "submission_frame": 1_100,
+                    "confirmation_state": "confirmed",
+                    "confirmation_count": 1,
+                    "confirmation_frame": 1_120,
+                    "confirmation_effect": (
+                        "unit_type:TERRAN_SIEGETANKSIEGED"
+                    ),
+                },
+            },
+        }
+        tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("ability_cast",),
+        )
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=tactical,
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        self.assertFalse(tactical.ok, tactical.to_dict())
+        self.assertFalse(report.ok, report.to_dict())
+        self.assertEqual("AbilityTask", report.blocker_manager)
+
+    def test_tactical_nuke_completes_only_after_current_sc2_confirmation(
+        self,
+    ) -> None:
+        update = {
+            "update_id": "nuke-current",
+            "issued_at_frame": 1_000,
+            "expires_at_frame": 30_000,
+            "manager_bias_domains": [
+                "production",
+                "tactical_task",
+                "unit_roles",
+            ],
+            "vector": {
+                "goal": "launch a tactical nuke",
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "tactical_nuke",
+                    "production_targets": ["TERRAN_NUKE"],
+                    "duration_seconds": 0,
+                },
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_GHOST",
+                        "role": "execute_ability",
+                        "ability_policy": "tactical_nuke",
+                    }
+                ],
+            },
+        }
+        telemetry = {
+            "frame": 1_200,
+            "active_modulation_ids": ["nuke-current"],
+            "managers": {
+                "AbilityTask": {
+                    "update_id": "nuke-current",
+                    "ability": "tactical_nuke",
+                    "status": "confirming",
+                    "cast_submitted_count": 1,
+                    "cast_submitted_action": (
+                        "VoiRoleGhostTacticalNuke|squad=|type=6|"
+                        "ability=EFFECT_NUKECALLDOWN|x=80|y=80"
+                    ),
+                    "cast_submission_frame": 1_100,
+                    "confirmation_state": "pending",
+                    "confirmation_count": 0,
+                    "confirmation_frame": 0,
+                    "confirmation_effect": "",
+                },
+            },
+        }
+        tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("ability_cast",),
+        )
+
+        report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=tactical,
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        self.assertFalse(report.ok, report.to_dict())
+        self.assertEqual("AbilityTask", report.blocker_manager)
+        scenarios = {item.name: item for item in report.scenarios}
+        self.assertEqual("missing", scenarios["tactical_nuke_ability_cast"].status)
+
+        telemetry["managers"]["AbilityTask"] = {
+            "update_id": "nuke-current",
+            "ability": "tactical_nuke",
+            "status": "confirmed",
+            "cast_submitted_count": 1,
+            "cast_submitted_action": (
+                "VoiRoleGhostTacticalNuke|squad=|type=6|"
+                "ability=EFFECT_NUKECALLDOWN|x=80|y=80"
+            ),
+            "cast_submission_frame": 1_100,
+            "confirmation_state": "confirmed",
+            "confirmation_count": 1,
+            "confirmation_frame": 1_120,
+            "confirmation_effect": "payload_consumed:TERRAN_NUKE",
+        }
+        confirmed_tactical = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("ability_cast",),
+        )
+        confirmed_report = classify_micromachine_command_execution(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            tactical_evidence=confirmed_tactical,
+            latest_frame=1_200,
+            target_frame=1_100,
+        )
+
+        self.assertTrue(confirmed_report.ok, confirmed_report.to_dict())
+        confirmed_scenarios = {
+            item.name: item for item in confirmed_report.scenarios
+        }
+        self.assertEqual(
+            "passed",
+            confirmed_scenarios["tactical_nuke_ability_cast"].status,
+        )
 
 
 if __name__ == "__main__":

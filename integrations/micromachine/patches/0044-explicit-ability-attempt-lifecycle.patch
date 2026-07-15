@@ -1,0 +1,1506 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index ca8bd36..dbdeb82 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -51,6 +51,8 @@ constexpr size_t ExplicitAbilityStagingQueryBatchSize = 64;
+ constexpr uint32_t ExplicitAbilityStagingProgressTimeoutFrames = 22u * 8u;
+ constexpr float ExplicitAbilityStagingProgressEpsilonSq = 1.0f;
+ constexpr float ExplicitAbilityRejectedStagingRadiusSq = 4.0f * 4.0f;
++constexpr uint32_t ExplicitAbilityConfirmationTimeoutFrames = 224u;
++constexpr float ExplicitAbilityOrderPositionToleranceSq = 1.0f;
+ 
+ struct VoiTacticalNukeTarget
+ {
+@@ -88,10 +90,6 @@ struct VoiExplicitAbilitySpec
+ 
+ const sc2::AbilityID VoiRavenInterferenceMatrixAbility(3747);
+ const sc2::AbilityID VoiRavenAntiArmorMissileAbility(3753);
+-const sc2::BUFF_ID VoiRavenInterferenceMatrixBuff =
+-	static_cast<sc2::BUFF_ID>(277);
+-const sc2::BUFF_ID VoiRavenAntiArmorMissileBuff =
+-	static_cast<sc2::BUFF_ID>(280);
+ 
+ bool voiResolveExplicitAbilitySpec(
+ 	const std::string & abilityName,
+@@ -232,6 +230,283 @@ bool voiResolveExplicitAbilitySpec(
+ 	return true;
+ }
+ 
++bool voiExplicitAbilityIsIrreversible(
++	const std::string & abilityName)
++{
++	return abilityName != "siege_mode"
++		&& abilityName != "unsiege"
++		&& abilityName != "widow_mine_burrow"
++		&& abilityName != "widow_mine_unburrow"
++		&& abilityName != "ghost_cloak"
++		&& abilityName != "ghost_decloak"
++		&& abilityName != "hellbat_mode"
++		&& abilityName != "hellion_mode"
++		&& abilityName != "thor_high_impact_mode"
++		&& abilityName != "thor_explosive_mode"
++		&& abilityName != "medivac_heal"
++		&& abilityName != "viking_fighter_mode"
++		&& abilityName != "viking_assault_mode"
++		&& abilityName != "liberator_defender_mode"
++		&& abilityName != "liberator_fighter_mode"
++		&& abilityName != "banshee_cloak"
++		&& abilityName != "banshee_decloak";
++}
++
++bool voiExplicitAbilityAcceptanceIsTerminal(
++	const std::string & abilityName)
++{
++	return abilityName == "lock_on"
++		|| abilityName == "interference_matrix"
++		|| abilityName == "anti_armor_missile";
++}
++
++bool voiExpectedActorBuff(
++	const std::string & abilityName,
++	const sc2::Unit * actor,
++	sc2::BUFF_ID & buff)
++{
++	if (actor == nullptr)
++	{
++		return false;
++	}
++	if (abilityName == "stimpack")
++	{
++		if (actor->unit_type == sc2::UNIT_TYPEID::TERRAN_MARINE)
++		{
++			buff = sc2::BUFF_ID::STIMPACK;
++			return true;
++		}
++		if (actor->unit_type == sc2::UNIT_TYPEID::TERRAN_MARAUDER)
++		{
++			buff = sc2::BUFF_ID::STIMPACKMARAUDER;
++			return true;
++		}
++		return false;
++	}
++	if (abilityName == "marine_stimpack")
++	{
++		buff = sc2::BUFF_ID::STIMPACK;
++		return true;
++	}
++	if (abilityName == "marauder_stimpack")
++	{
++		buff = sc2::BUFF_ID::STIMPACKMARAUDER;
++		return true;
++	}
++	if (abilityName == "medivac_afterburners")
++	{
++		buff = sc2::BUFF_ID::MEDIVACSPEEDBOOST;
++		return true;
++	}
++	return false;
++}
++
++bool voiActorHasExpectedBuff(
++	const std::string & abilityName,
++	const sc2::Unit * actor)
++{
++	sc2::BUFF_ID buff = static_cast<sc2::BUFF_ID>(0);
++	return voiExpectedActorBuff(abilityName, actor, buff)
++		&& Util::unitHasBuff(actor, buff);
++}
++
++bool voiExplicitAbilityDesiredStateSatisfied(
++	const std::string & abilityName,
++	const sc2::Unit * actor,
++	std::string & evidence)
++{
++	if (actor == nullptr)
++	{
++		return false;
++	}
++	const auto actorIs =
++		[&](sc2::UNIT_TYPEID type, const std::string & typeName)
++		{
++			if (actor->unit_type != type)
++			{
++				return false;
++			}
++			evidence = "unit_type:" + typeName;
++			return true;
++		};
++	if (abilityName == "siege_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED,
++			"TERRAN_SIEGETANKSIEGED");
++	}
++	if (abilityName == "unsiege")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_SIEGETANK,
++			"TERRAN_SIEGETANK");
++	}
++	if (abilityName == "widow_mine_burrow")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED,
++			"TERRAN_WIDOWMINEBURROWED");
++	}
++	if (abilityName == "widow_mine_unburrow")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_WIDOWMINE,
++			"TERRAN_WIDOWMINE");
++	}
++	if (abilityName == "hellbat_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_HELLIONTANK,
++			"TERRAN_HELLIONTANK");
++	}
++	if (abilityName == "hellion_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_HELLION,
++			"TERRAN_HELLION");
++	}
++	if (abilityName == "thor_high_impact_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_THORAP,
++			"TERRAN_THORAP");
++	}
++	if (abilityName == "thor_explosive_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_THOR,
++			"TERRAN_THOR");
++	}
++	if (abilityName == "viking_fighter_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER,
++			"TERRAN_VIKINGFIGHTER");
++	}
++	if (abilityName == "viking_assault_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT,
++			"TERRAN_VIKINGASSAULT");
++	}
++	if (abilityName == "liberator_defender_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_LIBERATORAG,
++			"TERRAN_LIBERATORAG");
++	}
++	if (abilityName == "liberator_fighter_mode")
++	{
++		return actorIs(
++			sc2::UNIT_TYPEID::TERRAN_LIBERATOR,
++			"TERRAN_LIBERATOR");
++	}
++	if (abilityName == "ghost_cloak"
++		|| abilityName == "banshee_cloak")
++	{
++		if (actor->cloak == sc2::Unit::NotCloaked
++			|| actor->cloak == sc2::Unit::Unknown)
++		{
++			return false;
++		}
++		evidence = "cloak_state:cloaked";
++		return true;
++	}
++	if (abilityName == "ghost_decloak"
++		|| abilityName == "banshee_decloak")
++	{
++		if (actor->cloak != sc2::Unit::NotCloaked)
++		{
++			return false;
++		}
++		evidence = "cloak_state:not_cloaked";
++		return true;
++	}
++	if (abilityName == "stimpack"
++		|| abilityName == "marine_stimpack"
++		|| abilityName == "marauder_stimpack"
++		|| abilityName == "medivac_afterburners")
++	{
++		sc2::BUFF_ID buff = static_cast<sc2::BUFF_ID>(0);
++		if (!voiExpectedActorBuff(abilityName, actor, buff)
++			|| !Util::unitHasBuff(actor, buff))
++		{
++			return false;
++		}
++		evidence = "actor_buff:"
++			+ std::string(
++				abilityName == "medivac_afterburners"
++					? "MEDIVACSPEEDBOOST"
++					: (buff == sc2::BUFF_ID::STIMPACK
++						? "STIMPACK"
++						: "STIMPACKMARAUDER"));
++		return true;
++	}
++	if (abilityName == "medivac_unload_all"
++		&& actor->cargo_space_taken == 0
++		&& actor->passengers.empty())
++	{
++		evidence = "cargo:empty";
++		return true;
++	}
++	return false;
++}
++
++std::set<sc2::Tag> voiPassengerTags(const sc2::Unit * actor)
++{
++	std::set<sc2::Tag> result;
++	if (actor == nullptr)
++	{
++		return result;
++	}
++	for (const auto & passenger : actor->passengers)
++	{
++		result.insert(passenger.tag);
++	}
++	return result;
++}
++
++bool voiActorHasExactAbilityOrder(
++	const sc2::Unit * actor,
++	sc2::AbilityID abilityId,
++	sc2::Tag targetTag,
++	const CCPosition & targetPosition)
++{
++	if (actor == nullptr)
++	{
++		return false;
++	}
++	for (const auto & order : actor->orders)
++	{
++		if (order.ability_id != abilityId)
++		{
++			continue;
++		}
++		if (targetTag != 0)
++		{
++			if (order.target_unit_tag == targetTag)
++			{
++				return true;
++			}
++			continue;
++		}
++		if (targetPosition != CCPosition())
++		{
++			if (order.target_unit_tag == 0
++				&& Util::DistSq(
++					order.target_pos,
++					targetPosition)
++					<= ExplicitAbilityOrderPositionToleranceSq)
++			{
++				return true;
++			}
++			continue;
++		}
++		return true;
++	}
++	return false;
++}
++
+ bool voiExplicitAbilityUsesLocationStaging(
+ 	const std::string & abilityName,
+ 	VoiExplicitAbilityTargetKind targetKind)
+@@ -652,6 +927,14 @@ std::string voiActionEvidence(const UnitAction & action)
+ 	{
+ 		ss << "|target=" << action.target->tag;
+ 	}
++	if (action.explicitAbilityAttemptGeneration != 0)
++	{
++		ss << "|explicit_update=" << action.explicitAbilityUpdateId
++			<< "|explicit_task=" << action.explicitAbilityTaskId
++			<< "|explicit_name=" << action.explicitAbilityName
++			<< "|attempt="
++			<< action.explicitAbilityAttemptGeneration;
++	}
+ 	return ss.str();
+ }
+ 
+@@ -1482,6 +1765,96 @@ CombatCommander::CombatCommander(CCBot & bot)
+ {
+ }
+ 
++void CombatCommander::bindCurrentVoiExplicitAbilityAttempt(
++	UnitAction & action) const
++{
++	action.explicitAbilityAttemptGeneration =
++		m_voiExplicitAbilityAttemptGeneration;
++	action.explicitAbilityUpdateId =
++		m_voiExplicitAbilityUpdateId;
++	action.explicitAbilityTaskId =
++		m_voiExplicitAbilityTaskId;
++	action.explicitAbilityName =
++		m_voiExplicitAbilityAttemptAbility;
++}
++
++bool CombatCommander::isCurrentVoiExplicitAbilityAttempt(
++	const UnitAction & action) const
++{
++	return action.explicitAbilityAttemptGeneration != 0
++		&& action.explicitAbilityAttemptGeneration
++			== m_voiExplicitAbilityAttemptGeneration
++		&& action.explicitAbilityUpdateId
++			== m_voiExplicitAbilityUpdateId
++		&& action.explicitAbilityTaskId
++			== m_voiExplicitAbilityTaskId
++		&& action.explicitAbilityName
++			== m_voiExplicitAbilityAttemptAbility;
++}
++
++void CombatCommander::discardVoiExplicitAbilityActions()
++{
++	for (auto it = unitActions.begin();
++		it != unitActions.end();)
++	{
++		const UnitAction & action = it->second;
++		const bool explicitAction =
++			action.explicitAbilityAttemptGeneration != 0
++			|| action.description.rfind(
++				"VoiExplicitAbility:",
++				0) == 0
++			|| action.description.rfind(
++				"VoiExplicitAbilityStage:",
++				0) == 0;
++		if (explicitAction)
++		{
++			it = unitActions.erase(it);
++		}
++		else
++		{
++			++it;
++		}
++	}
++}
++
++void CombatCommander::advanceVoiExplicitAbilityAttempt()
++{
++	discardVoiExplicitAbilityActions();
++	++m_voiExplicitAbilityAttemptGeneration;
++	if (m_voiExplicitAbilityAttemptGeneration == 0)
++	{
++		m_voiExplicitAbilityAttemptGeneration = 1;
++	}
++	m_voiExplicitAbilityAwaitingConfirmation = false;
++	m_voiExplicitAbilityObservedAccepted = false;
++	m_lastVoiExplicitAbilitySubmissionFrame = 0;
++	m_lastVoiExplicitAbilitySubmittedAttemptGeneration = 0;
++	m_lastVoiExplicitAbilityObservedAcceptedFrame = 0;
++	m_lastVoiExplicitAbilityObservedAcceptedAttemptGeneration = 0;
++	m_lastVoiExplicitAbilityObservedAcceptedEvidence = "";
++	m_lastVoiExplicitAbilityTerminalAttemptGeneration = 0;
++	m_lastVoiExplicitAbilityActorPosition = CCPosition();
++	m_lastVoiExplicitAbilityActorEnergy = 0.0f;
++	m_lastVoiExplicitAbilityActorCargo = 0;
++	m_lastVoiExplicitAbilityActorPassengerTags.clear();
++	m_lastVoiExplicitAbilityAvailableAtSubmission = false;
++	m_lastVoiExplicitAbilityTargetHealth = 0.0f;
++	m_lastVoiExplicitAbilityTargetShield = 0.0f;
++	m_lastVoiExplicitAbilityTargetEnergy = 0.0f;
++	m_lastVoiExplicitAbilityActorTypeAtSubmission =
++		sc2::UNIT_TYPEID::INVALID;
++	m_lastVoiExplicitAbilityActorCloakAtSubmission =
++		sc2::Unit::Unknown;
++	m_lastVoiExplicitAbilityActorHealth = 0.0f;
++	m_lastVoiExplicitAbilityActorHadExpectedBuff = false;
++	m_lastVoiExplicitAbilityTargetWasPresent = false;
++	m_lastVoiExplicitAbilityActorOrderObserved = false;
++	m_lastVoiExplicitAbilityActorTargetOrderObserved = false;
++	m_lastVoiExplicitAbilitySpawnedUnitTags.clear();
++	m_lastVoiExplicitAbilityConfirmationState = "unconfirmed";
++	m_lastVoiExplicitAbilityConfirmationEffect = "";
++}
++
+ void CombatCommander::onStart()
+ {
+ 	for (auto& ability : m_bot.Observation()->GetAbilityData())
+@@ -2042,11 +2415,15 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		|| operationKey != m_voiExplicitAbilityOperationKey)
+ 	{
+ 		m_voiExplicitAbilityUpdateId = updateId;
++		m_voiExplicitAbilityTaskId = taskId;
++		m_voiExplicitAbilityAttemptAbility = abilityName;
+ 		m_voiExplicitAbilityOperationKey = operationKey;
++		advanceVoiExplicitAbilityAttempt();
+ 		m_lastVoiExplicitAbilityName = "";
+ 		m_lastVoiExplicitAbilityStatus = "inactive";
+ 		m_lastVoiExplicitAbilityReason =
+ 			"No explicit ability task requested";
++		m_lastVoiExplicitAbilityPhase = "idle";
+ 		m_lastVoiExplicitAbilityActorTag = 0;
+ 		m_lastVoiExplicitAbilityActorType = "";
+ 		m_lastVoiExplicitAbilityTargetTag = 0;
+@@ -2056,18 +2433,8 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		m_lastVoiExplicitAbilitySubmittedCount = 0;
+ 		m_lastVoiExplicitAbilityFrame = 0;
+ 		m_lastVoiExplicitAbilityAction = "";
+-		m_voiExplicitAbilityAwaitingConfirmation = false;
+-		m_lastVoiExplicitAbilitySubmissionFrame = 0;
+-		m_lastVoiExplicitAbilityActorPosition = CCPosition();
+-		m_lastVoiExplicitAbilityActorEnergy = 0.0f;
+-		m_lastVoiExplicitAbilityActorCargo = 0;
+-		m_lastVoiExplicitAbilityTargetHealth = 0.0f;
+-		m_lastVoiExplicitAbilityTargetShield = 0.0f;
+-		m_lastVoiExplicitAbilityTargetEnergy = 0.0f;
+-		m_lastVoiExplicitAbilityConfirmationState = "unconfirmed";
+ 		m_lastVoiExplicitAbilityConfirmationCount = 0;
+ 		m_lastVoiExplicitAbilityConfirmationFrame = 0;
+-		m_lastVoiExplicitAbilityConfirmationEffect = "";
+ 		m_lastVoiExplicitAbilityLocationIntent = "";
+ 		m_voiExplicitAbilityStagingActorTag = 0;
+ 		m_lastVoiExplicitAbilityStagingPosition = CCPosition();
+@@ -2079,17 +2446,6 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		m_lastVoiExplicitAbilityStagingIssuedAction = "";
+ 		m_lastVoiExplicitAbilityActorHomeDistance = 0.0f;
+ 		m_maxVoiExplicitAbilityActorHomeDistance = 0.0f;
+-		m_lastVoiExplicitAbilityActorTypeAtSubmission =
+-			sc2::UNIT_TYPEID::INVALID;
+-		m_lastVoiExplicitAbilityActorCloakAtSubmission =
+-			sc2::Unit::Unknown;
+-		m_lastVoiExplicitAbilityActorHealth = 0.0f;
+-		m_lastVoiExplicitAbilityActorHadExpectedBuff = false;
+-			m_lastVoiExplicitAbilityTargetHadExpectedBuff = false;
+-			m_lastVoiExplicitAbilityTargetWasPresent = false;
+-			m_lastVoiExplicitAbilityActorOrderObserved = false;
+-			m_lastVoiExplicitAbilityActorTargetOrderObserved = false;
+-			m_lastVoiExplicitAbilityAutoTurretTags.clear();
+ 		m_voiExplicitAbilityStagingBestDistanceSq = 0.0f;
+ 		m_voiExplicitAbilityStagingLastProgressFrame = 0;
+ 		m_voiExplicitAbilityRejectedStagingPositions.clear();
+@@ -2115,15 +2471,25 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			"Unsupported tactical_task.ability";
+ 		return;
+ 	}
+-	if (m_lastVoiExplicitAbilityConfirmationCount > 0)
++	if (m_lastVoiExplicitAbilityTerminalAttemptGeneration
++			== m_voiExplicitAbilityAttemptGeneration
++		&& (m_lastVoiExplicitAbilityStatus == "completed"
++			|| m_lastVoiExplicitAbilityStatus == "refused"))
+ 	{
+-		m_lastVoiExplicitAbilityStatus = "completed";
+-		m_lastVoiExplicitAbilityReason =
+-			"Explicit ability effect was observed in subsequent SC2 state";
+ 		return;
+ 	}
+ 	if (m_voiExplicitAbilityAwaitingConfirmation)
+ 	{
++		if (m_lastVoiExplicitAbilitySubmittedAttemptGeneration
++			!= m_voiExplicitAbilityAttemptGeneration)
++		{
++			advanceVoiExplicitAbilityAttempt();
++			m_lastVoiExplicitAbilityStatus = "retrying";
++			m_lastVoiExplicitAbilityReason =
++				"Discarded stale submission state from an older explicit ability attempt";
++			m_lastVoiExplicitAbilityPhase = "retrying";
++			return;
++		}
+ 		const sc2::Unit * actor =
+ 			m_bot.Observation()->GetUnit(
+ 				m_lastVoiExplicitAbilityActorTag);
+@@ -2133,62 +2499,15 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 					m_lastVoiExplicitAbilityTargetTag)
+ 				: nullptr;
+ 		std::string confirmationEffect;
+-		const auto actorHasBuff =
+-			[&](sc2::BUFF_ID buff)
+-			{
+-				return actor != nullptr
+-					&& Util::unitHasBuff(actor, buff);
+-			};
+-		const auto actorHasOrder =
+-			[&]()
+-			{
+-				if (actor == nullptr)
+-				{
+-					return false;
+-				}
+-				for (const auto & order : actor->orders)
+-				{
+-					if (order.ability_id == spec.abilityId)
+-					{
+-						return true;
+-					}
+-				}
+-				return false;
+-			};
+-		const auto actorHasOrderForTarget =
+-			[&]()
+-			{
+-				if (actor == nullptr
+-					|| m_lastVoiExplicitAbilityTargetTag == 0)
+-				{
+-					return false;
+-				}
+-				for (const auto & order : actor->orders)
+-				{
+-					if (order.ability_id == spec.abilityId
+-						&& order.target_unit_tag
+-							== m_lastVoiExplicitAbilityTargetTag)
+-					{
+-						return true;
+-					}
+-				}
+-				return false;
+-			};
+-		const auto actorIsType =
+-			[&](sc2::UNIT_TYPEID type)
+-			{
+-				return actor != nullptr
+-					&& actor->unit_type == type;
+-			};
+-		const auto actorChangedToType =
+-			[&](sc2::UNIT_TYPEID type)
+-			{
+-				return actorIsType(type)
+-					&& m_lastVoiExplicitAbilityActorTypeAtSubmission
+-						!= type;
+-			};
+-		const bool actorOrderObserved = actorHasOrder();
+-		const bool actorTargetOrderObserved = actorHasOrderForTarget();
++		const bool actorOrderObserved =
++			voiActorHasExactAbilityOrder(
++				actor,
++				spec.abilityId,
++				m_lastVoiExplicitAbilityTargetTag,
++				m_lastVoiExplicitAbilityTargetPosition);
++		const bool actorTargetOrderObserved =
++			m_lastVoiExplicitAbilityTargetTag != 0
++			&& actorOrderObserved;
+ 		if (actorOrderObserved)
+ 		{
+ 			m_lastVoiExplicitAbilityActorOrderObserved = true;
+@@ -2203,182 +2522,105 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 				< m_lastVoiExplicitAbilityActorEnergy - 0.1f;
+ 		const bool abilityAvailabilityConsumed =
+ 			actor != nullptr
++			&& m_lastVoiExplicitAbilityAvailableAtSubmission
+ 			&& !Util::IsAbilityAvailable(
+ 				spec.abilityId,
+ 				actor,
+ 				m_unitsAbilities);
+-		const bool actorCommitted =
++		std::string desiredStateEvidence;
++		const bool desiredStateSatisfied =
++			voiExplicitAbilityDesiredStateSatisfied(
++				abilityName,
++				actor,
++				desiredStateEvidence);
++		const bool actorAccepted =
+ 			m_lastVoiExplicitAbilityActorOrderObserved
+ 			|| actorEnergySpent
+-			|| abilityAvailabilityConsumed;
+-		bool confirmed = false;
+-		if (abilityName == "siege_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_SIEGETANKSIEGED";
+-		}
+-		else if (abilityName == "unsiege"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_SIEGETANK))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_SIEGETANK";
+-		}
+-		else if (abilityName == "widow_mine_burrow"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_WIDOWMINEBURROWED";
+-		}
+-		else if (abilityName == "widow_mine_unburrow"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_WIDOWMINE))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_WIDOWMINE";
+-		}
+-		else if (abilityName == "hellbat_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_HELLIONTANK))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_HELLIONTANK";
+-		}
+-		else if (abilityName == "hellion_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_HELLION))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_HELLION";
+-		}
+-		else if (abilityName == "thor_high_impact_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_THORAP))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_THORAP";
+-		}
+-		else if (abilityName == "thor_explosive_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_THOR))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_THOR";
+-		}
+-		else if (abilityName == "viking_fighter_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_VIKINGFIGHTER";
+-		}
+-		else if (abilityName == "viking_assault_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_VIKINGASSAULT";
+-		}
+-		else if (abilityName == "liberator_defender_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_LIBERATORAG))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_LIBERATORAG";
+-		}
+-		else if (abilityName == "liberator_fighter_mode"
+-			&& actorChangedToType(
+-				sc2::UNIT_TYPEID::TERRAN_LIBERATOR))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "unit_type:TERRAN_LIBERATOR";
+-		}
+-		else if ((abilityName == "ghost_cloak"
+-				|| abilityName == "banshee_cloak")
+-			&& actor != nullptr
+-			&& actor->cloak != sc2::Unit::NotCloaked
+-			&& actor->cloak != sc2::Unit::Unknown
+-			&& (m_lastVoiExplicitAbilityActorCloakAtSubmission
+-					== sc2::Unit::NotCloaked
+-				|| m_lastVoiExplicitAbilityActorCloakAtSubmission
+-					== sc2::Unit::Unknown))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "cloak_state:cloaked";
+-		}
+-		else if ((abilityName == "ghost_decloak"
+-				|| abilityName == "banshee_decloak")
+-			&& actor != nullptr
+-			&& actor->cloak == sc2::Unit::NotCloaked
+-			&& m_lastVoiExplicitAbilityActorCloakAtSubmission
+-				!= sc2::Unit::NotCloaked
+-			&& m_lastVoiExplicitAbilityActorCloakAtSubmission
+-				!= sc2::Unit::Unknown)
+-		{
+-			confirmed = true;
+-			confirmationEffect = "cloak_state:not_cloaked";
+-		}
+-		else if ((abilityName == "stimpack"
+-				|| abilityName == "marine_stimpack")
+-			&& !m_lastVoiExplicitAbilityActorHadExpectedBuff
+-			&& actor != nullptr
+-			&& actor->health
+-				< m_lastVoiExplicitAbilityActorHealth - 0.1f
+-			&& actorHasBuff(sc2::BUFF_ID::STIMPACK))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "buff:STIMPACK";
+-		}
+-		else if (abilityName == "marauder_stimpack"
+-			&& !m_lastVoiExplicitAbilityActorHadExpectedBuff
+-			&& actor != nullptr
+-			&& actor->health
+-				< m_lastVoiExplicitAbilityActorHealth - 0.1f
+-			&& actorHasBuff(
+-				sc2::BUFF_ID::STIMPACKMARAUDER))
++			|| abilityAvailabilityConsumed
++			|| desiredStateSatisfied;
++		if (actorAccepted && !m_voiExplicitAbilityObservedAccepted)
+ 		{
+-			confirmed = true;
+-			confirmationEffect = "buff:STIMPACKMARAUDER";
+-		}
+-		else if (abilityName == "medivac_afterburners"
+-			&& !m_lastVoiExplicitAbilityActorHadExpectedBuff
+-			&& actorHasBuff(
+-				sc2::BUFF_ID::MEDIVACSPEEDBOOST))
+-		{
+-			confirmed = true;
+-			confirmationEffect = "buff:MEDIVACSPEEDBOOST";
++			m_voiExplicitAbilityObservedAccepted = true;
++			m_lastVoiExplicitAbilityObservedAcceptedFrame =
++				m_bot.GetGameLoop();
++			m_lastVoiExplicitAbilityObservedAcceptedAttemptGeneration =
++				m_voiExplicitAbilityAttemptGeneration;
++			if (m_lastVoiExplicitAbilityActorOrderObserved)
++			{
++				m_lastVoiExplicitAbilityObservedAcceptedEvidence =
++					"actor_order:"
++					+ std::string(
++						sc2::AbilityTypeToName(spec.abilityId));
++			}
++			else if (actorEnergySpent)
++			{
++				m_lastVoiExplicitAbilityObservedAcceptedEvidence =
++					"actor_energy:decreased";
++			}
++			else if (desiredStateSatisfied)
++			{
++				m_lastVoiExplicitAbilityObservedAcceptedEvidence =
++					desiredStateEvidence;
++			}
++			else
++			{
++				m_lastVoiExplicitAbilityObservedAcceptedEvidence =
++					"ability_availability:consumed";
++			}
++			m_lastVoiExplicitAbilityPhase = "observed_accepted";
++			m_lastVoiExplicitAbilityStatus = "accepted";
++			m_lastVoiExplicitAbilityReason =
++				"SC2 observation accepted the exact explicit ability attempt";
++			m_lastVoiExplicitAbilityConfirmationState = "accepted";
++			m_lastVoiExplicitAbilityConfirmationEffect =
++				m_lastVoiExplicitAbilityObservedAcceptedEvidence;
+ 		}
+-		else if (abilityName == "lock_on"
+-			&& target != nullptr
+-			&& !m_lastVoiExplicitAbilityTargetHadExpectedBuff
+-			&& actorCommitted
+-			&& Util::unitHasBuff(
+-				target,
+-				sc2::BUFF_ID::LOCKON))
++		bool confirmed = false;
++		if (desiredStateSatisfied
++			&& !m_lastVoiExplicitAbilityActorHadExpectedBuff)
+ 		{
+ 			confirmed = true;
+-			confirmationEffect = "target_buff:LOCKON";
++			confirmationEffect = desiredStateEvidence;
+ 		}
+ 		else if (abilityName == "medivac_load"
+ 			&& actor != nullptr
+-			&& actorCommitted
+-			&& actor->cargo_space_taken
+-				> m_lastVoiExplicitAbilityActorCargo)
++			&& actorAccepted)
+ 		{
+-			confirmed = true;
+-			confirmationEffect = "cargo:loaded";
++			const std::set<sc2::Tag> currentPassengers =
++				voiPassengerTags(actor);
++			for (const sc2::Tag passengerTag : currentPassengers)
++			{
++				if (m_lastVoiExplicitAbilityActorPassengerTags.count(
++						passengerTag) == 0)
++				{
++					confirmed = true;
++					confirmationEffect =
++						"cargo:passenger_loaded";
++					break;
++				}
++			}
++			if (!confirmed
++				&& actor->cargo_space_taken
++					> m_lastVoiExplicitAbilityActorCargo)
++			{
++				confirmed = true;
++				confirmationEffect = "cargo:loaded";
++			}
+ 		}
+ 		else if (abilityName == "medivac_unload_all"
+ 			&& actor != nullptr
+-			&& actorCommitted
+-			&& actor->cargo_space_taken
+-				< m_lastVoiExplicitAbilityActorCargo)
++			&& actorAccepted)
+ 		{
+-			confirmed = true;
+-			confirmationEffect = "cargo:unloaded";
++			const std::set<sc2::Tag> currentPassengers =
++				voiPassengerTags(actor);
++			if (actor->cargo_space_taken
++					< m_lastVoiExplicitAbilityActorCargo
++				|| currentPassengers.size()
++					< m_lastVoiExplicitAbilityActorPassengerTags.size())
++			{
++				confirmed = true;
++				confirmationEffect = "cargo:unloaded";
++			}
+ 		}
+ 		else if (abilityName == "medivac_heal"
+ 			&& target != nullptr
+@@ -2391,7 +2633,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		}
+ 		else if (abilityName == "emp"
+ 			&& target != nullptr
+-			&& actorCommitted
++			&& actorAccepted
+ 			&& actorEnergySpent
+ 			&& (target->shield
+ 					< m_lastVoiExplicitAbilityTargetShield - 0.1f
+@@ -2404,7 +2646,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		else if ((abilityName == "snipe"
+ 				|| abilityName == "yamato")
+ 			&& m_lastVoiExplicitAbilityTargetWasPresent
+-			&& actorCommitted
++			&& actorAccepted
+ 			&& (target == nullptr
+ 				|| !target->is_alive
+ 				|| target->health
+@@ -2416,33 +2658,9 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 					? "target_removed_after_actor_commitment"
+ 					: "target_health:decreased_after_actor_commitment";
+ 		}
+-		else if (abilityName == "interference_matrix"
+-			&& target != nullptr
+-			&& !m_lastVoiExplicitAbilityTargetHadExpectedBuff
+-			&& actorEnergySpent
+-			&& Util::unitHasBuff(
+-				target,
+-				VoiRavenInterferenceMatrixBuff))
+-		{
+-			confirmed = true;
+-			confirmationEffect =
+-				"target_buff:RAVENSCRAMBLERMISSILE";
+-		}
+-		else if (abilityName == "anti_armor_missile"
+-			&& target != nullptr
+-			&& !m_lastVoiExplicitAbilityTargetHadExpectedBuff
+-			&& actorEnergySpent
+-			&& Util::unitHasBuff(
+-				target,
+-				VoiRavenAntiArmorMissileBuff))
+-		{
+-			confirmed = true;
+-			confirmationEffect =
+-				"target_buff:RAVENSHREDDERMISSILEARMORREDUCTION";
+-		}
+ 		else if (abilityName == "tactical_jump"
+ 			&& actor != nullptr
+-			&& actorCommitted
++			&& actorAccepted
+ 			&& m_lastVoiExplicitAbilityTargetPosition
+ 				!= CCPosition()
+ 			&& Util::Dist(
+@@ -2462,10 +2680,10 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			{
+ 				if (unit.getAPIUnitType()
+ 						== sc2::UNIT_TYPEID::TERRAN_AUTOTURRET
+-					&& m_lastVoiExplicitAbilityAutoTurretTags.count(
++					&& m_lastVoiExplicitAbilitySpawnedUnitTags.count(
+ 							unit.getTag())
+ 						== 0
+-					&& actorCommitted
++					&& actorAccepted
+ 					&& Util::Dist(
+ 						unit.getPosition(),
+ 						m_lastVoiExplicitAbilityTargetPosition)
+@@ -2478,35 +2696,10 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 				}
+ 			}
+ 		}
+-		const bool requiresConcreteState =
+-			abilityName != "reaper_grenade";
+-		if (!confirmed
+-			&& !requiresConcreteState
+-			&& actorOrderObserved)
+-		{
+-			confirmed = true;
+-			confirmationEffect =
+-				"actor_order:" + std::string(
+-					sc2::AbilityTypeToName(spec.abilityId));
+-		}
+-		if (!confirmed
+-			&& !requiresConcreteState
+-			&& actorEnergySpent)
+-		{
+-			confirmed = true;
+-			confirmationEffect = "actor_energy:decreased";
+-		}
+-		if (!confirmed
+-			&& !requiresConcreteState
+-			&& abilityAvailabilityConsumed)
+-		{
+-			confirmed = true;
+-			confirmationEffect =
+-				"ability_availability:consumed";
+-		}
+ 		if (confirmed)
+ 		{
+ 			m_voiExplicitAbilityAwaitingConfirmation = false;
++			m_voiExplicitAbilityObservedAccepted = true;
+ 			m_lastVoiExplicitAbilityConfirmationState =
+ 				"confirmed";
+ 			m_lastVoiExplicitAbilityConfirmationCount++;
+@@ -2517,6 +2710,9 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			m_lastVoiExplicitAbilityStatus = "completed";
+ 			m_lastVoiExplicitAbilityReason =
+ 				"Explicit ability effect was observed in subsequent SC2 state";
++			m_lastVoiExplicitAbilityPhase = "effect_observed";
++			m_lastVoiExplicitAbilityTerminalAttemptGeneration =
++				m_voiExplicitAbilityAttemptGeneration;
+ 			if (actor != nullptr)
+ 			{
+ 				m_lastVoiExplicitAbilityActorType =
+@@ -2524,27 +2720,75 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			}
+ 			return;
+ 		}
+-		const uint32_t confirmationTimeoutFrames = 224;
++		if (m_voiExplicitAbilityObservedAccepted
++			&& voiExplicitAbilityAcceptanceIsTerminal(
++				abilityName))
++		{
++			m_voiExplicitAbilityAwaitingConfirmation = false;
++			m_lastVoiExplicitAbilityStatus = "completed";
++			m_lastVoiExplicitAbilityReason =
++				"SC2 observation accepted the exact ability attempt; this ability has no reliable enemy-effect observation";
++			m_lastVoiExplicitAbilityPhase = "observed_accepted";
++			m_lastVoiExplicitAbilityConfirmationState = "accepted";
++			m_lastVoiExplicitAbilityTerminalAttemptGeneration =
++				m_voiExplicitAbilityAttemptGeneration;
++			return;
++		}
+ 		if (m_bot.GetGameLoop()
+ 			< m_lastVoiExplicitAbilitySubmissionFrame
+-				+ confirmationTimeoutFrames)
++				+ ExplicitAbilityConfirmationTimeoutFrames)
+ 		{
+-			m_lastVoiExplicitAbilityStatus =
+-				"pending_confirmation";
+-			m_lastVoiExplicitAbilityReason =
+-				"Ability was submitted and is waiting for a subsequent SC2 state change";
+-			m_lastVoiExplicitAbilityConfirmationState =
+-				"pending";
++			if (!m_voiExplicitAbilityObservedAccepted)
++			{
++				m_lastVoiExplicitAbilityStatus =
++					"pending_confirmation";
++				m_lastVoiExplicitAbilityReason =
++					"Ability was submitted and is waiting for SC2 acceptance or effect observation";
++				m_lastVoiExplicitAbilityPhase = "submitted";
++				m_lastVoiExplicitAbilityConfirmationState =
++					"pending";
++			}
+ 			return;
+ 		}
+-		m_voiExplicitAbilityAwaitingConfirmation = false;
+-		m_lastVoiExplicitAbilityConfirmationState =
+-			"retrying";
++		if (voiExplicitAbilityIsIrreversible(abilityName))
++		{
++			m_voiExplicitAbilityAwaitingConfirmation = false;
++			m_lastVoiExplicitAbilityTerminalAttemptGeneration =
++				m_voiExplicitAbilityAttemptGeneration;
++			if (m_voiExplicitAbilityObservedAccepted)
++			{
++				m_lastVoiExplicitAbilityStatus = "completed";
++				m_lastVoiExplicitAbilityReason =
++					"SC2 accepted the irreversible ability attempt; no duplicate command was submitted after the effect-observation timeout";
++				m_lastVoiExplicitAbilityPhase = "observed_accepted";
++				m_lastVoiExplicitAbilityConfirmationState =
++					"accepted";
++				m_lastVoiExplicitAbilityConfirmationEffect =
++					"accepted_without_observable_effect:"
++					+ m_lastVoiExplicitAbilityObservedAcceptedEvidence;
++			}
++			else
++			{
++				m_lastVoiExplicitAbilityStatus = "refused";
++				m_lastVoiExplicitAbilityReason =
++					"Irreversible ability submission was not observed as accepted; retry suppressed to prevent duplicate effects";
++				m_lastVoiExplicitAbilityPhase =
++					"submitted_unconfirmed";
++				m_lastVoiExplicitAbilityConfirmationState =
++					"unconfirmed_no_retry";
++				m_lastVoiExplicitAbilityConfirmationEffect =
++					"acceptance_timeout";
++			}
++			return;
++		}
++		advanceVoiExplicitAbilityAttempt();
++		m_lastVoiExplicitAbilityConfirmationState = "retrying";
+ 		m_lastVoiExplicitAbilityConfirmationEffect =
+ 			"confirmation_timeout";
+ 		m_lastVoiExplicitAbilityStatus = "retrying";
+ 		m_lastVoiExplicitAbilityReason =
+-			"No SC2 state change confirmed the submission; retrying safely";
++			"No SC2 acceptance or effect confirmed the reversible submission; starting a fresh exact attempt";
++		m_lastVoiExplicitAbilityPhase = "retrying";
+ 	}
+ 
+ 	std::vector<const sc2::Unit *> availableCasters;
+@@ -2561,6 +2805,29 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		}
+ 		matchingCasterCount++;
+ 		const sc2::Unit * unit = combatUnit.getUnitPtr();
++		std::string satisfiedEvidence;
++		if (voiExplicitAbilityDesiredStateSatisfied(
++				abilityName,
++				unit,
++				satisfiedEvidence))
++		{
++			m_lastVoiExplicitAbilityActorTag = unit->tag;
++			m_lastVoiExplicitAbilityActorType =
++				sc2::UnitTypeToName(unit->unit_type);
++			m_lastVoiExplicitAbilityStatus = "completed";
++			m_lastVoiExplicitAbilityReason =
++				"Requested explicit ability state was already satisfied in SC2 observation";
++			m_lastVoiExplicitAbilityPhase = "effect_observed";
++			m_lastVoiExplicitAbilityConfirmationState = "confirmed";
++			m_lastVoiExplicitAbilityConfirmationCount++;
++			m_lastVoiExplicitAbilityConfirmationFrame =
++				m_bot.GetGameLoop();
++			m_lastVoiExplicitAbilityConfirmationEffect =
++				"already_satisfied:" + satisfiedEvidence;
++			m_lastVoiExplicitAbilityTerminalAttemptGeneration =
++				m_voiExplicitAbilityAttemptGeneration;
++			return;
++		}
+ 		if (Util::IsAbilityAvailable(
+ 			spec.abilityId,
+ 			unit,
+@@ -2576,6 +2843,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		m_lastVoiExplicitAbilityStatus = "waiting_caster";
+ 		m_lastVoiExplicitAbilityReason =
+ 			"Waiting for ProductionManager to provide a matching caster";
++		m_lastVoiExplicitAbilityPhase = "waiting_caster";
+ 		return;
+ 	}
+ 	if (availableCasters.empty())
+@@ -2583,6 +2851,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		m_lastVoiExplicitAbilityStatus = "waiting_ability";
+ 		m_lastVoiExplicitAbilityReason =
+ 			"Matching caster exists but the requested ability is unavailable";
++		m_lastVoiExplicitAbilityPhase = "waiting_ability";
+ 		return;
+ 	}
+ 
+@@ -3120,13 +3389,15 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 						"Locked caster made no staging progress; discarded the failed route and will resolve another SC2-authoritative path";
+ 					return;
+ 				}
+-				const UnitAction stagingAction(
++				UnitAction stagingAction(
+ 					MicroActionType::Move,
+ 					stagingPosition,
+ 					true,
+ 					0,
+ 					"VoiExplicitAbilityStage:" + abilityName,
+ 					"");
++				bindCurrentVoiExplicitAbilityAttempt(
++					stagingAction);
+ 				if (!PlanAction(stagingCaster, stagingAction))
+ 				{
+ 					m_lastVoiExplicitAbilityStatus = "refused";
+@@ -3137,6 +3408,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 				m_lastVoiExplicitAbilityStatus = "staging";
+ 				m_lastVoiExplicitAbilityReason =
+ 					"Moving the locked caster to the requested location before ability use";
++				m_lastVoiExplicitAbilityPhase = "staging";
+ 				m_lastVoiExplicitAbilityFrame =
+ 					m_bot.GetGameLoop();
+ 				m_lastVoiExplicitAbilityAction =
+@@ -3342,6 +3614,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			actionDescription,
+ 			"");
+ 	}
++	bindCurrentVoiExplicitAbilityAttempt(action);
+ 
+ 	if (!PlanAction(selectedCaster, action))
+ 	{
+@@ -3368,6 +3641,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 	m_lastVoiExplicitAbilityStatus = "planned";
+ 	m_lastVoiExplicitAbilityReason =
+ 		"Resolved caster and target; prioritized UnitAction is ready for SC2 command issue";
++	m_lastVoiExplicitAbilityPhase = "planned";
+ }
+ 
+ bool CombatCommander::isSquadUpdateFrame()
+@@ -8715,6 +8989,18 @@ void CombatCommander::ExecuteActions()
+ 			action.description.rfind(
+ 				"VoiExplicitScoutOrder:",
+ 				0) == 0;
++		if ((explicitAbilityAction
++				|| explicitAbilityStagingAction)
++			&& !isCurrentVoiExplicitAbilityAttempt(action))
++		{
++			action.finished = true;
++			m_lastVoiActionSkippedCount++;
++			m_lastVoiActionFrame = m_bot.GetGameLoop();
++			m_lastVoiSkippedAction =
++				"stale_explicit_ability_attempt|"
++				+ voiActionEvidence(action);
++			continue;
++		}
+ 		const auto rejectExplicitAbility =
+ 			[&](const std::string & status, const std::string & reason)
+ 			{
+@@ -9014,6 +9300,7 @@ void CombatCommander::ExecuteActions()
+ 				m_lastVoiExplicitAbilityStatus = "staging";
+ 				m_lastVoiExplicitAbilityReason =
+ 					"Explicit ability staging Move reached the SC2 command issue path";
++				m_lastVoiExplicitAbilityPhase = "staging";
+ 				m_lastVoiExplicitAbilityActorTag =
+ 					rangedUnit->tag;
+ 				m_lastVoiExplicitAbilityActorType =
+@@ -9099,7 +9386,8 @@ void CombatCommander::ExecuteActions()
+ 				m_lastVoiExplicitAbilityStatus =
+ 					"pending_confirmation";
+ 				m_lastVoiExplicitAbilityReason =
+-					"Explicit ability was submitted to SC2 and awaits observation confirmation";
++					"Exact explicit ability attempt was submitted to SC2 and awaits observed acceptance or effect";
++				m_lastVoiExplicitAbilityPhase = "submitted";
+ 				m_lastVoiExplicitAbilityActorTag =
+ 					rangedUnit->tag;
+ 				m_lastVoiExplicitAbilityActorType =
+@@ -9124,6 +9412,8 @@ void CombatCommander::ExecuteActions()
+ 					true;
+ 				m_lastVoiExplicitAbilitySubmissionFrame =
+ 					m_bot.GetGameLoop();
++				m_lastVoiExplicitAbilitySubmittedAttemptGeneration =
++					action.explicitAbilityAttemptGeneration;
+ 					m_lastVoiExplicitAbilityActorPosition =
+ 						rangedUnit->pos;
+ 					m_lastVoiExplicitAbilityActorTypeAtSubmission =
+@@ -9136,6 +9426,13 @@ void CombatCommander::ExecuteActions()
+ 						rangedUnit->energy;
+ 					m_lastVoiExplicitAbilityActorCargo =
+ 						rangedUnit->cargo_space_taken;
++					m_lastVoiExplicitAbilityActorPassengerTags =
++						voiPassengerTags(rangedUnit);
++					m_lastVoiExplicitAbilityAvailableAtSubmission =
++						Util::IsAbilityAvailable(
++							action.abilityID,
++							rangedUnit,
++							m_unitsAbilities);
+ 				m_lastVoiExplicitAbilityTargetHealth =
+ 					confirmationTarget != nullptr
+ 						? confirmationTarget->health
+@@ -9155,40 +9452,10 @@ void CombatCommander::ExecuteActions()
+ 					m_lastVoiExplicitAbilityActorTargetOrderObserved =
+ 						false;
+ 					m_lastVoiExplicitAbilityActorHadExpectedBuff =
+-						((m_lastVoiExplicitAbilityName == "stimpack"
+-								|| m_lastVoiExplicitAbilityName
+-									== "marine_stimpack")
+-							&& Util::unitHasBuff(
+-								rangedUnit,
+-								sc2::BUFF_ID::STIMPACK))
+-						|| (m_lastVoiExplicitAbilityName
+-								== "marauder_stimpack"
+-							&& Util::unitHasBuff(
+-								rangedUnit,
+-								sc2::BUFF_ID::STIMPACKMARAUDER))
+-						|| (m_lastVoiExplicitAbilityName
+-								== "medivac_afterburners"
+-							&& Util::unitHasBuff(
+-								rangedUnit,
+-								sc2::BUFF_ID::MEDIVACSPEEDBOOST));
+-					m_lastVoiExplicitAbilityTargetHadExpectedBuff =
+-						confirmationTarget != nullptr
+-						&& ((m_lastVoiExplicitAbilityName
+-									== "lock_on"
+-								&& Util::unitHasBuff(
+-									confirmationTarget,
+-									sc2::BUFF_ID::LOCKON))
+-							|| (m_lastVoiExplicitAbilityName
+-									== "interference_matrix"
+-								&& Util::unitHasBuff(
+-									confirmationTarget,
+-									VoiRavenInterferenceMatrixBuff))
+-							|| (m_lastVoiExplicitAbilityName
+-									== "anti_armor_missile"
+-								&& Util::unitHasBuff(
+-									confirmationTarget,
+-									VoiRavenAntiArmorMissileBuff)));
+-					m_lastVoiExplicitAbilityAutoTurretTags.clear();
++						voiActorHasExpectedBuff(
++							m_lastVoiExplicitAbilityName,
++							rangedUnit);
++					m_lastVoiExplicitAbilitySpawnedUnitTags.clear();
+ 					if (m_lastVoiExplicitAbilityName == "auto_turret")
+ 					{
+ 						for (const auto & unit :
+@@ -9198,7 +9465,7 @@ void CombatCommander::ExecuteActions()
+ 							if (unit.getAPIUnitType()
+ 								== sc2::UNIT_TYPEID::TERRAN_AUTOTURRET)
+ 							{
+-								m_lastVoiExplicitAbilityAutoTurretTags.insert(
++								m_lastVoiExplicitAbilitySpawnedUnitTags.insert(
+ 									unit.getTag());
+ 							}
+ 						}
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 04d3027..4bf0362 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -114,12 +114,27 @@ struct UnitAction
+ 	uint32_t executionFrame;
+ 	std::string description;
+ 	std::string squad;
++	uint64_t explicitAbilityAttemptGeneration = 0;
++	std::string explicitAbilityUpdateId = "";
++	std::string explicitAbilityTaskId = "";
++	std::string explicitAbilityName = "";
+ 
+ 	UnitAction& operator=(const UnitAction&) = default;
+ 
+ 	bool operator==(const UnitAction& unitAction)
+ 	{
+-		return microActionType == unitAction.microActionType && target == unitAction.target && position == unitAction.position && abilityID == unitAction.abilityID;
++		return microActionType == unitAction.microActionType
++			&& target == unitAction.target
++			&& position == unitAction.position
++			&& abilityID == unitAction.abilityID
++			&& explicitAbilityAttemptGeneration
++				== unitAction.explicitAbilityAttemptGeneration
++			&& explicitAbilityUpdateId
++				== unitAction.explicitAbilityUpdateId
++			&& explicitAbilityTaskId
++				== unitAction.explicitAbilityTaskId
++			&& explicitAbilityName
++				== unitAction.explicitAbilityName;
+ 	}
+ };
+ 
+@@ -257,9 +272,13 @@ class CombatCommander
+ 	int m_lastVoiUnitRoleExecutedCount = 0;
+ 	uint32_t m_lastVoiUnitRoleFrame = 0;
+ 	std::string m_voiExplicitAbilityUpdateId = "";
++	std::string m_voiExplicitAbilityTaskId = "";
++	std::string m_voiExplicitAbilityAttemptAbility = "";
++	uint64_t m_voiExplicitAbilityAttemptGeneration = 0;
+ 	std::string m_lastVoiExplicitAbilityName = "";
+ 	std::string m_lastVoiExplicitAbilityStatus = "inactive";
+ 	std::string m_lastVoiExplicitAbilityReason = "No explicit ability task requested";
++	std::string m_lastVoiExplicitAbilityPhase = "idle";
+ 	uint64_t m_lastVoiExplicitAbilityActorTag = 0;
+ 	std::string m_lastVoiExplicitAbilityActorType = "";
+ 	uint64_t m_lastVoiExplicitAbilityTargetTag = 0;
+@@ -271,9 +290,17 @@ class CombatCommander
+ 	std::string m_lastVoiExplicitAbilityAction = "";
+ 	bool m_voiExplicitAbilityAwaitingConfirmation = false;
+ 	uint32_t m_lastVoiExplicitAbilitySubmissionFrame = 0;
++	uint64_t m_lastVoiExplicitAbilitySubmittedAttemptGeneration = 0;
++	bool m_voiExplicitAbilityObservedAccepted = false;
++	uint32_t m_lastVoiExplicitAbilityObservedAcceptedFrame = 0;
++	uint64_t m_lastVoiExplicitAbilityObservedAcceptedAttemptGeneration = 0;
++	std::string m_lastVoiExplicitAbilityObservedAcceptedEvidence = "";
++	uint64_t m_lastVoiExplicitAbilityTerminalAttemptGeneration = 0;
+ 	CCPosition m_lastVoiExplicitAbilityActorPosition = CCPosition();
+ 	float m_lastVoiExplicitAbilityActorEnergy = 0.0f;
+ 	int m_lastVoiExplicitAbilityActorCargo = 0;
++	std::set<sc2::Tag> m_lastVoiExplicitAbilityActorPassengerTags;
++	bool m_lastVoiExplicitAbilityAvailableAtSubmission = false;
+ 	float m_lastVoiExplicitAbilityTargetHealth = 0.0f;
+ 	float m_lastVoiExplicitAbilityTargetShield = 0.0f;
+ 	float m_lastVoiExplicitAbilityTargetEnergy = 0.0f;
+@@ -299,11 +326,10 @@ class CombatCommander
+ 		sc2::Unit::Unknown;
+ 	float m_lastVoiExplicitAbilityActorHealth = 0.0f;
+ 	bool m_lastVoiExplicitAbilityActorHadExpectedBuff = false;
+-	bool m_lastVoiExplicitAbilityTargetHadExpectedBuff = false;
+ 	bool m_lastVoiExplicitAbilityTargetWasPresent = false;
+ 	bool m_lastVoiExplicitAbilityActorOrderObserved = false;
+ 	bool m_lastVoiExplicitAbilityActorTargetOrderObserved = false;
+-	std::set<sc2::Tag> m_lastVoiExplicitAbilityAutoTurretTags;
++	std::set<sc2::Tag> m_lastVoiExplicitAbilitySpawnedUnitTags;
+ 	float m_voiExplicitAbilityStagingBestDistanceSq = 0.0f;
+ 	uint32_t m_voiExplicitAbilityStagingLastProgressFrame = 0;
+ 	std::vector<CCPosition> m_voiExplicitAbilityRejectedStagingPositions;
+@@ -404,6 +430,10 @@ class CombatCommander
+ 	void			drawCombatInformation();
+ 	void			drawInfluenceMaps();
+ 	void			drawBlockedTiles();
++	void			bindCurrentVoiExplicitAbilityAttempt(UnitAction & action) const;
++	bool			isCurrentVoiExplicitAbilityAttempt(const UnitAction & action) const;
++	void			discardVoiExplicitAbilityActions();
++	void			advanceVoiExplicitAbilityAttempt();
+ 
+ public:
+ 
+@@ -522,9 +552,13 @@ public:
+ 	int getVoiUnitRoleExecutedCount() const { return m_lastVoiUnitRoleExecutedCount; }
+ 	uint32_t getVoiUnitRoleFrame() const { return m_lastVoiUnitRoleFrame; }
+ 	const std::string & getVoiExplicitAbilityUpdateId() const { return m_voiExplicitAbilityUpdateId; }
++	const std::string & getVoiExplicitAbilityTaskId() const { return m_voiExplicitAbilityTaskId; }
++	const std::string & getVoiExplicitAbilityAttemptAbility() const { return m_voiExplicitAbilityAttemptAbility; }
++	uint64_t getVoiExplicitAbilityAttemptGeneration() const { return m_voiExplicitAbilityAttemptGeneration; }
+ 	const std::string & getVoiExplicitAbilityName() const { return m_lastVoiExplicitAbilityName; }
+ 	const std::string & getVoiExplicitAbilityStatus() const { return m_lastVoiExplicitAbilityStatus; }
+ 	const std::string & getVoiExplicitAbilityReason() const { return m_lastVoiExplicitAbilityReason; }
++	const std::string & getVoiExplicitAbilityPhase() const { return m_lastVoiExplicitAbilityPhase; }
+ 	uint64_t getVoiExplicitAbilityActorTag() const { return m_lastVoiExplicitAbilityActorTag; }
+ 	const std::string & getVoiExplicitAbilityActorType() const { return m_lastVoiExplicitAbilityActorType; }
+ 	uint64_t getVoiExplicitAbilityTargetTag() const { return m_lastVoiExplicitAbilityTargetTag; }
+@@ -535,6 +569,11 @@ public:
+ 	uint32_t getVoiExplicitAbilityFrame() const { return m_lastVoiExplicitAbilityFrame; }
+ 	const std::string & getVoiExplicitAbilityAction() const { return m_lastVoiExplicitAbilityAction; }
+ 	uint32_t getVoiExplicitAbilitySubmissionFrame() const { return m_lastVoiExplicitAbilitySubmissionFrame; }
++	uint64_t getVoiExplicitAbilitySubmittedAttemptGeneration() const { return m_lastVoiExplicitAbilitySubmittedAttemptGeneration; }
++	uint32_t getVoiExplicitAbilityObservedAcceptedFrame() const { return m_lastVoiExplicitAbilityObservedAcceptedFrame; }
++	uint64_t getVoiExplicitAbilityObservedAcceptedAttemptGeneration() const { return m_lastVoiExplicitAbilityObservedAcceptedAttemptGeneration; }
++	const std::string & getVoiExplicitAbilityObservedAcceptedEvidence() const { return m_lastVoiExplicitAbilityObservedAcceptedEvidence; }
++	uint64_t getVoiExplicitAbilityTerminalAttemptGeneration() const { return m_lastVoiExplicitAbilityTerminalAttemptGeneration; }
+ 	const std::string & getVoiExplicitAbilityConfirmationState() const { return m_lastVoiExplicitAbilityConfirmationState; }
+ 	int getVoiExplicitAbilityConfirmationCount() const { return m_lastVoiExplicitAbilityConfirmationCount; }
+ 	uint32_t getVoiExplicitAbilityConfirmationFrame() const { return m_lastVoiExplicitAbilityConfirmationFrame; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index 4e65f0b..48fafd1 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -221,7 +221,8 @@ void GameCommander::writeVoiTelemetry() const
+     const std::string tacticalTaskType = voiJsonEscape(rawTacticalTaskType);
+     const std::string rawTacticalTaskAbility = m_voiPolicyBlackboard.getString("tactical_task.ability", "");
+     const std::string tacticalTaskAbility = voiJsonEscape(rawTacticalTaskAbility);
+-    const std::string tacticalTaskId = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.task_id", ""));
++    const std::string rawTacticalTaskId = m_voiPolicyBlackboard.getString("tactical_task.task_id", "");
++    const std::string tacticalTaskId = voiJsonEscape(rawTacticalTaskId);
+     const std::string tacticalTaskUnitClasses = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.unit_classes", ""));
+     const std::string tacticalTaskProductionTargets = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.production_targets", ""));
+     const std::string tacticalTaskLocationIntent = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.location_intent", ""));
+@@ -409,6 +410,15 @@ void GameCommander::writeVoiTelemetry() const
+             !rawUpdateId.empty()
+             && m_combatCommander.getVoiExplicitAbilityUpdateId()
+                 == rawUpdateId;
++        const uint64_t explicitAbilityAttemptGeneration =
++            m_combatCommander.getVoiExplicitAbilityAttemptGeneration();
++        const bool explicitAbilityTelemetryMatchesAttempt =
++            explicitAbilityTelemetryMatchesUpdate
++            && explicitAbilityAttemptGeneration > 0
++            && m_combatCommander.getVoiExplicitAbilityTaskId()
++                == rawTacticalTaskId
++            && m_combatCommander.getVoiExplicitAbilityAttemptAbility()
++                == rawTacticalTaskAbility;
+         tacticalTaskLastCommandFrame = tacticalNukeRequested
+             ? m_combatCommander.getVoiTacticalNukeCastSubmissionFrame()
+             : m_combatCommander.getVoiExplicitAbilityFrame();
+@@ -424,13 +434,28 @@ void GameCommander::writeVoiTelemetry() const
+                 m_combatCommander.getVoiTacticalNukeConfirmationFrame());
+         const bool explicitAbilitySubmissionFresh =
+             explicitAbilityRequested
+-            && explicitAbilityTelemetryMatchesUpdate
++            && explicitAbilityTelemetryMatchesAttempt
+             && m_combatCommander.getVoiExplicitAbilitySubmittedCount() > 0
++            && m_combatCommander.getVoiExplicitAbilitySubmittedAttemptGeneration()
++                == explicitAbilityAttemptGeneration
+             && isFreshTacticalTaskFrame(
+                 m_combatCommander.getVoiExplicitAbilityFrame());
++        const bool explicitAbilityAcceptanceFresh =
++            explicitAbilityRequested
++            && explicitAbilityTelemetryMatchesAttempt
++            && m_combatCommander.getVoiExplicitAbilityObservedAcceptedAttemptGeneration()
++                == explicitAbilityAttemptGeneration
++            && isFreshTacticalTaskFrame(
++                m_combatCommander.getVoiExplicitAbilityObservedAcceptedFrame());
++        const bool explicitAbilityTerminalCurrent =
++            explicitAbilityRequested
++            && explicitAbilityTelemetryMatchesAttempt
++            && m_combatCommander.getVoiExplicitAbilityTerminalAttemptGeneration()
++                == explicitAbilityAttemptGeneration;
+         const bool explicitAbilityConfirmationFresh =
+             explicitAbilityRequested
+-            && explicitAbilityTelemetryMatchesUpdate
++            && explicitAbilityTelemetryMatchesAttempt
++            && explicitAbilityTerminalCurrent
+             && m_combatCommander.getVoiExplicitAbilityConfirmationCount() > 0
+             && isFreshTacticalTaskFrame(
+                 m_combatCommander.getVoiExplicitAbilityConfirmationFrame());
+@@ -456,6 +481,28 @@ void GameCommander::writeVoiTelemetry() const
+             tacticalTaskReason =
+                 "CombatCommander observed the explicit ability effect in subsequent SC2 state";
+         }
++        else if (explicitAbilityTerminalCurrent
++            && m_combatCommander.getVoiExplicitAbilityStatus()
++                == "completed")
++        {
++            tacticalTaskStatus = "completed";
++            tacticalTaskReason =
++                m_combatCommander.getVoiExplicitAbilityReason();
++        }
++        else if (explicitAbilityTerminalCurrent
++            && m_combatCommander.getVoiExplicitAbilityStatus()
++                == "refused")
++        {
++            tacticalTaskStatus = "refused";
++            tacticalTaskReason =
++                m_combatCommander.getVoiExplicitAbilityReason();
++        }
++        else if (explicitAbilityAcceptanceFresh)
++        {
++            tacticalTaskStatus = "executing";
++            tacticalTaskReason =
++                "SC2 observation accepted the exact explicit ability attempt; waiting for a concrete effect when observable";
++        }
+         else if (explicitAbilitySubmissionFresh)
+         {
+             tacticalTaskStatus = "executing";
+@@ -463,7 +510,7 @@ void GameCommander::writeVoiTelemetry() const
+                 "CombatCommander submitted the explicit ability and is waiting for SC2 observation confirmation";
+         }
+         else if (explicitAbilityRequested
+-            && explicitAbilityTelemetryMatchesUpdate
++            && explicitAbilityTelemetryMatchesAttempt
+             && m_combatCommander.getVoiExplicitAbilityStatus()
+                 == "refused")
+         {
+@@ -475,9 +522,9 @@ void GameCommander::writeVoiTelemetry() const
+         {
+             tacticalTaskStatus = "accepted";
+             tacticalTaskReason =
+-                explicitAbilityTelemetryMatchesUpdate
++                explicitAbilityTelemetryMatchesAttempt
+                 ? m_combatCommander.getVoiExplicitAbilityReason()
+-                : "Waiting for CombatCommander explicit ability evaluation";
++                : "Waiting for CombatCommander telemetry for the exact update, task, ability, and attempt";
+         }
+         else if (castConfirmationFresh)
+         {
+@@ -597,10 +644,38 @@ void GameCommander::writeVoiTelemetry() const
+             rawTacticalTaskAbility == "tactical_nuke"
+                 ? m_combatCommander.getVoiTacticalNukeReason()
+                 : m_combatCommander.getVoiExplicitAbilityReason()) << "\","
++        << "\"phase\":\"" << voiJsonEscape(
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? m_combatCommander.getVoiTacticalNukeStatus()
++                : m_combatCommander.getVoiExplicitAbilityPhase()) << "\","
+         << "\"update_id\":\"" << voiJsonEscape(
+             rawTacticalTaskAbility == "tactical_nuke"
+                 ? m_combatCommander.getVoiTacticalNukeUpdateId()
+                 : m_combatCommander.getVoiExplicitAbilityUpdateId()) << "\","
++        << "\"attempt_generation\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? 0
++                : m_combatCommander.getVoiExplicitAbilityAttemptGeneration()) << ","
++        << "\"submitted_attempt_generation\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? 0
++                : m_combatCommander.getVoiExplicitAbilitySubmittedAttemptGeneration()) << ","
++        << "\"observed_accepted_frame\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? 0
++                : m_combatCommander.getVoiExplicitAbilityObservedAcceptedFrame()) << ","
++        << "\"observed_accepted_attempt_generation\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? 0
++                : m_combatCommander.getVoiExplicitAbilityObservedAcceptedAttemptGeneration()) << ","
++        << "\"observed_accepted_evidence\":\"" << voiJsonEscape(
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? ""
++                : m_combatCommander.getVoiExplicitAbilityObservedAcceptedEvidence()) << "\","
++        << "\"terminal_attempt_generation\":" << (
++            rawTacticalTaskAbility == "tactical_nuke"
++                ? 0
++                : m_combatCommander.getVoiExplicitAbilityTerminalAttemptGeneration()) << ","
+         << "\"actor_tag\":" << (
+             rawTacticalTaskAbility == "tactical_nuke"
+                 ? m_combatCommander.getVoiTacticalNukeGhostTag()

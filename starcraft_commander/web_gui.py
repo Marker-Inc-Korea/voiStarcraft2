@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import concurrent.futures
+import hashlib
 import html
 import json
 import os
@@ -42,8 +43,9 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Final, Protocol, runtime_checkable
@@ -96,6 +98,12 @@ DEFAULT_LIVE_MAP: Final[str] = "AcropolisLE"
 
 DEFAULT_LIVE_DIFFICULTY: Final[str] = "easy"
 """Default difficulty for opt-in legacy python-sc2 auto-launch sessions."""
+
+DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY: Final[int] = 10
+"""Default maximum enemy difficulty for UI-triggered manual MicroMachine live QA."""
+
+_MICROMACHINE_ENEMY_DIFFICULTY_MIN: Final[int] = 1
+_MICROMACHINE_ENEMY_DIFFICULTY_MAX: Final[int] = 10
 
 COMMAND_MODE_MICROMACHINE: Final[str] = "micromachine"
 """Default cockpit mode: publish text/voice intent to MicroMachine DSL blackboard."""
@@ -323,6 +331,21 @@ def _normalize_runtime_mode(value: str) -> str:
     )
 
 
+def _require_micromachine_enemy_difficulty(
+    value: object,
+    *,
+    default: int = DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY,
+) -> int:
+    """Return a validated SC2 API enemy difficulty in the supported 1..10 range."""
+
+    candidate = default if value is None else value
+    if type(candidate) is not int:
+        raise TypeError("enemy_difficulty 필드는 1..10 정수여야 합니다.")
+    if not _MICROMACHINE_ENEMY_DIFFICULTY_MIN <= candidate <= _MICROMACHINE_ENEMY_DIFFICULTY_MAX:
+        raise ValueError("enemy_difficulty 필드는 1..10 범위여야 합니다.")
+    return candidate
+
+
 def _default_micromachine_blackboard_dir() -> str:
     return os.environ.get("VOI_MICROMACHINE_BLACKBOARD_DIR", "").strip() or (
         "/private/tmp/voi-mm-live"
@@ -333,20 +356,69 @@ def _micromachine_compile_result_path(blackboard_dir: str) -> str:
     return os.path.join(blackboard_dir, "latest_modulation_compile_result.json")
 
 
+def _micromachine_blackboard_scope_id(blackboard_dir: str) -> str:
+    """Return the server-owned opaque identity for one resolved blackboard."""
+
+    root = os.path.realpath(os.path.abspath(blackboard_dir))
+    digest = hashlib.sha256(root.encode("utf-8")).hexdigest()
+    return f"voi-mm-scope-{digest[:24]}"
+
+
+def _micromachine_compile_result_id(
+    blackboard_scope_id: str,
+    update_id: str,
+) -> str:
+    """Return the immutable browser de-duplication ID for one update result."""
+
+    digest = hashlib.sha256(
+        f"{blackboard_scope_id}\0{update_id}".encode("utf-8")
+    ).hexdigest()
+    return f"voi-mm-result-{digest}"
+
+
+def _micromachine_compile_result_metadata(
+    blackboard_dir: str,
+    update_id: object,
+) -> dict[str, str]:
+    """Build canonical result metadata without trusting client-provided scope."""
+
+    scope_id = _micromachine_blackboard_scope_id(blackboard_dir)
+    normalized_update_id = str(update_id or "").strip()
+    metadata = {"blackboard_scope_id": scope_id}
+    if normalized_update_id:
+        metadata["result_id"] = _micromachine_compile_result_id(
+            scope_id,
+            normalized_update_id,
+        )
+    return metadata
+
+
+def _micromachine_compile_result_history_dir(blackboard_dir: str) -> str:
+    return os.path.join(blackboard_dir, "modulation_compile_results")
+
+
+def _micromachine_compile_result_history_path(
+    blackboard_dir: str,
+    update_id: str,
+) -> str:
+    digest = hashlib.sha256(update_id.encode("utf-8")).hexdigest()
+    return os.path.join(
+        _micromachine_compile_result_history_dir(blackboard_dir),
+        f"{digest}.json",
+    )
+
+
 def _new_micromachine_update_id() -> str:
     return f"voi-mm-{uuid.uuid4().hex}"
 
 
-def _write_micromachine_compile_result(
-    blackboard_dir: str,
-    payload: Mapping[str, object],
-) -> None:
-    os.makedirs(blackboard_dir, exist_ok=True)
-    path = _micromachine_compile_result_path(blackboard_dir)
+def _atomic_write_json(path: str, payload: Mapping[str, object]) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        prefix=".latest_modulation_compile_result.",
+        prefix=f".{os.path.basename(path)}.",
         suffix=".tmp",
-        dir=blackboard_dir,
+        dir=directory,
         text=True,
     )
     try:
@@ -358,6 +430,58 @@ def _write_micromachine_compile_result(
         try:
             os.unlink(tmp_path)
         except FileNotFoundError:
+            pass
+
+
+def _write_micromachine_compile_result(
+    blackboard_dir: str,
+    payload: Mapping[str, object],
+) -> tuple[str, ...]:
+    """Persist latest/history records independently and return safe warnings."""
+
+    document = dict(payload)
+    update_id = str(document.get("update_id", "") or "").strip()
+    document.update(_micromachine_compile_result_metadata(blackboard_dir, update_id))
+    warnings: list[str] = []
+    try:
+        _atomic_write_json(_micromachine_compile_result_path(blackboard_dir), document)
+    except Exception as error:  # noqa: BLE001 - persistence is never publish control flow.
+        warnings.append(f"latest compile result persistence failed: {type(error).__name__}")
+    if not update_id:
+        return tuple(warnings)
+    history_path = _micromachine_compile_result_history_path(
+        blackboard_dir,
+        update_id,
+    )
+    try:
+        _atomic_write_json(history_path, document)
+    except Exception as error:  # noqa: BLE001 - persistence is never publish control flow.
+        warnings.append(f"compile result history persistence failed: {type(error).__name__}")
+    try:
+        _prune_micromachine_compile_result_history(blackboard_dir)
+    except Exception as error:  # noqa: BLE001 - retention is best effort.
+        warnings.append(f"compile result history retention failed: {type(error).__name__}")
+    return tuple(warnings)
+
+
+def _prune_micromachine_compile_result_history(blackboard_dir: str) -> None:
+    directory = _micromachine_compile_result_history_dir(blackboard_dir)
+    try:
+        paths = [
+            os.path.join(directory, name)
+            for name in os.listdir(directory)
+            if name.endswith(".json")
+        ]
+    except OSError:
+        return
+    paths.sort(
+        key=lambda path: os.path.getmtime(path),
+        reverse=True,
+    )
+    for path in paths[_MICROMACHINE_COMPILE_RESULT_HISTORY_LIMIT:]:
+        try:
+            os.unlink(path)
+        except OSError:
             pass
 
 
@@ -373,6 +497,97 @@ def _read_micromachine_compile_result(blackboard_dir: str) -> dict[str, object] 
     except (OSError, json.JSONDecodeError):
         return None
     return dict(payload) if isinstance(payload, Mapping) else None
+
+
+def _read_micromachine_compile_result_history(
+    blackboard_dir: str,
+) -> tuple[dict[str, object], ...]:
+    directory = _micromachine_compile_result_history_dir(blackboard_dir)
+    root_real = os.path.realpath(blackboard_dir)
+    directory_real = os.path.realpath(directory)
+    if not directory_real.startswith(root_real + os.sep):
+        return ()
+    try:
+        paths = [
+            os.path.join(directory_real, name)
+            for name in os.listdir(directory_real)
+            if name.endswith(".json")
+        ]
+    except OSError:
+        return ()
+    documents: list[dict[str, object]] = []
+    for path in paths:
+        path_real = os.path.realpath(path)
+        if not path_real.startswith(directory_real + os.sep):
+            continue
+        try:
+            with open(path_real, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, Mapping):
+            documents.append(dict(payload))
+    documents.sort(
+        key=lambda item: float(item.get("written_at_unix", 0.0) or 0.0)
+    )
+    return tuple(documents[-_MICROMACHINE_COMPILE_RESULT_HISTORY_LIMIT:])
+
+
+def _micromachine_compile_result_stream(
+    documents: Sequence[Mapping[str, object]],
+    *,
+    blackboard_dir: str,
+    now_unix: float | None = None,
+) -> list[dict[str, object]]:
+    now = time.time() if now_unix is None else float(now_unix)
+    results: list[dict[str, object]] = []
+    for document in documents:
+        written_at = document.get("written_at_unix")
+        if isinstance(written_at, (int, float)) and not isinstance(written_at, bool):
+            if now - float(written_at) > _MICROMACHINE_COMPILE_RESULT_FRESH_SECONDS:
+                continue
+        result = document.get("result")
+        if isinstance(result, Mapping):
+            item = dict(result)
+            update = item.get("update")
+            update_id = (
+                str(update.get("update_id", "") or "")
+                if isinstance(update, Mapping)
+                else str(
+                    item.get("update_id")
+                    or _mapping_child(item, "compile_result").get("update_id")
+                    or document.get("update_id")
+                    or ""
+                )
+            )
+            item.update(
+                _micromachine_compile_result_metadata(blackboard_dir, update_id)
+            )
+            results.append(item)
+            continue
+        compile_result = _latest_compile_result_payload(document, now_unix=now)
+        if compile_result is None:
+            continue
+        item = {
+            "status": str(document.get("status", "") or ""),
+            "command_text": str(document.get("command_text", "") or ""),
+            "compile_result": compile_result,
+            "command_queue": (
+                dict(document["command_queue"])
+                if isinstance(document.get("command_queue"), Mapping)
+                else {}
+            ),
+        }
+        item.update(
+            _micromachine_compile_result_metadata(
+                blackboard_dir,
+                document.get("update_id")
+                or compile_result.get("update_id")
+                or "",
+            )
+        )
+        results.append(item)
+    return results
 
 
 def _latest_compile_result_payload(
@@ -927,7 +1142,7 @@ def _micromachine_intervention_summary(
         tactical_evidence=tactical_evidence,
         expected_tactical_effects=_micromachine_expected_tactical_effects(vector),
         latest_frame=telemetry_frame or 0,
-        target_frame=(telemetry_frame or 0) if evidence_can_be_current else 0,
+        target_frame=0,
     ).to_dict()
     tactical_evidence_payload = tactical_evidence.to_dict()
     dashboard_managers = evidence_telemetry.get("managers", {})
@@ -1645,8 +1860,101 @@ _STOP_SENTINEL: Final[object] = object()
 _MICROMACHINE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
 """Maximum HTTP wait for one queued MicroMachine modulation submission."""
 
+_MICROMACHINE_SYNC_PUBLISH_DEADLINE_SECONDS: Final[float] = 25.0
+"""Publish deadline kept below the synchronous HTTP wait budget."""
+
 _MICROMACHINE_COMPILE_RESULT_FRESH_SECONDS: Final[float] = 300.0
 """How long a failed/clarifying compile result remains current in the dashboard."""
+
+_MICROMACHINE_COMPILE_RESULT_HISTORY_LIMIT: Final[int] = 64
+"""Maximum per-update compile/publish results retained for browser polling."""
+
+_BRIDGE_QUEUE_PRIORITY_EMERGENCY: Final[int] = 0
+_BRIDGE_QUEUE_PRIORITY_NORMAL: Final[int] = 10
+_BRIDGE_QUEUE_PRIORITY_STOP: Final[int] = 100
+
+_BRIDGE_LIFECYCLE_STOPPED: Final[str] = "STOPPED"
+_BRIDGE_LIFECYCLE_STARTING: Final[str] = "STARTING"
+_BRIDGE_LIFECYCLE_RUNNING: Final[str] = "RUNNING"
+_BRIDGE_LIFECYCLE_STOPPING: Final[str] = "STOPPING"
+
+_MICROMACHINE_RETREAT_TEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:(?:긴급|즉시|당장|지금|전원|모두)\s*)*"
+    r"(?:후퇴|퇴각|철수)"
+    r"(?:\s*(?:해|하라|하세요|해라|해줘|해\s*주세요|진행해|시작해))?"
+    r"[.!]?$|"
+    r"^(?:please\s+)?(?:emergency\s+)?"
+    r"(?:retreat|fall\s+back)"
+    r"(?:\s+(?:now|immediately))?[.!]?$|"
+    r"^(?:(?:立即|马上|紧急)\s*)?撤退(?:吧|！|。)?$",
+    re.IGNORECASE,
+)
+
+_MICROMACHINE_ATTACK_CANCEL_TEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:공격|러시|러쉬|압박|작전|진격)(?:을|를|은|는)?\s*"
+    r"(?:취소|중지|중단|멈춰|그만)|"
+    r"(?:cancel|abort|stop)\s+(?:the\s+)?"
+    r"(?:attack|attacking|rush|pressure|operation|advance)|"
+    r"(?:attack|rush|pressure|operation|advance)\s+"
+    r"(?:cancel|abort|stop)|"
+    r"(?:取消|停止)\s*(?:进攻|攻击|行动)|"
+    r"(?:进攻|攻击|行动)\s*(?:取消|停止)",
+    re.IGNORECASE,
+)
+
+_MICROMACHINE_NEGATED_EMERGENCY_PATTERNS: Final[
+    tuple[re.Pattern[str], ...]
+] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        (
+            r"(?:(?:공격|러시|러쉬|압박|작전|진격)(?:을|를|은|는)?\s*)?"
+            r"(?:취소|중지|중단|멈추|그만두|그만하)(?:하)?지\s*"
+            r"(?:마(?:라|세요)?|말(?:고|아|라)?|않(?:아|는다|도록|고)?)"
+        ),
+        (
+            r"(?:공격|러시|러쉬|압박|작전|진격)(?:을|를|은|는)?\s*"
+            r"(?:취소|중지|중단|멈춤|그만두기)\s*"
+            r"(?:없이|금지|불가|안\s*돼|안돼|없(?:다|어|음))"
+        ),
+        (
+            r"(?:후퇴|퇴각|철수|물러나)(?:하)?지\s*"
+            r"(?:마(?:라|세요)?|말(?:고|아|라)?|않(?:아|는다|도록|고)?)"
+        ),
+        (
+            r"(?:후퇴|퇴각|철수|물러나)(?:은|는|이|가)?\s*"
+            r"(?:금지|말고|없이|불가|안\s*돼|안돼|없(?:다|어|음))"
+        ),
+        (
+            r"(?:후퇴|퇴각|철수|물러나)(?:은|는|이|가)?\s*"
+            r"(?:선택지|옵션)(?:가|이)?\s*"
+            r"(?:아니(?:다|야|고)?|아님|될\s*수\s*없)"
+        ),
+        (
+            r"(?:후퇴|퇴각|철수|물러나)\s*안\s*"
+            r"(?:하|해|하고|한다|할)"
+        ),
+        (
+            r"\b(?:do\s+not|don't|dont|never)\s+"
+            r"(?:cancel|stop|abort|retreat|fall\s+back)\b"
+        ),
+        (
+            r"\bwithout\s+"
+            r"(?:cancel(?:ing|ling)?|stopp?ing|abort(?:ing)?|"
+            r"retreat(?:ing)?|fall(?:ing)?\s+back)\b"
+        ),
+        r"\bno\s+(?:retreat|fall(?:ing)?\s+back)\b",
+        (
+            r"\b(?:retreat|fall(?:ing)?\s+back)\s+(?:is|are)\s+not\s+"
+            r"(?:an?\s+)?(?:option|allowed)\b"
+        ),
+        (
+            r"\b(?:retreat|fall(?:ing)?\s+back)\s+"
+            r"(?:forbidden|prohibited|banned)\b"
+        ),
+        r"(?:禁止|不得|不许|不要|别)\s*(?:撤退|取消|停止)",
+    )
+)
 
 _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH: Final[str] = (
     "integrations/micromachine/scripts/smoke_macos_local.sh"
@@ -1665,8 +1973,245 @@ _MICROMACHINE_LANGUAGE_LABELS: Final[Mapping[str, str]] = {
 }
 """Language labels passed to the LLM policy modulation context."""
 
+_MICROMACHINE_RECENT_COMMAND_LIMIT: Final[int] = 8
+"""Maximum recent commands retained per blackboard for LLM context."""
 
-@dataclass(frozen=True)
+_MICROMACHINE_RECENT_COMMAND_TEXT_LIMIT: Final[int] = 500
+"""Maximum text stored for one recent commander-context field."""
+
+_MICROMACHINE_RECENT_COMMAND_VALUE_LIMIT: Final[int] = 160
+"""Maximum text stored for one compact recent-command metadata value."""
+
+_MICROMACHINE_RECENT_COMMAND_LIST_LIMIT: Final[int] = 8
+"""Maximum unit-like values retained inside one recent-command entry."""
+
+
+def _micromachine_recent_context_text(
+    value: object,
+    *,
+    max_chars: int = _MICROMACHINE_RECENT_COMMAND_VALUE_LIMIT,
+) -> str:
+    return _redact_sensitive_text(
+        value or "",
+        normalize_whitespace=True,
+        max_chars=max_chars,
+    )
+
+
+def _micromachine_recent_context_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        values: Sequence[object] = (value,)
+    elif isinstance(value, Sequence) and not isinstance(
+        value, (bytes, bytearray)
+    ):
+        values = value
+    else:
+        values = ()
+    result: list[str] = []
+    for item in values:
+        text = _micromachine_recent_context_text(item)
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= _MICROMACHINE_RECENT_COMMAND_LIST_LIMIT:
+            break
+    return result
+
+
+def _micromachine_recent_context_count(value: object) -> int:
+    if type(value) is not int:
+        return 0
+    return max(0, min(value, 200))
+
+
+def _merge_micromachine_provider_recent_commands(
+    supplemental: object,
+    runtime_context: object,
+) -> list[dict[str, object]]:
+    """Merge web-memory history with blackboard-restored runtime context."""
+
+    result: list[dict[str, object]] = []
+    identities: dict[str, int] = {}
+    for source in (supplemental, runtime_context):
+        if not isinstance(source, Sequence) or isinstance(
+            source,
+            (str, bytes, bytearray),
+        ):
+            continue
+        for item in source:
+            if not isinstance(item, Mapping):
+                continue
+            document = dict(item)
+            update_id = _micromachine_recent_context_text(
+                document.get("update_id", "")
+            )
+            identity = (
+                f"update:{update_id}"
+                if update_id
+                else "content:"
+                + "|".join(
+                    (
+                        _micromachine_recent_context_text(
+                            document.get("command_text", "")
+                        ),
+                        _micromachine_recent_context_text(
+                            document.get("goal", "")
+                        ),
+                        _micromachine_recent_context_text(
+                            document.get("command_layer", "")
+                        ),
+                    )
+                )
+            )
+            if identity in identities:
+                index = identities[identity]
+                result[index] = {
+                    **document,
+                    **result[index],
+                }
+                continue
+            identities[identity] = len(result)
+            result.append(document)
+    return result[-_MICROMACHINE_RECENT_COMMAND_LIMIT:]
+
+
+def _micromachine_recent_command_entry(
+    command_text: str,
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    compile_result = _mapping_child(payload, "compile_result")
+    vector = _mapping_child(compile_result, "vector")
+    update = _mapping_child(payload, "update")
+    command_queue = _mapping_child(payload, "command_queue")
+    if not command_queue:
+        command_queue = _mapping_child(compile_result, "command_queue")
+    strategy = _mapping_child(vector, "strategy")
+    tactical_task = _mapping_child(vector, "tactical_task")
+    route_intent = _mapping_child(vector, "route_intent")
+    target_intent = _mapping_child(vector, "target_intent")
+    scope = _mapping_child(vector, "scope")
+    intervention = _mapping_child(payload, "intervention")
+    execution = _mapping_child(intervention, "command_execution")
+
+    unit_classes = _micromachine_recent_context_strings(
+        tactical_task.get("unit_classes", ())
+    )
+    requested_count = 0
+    composition_requirements = vector.get("composition_requirements", ())
+    if isinstance(composition_requirements, Sequence) and not isinstance(
+        composition_requirements,
+        (str, bytes, bytearray),
+    ):
+        for requirement in composition_requirements[
+            :_MICROMACHINE_RECENT_COMMAND_LIST_LIMIT
+        ]:
+            if not isinstance(requirement, Mapping):
+                continue
+            unit_type = _micromachine_recent_context_text(
+                requirement.get("unit_type", "")
+            )
+            if unit_type and unit_type not in unit_classes:
+                unit_classes.append(unit_type)
+                unit_classes = unit_classes[
+                    :_MICROMACHINE_RECENT_COMMAND_LIST_LIMIT
+                ]
+            requested_count += _micromachine_recent_context_count(
+                requirement.get("count")
+            )
+
+    assistant_message = (
+        compile_result.get("assistant_message")
+        or vector.get("assistant_message")
+        or ""
+    )
+    update_id = (
+        update.get("update_id")
+        or compile_result.get("update_id")
+        or payload.get("update_id")
+        or ""
+    )
+    target = (
+        target_intent.get("target_type")
+        or tactical_task.get("location_intent")
+        or scope.get("location_intent")
+        or ""
+    )
+    return {
+        "command_text": _micromachine_recent_context_text(
+            command_text,
+            max_chars=_MICROMACHINE_RECENT_COMMAND_TEXT_LIMIT,
+        ),
+        "status": _micromachine_recent_context_text(
+            payload.get("status") or compile_result.get("status") or ""
+        ),
+        "update_id": _micromachine_recent_context_text(update_id),
+        "assistant_message": _micromachine_recent_context_text(
+            assistant_message,
+            max_chars=_MICROMACHINE_RECENT_COMMAND_TEXT_LIMIT,
+        ),
+        "command_layer": _micromachine_recent_context_text(
+            vector.get("command_layer", "")
+        ),
+        "category": _micromachine_recent_context_text(
+            command_queue.get("category", "")
+        ),
+        "reducer_action": _micromachine_recent_context_text(
+            command_queue.get("action", "")
+        ),
+        "goal": _micromachine_recent_context_text(
+            vector.get("goal", ""),
+            max_chars=_MICROMACHINE_RECENT_COMMAND_TEXT_LIMIT,
+        ),
+        "doctrine": _micromachine_recent_context_text(
+            strategy.get("doctrine", "")
+        ),
+        "tactical_task": {
+            "type": _micromachine_recent_context_text(
+                tactical_task.get("task_type", "")
+            ),
+            "ability": _micromachine_recent_context_text(
+                tactical_task.get("ability", "")
+            ),
+            "units": unit_classes,
+            "count": {
+                "min": _micromachine_recent_context_count(
+                    tactical_task.get("min_units")
+                ),
+                "max": _micromachine_recent_context_count(
+                    tactical_task.get("max_units")
+                ),
+                "requested": min(requested_count, 200),
+            },
+        },
+        "route": _micromachine_recent_context_text(
+            route_intent.get("route_type", "")
+        ),
+        "target": _micromachine_recent_context_text(target),
+        "consumption_status": _micromachine_recent_context_text(
+            payload.get("consumption_status", "")
+        ),
+        "execution_status": _micromachine_recent_context_text(
+            execution.get("state", "")
+        ),
+    }
+
+
+class _MicroMachineRequestSupersededError(RuntimeError):
+    """Raised when an emergency command supersedes unpublished queued work."""
+
+    def __init__(self, request_id: str, replacement_update_id: str) -> None:
+        self.request_id = request_id
+        self.replacement_update_id = replacement_update_id
+        super().__init__(
+            f"MicroMachine request {request_id} was superseded by emergency "
+            f"request {replacement_update_id}."
+        )
+
+
+class _MicroMachinePublishCancelledError(RuntimeError):
+    """Raised when a cancelled or expired request reaches the publish boundary."""
+
+
+@dataclass
 class _MicroMachineModulationRequest:
     """Queued MicroMachine write request, serialized with commander commands."""
 
@@ -1680,6 +2225,133 @@ class _MicroMachineModulationRequest:
     current_frame: int | None
     update_id: str | None
     future: concurrent.futures.Future[Mapping[str, object]]
+    cancel_event: threading.Event
+    deadline_monotonic: float | None = None
+    emergency: bool = False
+    emergency_epoch: int = 0
+    publish_committed: bool = False
+
+
+class _GuardedMicroMachineBackend:
+    """Make cancellation/deadline checks atomic with blackboard publication."""
+
+    def __init__(
+        self,
+        backend: object,
+        request: _MicroMachineModulationRequest,
+        coordinator_lock: threading.Lock,
+        emergency_epochs: dict[str, tuple[int, str]],
+    ) -> None:
+        self._backend = backend
+        self._request = request
+        self._coordinator_lock = coordinator_lock
+        self._emergency_epochs = emergency_epochs
+
+    def publish_vector(self, *args, **kwargs):
+        request = self._request
+        with self._coordinator_lock:
+            blackboard_key = os.path.realpath(request.blackboard_dir)
+            emergency_epoch, latest_emergency_update_id = (
+                self._emergency_epochs.get(blackboard_key, (0, ""))
+            )
+            deadline = request.deadline_monotonic
+            if request.cancel_event.is_set():
+                raise _MicroMachinePublishCancelledError(
+                    f"MicroMachine request {request.update_id or '<pending>'} was cancelled."
+                )
+            if deadline is not None and time.monotonic() >= deadline:
+                request.cancel_event.set()
+                raise _MicroMachinePublishCancelledError(
+                    f"MicroMachine request {request.update_id or '<pending>'} exceeded its publish deadline."
+                )
+            if not request.emergency and request.emergency_epoch != emergency_epoch:
+                request.cancel_event.set()
+                raise _MicroMachineRequestSupersededError(
+                    request.update_id or "<pending>",
+                    latest_emergency_update_id or "<emergency>",
+                )
+            result = self._backend.publish_vector(*args, **kwargs)
+            request.publish_committed = True
+            if request.emergency:
+                self._emergency_epochs[blackboard_key] = (
+                    emergency_epoch + 1,
+                    request.update_id or "",
+                )
+            return result
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._backend, name)
+
+
+def _micromachine_request_is_emergency(
+    text: str,
+    provider_output: Mapping[str, object] | None,
+) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    for pattern in _MICROMACHINE_NEGATED_EMERGENCY_PATTERNS:
+        normalized = pattern.sub(" ", normalized)
+    normalized = " ".join(normalized.split()).strip(" ,;:")
+    if (
+        _MICROMACHINE_RETREAT_TEXT_RE.search(normalized)
+        or _MICROMACHINE_ATTACK_CANCEL_TEXT_RE.search(normalized)
+    ):
+        return True
+    if not isinstance(provider_output, Mapping):
+        return False
+    if str(provider_output.get("command_layer", "") or "").lower() == "emergency":
+        return True
+    if str(provider_output.get("override_level", "") or "").lower() == "emergency":
+        return True
+    emergency = provider_output.get("emergency")
+    return isinstance(emergency, Mapping) and any(bool(value) for value in emergency.values())
+
+
+def _micromachine_emergency_safety_output(text: str) -> dict[str, object]:
+    """Compile explicit retreat/cancel intent without waiting on an LLM."""
+
+    return {
+        "source": PolicyModulationSource.UI.value,
+        "goal": text,
+        "assistant_message": "긴급 후퇴·공격 취소를 safety override로 즉시 적용했습니다.",
+        "override_level": "emergency",
+        "command_layer": "emergency",
+        "confidence": 1.0,
+        "ttl_seconds": 45,
+        "strategy": {"posture": "defensive"},
+        "combat": {
+            "aggression": -0.9,
+            "defend_bias": 0.6,
+            "preserve_army_bias": 0.95,
+            "attack_condition_override": "normal",
+        },
+        "squad": {
+            "main_army_bias": -0.8,
+            "regroup_bias": 0.95,
+            "defense_bias": 0.7,
+        },
+        "emergency": {
+            "cancel_attacks": True,
+            "force_retreat": True,
+        },
+        "workers": {"repeat_order_guard_frames": 32},
+        "lifetime": {
+            "mode": "emergency_window",
+            "completion_conditions": [
+                "retreat_confirmed",
+                "ttl_expired",
+            ],
+            "completion_state": "active",
+            "reason": "deterministic safety override",
+        },
+        "tags": [
+            "web_gui",
+            "deterministic_emergency",
+            "safety_override",
+        ],
+        "rationale": (
+            "Safety-critical retreat and attack cancellation bypass LLM latency."
+        ),
+    }
 
 
 class _SemanticScopePolicyModulationProvider:
@@ -1719,8 +2391,18 @@ class _LocalLLMPolicyModulationProvider:
 
     source = PolicyModulationSource.LLM
 
-    def __init__(self, llm_control: object | None) -> None:
+    def __init__(
+        self,
+        llm_control: object | None,
+        *,
+        recent_commands: Sequence[Mapping[str, object]] | None = None,
+    ) -> None:
         self.llm_control = llm_control
+        self.recent_commands = (
+            json.loads(json.dumps(list(recent_commands), ensure_ascii=False))
+            if recent_commands is not None
+            else None
+        )
 
     def propose_policy_modulation(self, request: object) -> Mapping[str, object]:
         control = self.llm_control
@@ -1756,8 +2438,26 @@ class _LocalLLMPolicyModulationProvider:
             return _llm_policy_modulation_unavailable_output(
                 "LLM control이 MicroMachine policy modulation provider를 지원하지 않습니다."
             )
+        provider_request = request
+        if self.recent_commands is not None:
+            commander_context = getattr(request, "commander_context", {})
+            if isinstance(commander_context, Mapping):
+                compact_context = dict(commander_context)
+                compact_context["recent_commands"] = (
+                    _merge_micromachine_provider_recent_commands(
+                        self.recent_commands,
+                        commander_context.get("recent_commands"),
+                    )
+                )
+                try:
+                    provider_request = replace(
+                        request,
+                        commander_context=compact_context,
+                    )
+                except TypeError:
+                    provider_request = request
         try:
-            output = propose(request)
+            output = propose(provider_request)
         except Exception as error:  # noqa: BLE001 - normalize provider boundary.
             return {
                 **_llm_policy_modulation_unavailable_output(
@@ -2018,6 +2718,7 @@ class _MicroMachineLaunchManager:
         self._error = ""
         self._last_line = ""
         self._blackboard_dir = _default_micromachine_blackboard_dir()
+        self._enemy_difficulty = DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY
         self._launch_wall_time = 0.0
         self._cwd = cwd.strip() or _REPO_ROOT
         candidate_script = script_path.strip()
@@ -2028,25 +2729,37 @@ class _MicroMachineLaunchManager:
             _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH,
         )
 
-    def start(self, blackboard_dir: str = "") -> dict[str, object]:
+    def start(
+        self,
+        blackboard_dir: str = "",
+        enemy_difficulty: int = DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY,
+    ) -> dict[str, object]:
         """Launch MicroMachine smoke/live runtime for the selected blackboard."""
 
         root = _clean_blackboard_dir(blackboard_dir, self._blackboard_dir)
+        difficulty = _require_micromachine_enemy_difficulty(enemy_difficulty)
         with self._lock:
             self._refresh_unlocked()
             if self._process is not None and self._process.poll() is None:
-                if os.path.realpath(root) != os.path.realpath(self._blackboard_dir):
+                blackboard_changed = (
+                    os.path.realpath(root) != os.path.realpath(self._blackboard_dir)
+                )
+                difficulty_changed = difficulty != self._enemy_difficulty
+                if blackboard_changed or difficulty_changed:
                     payload = self._snapshot_unlocked()
                     payload["status"] = "blocked"
                     payload["accepted"] = False
                     payload["requested_blackboard_dir"] = root
+                    payload["requested_enemy_difficulty"] = difficulty
                     payload["error"] = (
-                        "MicroMachine runtime is already running with a different "
-                        f"blackboard_dir: {self._blackboard_dir}"
+                        "MicroMachine runtime is already running with "
+                        f"blackboard_dir={self._blackboard_dir} and "
+                        f"enemy_difficulty={self._enemy_difficulty}."
                     )
                     return payload
                 return self._snapshot_unlocked()
             self._blackboard_dir = root
+            self._enemy_difficulty = difficulty
             self._status = "starting"
             self._error = ""
             self._last_line = ""
@@ -2061,6 +2774,7 @@ class _MicroMachineLaunchManager:
             env["BLACKBOARD_DIR"] = root
             env.setdefault("SC2_ROOT", DEFAULT_SC2_INSTALL_PATH)
             env.setdefault("SMOKE_KEEP_RUNNING_AFTER_PASS", "1")
+            env["SMOKE_ENEMY_DIFFICULTY"] = str(difficulty)
             max_attempts = env.get(_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV, "1")
             env.setdefault("SMOKE_MAX_ATTEMPTS", max_attempts)
             argv = [
@@ -2070,6 +2784,8 @@ class _MicroMachineLaunchManager:
                 "--fresh-live-session",
                 "--blackboard-dir",
                 root,
+                "--enemy-difficulty",
+                str(difficulty),
                 "--max-attempts",
                 max_attempts,
             ]
@@ -2170,6 +2886,7 @@ class _MicroMachineLaunchManager:
             "pid": process.pid if runtime_attached else None,
             "runtime_attached": runtime_attached,
             "blackboard_dir": self._blackboard_dir,
+            "enemy_difficulty": self._enemy_difficulty,
             "script_path": self._script_path,
             "last_line": self._last_line,
             "error": self._error,
@@ -2243,52 +2960,122 @@ class SessionLoopBridge:
             micromachine_blackboard_dir.strip()
             or _default_micromachine_blackboard_dir()
         )
+        self._micromachine_recent_commands: dict[
+            str, deque[dict[str, object]]
+        ] = {}
+        self._micromachine_recent_commands_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
+        self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
+        self._micromachine_request_lock = threading.Lock()
+        self._micromachine_requests: dict[
+            str,
+            _MicroMachineModulationRequest,
+        ] = {}
+        self._micromachine_emergency_epochs: dict[str, tuple[int, str]] = {}
+        self._queue_sequence = 0
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._queue: "asyncio.Queue[object]" | None = None
+        self._queue: "asyncio.PriorityQueue[tuple[int, int, object]]" | None = None
+        self._micromachine_normal_executor: (
+            concurrent.futures.ThreadPoolExecutor | None
+        ) = None
+        self._micromachine_emergency_executor: (
+            concurrent.futures.ThreadPoolExecutor | None
+        ) = None
+        self._stopping = threading.Event()
         self._ready = threading.Event()
 
     @property
     def is_running(self) -> bool:
         """Return whether the worker loop thread is alive and accepting work."""
 
-        thread = self._thread
-        return thread is not None and thread.is_alive() and self._loop is not None
+        with self._lifecycle_lock:
+            thread = self._thread
+            return (
+                self._lifecycle_state == _BRIDGE_LIFECYCLE_RUNNING
+                and thread is not None
+                and thread.is_alive()
+                and self._loop is not None
+                and self._queue is not None
+            )
 
     def start(self) -> None:
         """Start the daemon loop thread; idempotent while already running."""
 
         with self._lifecycle_lock:
-            if self._thread is not None and self._thread.is_alive():
+            if self._lifecycle_state == _BRIDGE_LIFECYCLE_RUNNING:
                 return
-            self._ready.clear()
-            self._thread = threading.Thread(
-                target=self._run_loop,
-                name=_BRIDGE_THREAD_NAME,
-                daemon=True,
-            )
-            self._thread.start()
-        if not self._ready.wait(timeout=10.0):
+            if self._lifecycle_state == _BRIDGE_LIFECYCLE_STOPPING:
+                raise RuntimeError(
+                    "Session loop bridge is still stopping; wait for the "
+                    "previous worker to terminate before restarting."
+                )
+            if self._lifecycle_state == _BRIDGE_LIFECYCLE_STARTING:
+                ready = self._ready
+            else:
+                self._stopping.clear()
+                self._ready.clear()
+                self._lifecycle_state = _BRIDGE_LIFECYCLE_STARTING
+                self._thread = threading.Thread(
+                    target=self._run_loop,
+                    name=_BRIDGE_THREAD_NAME,
+                    daemon=True,
+                )
+                ready = self._ready
+                try:
+                    self._thread.start()
+                except Exception:
+                    self._thread = None
+                    self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
+                    self._stopping.set()
+                    ready.set()
+                    raise
+        if not ready.wait(timeout=10.0):
             raise RuntimeError("Session loop bridge event loop failed to start in 10s.")
+        with self._lifecycle_lock:
+            if self._lifecycle_state == _BRIDGE_LIFECYCLE_RUNNING:
+                return
+            if self._lifecycle_state == _BRIDGE_LIFECYCLE_STOPPING:
+                raise RuntimeError(
+                    "Session loop bridge stopped while the worker was starting."
+                )
+            raise RuntimeError("Session loop bridge event loop failed to start.")
 
     def stop(self, timeout: float = 10.0) -> None:
         """Drain pending commands, stop the loop, and join the thread."""
 
         with self._lifecycle_lock:
             thread = self._thread
-            if thread is None:
+            if self._lifecycle_state == _BRIDGE_LIFECYCLE_STOPPED or thread is None:
                 return
+            self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPING
+            self._stopping.set()
             loop = self._loop
             queue = self._queue
+            self._terminate_pending_micromachine_requests(
+                "Session loop bridge stopped before the MicroMachine request completed."
+            )
             if thread.is_alive() and loop is not None and queue is not None:
                 try:
-                    loop.call_soon_threadsafe(queue.put_nowait, _STOP_SENTINEL)
+                    self._enqueue_bridge_item(
+                        loop,
+                        queue,
+                        _STOP_SENTINEL,
+                        priority=_BRIDGE_QUEUE_PRIORITY_STOP,
+                    )
                 except RuntimeError:
                     # The loop already closed on its own; just join below.
                     pass
+        if thread is not threading.current_thread():
             thread.join(timeout=timeout)
-            self._thread = None
+        with self._lifecycle_lock:
+            if not thread.is_alive() and self._thread is thread:
+                self._thread = None
+                self._loop = None
+                self._queue = None
+                self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
+                self._stopping.set()
+                self._ready.set()
 
     def submit_command(self, text: str) -> None:
         """Enqueue one utterance for sequential processing (non-blocking)."""
@@ -2298,11 +3085,130 @@ class SessionLoopBridge:
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("Web GUI command text must be non-empty.")
-        loop = self._loop
-        queue = self._queue
-        if loop is None or queue is None or not self.is_running:
-            raise RuntimeError("Session loop bridge is not running; call start() first.")
-        loop.call_soon_threadsafe(queue.put_nowait, cleaned)
+        self._accept_bridge_item(
+            cleaned,
+            priority=_BRIDGE_QUEUE_PRIORITY_NORMAL,
+        )
+
+    def _accept_bridge_item(self, item: object, *, priority: int) -> None:
+        """Atomically validate RUNNING state and schedule one accepted item."""
+
+        with self._lifecycle_lock:
+            if self._lifecycle_state != _BRIDGE_LIFECYCLE_RUNNING:
+                raise RuntimeError(
+                    "Session loop bridge is not running; call start() first."
+                )
+            loop = self._loop
+            queue = self._queue
+            if loop is None or queue is None:
+                raise RuntimeError(
+                    "Session loop bridge is not running; call start() first."
+                )
+            self._enqueue_bridge_item(loop, queue, item, priority=priority)
+
+    def _enqueue_bridge_item(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        queue: "asyncio.PriorityQueue[tuple[int, int, object]]",
+        item: object,
+        *,
+        priority: int,
+    ) -> None:
+        self._queue_sequence += 1
+        sequence = self._queue_sequence
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            (priority, sequence, item),
+        )
+
+    def _register_micromachine_request(
+        self,
+        request: _MicroMachineModulationRequest,
+    ) -> None:
+        update_id = request.update_id or ""
+        with self._micromachine_request_lock:
+            if update_id in self._micromachine_requests:
+                raise ValueError(
+                    f"MicroMachine update_id is already queued: {update_id}."
+                )
+            request_blackboard = os.path.realpath(request.blackboard_dir)
+            request.emergency_epoch = self._micromachine_emergency_epochs.get(
+                request_blackboard,
+                (0, ""),
+            )[0]
+            if request.emergency:
+                for pending_id, pending in tuple(
+                    self._micromachine_requests.items()
+                ):
+                    if (
+                        pending_id == update_id
+                        or pending.publish_committed
+                        or os.path.realpath(pending.blackboard_dir)
+                        != request_blackboard
+                    ):
+                        continue
+                    pending.cancel_event.set()
+                    if not pending.future.done():
+                        pending.future.set_exception(
+                            _MicroMachineRequestSupersededError(
+                                pending_id,
+                                update_id,
+                            )
+                        )
+            self._micromachine_requests[update_id] = request
+
+    def _accept_micromachine_request(
+        self,
+        request: _MicroMachineModulationRequest,
+    ) -> None:
+        """Register and enqueue a request under one lifecycle decision."""
+
+        with self._lifecycle_lock:
+            if self._lifecycle_state != _BRIDGE_LIFECYCLE_RUNNING:
+                raise RuntimeError(
+                    "Session loop bridge is not running; call start() first."
+                )
+            loop = self._loop
+            queue = self._queue
+            if loop is None or queue is None:
+                raise RuntimeError(
+                    "Session loop bridge is not running; call start() first."
+                )
+            self._register_micromachine_request(request)
+            try:
+                self._enqueue_bridge_item(
+                    loop,
+                    queue,
+                    request,
+                    priority=(
+                        _BRIDGE_QUEUE_PRIORITY_EMERGENCY
+                        if request.emergency
+                        else _BRIDGE_QUEUE_PRIORITY_NORMAL
+                    ),
+                )
+            except Exception as error:
+                if not request.future.done():
+                    request.future.set_exception(error)
+                self._forget_micromachine_request(request)
+                raise
+
+    def _forget_micromachine_request(
+        self,
+        request: _MicroMachineModulationRequest,
+    ) -> None:
+        update_id = request.update_id or ""
+        with self._micromachine_request_lock:
+            if self._micromachine_requests.get(update_id) is request:
+                del self._micromachine_requests[update_id]
+
+    def _terminate_pending_micromachine_requests(self, reason: str) -> None:
+        """Give every non-committed request a terminal future during shutdown."""
+
+        with self._micromachine_request_lock:
+            for request in self._micromachine_requests.values():
+                request.cancel_event.set()
+                if not request.publish_committed and not request.future.done():
+                    request.future.set_exception(RuntimeError(reason))
 
     def state_snapshot(self) -> Mapping[str, object] | None:
         """Resolve the session's bound bot into a JSON-ready state snapshot.
@@ -2379,27 +3285,43 @@ class SessionLoopBridge:
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("MicroMachine command text must be non-empty.")
-        loop = self._loop
-        queue = self._queue
-        if loop is None or queue is None or not self.is_running:
-            raise RuntimeError("Session loop bridge is not running; call start() first.")
+        root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
+        resolved_update_id = update_id or _new_micromachine_update_id()
         future: concurrent.futures.Future[Mapping[str, object]] = (
             concurrent.futures.Future()
         )
         request = _MicroMachineModulationRequest(
             text=cleaned,
-            blackboard_dir=blackboard_dir,
+            blackboard_dir=root,
             provider_output=provider_output,
             allow_smoke_keyword_provider=allow_smoke_keyword_provider,
             semantic_scope=semantic_scope,
             commander_context=dict(commander_context or {}),
             ttl_seconds=ttl_seconds,
             current_frame=current_frame,
-            update_id=update_id,
+            update_id=resolved_update_id,
             future=future,
+            cancel_event=threading.Event(),
+            deadline_monotonic=(
+                time.monotonic() + _MICROMACHINE_SYNC_PUBLISH_DEADLINE_SECONDS
+            ),
+            emergency=_micromachine_request_is_emergency(
+                cleaned,
+                provider_output,
+            ),
         )
-        loop.call_soon_threadsafe(queue.put_nowait, request)
-        return future.result(timeout=_MICROMACHINE_REQUEST_TIMEOUT_SECONDS)
+        self._accept_micromachine_request(request)
+        try:
+            return future.result(timeout=_MICROMACHINE_REQUEST_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            with self._micromachine_request_lock:
+                publish_committed = request.publish_committed
+                if not publish_committed:
+                    request.cancel_event.set()
+                    future.cancel()
+            if publish_committed:
+                return future.result()
+            raise
 
     def submit_micromachine_modulation_background(
         self,
@@ -2421,44 +3343,11 @@ class SessionLoopBridge:
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("MicroMachine command text must be non-empty.")
-        loop = self._loop
-        queue = self._queue
-        if loop is None or queue is None or not self.is_running:
-            raise RuntimeError("Session loop bridge is not running; call start() first.")
         root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
         resolved_update_id = update_id or _new_micromachine_update_id()
         future: concurrent.futures.Future[Mapping[str, object]] = (
             concurrent.futures.Future()
         )
-
-        def observe_background_result(done: concurrent.futures.Future[Mapping[str, object]]) -> None:
-            try:
-                done.result()
-            except Exception as error:  # noqa: BLE001 - persist async failures for UI polling.
-                _write_micromachine_compile_result(
-                    root,
-                    _redact_json_ready(
-                        {
-                            "command_text": cleaned,
-                            "status": "publish_failed",
-                            "current_frame": current_frame,
-                            "compile_result": {
-                                "status": "refused",
-                                "source": "llm",
-                                "refusal_reason": (
-                                    "MicroMachine async publish failed with "
-                                    f"{type(error).__name__}: {error}"
-                                ),
-                                "update_id": resolved_update_id,
-                            },
-                            "update_id": resolved_update_id,
-                            "duration_ms": 0,
-                            "written_at_unix": time.time(),
-                        }
-                    ),
-                )
-
-        future.add_done_callback(observe_background_result)
         request = _MicroMachineModulationRequest(
             text=cleaned,
             blackboard_dir=root,
@@ -2470,8 +3359,78 @@ class SessionLoopBridge:
             current_frame=current_frame,
             update_id=resolved_update_id,
             future=future,
+            cancel_event=threading.Event(),
+            emergency=_micromachine_request_is_emergency(
+                cleaned,
+                provider_output,
+            ),
         )
-        loop.call_soon_threadsafe(queue.put_nowait, request)
+
+        def observe_background_result(
+            done: concurrent.futures.Future[Mapping[str, object]],
+        ) -> None:
+            try:
+                done.result()
+            except Exception as error:  # noqa: BLE001 - persist async failures for UI polling.
+                # A post-commit warning must never manufacture a failed publish.
+                if request.publish_committed:
+                    return
+                superseded = isinstance(
+                    error,
+                    _MicroMachineRequestSupersededError,
+                )
+                superseded_by_update_id = (
+                    error.replacement_update_id
+                    if isinstance(error, _MicroMachineRequestSupersededError)
+                    else ""
+                )
+                compile_result = {
+                    "status": "refused",
+                    "source": "system",
+                    "failure_kind": (
+                        "superseded" if superseded else "publish_failed"
+                    ),
+                    "refusal_reason": str(error),
+                    "update_id": resolved_update_id,
+                }
+                result = {
+                    "ok": False,
+                    "status": "superseded" if superseded else "publish_failed",
+                    "command_text": cleaned,
+                    "compile_result": compile_result,
+                    "update": None,
+                    "command_queue": {
+                        "active_command_id": resolved_update_id,
+                        "update_id": resolved_update_id,
+                        "action": (
+                            "superseded_by_emergency"
+                            if superseded
+                            else "publish_failed"
+                        ),
+                        "superseded_previous": False,
+                        "superseded_by_update_id": superseded_by_update_id,
+                    },
+                    "consumption_status": "not_published",
+                }
+                compile_document = {
+                    "command_text": cleaned,
+                    "status": result["status"],
+                    "current_frame": current_frame,
+                    "compile_result": compile_result,
+                    "update_id": resolved_update_id,
+                    "command_queue": result["command_queue"],
+                    "duration_ms": 0,
+                    "result": result,
+                    "written_at_unix": time.time(),
+                }
+                _write_micromachine_compile_result(
+                    root,
+                    _redact_json_ready(compile_document),
+                )
+
+        future.add_done_callback(observe_background_result)
+        self._accept_micromachine_request(request)
+        metadata = _micromachine_compile_result_metadata(root, resolved_update_id)
         return {
             "accepted": True,
             "ok": True,
@@ -2481,6 +3440,7 @@ class SessionLoopBridge:
             "command_text": cleaned,
             "update_id": resolved_update_id,
             "blackboard_dir": root,
+            **metadata,
             "consumption_status": "pending_compile",
             "message": (
                 "MicroMachine publish를 백그라운드에서 시작했습니다. "
@@ -2500,6 +3460,7 @@ class SessionLoopBridge:
         ttl_seconds: int | None = None,
         current_frame: int | None = None,
         update_id: str | None = None,
+        request: _MicroMachineModulationRequest | None = None,
     ) -> Mapping[str, object]:
         from starcraft_commander.micromachine_live_session import (
             KeywordPolicyModulationProvider,
@@ -2517,10 +3478,29 @@ class SessionLoopBridge:
                 source=PolicyModulationSource.UI,
                 force_source=True,
             )
+        elif request is not None and request.emergency:
+            provider = StaticJsonPolicyModulationProvider(
+                _micromachine_emergency_safety_output(text),
+                source=PolicyModulationSource.UI,
+                force_source=True,
+            )
         elif allow_smoke_keyword_provider:
             provider = KeywordPolicyModulationProvider()
         else:
-            provider = _LocalLLMPolicyModulationProvider(self._llm_control)
+            recent_commands = (
+                commander_context.get("recent_commands")
+                if isinstance(commander_context, Mapping)
+                else None
+            )
+            provider = _LocalLLMPolicyModulationProvider(
+                self._llm_control,
+                recent_commands=(
+                    recent_commands
+                    if isinstance(recent_commands, Sequence)
+                    and not isinstance(recent_commands, (str, bytes, bytearray))
+                    else ()
+                ),
+            )
         if semantic_scope or ttl_seconds is not None:
             provider = _SemanticScopePolicyModulationProvider(
                 provider,
@@ -2528,8 +3508,16 @@ class SessionLoopBridge:
                 ttl_seconds=ttl_seconds,
             )
         started_at = time.monotonic()
+        backend: object = MicroMachineFilesystemBlackboard(root)
+        if request is not None:
+            backend = _GuardedMicroMachineBackend(
+                backend,
+                request,
+                self._micromachine_request_lock,
+                self._micromachine_emergency_epochs,
+            )
         result = MicroMachineLiveTextSession(
-            MicroMachineFilesystemBlackboard(root),
+            backend,
             provider,
         ).submit_text(
             text,
@@ -2548,25 +3536,17 @@ class SessionLoopBridge:
             if isinstance(update_for_compile, Mapping)
             else (update_id or "")
         )
+        result_metadata = _micromachine_compile_result_metadata(
+            root,
+            compile_update_id,
+        )
+        payload.update(result_metadata)
         compile_result_for_document = payload.get("compile_result")
         if isinstance(compile_result_for_document, Mapping) and compile_update_id:
             compile_result_for_document = dict(compile_result_for_document)
             compile_result_for_document.setdefault("update_id", compile_update_id)
+            compile_result_for_document.update(result_metadata)
             payload["compile_result"] = compile_result_for_document
-        compile_document: dict[str, object] = {
-            "command_text": text,
-            "status": str(payload.get("status", "") or ""),
-            "current_frame": payload.get("current_frame"),
-            "compile_result": compile_result_for_document,
-            "update_id": compile_update_id,
-            "command_queue": payload.get("command_queue"),
-            "duration_ms": duration_ms,
-            "written_at_unix": time.time(),
-        }
-        _write_micromachine_compile_result(
-            root,
-            _redact_json_ready(compile_document),
-        )
         dashboard = payload.get("dashboard", {})
         telemetry = dashboard.get("telemetry") if isinstance(dashboard, Mapping) else None
         update = payload.get("update")
@@ -2587,6 +3567,42 @@ class SessionLoopBridge:
                 if isinstance(payload.get("command_queue"), Mapping)
                 else {}
             )
+        result_snapshot = {
+            key: payload.get(key)
+            for key in (
+                "ok",
+                "command_text",
+                "status",
+                "provider_source",
+                "current_frame",
+                "compile_result",
+                "update",
+                "consumption_status",
+                "consumed",
+                "command_queue",
+                "intervention",
+                "blackboard_scope_id",
+                "result_id",
+            )
+        }
+        compile_document: dict[str, object] = {
+            "command_text": text,
+            "status": str(payload.get("status", "") or ""),
+            "current_frame": payload.get("current_frame"),
+            "compile_result": compile_result_for_document,
+            "update_id": compile_update_id,
+            "command_queue": payload.get("command_queue"),
+            "duration_ms": duration_ms,
+            "result": result_snapshot,
+            "written_at_unix": time.time(),
+        }
+        compile_document.update(result_metadata)
+        persistence_warnings = _write_micromachine_compile_result(
+            root,
+            _redact_json_ready(compile_document),
+        )
+        if persistence_warnings:
+            payload["persistence_warnings"] = list(persistence_warnings)
         return payload
 
     def micromachine_status(self, *, blackboard_dir: str = "") -> Mapping[str, object]:
@@ -2607,9 +3623,19 @@ class SessionLoopBridge:
         )
         compile_document = _read_micromachine_compile_result(root)
         compile_result = _latest_compile_result_payload(compile_document)
-        return {
+        compile_history = _read_micromachine_compile_result_history(root)
+        result_metadata = _micromachine_compile_result_metadata(
+            root,
+            (
+                compile_document.get("update_id")
+                if isinstance(compile_document, Mapping)
+                else ""
+            ),
+        )
+        payload = {
             "enabled": True,
             "blackboard_dir": root,
+            **result_metadata,
             **_micromachine_status_payload(
                 snapshot.to_dict(),
                 telemetry=telemetry,
@@ -2617,34 +3643,91 @@ class SessionLoopBridge:
                 compile_result=compile_result,
             ),
         }
+        payload["modulation_results"] = _micromachine_compile_result_stream(
+            compile_history,
+            blackboard_dir=root,
+        )
+        self._update_micromachine_recent_lifecycle(root, payload)
+        return payload
 
     def _run_loop(self) -> None:
         """Daemon thread body: run a private asyncio loop draining commands."""
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        self._loop = loop
-        self._queue = asyncio.Queue()
-        self._ready.set()
+        queue: "asyncio.PriorityQueue[tuple[int, int, object]]" = (
+            asyncio.PriorityQueue()
+        )
+        normal_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        emergency_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        active = False
         try:
-            loop.run_until_complete(self._drain_commands())
+            normal_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="voi-mm-normal",
+            )
+            emergency_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="voi-mm-emergency",
+            )
+            with self._lifecycle_lock:
+                if self._lifecycle_state == _BRIDGE_LIFECYCLE_STARTING:
+                    self._loop = loop
+                    self._queue = queue
+                    self._micromachine_normal_executor = normal_executor
+                    self._micromachine_emergency_executor = emergency_executor
+                    self._lifecycle_state = _BRIDGE_LIFECYCLE_RUNNING
+                    active = True
+                self._ready.set()
+            if active:
+                loop.run_until_complete(self._drain_commands())
         finally:
-            self._loop = None
-            self._queue = None
+            if normal_executor is not None:
+                normal_executor.shutdown(wait=True)
+            if emergency_executor is not None:
+                emergency_executor.shutdown(wait=True)
+            self._terminate_pending_micromachine_requests(
+                "Session loop bridge stopped before the MicroMachine request completed."
+            )
+            with self._lifecycle_lock:
+                if self._loop is loop:
+                    self._loop = None
+                    self._queue = None
+                    self._micromachine_normal_executor = None
+                    self._micromachine_emergency_executor = None
+                if self._thread is threading.current_thread():
+                    self._thread = None
+                self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
+                self._stopping.set()
+                self._ready.set()
             asyncio.set_event_loop(None)
             loop.close()
 
     async def _drain_commands(self) -> None:
-        """Process queued texts strictly in submission order until stopped."""
+        """Drain normal work serially while dispatching emergency work immediately."""
 
         queue = self._queue
         assert queue is not None  # Set by _run_loop before _ready fires.
         while True:
-            item = await queue.get()
+            _priority, _sequence, item = await queue.get()
             if item is _STOP_SENTINEL:
                 return
             if isinstance(item, _MicroMachineModulationRequest):
-                self._process_one_micromachine_request(item)
+                executor = (
+                    self._micromachine_emergency_executor
+                    if item.emergency
+                    else self._micromachine_normal_executor
+                )
+                if executor is None:
+                    if not item.future.done():
+                        item.future.set_exception(
+                            RuntimeError(
+                                "MicroMachine request executor is not running."
+                            )
+                        )
+                    self._forget_micromachine_request(item)
+                    continue
+                executor.submit(self._process_one_micromachine_request, item)
                 continue
             await self._process_one(str(item))
 
@@ -2652,26 +3735,131 @@ class SessionLoopBridge:
         self,
         request: _MicroMachineModulationRequest,
     ) -> None:
-        """Publish one MicroMachine update on the single bridge worker queue."""
+        """Compile and publish one MicroMachine update on its assigned lane."""
 
-        if request.future.cancelled():
+        if request.future.cancelled() or request.cancel_event.is_set():
+            if not request.future.done():
+                request.future.set_exception(
+                    RuntimeError(
+                        "MicroMachine request was cancelled before publication."
+                    )
+                )
+            self._forget_micromachine_request(request)
             return
+        root = _clean_blackboard_dir(
+            request.blackboard_dir,
+            self._micromachine_blackboard_dir,
+        )
+        commander_context = self._micromachine_commander_context(
+            root,
+            request.commander_context,
+        )
         try:
             payload = self._publish_micromachine_modulation(
                 request.text,
-                blackboard_dir=request.blackboard_dir,
+                blackboard_dir=root,
                 provider_output=request.provider_output,
                 allow_smoke_keyword_provider=request.allow_smoke_keyword_provider,
                 semantic_scope=request.semantic_scope,
-                commander_context=request.commander_context,
+                commander_context=commander_context,
                 ttl_seconds=request.ttl_seconds,
                 current_frame=request.current_frame,
                 update_id=request.update_id,
+                request=request,
             )
         except Exception as error:  # noqa: BLE001 - returned to HTTP handler.
-            request.future.set_exception(error)
+            if not request.cancel_event.is_set():
+                self._remember_micromachine_command(
+                    root,
+                    request.text,
+                    {
+                        "status": "publish_failed",
+                        "update_id": request.update_id or "",
+                        "error": f"{type(error).__name__}: {error}",
+                    },
+                )
+            if not request.future.done():
+                request.future.set_exception(error)
+            self._forget_micromachine_request(request)
             return
-        request.future.set_result(payload)
+        self._remember_micromachine_command(root, request.text, payload)
+        if not request.future.done():
+            request.future.set_result(payload)
+        self._forget_micromachine_request(request)
+
+    def _micromachine_commander_context(
+        self,
+        blackboard_dir: str,
+        supplied_context: Mapping[str, object],
+    ) -> dict[str, object]:
+        context = dict(supplied_context)
+        key = os.path.realpath(blackboard_dir)
+        with self._micromachine_recent_commands_lock:
+            has_history = bool(self._micromachine_recent_commands.get(key))
+        if has_history:
+            try:
+                self.micromachine_status(blackboard_dir=blackboard_dir)
+            except Exception:
+                pass
+        with self._micromachine_recent_commands_lock:
+            history = self._micromachine_recent_commands.get(key)
+            context["recent_commands"] = (
+                json.loads(json.dumps(list(history), ensure_ascii=False))
+                if history is not None
+                else []
+            )
+        return context
+
+    def _remember_micromachine_command(
+        self,
+        blackboard_dir: str,
+        command_text: str,
+        payload: Mapping[str, object],
+    ) -> None:
+        entry = _micromachine_recent_command_entry(command_text, payload)
+        key = os.path.realpath(blackboard_dir)
+        with self._micromachine_recent_commands_lock:
+            history = self._micromachine_recent_commands.setdefault(
+                key,
+                deque(maxlen=_MICROMACHINE_RECENT_COMMAND_LIMIT),
+            )
+            history.append(entry)
+
+    def _update_micromachine_recent_lifecycle(
+        self,
+        blackboard_dir: str,
+        payload: Mapping[str, object],
+    ) -> None:
+        update = _mapping_child(payload, "update")
+        intervention = _mapping_child(payload, "intervention")
+        execution = _mapping_child(intervention, "command_execution")
+        update_id = (
+            execution.get("command_id")
+            or update.get("update_id")
+            or ""
+        )
+        normalized_update_id = _micromachine_recent_context_text(update_id)
+        if not normalized_update_id:
+            return
+        consumption_status = _micromachine_recent_context_text(
+            payload.get("consumption_status", "")
+        )
+        execution_status = _micromachine_recent_context_text(
+            execution.get("state", "")
+        )
+        key = os.path.realpath(blackboard_dir)
+        with self._micromachine_recent_commands_lock:
+            history = self._micromachine_recent_commands.get(key)
+            if history is None:
+                return
+            for entry in reversed(history):
+                if entry.get("update_id") != normalized_update_id:
+                    continue
+                if consumption_status:
+                    entry["consumption_status"] = consumption_status
+                if execution_status:
+                    entry["execution_status"] = execution_status
+                break
 
     async def _process_one(self, text: str) -> None:
         """Run one utterance through the session; never drop it silently."""
@@ -3086,6 +4274,13 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   #live-status a { color: var(--accent); font-weight: 900; }
   .runtime-actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .runtime-config {
+    display: flex; align-items: center; gap: 10px; margin-top: 10px;
+    color: var(--muted); font-size: 0.78rem; font-weight: 800;
+  }
+  .runtime-config input {
+    width: 84px; margin: 0; padding: 8px 10px;
+  }
   .runtime-actions button {
     flex: 1 1 160px; margin-top: 0 !important; padding: 10px 12px !important;
     background: rgba(255, 255, 255, 0.9) !important; color: #071225 !important;
@@ -3462,6 +4657,10 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       </div>
       <p id="legacy-mode-warning" class="legacy-mode-warning" data-i18n="legacyModeWarning">Legacy mode는 MicroMachine이 아닙니다. SC2 실행/명령이 python-sc2 demo 경로로 가므로 MicroMachine QA와 혼동하지 마세요.</p>
       <div id="live-status" data-i18n="runtimeIdleMicro">MicroMachine 런타임 대기 중입니다. 선택 모드 실행을 누르면 SC2/MicroMachine smoke session을 시작합니다.</div>
+      <label id="micromachine-enemy-difficulty-control" class="runtime-config" for="micromachine-enemy-difficulty">
+        <span data-i18n="microMachineEnemyDifficulty">수동 live-hold 적 난이도 (1..10)</span>
+        <input id="micromachine-enemy-difficulty" type="number" min="1" max="10" step="1" value="10">
+      </label>
       <div class="runtime-actions">
         <button id="runtime-start-button" type="button" data-i18n="runtimeStartButton">선택 모드 실행</button>
         <button id="live-open-button" type="button" data-i18n="runtimeOpenButton" disabled>Live GUI 열기</button>
@@ -3500,6 +4699,10 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
           <label class="provider-option">
             <input type="radio" name="llm-provider-choice" value="openai" onchange="handleProviderChoiceChange('openai')" checked>
             OpenAI / GPT
+          </label>
+          <label class="provider-option">
+            <input type="radio" name="llm-provider-choice" value="myproxy" onchange="handleProviderChoiceChange('myproxy')">
+            MyProxy / GPT
           </label>
           <label class="provider-option">
             <input type="radio" name="llm-provider-choice" value="anthropic" onchange="handleProviderChoiceChange('anthropic')">
@@ -3689,6 +4892,9 @@ var trimmedChatEvents = 0;
 var recentEvents = [];
 var archivedChatEvents = [];
 var pendingMicroMachineAsyncUpdates = {};
+var deferredPendingMicroMachineTransfers = {};
+var knownPendingMicroMachineUpdateKeys = {};
+var consumedMicroMachineResultIdsByScope = {};
 var compactedContext = {
   total: 0,
   successful: 0,
@@ -3713,6 +4919,12 @@ var COMMAND_MODE_MICROMACHINE = "__COMMAND_MODE_MICROMACHINE__";
 var COMMAND_MODE_LEGACY_COMMANDER = "__COMMAND_MODE_LEGACY_COMMANDER__";
 var activeCommandMode = COMMAND_MODE_MICROMACHINE;
 var LLM_MODELS = {
+  myproxy: [
+    { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+    { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+    { value: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+    { value: "gpt-5.5", label: "GPT-5.5" }
+  ],
   openai: [
     { value: "gpt-5.5", label: "GPT-5.5" },
     { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
@@ -3782,6 +4994,7 @@ var I18N = {
     runtimeStartButton: "선택 모드 실행",
     runtimeOpenButton: "Live GUI 열기",
     runtimeRefreshButton: "런타임 상태 확인",
+    microMachineEnemyDifficulty: "수동 live-hold 적 난이도 (1..10)",
     runtimeStarting: "선택한 런타임 시작 중",
     runtimeRunning: "선택한 런타임 실행 중",
     runtimeConnected: "MicroMachine telemetry 연결됨",
@@ -3943,6 +5156,7 @@ var I18N = {
     runtimeStartButton: "Launch selected runtime",
     runtimeOpenButton: "Open Live GUI",
     runtimeRefreshButton: "Check runtime status",
+    microMachineEnemyDifficulty: "Manual live-hold enemy difficulty (1..10)",
     runtimeStarting: "Starting selected runtime",
     runtimeRunning: "Selected runtime is running",
     runtimeConnected: "MicroMachine telemetry connected",
@@ -4104,6 +5318,7 @@ var I18N = {
     runtimeStartButton: "启动所选 runtime",
     runtimeOpenButton: "打开 Live GUI",
     runtimeRefreshButton: "检查 runtime 状态",
+    microMachineEnemyDifficulty: "手动 live-hold 敌方难度 (1..10)",
     runtimeStarting: "正在启动所选 runtime",
     runtimeRunning: "所选 runtime 正在运行",
     runtimeConnected: "MicroMachine telemetry 已连接",
@@ -4277,6 +5492,10 @@ function setCommandMode(mode) {
   var warning = document.getElementById("legacy-mode-warning");
   if (warning) {
     warning.style.display = isMicroMachineCommandMode() ? "none" : "block";
+  }
+  var difficultyControl = document.getElementById("micromachine-enemy-difficulty-control");
+  if (difficultyControl) {
+    difficultyControl.style.display = isMicroMachineCommandMode() ? "flex" : "none";
   }
   if (!llmConfigured) {
     setLlmStatus(
@@ -4584,6 +5803,7 @@ function appendPendingCommand(text) {
   renderPendingAggregate(text);
   updateAssistantPendingState();
   logBox.scrollTop = logBox.scrollHeight;
+  return pendingId;
 }
 
 function pendingCommandTexts() {
@@ -4662,9 +5882,8 @@ function clearPendingMicroMachinePlan() {
 }
 
 function appendMicroMachinePendingPlan(text) {
-  clearPendingMicroMachinePlan();
   latestMicroMachinePlanText = text;
-  appendPendingCommand(text);
+  return appendPendingCommand(text);
 }
 
 function appendVoiceRecordingBubble() {
@@ -4704,6 +5923,25 @@ function removePendingForCommand(text) {
   renderPendingAggregate();
   updateAssistantPendingState();
   return true;
+}
+
+function removePendingById(pendingId) {
+  if (!pendingId) { return false; }
+  var removed = false;
+  Object.keys(pendingNodes).some(function(text) {
+    var pendingIds = pendingNodes[text] || [];
+    var index = pendingIds.indexOf(pendingId);
+    if (index < 0) { return false; }
+    pendingIds.splice(index, 1);
+    if (!pendingIds.length) { delete pendingNodes[text]; }
+    removed = true;
+    return true;
+  });
+  if (removed) {
+    renderPendingAggregate();
+    updateAssistantPendingState();
+  }
+  return removed;
 }
 
 function removeOldestPendingCommand() {
@@ -5488,10 +6726,13 @@ function renderLlmSettings(data) {
   llmConfigured = !!data.configured;
   setCommandEnabled(llmConfigured);
   if (data.configured) {
+    var effort = data.reasoning_effort
+      ? " / effort=" + data.reasoning_effort
+      : "";
     setLlmStatus(
       "success",
       "llmSuccessLabel",
-      t("llmReady") + " (" + data.provider + " / " + data.model + ")"
+      t("llmReady") + " (" + data.provider + " / " + data.model + effort + ")"
     );
     return;
   }
@@ -5599,8 +6840,19 @@ function runtimeStartPayload() {
   var payload = { mode: mode };
   if (mode === COMMAND_MODE_MICROMACHINE) {
     payload.blackboard_dir = optionalMicroMachineField("micromachine-blackboard-dir");
+    payload.enemy_difficulty = requireMicroMachineEnemyDifficulty();
   }
   return payload;
+}
+
+function requireMicroMachineEnemyDifficulty() {
+  var rawValue = optionalMicroMachineField("micromachine-enemy-difficulty");
+  if (!rawValue) { return 7; }
+  var value = Number(rawValue);
+  if (!Number.isInteger(value) || value < 1 || value > 10) {
+    throw new Error("enemy difficulty must be an integer from 1 to 10.");
+  }
+  return value;
 }
 
 function handleLiveStart(status, options) {
@@ -5686,7 +6938,13 @@ function refreshLiveConnectionFlow() {
 }
 
 function startSelectedRuntime() {
-  var payload = runtimeStartPayload();
+  var payload;
+  try {
+    payload = runtimeStartPayload();
+  } catch (error) {
+    setLiveStatusText(t("runtimeFailed") + ": " + error.message);
+    return;
+  }
   setLiveStatusText(t("runtimeStarting") + " (" + payload.mode + ")");
   fetch("/api/runtime/start" + authQuery, {
     method: "POST",
@@ -5733,6 +6991,9 @@ function formatRuntimeDetails(status) {
     parts.push("frame " + status.telemetry_frame);
   }
   if (status.blackboard_dir) { parts.push("blackboard " + status.blackboard_dir); }
+  if (status.enemy_difficulty) {
+    parts.push("enemy difficulty " + status.enemy_difficulty);
+  }
   return parts.length ? " (" + parts.join(", ") + ")" : formatLivePid(status);
 }
 
@@ -6034,6 +7295,12 @@ function renderMicroMachineStatus(data) {
   if (dashboard.last_failure) { parts.push("failure " + dashboard.last_failure); }
   node.textContent = parts.length ? parts.join(" | ") : t("microMachinePending");
   renderMicroMachineIntervention(data);
+  var modulationResults = Array.isArray(data.modulation_results)
+    ? data.modulation_results
+    : [];
+  modulationResults.forEach(function(result) {
+    maybeAppendMicroMachineAsyncCompletion(result);
+  });
   maybeAppendMicroMachineAsyncCompletion(data);
 }
 
@@ -6136,12 +7403,271 @@ function buildMicroMachineModulationPayload(text) {
   return payload;
 }
 
-function rememberPendingMicroMachineAsync(text, data) {
-  if (!data || !data.async_publish || !data.update_id) { return; }
-  pendingMicroMachineAsyncUpdates[data.update_id] = {
+function looksLikeMicroMachineEmergencyCommand(text) {
+  // Display-only classifier retained for local affordances; it never retires
+  // pending work. Server command_queue edges are the sole authority for that.
+  var normalized = " " + String(text || "").toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim() + " ";
+  if (
+    /(?:취소|중지|중단|후퇴|퇴각|철수).{0,12}(?:하지 마|말고|금지|없이)|(?:후퇴|퇴각|철수).{0,12}(?:아니|안 하)|\\b(?:no retreat|do not stop|never retreat|retreat is not an option)\\b|(?:不要|禁止).{0,4}(?:撤退|取消|停止)/.test(normalized)
+  ) {
+    return false;
+  }
+  return (
+    /^(?:(?:긴급|즉시|당장|지금|전원|모두)\s*)*(?:후퇴|퇴각|철수)(?:\s*(?:해|하라|하세요|해라|해줘|해\s*주세요|진행해|시작해))?[.!]?$/.test(normalized.trim()) ||
+    /^(?:please\s+)?(?:emergency\s+)?(?:retreat|fall\s+back)(?:\s+(?:now|immediately))?[.!]?$/.test(normalized.trim()) ||
+    /^(?:(?:立即|马上|紧急)\s*)?撤退(?:吧|！|。)?$/.test(normalized.trim()) ||
+    /(?:공격|러시|러쉬|압박|작전|진격)(?:을|를|은|는)?\s*(?:취소|중지|중단|멈춰|그만)|(?:cancel|abort|stop)\s+(?:the\s+)?(?:attack|attacking|rush|pressure|operation|advance)|(?:attack|rush|pressure|operation|advance)\s+(?:cancel|abort|stop)|(?:取消|停止)\s*(?:进攻|攻击|行动)|(?:进攻|攻击|行动)\s*(?:取消|停止)/.test(normalized)
+  );
+}
+
+function microMachineScopeId(data) {
+  var compileResult = data && data.compile_result;
+  var scopeId = data && data.blackboard_scope_id;
+  if (!scopeId && compileResult) { scopeId = compileResult.blackboard_scope_id; }
+  return typeof scopeId === "string" ? scopeId : "";
+}
+
+function microMachineResultId(data) {
+  var compileResult = data && data.compile_result;
+  var resultId = data && data.result_id;
+  if (!resultId && compileResult) { resultId = compileResult.result_id; }
+  return typeof resultId === "string" ? resultId : "";
+}
+
+function microMachineUpdateId(data) {
+  var compileResult = (data && data.compile_result) || {};
+  var update = (data && data.update) || {};
+  var intervention = (data && data.intervention) || {};
+  var execution = intervention.command_execution || {};
+  return String(
+    update.update_id ||
+    compileResult.update_id ||
+    execution.command_id ||
+    ""
+  );
+}
+
+function microMachinePendingKey(scopeId, updateId) {
+  return scopeId + "\u0000" + updateId;
+}
+
+function pendingMicroMachineRecord(scopeId, updateId) {
+  if (!scopeId || !updateId) { return null; }
+  return pendingMicroMachineAsyncUpdates[
+    microMachinePendingKey(scopeId, updateId)
+  ] || null;
+}
+
+function rememberPendingMicroMachineAsync(text, data, pendingId) {
+  var scopeId = microMachineScopeId(data);
+  var updateId = data && data.update_id;
+  if (
+    !data ||
+    !data.async_publish ||
+    typeof scopeId !== "string" ||
+    !scopeId ||
+    typeof updateId !== "string" ||
+    !updateId
+  ) {
+    return null;
+  }
+  var record = {
+    scopeId: scopeId,
+    updateId: updateId,
     text: text,
-    createdAt: Date.now()
+    pendingId: pendingId || "",
+    createdAt: Date.now(),
+    supersededUpdateIds: [],
+    preservedUpdateIds: [],
+    preservedCommandTexts: []
   };
+  var pendingKey = microMachinePendingKey(scopeId, updateId);
+  pendingMicroMachineAsyncUpdates[pendingKey] = record;
+  knownPendingMicroMachineUpdateKeys[pendingKey] = true;
+  applyDeferredPendingMicroMachineTransfers(scopeId, updateId);
+  return record;
+}
+
+function appendUniqueMicroMachineValue(values, value) {
+  if (value && values.indexOf(value) === -1) {
+    values.push(value);
+  }
+}
+
+function movePendingMicroMachinePredecessor(
+  scopeId,
+  predecessorUpdateId,
+  replacementUpdateId,
+  relation
+) {
+  if (
+    !scopeId ||
+    !predecessorUpdateId ||
+    predecessorUpdateId === replacementUpdateId
+  ) {
+    return false;
+  }
+  var predecessor = pendingMicroMachineRecord(scopeId, predecessorUpdateId);
+  if (!predecessor) { return false; }
+  var replacement = pendingMicroMachineRecord(scopeId, replacementUpdateId);
+  if (!replacement) {
+    var deferredKey = microMachinePendingKey(scopeId, replacementUpdateId);
+    if (knownPendingMicroMachineUpdateKeys[deferredKey]) {
+      delete pendingMicroMachineAsyncUpdates[
+        microMachinePendingKey(scopeId, predecessorUpdateId)
+      ];
+      removePendingById(predecessor.pendingId);
+      return true;
+    }
+    var deferred = deferredPendingMicroMachineTransfers[deferredKey] || [];
+    var duplicate = deferred.some(function(item) {
+      return (
+        item.predecessorUpdateId === predecessorUpdateId &&
+        item.relation === relation
+      );
+    });
+    if (!duplicate) {
+      deferred.push({
+        predecessorUpdateId: predecessorUpdateId,
+        relation: relation
+      });
+    }
+    deferredPendingMicroMachineTransfers[deferredKey] = deferred;
+    predecessor.deferredReplacementUpdateId = replacementUpdateId;
+    return true;
+  }
+  delete pendingMicroMachineAsyncUpdates[
+    microMachinePendingKey(scopeId, predecessorUpdateId)
+  ];
+  removePendingById(predecessor.pendingId);
+  var targetIds = relation === "parent"
+    ? replacement.preservedUpdateIds
+    : replacement.supersededUpdateIds;
+  appendUniqueMicroMachineValue(targetIds, predecessorUpdateId);
+  var inheritedIds = relation === "parent"
+    ? predecessor.preservedUpdateIds
+    : predecessor.supersededUpdateIds;
+  (Array.isArray(inheritedIds) ? inheritedIds : []).forEach(function(updateId) {
+    appendUniqueMicroMachineValue(targetIds, updateId);
+  });
+  if (relation === "parent") {
+    appendUniqueMicroMachineValue(
+      replacement.preservedCommandTexts,
+      predecessor.text
+    );
+    (Array.isArray(predecessor.preservedCommandTexts)
+      ? predecessor.preservedCommandTexts
+      : []
+    ).forEach(function(commandText) {
+      appendUniqueMicroMachineValue(
+        replacement.preservedCommandTexts,
+        commandText
+      );
+    });
+  }
+  return true;
+}
+
+function applyDeferredPendingMicroMachineTransfers(scopeId, replacementUpdateId) {
+  var deferredKey = microMachinePendingKey(scopeId, replacementUpdateId);
+  var deferred = deferredPendingMicroMachineTransfers[deferredKey];
+  if (!Array.isArray(deferred) || !deferred.length) { return false; }
+  delete deferredPendingMicroMachineTransfers[deferredKey];
+  var moved = false;
+  deferred.forEach(function(item) {
+    if (
+      movePendingMicroMachinePredecessor(
+        scopeId,
+        item.predecessorUpdateId,
+        replacementUpdateId,
+        item.relation
+      )
+    ) {
+      moved = true;
+    }
+  });
+  return moved;
+}
+
+function microMachineCommandQueue(data) {
+  var intervention = (data && data.intervention) || {};
+  var compileResult = (data && data.compile_result) || {};
+  var candidates = [
+    data && data.command_queue,
+    intervention.command_queue,
+    compileResult.command_queue
+  ];
+  for (var index = 0; index < candidates.length; index += 1) {
+    var candidate = candidates[index];
+    if (
+      candidate &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate) &&
+      Object.keys(candidate).length
+    ) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
+function exactMicroMachinePredecessorEdges(data, scopeId, currentUpdateId) {
+  var commandQueue = microMachineCommandQueue(data);
+  var changed = false;
+  var parentIds = Array.isArray(commandQueue.parent_command_ids)
+    ? commandQueue.parent_command_ids
+    : [];
+  var supersededIds = Array.isArray(commandQueue.superseded_update_ids)
+    ? commandQueue.superseded_update_ids
+    : [];
+  var normalizedSupersededIds = supersededIds.map(function(updateId) {
+    return String(updateId || "");
+  });
+  parentIds.forEach(function(parentUpdateId) {
+    var normalizedParentUpdateId = String(parentUpdateId || "");
+    if (normalizedSupersededIds.indexOf(normalizedParentUpdateId) !== -1) {
+      return;
+    }
+    if (
+      movePendingMicroMachinePredecessor(
+        scopeId,
+        normalizedParentUpdateId,
+        currentUpdateId,
+        "parent"
+      )
+    ) {
+      changed = true;
+    }
+  });
+  normalizedSupersededIds.forEach(function(supersededUpdateId) {
+    if (
+      movePendingMicroMachinePredecessor(
+        scopeId,
+        supersededUpdateId,
+        currentUpdateId,
+        "superseded"
+      )
+    ) {
+      changed = true;
+    }
+  });
+  var supersededByUpdateId = String(
+    commandQueue.superseded_by_update_id || ""
+  );
+  if (
+    supersededByUpdateId &&
+    movePendingMicroMachinePredecessor(
+      scopeId,
+      currentUpdateId,
+      supersededByUpdateId,
+      "superseded"
+    )
+  ) {
+    changed = true;
+  }
+  return changed;
 }
 
 function microMachineAsyncTimeoutError() {
@@ -6154,61 +7680,143 @@ function microMachineAsyncTimeoutError() {
 
 function expirePendingMicroMachineAsync(nowMs) {
   var currentTime = typeof nowMs === "number" ? nowMs : Date.now();
-  Object.keys(pendingMicroMachineAsyncUpdates || {}).forEach(function(updateId) {
-    var pending = pendingMicroMachineAsyncUpdates[updateId];
+  Object.keys(pendingMicroMachineAsyncUpdates || {}).forEach(function(key) {
+    var pending = pendingMicroMachineAsyncUpdates[key];
     var createdAt = pending && Number(pending.createdAt);
     if (!createdAt || currentTime - createdAt < MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS) {
       return;
     }
-    delete pendingMicroMachineAsyncUpdates[updateId];
+    delete pendingMicroMachineAsyncUpdates[key];
     safelyAppendMicroMachineChatFailure(
       (pending && pending.text) || "",
-      microMachineAsyncTimeoutError()
+      microMachineAsyncTimeoutError(),
+      pending && pending.pendingId
     );
   });
 }
 
 function maybeAppendMicroMachineAsyncCompletion(data) {
   if (!data || !pendingMicroMachineAsyncUpdates) { return; }
+  var scopeId = microMachineScopeId(data);
+  var resultId = microMachineResultId(data);
+  if (!scopeId || !resultId) {
+    expirePendingMicroMachineAsync();
+    return;
+  }
+  var consumedResultIds = consumedMicroMachineResultIdsByScope[scopeId] || {};
+  if (consumedResultIds[resultId]) {
+    expirePendingMicroMachineAsync();
+    return;
+  }
   var compileResult = data.compile_result || {};
   var update = data.update || {};
-  var compileUpdateId = compileResult.update_id || "";
-  var activeUpdateId = update.update_id || "";
+  var intervention = data.intervention || {};
+  var execution = intervention.command_execution || {};
+  var compileUpdateId = String(compileResult.update_id || "");
+  var activeUpdateId = String(update.update_id || "");
+  var executionUpdateId = String(execution.command_id || activeUpdateId);
+  var currentUpdateId = microMachineUpdateId(data);
+  if (!currentUpdateId) {
+    expirePendingMicroMachineAsync();
+    return;
+  }
   var isTerminalRefusal = Boolean(
     compileResult.refusal_reason ||
     compileResult.clarification_prompt ||
     compileResult.status === "refused" ||
-    compileResult.status === "clarification_required"
+    compileResult.status === "clarification_required" ||
+    data.status === "publish_failed" ||
+    data.status === "superseded"
   );
+  var commandQueue = microMachineCommandQueue(data);
+  exactMicroMachinePredecessorEdges(
+    data,
+    scopeId,
+    currentUpdateId
+  );
+  var terminalExecutionStates = {
+    completed: true,
+    failed: true,
+    expired: true,
+    superseded: true
+  };
   var candidateUpdateIds = [];
   if (activeUpdateId) { candidateUpdateIds.push(activeUpdateId); }
   if (compileUpdateId && compileUpdateId !== activeUpdateId) {
     candidateUpdateIds.push(compileUpdateId);
   }
+  if (
+    executionUpdateId &&
+    executionUpdateId !== activeUpdateId &&
+    executionUpdateId !== compileUpdateId
+  ) {
+    candidateUpdateIds.push(executionUpdateId);
+  }
+  var terminalHandled = false;
   candidateUpdateIds.forEach(function(updateId) {
-    if (!updateId || !pendingMicroMachineAsyncUpdates[updateId]) { return; }
-    var requestStatus = data.latest_request && data.latest_request.update_id === updateId
-      ? data.latest_request.consumption_status
-      : (updateId === activeUpdateId ? data.consumption_status : "");
+    var pending = pendingMicroMachineRecord(scopeId, updateId);
+    if (!updateId || !pending) { return; }
+    if (pending.deferredReplacementUpdateId) { return; }
     var terminalForUpdate = updateId === compileUpdateId && isTerminalRefusal;
-    var isConsumed = requestStatus === "consumed";
-    if (!terminalForUpdate && !isConsumed) { return; }
-    var pending = pendingMicroMachineAsyncUpdates[updateId];
-    delete pendingMicroMachineAsyncUpdates[updateId];
-    removePendingForCommand(pending.text || "");
+    var executionState = updateId === executionUpdateId ? execution.state : "";
+    var terminalExecution = Boolean(terminalExecutionStates[executionState]);
+    if (!terminalForUpdate && !terminalExecution) { return; }
+    delete pendingMicroMachineAsyncUpdates[
+      microMachinePendingKey(scopeId, updateId)
+    ];
     var narrationData = data;
-    if (isConsumed && !terminalForUpdate && compileUpdateId && compileUpdateId !== updateId) {
+    if (terminalExecution && !terminalForUpdate && compileUpdateId && compileUpdateId !== updateId) {
       narrationData = Object.assign({}, data, {
         compile_result: {},
         latest_request: null
       });
     }
-    appendLog({
-      command_text: pending.text,
-      status: terminalForUpdate ? "clarification" : "partially_executed",
-      narration: microMachineChatNarration(narrationData)
-    });
+    if (pending.supersededUpdateIds && pending.supersededUpdateIds.length) {
+      narrationData = Object.assign({}, narrationData, {
+        command_queue: Object.assign({}, commandQueue, {
+          superseded_previous: true,
+          superseded_update_ids: pending.supersededUpdateIds.slice()
+        })
+      });
+    }
+    if (pending.preservedUpdateIds && pending.preservedUpdateIds.length) {
+      narrationData = Object.assign({}, narrationData, {
+        command_queue: Object.assign(
+          {},
+          narrationData.command_queue || commandQueue,
+          {
+            preserved_update_ids: pending.preservedUpdateIds.slice(),
+            preserved_command_texts: pending.preservedCommandTexts.slice()
+          }
+        )
+      });
+    }
+    var outcomeStatus = "partially_executed";
+    if (terminalForUpdate) {
+      outcomeStatus = "clarification";
+    } else if (executionState === "completed") {
+      outcomeStatus = "executed";
+    } else if (executionState === "superseded") {
+      outcomeStatus = "clarification";
+    } else if (executionState === "failed" || executionState === "expired") {
+      outcomeStatus = "blocked";
+    }
+    terminalHandled = true;
+    safelyAppendMicroMachineChatResult(
+      pending.text,
+      Object.assign({}, narrationData, {
+        chat_outcome_status: outcomeStatus
+      }),
+      pending.pendingId
+    );
   });
+  // A predecessor edge is non-terminal for the replacement update. The
+  // server intentionally keeps one immutable result_id per update while its
+  // execution advances, so only terminal chat delivery may consume that ID.
+  if (terminalHandled) {
+    consumedResultIds[resultId] = true;
+    consumedMicroMachineResultIdsByScope[scopeId] = consumedResultIds;
+  }
   expirePendingMicroMachineAsync();
 }
 
@@ -6229,10 +7837,8 @@ function microMachineChatNarration(data) {
   var compileResult = (data && data.compile_result) || {};
   var vector = compileResult.vector || {};
   var assistantMessage = microMachineAssistantMessage(compileResult, vector);
-  if (assistantMessage) {
-    return assistantMessage;
-  }
   var parts = [];
+  if (assistantMessage) { parts.push(assistantMessage); }
   if (data && data.status === "queued") {
     parts.push("LLM이 MicroMachine DSL을 해석 중입니다.");
     if (data.message) { parts.push(data.message); }
@@ -6258,7 +7864,17 @@ function microMachineChatNarration(data) {
   }
   if (intervention.latest_update_id) { parts.push("update_id=" + intervention.latest_update_id); }
   var commandQueue = (data && data.command_queue) || intervention.command_queue || compileResult.command_queue || {};
-  if (commandQueue.category || commandQueue.action) {
+  if (
+    commandQueue.category ||
+    commandQueue.action ||
+    commandQueue.merged_command_count ||
+    commandQueue.superseded_previous ||
+    (
+      Array.isArray(commandQueue.preserved_update_ids) &&
+      commandQueue.preserved_update_ids.length
+    ) ||
+    commandQueue.standing_order_preserved
+  ) {
     var queueBits = ["command_queue"];
     if (commandQueue.category) { queueBits.push("category=" + commandQueue.category); }
     if (commandQueue.action) { queueBits.push("action=" + commandQueue.action); }
@@ -6266,6 +7882,25 @@ function microMachineChatNarration(data) {
       queueBits.push("merged=" + commandQueue.merged_command_count);
     }
     if (commandQueue.superseded_previous) { queueBits.push("superseded_previous=true"); }
+    if (
+      Array.isArray(commandQueue.preserved_update_ids) &&
+      commandQueue.preserved_update_ids.length
+    ) {
+      queueBits.push(
+        "preserved_ids=" + commandQueue.preserved_update_ids.slice(0, 8).join(",")
+      );
+    }
+    if (commandQueue.superseded_by_update_id) {
+      queueBits.push("superseded_by=" + commandQueue.superseded_by_update_id);
+    }
+    if (
+      Array.isArray(commandQueue.superseded_update_ids) &&
+      commandQueue.superseded_update_ids.length
+    ) {
+      queueBits.push(
+        "superseded_ids=" + commandQueue.superseded_update_ids.slice(0, 8).join(",")
+      );
+    }
     if (commandQueue.standing_order_preserved) { queueBits.push("standing_order_preserved=true"); }
     parts.push(queueBits.join(" | "));
   }
@@ -6282,20 +7917,42 @@ function microMachineChatNarration(data) {
   if (intervention.refusal_reason && parts.indexOf(intervention.refusal_reason) < 0) {
     parts.push(intervention.refusal_reason);
   }
+  var execution = intervention.command_execution || {};
+  if (execution.state) {
+    var executionBits = ["실행 상태: " + execution.state];
+    if (execution.blocker_manager) {
+      executionBits.push(
+        "blocker=" + execution.blocker_manager +
+        (execution.blocker_reason ? ": " + execution.blocker_reason : "")
+      );
+    }
+    parts.push(executionBits.join(" | "));
+  }
   return parts.join("\\n");
 }
 
-function appendMicroMachineChatResult(text, data) {
-  var removed = removePendingForCommand(text);
-  if (!removed && latestMicroMachinePlanText && text !== latestMicroMachinePlanText && pendingCommandCount() > 0) {
-    updateAssistantPendingState();
-    return;
-  }
+function removeMicroMachineChatPending(text, pendingId) {
+  return pendingId
+    ? removePendingById(pendingId)
+    : removePendingForCommand(text);
+}
+
+function appendMicroMachineChatResult(text, data, pendingId) {
+  var removed = removeMicroMachineChatPending(text, pendingId);
   if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
   var accepted = data && data.accepted !== false && data.ok !== false;
+  var outcomeStatus = data && data.chat_outcome_status;
+  if (
+    outcomeStatus !== "executed" &&
+    outcomeStatus !== "partially_executed" &&
+    outcomeStatus !== "clarification" &&
+    outcomeStatus !== "blocked"
+  ) {
+    outcomeStatus = accepted ? "partially_executed" : "clarification";
+  }
   appendLog({
     command_text: text,
-    status: accepted ? "partially_executed" : "clarification",
+    status: outcomeStatus,
     narration: microMachineChatNarration(data || {})
   });
   if (!removed) {
@@ -6303,12 +7960,8 @@ function appendMicroMachineChatResult(text, data) {
   }
 }
 
-function appendMicroMachineChatFailure(text, error) {
-  var removed = removePendingForCommand(text);
-  if (!removed && latestMicroMachinePlanText && text !== latestMicroMachinePlanText && pendingCommandCount() > 0) {
-    updateAssistantPendingState();
-    return;
-  }
+function appendMicroMachineChatFailure(text, error, pendingId) {
+  var removed = removeMicroMachineChatPending(text, pendingId);
   if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
   appendLog({
     command_text: text,
@@ -6320,11 +7973,11 @@ function appendMicroMachineChatFailure(text, error) {
   }
 }
 
-function safelyAppendMicroMachineChatResult(text, data) {
+function safelyAppendMicroMachineChatResult(text, data, pendingId) {
   try {
-    appendMicroMachineChatResult(text, data);
+    appendMicroMachineChatResult(text, data, pendingId);
   } catch (error) {
-    removePendingForCommand(text);
+    removeMicroMachineChatPending(text, pendingId);
     updateAssistantPendingState();
     var node = document.getElementById("micromachine-status");
     if (node) {
@@ -6336,11 +7989,11 @@ function safelyAppendMicroMachineChatResult(text, data) {
   }
 }
 
-function safelyAppendMicroMachineChatFailure(text, error) {
+function safelyAppendMicroMachineChatFailure(text, error, pendingId) {
   try {
-    appendMicroMachineChatFailure(text, error);
+    appendMicroMachineChatFailure(text, error, pendingId);
   } catch (renderError) {
-    removePendingForCommand(text);
+    removeMicroMachineChatPending(text, pendingId);
     updateAssistantPendingState();
     var node = document.getElementById("micromachine-status");
     if (node) {
@@ -6368,7 +8021,11 @@ function submitMicroMachineModulation(payload, options) {
   if (options.appendChat && options.timeoutMs !== 0 && window.setTimeout) {
     timeoutId = window.setTimeout(function () {
       timedOut = true;
-      safelyAppendMicroMachineChatFailure(payload.text || "", microMachineTimeoutError());
+      safelyAppendMicroMachineChatFailure(
+        payload.text || "",
+        microMachineTimeoutError(),
+        options.pendingId
+      );
     }, options.timeoutMs || MICROMACHINE_CHAT_TIMEOUT_MS);
   }
   function clearSubmitTimeout() {
@@ -6386,10 +8043,18 @@ function submitMicroMachineModulation(payload, options) {
     .then(function (data) {
       clearSubmitTimeout();
       if (!timedOut && data && data.async_publish) {
-        rememberPendingMicroMachineAsync(payload.text || "", data);
+        rememberPendingMicroMachineAsync(
+          payload.text || "",
+          data,
+          options.pendingId
+        );
       }
       if (options.appendChat && !timedOut && !(data && data.async_publish)) {
-        safelyAppendMicroMachineChatResult(payload.text || "", data);
+        safelyAppendMicroMachineChatResult(
+          payload.text || "",
+          data,
+          options.pendingId
+        );
       }
       safeRenderMicroMachineStatus(data);
       if (!timedOut && options.clearInput && data.ok) { options.clearInput.value = ""; }
@@ -6400,7 +8065,13 @@ function submitMicroMachineModulation(payload, options) {
       if (statusNode) {
         statusNode.textContent = t("microMachineFailed") + ": " + error.message;
       }
-      if (options.appendChat && !timedOut) { safelyAppendMicroMachineChatFailure(payload.text || "", error); }
+      if (options.appendChat && !timedOut) {
+        safelyAppendMicroMachineChatFailure(
+          payload.text || "",
+          error,
+          options.pendingId
+        );
+      }
       throw error;
     });
 }
@@ -6426,11 +8097,15 @@ document.getElementById("command-form").addEventListener("submit", function (eve
   if (!text) { return; }
   setCommandMode(selectedCommandMode());
   if (isMicroMachineCommandMode()) {
-    appendMicroMachinePendingPlan(text);
+    var pendingId = appendMicroMachinePendingPlan(text);
     var microPayload = buildMicroMachineModulationPayload(text);
     submitMicroMachineModulation(
       microPayload,
-      { appendChat: true, timeoutMs: MICROMACHINE_CHAT_TIMEOUT_MS }
+      {
+        appendChat: true,
+        pendingId: pendingId,
+        timeoutMs: MICROMACHINE_CHAT_TIMEOUT_MS
+      }
     ).catch(function () {});
     input.value = "";
     input.focus();
@@ -6499,10 +8174,13 @@ document.getElementById("llm-form").addEventListener("submit", function (event) 
       keyInput.value = "";
       renderLlmSettings(data);
       if (data.configured) {
+        var effort = data.reasoning_effort
+          ? " / effort=" + data.reasoning_effort
+          : "";
         setLlmStatus(
           "success",
           "llmSuccessLabel",
-          t("llmReady") + " (" + data.provider + " / " + data.model + ")"
+          t("llmReady") + " (" + data.provider + " / " + data.model + effort + ")"
         );
         if (data.live_start) {
           handleLiveStart(data.live_start);
@@ -7003,9 +8681,20 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         try:
+            enemy_difficulty = _require_micromachine_enemy_difficulty(
+                document.get("enemy_difficulty")
+            )
+        except (TypeError, ValueError) as error:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": str(error)},
+            )
+            return
+        try:
             payload = dict(
                 launcher.start(
                     blackboard_dir=str(document.get("blackboard_dir", "") or ""),
+                    enemy_difficulty=enemy_difficulty,
                 )
             )
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
@@ -7199,6 +8888,16 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {
                     "accepted": False,
                     "error": "MicroMachine modulation request timed out.",
+                },
+            )
+            return
+        except _MicroMachineRequestSupersededError as error:
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {
+                    "accepted": False,
+                    "status": "superseded",
+                    "error": str(error),
                 },
             )
             return
@@ -7504,11 +9203,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     # adapter + executor + session) instead of duplicating it here.
     from starcraft_commander.demo_sc2 import MVP_DEMO_COMMAND, build_dry_run_session
     from starcraft_commander.llm_interpreter import (
+        MYPROXY_API_KEY_ENV_VAR,
         HybridCommandInterpreter,
         LocalLLMControl,
     )
 
-    llm_control = LocalLLMControl()
+    default_provider = (
+        "myproxy"
+        if any(
+            os.environ.get(name, "").strip()
+            for name in (MYPROXY_API_KEY_ENV_VAR, "CODEX_MYPROXY_API_KEY")
+        )
+        else "openai"
+    )
+    llm_control = LocalLLMControl(provider=default_provider)
     interpreter = HybridCommandInterpreter(llm_interpreter=llm_control)
     session, _bot = build_dry_run_session(interpreter=interpreter)
     bridge = SessionLoopBridge(session=session, llm_control=llm_control)

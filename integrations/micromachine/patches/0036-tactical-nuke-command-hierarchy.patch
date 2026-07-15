@@ -1,0 +1,2175 @@
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+index ca56cb2..ea0a1bc 100644
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -178,7 +178,10 @@ bool isVoiMacroStructureType(const UnitType & type)
+ 		apiType == sc2::UNIT_TYPEID::TERRAN_BARRACKS ||
+ 		apiType == sc2::UNIT_TYPEID::TERRAN_FACTORY ||
+ 		apiType == sc2::UNIT_TYPEID::TERRAN_STARPORT ||
+-		apiType == sc2::UNIT_TYPEID::TERRAN_ENGINEERINGBAY;
++		apiType == sc2::UNIT_TYPEID::TERRAN_ENGINEERINGBAY ||
++		apiType == sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY ||
++		apiType == sc2::UNIT_TYPEID::TERRAN_ARMORY ||
++		apiType == sc2::UNIT_TYPEID::TERRAN_FUSIONCORE;
+ }
+ 
+ bool shouldWaitForVoiMacroConstructionFeedback(CCBot & bot, const Building & building, uint32_t frame)
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index b7383db..5e42fa1 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -17,6 +17,7 @@ const size_t ScoutDefensePriority = 5;
+ const size_t WorkerFleePriority = 5;
+ const size_t DropPriority = 5;
+ const size_t ExplicitOperationPriority = 6;
++const size_t TacticalAbilityPriority = 7;
+ 
+ const float DefaultOrderRadius = 25;			//Order radius is the threat awareness range of units in the squad
+ const float WorkerRushDefenseOrderRadius = 250;
+@@ -36,6 +37,23 @@ const int ACTION_REEXECUTION_FREQUENCY = 50;
+ 
+ namespace
+ {
++constexpr float TacticalNukeCastRange = 12.0f;
++constexpr float TacticalNukeDamageRadius = 8.0f;
++constexpr float TacticalNukeDefaultStagingRadius = 10.5f;
++constexpr uint32_t TacticalNukeRecentMobileObservationWindowFrames = 22u * 20u;
++constexpr uint32_t TacticalNukeKnownBuildingObservationWindowFrames = 22u * 120u;
++constexpr uint32_t TacticalNukeConfirmationRetryFrames = 22u * 2u;
++constexpr uint32_t NukePersistentEffectId = 7;
++
++struct VoiTacticalNukeTarget
++{
++	CCPosition position = CCPosition();
++	uint32_t observationFrame = 0;
++	float score = 0.0f;
++};
++
++bool voiTacticalTaskWithinDuration(CCBot & bot);
++
+ bool voiCommaListContains(const std::string & values, const std::string & target)
+ {
+ 	std::size_t start = 0;
+@@ -63,6 +81,277 @@ bool voiCommaListContains(const std::string & values, const std::string & target
+ 	return false;
+ }
+ 
++bool voiHasTacticalNukeGhostRole(CCBot & bot)
++{
++	for (int i = 0; i < 32; ++i)
++	{
++		const std::string prefix = "unit_roles." + std::to_string(i);
++		if (bot.Commander().getVoiPolicyString(prefix + ".unit_type", "") == "TERRAN_GHOST"
++			&& bot.Commander().getVoiPolicyString(prefix + ".role", "") == "execute_ability"
++			&& bot.Commander().getVoiPolicyString(prefix + ".ability_policy", "") == "tactical_nuke")
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++bool voiTacticalNukeTaskRequested(CCBot & bot)
++{
++	return bot.Commander().isVoiPolicyActive()
++		&& voiTacticalTaskWithinDuration(bot)
++		&& bot.Commander().getVoiPolicyString("tactical_task.task_type", "") == "execute_ability"
++		&& bot.Commander().getVoiPolicyString("tactical_task.ability", "") == "tactical_nuke";
++}
++
++bool voiGhostHasTacticalNukeOrder(CCBot & bot, uint64_t ghostTag)
++{
++	if (ghostTag == 0)
++	{
++		return false;
++	}
++	for (const auto & ally : bot.UnitInfo().getUnits(Players::Self))
++	{
++		const sc2::Unit * unit = ally.getUnitPtr();
++		if (unit == nullptr
++			|| !unit->is_alive
++			|| unit->tag != ghostTag
++			|| unit->unit_type != sc2::UNIT_TYPEID::TERRAN_GHOST)
++		{
++			continue;
++		}
++		for (const auto & order : unit->orders)
++		{
++			if (order.ability_id
++				== sc2::ABILITY_ID::EFFECT_NUKECALLDOWN)
++			{
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
++int voiTacticalNukePayloadCount(CCBot & bot)
++{
++	sc2::Units ghosts;
++	for (const auto & ally : bot.UnitInfo().getUnits(Players::Self))
++	{
++		const sc2::Unit * unit = ally.getUnitPtr();
++		if (unit != nullptr
++			&& unit->is_alive
++			&& unit->build_progress >= 1.0f
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_GHOST)
++		{
++			ghosts.push_back(unit);
++		}
++	}
++	if (ghosts.empty())
++	{
++		return 0;
++	}
++
++	int availableGhostCount = 0;
++	for (const auto & abilities : bot.Query()->GetAbilitiesForUnits(ghosts))
++	{
++		if (Util::IsAbilityAvailable(
++			sc2::ABILITY_ID::EFFECT_NUKECALLDOWN,
++			abilities))
++		{
++			availableGhostCount++;
++		}
++	}
++	return availableGhostCount;
++}
++
++bool voiTacticalNukeGhostAlive(CCBot & bot, uint64_t ghostTag)
++{
++	for (const auto & ally : bot.UnitInfo().getUnits(Players::Self))
++	{
++		const sc2::Unit * unit = ally.getUnitPtr();
++		if (unit != nullptr
++			&& unit->is_alive
++			&& unit->tag == ghostTag
++			&& unit->unit_type == sc2::UNIT_TYPEID::TERRAN_GHOST)
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++bool voiTacticalNukeEffectNear(CCBot & bot, const CCPosition & position)
++{
++	const float overlapRadiusSq = (TacticalNukeDamageRadius * 2.0f)
++		* (TacticalNukeDamageRadius * 2.0f);
++	for (const auto & effect : bot.Observation()->GetEffects())
++	{
++		if (effect.effect_id != NukePersistentEffectId)
++		{
++			continue;
++		}
++		for (const auto & effectPosition : effect.positions)
++		{
++			if (Util::DistSq(position, effectPosition) <= overlapRadiusSq)
++			{
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
++bool voiUnsafeFriendlyUnitNear(
++	CCBot & bot,
++	const CCPosition & position,
++	float radius)
++{
++	const float radiusSq = radius * radius;
++	for (const auto & ally : bot.UnitInfo().getUnits(Players::Self))
++	{
++		if (ally.isValid()
++			&& ally.isAlive()
++			&& Util::DistSq(position, ally.getPosition()) <= radiusSq
++			&& (ally.getType().isBuilding()
++				|| ally.getType().isWorker()))
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++int voiMobileFriendlyUnitCountNear(
++	CCBot & bot,
++	const CCPosition & position,
++	float radius,
++	uint64_t excludedTag = 0)
++{
++	const float radiusSq = radius * radius;
++	int count = 0;
++	for (const auto & ally : bot.UnitInfo().getUnits(Players::Self))
++	{
++		if (ally.isValid()
++			&& ally.isAlive()
++			&& ally.getTag() != excludedTag
++			&& !ally.getType().isBuilding()
++			&& !ally.getType().isWorker()
++			&& Util::DistSq(position, ally.getPosition()) <= radiusSq)
++		{
++			count++;
++		}
++	}
++	return count;
++}
++
++bool voiSelectTacticalNukeTarget(
++	CCBot & bot,
++	const CCPosition & preferredPosition,
++	VoiTacticalNukeTarget & selectedTarget)
++{
++	const uint32_t currentFrame = bot.GetCurrentFrame();
++	const float safetyMargin = std::max(
++		0.0f,
++		bot.Commander().getVoiPolicyFloat("tactical_task.safety_margin", 0.0f));
++	const float friendlyExclusionRadius =
++		TacticalNukeDamageRadius + safetyMargin;
++	bool found = false;
++
++	for (const auto & candidateUnit : bot.UnitInfo().getUnits(Players::Enemy))
++	{
++		const sc2::Unit * candidate = candidateUnit.getUnitPtr();
++		if (candidate == nullptr || !candidate->is_alive || candidate->last_seen_game_loop == 0)
++		{
++			continue;
++		}
++		const uint32_t lastSeenFrame = candidate->last_seen_game_loop;
++		const UnitType candidateType(candidate->unit_type, bot);
++		const uint32_t candidateObservationWindow =
++			candidateType.isBuilding()
++				? TacticalNukeKnownBuildingObservationWindowFrames
++				: TacticalNukeRecentMobileObservationWindowFrames;
++		if (currentFrame < lastSeenFrame
++			|| currentFrame - lastSeenFrame > candidateObservationWindow)
++		{
++			continue;
++		}
++		if (voiUnsafeFriendlyUnitNear(
++				bot,
++				candidate->pos,
++				friendlyExclusionRadius)
++			|| voiTacticalNukeEffectNear(bot, candidate->pos))
++		{
++			continue;
++		}
++
++		int clusterCount = 0;
++		float clusterValue = 0.0f;
++		uint32_t newestObservationFrame = lastSeenFrame;
++		for (const auto & nearbyUnit : bot.UnitInfo().getUnits(Players::Enemy))
++		{
++			const sc2::Unit * nearby = nearbyUnit.getUnitPtr();
++			if (nearby == nullptr || !nearby->is_alive || nearby->last_seen_game_loop == 0)
++			{
++				continue;
++			}
++			const uint32_t nearbyLastSeen = nearby->last_seen_game_loop;
++			const UnitType nearbyType(nearby->unit_type, bot);
++			const uint32_t nearbyObservationWindow =
++				nearbyType.isBuilding()
++					? TacticalNukeKnownBuildingObservationWindowFrames
++					: TacticalNukeRecentMobileObservationWindowFrames;
++			if (currentFrame < nearbyLastSeen
++				|| currentFrame - nearbyLastSeen > nearbyObservationWindow
++				|| Util::DistSq(candidate->pos, nearby->pos)
++					> TacticalNukeDamageRadius * TacticalNukeDamageRadius)
++			{
++				continue;
++			}
++			clusterCount++;
++			newestObservationFrame = std::max(newestObservationFrame, nearbyLastSeen);
++			clusterValue += static_cast<float>(
++				nearbyType.mineralPrice() + nearbyType.gasPrice() * 2);
++			if (nearbyType.isBuilding())
++			{
++				clusterValue += 125.0f;
++			}
++			if (nearbyType.isResourceDepot())
++			{
++				clusterValue += 400.0f;
++			}
++		}
++
++		const bool highValueTarget = candidateType.isBuilding()
++			|| candidateType.isResourceDepot()
++			|| candidateType.mineralPrice() + candidateType.gasPrice() * 2 >= 300;
++		if (clusterCount < 3 && !highValueTarget)
++		{
++			continue;
++		}
++
++		const int mobileFriendlyCount = voiMobileFriendlyUnitCountNear(
++			bot,
++			candidate->pos,
++			friendlyExclusionRadius);
++		float score = clusterValue
++			+ static_cast<float>(clusterCount) * 150.0f
++			- static_cast<float>(mobileFriendlyCount) * 800.0f;
++		if (preferredPosition != CCPosition()
++			&& Util::DistSq(preferredPosition, candidate->pos) <= 6.0f * 6.0f)
++		{
++			score += 5000.0f;
++		}
++		if (!found || score > selectedTarget.score)
++		{
++			found = true;
++			selectedTarget.position = candidate->pos;
++			selectedTarget.observationFrame = newestObservationFrame;
++			selectedTarget.score = score;
++		}
++	}
++	return found;
++}
++
+ bool voiIsMorphAbility(sc2::AbilityID ability)
+ {
+ 	switch ((sc2::ABILITY_ID)ability)
+@@ -86,6 +375,15 @@ std::string voiActionEvidence(const UnitAction & action)
+ {
+ 	std::stringstream ss;
+ 	ss << action.description << "|squad=" << action.squad << "|type=" << static_cast<int>(action.microActionType);
++	const bool abilityAction =
++		action.microActionType == MicroActionType::Ability
++		|| action.microActionType == MicroActionType::AbilityPosition
++		|| action.microActionType == MicroActionType::AbilityTarget
++		|| action.microActionType == MicroActionType::ToggleAbility;
++	if (abilityAction)
++	{
++		ss << "|ability=" << sc2::AbilityTypeToName(action.abilityID);
++	}
+ 	if (action.position != CCPosition())
+ 	{
+ 		ss << "|x=" << action.position.x << "|y=" << action.position.y;
+@@ -516,6 +814,47 @@ CCPosition voiHomePosition(CCBot & bot)
+ 	return selfBase ? selfBase->getPosition() : bot.GetStartLocation();
+ }
+ 
++CCPosition voiTacticalNukeContainmentPosition(
++	CCBot & bot,
++	const CCPosition & target)
++{
++	if (target == CCPosition())
++	{
++		return voiHomePosition(bot);
++	}
++	const float safetyMargin = std::max(
++		0.0f,
++		bot.Commander().getVoiPolicyFloat(
++			"tactical_task.safety_margin",
++			0.0f));
++	const float containmentRadius =
++		TacticalNukeDamageRadius + safetyMargin + 6.0f;
++	const CCPosition targetToHome = voiHomePosition(bot) - target;
++	const float baseAngle = std::atan2(targetToHome.y, targetToHome.x);
++	for (float angleOffset : {
++		0.0f,
++		0.523599f,
++		-0.523599f,
++		1.047198f,
++		-1.047198f,
++		1.570796f,
++		-1.570796f})
++	{
++		const float angle = baseAngle + angleOffset;
++		const CCPosition candidate =
++			target
++				+ CCPosition(std::cos(angle), std::sin(angle))
++					* containmentRadius;
++		if (bot.Map().isValidPosition(candidate)
++			&& bot.Map().isWalkable(candidate)
++			&& bot.Map().isConnected(voiHomePosition(bot), candidate))
++		{
++			return candidate;
++		}
++	}
++	return voiHomePosition(bot);
++}
++
+ bool voiIsRemoteCombatTarget(CCBot & bot, const CCPosition & targetPosition, float minimumDistance = 24.0f)
+ {
+ 	if (targetPosition == CCPosition())
+@@ -851,9 +1190,452 @@ void CombatCommander::onStart()
+ 	SquadOrder scoutOrder(SquadOrderTypes::Scout, CCPosition(), ScoutOrderRadius, "Scouting for new bases");
+ 	m_squadData.addSquad("Scout", Squad("Scout", scoutOrder, ScoutPriority, m_bot));
+ 
++	SquadOrder nukeOpsOrder(
++		SquadOrderTypes::Idle,
++		m_bot.GetStartLocation(),
++		DefaultOrderRadius,
++		"Tactical nuke operation");
++	m_squadData.addSquad(
++		"NukeOps",
++		Squad(
++			"NukeOps",
++			nukeOpsOrder,
++			TacticalAbilityPriority,
++			m_bot));
++
+ 	//The influence maps are initialised earlier so we can use the blocked tiles influence map to place the turrets
+ }
+ 
++void CombatCommander::updateVoiTacticalNukeSquad()
++{
++	if (!m_squadData.squadExists("NukeOps"))
++	{
++		return;
++	}
++	Squad & nukeOpsSquad = m_squadData.getSquad("NukeOps");
++	nukeOpsSquad.setPriority(TacticalAbilityPriority);
++	m_lastVoiTacticalNukeReservedGhostCount = 0;
++	if (!voiTacticalNukeTaskRequested(m_bot))
++	{
++		std::vector<Unit> unitsToRelease = nukeOpsSquad.getUnits();
++		Squad & idleSquad = m_squadData.getSquad("Idle");
++		for (const auto & unit : unitsToRelease)
++		{
++			m_squadData.assignUnitToSquad(unit, idleSquad);
++		}
++		return;
++	}
++
++	Unit selectedGhost;
++	for (const auto & combatUnit : m_combatUnits)
++	{
++		if (!combatUnit.isValid()
++			|| !combatUnit.isAlive()
++			|| combatUnit.getAPIUnitType()
++				!= sc2::UNIT_TYPEID::TERRAN_GHOST)
++		{
++			continue;
++		}
++		if (combatUnit.getTag() == m_lastVoiTacticalNukeGhostTag)
++		{
++			selectedGhost = combatUnit;
++			break;
++		}
++		if (!selectedGhost.isValid()
++			|| (Util::IsAbilityAvailable(
++					sc2::ABILITY_ID::EFFECT_NUKECALLDOWN,
++					combatUnit.getUnitPtr(),
++					m_unitsAbilities)
++				&& !Util::IsAbilityAvailable(
++					sc2::ABILITY_ID::EFFECT_NUKECALLDOWN,
++					selectedGhost.getUnitPtr(),
++					m_unitsAbilities)))
++		{
++			selectedGhost = combatUnit;
++		}
++	}
++
++	std::vector<Unit> unitsToRelease;
++	for (const auto & unit : nukeOpsSquad.getUnits())
++	{
++		if (!selectedGhost.isValid()
++			|| unit.getTag() != selectedGhost.getTag())
++		{
++			unitsToRelease.push_back(unit);
++		}
++	}
++	Squad & idleSquad = m_squadData.getSquad("Idle");
++	for (const auto & unit : unitsToRelease)
++	{
++		m_squadData.assignUnitToSquad(unit, idleSquad);
++	}
++	if (!selectedGhost.isValid())
++	{
++		return;
++	}
++	if (m_squadData.getUnitSquad(selectedGhost) != &nukeOpsSquad)
++	{
++		m_squadData.assignUnitToSquad(selectedGhost, nukeOpsSquad);
++	}
++	m_lastVoiTacticalNukeReservedGhostCount = 1;
++	m_lastVoiUnitRole = "execute_ability";
++	m_lastVoiUnitRoleUnitType = "TERRAN_GHOST";
++	m_lastVoiUnitRoleUnitTag = selectedGhost.getTag();
++	m_lastVoiUnitRolePolicy = "tactical_nuke";
++	m_lastVoiUnitRoleStatus = "reserved";
++	m_lastVoiUnitRoleReason =
++		"Ghost is exclusively reserved in NukeOps and removed from ordinary attack/scout ownership";
++	m_lastVoiUnitRoleAbility = "tactical_nuke";
++	m_lastVoiUnitRoleIssuedAction = "";
++	m_lastVoiUnitRoleAvailableCount = 1;
++	m_lastVoiUnitRoleAttemptedCount = 0;
++	m_lastVoiUnitRoleExecutedCount = 0;
++	m_lastVoiUnitRoleFrame = m_bot.GetCurrentFrame();
++	nukeOpsSquad.setSquadOrder(SquadOrder(
++		SquadOrderTypes::Idle,
++		selectedGhost.getPosition(),
++		DefaultOrderRadius,
++		"Tactical nuke Ghost reserved"));
++}
++
++void CombatCommander::updateVoiTacticalNukeAction()
++{
++	const std::string updateId =
++		m_bot.Commander().getVoiPolicyString("update_id", "");
++	if (updateId != m_voiTacticalNukeUpdateId)
++	{
++		m_voiTacticalNukeUpdateId = updateId;
++		m_lastVoiTacticalNukeStatus = "inactive";
++		m_lastVoiTacticalNukeReason = "No tactical nuke ability task requested";
++		m_lastVoiTacticalNukeGhostTag = 0;
++		m_lastVoiTacticalNukeTarget = CCPosition();
++		m_lastVoiTacticalNukeStagingPosition = CCPosition();
++		m_lastVoiTacticalNukeTargetObservationFrame = 0;
++		m_lastVoiTacticalNukeReservedGhostCount = 0;
++		m_lastVoiTacticalNukeAvailableGhostCount = 0;
++		m_lastVoiTacticalNukeStagingCommandIssuedCount = 0;
++		m_lastVoiTacticalNukeStagingCommandFrame = 0;
++		m_lastVoiTacticalNukeStagingIssuedAction = "";
++		m_lastVoiTacticalNukeCastAttemptedCount = 0;
++		m_lastVoiTacticalNukeCastSubmittedCount = 0;
++		m_lastVoiTacticalNukeCastSubmissionFrame = 0;
++		m_lastVoiTacticalNukeCastSubmittedAction = "";
++		m_lastVoiTacticalNukePayloadCountAtSubmission = -1;
++		m_lastVoiTacticalNukeConfirmationState = "unconfirmed";
++		m_lastVoiTacticalNukeConfirmationCount = 0;
++		m_lastVoiTacticalNukeConfirmationFrame = 0;
++		m_lastVoiTacticalNukeConfirmationEffect = "";
++	}
++
++	if (!voiTacticalNukeTaskRequested(m_bot))
++	{
++		m_lastVoiTacticalNukeStatus = "inactive";
++		m_lastVoiTacticalNukeReason =
++			"No active execute_ability tactical_task.ability=tactical_nuke request";
++		return;
++	}
++	const bool hasExplicitGhostRole =
++		voiHasTacticalNukeGhostRole(m_bot);
++	const uint32_t currentFrame = m_bot.GetGameLoop();
++	if (m_lastVoiTacticalNukeConfirmationCount > 0)
++	{
++		m_lastVoiTacticalNukeStatus = "confirmed";
++		m_lastVoiTacticalNukeReason =
++			"Tactical nuke cast already has SC2 observation confirmation for this update";
++		return;
++	}
++	if (m_lastVoiTacticalNukeCastSubmittedCount > 0)
++	{
++		std::string confirmationEffect;
++		std::string confirmationReason;
++		if (voiGhostHasTacticalNukeOrder(
++				m_bot,
++				m_lastVoiTacticalNukeGhostTag))
++		{
++			confirmationEffect =
++				"ghost_order:EFFECT_NUKECALLDOWN";
++			confirmationReason =
++				"SC2 observation reports the selected Ghost channeling EFFECT_NUKECALLDOWN";
++		}
++		else if (m_lastVoiTacticalNukeTarget != CCPosition()
++			&& voiTacticalNukeEffectNear(
++				m_bot,
++				m_lastVoiTacticalNukeTarget))
++		{
++			confirmationEffect =
++				"persistent_effect:NUKEPERSISTENT";
++			confirmationReason =
++				"SC2 observation reports NUKEPERSISTENT at the submitted target";
++		}
++		else if (m_lastVoiTacticalNukePayloadCountAtSubmission > 0
++			&& voiTacticalNukeGhostAlive(
++				m_bot,
++				m_lastVoiTacticalNukeGhostTag)
++			&& voiTacticalNukePayloadCount(m_bot)
++				< m_lastVoiTacticalNukePayloadCountAtSubmission)
++		{
++			confirmationEffect =
++				"payload_consumed:TERRAN_NUKE";
++			confirmationReason =
++				"SC2 observation reports the submitted tactical nuke payload was consumed";
++		}
++
++		if (!confirmationEffect.empty())
++		{
++			m_lastVoiTacticalNukeConfirmationState = "confirmed";
++			m_lastVoiTacticalNukeConfirmationCount++;
++			m_lastVoiTacticalNukeConfirmationFrame = currentFrame;
++			m_lastVoiTacticalNukeConfirmationEffect =
++				confirmationEffect;
++			m_lastVoiTacticalNukeStatus = "confirmed";
++			m_lastVoiTacticalNukeReason = confirmationReason;
++			return;
++		}
++
++		const bool retryDelayElapsed =
++			currentFrame >= m_lastVoiTacticalNukeCastSubmissionFrame
++			&& currentFrame
++				- m_lastVoiTacticalNukeCastSubmissionFrame
++				>= TacticalNukeConfirmationRetryFrames;
++		if (!retryDelayElapsed)
++		{
++			m_lastVoiTacticalNukeConfirmationState = "pending";
++			m_lastVoiTacticalNukeStatus = "confirming";
++			m_lastVoiTacticalNukeReason =
++				"EFFECT_NUKECALLDOWN was submitted; waiting for Ghost order, NUKEPERSISTENT, or payload-consumption observation";
++			return;
++		}
++		m_lastVoiTacticalNukeConfirmationState = "retryable";
++		m_lastVoiTacticalNukeStatus = "retrying";
++		m_lastVoiTacticalNukeReason =
++			"No SC2 confirmation followed the prior submission; retry is allowed without marking completion";
++	}
++
++	VoiTacticalNukeTarget selectedTarget;
++	if (!voiSelectTacticalNukeTarget(
++			m_bot,
++			m_lastVoiTacticalNukeTarget,
++			selectedTarget))
++	{
++		m_lastVoiTacticalNukeStatus = "waiting_target";
++		m_lastVoiTacticalNukeReason =
++			"Waiting for a safe recently observed high-value or clustered enemy target";
++		m_lastVoiTacticalNukeTarget = CCPosition();
++		m_lastVoiTacticalNukeStagingPosition = CCPosition();
++		m_lastVoiTacticalNukeTargetObservationFrame = 0;
++		return;
++	}
++	m_lastVoiTacticalNukeTarget = selectedTarget.position;
++	m_lastVoiTacticalNukeTargetObservationFrame =
++		selectedTarget.observationFrame;
++
++	float castRange = TacticalNukeCastRange;
++	const auto castRangeIt =
++		m_abilityCastingRanges.find(sc2::ABILITY_ID::EFFECT_NUKECALLDOWN);
++	if (castRangeIt != m_abilityCastingRanges.end()
++		&& castRangeIt->second > 0.0f)
++	{
++		castRange = castRangeIt->second;
++	}
++	const float usableCastRange = std::max(1.0f, castRange - 0.25f);
++	const float usableCastRangeSq = usableCastRange * usableCastRange;
++	const float safetyMargin = std::max(
++		0.0f,
++		m_bot.Commander().getVoiPolicyFloat(
++			"tactical_task.safety_margin",
++			0.0f));
++	const float minimumSafeCastRadius =
++		TacticalNukeDamageRadius + std::max(1.0f, safetyMargin);
++	const float minimumSafeCastRadiusSq =
++		minimumSafeCastRadius * minimumSafeCastRadius;
++
++	const auto findStagingPosition =
++		[&](const sc2::Unit * ghost, CCPosition & stagingPosition, float & stagingScore)
++	{
++		if (ghost == nullptr)
++		{
++			return false;
++		}
++		if (minimumSafeCastRadius >= usableCastRange)
++		{
++			return false;
++		}
++		const float minimumCandidateRadius =
++			std::min(
++				usableCastRange - 0.1f,
++				minimumSafeCastRadius + 0.25f);
++		const float maximumCandidateRadius =
++			std::max(
++				minimumCandidateRadius,
++				usableCastRange - 0.1f);
++		const float preferredStagingRadius =
++			std::min(
++				maximumCandidateRadius,
++				std::max(
++					TacticalNukeDefaultStagingRadius,
++					minimumCandidateRadius));
++		const CCPosition targetToGhost = ghost->pos - selectedTarget.position;
++		const float baseAngle = std::atan2(targetToGhost.y, targetToGhost.x);
++		bool found = false;
++		stagingScore = 0.0f;
++		for (float stagingRadius : {
++			preferredStagingRadius,
++			minimumCandidateRadius,
++			(minimumCandidateRadius + maximumCandidateRadius) * 0.5f,
++			maximumCandidateRadius})
++		{
++			for (int angleIndex = 0; angleIndex < 32; ++angleIndex)
++			{
++				const float angle =
++					baseAngle
++					+ static_cast<float>(angleIndex) * 0.19634954f;
++				const CCPosition candidate =
++					selectedTarget.position
++					+ CCPosition(std::cos(angle), std::sin(angle))
++						* stagingRadius;
++				if (!m_bot.Map().isValidPosition(candidate)
++					|| !m_bot.Map().isWalkable(candidate)
++					|| !m_bot.Map().isConnected(ghost->pos, candidate))
++				{
++					continue;
++				}
++				const float targetDistanceSq =
++					Util::DistSq(candidate, selectedTarget.position);
++				if (targetDistanceSq < minimumSafeCastRadiusSq
++					|| targetDistanceSq > usableCastRangeSq)
++				{
++					continue;
++				}
++				const float influence = std::max(
++					0.0f,
++					getTotalGroundInfluence(Util::GetTilePosition(candidate)));
++				const float travelDistance =
++					Util::Dist(ghost->pos, candidate);
++				const float radiusPenalty =
++					std::abs(stagingRadius - preferredStagingRadius) * 10.0f;
++				const float candidateScore =
++					influence * 100.0f
++					+ travelDistance
++					+ radiusPenalty;
++				if (!found || candidateScore < stagingScore)
++				{
++					found = true;
++					stagingPosition = candidate;
++					stagingScore = candidateScore;
++				}
++			}
++		}
++		return found;
++	};
++
++	const sc2::Unit * selectedGhost = nullptr;
++	CCPosition selectedStagingPosition;
++	float selectedGhostScore = 0.0f;
++	int ghostCount = 0;
++	m_lastVoiTacticalNukeAvailableGhostCount = 0;
++	for (const auto & combatUnit : m_combatUnits)
++	{
++		if (!combatUnit.isValid()
++			|| !combatUnit.isAlive()
++			|| combatUnit.getAPIUnitType()
++				!= sc2::UNIT_TYPEID::TERRAN_GHOST
++			|| !m_squadData.squadExists("NukeOps")
++			|| m_squadData.getUnitSquad(combatUnit)
++				!= &m_squadData.getSquad("NukeOps"))
++		{
++			continue;
++		}
++		ghostCount++;
++		const sc2::Unit * ghost = combatUnit.getUnitPtr();
++		if (!Util::IsAbilityAvailable(
++			sc2::ABILITY_ID::EFFECT_NUKECALLDOWN,
++			ghost,
++			m_unitsAbilities))
++		{
++			continue;
++		}
++		m_lastVoiTacticalNukeAvailableGhostCount++;
++		const float targetDistanceSq =
++			Util::DistSq(ghost->pos, selectedTarget.position);
++		CCPosition stagingPosition = ghost->pos;
++		float ghostScore = targetDistanceSq;
++		if (targetDistanceSq > usableCastRangeSq
++			|| targetDistanceSq < minimumSafeCastRadiusSq)
++		{
++			float stagingScore = 0.0f;
++			if (!findStagingPosition(ghost, stagingPosition, stagingScore))
++			{
++				continue;
++			}
++			ghostScore = stagingScore + 100000.0f;
++		}
++		if (selectedGhost == nullptr || ghostScore < selectedGhostScore)
++		{
++			selectedGhost = ghost;
++			selectedStagingPosition = stagingPosition;
++			selectedGhostScore = ghostScore;
++		}
++	}
++
++	if (ghostCount == 0)
++	{
++		m_lastVoiTacticalNukeStatus = "waiting_ghost";
++		m_lastVoiTacticalNukeReason =
++			"Waiting for ProductionManager to provide a Ghost";
++		m_lastVoiTacticalNukeGhostTag = 0;
++		return;
++	}
++	if (m_lastVoiTacticalNukeAvailableGhostCount == 0)
++	{
++		m_lastVoiTacticalNukeStatus = "waiting_payload";
++		m_lastVoiTacticalNukeReason =
++			"Ghost exists but EFFECT_NUKECALLDOWN is unavailable";
++		m_lastVoiTacticalNukeGhostTag = 0;
++		return;
++	}
++	if (selectedGhost == nullptr)
++	{
++		m_lastVoiTacticalNukeStatus = "refused";
++		m_lastVoiTacticalNukeReason =
++			"No terrain-connected safe cast staging position within tactical nuke range";
++		m_lastVoiTacticalNukeGhostTag = 0;
++		return;
++	}
++
++	m_lastVoiTacticalNukeGhostTag = selectedGhost->tag;
++	const float targetDistanceSq =
++		Util::DistSq(selectedGhost->pos, selectedTarget.position);
++	if (targetDistanceSq > usableCastRangeSq
++		|| targetDistanceSq < minimumSafeCastRadiusSq)
++	{
++		m_lastVoiTacticalNukeStagingPosition = selectedStagingPosition;
++		const UnitAction stagingAction(
++			MicroActionType::Move,
++			selectedStagingPosition,
++			true,
++			0,
++			"VoiTacticalNukeStage",
++			"");
++		PlanAction(selectedGhost, stagingAction);
++		m_lastVoiTacticalNukeStatus = "staging";
++		m_lastVoiTacticalNukeReason = hasExplicitGhostRole
++			? "Role-mapped Ghost is moving to the lowest-risk pathable staging position before cast"
++			: "Canonical tactical_task selected a Ghost and is moving it to the lowest-risk pathable staging position before cast";
++		return;
++	}
++	const float friendlyExclusionRadius =
++		TacticalNukeDamageRadius + safetyMargin;
++	if (voiMobileFriendlyUnitCountNear(
++			m_bot,
++			selectedTarget.position,
++			friendlyExclusionRadius,
++			selectedGhost->tag) > 0)
++	{
++		m_lastVoiTacticalNukeStatus = "clearing_blast_radius";
++		m_lastVoiTacticalNukeReason =
++			"Reserved target is valid; waiting for MainAttack and other mobile allies to clear the blast radius";
++		return;
++	}
++
++	m_lastVoiTacticalNukeStagingPosition = selectedGhost->pos;
++	const UnitAction castAction(
++		MicroActionType::AbilityPosition,
++		sc2::ABILITY_ID::EFFECT_NUKECALLDOWN,
++		selectedTarget.position,
++		true,
++		350,
++		"VoiRoleGhostTacticalNuke",
++		"");
++	if (PlanAction(selectedGhost, castAction))
++	{
++		m_lastVoiTacticalNukeCastAttemptedCount++;
++	}
++	m_lastVoiTacticalNukeStatus = "cast_planned";
++	m_lastVoiTacticalNukeReason = hasExplicitGhostRole
++		? "Role-mapped Ghost is in verified cast range; EFFECT_NUKECALLDOWN is planned for command issue"
++		: "Canonical tactical_task Ghost is in verified cast range; EFFECT_NUKECALLDOWN is planned for command issue";
++}
++
+ bool CombatCommander::isSquadUpdateFrame()
+ {
+     return true;
+@@ -1005,6 +1787,7 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
+ 	sc2::Units units;
+ 	Util::CCUnitsToSc2Units(combatUnits, units);
+ 	m_unitsAbilities = m_bot.Query()->GetAbilitiesForUnits(units);
++	updateVoiTacticalNukeSquad();
+ 
+ 	m_bot.StartProfiling("0.10.4.0    updateInfluenceMaps");
+ 	updateInfluenceMaps();
+@@ -1061,6 +1844,8 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
+ 	m_squadData.onFrame();
+ 	m_bot.StopProfiling("0.10.4.1    m_squadData.onFrame");
+ 
++	updateVoiTacticalNukeAction();
++
+ 	m_bot.StartProfiling("0.10.4.6    ExecuteActions");
+ 	ExecuteActions();
+ 	m_bot.StopProfiling("0.10.4.6    ExecuteActions");
+@@ -2269,16 +3054,34 @@ void CombatCommander::updateScoutSquad()
+ 	const bool pressureNeedsScout = explicitPressureScope
+ 		&& requireFreshEnemyObservation
+ 		&& !voiHasObservedEnemyLocationEvidence(m_bot);
+-	const bool autonomousNeedsEnemyEvidence = requireFreshEnemyObservation
+-		&& !voiHasObservedEnemyLocationEvidence(m_bot);
++	const bool tacticalNukeNeedsTargetObservation =
++		voiTacticalNukeTaskRequested(m_bot)
++		&& m_voiTacticalNukeUpdateId
++			== m_bot.Commander().getVoiPolicyString("update_id", "")
++		&& m_lastVoiTacticalNukeStatus == "waiting_target";
++	const bool enemyEvidenceScoutRequested =
++		pressureNeedsScout || tacticalNukeNeedsTargetObservation;
++	const bool autonomousNeedsEnemyEvidence =
++		tacticalNukeNeedsTargetObservation
++		|| (requireFreshEnemyObservation
++			&& !voiHasObservedEnemyLocationEvidence(m_bot));
+ 	const bool autonomousCombatScoutScope = !explicitScoutScope
+ 		&& (!explicitPressureScope || pressureNeedsScout)
+ 		&& (enemyStartNeedsCombatScout || pressureNeedsScout || autonomousNeedsEnemyEvidence)
+ 		&& voiCountMobileAttackUnits(m_combatUnits) >= 1;
+ 	const bool activeScoutScope = explicitScoutScope || autonomousCombatScoutScope;
+-	scoutSquad.setPriority((explicitScoutScope || pressureNeedsScout) ? ExplicitOperationPriority : ScoutPriority);
++	scoutSquad.setPriority(
++		(explicitScoutScope || enemyEvidenceScoutRequested)
++			? ExplicitOperationPriority
++			: ScoutPriority);
+ 	auto isSafeScoutSource = [&](const Unit & unit)
+ 	{
++		if (voiTacticalNukeTaskRequested(m_bot)
++			&& unit.getAPIUnitType()
++				== sc2::UNIT_TYPEID::TERRAN_GHOST)
++		{
++			return false;
++		}
+ 		Squad * currentSquad = m_squadData.getUnitSquad(unit);
+ 		if (currentSquad == nullptr || currentSquad == &scoutSquad)
+ 		{
+@@ -2290,7 +3093,8 @@ void CombatCommander::updateScoutSquad()
+ 			return true;
+ 		}
+ 		return currentName == "MainAttack"
+-			&& (pressureNeedsScout || currentSquad->getPriority() < ExplicitOperationPriority);
++			&& (enemyEvidenceScoutRequested
++				|| currentSquad->getPriority() < ExplicitOperationPriority);
+ 	};
+ 	auto restoreScoutUnit = [&](const Unit & unit)
+ 	{
+@@ -2381,7 +3185,7 @@ void CombatCommander::updateScoutSquad()
+ 	int desiredScoutUnits = activeScoutScope
+ 		? std::max(1, requestedMinUnits > 0 ? requestedMinUnits : requestedMaxUnits)
+ 		: 1;
+-	if (pressureNeedsScout)
++	if (enemyEvidenceScoutRequested && !explicitScoutScope)
+ 	{
+ 		desiredScoutUnits = 1;
+ 	}
+@@ -2533,7 +3337,12 @@ void CombatCommander::updateScoutSquad()
+ 			addScoutType("TERRAN_MARINE", sc2::UNIT_TYPEID::TERRAN_MARINE);
+ 			addScoutType("TERRAN_REAPER", sc2::UNIT_TYPEID::TERRAN_REAPER);
+ 			addScoutType("TERRAN_MARAUDER", sc2::UNIT_TYPEID::TERRAN_MARAUDER);
+-			addScoutType("TERRAN_GHOST", sc2::UNIT_TYPEID::TERRAN_GHOST);
++			if (!voiTacticalNukeTaskRequested(m_bot))
++			{
++				addScoutType(
++					"TERRAN_GHOST",
++					sc2::UNIT_TYPEID::TERRAN_GHOST);
++			}
+ 			addScoutType("TERRAN_HELLION", sc2::UNIT_TYPEID::TERRAN_HELLION);
+ 			addScoutType("TERRAN_WIDOWMINE", sc2::UNIT_TYPEID::TERRAN_WIDOWMINE);
+ 			addScoutType("TERRAN_WIDOWMINE", sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED);
+@@ -2584,7 +3393,7 @@ void CombatCommander::updateScoutSquad()
+ 							break;
+ 						}
+ 						Squad * previousSquad = m_squadData.getUnitSquad(bestCandidate);
+-						if (explicitScoutScope || pressureNeedsScout)
++						if (explicitScoutScope || enemyEvidenceScoutRequested)
+ 						{
+ 							m_voiScoutPreviousSquadByTag[bestCandidate.getTag()] = previousSquad ? previousSquad->getName() : "Backup";
+ 						}
+@@ -2620,13 +3429,13 @@ void CombatCommander::updateScoutSquad()
+ 	}
+ 
+ 	const CCPosition defaultScoutTarget = GetNextBaseLocationToScout();
+-	CCPosition scoutTarget = pressureNeedsScout
++	CCPosition scoutTarget = enemyEvidenceScoutRequested
+ 		? GetNextEnemyStartCandidateToScout()
+ 		: activeScoutScope
+ 			? voiResolveCombatLocationIntent(m_bot, effectiveLocationIntent.empty() ? "enemy_main" : effectiveLocationIntent, defaultScoutTarget)
+ 			: defaultScoutTarget;
+ 	bool rotatedStalledTarget = false;
+-	if (pressureNeedsScout && scoutTarget != CCPosition())
++	if (enemyEvidenceScoutRequested && scoutTarget != CCPosition())
+ 	{
+ 		const Unit & scoutUnit = scoutSquad.getUnits().front();
+ 		const float targetDistance = Util::Dist(scoutUnit.getPosition(), scoutTarget);
+@@ -2676,7 +3485,11 @@ void CombatCommander::updateScoutSquad()
+ 	scoutSquad.setSquadOrder(scoutOrder);
+ 	m_lastVoiScoutAssignedUnitCount = static_cast<int>(scoutSquad.getUnits().size());
+ 	m_lastVoiScoutScopeStatus = activeScoutScope ? "Consumed" : "Default";
+-	m_lastVoiScoutScopeReason = pressureNeedsScout
++	m_lastVoiScoutScopeReason = tacticalNukeNeedsTargetObservation
++		? (rotatedStalledTarget
++			? "Tactical nuke observation scout rotated from a stalled enemy-start candidate"
++			: "Tactical nuke is waiting for a recently observed enemy target")
++		: pressureNeedsScout
+ 		? (rotatedStalledTarget
+ 			? "Combat scout rotated from a stalled enemy-start candidate"
+ 			: "Combat scout is checking an unobserved enemy-start candidate before attack")
+@@ -3456,6 +4269,16 @@ void CombatCommander::updateAttackSquads()
+ 		&& !voiOperationProducing
+ 		&& voiRallyRequiredUnits > 0
+ 		&& !m_voiRallyCompleted;
++	const bool voiTacticalNukeContainmentActive =
++		voiTacticalNukeTaskRequested(m_bot)
++		&& m_lastVoiTacticalNukeConfirmationCount == 0
++		&& m_lastVoiTacticalNukeTarget != CCPosition();
++	const CCPosition voiTacticalNukeContainment =
++		voiTacticalNukeContainmentActive
++			? voiTacticalNukeContainmentPosition(
++				m_bot,
++				m_lastVoiTacticalNukeTarget)
++			: CCPosition();
+ 	m_lastVoiRallyReadyUnits = voiRallyReadyUnits;
+ 	m_lastVoiRallyRequiredUnits = voiRallyRequiredUnits;
+ 	m_lastVoiBoundedForceCommit = false;
+@@ -3558,7 +4381,13 @@ void CombatCommander::updateAttackSquads()
+ 		}
+ 	}
+ 
+-	if (voiForceRetreat)
++	if (voiTacticalNukeContainmentActive)
++	{
++		retreat = true;
++		retreatReason =
++			"Holding outside reserved tactical nuke blast radius";
++	}
++	if (!retreat && voiForceRetreat)
+ 	{
+ 		retreat = true;
+ 		retreatReason = "VOI force retreat";
+@@ -3802,7 +4631,14 @@ void CombatCommander::updateAttackSquads()
+ 	}
+ 	if (retreat)
+ 	{
+-		if (voiAwaitingFreshEnemyObservation)
++		if (voiTacticalNukeContainmentActive)
++		{
++			orderPosition = voiTacticalNukeContainment;
++			orderStatus = "NukeContainment";
++			orderReason = retreatReason;
++			m_lastVoiOperationPhase = "NukeContainment";
++		}
++		else if (voiAwaitingFreshEnemyObservation)
+ 		{
+ 			orderPosition = m_idlePosition;
+ 			orderStatus = "Scouting";
+@@ -3852,6 +4688,7 @@ void CombatCommander::updateAttackSquads()
+ 			|| orderStatus == "Regrouping"
+ 			|| orderStatus == "Rallying"
+ 			|| orderStatus == "Producing"
++			|| orderStatus == "NukeContainment"
+ 		? SquadOrderTypes::Retreat
+ 		: SquadOrderTypes::Attack;
+ 	const SquadOrder mainAttackOrder(mainAttackOrderType, orderPosition, voiAttackRadius, orderStatus);
+@@ -6063,8 +6900,48 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				break;
+ 			case MicroActionType::AbilityPosition:
+-				Micro::SmartAbility(rangedUnit, action.abilityID, action.position, m_bot);
+-				issuedCommand = true;
++				if (action.abilityID == sc2::ABILITY_ID::EFFECT_NUKECALLDOWN)
++				{
++					float castRange = TacticalNukeCastRange;
++					const auto castRangeIt =
++						m_abilityCastingRanges.find(
++							sc2::ABILITY_ID::EFFECT_NUKECALLDOWN);
++					if (castRangeIt != m_abilityCastingRanges.end()
++						&& castRangeIt->second > 0.0f)
++					{
++						castRange = castRangeIt->second;
++					}
++					const float usableCastRange =
++						std::max(1.0f, castRange - 0.25f);
++					if (!Util::IsAbilityAvailable(
++						sc2::ABILITY_ID::EFFECT_NUKECALLDOWN,
++						rangedUnit,
++						m_unitsAbilities))
++					{
++						skip = true;
++						m_lastVoiTacticalNukeStatus =
++							"waiting_payload";
++						m_lastVoiTacticalNukeReason =
++							"Cast issue guard rejected unavailable EFFECT_NUKECALLDOWN";
++					}
++					else if (distToGoal
++						> usableCastRange * usableCastRange)
++					{
++						skip = true;
++						m_lastVoiTacticalNukeStatus = "staging";
++						m_lastVoiTacticalNukeReason =
++							"Cast issue guard rejected an out-of-range target; staging must complete first";
++					}
++				}
++				if (!skip)
++				{
++					Micro::SmartAbility(
++						rangedUnit,
++						action.abilityID,
++						action.position,
++						m_bot);
++					issuedCommand = true;
++				}
+ 				break;
+ 			case MicroActionType::AbilityTarget:
+ 				Micro::SmartAbility(rangedUnit, action.abilityID, action.target, m_bot);
+@@ -6110,6 +6987,39 @@ void CombatCommander::ExecuteActions()
+ 			m_lastVoiActionFrame = m_bot.GetGameLoop();
+ 			m_lastVoiIssuedActionFrame = m_bot.GetGameLoop();
+ 			m_lastVoiIssuedAction = voiActionEvidence(action);
++			if (action.description == "VoiTacticalNukeStage")
++			{
++				m_lastVoiTacticalNukeStatus = "staging";
++				m_lastVoiTacticalNukeReason =
++					"Ghost staging Move reached the SC2 command issue path";
++				m_lastVoiTacticalNukeGhostTag = rangedUnit->tag;
++				m_lastVoiTacticalNukeStagingPosition = action.position;
++				m_lastVoiTacticalNukeStagingCommandIssuedCount++;
++				m_lastVoiTacticalNukeStagingCommandFrame =
++					m_bot.GetGameLoop();
++				m_lastVoiTacticalNukeStagingIssuedAction =
++					m_lastVoiIssuedAction;
++			}
++			else if (action.description
++					== "VoiRoleGhostTacticalNuke"
++				&& action.abilityID
++					== sc2::ABILITY_ID::EFFECT_NUKECALLDOWN)
++			{
++				m_lastVoiTacticalNukeStatus = "cast_submitted";
++				m_lastVoiTacticalNukeReason =
++					"EFFECT_NUKECALLDOWN was submitted to SC2 and awaits observation confirmation";
++				m_lastVoiTacticalNukeGhostTag = rangedUnit->tag;
++				m_lastVoiTacticalNukeTarget = action.position;
++				m_lastVoiTacticalNukeCastSubmittedCount++;
++				m_lastVoiTacticalNukeCastSubmissionFrame =
++					m_bot.GetGameLoop();
++				m_lastVoiTacticalNukeCastSubmittedAction =
++					m_lastVoiIssuedAction;
++				m_lastVoiTacticalNukePayloadCountAtSubmission =
++					voiTacticalNukePayloadCount(m_bot);
++				m_lastVoiTacticalNukeConfirmationState = "pending";
++				m_lastVoiTacticalNukeConfirmationEffect = "";
++			}
+ 			const std::string executedVoiRole = m_bot.Commander().isVoiPolicyActive()
+ 				? voiRoleForUnit(m_bot, rangedUnit)
+ 				: "";
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 17c20c0..f32eabb 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -247,6 +247,27 @@ class CombatCommander
+ 	int m_lastVoiUnitRoleAttemptedCount = 0;
+ 	int m_lastVoiUnitRoleExecutedCount = 0;
+ 	uint32_t m_lastVoiUnitRoleFrame = 0;
++	std::string m_voiTacticalNukeUpdateId = "";
++	std::string m_lastVoiTacticalNukeStatus = "inactive";
++	std::string m_lastVoiTacticalNukeReason = "No tactical nuke ability task requested";
++	uint64_t m_lastVoiTacticalNukeGhostTag = 0;
++	CCPosition m_lastVoiTacticalNukeTarget = CCPosition();
++	CCPosition m_lastVoiTacticalNukeStagingPosition = CCPosition();
++	uint32_t m_lastVoiTacticalNukeTargetObservationFrame = 0;
++	int m_lastVoiTacticalNukeReservedGhostCount = 0;
++	int m_lastVoiTacticalNukeAvailableGhostCount = 0;
++	int m_lastVoiTacticalNukeStagingCommandIssuedCount = 0;
++	uint32_t m_lastVoiTacticalNukeStagingCommandFrame = 0;
++	std::string m_lastVoiTacticalNukeStagingIssuedAction = "";
++	int m_lastVoiTacticalNukeCastAttemptedCount = 0;
++	int m_lastVoiTacticalNukeCastSubmittedCount = 0;
++	uint32_t m_lastVoiTacticalNukeCastSubmissionFrame = 0;
++	std::string m_lastVoiTacticalNukeCastSubmittedAction = "";
++	int m_lastVoiTacticalNukePayloadCountAtSubmission = -1;
++	std::string m_lastVoiTacticalNukeConfirmationState = "unconfirmed";
++	int m_lastVoiTacticalNukeConfirmationCount = 0;
++	uint32_t m_lastVoiTacticalNukeConfirmationFrame = 0;
++	std::string m_lastVoiTacticalNukeConfirmationEffect = "";
+ 	bool m_logVikingActions = false;
+ 	bool m_allowEarlyBuildingAttack = false;
+     bool            m_initialized;
+@@ -428,6 +449,27 @@ public:
+ 	int getVoiUnitRoleAttemptedCount() const { return m_lastVoiUnitRoleAttemptedCount; }
+ 	int getVoiUnitRoleExecutedCount() const { return m_lastVoiUnitRoleExecutedCount; }
+ 	uint32_t getVoiUnitRoleFrame() const { return m_lastVoiUnitRoleFrame; }
++	const std::string & getVoiTacticalNukeUpdateId() const { return m_voiTacticalNukeUpdateId; }
++	const std::string & getVoiTacticalNukeStatus() const { return m_lastVoiTacticalNukeStatus; }
++	const std::string & getVoiTacticalNukeReason() const { return m_lastVoiTacticalNukeReason; }
++	uint64_t getVoiTacticalNukeGhostTag() const { return m_lastVoiTacticalNukeGhostTag; }
++	CCPosition getVoiTacticalNukeTarget() const { return m_lastVoiTacticalNukeTarget; }
++	CCPosition getVoiTacticalNukeStagingPosition() const { return m_lastVoiTacticalNukeStagingPosition; }
++	uint32_t getVoiTacticalNukeTargetObservationFrame() const { return m_lastVoiTacticalNukeTargetObservationFrame; }
++	int getVoiTacticalNukeReservedGhostCount() const { return m_lastVoiTacticalNukeReservedGhostCount; }
++	int getVoiTacticalNukeAvailableGhostCount() const { return m_lastVoiTacticalNukeAvailableGhostCount; }
++	int getVoiTacticalNukeStagingCommandIssuedCount() const { return m_lastVoiTacticalNukeStagingCommandIssuedCount; }
++	uint32_t getVoiTacticalNukeStagingCommandFrame() const { return m_lastVoiTacticalNukeStagingCommandFrame; }
++	const std::string & getVoiTacticalNukeStagingIssuedAction() const { return m_lastVoiTacticalNukeStagingIssuedAction; }
++	int getVoiTacticalNukeCastAttemptedCount() const { return m_lastVoiTacticalNukeCastAttemptedCount; }
++	int getVoiTacticalNukeCastSubmittedCount() const { return m_lastVoiTacticalNukeCastSubmittedCount; }
++	uint32_t getVoiTacticalNukeCastSubmissionFrame() const { return m_lastVoiTacticalNukeCastSubmissionFrame; }
++	const std::string & getVoiTacticalNukeCastSubmittedAction() const { return m_lastVoiTacticalNukeCastSubmittedAction; }
++	int getVoiTacticalNukePayloadCountAtSubmission() const { return m_lastVoiTacticalNukePayloadCountAtSubmission; }
++	const std::string & getVoiTacticalNukeConfirmationState() const { return m_lastVoiTacticalNukeConfirmationState; }
++	int getVoiTacticalNukeConfirmationCount() const { return m_lastVoiTacticalNukeConfirmationCount; }
++	uint32_t getVoiTacticalNukeConfirmationFrame() const { return m_lastVoiTacticalNukeConfirmationFrame; }
++	const std::string & getVoiTacticalNukeConfirmationEffect() const { return m_lastVoiTacticalNukeConfirmationEffect; }
+ 	void initInfluenceMaps();
+ 	CCPosition getMainAttackLocation();
+ 	void updateBlockedTilesWithNeutral();
+@@ -442,6 +484,8 @@ public:
+ 	void CalcBestFlyingCycloneHelpers();
+ 	bool ShouldUnitHeal(const sc2::Unit * unit) const;
+ 	bool GetUnitAbilities(const sc2::Unit * unit, sc2::AvailableAbilities & outUnitAbilities) const;
++	void updateVoiTacticalNukeSquad();
++	void updateVoiTacticalNukeAction();
+ 	SquadData & getSquadData() { return m_squadData; }
+ 	const std::vector<CCTilePosition> & getMainBaseSiegePositions() const { return m_mainBaseSiegePositions; }
+ 	sc2::Units & getMainBaseSiegeTanks() { return m_mainBaseSiegeTanks; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index ef6f1f9..4929f07 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -219,6 +219,8 @@ void GameCommander::writeVoiTelemetry() const
+     const std::string scopeLocationIntent = voiJsonEscape(m_voiPolicyBlackboard.getString("scope.location_intent", ""));
+     const std::string rawTacticalTaskType = m_voiPolicyBlackboard.getString("tactical_task.task_type", "");
+     const std::string tacticalTaskType = voiJsonEscape(rawTacticalTaskType);
++    const std::string rawTacticalTaskAbility = m_voiPolicyBlackboard.getString("tactical_task.ability", "");
++    const std::string tacticalTaskAbility = voiJsonEscape(rawTacticalTaskAbility);
+     const std::string tacticalTaskId = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.task_id", ""));
+     const std::string tacticalTaskUnitClasses = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.unit_classes", ""));
+     const std::string tacticalTaskProductionTargets = voiJsonEscape(m_voiPolicyBlackboard.getString("tactical_task.production_targets", ""));
+@@ -392,6 +394,66 @@ void GameCommander::writeVoiTelemetry() const
+             tacticalTaskReason = m_combatCommander.getVoiMainAttackOrderReason();
+         }
+     }
++    else if (rawTacticalTaskType == "execute_ability")
++    {
++        tacticalTaskConsumedBy = "CombatCommander";
++        const bool tacticalNukeRequested =
++            rawTacticalTaskAbility == "tactical_nuke";
++        const bool nukeTelemetryMatchesUpdate =
++            !rawUpdateId.empty()
++            && m_combatCommander.getVoiTacticalNukeUpdateId() == rawUpdateId;
++        tacticalTaskLastCommandFrame =
++            m_combatCommander.getVoiTacticalNukeCastSubmissionFrame();
++        const bool castSubmissionFresh =
++            tacticalNukeRequested
++            && nukeTelemetryMatchesUpdate
++            && isFreshTacticalTaskFrame(tacticalTaskLastCommandFrame);
++        const bool castConfirmationFresh =
++            tacticalNukeRequested
++            && nukeTelemetryMatchesUpdate
++            && m_combatCommander.getVoiTacticalNukeConfirmationCount() > 0
++            && isFreshTacticalTaskFrame(
++                m_combatCommander.getVoiTacticalNukeConfirmationFrame());
++        tacticalTaskActualCommandCount = castSubmissionFresh
++            ? static_cast<uint32_t>(
++                m_combatCommander.getVoiTacticalNukeCastSubmittedCount())
++            : 0;
++        tacticalTaskLastCommand = castSubmissionFresh
++            ? m_combatCommander.getVoiTacticalNukeCastSubmittedAction()
++            : "";
++        if (!tacticalNukeRequested)
++        {
++            tacticalTaskStatus = "refused";
++            tacticalTaskReason =
++                "execute_ability currently supports tactical_task.ability=tactical_nuke";
++        }
++        else if (castConfirmationFresh)
++        {
++            tacticalTaskStatus = "completed";
++            tacticalTaskReason =
++                "CombatCommander observed SC2 tactical nuke cast/effect confirmation";
++        }
++        else if (castSubmissionFresh && tacticalTaskActualCommandCount > 0)
++        {
++            tacticalTaskStatus = "executing";
++            tacticalTaskReason =
++                "CombatCommander submitted EFFECT_NUKECALLDOWN and is waiting for SC2 observation confirmation";
++        }
++        else if (nukeTelemetryMatchesUpdate
++            && m_combatCommander.getVoiTacticalNukeStatus() == "refused")
++        {
++            tacticalTaskStatus = "refused";
++            tacticalTaskReason =
++                m_combatCommander.getVoiTacticalNukeReason();
++        }
++        else
++        {
++            tacticalTaskStatus = "accepted";
++            tacticalTaskReason = nukeTelemetryMatchesUpdate
++                ? m_combatCommander.getVoiTacticalNukeReason()
++                : "Waiting for CombatCommander tactical nuke task evaluation";
++        }
++    }
+     else if (rawTacticalTaskType == "sustain_production" || rawTacticalTaskType == "tech_transition" || rawTacticalTaskType == "expand_or_land_command_center")
+     {
+         tacticalTaskConsumedBy = "ProductionManager";
+@@ -451,6 +513,7 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"TacticalTask\":{"
+         << "\"active\":" << (!rawTacticalTaskType.empty() && m_voiPolicyActive ? "true" : "false") << ","
+         << "\"task_type\":\"" << tacticalTaskType << "\","
++        << "\"ability\":\"" << tacticalTaskAbility << "\","
+         << "\"task_id\":\"" << tacticalTaskId << "\","
+         << "\"status\":\"" << voiJsonEscape(tacticalTaskStatus) << "\","
+         << "\"reason\":\"" << voiJsonEscape(tacticalTaskReason) << "\","
+@@ -467,7 +530,39 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"actual_command_issued_count\":" << tacticalTaskActualCommandCount << ","
+         << "\"last_actual_command\":\"" << voiJsonEscape(tacticalTaskLastCommand) << "\","
+         << "\"last_actual_command_frame\":" << tacticalTaskLastCommandFrame << ","
+-        << "\"consumed_axes\":\"tactical_task.task_type,tactical_task.task_id,tactical_task.unit_classes,tactical_task.production_targets,tactical_task.location_intent,tactical_task.priority,tactical_task.min_units,tactical_task.max_units,tactical_task.duration_seconds,tactical_task.allow_partial,tactical_task.safety_margin\""
++        << "\"consumed_axes\":\"tactical_task.task_type,tactical_task.ability,tactical_task.task_id,tactical_task.unit_classes,tactical_task.production_targets,tactical_task.location_intent,tactical_task.priority,tactical_task.min_units,tactical_task.max_units,tactical_task.duration_seconds,tactical_task.allow_partial,tactical_task.safety_margin\""
++        << "},"
++        << "\"AbilityTask\":{"
++        << "\"active\":" << (m_voiPolicyActive && rawTacticalTaskType == "execute_ability" ? "true" : "false") << ","
++        << "\"task_id\":\"" << tacticalTaskId << "\","
++        << "\"ability\":\"" << tacticalTaskAbility << "\","
++        << "\"ability_policy\":\"tactical_nuke\","
++        << "\"status\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeStatus()) << "\","
++        << "\"reason\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeReason()) << "\","
++        << "\"update_id\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeUpdateId()) << "\","
++        << "\"actor_tag\":" << m_combatCommander.getVoiTacticalNukeGhostTag() << ","
++        << "\"target_x\":" << m_combatCommander.getVoiTacticalNukeTarget().x << ","
++        << "\"target_y\":" << m_combatCommander.getVoiTacticalNukeTarget().y << ","
++        << "\"target_observation_frame\":" << m_combatCommander.getVoiTacticalNukeTargetObservationFrame() << ","
++        << "\"staging_x\":" << m_combatCommander.getVoiTacticalNukeStagingPosition().x << ","
++        << "\"staging_y\":" << m_combatCommander.getVoiTacticalNukeStagingPosition().y << ","
++        << "\"reserved_ghost_count\":" << m_combatCommander.getVoiTacticalNukeReservedGhostCount() << ","
++        << "\"available_ghost_count\":" << m_combatCommander.getVoiTacticalNukeAvailableGhostCount() << ","
++        << "\"staging_command_issued_count\":" << m_combatCommander.getVoiTacticalNukeStagingCommandIssuedCount() << ","
++        << "\"staging_command_frame\":" << m_combatCommander.getVoiTacticalNukeStagingCommandFrame() << ","
++        << "\"staging_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeStagingIssuedAction()) << "\","
++        << "\"cast_attempted_count\":" << m_combatCommander.getVoiTacticalNukeCastAttemptedCount() << ","
++        << "\"cast_submitted_count\":" << m_combatCommander.getVoiTacticalNukeCastSubmittedCount() << ","
++        << "\"cast_submission_frame\":" << m_combatCommander.getVoiTacticalNukeCastSubmissionFrame() << ","
++        << "\"cast_submitted_action\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeCastSubmittedAction()) << "\","
++        << "\"payload_count_at_submission\":" << m_combatCommander.getVoiTacticalNukePayloadCountAtSubmission() << ","
++        << "\"confirmation_state\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeConfirmationState()) << "\","
++        << "\"confirmation_count\":" << m_combatCommander.getVoiTacticalNukeConfirmationCount() << ","
++        << "\"confirmation_frame\":" << m_combatCommander.getVoiTacticalNukeConfirmationFrame() << ","
++        << "\"confirmation_effect\":\"" << voiJsonEscape(m_combatCommander.getVoiTacticalNukeConfirmationEffect()) << "\","
++        << "\"consumed_role_axis\":\"unit_roles.*.role\","
++        << "\"consumed_ability_policy_axis\":\"unit_roles.*.ability_policy\","
++        << "\"consumed_axes\":\"tactical_task.task_type,tactical_task.ability,tactical_task.production_targets,tactical_task.location_intent,tactical_task.safety_margin,unit_roles.*.unit_type,unit_roles.*.role,unit_roles.*.ability_policy\""
+         << "},"
+         << "\"BuildingTask\":{"
+         << "\"active\":" << (buildingTaskActive ? "true" : "false") << ","
+@@ -645,6 +740,15 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"last_actual_production_command_item\":\"" << voiJsonEscape(m_productionManager.getLastVoiProductionCommandItem()) << "\","
+         << "\"last_actual_production_command_update_id\":\"" << voiJsonEscape(m_productionManager.getLastVoiProductionCommandUpdateId()) << "\","
+         << "\"last_actual_production_command_frame\":" << m_productionManager.getLastVoiProductionCommandFrame() << ","
++        << "\"tactical_nuke_payload_status\":\"" << voiJsonEscape(m_productionManager.getLastVoiTacticalNukePayloadStatus()) << "\","
++        << "\"tactical_nuke_payload_update_id\":\"" << voiJsonEscape(m_productionManager.getLastVoiTacticalNukePayloadUpdateId()) << "\","
++        << "\"tactical_nuke_payload_producer_tag\":" << m_productionManager.getLastVoiTacticalNukePayloadProducerTag() << ","
++        << "\"tactical_nuke_payload_submission_count\":" << m_productionManager.getVoiTacticalNukePayloadSubmissionCount() << ","
++        << "\"tactical_nuke_payload_accepted_count\":" << m_productionManager.getVoiTacticalNukePayloadAcceptedCount() << ","
++        << "\"tactical_nuke_payload_rejected_count\":" << m_productionManager.getVoiTacticalNukePayloadRejectedCount() << ","
++        << "\"tactical_nuke_payload_submission_frame\":" << m_productionManager.getLastVoiTacticalNukePayloadSubmissionFrame() << ","
++        << "\"tactical_nuke_payload_accepted_frame\":" << m_productionManager.getLastVoiTacticalNukePayloadAcceptedFrame() << ","
++        << "\"tactical_nuke_payload_next_retry_frame\":" << m_productionManager.getNextVoiTacticalNukePayloadRetryFrame() << ","
+         << "\"policy_update_id\":\"" << updateId << "\","
+         << "\"policy_issued_at_frame\":" << issuedAtFrame << ","
+         << "\"policy_expires_at_frame\":" << expiresAtFrame << ","
+diff --git a/src/MetaTypeEnum.cpp b/src/MetaTypeEnum.cpp
+index 79f82e0..8775254 100644
+--- a/src/MetaTypeEnum.cpp
++++ b/src/MetaTypeEnum.cpp
+@@ -31,6 +31,7 @@ MetaType MetaTypeEnum::Marine;
+ MetaType MetaTypeEnum::Marauder;
+ MetaType MetaTypeEnum::Reaper;
+ MetaType MetaTypeEnum::Ghost;
++MetaType MetaTypeEnum::Nuke;
+ MetaType MetaTypeEnum::Hellion;
+ MetaType MetaTypeEnum::WidowMine;
+ MetaType MetaTypeEnum::Banshee;
+@@ -143,6 +144,7 @@ void MetaTypeEnum::Initialize(CCBot & m_bot)
+ 	MetaTypeEnum::Marauder = MetaType("Marauder", m_bot);
+ 	MetaTypeEnum::Reaper = MetaType("Reaper", m_bot);
+ 	MetaTypeEnum::Ghost = MetaType("Ghost", m_bot);
++	MetaTypeEnum::Nuke = MetaType(UnitType(sc2::UNIT_TYPEID::TERRAN_NUKE, m_bot), m_bot);
+ 	MetaTypeEnum::Hellion = MetaType("Hellion", m_bot);
+ 	MetaTypeEnum::WidowMine = MetaType("WidowMine", m_bot);
+ 	MetaTypeEnum::Banshee = MetaType("Banshee", m_bot);
+@@ -222,4 +224,4 @@ void MetaTypeEnum::Initialize(CCBot & m_bot)
+ 	MetaTypeEnum::ZergFlyerArmorsLevel1 = MetaType("ZergFlyerArmorsLevel1", m_bot);
+ 	MetaTypeEnum::ZergFlyerArmorsLevel2 = MetaType("ZergFlyerArmorsLevel2", m_bot);
+ 	MetaTypeEnum::ZergFlyerArmorsLevel3 = MetaType("ZergFlyerArmorsLevel3", m_bot);
+-}
+\ No newline at end of file
++}
+diff --git a/src/MetaTypeEnum.h b/src/MetaTypeEnum.h
+index ed8b0d7..e8f8c2b 100644
+--- a/src/MetaTypeEnum.h
++++ b/src/MetaTypeEnum.h
+@@ -37,6 +37,7 @@ class MetaTypeEnum
+ 		static MetaType Marauder;
+ 		static MetaType Reaper;
+ 		static MetaType Ghost;
++		static MetaType Nuke;
+ 		static MetaType Hellion;
+ 		static MetaType WidowMine;
+ 		static MetaType Banshee;
+@@ -118,4 +119,4 @@ class MetaTypeEnum
+ 		static MetaType ZergFlyerArmorsLevel3;
+ 
+ 		static void Initialize(CCBot & m_bot);
+-};
+\ No newline at end of file
++};
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index bd06c6b..ccd1439 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -600,12 +600,41 @@ int voiCompletedProducersWithAttachedAddon(
+ 	return count;
+ }
+ 
++bool isVoiExplicitTacticalPrerequisiteBuilding(CCBot & bot, const MetaType & type)
++{
++	if (!bot.Commander().isVoiPolicyActive() ||
++		!type.isUnit() ||
++		!type.getUnitType().isBuilding())
++	{
++		return false;
++	}
++
++	const std::string requestedTargets = bot.Commander().getVoiPolicyString(
++		"tactical_task.production_targets",
++		"");
++	switch ((sc2::UNIT_TYPEID)type.getUnitType().getAPIUnitType())
++	{
++		case sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY:
++			return voiCommaListContains(requestedTargets, "TERRAN_GHOSTACADEMY");
++		case sc2::UNIT_TYPEID::TERRAN_ARMORY:
++			return voiCommaListContains(requestedTargets, "TERRAN_ARMORY");
++		case sc2::UNIT_TYPEID::TERRAN_FUSIONCORE:
++			return voiCommaListContains(requestedTargets, "TERRAN_FUSIONCORE");
++		default:
++			return false;
++	}
++}
++
+ bool isBootstrapPlacementCritical(CCBot & bot, const MetaType & type)
+ {
+ 	if (!type.isUnit() || !type.getUnitType().isBuilding())
+ 	{
+ 		return false;
+ 	}
++	if (isVoiExplicitTacticalPrerequisiteBuilding(bot, type))
++	{
++		return true;
++	}
+ 
+ 	const auto apiType = type.getUnitType().getAPIUnitType();
+ 	if (bot.Commander().isVoiPolicyActive())
+@@ -673,6 +702,7 @@ std::string voiCanonicalProductionItemName(const std::string & itemName)
+ 	if (itemName == "TERRAN_MARAUDER") { return "Marauder"; }
+ 	if (itemName == "TERRAN_REAPER") { return "Reaper"; }
+ 	if (itemName == "TERRAN_GHOST") { return "Ghost"; }
++	if (itemName == "TERRAN_NUKE") { return "Nuke"; }
+ 	if (itemName == "TERRAN_HELLION") { return "Hellion"; }
+ 	if (itemName == "TERRAN_WIDOWMINE") { return "WidowMine"; }
+ 	if (itemName == "TERRAN_CYCLONE") { return "Cyclone"; }
+@@ -1886,7 +1916,10 @@ void ProductionManager::deferPlacementRetry(const MetaType & type, const std::st
+ 	const uint32_t currentFrame = m_bot.GetCurrentFrame();
+ 	const auto unitType = type.getUnitType().getAPIUnitType();
+ 	const int retryCount = ++m_placementRetryCount[unitType];
+-	const bool isVoiTransitionBuilding = voiDoctrineRequestsTechTransition(m_bot, type);
++	const bool isVoiTacticalPrerequisite =
++		isVoiExplicitTacticalPrerequisiteBuilding(m_bot, type);
++	const bool isVoiTransitionBuilding =
++		voiDoctrineRequestsTechTransition(m_bot, type) || isVoiTacticalPrerequisite;
+ 	const bool isVoiExpandCommandCenter = type == MetaTypeEnum::CommandCenter && isVoiExpandMacroActive();
+ 	const bool isExplicitVoiExpandCommandCenter =
+ 		isVoiExpandCommandCenter && isVoiExplicitExpandCommandCenterRequested();
+@@ -1902,7 +1935,11 @@ void ProductionManager::deferPlacementRetry(const MetaType & type, const std::st
+ 	}
+ 	else if (isVoiTransitionBuilding)
+ 	{
+-		retryDelayFrames = 22 * 15;
++		// Explicit tactical prerequisites stay on a short bounded retry loop.
++		// They are user-requested dependency closure, not passive macro churn.
++		retryDelayFrames = isVoiTacticalPrerequisite
++			? (retryCount <= 2 ? 22 * 5 : 22 * 10)
++			: 22 * 15;
+ 	}
+ 	else if (retryCount == 2)
+ 	{
+@@ -1921,6 +1958,7 @@ void ProductionManager::deferPlacementRetry(const MetaType & type, const std::st
+ 			+ " count=" + std::to_string(retryCount)
+ 			+ " voi_expand_macro=" + std::to_string(isVoiExpandCommandCenter)
+ 			+ " explicit_expand=" + std::to_string(isExplicitVoiExpandCommandCenter)
++			+ " tactical_prerequisite=" + std::to_string(isVoiTacticalPrerequisite)
+ 			+ " passive_expand_quarantine="
+ 			+ std::to_string(
+ 				isVoiExpandCommandCenter
+@@ -3015,6 +3053,88 @@ void ProductionManager::recordVoiDoctrineConsumption(const MetaType & type, cons
+ 	Util::Log(__FUNCTION__, "voi doctrine consumed action=" + action + " item=" + type.getName() + " evidence=" + m_lastVoiDoctrineEvidence + " doctrine=" + m_lastVoiDoctrine, m_bot);
+ }
+ 
++void ProductionManager::recordVoiTacticalNukePayloadSubmission(const Unit & producer)
++{
++	m_voiTacticalNukePayloadSubmissionCount++;
++	m_lastVoiTacticalNukePayloadSubmissionFrame = m_bot.GetCurrentFrame();
++	m_lastVoiTacticalNukePayloadProducerTag = producer.getTag();
++	m_lastVoiTacticalNukePayloadStatus = "submitted";
++	m_lastVoiTacticalNukePayloadUpdateId =
++		m_bot.Commander().getVoiPolicyString("update_id", "");
++	m_nextVoiTacticalNukePayloadRetryFrame = 0;
++	Util::Log(
++		__FUNCTION__,
++		"VOI tactical nuke payload command submitted producer_tag="
++			+ std::to_string(m_lastVoiTacticalNukePayloadProducerTag)
++			+ " update_id=" + m_lastVoiTacticalNukePayloadUpdateId
++			+ "; awaiting SC2 observation acceptance.",
++		m_bot);
++}
++
++void ProductionManager::refreshVoiTacticalNukePayloadSubmission()
++{
++	if (m_lastVoiTacticalNukePayloadStatus != "submitted")
++	{
++		return;
++	}
++
++	const uint32_t currentFrame = m_bot.GetCurrentFrame();
++	for (const auto & ghostAcademy :
++		m_bot.GetAllyUnits(sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY))
++	{
++		const sc2::Unit * academyUnit = ghostAcademy.getUnitPtr();
++		if (academyUnit == nullptr
++			|| !academyUnit->is_alive
++			|| academyUnit->tag != m_lastVoiTacticalNukePayloadProducerTag)
++		{
++			continue;
++		}
++		for (const auto & order : academyUnit->orders)
++		{
++			if (order.ability_id != sc2::ABILITY_ID::BUILD_NUKE)
++			{
++				continue;
++			}
++			m_lastVoiTacticalNukePayloadStatus = "accepted";
++			m_voiTacticalNukePayloadAcceptedCount++;
++			m_lastVoiTacticalNukePayloadAcceptedFrame = currentFrame;
++			recordVoiActualProductionCommand(
++				MetaTypeEnum::Nuke,
++				"build_nuke_accepted");
++			Util::Log(
++				__FUNCTION__,
++				"VOI tactical nuke payload command accepted by SC2 observation producer_tag="
++					+ std::to_string(m_lastVoiTacticalNukePayloadProducerTag)
++					+ " order=BUILD_NUKE.",
++				m_bot);
++			return;
++		}
++	}
++
++	constexpr uint32_t NukePayloadAcceptanceObservationFrames = 8;
++	if (currentFrame < m_lastVoiTacticalNukePayloadSubmissionFrame
++		|| currentFrame - m_lastVoiTacticalNukePayloadSubmissionFrame
++			< NukePayloadAcceptanceObservationFrames)
++	{
++		return;
++	}
++
++	constexpr uint32_t NukePayloadRejectedRetryFrames = 22u * 2u;
++	m_lastVoiTacticalNukePayloadStatus = "rejected";
++	m_voiTacticalNukePayloadRejectedCount++;
++	m_nextVoiTacticalNukePayloadRetryFrame =
++		currentFrame + NukePayloadRejectedRetryFrames;
++	recordVoiDoctrineConsumption(
++		MetaTypeEnum::Nuke,
++		"tactical_nuke_payload",
++		"payload_command_rejected");
++	Util::Log(
++		__FUNCTION__,
++		"VOI tactical nuke payload command was not observed on the Ghost Academy; retry deferred until frame="
++			+ std::to_string(m_nextVoiTacticalNukePayloadRetryFrame) + ".",
++		m_bot);
++}
++
+ bool ProductionManager::queueSupplyProviderRecovery(const std::string & reason)
+ {
+ 	if (m_bot.GetMaxSupply() >= 200)
+@@ -3090,7 +3210,10 @@ bool ProductionManager::shouldRecordVoiActualProductionCommand(const std::string
+ 		return false;
+ 	}
+ 	const std::string canonicalItemName = voiCanonicalProductionItemName(itemName);
+-	if (!canonicalItemName.empty() && canonicalItemName == m_lastVoiDoctrineQueueItem)
++	const std::string canonicalQueueItemName =
++		voiCanonicalProductionItemName(m_lastVoiDoctrineQueueItem);
++	if (!canonicalItemName.empty()
++		&& canonicalItemName == canonicalQueueItemName)
+ 	{
+ 		return true;
+ 	}
+@@ -3152,7 +3275,11 @@ bool ProductionManager::shouldUseVoiDirectAddonCommand(const UnitType & type) co
+ 		tacticalTargetRequested = voiCommaListContains(tacticalProductionTargets, "STARPORT_REACTOR")
+ 			|| voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORTREACTOR");
+ 	}
+-	return (!updateId.empty() && updateId == m_lastVoiDoctrineUpdateId && canonicalItemName == m_lastVoiDoctrineQueueItem)
++	const std::string canonicalQueueItemName =
++		voiCanonicalProductionItemName(m_lastVoiDoctrineQueueItem);
++	return (!updateId.empty()
++			&& updateId == m_lastVoiDoctrineUpdateId
++			&& canonicalItemName == canonicalQueueItemName)
+ 		|| explicitAddonBias > 0.25f
+ 		|| tacticalTargetRequested
+ 		|| voiDoctrineExpectsActualItem(doctrine, canonicalItemName);
+@@ -3162,6 +3289,9 @@ void ProductionManager::recordVoiActualProductionCommand(const MetaType & type,
+ {
+ 	const std::string itemName = voiCanonicalProductionItemName(type.getName());
+ 	const std::string commandKind = kind.empty() ? "unit_command" : kind;
++	m_lastAuthoritativeProductionCommandFrame = m_bot.GetCurrentFrame();
++	m_lastAuthoritativeProductionCommandItem = itemName;
++	m_lastAuthoritativeProductionCommandKind = commandKind;
+ 	if (itemName == "SupplyDepot")
+ 	{
+ 		m_lastVoiSupplyProviderCommandFrame = m_bot.GetCurrentFrame();
+@@ -3194,6 +3324,9 @@ void ProductionManager::recordVoiActualProductionCommand(const UnitType & type,
+ {
+ 	const std::string itemName = voiCanonicalProductionItemName(type.getName());
+ 	const std::string commandKind = kind.empty() ? "unit_command" : kind;
++	m_lastAuthoritativeProductionCommandFrame = m_bot.GetCurrentFrame();
++	m_lastAuthoritativeProductionCommandItem = itemName;
++	m_lastAuthoritativeProductionCommandKind = commandKind;
+ 	if (itemName == "SupplyDepot")
+ 	{
+ 		m_lastVoiSupplyProviderCommandFrame = m_bot.GetCurrentFrame();
+@@ -3243,6 +3376,15 @@ void ProductionManager::refreshVoiDoctrinePolicyBaseline(const std::string & upd
+ 	m_lastVoiProductionCommandItem = "none";
+ 	m_lastVoiProductionCommandKind = "none";
+ 	m_lastVoiProductionCommandUpdateId = "";
++	m_voiTacticalNukePayloadSubmissionCount = 0;
++	m_voiTacticalNukePayloadAcceptedCount = 0;
++	m_voiTacticalNukePayloadRejectedCount = 0;
++	m_lastVoiTacticalNukePayloadSubmissionFrame = 0;
++	m_lastVoiTacticalNukePayloadAcceptedFrame = 0;
++	m_nextVoiTacticalNukePayloadRetryFrame = 0;
++	m_lastVoiTacticalNukePayloadProducerTag = 0;
++	m_lastVoiTacticalNukePayloadStatus = "idle";
++	m_lastVoiTacticalNukePayloadUpdateId = updateId;
+ 	m_lastVoiSupplyBlockFrame = 0;
+ 	m_lastVoiSupplyRecoveryFrame = 0;
+ 	m_voiSupplyRecoveryQueuedCount = 0;
+@@ -3274,6 +3416,7 @@ void ProductionManager::refreshVoiDoctrinePolicyBaseline(const std::string & upd
+ 		MetaTypeEnum::Reaper,
+ 		MetaTypeEnum::Marine,
+ 		MetaTypeEnum::Ghost,
++		MetaTypeEnum::Nuke,
+ 		MetaTypeEnum::WidowMine,
+ 		MetaTypeEnum::Liberator,
+ 		MetaTypeEnum::Banshee,
+@@ -3332,12 +3475,14 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const uint32_t currentFrame = m_bot.GetCurrentFrame();
+ 	const std::string updateId = m_bot.Commander().getVoiPolicyString("update_id", "");
+ 	refreshVoiDoctrinePolicyBaseline(updateId);
++	refreshVoiTacticalNukePayloadSubmission();
+ 	if (currentFrame - m_lastVoiDoctrineFrame < 48)
+ 	{
+ 		return;
+ 	}
+ 
+ 	const std::string tacticalTaskType = m_bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
++	const std::string tacticalTaskAbility = m_bot.Commander().getVoiPolicyString("tactical_task.ability", "");
+ 	const std::string tacticalProductionTargets = m_bot.Commander().getVoiPolicyString("tactical_task.production_targets", "");
+ 	const float tacticalTaskPriority = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("tactical_task.priority", 0.0f));
+ 	const bool tacticalTaskActive = voiTacticalTaskWithinDuration(m_bot);
+@@ -3374,6 +3519,13 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool taskTargetsFusionCore = voiCommaListContains(tacticalProductionTargets, "TERRAN_FUSIONCORE");
+ 	const bool taskTargetsMarine = voiCommaListContains(tacticalProductionTargets, "TERRAN_MARINE");
+ 	const bool taskTargetsGhost = voiCommaListContains(tacticalProductionTargets, "TERRAN_GHOST");
++	const bool taskTargetsNuke =
++		voiCommaListContains(tacticalProductionTargets, "TERRAN_NUKE")
++		|| voiCommaListContains(tacticalProductionTargets, "NUKE");
++	const bool taskExecuteTacticalNuke = tacticalTaskActive
++		&& tacticalTaskType == "execute_ability"
++		&& tacticalTaskAbility == "tactical_nuke"
++		&& taskTargetsNuke;
+ 	const bool taskTargetsSiegeTank = voiCommaListContains(tacticalProductionTargets, "TERRAN_SIEGETANK");
+ 	const bool taskTargetsWidowMine = voiCommaListContains(tacticalProductionTargets, "TERRAN_WIDOWMINE");
+ 	const bool taskTargetsMedivac = voiCommaListContains(tacticalProductionTargets, "TERRAN_MEDIVAC");
+@@ -3415,10 +3567,14 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float reaperBias = voiMaxBias(m_bot, "production.queue_biases.TERRAN_REAPER", "tech.unit_biases.TERRAN_REAPER");
+ 	const float ghostBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_GHOST", "tech.unit_biases.TERRAN_GHOST"),
+-		(taskTechTransition && taskTargetsGhost) ? tacticalTaskPriority : 0.0f);
++		std::max(
++			(taskTechTransition && taskTargetsGhost) ? tacticalTaskPriority : 0.0f,
++			taskExecuteTacticalNuke ? std::max(0.75f, tacticalTaskPriority) : 0.0f));
+ 	const float ghostAcademyBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_GHOSTACADEMY", "production.production_facility_biases.TERRAN_GHOSTACADEMY", "tech.structure_biases.TERRAN_GHOSTACADEMY"),
+-		(taskTechTransition && taskTargetsGhostAcademy) ? tacticalTaskPriority : 0.0f);
++		std::max(
++			(taskTechTransition && taskTargetsGhostAcademy) ? tacticalTaskPriority : 0.0f,
++			taskExecuteTacticalNuke ? std::max(0.75f, tacticalTaskPriority) : 0.0f));
+ 	const float tankBias = std::max(
+ 		voiMaxBias(m_bot, "production.queue_biases.TERRAN_SIEGETANK", "tech.unit_biases.TERRAN_SIEGETANK"),
+ 		(taskTechTransition && taskTargetsSiegeTank) ? tacticalTaskPriority : 0.0f);
+@@ -3556,8 +3712,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const float effectiveFusionCoreBias = std::max(fusionCoreBias, effectiveBattlecruiserBias);
+ 	const float effectiveStarportReactorBias = std::max(starportReactorBias, compositionDropBias);
+ 
+ 	const bool wantsStarport = wantsStarportDoctrine || effectiveStarportBias > 0.25f || effectiveMedivacBias > 0.25f || effectiveVikingBias > 0.25f || effectiveLiberatorBias > 0.25f || effectiveBansheeBias > 0.25f || effectiveRavenBias > 0.25f || effectiveBattlecruiserBias > 0.25f;
+-	const bool wantsFactory = taskTechTransition || wantsFactoryDoctrine || wantsStarport || effectiveFactoryBias > 0.25f || effectiveTankBias > 0.25f || effectiveHellionBias > 0.25f || effectiveWidowMineBias > 0.25f || effectiveCycloneBias > 0.25f || effectiveThorBias > 0.25f;
++	const bool wantsFactory = taskTechTransition || taskExecuteTacticalNuke || wantsFactoryDoctrine || wantsStarport || effectiveFactoryBias > 0.25f || effectiveTankBias > 0.25f || effectiveHellionBias > 0.25f || effectiveWidowMineBias > 0.25f || effectiveCycloneBias > 0.25f || effectiveThorBias > 0.25f;
+ 	const bool wantsCommandCenter = taskExpandCommandCenter || wantsMacroDoctrine || effectiveCommandCenterBias > 0.45f;
+ 	const bool wantsFactoryTechLab =
+ 		(taskTechTransition && (taskTargetsFactoryTechLab || taskTargetsSiegeTank))
+@@ -3562,7 +3718,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const bool wantsArmory = effectiveArmoryBias > 0.25f;
+ 	const bool wantsBarracksTechLab =
+ 		doctrine == "bio_pressure"
+-		|| effectiveBarracksTechLabBias > 0.25f;
++		|| effectiveBarracksTechLabBias > 0.25f
++		|| taskExecuteTacticalNuke;
+ 	const bool wantsStarportTechLab = effectiveStarportTechLabBias > 0.25f;
+ 	const bool wantsFusionCore = effectiveFusionCoreBias > 0.25f;
+ 	const bool wantsGhostAcademy = effectiveGhostAcademyBias > 0.25f;
+@@ -3585,6 +3742,69 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		MetaTypeEnum::GhostAcademy.getUnitType(),
+ 		false,
+ 		true);
++	int completedGhostAcademyCount = 0;
++	for (const auto & ghostAcademy :
++		m_bot.GetAllyUnits(sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY))
++	{
++		const sc2::Unit * academyUnit = ghostAcademy.getUnitPtr();
++		if (academyUnit != nullptr
++			&& academyUnit->is_alive
++			&& academyUnit->build_progress >= 1.0f)
++		{
++			completedGhostAcademyCount++;
++		}
++	}
++	int completedGhostCount = 0;
++	int nukeReadyGhostCount = 0;
++	sc2::Units completedGhosts;
++	for (const auto & ghost : m_bot.GetAllyUnits(
++		sc2::UNIT_TYPEID::TERRAN_GHOST))
++	{
++		const sc2::Unit * ghostUnit = ghost.getUnitPtr();
++		if (ghostUnit != nullptr
++			&& ghostUnit->is_alive
++			&& ghostUnit->build_progress >= 1.0f)
++		{
++			completedGhosts.push_back(ghostUnit);
++			completedGhostCount++;
++		}
++	}
++	if (!completedGhosts.empty())
++	{
++		const auto ghostAbilities =
++			m_bot.Query()->GetAbilitiesForUnits(completedGhosts);
++		for (const auto & abilities : ghostAbilities)
++		{
++			if (Util::IsAbilityAvailable(
++				sc2::ABILITY_ID::EFFECT_NUKECALLDOWN,
++				abilities))
++			{
++				nukeReadyGhostCount++;
++			}
++		}
++	}
++	bool ghostAcademyBuildingNuke = false;
++	for (const auto & ghostAcademy :
++		m_bot.GetAllyUnits(sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY))
++	{
++		const sc2::Unit * academyUnit = ghostAcademy.getUnitPtr();
++		if (academyUnit == nullptr || !academyUnit->is_alive)
++		{
++			continue;
++		}
++		for (const auto & order : academyUnit->orders)
++		{
++			if (order.ability_id == sc2::ABILITY_ID::BUILD_NUKE)
++			{
++				ghostAcademyBuildingNuke = true;
++				break;
++			}
++		}
++		if (ghostAcademyBuildingNuke)
++		{
++			break;
++		}
++	}
+ 	const int factoryCount = m_bot.UnitInfo().getUnitTypeCount(
+ 		Players::Self,
+ 		MetaTypeEnum::Factory.getUnitType(),
+@@ -3842,6 +4062,65 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
++	if (taskExecuteTacticalNuke && completedFactoryCount == 0)
++	{
++		if (factoryCount == 0
++			&& completedBarracksCount > 0
++			&& refineryCount > 0
++			&& queueVoiDoctrineItem(
++				MetaTypeEnum::Factory,
++				"tactical_nuke_factory_prerequisite",
++				true))
++		{
++			return;
++		}
++		recordVoiDoctrineConsumption(
++			MetaTypeEnum::Factory,
++			"tactical_nuke_factory_prerequisite",
++			factoryCount > 0
++				? "waiting_for_completed_grounded_factory"
++				: "waiting_to_queue_factory");
++		return;
++	}
++	if (taskExecuteTacticalNuke
++		&& completedGhostAcademyCount > 0
++		&& barracksTechLabCount > 0
++		&& voiRepresentedUnitCount(MetaTypeEnum::Ghost) == 0
++		&& queueVoiDoctrineItem(
++			MetaTypeEnum::Ghost,
++			"tactical_nuke_ghost",
++			true))
++	{
++		return;
++	}
++	if (taskExecuteTacticalNuke
++		&& completedGhostAcademyCount > 0
++		&& completedGhostCount > 0)
++	{
++		const bool nukePayloadReady = nukeReadyGhostCount > 0;
++		const bool nukePayloadInProgress = ghostAcademyBuildingNuke;
++		if ((nukePayloadReady || nukePayloadInProgress)
++			&& m_queue.contains(MetaTypeEnum::Nuke))
++		{
++			m_queue.removeAllOfType(MetaTypeEnum::Nuke);
++			Util::Log(
++				__FUNCTION__,
++				"VOI removed a stale tactical nuke queue item because SC2 reports the payload ready or BUILD_NUKE in progress.",
++				m_bot);
++		}
++		if (nukePayloadReady || nukePayloadInProgress)
++		{
++			recordVoiDoctrineConsumption(
++				MetaTypeEnum::Nuke,
++				"tactical_nuke_payload",
++				nukePayloadReady
++					? "payload_ready:EFFECT_NUKECALLDOWN"
++					: "payload_building:BUILD_NUKE");
++		}
++		else if (m_queue.contains(MetaTypeEnum::Nuke))
++		{
++			recordVoiDoctrineConsumption(
++				MetaTypeEnum::Nuke,
++				"tactical_nuke_payload",
++				"payload_queued");
++			return;
++		}
++		else if (currentFrame < m_nextVoiTacticalNukePayloadRetryFrame)
++		{
++			recordVoiDoctrineConsumption(
++				MetaTypeEnum::Nuke,
++				"tactical_nuke_payload",
++				"blocked_payload_retry_cooldown");
++			return;
++		}
++		else if (queueVoiDoctrineItem(
++			MetaTypeEnum::Nuke,
++			"tactical_nuke_payload",
++			true))
++		{
++			return;
++		}
++	}
+ 	if (wantsFactory && completedBarracksCount > 0 && refineryCount > 0 && factoryCount == 0 && queueVoiDoctrineItem(MetaTypeEnum::Factory, "factory_transition", true))
+ 	{
+ 		return;
+@@ -3967,7 +4246,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		return;
+ 	}
+-	if (effectiveGhostBias > 0.25f
++	if (!taskExecuteTacticalNuke
++		&& effectiveGhostBias > 0.25f
+ 		&& !ghostCompositionSatisfied
+ 		&& barracksTechLabCount > 0
+ 		&& ghostAcademyCount > 0
+@@ -4216,6 +4496,17 @@ void ProductionManager::enforceBarracksProductionContinuity()
+ 	{
+ 		return;
+ 	}
++	if (m_lastAuthoritativeProductionCommandFrame == m_bot.GetCurrentFrame())
++	{
++		Util::Log(
++			__FUNCTION__,
++			"VOI held Marine continuity because an authoritative production command was issued this frame kind="
++				+ m_lastAuthoritativeProductionCommandKind
++				+ " item="
++				+ m_lastAuthoritativeProductionCommandItem,
++			m_bot);
++		return;
++	}
+ 	if (m_bot.GetFreeMinerals() < MetaTypeEnum::Marine.getUnitType().mineralPrice())
+ 	{
+ 		return;
+@@ -5596,7 +5887,14 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+ 			return false;
+ 		}
+ 		producer.train(item.type.getUnitType());
+-		recordVoiActualProductionCommand(item.type, "train_command");
++		if (item.type == MetaTypeEnum::Nuke)
++		{
++			recordVoiTacticalNukePayloadSubmission(producer);
++		}
++		else
++		{
++			recordVoiActualProductionCommand(item.type, "train_command");
++		}
+ 		if (item.type == MetaTypeEnum::Marine || item.type == MetaTypeEnum::Reaper)
+ 		{
+ 			Util::Log(__FUNCTION__, "create unit item=" + item.type.getName() + " result=1", m_bot);
+@@ -5768,6 +6066,104 @@ bool ProductionManager::canMakeNow(const Unit & producer, const MetaType & type)
+ 	}
+ 
+ 	sc2::AvailableAbilities available_abilities = m_bot.Query()->GetAbilitiesForUnit(producer.getUnitPtr());
++	const bool isTacticalNuke = type == MetaTypeEnum::Nuke;
++	if (isTacticalNuke)
++	{
++		const sc2::AvailableAbilities unrestrictedAbilities =
++			m_bot.Query()->GetAbilitiesForUnit(producer.getUnitPtr(), true);
++		const bool normalAllowsNuke = Util::IsAbilityAvailable(
++			sc2::ABILITY_ID::BUILD_NUKE,
++			available_abilities);
++		const bool unrestrictedAllowsNuke = Util::IsAbilityAvailable(
++			sc2::ABILITY_ID::BUILD_NUKE,
++			unrestrictedAbilities);
++		const uint32_t currentFrame = m_bot.GetCurrentFrame();
++		const sc2::Unit * producerUnit = producer.getUnitPtr();
++		const bool completedGroundedAcademy =
++			producerUnit != nullptr
++			&& producerUnit->is_alive
++			&& producer.getAPIUnitType()
++				== sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY
++			&& producer.isCompleted()
++			&& !producer.isFlying();
++		const bool academyIdle =
++			completedGroundedAcademy && producerUnit->orders.empty();
++		const bool completedFactoryAvailable =
++			voiCompletedGroundedProducerCount(
++				m_bot,
++				sc2::UNIT_TYPEID::TERRAN_FACTORY) > 0;
++		const bool resourcesAvailable =
++			m_bot.GetFreeMinerals() >= m_bot.Data(type).mineralCost
++			&& m_bot.GetFreeGas() >= m_bot.Data(type).gasCost;
++		bool payloadBuildInProgress = false;
++		for (const auto & ghostAcademy :
++			m_bot.GetAllyUnits(sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY))
++		{
++			const sc2::Unit * academyUnit = ghostAcademy.getUnitPtr();
++			if (academyUnit == nullptr || !academyUnit->is_alive)
++			{
++				continue;
++			}
++			for (const auto & order : academyUnit->orders)
++			{
++				if (order.ability_id == sc2::ABILITY_ID::BUILD_NUKE)
++				{
++					payloadBuildInProgress = true;
++					break;
++				}
++			}
++			if (payloadBuildInProgress)
++			{
++				break;
++			}
++		}
++		bool payloadReady = false;
++		sc2::Units completedGhosts;
++		for (const auto & ghost :
++			m_bot.GetAllyUnits(sc2::UNIT_TYPEID::TERRAN_GHOST))
++		{
++			const sc2::Unit * ghostUnit = ghost.getUnitPtr();
++			if (ghostUnit != nullptr
++				&& ghostUnit->is_alive
++				&& ghostUnit->build_progress >= 1.0f)
++			{
++				completedGhosts.push_back(ghostUnit);
++			}
++		}
++		if (!completedGhosts.empty())
++		{
++			const auto ghostAbilities =
++				m_bot.Query()->GetAbilitiesForUnits(completedGhosts);
++			for (const auto & abilities : ghostAbilities)
++			{
++				if (Util::IsAbilityAvailable(
++					sc2::ABILITY_ID::EFFECT_NUKECALLDOWN,
++					abilities))
++				{
++					payloadReady = true;
++					break;
++				}
++			}
++		}
++		const bool submissionPending =
++			m_lastVoiTacticalNukePayloadStatus == "submitted";
++		const bool retryCoolingDown =
++			currentFrame < m_nextVoiTacticalNukePayloadRetryFrame;
++		const bool directSubmissionEligible =
++			completedGroundedAcademy
++			&& academyIdle
++			&& completedFactoryAvailable
++			&& resourcesAvailable
++			&& !payloadBuildInProgress
++			&& !payloadReady
++			&& !submissionPending
++			&& !retryCoolingDown;
++		const bool availabilityChanged =
++			m_lastVoiTacticalNukeNormalAbilityState
++				!= static_cast<int>(normalAllowsNuke)
++			|| m_lastVoiTacticalNukeUnrestrictedAbilityState
++				!= static_cast<int>(unrestrictedAllowsNuke);
++		const bool shouldLogAvailability =
++			availabilityChanged
++			|| currentFrame < m_lastVoiTacticalNukeAvailabilityLogFrame
++			|| currentFrame - m_lastVoiTacticalNukeAvailabilityLogFrame
++				>= 22u * 5u;
++		if (shouldLogAvailability)
++		{
++			m_lastVoiTacticalNukeAvailabilityLogFrame = currentFrame;
++			m_lastVoiTacticalNukeNormalAbilityState =
++				static_cast<int>(normalAllowsNuke);
++			m_lastVoiTacticalNukeUnrestrictedAbilityState =
++				static_cast<int>(unrestrictedAllowsNuke);
++			std::ostringstream diagnostic;
++			diagnostic
++				<< "VOI tactical nuke availability"
++				<< " normal=" << normalAllowsNuke
++				<< " unrestricted=" << unrestrictedAllowsNuke
++				<< " normal_count=" << available_abilities.abilities.size()
++				<< " unrestricted_count=" << unrestrictedAbilities.abilities.size()
++				<< " minerals=" << m_bot.GetMinerals()
++				<< " gas=" << m_bot.GetGas()
++				<< " free_minerals=" << m_bot.GetFreeMinerals()
++				<< " free_gas=" << m_bot.GetFreeGas()
++				<< " cost_minerals=" << m_bot.Data(type).mineralCost
++				<< " cost_gas=" << m_bot.Data(type).gasCost
++				<< " producer_tag=" << producer.getTag()
++				<< " producer_type=" << static_cast<uint32_t>(producer.getAPIUnitType())
++				<< " producer_build_progress=" << producer.getUnitPtr()->build_progress
++				<< " producer_orders=" << producer.getUnitPtr()->orders.size()
++				<< " completed_grounded_academy=" << completedGroundedAcademy
++				<< " academy_idle=" << academyIdle
++				<< " completed_factory_available=" << completedFactoryAvailable
++				<< " resources_available=" << resourcesAvailable
++				<< " payload_build_in_progress=" << payloadBuildInProgress
++				<< " payload_ready=" << payloadReady
++				<< " submission_pending=" << submissionPending
++				<< " retry_cooling_down=" << retryCoolingDown
++				<< " direct_submission_eligible=" << directSubmissionEligible;
++			for (const auto & availableAbility : available_abilities.abilities)
++			{
++				diagnostic
++					<< " normal_ability="
++					<< static_cast<uint32_t>(availableAbility.ability_id);
++			}
++			for (const auto & availableAbility : unrestrictedAbilities.abilities)
++			{
++				diagnostic
++					<< " unrestricted_ability="
++					<< static_cast<uint32_t>(availableAbility.ability_id);
++			}
++			for (const auto & order : producer.getUnitPtr()->orders)
++			{
++				diagnostic << " order=" << static_cast<uint32_t>(order.ability_id);
++			}
++			Util::Log(__FUNCTION__, diagnostic.str(), m_bot);
++			const auto & abilityData = m_bot.Observation()->GetAbilityData();
++			const std::size_t buildNukeIndex =
++				static_cast<std::size_t>(sc2::ABILITY_ID::BUILD_NUKE);
++			if (buildNukeIndex < abilityData.size())
++			{
++				const sc2::AbilityData & buildNukeData =
++					abilityData[buildNukeIndex];
++				std::ostringstream abilityDiagnostic;
++				abilityDiagnostic
++					<< "VOI tactical nuke ability data"
++					<< " available=" << buildNukeData.available
++					<< " ability_id="
++					<< static_cast<uint32_t>(buildNukeData.ability_id)
++					<< " link_name=" << buildNukeData.link_name
++					<< " button_name=" << buildNukeData.button_name
++					<< " remaps_to=" << buildNukeData.remaps_to_ability_id
++					<< " remaps_from_count="
++					<< buildNukeData.remaps_from_ability_id.size();
++				Util::Log(__FUNCTION__, abilityDiagnostic.str(), m_bot);
++			}
++		}
++		if (!directSubmissionEligible)
++		{
++			if (shouldLogAvailability)
++			{
++				Util::Log(
++					__FUNCTION__,
++					"VOI tactical nuke direct submission is state-blocked; command not submitted.",
++					m_bot);
++			}
++			return false;
++		}
++		if (!normalAllowsNuke && shouldLogAvailability)
++		{
++			Util::Log(
++				__FUNCTION__,
++				"VOI tactical nuke ability query omission tolerated; state/resource gate permits direct BUILD_NUKE submission.",
++				m_bot);
++		}
++		return true;
++	}
+ 
+ 	// quick check if the unit can't do anything it certainly can't build the thing we want
+ 	if (available_abilities.abilities.empty())
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+index c788ed2..ce3219a 100644
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -45,6 +45,21 @@ class ProductionManager
+ 	std::string m_lastVoiProductionCommandItem = "none";
+ 	std::string m_lastVoiProductionCommandKind = "none";
+ 	std::string m_lastVoiProductionCommandUpdateId = "";
++	uint32_t m_lastAuthoritativeProductionCommandFrame = 0;
++	std::string m_lastAuthoritativeProductionCommandItem = "none";
++	std::string m_lastAuthoritativeProductionCommandKind = "none";
++	uint32_t m_voiTacticalNukePayloadSubmissionCount = 0;
++	uint32_t m_voiTacticalNukePayloadAcceptedCount = 0;
++	uint32_t m_voiTacticalNukePayloadRejectedCount = 0;
++	uint32_t m_lastVoiTacticalNukePayloadSubmissionFrame = 0;
++	uint32_t m_lastVoiTacticalNukePayloadAcceptedFrame = 0;
++	uint32_t m_nextVoiTacticalNukePayloadRetryFrame = 0;
++	uint32_t m_lastVoiTacticalNukeAvailabilityLogFrame = 0;
++	uint64_t m_lastVoiTacticalNukePayloadProducerTag = 0;
++	int m_lastVoiTacticalNukeNormalAbilityState = -1;
++	int m_lastVoiTacticalNukeUnrestrictedAbilityState = -1;
++	std::string m_lastVoiTacticalNukePayloadStatus = "idle";
++	std::string m_lastVoiTacticalNukePayloadUpdateId = "";
+ 	uint32_t m_lastVoiSupplyBlockFrame = 0;
+ 	uint32_t m_lastVoiSupplyRecoveryFrame = 0;
+ 	uint32_t m_voiSupplyRecoveryQueuedCount = 0;
+@@ -93,6 +108,8 @@ class ProductionManager
+ 	bool	shouldReserveForVoiExpandCommandCenter() const;
+ 	void	prioritizeVoiExpandCommandCenter();
+ 	void	recordVoiDoctrineConsumption(const MetaType & type, const std::string & action, const std::string & evidence);
++	void	recordVoiTacticalNukePayloadSubmission(const Unit & producer);
++	void	refreshVoiTacticalNukePayloadSubmission();
+ 	bool	queueSupplyProviderRecovery(const std::string & reason);
+ 	bool	shouldRecordVoiActualProductionCommand(const std::string & itemName) const;
+ 	void	refreshVoiDoctrinePolicyBaseline(const std::string & updateId);
+@@ -167,6 +184,15 @@ public:
+ 	const std::string & getLastVoiProductionCommandItem() const { return m_lastVoiProductionCommandItem; }
+ 	const std::string & getLastVoiProductionCommandKind() const { return m_lastVoiProductionCommandKind; }
+ 	const std::string & getLastVoiProductionCommandUpdateId() const { return m_lastVoiProductionCommandUpdateId; }
++	uint32_t getVoiTacticalNukePayloadSubmissionCount() const { return m_voiTacticalNukePayloadSubmissionCount; }
++	uint32_t getVoiTacticalNukePayloadAcceptedCount() const { return m_voiTacticalNukePayloadAcceptedCount; }
++	uint32_t getVoiTacticalNukePayloadRejectedCount() const { return m_voiTacticalNukePayloadRejectedCount; }
++	uint32_t getLastVoiTacticalNukePayloadSubmissionFrame() const { return m_lastVoiTacticalNukePayloadSubmissionFrame; }
++	uint32_t getLastVoiTacticalNukePayloadAcceptedFrame() const { return m_lastVoiTacticalNukePayloadAcceptedFrame; }
++	uint32_t getNextVoiTacticalNukePayloadRetryFrame() const { return m_nextVoiTacticalNukePayloadRetryFrame; }
++	uint64_t getLastVoiTacticalNukePayloadProducerTag() const { return m_lastVoiTacticalNukePayloadProducerTag; }
++	const std::string & getLastVoiTacticalNukePayloadStatus() const { return m_lastVoiTacticalNukePayloadStatus; }
++	const std::string & getLastVoiTacticalNukePayloadUpdateId() const { return m_lastVoiTacticalNukePayloadUpdateId; }
+ 	uint32_t getLastVoiSupplyBlockFrame() const { return m_lastVoiSupplyBlockFrame; }
+ 	uint32_t getLastVoiSupplyRecoveryFrame() const { return m_lastVoiSupplyRecoveryFrame; }
+ 	uint32_t getVoiSupplyRecoveryQueuedCount() const { return m_voiSupplyRecoveryQueuedCount; }
+diff --git a/src/TechTree.cpp b/src/TechTree.cpp
+index 6853a05..de81071 100644
+--- a/src/TechTree.cpp
++++ b/src/TechTree.cpp
+@@ -118,7 +118,7 @@ void TechTree::initUnitTypeData()
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_THORAP, m_bot)] =                   { sc2::Race::Terran, 0, 0, 6, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_THOR, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_FACTORY, m_bot) }, { UnitType(sc2::UNIT_TYPEID::TERRAN_FACTORYTECHLAB, m_bot), UnitType(sc2::UNIT_TYPEID::TERRAN_ARMORY, m_bot) }, {} };
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_WIDOWMINE, m_bot)] =                { sc2::Race::Terran, 0, 0, 2, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_WIDOWMINE, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_FACTORY, m_bot) }, {}, {} }; 
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED, m_bot)] =        { sc2::Race::Terran, 0, 0, 2, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_WIDOWMINE, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_FACTORY, m_bot) }, {}, {} }; 
+-    m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_NUKE, m_bot)] =                     { sc2::Race::Terran, 0, 0, 0, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::BUILD_NUKE, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY, m_bot) }, {}, {} }; 
++    m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_NUKE, m_bot)] =                     { sc2::Race::Terran, 100, 100, 0, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::BUILD_NUKE, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY, m_bot) }, { UnitType(sc2::UNIT_TYPEID::TERRAN_FACTORY, m_bot) }, {} };
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_BANSHEE, m_bot)] =                  { sc2::Race::Terran, 0, 0, 3, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_BANSHEE, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_STARPORT, m_bot) }, { UnitType(sc2::UNIT_TYPEID::TERRAN_STARPORTTECHLAB, m_bot) }, {} };
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER, m_bot)] =            { sc2::Race::Terran, 0, 0, 6, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_BATTLECRUISER, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_STARPORT, m_bot) }, { UnitType(sc2::UNIT_TYPEID::TERRAN_STARPORTTECHLAB, m_bot), UnitType(sc2::UNIT_TYPEID::TERRAN_FUSIONCORE, m_bot) }, {} };
+     m_unitTypeData[UnitType(sc2::UNIT_TYPEID::TERRAN_LIBERATOR, m_bot)] =                { sc2::Race::Terran, 0, 0, 3, 0, true, false, false, false, false, false, false, sc2::ABILITY_ID::TRAIN_LIBERATOR, 0, { UnitType(sc2::UNIT_TYPEID::TERRAN_STARPORT, m_bot) }, {}, {} }; 

@@ -1,0 +1,168 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -3872,6 +3872,20 @@ void CombatCommander::updateScoutSquad()
+ 	Squad & scoutSquad = m_squadData.getSquad("Scout");
+ 	const std::string tacticalTaskType = m_bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
+ 	const bool tacticalScoutTask = tacticalTaskType == "scout_with_units" && voiTacticalTaskWithinDuration(m_bot);
++	const std::string explicitScoutUpdateId = tacticalScoutTask
++		? m_bot.Commander().getVoiPolicyString("update_id", "")
++		: "";
++	if (!explicitScoutUpdateId.empty()
++		&& explicitScoutUpdateId != m_voiExplicitScoutUpdateId)
++	{
++		m_voiExplicitScoutUpdateId = explicitScoutUpdateId;
++		m_voiExplicitScoutReissuePending = true;
++		m_lastVoiScoutExplicitReissueStatus = "pending";
++		m_lastVoiScoutExplicitReissueReason =
++			"New explicit scout task is waiting for unit assignment and a fresh SC2 command";
++		m_lastVoiScoutExplicitReissuePlannedCount = 0;
++		m_lastVoiScoutExplicitReissueFrame = m_bot.GetGameLoop();
++	}
+ 	const std::string scopeArmyGroup = m_bot.Commander().getVoiPolicyString("scope.army_group", "");
+ 	const bool scopeTargetsScout = scopeArmyGroup == "scout";
+ 	const std::string scopeUnitClasses = m_bot.Commander().getVoiPolicyString("scope.unit_classes", "");
+@@ -4130,7 +4144,9 @@ void CombatCommander::updateScoutSquad()
+ 					const bool bAlreadyScout = m_squadData.getUnitSquad(b) == &scoutSquad;
+ 					if (aAlreadyScout != bAlreadyScout)
+ 					{
+-						return aAlreadyScout;
++						return m_voiExplicitScoutReissuePending
++							? !aAlreadyScout
++							: aAlreadyScout;
+ 					}
+ 					return Util::DistSq(a.getPosition(), basePosition) < Util::DistSq(b.getPosition(), basePosition);
+ 				});
+@@ -4368,6 +4384,50 @@ void CombatCommander::updateScoutSquad()
+ 	}
+ 	const SquadOrder scoutOrder(SquadOrderTypes::Scout, scoutTarget, ScoutOrderRadius, "Scout");
+ 	scoutSquad.setSquadOrder(scoutOrder);
++	if (m_voiExplicitScoutReissuePending
++		&& tacticalScoutTask
++		&& scoutTarget != CCPosition())
++	{
++		int plannedCount = 0;
++		for (const auto & scoutUnit : scoutSquad.getUnits())
++		{
++			const sc2::Unit * unit = scoutUnit.getUnitPtr();
++			if (unit == nullptr
++				|| !unit->is_alive
++				|| Util::DistSq(unit->pos, scoutTarget) <= 1.0f)
++			{
++				continue;
++			}
++			unitActions.erase(unit);
++			nextCommandFrameForUnit.erase(unit);
++			const UnitAction explicitScoutAction(
++				MicroActionType::Move,
++				scoutTarget,
++				true,
++				0,
++				"VoiExplicitScoutOrder:" + m_voiExplicitScoutUpdateId,
++				scoutSquad.getName());
++			if (PlanAction(unit, explicitScoutAction))
++			{
++				plannedCount++;
++			}
++		}
++		m_lastVoiScoutExplicitReissuePlannedCount = plannedCount;
++		m_lastVoiScoutExplicitReissueFrame = m_bot.GetGameLoop();
++		if (plannedCount > 0)
++		{
++			m_voiExplicitScoutReissuePending = false;
++			m_lastVoiScoutExplicitReissueStatus = "planned";
++			m_lastVoiScoutExplicitReissueReason =
++				"Fresh prioritized Scout MOVE is planned for this explicit update";
++		}
++		else
++		{
++			m_lastVoiScoutExplicitReissueStatus = "waiting";
++			m_lastVoiScoutExplicitReissueReason =
++				"Assigned scout units are already at the requested target or cannot accept a fresh action";
++		}
++	}
+ 	m_lastVoiScoutResolvedTarget = scoutTarget;
+ 	m_lastVoiScoutTargetHomeDistance =
+ 		scoutTarget == CCPosition()
+@@ -7759,6 +7819,10 @@ void CombatCommander::ExecuteActions()
+ 			action.description.rfind(
+ 				"VoiExplicitAbility:",
+ 				0) == 0;
++		const bool explicitScoutOrderAction =
++			action.description.rfind(
++				"VoiExplicitScoutOrder:",
++				0) == 0;
+ 		const auto rejectExplicitAbility =
+ 			[&](const std::string & status, const std::string & reason)
+ 			{
+@@ -7818,7 +7882,9 @@ void CombatCommander::ExecuteActions()
+ 					skip = true;
+ 				else if (distToGoal < (action.description == "MoveToGoalOrder" ? 10.f : 0.1f))
+ 					skip = true;
+-				else if (!rangedUnit->orders.empty() && rangedUnit->orders[0].ability_id == sc2::ABILITY_ID::MOVE)
++				else if (!explicitScoutOrderAction
++					&& !rangedUnit->orders.empty()
++					&& rangedUnit->orders[0].ability_id == sc2::ABILITY_ID::MOVE)
+ 				{
+ 					const auto orderPos = rangedUnit->orders[0].target_pos;
+ 					const auto orderDirection = Util::Normalized(orderPos - rangedUnit->pos);
+@@ -8131,6 +8197,16 @@ void CombatCommander::ExecuteActions()
+ 				m_lastVoiScoutIssuedAction = m_lastVoiIssuedAction;
+ 				m_lastVoiScoutCommandedUnitTag = rangedUnit->tag;
+ 				m_lastVoiScoutCommandedUnitType = sc2::UnitTypeToName(rangedUnit->unit_type);
++				if (explicitScoutOrderAction)
++				{
++					m_lastVoiScoutExplicitReissueStatus = "submitted";
++					m_lastVoiScoutExplicitReissueReason =
++						"Fresh explicit Scout MOVE reached the SC2 command issue path";
++					m_lastVoiScoutExplicitReissueFrame =
++						m_bot.GetGameLoop();
++					action.description = "MoveToGoalOrder";
++					action.prioritized = false;
++				}
+ 			}
+ 			if (action.duration > 0)
+ 			{
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -213,6 +213,12 @@ class CombatCommander
+ 	std::string m_lastVoiScoutIssuedAction = "";
+ 	uint64_t m_lastVoiScoutCommandedUnitTag = 0;
+ 	std::string m_lastVoiScoutCommandedUnitType = "";
++	std::string m_voiExplicitScoutUpdateId = "";
++	bool m_voiExplicitScoutReissuePending = false;
++	std::string m_lastVoiScoutExplicitReissueStatus = "none";
++	std::string m_lastVoiScoutExplicitReissueReason = "No explicit scout task received";
++	int m_lastVoiScoutExplicitReissuePlannedCount = 0;
++	uint32_t m_lastVoiScoutExplicitReissueFrame = 0;
+ 	std::map<sc2::Tag, std::string> m_voiScoutPreviousSquadByTag;
+ 	std::string m_voiScoutOperationKey = "";
+ 	CCPosition m_voiScoutProgressTarget = CCPosition();
+@@ -441,6 +447,11 @@ public:
+ 	const std::string & getVoiScoutIssuedAction() const { return m_lastVoiScoutIssuedAction; }
+ 	uint64_t getVoiScoutCommandedUnitTag() const { return m_lastVoiScoutCommandedUnitTag; }
+ 	const std::string & getVoiScoutCommandedUnitType() const { return m_lastVoiScoutCommandedUnitType; }
++	const std::string & getVoiExplicitScoutUpdateId() const { return m_voiExplicitScoutUpdateId; }
++	const std::string & getVoiScoutExplicitReissueStatus() const { return m_lastVoiScoutExplicitReissueStatus; }
++	const std::string & getVoiScoutExplicitReissueReason() const { return m_lastVoiScoutExplicitReissueReason; }
++	int getVoiScoutExplicitReissuePlannedCount() const { return m_lastVoiScoutExplicitReissuePlannedCount; }
++	uint32_t getVoiScoutExplicitReissueFrame() const { return m_lastVoiScoutExplicitReissueFrame; }
+ 	const std::string & getVoiTargetEvidence() const { return m_lastVoiTargetEvidence; }
+ 	int getVoiActionPlanCount() const { return m_lastVoiActionPlanCount; }
+ 	int getVoiActionIssuedCount() const { return m_lastVoiActionIssuedCount; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -750,6 +750,11 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"scout_last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutIssuedAction()) << "\","
+         << "\"scout_last_commanded_unit_tag\":" << m_combatCommander.getVoiScoutCommandedUnitTag() << ","
+         << "\"scout_last_commanded_unit_type\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutCommandedUnitType()) << "\","
++        << "\"scout_explicit_update_id\":\"" << voiJsonEscape(m_combatCommander.getVoiExplicitScoutUpdateId()) << "\","
++        << "\"scout_explicit_reissue_status\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutExplicitReissueStatus()) << "\","
++        << "\"scout_explicit_reissue_reason\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutExplicitReissueReason()) << "\","
++        << "\"scout_explicit_reissue_planned_count\":" << m_combatCommander.getVoiScoutExplicitReissuePlannedCount() << ","
++        << "\"scout_explicit_reissue_frame\":" << m_combatCommander.getVoiScoutExplicitReissueFrame() << ","
+         << "\"target_evidence\":\"" << voiJsonEscape(m_combatCommander.getVoiTargetEvidence()) << "\","
+         << "\"action_plan_count\":" << m_combatCommander.getVoiActionPlanCount() << ","
+         << "\"actual_command_issued_count\":" << m_combatCommander.getVoiActionIssuedCount() << ","

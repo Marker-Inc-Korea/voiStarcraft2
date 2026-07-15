@@ -25,7 +25,7 @@ Current offline verification:
 
 ```bash
 python3 -m pytest -q
-# 1568 passed, 5 skipped, 4187 subtests passed
+# 1649 passed, 5 skipped, 4509 subtests passed
 ```
 
 The suite does not require StarCraft II, `burnysc2`, BWAPI, LLM credentials,

@@ -120,6 +120,38 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
         )
         json.dumps(document, ensure_ascii=False)
 
+    def test_semantic_lifetimes_survive_transport_ttl(self) -> None:
+        standing = MicroMachineBlackboardUpdate(
+            update_id="standing",
+            issued_at_frame=10,
+            expires_at_frame=20,
+            vector=PolicyModulationVector(
+                goal="keep producing",
+                lifetime=LifetimeModulation(
+                    mode="standing_order",
+                    completion_state="active",
+                ),
+            ),
+        )
+        transient = MicroMachineBlackboardUpdate(
+            update_id="transient",
+            issued_at_frame=10,
+            expires_at_frame=20,
+            vector=PolicyModulationVector(
+                goal="attack until complete",
+                tactical_task=TacticalTaskModulation(
+                    task_type="pressure_with_main_army",
+                ),
+                lifetime=LifetimeModulation(
+                    mode="until_completed",
+                    completion_state="active",
+                ),
+            ),
+        )
+
+        self.assertFalse(standing.is_stale(21))
+        self.assertFalse(transient.is_stale(21))
+
     def test_manager_bias_domains_ignore_neutral_defaults(self) -> None:
         neutral = MicroMachineBlackboardUpdate(
             update_id="mod-neutral",

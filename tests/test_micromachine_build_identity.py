@@ -8,6 +8,7 @@ from pathlib import Path
 
 from starcraft_commander.micromachine_build_identity import (
     MicroMachineBuildIdentityConfig,
+    build_argument_parser,
     build_micromachine_build_identity,
     read_build_identity,
     write_build_identity_report,
@@ -27,7 +28,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             write_build_identity_report(report, output)
 
             self.assertTrue(report["ok"], report)
-            self.assertEqual(36, report["schema_version"])
+            self.assertEqual(50, report["schema_version"])
             self.assertTrue(str(report["identity"]).startswith("sha256:"))
             self.assertEqual(report["identity"], read_build_identity(output))
             self.assertIn(
@@ -284,6 +285,148 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_adaptive_pressure_stable_operation_key_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_tactical_nuke_command_hierarchy_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_tactical_nuke_command_hierarchy_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_location_intent_target_lock_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_location_intent_target_lock_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_terran_ability_execution_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_explicit_terran_ability_execution_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_scout_command_epoch_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_explicit_scout_command_epoch_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_ability_caster_production_priority_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_explicit_ability_caster_production_priority_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_ability_observation_confirmation_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_explicit_ability_observation_confirmation_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_ability_production_isolation_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_explicit_ability_production_isolation_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_ability_attempt_lifecycle_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_explicit_ability_attempt_lifecycle_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_ability_review_closure_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_explicit_ability_review_closure_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_authoritative_addon_runtime_clearance_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_authoritative_addon_runtime_clearance_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_banshee_unit_specific_cloak_command_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_banshee_unit_specific_cloak_command_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_allied_cloak_observation_confirmation_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_allied_cloak_observation_confirmation_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_ability_caster_ownership_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_explicit_ability_caster_ownership_"
+                    "patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_explicit_ability_staging_single_flight_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_explicit_ability_staging_single_flight_"
+                    "patch_sha256"
+                ),
                 report["checksums"],
             )
             self.assertIn("source_attestation", report["paths"])
@@ -762,6 +905,799 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 ],
             )
 
+    def test_tactical_nuke_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_tactical_nuke_command_hierarchy_patch.write_text(
+                "different tactical nuke command hierarchy patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][
+                    "micromachine_tactical_nuke_command_hierarchy_patch_sha256"
+                ],
+                second["checksums"][
+                    "micromachine_tactical_nuke_command_hierarchy_patch_sha256"
+                ],
+            )
+
+    def test_missing_tactical_nuke_patch_marks_identity_not_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_tactical_nuke_command_hierarchy_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_tactical_nuke_command_hierarchy_patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_tactical_nuke_patch_cli_defaults_to_patch_0036(self) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0036-tactical-nuke-command-hierarchy.patch",
+            Path(args.micromachine_tactical_nuke_command_hierarchy_patch).name,
+        )
+
+    def test_location_intent_target_lock_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_location_intent_target_lock_patch.write_text(
+                "different location intent target lock patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][
+                    "micromachine_location_intent_target_lock_patch_sha256"
+                ],
+                second["checksums"][
+                    "micromachine_location_intent_target_lock_patch_sha256"
+                ],
+            )
+
+    def test_location_intent_target_lock_cli_defaults_to_patch_0037(self) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0037-location-intent-target-lock.patch",
+            Path(args.micromachine_location_intent_target_lock_patch).name,
+        )
+
+    def test_explicit_terran_ability_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_explicit_terran_ability_execution_patch.write_text(
+                "different explicit Terran ability execution patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][
+                    "micromachine_explicit_terran_ability_execution_patch_sha256"
+                ],
+                second["checksums"][
+                    "micromachine_explicit_terran_ability_execution_patch_sha256"
+                ],
+            )
+
+    def test_missing_explicit_terran_ability_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_terran_ability_execution_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_terran_ability_execution_patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_terran_ability_cli_defaults_to_patch_0038(self) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0038-explicit-terran-ability-execution.patch",
+            Path(
+                args.micromachine_explicit_terran_ability_execution_patch
+            ).name,
+        )
+
+    def test_explicit_scout_command_epoch_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_explicit_scout_command_epoch_patch.write_text(
+                "different explicit scout command epoch patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][
+                    "micromachine_explicit_scout_command_epoch_patch_sha256"
+                ],
+                second["checksums"][
+                    "micromachine_explicit_scout_command_epoch_patch_sha256"
+                ],
+            )
+
+    def test_missing_explicit_scout_command_epoch_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_scout_command_epoch_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_scout_command_epoch_patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_scout_command_epoch_cli_defaults_to_patch_0039(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0039-explicit-scout-command-epoch.patch",
+            Path(args.micromachine_explicit_scout_command_epoch_patch).name,
+        )
+
+    def test_standing_production_continuity_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_standing_production_continuity_closure_patch.write_text(
+                "different standing production continuity patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][
+                    "micromachine_standing_production_continuity_closure_patch_sha256"
+                ],
+                second["checksums"][
+                    "micromachine_standing_production_continuity_closure_patch_sha256"
+                ],
+            )
+
+    def test_missing_standing_production_continuity_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_standing_production_continuity_closure_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_standing_production_continuity_closure_patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_standing_production_continuity_cli_defaults_to_patch_0040(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0040-standing-production-continuity-closure.patch",
+            Path(
+                args.micromachine_standing_production_continuity_closure_patch
+            ).name,
+        )
+
+    def test_explicit_ability_caster_priority_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_explicit_ability_caster_production_priority_patch.write_text(
+                "different explicit ability caster priority patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            checksum = (
+                "micromachine_explicit_ability_caster_production_priority_"
+                "patch_sha256"
+            )
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_explicit_ability_caster_priority_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_ability_caster_production_priority_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_ability_caster_production_"
+                        "priority_patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_ability_caster_priority_cli_defaults_to_patch_0041(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0041-explicit-ability-caster-production-priority.patch",
+            Path(
+                args.micromachine_explicit_ability_caster_production_priority_patch
+            ).name,
+        )
+
+    def test_explicit_ability_observation_confirmation_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_explicit_ability_observation_confirmation_patch.write_text(
+                "different explicit ability observation confirmation patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            checksum = (
+                "micromachine_explicit_ability_observation_confirmation_"
+                "patch_sha256"
+            )
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_explicit_ability_observation_confirmation_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_ability_observation_confirmation_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_ability_observation_confirmation_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_ability_observation_confirmation_cli_defaults_to_patch_0042(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0042-explicit-ability-observation-confirmation.patch",
+            Path(
+                args.micromachine_explicit_ability_observation_confirmation_patch
+            ).name,
+        )
+
+    def test_explicit_ability_production_isolation_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_explicit_ability_production_isolation_patch.write_text(
+                "different explicit ability production isolation patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            checksum = (
+                "micromachine_explicit_ability_production_isolation_patch_sha256"
+            )
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_explicit_ability_production_isolation_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_ability_production_isolation_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_ability_production_isolation_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_ability_production_isolation_cli_defaults_to_patch_0043(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0043-explicit-ability-production-isolation.patch",
+            Path(
+                args.micromachine_explicit_ability_production_isolation_patch
+            ).name,
+        )
+
+    def test_explicit_ability_attempt_lifecycle_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            config.micromachine_explicit_ability_attempt_lifecycle_patch.write_text(
+                "different explicit ability attempt lifecycle patch\n"
+            )
+
+            second = build_micromachine_build_identity(config)
+
+            checksum = (
+                "micromachine_explicit_ability_attempt_lifecycle_patch_sha256"
+            )
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_explicit_ability_attempt_lifecycle_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_ability_attempt_lifecycle_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_ability_attempt_lifecycle_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_ability_attempt_lifecycle_cli_defaults_to_patch_0044(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0044-explicit-ability-attempt-lifecycle.patch",
+            Path(
+                args.micromachine_explicit_ability_attempt_lifecycle_patch
+            ).name,
+        )
+
+    def test_explicit_ability_review_closure_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_explicit_ability_review_closure_patch_sha256"
+            )
+
+            config.micromachine_explicit_ability_review_closure_patch.write_text(
+                "changed review closure\n"
+            )
+            write_micromachine_source_attestation(config)
+            write_micromachine_build_attestation(config)
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_explicit_ability_review_closure_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_ability_review_closure_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_ability_review_closure_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_ability_review_closure_cli_defaults_to_patch_0045(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0045-explicit-ability-review-closure.patch",
+            Path(
+                args.micromachine_explicit_ability_review_closure_patch
+            ).name,
+        )
+
+    def test_authoritative_addon_runtime_clearance_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_authoritative_addon_runtime_clearance_patch_sha256"
+            )
+
+            config.micromachine_authoritative_addon_runtime_clearance_patch.write_text(
+                "changed authoritative addon runtime clearance\n"
+            )
+            write_micromachine_source_attestation(config)
+            write_micromachine_build_attestation(config)
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_authoritative_addon_runtime_clearance_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_authoritative_addon_runtime_clearance_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_authoritative_addon_runtime_clearance_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_authoritative_addon_runtime_clearance_cli_defaults_to_patch_0046(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0046-authoritative-addon-runtime-clearance.patch",
+            Path(
+                args.micromachine_authoritative_addon_runtime_clearance_patch
+            ).name,
+        )
+
+    def test_banshee_unit_specific_cloak_command_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_banshee_unit_specific_cloak_command_patch_sha256"
+            )
+
+            config.micromachine_banshee_unit_specific_cloak_command_patch.write_text(
+                "changed Banshee unit-specific cloak command\n"
+            )
+            write_micromachine_source_attestation(config)
+            write_micromachine_build_attestation(config)
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_banshee_unit_specific_cloak_command_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_banshee_unit_specific_cloak_command_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_banshee_unit_specific_cloak_command_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_banshee_unit_specific_cloak_command_cli_defaults_to_patch_0047(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0047-banshee-unit-specific-cloak-command.patch",
+            Path(
+                args.micromachine_banshee_unit_specific_cloak_command_patch
+            ).name,
+        )
+
+    def test_allied_cloak_observation_confirmation_cli_defaults_to_patch_0048(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0048-allied-cloak-observation-confirmation.patch",
+            Path(
+                args.micromachine_allied_cloak_observation_confirmation_patch
+            ).name,
+        )
+
+    def test_missing_allied_cloak_observation_confirmation_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_allied_cloak_observation_confirmation_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_allied_cloak_observation_confirmation_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_ability_caster_ownership_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_explicit_ability_caster_ownership_patch_sha256"
+            )
+
+            config.micromachine_explicit_ability_caster_ownership_patch.write_text(
+                "changed explicit ability caster ownership\n"
+            )
+            write_micromachine_source_attestation(config)
+            write_micromachine_build_attestation(config)
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_explicit_ability_caster_ownership_cli_defaults_to_patch_0049(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0049-explicit-ability-caster-ownership.patch",
+            Path(
+                args.micromachine_explicit_ability_caster_ownership_patch
+            ).name,
+        )
+
+    def test_missing_explicit_ability_caster_ownership_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_ability_caster_ownership_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_ability_caster_ownership_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_explicit_ability_staging_single_flight_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_explicit_ability_staging_single_flight_patch_sha256"
+            )
+
+            config.micromachine_explicit_ability_staging_single_flight_patch.write_text(
+                "changed explicit ability staging single flight\n"
+            )
+            write_micromachine_source_attestation(config)
+            write_micromachine_build_attestation(config)
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_explicit_ability_staging_single_flight_cli_defaults_to_patch_0050(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0050-explicit-ability-staging-single-flight.patch",
+            Path(
+                args.micromachine_explicit_ability_staging_single_flight_patch
+            ).name,
+        )
+
+    def test_missing_explicit_ability_staging_single_flight_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_explicit_ability_staging_single_flight_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_explicit_ability_staging_single_flight_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
     def test_missing_source_attestation_marks_identity_not_ok(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -838,6 +1774,20 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 "micromachine_source_state_mismatch",
                 {failure["code"] for failure in report["failures"]},
             )
+
+    def test_runtime_bot_config_mutation_does_not_invalidate_binary_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            bot_config = config.micromachine_dir / "bin" / "BotConfig.txt"
+            bot_config.parent.mkdir(parents=True, exist_ok=True)
+            bot_config.write_text('{"SC2API": {"EnemyDifficulty": 10}}\n')
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertTrue(report["ok"], report)
 
     def test_micromachine_build_artifacts_do_not_mutate_attested_source_state(
         self,
@@ -1029,6 +1979,51 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_adaptive_pressure_stable_operation_key_patch = (
             root / "micromachine-adaptive-pressure-stable-operation-key.patch"
         )
+        micromachine_tactical_nuke_command_hierarchy_patch = (
+            root / "micromachine-tactical-nuke-command-hierarchy.patch"
+        )
+        micromachine_location_intent_target_lock_patch = (
+            root / "micromachine-location-intent-target-lock.patch"
+        )
+        micromachine_explicit_terran_ability_execution_patch = (
+            root / "micromachine-explicit-terran-ability-execution.patch"
+        )
+        micromachine_explicit_scout_command_epoch_patch = (
+            root / "micromachine-explicit-scout-command-epoch.patch"
+        )
+        micromachine_standing_production_continuity_closure_patch = (
+            root / "micromachine-standing-production-continuity-closure.patch"
+        )
+        micromachine_explicit_ability_caster_production_priority_patch = (
+            root / "micromachine-explicit-ability-caster-production-priority.patch"
+        )
+        micromachine_explicit_ability_observation_confirmation_patch = (
+            root / "micromachine-explicit-ability-observation-confirmation.patch"
+        )
+        micromachine_explicit_ability_production_isolation_patch = (
+            root / "micromachine-explicit-ability-production-isolation.patch"
+        )
+        micromachine_explicit_ability_attempt_lifecycle_patch = (
+            root / "micromachine-explicit-ability-attempt-lifecycle.patch"
+        )
+        micromachine_explicit_ability_review_closure_patch = (
+            root / "micromachine-explicit-ability-review-closure.patch"
+        )
+        micromachine_authoritative_addon_runtime_clearance_patch = (
+            root / "micromachine-authoritative-addon-runtime-clearance.patch"
+        )
+        micromachine_banshee_unit_specific_cloak_command_patch = (
+            root / "micromachine-banshee-unit-specific-cloak-command.patch"
+        )
+        micromachine_allied_cloak_observation_confirmation_patch = (
+            root / "micromachine-allied-cloak-observation-confirmation.patch"
+        )
+        micromachine_explicit_ability_caster_ownership_patch = (
+            root / "micromachine-explicit-ability-caster-ownership.patch"
+        )
+        micromachine_explicit_ability_staging_single_flight_patch = (
+            root / "micromachine-explicit-ability-staging-single-flight.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -1070,6 +2065,21 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_review_closure_operation_identity_full_composition_patch,
             micromachine_semantic_operation_production_closure_patch,
             micromachine_adaptive_pressure_stable_operation_key_patch,
+            micromachine_tactical_nuke_command_hierarchy_patch,
+            micromachine_location_intent_target_lock_patch,
+            micromachine_explicit_terran_ability_execution_patch,
+            micromachine_explicit_scout_command_epoch_patch,
+            micromachine_standing_production_continuity_closure_patch,
+            micromachine_explicit_ability_caster_production_priority_patch,
+            micromachine_explicit_ability_observation_confirmation_patch,
+            micromachine_explicit_ability_production_isolation_patch,
+            micromachine_explicit_ability_attempt_lifecycle_patch,
+            micromachine_explicit_ability_review_closure_patch,
+            micromachine_authoritative_addon_runtime_clearance_patch,
+            micromachine_banshee_unit_specific_cloak_command_patch,
+            micromachine_allied_cloak_observation_confirmation_patch,
+            micromachine_explicit_ability_caster_ownership_patch,
+            micromachine_explicit_ability_staging_single_flight_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -1176,6 +2186,51 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_adaptive_pressure_stable_operation_key_patch=(
                 micromachine_adaptive_pressure_stable_operation_key_patch
+            ),
+            micromachine_tactical_nuke_command_hierarchy_patch=(
+                micromachine_tactical_nuke_command_hierarchy_patch
+            ),
+            micromachine_location_intent_target_lock_patch=(
+                micromachine_location_intent_target_lock_patch
+            ),
+            micromachine_explicit_terran_ability_execution_patch=(
+                micromachine_explicit_terran_ability_execution_patch
+            ),
+            micromachine_explicit_scout_command_epoch_patch=(
+                micromachine_explicit_scout_command_epoch_patch
+            ),
+            micromachine_standing_production_continuity_closure_patch=(
+                micromachine_standing_production_continuity_closure_patch
+            ),
+            micromachine_explicit_ability_caster_production_priority_patch=(
+                micromachine_explicit_ability_caster_production_priority_patch
+            ),
+            micromachine_explicit_ability_observation_confirmation_patch=(
+                micromachine_explicit_ability_observation_confirmation_patch
+            ),
+            micromachine_explicit_ability_production_isolation_patch=(
+                micromachine_explicit_ability_production_isolation_patch
+            ),
+            micromachine_explicit_ability_attempt_lifecycle_patch=(
+                micromachine_explicit_ability_attempt_lifecycle_patch
+            ),
+            micromachine_explicit_ability_review_closure_patch=(
+                micromachine_explicit_ability_review_closure_patch
+            ),
+            micromachine_authoritative_addon_runtime_clearance_patch=(
+                micromachine_authoritative_addon_runtime_clearance_patch
+            ),
+            micromachine_banshee_unit_specific_cloak_command_patch=(
+                micromachine_banshee_unit_specific_cloak_command_patch
+            ),
+            micromachine_allied_cloak_observation_confirmation_patch=(
+                micromachine_allied_cloak_observation_confirmation_patch
+            ),
+            micromachine_explicit_ability_caster_ownership_patch=(
+                micromachine_explicit_ability_caster_ownership_patch
+            ),
+            micromachine_explicit_ability_staging_single_flight_patch=(
+                micromachine_explicit_ability_staging_single_flight_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

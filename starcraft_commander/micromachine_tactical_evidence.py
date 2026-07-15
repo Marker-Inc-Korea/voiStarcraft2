@@ -25,6 +25,8 @@ TACTICAL_EFFECT_ORDER: Final[tuple[str, ...]] = (
     "harass",
     "target_priority",
     "scout",
+    "ability_cast",
+    "tactical_nuke",
     "refused",
 )
 """Deterministic effect ordering for reports."""
@@ -69,6 +71,13 @@ _EFFECT_ALIASES: Final[Mapping[str, str]] = {
     "scout": "scout",
     "scouting": "scout",
     "scouting_map_control": "scout",
+    "ability": "ability_cast",
+    "ability_cast": "ability_cast",
+    "cast_ability": "ability_cast",
+    "execute_ability": "ability_cast",
+    "nuke": "tactical_nuke",
+    "nuclear_strike": "tactical_nuke",
+    "tactical_nuke": "tactical_nuke",
 }
 
 _FRAME_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d+):\s*(.*)$")
@@ -109,6 +118,88 @@ _ACTUAL_DECISION_KEYS: Final[tuple[str, ...]] = (
 )
 _MIN_MAIN_ATTACK_HOME_DISTANCE: Final[float] = 12.0
 _MIN_COMBAT_SCOUT_HOME_DISTANCE: Final[float] = 8.0
+_TACTICAL_NUKE_CONFIRMATION_EFFECTS: Final[frozenset[str]] = frozenset(
+    {
+        "ghost_order:effect_nukecalldown",
+        "persistent_effect:nukepersistent",
+        "payload_consumed:terran_nuke",
+    }
+)
+_EXPLICIT_ABILITY_CONFIRMATION_EFFECTS: Final[
+    Mapping[str, frozenset[str]]
+] = {
+    "stimpack": frozenset({"actor_buff:stimpack", "buff:stimpack"}),
+    "marine_stimpack": frozenset(
+        {"actor_buff:stimpack", "buff:stimpack"}
+    ),
+    "marauder_stimpack": frozenset(
+        {"actor_buff:stimpackmarauder", "buff:stimpackmarauder"}
+    ),
+    "emp": frozenset({"target_shield_or_energy:decreased"}),
+    "snipe": frozenset(
+        {
+            "target_health:decreased_after_actor_commitment",
+            "target_removed_after_actor_commitment",
+        }
+    ),
+    "ghost_cloak": frozenset({"cloak_state:cloaked"}),
+    "ghost_decloak": frozenset({"cloak_state:not_cloaked"}),
+    "widow_mine_burrow": frozenset(
+        {"unit_type:terran_widowmineburrowed"}
+    ),
+    "widow_mine_unburrow": frozenset({"unit_type:terran_widowmine"}),
+    "lock_on": frozenset({"target_buff:lockon"}),
+    "siege_mode": frozenset({"unit_type:terran_siegetanksieged"}),
+    "unsiege": frozenset({"unit_type:terran_siegetank"}),
+    "hellbat_mode": frozenset({"unit_type:terran_helliontank"}),
+    "hellion_mode": frozenset({"unit_type:terran_hellion"}),
+    "thor_high_impact_mode": frozenset({"unit_type:terran_thorap"}),
+    "thor_explosive_mode": frozenset({"unit_type:terran_thor"}),
+    "medivac_afterburners": frozenset(
+        {"actor_buff:medivacspeedboost", "buff:medivacspeedboost"}
+    ),
+    "medivac_heal": frozenset({"target_health:increased"}),
+    "medivac_load": frozenset(
+        {"cargo:loaded", "cargo:passenger_loaded"}
+    ),
+    "medivac_unload_all": frozenset(
+        {"cargo:empty", "cargo:unloaded"}
+    ),
+    "viking_fighter_mode": frozenset(
+        {"unit_type:terran_vikingfighter"}
+    ),
+    "viking_assault_mode": frozenset(
+        {"unit_type:terran_vikingassault"}
+    ),
+    "liberator_defender_mode": frozenset(
+        {"unit_type:terran_liberatorag"}
+    ),
+    "liberator_fighter_mode": frozenset(
+        {"unit_type:terran_liberator"}
+    ),
+    "banshee_cloak": frozenset({"cloak_state:cloaked"}),
+    "banshee_decloak": frozenset({"cloak_state:not_cloaked"}),
+    "auto_turret": frozenset({"new_unit_created:terran_autoturret"}),
+    "interference_matrix": frozenset(
+        {"target_buff:ravenscramblermissile"}
+    ),
+    "anti_armor_missile": frozenset(
+        {"target_buff:ravenshreddermissilearmorreduction"}
+    ),
+    "yamato": frozenset(
+        {
+            "target_health:decreased_after_actor_commitment",
+            "target_removed_after_actor_commitment",
+        }
+    ),
+    "tactical_jump": frozenset({"position:tactical_jump_destination"}),
+    "reaper_grenade": frozenset(
+        {
+            "ability_availability:consumed",
+            "actor_energy:decreased",
+        }
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -186,8 +277,13 @@ def classify_micromachine_tactical_evidence(
     normalized_expected, unsupported = _normalize_expected_effects(expected_effects)
     consumed_axes = _consumed_axes_by_manager(telemetry_entries)
     concrete_effects = _concrete_tactical_task_effects(telemetry_entries)
+    current_update_ids = _current_update_ids(telemetry_entries)
     effects = [
-        *_effects_from_telemetry(telemetry_entries, concrete_effects=concrete_effects),
+        *_effects_from_telemetry(
+            telemetry_entries,
+            concrete_effects=concrete_effects,
+            current_update_ids=current_update_ids,
+        ),
         *_effects_from_log(log_text, concrete_effects=concrete_effects),
     ]
     observed = _ordered_unique(effect.tag for effect in effects)
@@ -246,6 +342,158 @@ def normalize_tactical_effect_tags(tags: Sequence[str]) -> tuple[str, ...]:
 
     normalized, _unsupported = _normalize_expected_effects(tags)
     return normalized
+
+
+def explicit_ability_confirmation_is_valid(
+    *,
+    ability: object,
+    submission_action: object,
+    confirmation_effect: object,
+) -> bool:
+    """Require telemetry to prove the requested ability's own SC2 effect."""
+
+    normalized_ability = str(ability or "").strip().lower()
+    if not normalized_ability or normalized_ability == "tactical_nuke":
+        return False
+    action_prefix = (
+        str(submission_action or "")
+        .split("|", 1)[0]
+        .strip()
+        .lower()
+    )
+    if action_prefix != f"voiexplicitability:{normalized_ability}":
+        return False
+    return explicit_ability_effect_is_valid(
+        ability=normalized_ability,
+        confirmation_effect=confirmation_effect,
+    )
+
+
+def explicit_ability_terminal_is_valid(
+    payload: Mapping[str, object],
+    *,
+    issued_at_frame: int = 0,
+) -> bool:
+    """Validate one exact C++ ability-attempt terminal without weakening it."""
+
+    ability = str(payload.get("ability", "") or "").strip().lower()
+    if not ability or ability == "tactical_nuke":
+        return False
+    status = str(payload.get("status", "") or "").strip().lower()
+    phase = str(payload.get("phase", "") or "").strip().lower()
+    confirmation_state = str(
+        payload.get("confirmation_state", "") or ""
+    ).strip().lower()
+    confirmation_effect = str(
+        payload.get("confirmation_effect", "") or ""
+    ).strip()
+    attempt_generation = int(_number(payload.get("attempt_generation")))
+    terminal_generation = int(
+        _number(payload.get("terminal_attempt_generation"))
+    )
+    if (
+        status != "completed"
+        or attempt_generation <= 0
+        or terminal_generation != attempt_generation
+    ):
+        return False
+
+    confirmation_frame = _explicit_ability_confirmation_frame(payload)
+    if (
+        phase == "effect_observed"
+        and confirmation_state == "confirmed"
+        and confirmation_effect.lower().startswith("already_satisfied:")
+    ):
+        observed_effect = confirmation_effect.split(":", 1)[1]
+        return (
+            _number(payload.get("submitted_count")) == 0
+            and _number(payload.get("confirmation_count")) > 0
+            and confirmation_frame > 0
+            and (
+                not issued_at_frame
+                or confirmation_frame >= issued_at_frame
+            )
+            and explicit_ability_effect_is_valid(
+                ability=ability,
+                confirmation_effect=observed_effect,
+            )
+        )
+
+    submission_action = _explicit_ability_submission_action(payload)
+    submission_frame = _explicit_ability_submission_frame(payload)
+    submitted_generation = int(
+        _number(payload.get("submitted_attempt_generation"))
+    )
+    if (
+        _number(payload.get("submitted_count")) <= 0
+        or not submission_action
+        or submission_frame <= 0
+        or (issued_at_frame and submission_frame < issued_at_frame)
+        or submitted_generation != attempt_generation
+    ):
+        return False
+
+    if phase == "effect_observed" and confirmation_state == "confirmed":
+        return (
+            _number(payload.get("confirmation_count")) > 0
+            and confirmation_frame >= submission_frame
+            and explicit_ability_confirmation_is_valid(
+                ability=ability,
+                submission_action=submission_action,
+                confirmation_effect=confirmation_effect,
+            )
+        )
+
+    observed_accepted_frame = int(
+        _number(payload.get("observed_accepted_frame"))
+    )
+    observed_accepted_generation = int(
+        _number(payload.get("observed_accepted_attempt_generation"))
+    )
+    observed_accepted_evidence = str(
+        payload.get("observed_accepted_evidence", "") or ""
+    ).strip()
+    return (
+        phase == "observed_accepted"
+        and confirmation_state == "accepted"
+        and observed_accepted_generation == attempt_generation
+        and observed_accepted_frame >= submission_frame
+        and bool(observed_accepted_evidence)
+        and (
+            confirmation_effect.lower().startswith(
+                "accepted_without_observable_effect:"
+            )
+            or confirmation_effect == observed_accepted_evidence
+        )
+        and str(submission_action)
+        .split("|", 1)[0]
+        .strip()
+        .lower()
+        == f"voiexplicitability:{ability}"
+    )
+
+
+def explicit_ability_effect_is_valid(
+    *,
+    ability: object,
+    confirmation_effect: object,
+) -> bool:
+    """Validate an observed state tag independently of command submission."""
+
+    normalized_ability = str(ability or "").strip().lower()
+    normalized_effect = str(confirmation_effect or "").strip().lower()
+    allowed_effects = _EXPLICIT_ABILITY_CONFIRMATION_EFFECTS.get(
+        normalized_ability
+    )
+    if not allowed_effects:
+        return False
+    if normalized_effect in allowed_effects:
+        return True
+    return (
+        normalized_ability == "reaper_grenade"
+        and normalized_effect.startswith("actor_order:")
+        and len(normalized_effect) > len("actor_order:")
+    )
 
 
 def _classify_status(
@@ -325,6 +573,7 @@ def _effects_from_telemetry(
     telemetry_entries: Sequence[Mapping[str, object]],
     *,
     concrete_effects: frozenset[str] = frozenset(),
+    current_update_ids: frozenset[str] = frozenset(),
 ) -> list[MicroMachineTacticalEffect]:
     effects: list[MicroMachineTacticalEffect] = []
     for entry in telemetry_entries:
@@ -363,6 +612,37 @@ def _effects_from_telemetry(
                 )
             if "scout" not in concrete_effects and _manager_reports_scouting(manager, payload):
                 effects.append(_telemetry_effect("scout", manager, payload, frame))
+            if _manager_reports_explicit_ability_cast(
+                manager,
+                payload,
+                current_update_ids=current_update_ids,
+            ):
+                effects.append(
+                    _telemetry_effect(
+                        "ability_cast",
+                        manager,
+                        payload,
+                        _explicit_ability_confirmation_frame(payload),
+                    )
+                )
+            if _manager_reports_tactical_nuke_cast(manager, payload):
+                confirmation_frame = _tactical_nuke_confirmation_frame(payload)
+                effects.append(
+                    _telemetry_effect(
+                        "ability_cast",
+                        manager,
+                        payload,
+                        confirmation_frame,
+                    )
+                )
+                effects.append(
+                    _telemetry_effect(
+                        "tactical_nuke",
+                        manager,
+                        payload,
+                        confirmation_frame,
+                    )
+                )
     return _dedupe_effects(effects)
 
 
@@ -564,12 +844,162 @@ def _payload_reports_marine_scout_command(
     return (
         _number(payload.get(command_count_key)) > 0
         and "squad=Scout" in str(payload.get(command_key, "") or "")
-        and _number(payload.get("scout_marine_assigned_count")) > 0
+        and _scout_assignment_matches_requested_count(payload)
         and _number(payload.get("scout_last_commanded_unit_tag")) > 0
         and _is_marine_unit_type(payload.get("scout_last_commanded_unit_type"))
         and _number(payload.get("scout_marine_max_home_distance"))
         >= _MIN_COMBAT_SCOUT_HOME_DISTANCE
     )
+
+
+def _scout_assignment_matches_requested_count(
+    payload: Mapping[str, object],
+) -> bool:
+    assigned = int(_number(payload.get("scout_marine_assigned_count")))
+    if assigned <= 0:
+        return False
+    requested_min = int(
+        max(
+            _number(payload.get("scout_scope_requested_min_units")),
+            _number(payload.get("min_units")),
+        )
+    )
+    requested_max = int(
+        max(
+            _number(payload.get("scout_scope_requested_max_units")),
+            _number(payload.get("max_units")),
+        )
+    )
+    if requested_min > 0 and requested_max > 0:
+        if requested_min == requested_max:
+            return assigned == requested_min
+        return requested_min <= assigned <= requested_max
+    if requested_min > 0:
+        return assigned >= requested_min
+    if requested_max > 0:
+        return assigned <= requested_max
+    return True
+
+
+def _manager_reports_tactical_nuke_cast(
+    manager: str,
+    payload: Mapping[str, object],
+) -> bool:
+    if manager != "AbilityTask":
+        return False
+    task_type = str(payload.get("task_type", "") or "").strip().lower()
+    ability_values = {
+        str(payload.get(key, "") or "").strip().lower()
+        for key in (
+            "ability",
+            "ability_name",
+            "ability_policy",
+            "executed_ability",
+            "requested_ability",
+        )
+    }
+    if "tactical_nuke" not in ability_values or task_type not in {
+        "",
+        "execute_ability",
+    }:
+        return False
+    location_intent = str(
+        payload.get("location_intent", "") or ""
+    ).strip().lower()
+    if location_intent in {
+        "enemy_main",
+        "enemy_base",
+        "enemy_start",
+        "enemy_start_location",
+        "enemy_natural",
+        "contain_enemy_natural",
+        "enemy_front",
+    } and payload.get("target_location_match") is not True:
+        return False
+    submitted_action = str(payload.get("cast_submitted_action", "") or "")
+    submitted_count = _number(payload.get("cast_submitted_count"))
+    submission_frame = int(_number(payload.get("cast_submission_frame")))
+    if (
+        submitted_count <= 0
+        or submission_frame <= 0
+        or not _action_reports_ability(
+            submitted_action,
+            "EFFECT_NUKECALLDOWN",
+        )
+    ):
+        return False
+    confirmation_state = str(
+        payload.get("confirmation_state", "") or ""
+    ).strip().lower()
+    confirmation_effect = str(
+        payload.get("confirmation_effect", "") or ""
+    ).strip().lower()
+    confirmation_count = _number(payload.get("confirmation_count"))
+    confirmation_frame = _tactical_nuke_confirmation_frame(payload)
+    if (
+        confirmation_state != "confirmed"
+        or confirmation_effect not in _TACTICAL_NUKE_CONFIRMATION_EFFECTS
+        or confirmation_count <= 0
+        or confirmation_frame < submission_frame
+    ):
+        return False
+    return True
+
+
+def _manager_reports_explicit_ability_cast(
+    manager: str,
+    payload: Mapping[str, object],
+    *,
+    current_update_ids: frozenset[str],
+) -> bool:
+    if manager != "AbilityTask":
+        return False
+    task_type = str(payload.get("task_type", "") or "").strip().lower()
+    ability = str(payload.get("ability", "") or "").strip().lower()
+    update_id = str(payload.get("update_id", "") or "").strip()
+    if (
+        not ability
+        or ability == "tactical_nuke"
+        or task_type not in {"", "execute_ability"}
+        or not update_id
+        or (current_update_ids and update_id not in current_update_ids)
+    ):
+        return False
+    return explicit_ability_terminal_is_valid(payload)
+
+
+def _explicit_ability_submission_action(payload: Mapping[str, object]) -> str:
+    return str(
+        payload.get("last_action")
+        or payload.get("last_actual_command")
+        or ""
+    ).strip()
+
+
+def _explicit_ability_submission_frame(payload: Mapping[str, object]) -> int:
+    return max(
+        int(_number(payload.get("submission_frame"))),
+        int(_number(payload.get("last_actual_command_frame"))),
+    )
+
+
+def _explicit_ability_confirmation_frame(payload: Mapping[str, object]) -> int:
+    return max(
+        int(_number(payload.get("confirmation_frame"))),
+        int(_number(payload.get("observed_accepted_frame"))),
+    )
+
+
+def _action_reports_ability(action: object, ability: str) -> bool:
+    expected = f"ability={ability}".lower()
+    return any(
+        field.strip().lower() == expected
+        for field in str(action or "").split("|")
+    )
+
+
+def _tactical_nuke_confirmation_frame(payload: Mapping[str, object]) -> int:
+    return int(_number(payload.get("confirmation_frame")))
 
 
 def _is_marine_unit_type(value: object) -> bool:
@@ -637,6 +1067,28 @@ def _telemetry_effect(
         "scout_actual_command_issued_count",
         "scout_last_commanded_unit_tag",
         "scout_last_commanded_unit_type",
+        "scout_scope_requested_min_units",
+        "scout_scope_requested_max_units",
+        "ability",
+        "ability_name",
+        "ability_policy",
+        "location_intent",
+        "target_anchor_x",
+        "target_anchor_y",
+        "target_anchor_distance",
+        "target_location_match",
+        "role",
+        "cast_attempted_count",
+        "cast_submitted_count",
+        "cast_submission_frame",
+        "cast_submitted_action",
+        "submitted_count",
+        "last_action",
+        "submission_frame",
+        "confirmation_state",
+        "confirmation_count",
+        "confirmation_frame",
+        "confirmation_effect",
     )
     details = {
         key: payload.get(key)
@@ -664,6 +1116,44 @@ def _dedupe_effects(
         seen.add(key)
         result.append(effect)
     return result
+
+
+def _current_update_ids(
+    telemetry_entries: Sequence[Mapping[str, object]],
+) -> frozenset[str]:
+    for entry in reversed(tuple(telemetry_entries)):
+        update_ids: set[str] = set()
+        active_ids = entry.get("active_modulation_ids")
+        if isinstance(active_ids, Sequence) and not isinstance(
+            active_ids,
+            (str, bytes, bytearray),
+        ):
+            update_ids.update(
+                str(item) for item in active_ids if isinstance(item, str) and item
+            )
+        managers = entry.get("managers")
+        if isinstance(managers, Mapping):
+            game_commander = managers.get("GameCommander")
+            if isinstance(game_commander, Mapping):
+                update_ids.update(
+                    value
+                    for value in (
+                        str(game_commander.get("update_id", "") or ""),
+                        str(game_commander.get("policy_update_id", "") or ""),
+                    )
+                    if value
+                )
+            if not update_ids:
+                ability_task = managers.get("AbilityTask")
+                if isinstance(ability_task, Mapping):
+                    ability_update_id = str(
+                        ability_task.get("update_id", "") or ""
+                    )
+                    if ability_update_id:
+                        update_ids.add(ability_update_id)
+        if update_ids:
+            return frozenset(update_ids)
+    return frozenset()
 
 
 def _consumed_axes_by_manager(

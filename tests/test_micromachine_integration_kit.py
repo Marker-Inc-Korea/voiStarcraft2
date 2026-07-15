@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from starcraft_commander.policy_modulation import MICROMACHINE_TACTICAL_ABILITIES
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = REPO_ROOT / "integrations" / "micromachine"
@@ -114,6 +116,71 @@ SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE = (
 )
 ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE = (
     KIT_DIR / "patches" / "0035-adaptive-pressure-stable-operation-key.patch"
+)
+TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH_FILE = (
+    KIT_DIR / "patches" / "0036-tactical-nuke-command-hierarchy.patch"
+)
+LOCATION_INTENT_TARGET_LOCK_PATCH_FILE = (
+    KIT_DIR / "patches" / "0037-location-intent-target-lock.patch"
+)
+EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH_FILE = (
+    KIT_DIR / "patches" / "0038-explicit-terran-ability-execution.patch"
+)
+EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH_FILE = (
+    KIT_DIR / "patches" / "0039-explicit-scout-command-epoch.patch"
+)
+STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH_FILE = (
+    KIT_DIR / "patches" / "0040-standing-production-continuity-closure.patch"
+)
+EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0041-explicit-ability-caster-production-priority.patch"
+)
+EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0042-explicit-ability-observation-confirmation.patch"
+)
+EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0043-explicit-ability-production-isolation.patch"
+)
+EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0044-explicit-ability-attempt-lifecycle.patch"
+)
+EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0045-explicit-ability-review-closure.patch"
+)
+AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0046-authoritative-addon-runtime-clearance.patch"
+)
+BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0047-banshee-unit-specific-cloak-command.patch"
+)
+ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0048-allied-cloak-observation-confirmation.patch"
+)
+EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0049-explicit-ability-caster-ownership.patch"
+)
+EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0050-explicit-ability-staging-single-flight.patch"
 )
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
@@ -1416,6 +1483,837 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     patch.count(f"diff --git a/{source} b/{source}"),
                 )
 
+    def test_tactical_nuke_patch_covers_production_execution_and_telemetry(
+        self,
+    ) -> None:
+        patch = _read_patch_text(TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH_FILE)
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        for source in (
+            "src/BuildingManager.cpp",
+            "src/MetaTypeEnum.h",
+            "src/MetaTypeEnum.cpp",
+            "src/ProductionManager.cpp",
+            "src/ProductionManager.h",
+            "src/CombatCommander.h",
+            "src/CombatCommander.cpp",
+            "src/GameCommander.cpp",
+            "src/TechTree.cpp",
+        ):
+            with self.subTest(source=source):
+                self.assertIn(f"diff --git a/{source} b/{source}", patch)
+        for production_contract in (
+            "MetaType Nuke",
+            "MetaTypeEnum::Nuke",
+            "TERRAN_NUKE",
+            "BUILD_NUKE",
+            "TERRAN_GHOSTACADEMY",
+            "TERRAN_GHOST",
+            "TERRAN_FACTORY",
+        ):
+            with self.subTest(production_contract=production_contract):
+                self.assertIn(production_contract, added_lines)
+        for placement_recovery_contract in (
+            "isVoiExplicitTacticalPrerequisiteBuilding",
+            "tactical_prerequisite=",
+            "retryCount <= 2 ? 22 * 5 : 22 * 10",
+            "TERRAN_GHOSTACADEMY",
+            "TERRAN_ARMORY",
+            "TERRAN_FUSIONCORE",
+        ):
+            with self.subTest(
+                placement_recovery_contract=placement_recovery_contract
+            ):
+                self.assertIn(placement_recovery_contract, added_lines)
+        self.assertIn(
+            "voiDoctrineRequestsTechTransition(m_bot, type) || "
+            "isVoiTacticalPrerequisite",
+            added_lines,
+        )
+        for execution_contract in (
+            '"execute_ability"',
+            '"tactical_nuke"',
+            '"tactical_task.ability"',
+            "EFFECT_NUKECALLDOWN",
+            "last_seen_game_loop",
+            "GetEffects()",
+            "NukePersistentEffectId",
+            "voiGhostHasTacticalNukeOrder",
+            "order.ability_id",
+            "voiTacticalNukePayloadCount",
+            "TacticalNukeConfirmationRetryFrames",
+            "AbilityPosition",
+            "VoiTacticalNukeStage",
+            "minimumCandidateRadius",
+            "preferredStagingRadius",
+            "angleIndex < 32",
+            "isConnected(ghost->pos, candidate)",
+            "No terrain-connected safe cast staging position",
+            '"waiting_target"',
+            '"confirming"',
+            '"retryable"',
+            '"ghost_order:EFFECT_NUKECALLDOWN"',
+            '"persistent_effect:NUKEPERSISTENT"',
+            '"payload_consumed:TERRAN_NUKE"',
+            "Waiting for a safe recently observed high-value or clustered enemy target",
+            "tacticalNukeNeedsTargetObservation",
+            "enemyEvidenceScoutRequested",
+            "enemyEvidenceScoutRequested && !explicitScoutScope",
+            "Tactical nuke is waiting for a recently observed enemy target",
+            "out-of-range target; staging must complete first",
+            "TacticalAbilityPriority",
+            '"NukeOps"',
+            "updateVoiTacticalNukeSquad",
+            '"clearing_blast_radius"',
+            "voiTacticalNukeContainmentPosition",
+            '"NukeContainment"',
+            "waiting for MainAttack and other mobile allies to clear the blast radius",
+        ):
+            with self.subTest(execution_contract=execution_contract):
+                self.assertIn(execution_contract, added_lines)
+        for telemetry_contract in (
+            "AbilityTask",
+            "staging_command_issued_count",
+            "cast_submitted_count",
+            "cast_submission_frame",
+            "cast_submitted_action",
+            "payload_count_at_submission",
+            "confirmation_state",
+            "confirmation_count",
+            "confirmation_frame",
+            "confirmation_effect",
+            "unit_roles.*.role",
+            "unit_roles.*.ability_policy",
+        ):
+            with self.subTest(telemetry_contract=telemetry_contract):
+                self.assertIn(telemetry_contract, added_lines)
+        for ability_action_type in (
+            "action.microActionType == MicroActionType::Ability",
+            "action.microActionType == MicroActionType::AbilityPosition",
+            "action.microActionType == MicroActionType::AbilityTarget",
+            "action.microActionType == MicroActionType::ToggleAbility",
+        ):
+            with self.subTest(ability_action_type=ability_action_type):
+                self.assertIn(ability_action_type, added_lines)
+        self.assertIn(
+            'ss << "|ability=" << sc2::AbilityTypeToName(action.abilityID);',
+            added_lines,
+        )
+        self.assertRegex(
+            added_lines,
+            r"getVoi[A-Za-z0-9_]*Nuke[A-Za-z0-9_]*\(\) const",
+        )
+        self.assertIn("m_queue.contains(MetaTypeEnum::Nuke)", added_lines)
+        for payload_state_contract in (
+            "nukeReadyGhostCount",
+            "GetAbilitiesForUnits(completedGhosts)",
+            "payload_ready:EFFECT_NUKECALLDOWN",
+            "payload_building:BUILD_NUKE",
+            "m_queue.removeAllOfType(MetaTypeEnum::Nuke)",
+            "VOI tactical nuke payload command submitted",
+            "build_nuke_accepted",
+            "payload_command_rejected",
+            "blocked_payload_retry_cooldown",
+            "canonicalQueueItemName",
+            "completedGroundedAcademy",
+            "academyIdle",
+            "resourcesAvailable",
+            "payloadBuildInProgress",
+            "payloadReady",
+            "submissionPending",
+            "retryCoolingDown",
+            "completedFactoryAvailable",
+            "completed_factory_available",
+            "tactical_nuke_factory_prerequisite",
+            "waiting_for_completed_grounded_factory",
+            "directSubmissionEligible",
+            "ability query omission tolerated",
+            "state/resource gate permits direct BUILD_NUKE submission",
+        ):
+            with self.subTest(payload_state_contract=payload_state_contract):
+                self.assertIn(payload_state_contract, added_lines)
+        self.assertIn("if (!directSubmissionEligible)", added_lines)
+        self.assertNotIn(
+            "getGroundDistance(ghost->pos, candidate)",
+            added_lines,
+        )
+        self.assertIn("if (!normalAllowsNuke && shouldLogAvailability)", added_lines)
+        self.assertIn("command not submitted.", added_lines)
+        self.assertIn("availabilityChanged", added_lines)
+        self.assertIn("shouldLogAvailability", added_lines)
+        self.assertIn("m_lastVoiTacticalNukeAvailabilityLogFrame", added_lines)
+        self.assertIn(">= 22u * 5u", added_lines)
+        self.assertIn(
+            "m_bot.GetFreeMinerals() >= m_bot.Data(type).mineralCost",
+            added_lines,
+        )
+        self.assertIn(
+            "m_bot.GetFreeGas() >= m_bot.Data(type).gasCost",
+            added_lines,
+        )
+        self.assertNotIn(
+            "VOI tactical nuke is not exposed by the Ghost Academy ability "
+            "query; command not submitted.",
+            added_lines,
+        )
+        self.assertNotIn("fallbackAbilities", added_lines)
+        self.assertNotIn(
+            "getUnitTypeCount(\n"
+            "\t\tPlayers::Self,\n"
+            "\t\tMetaTypeEnum::Nuke.getUnitType()",
+            added_lines,
+        )
+        self.assertIn("const bool hasExplicitGhostRole", added_lines)
+        self.assertNotIn("if (!voiHasTacticalNukeGhostRole", added_lines)
+        self.assertIn(
+            "const bool autonomousNeedsEnemyEvidence =\n"
+            "\t\ttacticalNukeNeedsTargetObservation\n"
+            "\t\t||",
+            added_lines,
+        )
+        self.assertIn(
+            "CCPosition scoutTarget = enemyEvidenceScoutRequested",
+            added_lines,
+        )
+        self.assertIn("? GetNextEnemyStartCandidateToScout()", patch)
+        self.assertGreaterEqual(added_lines.count("EFFECT_NUKECALLDOWN"), 2)
+        self.assertNotIn("cast_executed_count", added_lines)
+        self.assertNotIn("m_lastVoiTacticalNukeCastExecutedCount", added_lines)
+        self.assertNotIn('"ability_cast.', added_lines)
+        self.assertNotIn('tacticalTaskType == "tactical_nuke"', added_lines)
+
+    def test_location_intent_target_lock_patch_prevents_home_fallback(self) -> None:
+        patch = _read_patch_text(LOCATION_INTENT_TARGET_LOCK_PATCH_FILE)
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        for contract in (
+            "voiEffectiveTacticalNukeLocationIntent",
+            "voiResolveTacticalNukeTargetAnchor",
+            "TacticalNukeEnemyMainIntentRadius",
+            "observedTarget != CCPosition()",
+            "Util::Dist(anchor, observedTarget) <= radius",
+            "anchor = observedTarget",
+            "targetAnchorDistance > targetAnchorRadius",
+            "target_location_match",
+            "target_anchor_distance",
+            "scout_target_enemy_main_distance",
+            "retaining the requested location anchor",
+            "singleEnemyStartCandidate",
+            "voiIsRemoteCombatTarget(m_bot, fallbackTarget)",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        self.assertIn(
+            "selectedTarget.anchor != CCPosition()",
+            added_lines,
+        )
+        self.assertIn(
+            "m_lastVoiTacticalNukeTargetLocationMatch = false",
+            added_lines,
+        )
+
+    def test_explicit_terran_ability_patch_reaches_sc2_command_issue_path(
+        self,
+    ) -> None:
+        patch = _read_patch_text(EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH_FILE)
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        for source in (
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/GameCommander.cpp",
+            "src/MetaTypeEnum.cpp",
+            "src/MetaTypeEnum.h",
+            "src/ProductionManager.cpp",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    1,
+                    patch.count(f"diff --git a/{source} b/{source}"),
+                )
+        explicit_abilities = {
+            "stimpack",
+            "marine_stimpack",
+            "marauder_stimpack",
+            "kd8_charge",
+            "emp",
+            "snipe",
+            "ghost_cloak",
+            "ghost_decloak",
+            "widow_mine_burrow",
+            "widow_mine_unburrow",
+            "lock_on",
+            "siege_mode",
+            "unsiege",
+            "hellbat_mode",
+            "hellion_mode",
+            "thor_high_impact_mode",
+            "thor_explosive_mode",
+            "medivac_afterburners",
+            "medivac_heal",
+            "medivac_load",
+            "medivac_unload_all",
+            "viking_fighter_mode",
+            "viking_assault_mode",
+            "liberator_defender_mode",
+            "liberator_fighter_mode",
+            "banshee_cloak",
+            "banshee_decloak",
+            "auto_turret",
+            "interference_matrix",
+            "anti_armor_missile",
+            "yamato",
+            "tactical_jump",
+        }
+        self.assertEqual(
+            MICROMACHINE_TACTICAL_ABILITIES - {"", "tactical_nuke"},
+            explicit_abilities,
+        )
+        for ability in sorted(explicit_abilities):
+            with self.subTest(ability=ability):
+                self.assertIn(f'"{ability}"', added_lines)
+        for execution_contract in (
+            "updateVoiExplicitAbilityAction();",
+            "VoiExplicitAbility:",
+            "Util::IsAbilityAvailable",
+            "m_bot.Query()->Placement(",
+            "bestLoadTarget",
+            "LOAD_MEDIVAC",
+            "UNLOADALLAT_MEDIVAC",
+            "BEHAVIOR_CLOAKON_GHOST",
+            "EFFECT_STIM_MARAUDER",
+            "Explicit position ability target became invalid before command submission",
+            "Explicit target ability target became invalid before command submission",
+            "Explicit target ability target moved outside the verified cast range",
+            "m_lastVoiExplicitAbilitySubmittedCount++",
+            "Explicit ability reached the SC2 command issue path",
+            "Protect reserved tactical nuke Ghost at home",
+        ):
+            with self.subTest(execution_contract=execution_contract):
+                self.assertIn(execution_contract, added_lines)
+        for telemetry_contract in (
+            "actor_type",
+            "target_tag",
+            "available_caster_count",
+            "planned_count",
+            "submitted_count",
+            "last_action",
+            "getVoiExplicitAbilityActorTag",
+            "getVoiExplicitAbilityTargetPosition",
+        ):
+            with self.subTest(telemetry_contract=telemetry_contract):
+                self.assertIn(telemetry_contract, added_lines)
+        for production_contract in (
+            "taskTechOrAbilityProduction",
+            "taskTargetsBarracks",
+            "taskTargetsFactoryTechLab",
+            "taskTargetsStarportTechLab",
+            "MetaTypeEnum::Stimpack",
+            "MetaTypeEnum::PersonalCloaking",
+            "MetaTypeEnum::BansheeCloak",
+            "MetaTypeEnum::YamatoCannon",
+            "explicit_ability_stimpack_upgrade",
+            "explicit_ability_ghost_cloak_upgrade",
+            "explicit_ability_banshee_cloak_upgrade",
+            "explicit_ability_yamato_upgrade",
+        ):
+            with self.subTest(production_contract=production_contract):
+                self.assertIn(production_contract, added_lines)
+        self.assertNotIn(
+            "execute_ability currently supports tactical_task.ability=tactical_nuke",
+            added_lines,
+        )
+
+    def test_explicit_scout_command_epoch_forces_one_fresh_sc2_move(
+        self,
+    ) -> None:
+        patch = _read_patch_text(EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH_FILE)
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        for source in (
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/GameCommander.cpp",
+        ):
+            with self.subTest(source=source):
+                self.assertIn(f"diff --git a/{source} b/{source}", patch)
+        for contract in (
+            "explicitScoutUpdateId != m_voiExplicitScoutUpdateId",
+            "m_voiExplicitScoutReissuePending = true",
+            "? !aAlreadyScout",
+            "unitActions.erase(unit)",
+            "nextCommandFrameForUnit.erase(unit)",
+            "VoiExplicitScoutOrder:",
+            "MicroActionType::Move",
+            "explicitScoutOrderAction",
+            "!explicitScoutOrderAction",
+            'm_lastVoiScoutExplicitReissueStatus = "submitted"',
+            'action.description = "MoveToGoalOrder"',
+            "scout_explicit_reissue_status",
+            "scout_explicit_reissue_frame",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+
+    def test_standing_production_continuity_survives_operation_overlays(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn(
+            "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp",
+            patch,
+        )
+        for contract in (
+            "standingProductionOrder",
+            "isStandingProductionTarget",
+            "standingMarineProduction",
+            '"TERRAN_MARINE");',
+            "requestedCompositionGasPerWave",
+            "continuousCompositionProduction",
+            "isStandingProductionTarget(policyUnitType)",
+            '!isStandingProductionTarget("TERRAN_MARINE")',
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        self.assertNotIn(
+            "compositionSiegeBias,\n\t\tadaptiveSupportBias(\"TERRAN_LIBERATOR\")",
+            added_lines,
+        )
+
+    def test_explicit_ability_caster_preempts_unrelated_production_until_represented(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn(
+            "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp",
+            patch,
+        )
+        for contract in (
+            "tactical_task.unit_classes",
+            "explicitAbilityCasterPending",
+            "explicitAbilityNeedsFactoryTechLab",
+            "explicitAbilityNeedsStarportTechLab",
+            "explicit_ability_caster",
+            "completedFactoryCount > 0",
+            "!explicitAbilityCasterPending",
+            "voiRepresentedUnitCount(type) > 0",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        for caster in (
+            "Marine",
+            "Marauder",
+            "Reaper",
+            "Ghost",
+            "Hellion",
+            "WidowMine",
+            "Cyclone",
+            "Thor",
+            "SiegeTank",
+            "Medivac",
+            "Viking",
+            "Liberator",
+            "Banshee",
+            "Raven",
+            "Battlecruiser",
+        ):
+            with self.subTest(caster=caster):
+                self.assertIn(f"MetaTypeEnum::{caster}", added_lines)
+        self.assertIn(
+            'queueVoiDoctrineItem(MetaTypeEnum::Starport, "starport_transition", true)',
+            added_lines,
+        )
+        self.assertNotIn(
+            "wantsStarport && factoryCount > 0 && starportCount == 0",
+            added_lines,
+        )
+
+    def test_explicit_ability_completion_requires_subsequent_sc2_observation(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        for source_path in (
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/GameCommander.cpp",
+        ):
+            with self.subTest(source_path=source_path):
+                self.assertIn(
+                    f"--- a/{source_path}",
+                    patch,
+                )
+                self.assertIn(
+                    f"+++ b/{source_path}",
+                    patch,
+                )
+        for contract in (
+            "m_voiExplicitAbilityAwaitingConfirmation",
+            "m_lastVoiExplicitAbilitySubmissionFrame",
+            "m_lastVoiExplicitAbilityConfirmationState",
+            "m_lastVoiExplicitAbilityConfirmationCount",
+            "m_lastVoiExplicitAbilityConfirmationFrame",
+            "m_lastVoiExplicitAbilityConfirmationEffect",
+            "confirmationTimeoutFrames = 224",
+            '"pending_confirmation"',
+            '"confirmation_timeout"',
+            '"actor_order:"',
+            '"actor_energy:decreased"',
+            '"ability_availability:consumed"',
+            "explicitAbilityConfirmationFresh",
+            "rawTacticalTaskAbility == \"tactical_nuke\"",
+            "Explicit ability effect was observed in subsequent SC2 state",
+            "waiting for SC2 observation confirmation",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        self.assertIn(
+            '-\t\t\t\tm_lastVoiExplicitAbilityStatus = "completed";',
+            patch,
+        )
+        self.assertIn(
+            '-                "CombatCommander submitted the explicit ability through the SC2 command issue path";',
+            patch,
+        )
+
+    def test_explicit_ability_caster_production_isolated_from_legacy_strategy(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        for source_path in (
+            "src/ProductionManager.cpp",
+            "src/BuildingManager.cpp",
+        ):
+            with self.subTest(source_path=source_path):
+                self.assertIn(f"--- a/{source_path}", patch)
+                self.assertIn(f"+++ b/{source_path}", patch)
+        for contract in (
+            "voiExplicitAbilityCasterPending",
+            "queueInspectionBudget = m_queue.size()",
+            "removeIfUnrequested",
+            "casterNeedsStarport",
+            "casterNeedsStarportTechLab",
+            "requestedUnitClasses",
+            "requiredByCaster",
+            "MetaTypeEnum::Starport",
+            "MetaTypeEnum::StarportTechLab",
+            "MetaTypeEnum::StarportReactor",
+            "MetaTypeEnum::Banshee",
+            "MetaTypeEnum::BansheeCloak",
+            "MetaTypeEnum::HyperflightRotors",
+            "trustedVoiMacroPlacement",
+            "canTrustSafeMacroPlacement",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        for caster in (
+            "TERRAN_MEDIVAC",
+            "TERRAN_VIKINGFIGHTER",
+            "TERRAN_LIBERATOR",
+            "TERRAN_BANSHEE",
+            "TERRAN_RAVEN",
+            "TERRAN_BATTLECRUISER",
+        ):
+            with self.subTest(caster_prerequisite_preserved=caster):
+                self.assertIn(caster, added_lines)
+
+    def test_explicit_ability_attempt_lifecycle_is_exact_and_observation_bound(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        for source_path in (
+            "src/CombatCommander.cpp",
+            "src/CombatCommander.h",
+            "src/GameCommander.cpp",
+        ):
+            with self.subTest(source_path=source_path):
+                self.assertIn(f"--- a/{source_path}", patch)
+                self.assertIn(f"+++ b/{source_path}", patch)
+        for contract in (
+            "explicitAbilityAttemptGeneration",
+            "explicitAbilityUpdateId",
+            "explicitAbilityTaskId",
+            "explicitAbilityName",
+            "bindCurrentVoiExplicitAbilityAttempt",
+            "isCurrentVoiExplicitAbilityAttempt",
+            "discardVoiExplicitAbilityActions",
+            "advanceVoiExplicitAbilityAttempt",
+            "voiExplicitAbilityDesiredStateSatisfied",
+            "voiExplicitAbilityIsIrreversible",
+            "voiExplicitAbilityAcceptanceIsTerminal",
+            "m_lastVoiExplicitAbilityPhase",
+            "m_lastVoiExplicitAbilitySubmittedAttemptGeneration",
+            "m_lastVoiExplicitAbilityObservedAcceptedAttemptGeneration",
+            "m_lastVoiExplicitAbilityTerminalAttemptGeneration",
+            "m_lastVoiExplicitAbilityActorPassengerTags",
+            "m_lastVoiExplicitAbilitySpawnedUnitTags",
+            "STIMPACKMARAUDER",
+            '\\"phase\\":\\"',
+            '\\"attempt_generation\\":',
+            '\\"submitted_attempt_generation\\":',
+            '\\"observed_accepted_frame\\":',
+            '\\"observed_accepted_attempt_generation\\":',
+            '\\"observed_accepted_evidence\\":\\"',
+            '\\"terminal_attempt_generation\\":',
+            "explicitAbilityTelemetryMatchesAttempt",
+            "exact update, task, ability, and attempt",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        self.assertNotIn(
+            "VoiRavenInterferenceMatrixBuff",
+            added_lines,
+        )
+        self.assertNotIn(
+            "VoiRavenAntiArmorMissileBuff",
+            added_lines,
+        )
+
+    def test_explicit_ability_review_closure_matches_sc2_capabilities_and_scope(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn("--- a/src/CombatCommander.cpp", patch)
+        self.assertIn("+++ b/src/CombatCommander.cpp", patch)
+        self.assertGreaterEqual(
+            added_lines.count("sc2::ABILITY_ID::EFFECT_STIM"),
+            2,
+        )
+        self.assertNotIn("EFFECT_STIM_MARINE", added_lines)
+        self.assertNotIn("EFFECT_STIM_MARAUDER", added_lines)
+        for contract in (
+            "alreadySatisfiedCaster",
+            "allMatchingCastersSatisfied",
+            'abilityName == "medivac_unload_all"',
+            "completeAlreadySatisfied",
+            "voiExplicitAbilityBlocksAutonomousAction",
+            "explicit_state_ownership",
+            "voiTacticalTaskWithinDuration",
+            "MORPH_UNSIEGE",
+            "MORPH_SIEGEMODE",
+            "BURROWUP_WIDOWMINE",
+            "BURROWDOWN_WIDOWMINE",
+            "BEHAVIOR_CLOAKOFF_GHOST",
+            "BEHAVIOR_CLOAKON_GHOST",
+            "MORPH_HELLION",
+            "MORPH_HELLBAT",
+            "MORPH_THOREXPLOSIVEMODE",
+            "MORPH_THORHIGHIMPACTMODE",
+            "MORPH_VIKINGASSAULTMODE",
+            "MORPH_VIKINGFIGHTERMODE",
+            "MORPH_LIBERATORAAMODE",
+            "MORPH_LIBERATORAGMODE",
+            "BEHAVIOR_CLOAKOFF",
+            "BEHAVIOR_CLOAKON",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+
+    def test_authoritative_addon_runtime_clearance_uses_exact_sc2_footprint(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn("--- a/src/BuildingManager.cpp", patch)
+        self.assertIn("+++ b/src/BuildingManager.cpp", patch)
+        for contract in (
+            "queryCanPlaceVoiProductionAddonFootprint",
+            "producerTile != CCTilePosition()",
+            "const CCPosition delta = addonCenter - unit.getPosition()",
+            "const float collisionExtent = 1.0f + unit.getUnitPtr()->radius",
+            "std::abs(delta.x) >= collisionExtent",
+            "std::abs(delta.y) >= collisionExtent",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        self.assertNotIn("Util::Dist(addonCenter", added_lines)
+
+    def test_banshee_cloak_uses_unit_specific_sc2_command_ids(self) -> None:
+        patch = _read_patch_text(
+            BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+        removed_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("-") and not line.startswith("---")
+        )
+
+        for source in ("src/CombatCommander.cpp", "src/RangedManager.cpp"):
+            with self.subTest(source=source):
+                self.assertIn(f"--- a/{source}", patch)
+                self.assertIn(f"+++ b/{source}", patch)
+        for contract in (
+            "BEHAVIOR_CLOAKON_BANSHEE",
+            "BEHAVIOR_CLOAKOFF_BANSHEE",
+            "voiIsAbilityAvailableForCommand",
+            "SC2 ability queries may expose the generic remap",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        self.assertIn("VoiRoleBansheeCloak", patch)
+        self.assertIn(
+            "spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKON,",
+            removed_lines,
+        )
+        self.assertIn(
+            "spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF,",
+            removed_lines,
+        )
+        self.assertNotIn(
+            "action.abilityID = sc2::ABILITY_ID::BEHAVIOR_CLOAKON;",
+            added_lines,
+        )
+
+    def test_allied_cloak_observation_reaches_banshee_runtime_logic(self) -> None:
+        patch = _read_patch_text(
+            ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE
+        )
+        s2client_patch = _read_patch_text(S2CLIENT_PATCH_FILE)
+
+        for source in ("src/RangedManager.cpp", "src/Util.cpp"):
+            with self.subTest(source=source):
+                self.assertIn(f"--- a/{source}", patch)
+                self.assertIn(f"+++ b/{source}", patch)
+        self.assertGreaterEqual(patch.count("sc2::Unit::CloakedAllied"), 3)
+        for contract in (
+            "SC2APIProtocol::CloakState::CloakedUnknown",
+            "CloakedAllied = 4",
+            "Unknown = 5",
+            "SC2APIProtocol::CloakState::CloakedAllied",
+            "Unit::CloakedAllied",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, s2client_patch)
+
+    def test_explicit_ability_caster_ownership_blocks_competing_micro(self) -> None:
+        patch = _read_patch_text(EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE)
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn("--- a/src/CombatCommander.cpp", patch)
+        self.assertIn("bool CombatCommander::PlanAction", patch)
+        for contract in (
+            "explicit_caster_ownership",
+            "m_voiExplicitAbilityStagingActorTag",
+            "m_lastVoiExplicitAbilityActorTag",
+            "m_lastVoiExplicitAbilityTerminalAttemptGeneration",
+            "m_voiExplicitAbilityAttemptGeneration",
+            'activeExplicitAbility != "tactical_nuke"',
+            "!directExplicitAction",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        self.assertLess(
+            added_lines.index(
+                "m_lastVoiExplicitAbilityTerminalAttemptGeneration"
+            ),
+            added_lines.index("explicit_caster_ownership"),
+        )
+
+    def test_explicit_ability_staging_move_is_single_flight(self) -> None:
+        patch = _read_patch_text(
+            EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE
+        )
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertIn("--- a/src/CombatCommander.cpp", patch)
+        self.assertIn("--- a/src/CombatCommander.h", patch)
+        for contract in (
+            "m_voiExplicitAbilityStagingCommandActorTag",
+            "m_voiExplicitAbilityStagingCommandPosition",
+            "stagingCommandOwnsRoute",
+            "already in flight",
+            "stalled-route observation own bounded recovery",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, added_lines)
+        self.assertLess(
+            patch.index("stagingCommandOwnsRoute"),
+            patch.index("UnitAction stagingAction"),
+        )
+
     def test_hook_manifest_covers_verified_upstream_manager_hooks(self) -> None:
         manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
 
@@ -1545,6 +2443,279 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "patches/0035-adaptive-pressure-stable-operation-key.patch",
             {patch["path"] for patch in manifest["patch_bundle"]},
         )
+        self.assertIn(
+            {
+                "path": "patches/0036-tactical-nuke-command-hierarchy.patch",
+                "order": 36,
+                "scope": (
+                    "tactical nuke MetaType and full Factory/Ghost prerequisite "
+                    "production, four-Marine target-acquisition scope with separate "
+                    "defensive escort production, authoritative Ghost "
+                    "Academy/Factory/Armory/Fusion Core placement "
+                    "with bounded tactical-prerequisite retry, "
+                    "completed-Factory/state/resource-gated direct BUILD_NUKE "
+                    "submission with "
+                    "SC2-observed accepted/rejected state, duplicate-payload "
+                    "protection, retry cooldown, and rate-limited ability "
+                    "diagnostics, "
+                    "stale Nuke queue removal, "
+                    "dedicated NukeOps squad ownership, blast-radius MainAttack "
+                    "containment, safe recently observed enemy targeting, dense "
+                    "terrain-connected staging selection, retry-safe "
+                    "EFFECT_NUKECALLDOWN submission, SC2-observed cast/effect "
+                    "confirmation, and dedicated production/AbilityTask telemetry"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0045-explicit-ability-review-closure.patch"
+                ),
+                "order": 45,
+                "scope": (
+                    "resolve Marine and Marauder stim through the SC2 "
+                    "capability ID actually exposed by unit queries, "
+                    "require every scoped Medivac to be empty before treating "
+                    "unload-all as already satisfied, and preserve active "
+                    "explicit siege, burrow, cloak, vehicle, Viking, and "
+                    "Liberator state commands by rejecting autonomous inverse "
+                    "mode changes for their full policy TTL"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0049-explicit-ability-caster-ownership.patch"
+                ),
+                "order": 49,
+                "scope": (
+                    "reserve the selected explicit-ability caster from Squad "
+                    "and unit-manager autonomous actions while staging or "
+                    "awaiting confirmation, keep direct explicit actions and "
+                    "tactical-nuke ownership unchanged, and release the caster "
+                    "immediately when the exact attempt becomes terminal"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0050-explicit-ability-staging-single-flight.patch"
+                ),
+                "order": 50,
+                "scope": (
+                    "bind an issued explicit-ability staging Move to its exact "
+                    "caster and staging target for the full route lifetime, "
+                    "suppress duplicate submissions while position "
+                    "observations show progress, and release that ownership "
+                    "only when the existing stalled-route detector rejects "
+                    "and re-resolves the route"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0047-banshee-unit-specific-cloak-command.patch"
+                ),
+                "order": 47,
+                "scope": (
+                    "submit Banshee cloak and decloak through the "
+                    "unit-specific SC2 executable ability IDs while accepting "
+                    "generic capability-query remaps, and use the corrected "
+                    "IDs in explicit DSL execution, unit-role micro, "
+                    "inverse-action ownership, and autonomous RangedManager "
+                    "cloak logic"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0048-allied-cloak-observation-confirmation.patch"
+                ),
+                "order": 48,
+                "scope": (
+                    "preserve protocol CloakedUnknown and CloakedAllied "
+                    "observations through s2client-api without per-frame "
+                    "unsupported-state log flooding, recognize allied Banshee "
+                    "cloak in autonomous uncloak and cloaked-combat safety "
+                    "decisions, and allow explicit cloak tasks to reach "
+                    "effect_observed confirmation from the actual SC2 unit "
+                    "state"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0046-authoritative-addon-runtime-clearance.patch"
+                ),
+                "order": 46,
+                "scope": (
+                    "trust the authoritative SC2 placement query for a "
+                    "grounded producer's exact 2x2 addon footprint instead "
+                    "of rejecting valid adjacent structures through a broad "
+                    "radius heuristic, and clear only friendly mobile units "
+                    "whose collision boxes actually overlap the addon tiles"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0037-location-intent-target-lock.patch",
+                "order": 37,
+                "scope": (
+                    "requested enemy-location anchor locking for combat scouts "
+                    "and tactical-nuke target selection, observed-enemy anchor "
+                    "promotion inside the enemy-main area, home-adjacent "
+                    "fallback rejection, route-stall retention, and "
+                    "target-anchor match telemetry"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0038-explicit-terran-ability-execution.patch",
+                "order": 38,
+                "scope": (
+                    "SC2-availability-checked execution for explicit Terran "
+                    "abilities and mode changes, including Marine/Marauder-specific "
+                    "stim, Ghost cloak/decloak, Medivac load/unload, caster and "
+                    "target resolution from tactical_task unit classes and "
+                    "location intent, target liveness and cast-range submission "
+                    "guards, generic AbilityTask actor/action telemetry, "
+                    "authoritative production prerequisites and upgrades including "
+                    "Personal Cloaking, and protected home defense ownership for "
+                    "the reserved tactical-nuke Ghost"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0039-explicit-scout-command-epoch.patch",
+                "order": 39,
+                "scope": (
+                    "update-id-scoped explicit combat-scout command epochs that "
+                    "prefer a fresh matching unit, invalidate stale planned "
+                    "actions and command cooldowns, submit one prioritized MOVE "
+                    "even when the same SC2 order already exists, then restore "
+                    "ordinary duplicate suppression with planned/submitted telemetry"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0040-standing-production-continuity-closure.patch",
+                "order": 40,
+                "scope": (
+                    "standing production targets remain authoritative under "
+                    "operation-layer overlays, Marine continuity runs alongside "
+                    "requested Factory and Tank tech, standing gas and facility "
+                    "scaling stays active without exact composition entries, and "
+                    "ground siege bias no longer creates an unrequested Liberator "
+                    "and Starport transition"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0041-explicit-ability-caster-production-priority.patch"
+                ),
+                "order": 41,
+                "scope": (
+                    "explicit execute_ability unit classes become authoritative "
+                    "caster production requests for all supported Terran bio, "
+                    "mech, air, and capital units; required add-ons and tech "
+                    "structures are reconstructed in ProductionManager, unrelated "
+                    "doctrine and expansion work is deferred only while no caster "
+                    "is represented, Starport transition waits for a completed "
+                    "Factory, and standing macro resumes after caster production "
+                    "is queued, training, or complete"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0044-explicit-ability-attempt-lifecycle.patch"
+                ),
+                "order": 44,
+                "scope": (
+                    "bind each explicit ability action and telemetry record to "
+                    "the exact update, task, ability, and attempt generation; "
+                    "separate planned, submitted, observed-accepted, and "
+                    "effect-observed phases; suppress stale or irreversible "
+                    "duplicate submissions; recognize already-satisfied unit "
+                    "states; and confirm effects from actor type, cloak, buff, "
+                    "cargo, spawned-unit, destination, order, energy, and "
+                    "ability-availability observations"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0042-explicit-ability-observation-confirmation.patch"
+                ),
+                "order": 42,
+                "scope": (
+                    "non-nuke explicit ability submissions remain executing "
+                    "until subsequent SC2 observations confirm ability-specific "
+                    "unit-type, cloak, buff, cargo, target-state, destination, or "
+                    "spawned-unit effects; SC2 pathing queries are bounded into "
+                    "API-safe batches, stalled staging routes are rejected and "
+                    "re-resolved, and bounded confirmation timeout reopens safe "
+                    "retry, while location-derived target staging and AbilityTask "
+                    "submission/confirmation telemetry distinguish planned, "
+                    "submitted, pending, and observed completion"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0043-explicit-ability-production-isolation.patch"
+                ),
+                "order": 43,
+                "scope": (
+                    "while an explicit non-nuke ability caster is absent, "
+                    "isolate its prerequisite production lane from unrelated "
+                    "legacy Starport/Banshee tech, bound build-queue inspection "
+                    "to the queue snapshot, and trust already SC2-validated VOI "
+                    "macro placements instead of entering an additional "
+                    "unbounded path-safety search"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
 
         hooks = manifest["manager_hooks"]
         domains = {hook["domain"] for hook in hooks}
@@ -1580,6 +2751,154 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertTrue(hook["keys"])
                 self.assertTrue(hook["function"])
                 self.assertTrue(hook["intended_effect"])
+        hooks_by_domain = {hook["domain"]: hook for hook in hooks}
+        production_hook = hooks_by_domain["production"]
+        self.assertIn("tactical_task.ability", production_hook["keys"])
+        self.assertIn("tactical_task.unit_classes", production_hook["keys"])
+        self.assertIn("tactical_task.duration_seconds", production_hook["keys"])
+        self.assertEqual(
+            (
+                "ProductionManager::refreshVoiDoctrinePolicyBaseline() / "
+                "ProductionManager::applyVoiDoctrineProductionBias() / "
+                "ProductionManager::putImportantBuildOrderItemsInQueue() / "
+                "ProductionManager::manageBuildOrderQueue() / "
+                "ProductionManager::queueVoiDoctrineItem()"
+            ),
+            production_hook["secondary_function"],
+        )
+        for telemetry_field in (
+            "tactical_nuke_payload_status",
+            "tactical_nuke_payload_update_id",
+            "tactical_nuke_payload_producer_tag",
+            "tactical_nuke_payload_submission_count",
+            "tactical_nuke_payload_accepted_count",
+            "tactical_nuke_payload_rejected_count",
+            "tactical_nuke_payload_submission_frame",
+            "tactical_nuke_payload_accepted_frame",
+            "tactical_nuke_payload_next_retry_frame",
+        ):
+            with self.subTest(telemetry_field=telemetry_field):
+                self.assertIn(telemetry_field, production_hook["telemetry_fields"])
+        self.assertIn(
+            "becomes an actual production command only after",
+            production_hook["intended_effect"],
+        )
+        self.assertIn(
+            "isolate its prerequisite lane from unrelated legacy Starport/Banshee work",
+            production_hook["intended_effect"],
+        )
+        self.assertIn(
+            "initial queue snapshot",
+            production_hook["intended_effect"],
+        )
+        building_tasks_hook = hooks_by_domain["building_tasks"]
+        self.assertIn(
+            "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
+            building_tasks_hook["secondary_function"],
+        )
+        self.assertIn(
+            "bypass the redundant unbounded path-safety search",
+            building_tasks_hook["intended_effect"],
+        )
+        tactical_task_hook = hooks_by_domain["tactical_task"]
+        self.assertEqual(
+            "verified_consumed_with_observation_confirmed_ability_staging_telemetry",
+            tactical_task_hook["status"],
+        )
+        self.assertIn("tactical_task.ability", tactical_task_hook["keys"])
+        for role_key in (
+            "unit_roles.*.unit_type",
+            "unit_roles.*.role",
+            "unit_roles.*.ability_policy",
+        ):
+            with self.subTest(role_key=role_key):
+                self.assertIn(role_key, tactical_task_hook["keys"])
+        self.assertIn(
+            "CombatCommander::updateVoiTacticalNukeAction()",
+            tactical_task_hook["secondary_function"],
+        )
+        self.assertIn(
+            "CombatCommander::updateVoiExplicitAbilityAction()",
+            tactical_task_hook["secondary_function"],
+        )
+        self.assertIn(
+            "CombatCommander::ExecuteActions()",
+            tactical_task_hook["secondary_function"],
+        )
+        for telemetry_field in (
+            "TacticalTask.ability",
+            "AbilityTask.active",
+            "AbilityTask.task_id",
+            "AbilityTask.ability",
+            "AbilityTask.ability_policy",
+            "AbilityTask.status",
+            "AbilityTask.reason",
+            "AbilityTask.phase",
+            "AbilityTask.update_id",
+            "AbilityTask.attempt_generation",
+            "AbilityTask.submitted_attempt_generation",
+            "AbilityTask.observed_accepted_frame",
+            "AbilityTask.observed_accepted_attempt_generation",
+            "AbilityTask.observed_accepted_evidence",
+            "AbilityTask.terminal_attempt_generation",
+            "AbilityTask.actor_tag",
+            "AbilityTask.actor_type",
+            "AbilityTask.target_tag",
+            "AbilityTask.location_intent",
+            "AbilityTask.target_x",
+            "AbilityTask.target_y",
+            "AbilityTask.target_anchor_x",
+            "AbilityTask.target_anchor_y",
+            "AbilityTask.target_anchor_distance",
+            "AbilityTask.target_location_match",
+            "AbilityTask.target_observation_frame",
+            "AbilityTask.staging_x",
+            "AbilityTask.staging_y",
+            "AbilityTask.available_ghost_count",
+            "AbilityTask.available_caster_count",
+            "AbilityTask.planned_count",
+            "AbilityTask.staging_command_issued_count",
+            "AbilityTask.staging_command_frame",
+            "AbilityTask.staging_arrival_frame",
+            "AbilityTask.staging_issued_action",
+            "AbilityTask.actor_home_distance",
+            "AbilityTask.actor_max_home_distance",
+            "AbilityTask.cast_attempted_count",
+            "AbilityTask.cast_submitted_count",
+            "AbilityTask.cast_submission_frame",
+            "AbilityTask.cast_submitted_action",
+            "AbilityTask.submitted_count",
+            "AbilityTask.last_action",
+            "AbilityTask.payload_count_at_submission",
+            "AbilityTask.confirmation_state",
+            "AbilityTask.confirmation_count",
+            "AbilityTask.confirmation_frame",
+            "AbilityTask.confirmation_effect",
+            "AbilityTask.consumed_role_axis",
+            "AbilityTask.consumed_ability_policy_axis",
+            "AbilityTask.consumed_axes",
+        ):
+            with self.subTest(telemetry_field=telemetry_field):
+                self.assertIn(
+                    telemetry_field,
+                    tactical_task_hook["telemetry_fields"],
+                )
+        self.assertIn(
+            "exact update, task, ability, and attempt generation",
+            tactical_task_hook["intended_effect"],
+        )
+        self.assertIn(
+            "suppresses stale and irreversible duplicate submissions",
+            tactical_task_hook["intended_effect"],
+        )
+        self.assertIn(
+            "SC2 submission, observed acceptance, and concrete effect confirmation",
+            tactical_task_hook["intended_effect"],
+        )
+        self.assertIn(
+            "location target/staging coordinates and staging-command telemetry",
+            tactical_task_hook["intended_effect"],
+        )
         pending_keys = manifest["python_blackboard_emitted_but_not_consumed_by_current_cpp_patch"]
         self.assertIn("combat.pressure_window_frames", pending_keys)
         self.assertIn("squad.flank_bias", pending_keys)
@@ -1595,6 +2914,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn("scope.unit_classes", pending_keys)
         self.assertNotIn("scope.max_units", pending_keys)
         self.assertNotIn("tactical_task.task_type", pending_keys)
+        self.assertNotIn("tactical_task.ability", pending_keys)
         self.assertNotIn("tactical_task.production_targets", pending_keys)
         self.assertNotIn("building_tasks.*", pending_keys)
         self.assertNotIn("composition_requirements.*", pending_keys)
@@ -1662,6 +2982,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "outside Codex filesystem/network sandboxing",
             "VOI_SC2_CREATEGAME_MAP_DATA=1",
             "local_map.map_data",
+            "ProductionManager::putImportantBuildOrderItemsInQueue()",
+            "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
+            "through `0050`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -2204,6 +3527,21 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0033-review-closure-operation-identity-and-full-composition.patch",
             "0034-semantic-operation-production-closure.patch",
             "0035-adaptive-pressure-stable-operation-key.patch",
+            "0036-tactical-nuke-command-hierarchy.patch",
+            "0037-location-intent-target-lock.patch",
+            "0038-explicit-terran-ability-execution.patch",
+            "0039-explicit-scout-command-epoch.patch",
+            "0040-standing-production-continuity-closure.patch",
+            "0041-explicit-ability-caster-production-priority.patch",
+            "0042-explicit-ability-observation-confirmation.patch",
+            "0043-explicit-ability-production-isolation.patch",
+            "0044-explicit-ability-attempt-lifecycle.patch",
+            "0045-explicit-ability-review-closure.patch",
+            "0046-authoritative-addon-runtime-clearance.patch",
+            "0047-banshee-unit-specific-cloak-command.patch",
+            "0048-allied-cloak-observation-confirmation.patch",
+            "0049-explicit-ability-caster-ownership.patch",
+            "0050-explicit-ability-staging-single-flight.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -2237,6 +3575,29 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "REVIEW_CLOSURE_OPERATION_IDENTITY_FULL_COMPOSITION_PATCH_FILE",
             "SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH_FILE",
             "ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE",
+            "TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH_FILE",
+            "LOCATION_INTENT_TARGET_LOCK_PATCH_FILE",
+            "EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH_FILE",
+            "EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH_FILE",
+            "STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH_FILE",
+            "EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH_FILE",
+            "EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH_FILE",
+            "EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH_FILE",
+            "EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH_FILE",
+            "EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH_FILE",
+            "AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH_FILE",
+            "BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH_FILE",
+            "ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE",
+            "EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE",
+            "EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE",
+            "--micromachine-explicit-ability-production-isolation-patch",
+            "--micromachine-explicit-ability-attempt-lifecycle-patch",
+            "--micromachine-explicit-ability-review-closure-patch",
+            "--micromachine-authoritative-addon-runtime-clearance-patch",
+            "--micromachine-banshee-unit-specific-cloak-command-patch",
+            "--micromachine-allied-cloak-observation-confirmation-patch",
+            "--micromachine-explicit-ability-caster-ownership-patch",
+            "--micromachine-explicit-ability-staging-single-flight-patch",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",
@@ -2277,6 +3638,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-continuous-combat-production-relaunch-patch",
             "--micromachine-resource-throughput-expansion-backoff-patch",
             "--micromachine-gas-worker-completion-cap-patch",
+            "--micromachine-tactical-nuke-command-hierarchy-patch",
+            "--micromachine-explicit-terran-ability-execution-patch",
+            "--micromachine-explicit-scout-command-epoch-patch",
+            "--micromachine-standing-production-continuity-closure-patch",
+            "--micromachine-explicit-ability-caster-production-priority-patch",
+            "--micromachine-explicit-ability-observation-confirmation-patch",
             "voi_build_identity.json",
             "BLACKBOARD_HEADER_FILE",
             "voi_policy_blackboard.hpp",
@@ -2296,6 +3663,289 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertLess(
             build_script.index('cmake --build "${MICROMACHINE_BUILD_DIR}"'),
             build_script.index("--finalize-build-attestation"),
+        )
+        adaptive_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH_FILE}"'
+        )
+        tactical_nuke_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH_FILE}"'
+        )
+        tactical_nuke_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH_FILE}"'
+        )
+        location_lock_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${LOCATION_INTENT_TARGET_LOCK_PATCH_FILE}"'
+        )
+        location_lock_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${LOCATION_INTENT_TARGET_LOCK_PATCH_FILE}"'
+        )
+        explicit_ability_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH_FILE}"'
+        )
+        explicit_ability_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH_FILE}"'
+        )
+        explicit_scout_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH_FILE}"'
+        )
+        explicit_scout_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH_FILE}"'
+        )
+        standing_production_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH_FILE}"'
+        )
+        standing_production_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH_FILE}"'
+        )
+        explicit_caster_priority_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH_FILE}"'
+        )
+        explicit_caster_priority_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH_FILE}"'
+        )
+        explicit_observation_confirmation_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH_FILE}"'
+        )
+        explicit_observation_confirmation_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH_FILE}"'
+        )
+        explicit_production_isolation_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH_FILE}"'
+        )
+        explicit_production_isolation_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH_FILE}"'
+        )
+        explicit_attempt_lifecycle_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH_FILE}"'
+        )
+        explicit_attempt_lifecycle_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH_FILE}"'
+        )
+        explicit_review_closure_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        explicit_review_closure_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        authoritative_addon_runtime_clearance_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH_FILE}"'
+        )
+        authoritative_addon_runtime_clearance_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH_FILE}"'
+        )
+        banshee_unit_specific_cloak_command_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH_FILE}"'
+        )
+        banshee_unit_specific_cloak_command_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH_FILE}"'
+        )
+        allied_cloak_observation_confirmation_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE}"'
+        )
+        allied_cloak_observation_confirmation_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE}"'
+        )
+        explicit_ability_caster_ownership_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE}"'
+        )
+        explicit_ability_caster_ownership_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE}"'
+        )
+        explicit_ability_staging_single_flight_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE}"'
+        )
+        explicit_ability_staging_single_flight_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE}"'
+        )
+        blackboard_copy = (
+            'cp "${BLACKBOARD_HEADER_FILE}" '
+            '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
+        )
+        self.assertLess(
+            build_script.index(adaptive_apply),
+            build_script.index(tactical_nuke_check),
+        )
+        self.assertLess(
+            build_script.index(tactical_nuke_check),
+            build_script.index(tactical_nuke_apply),
+        )
+        self.assertLess(
+            build_script.index(tactical_nuke_apply),
+            build_script.index(location_lock_check),
+        )
+        self.assertLess(
+            build_script.index(location_lock_check),
+            build_script.index(location_lock_apply),
+        )
+        self.assertLess(
+            build_script.index(location_lock_apply),
+            build_script.index(explicit_ability_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_ability_check),
+            build_script.index(explicit_ability_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_ability_apply),
+            build_script.index(explicit_scout_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_scout_check),
+            build_script.index(explicit_scout_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_scout_apply),
+            build_script.index(standing_production_check),
+        )
+        self.assertLess(
+            build_script.index(standing_production_check),
+            build_script.index(standing_production_apply),
+        )
+        self.assertLess(
+            build_script.index(standing_production_apply),
+            build_script.index(explicit_caster_priority_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_caster_priority_check),
+            build_script.index(explicit_caster_priority_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_caster_priority_apply),
+            build_script.index(explicit_observation_confirmation_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_observation_confirmation_check),
+            build_script.index(explicit_observation_confirmation_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_observation_confirmation_apply),
+            build_script.index(explicit_production_isolation_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_production_isolation_check),
+            build_script.index(explicit_production_isolation_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_production_isolation_apply),
+            build_script.index(explicit_attempt_lifecycle_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_attempt_lifecycle_check),
+            build_script.index(explicit_attempt_lifecycle_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_attempt_lifecycle_apply),
+            build_script.index(explicit_review_closure_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_review_closure_check),
+            build_script.index(explicit_review_closure_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_review_closure_apply),
+            build_script.index(authoritative_addon_runtime_clearance_check),
+        )
+        self.assertLess(
+            build_script.index(authoritative_addon_runtime_clearance_check),
+            build_script.index(authoritative_addon_runtime_clearance_apply),
+        )
+        self.assertLess(
+            build_script.index(authoritative_addon_runtime_clearance_apply),
+            build_script.index(banshee_unit_specific_cloak_command_check),
+        )
+        self.assertLess(
+            build_script.index(banshee_unit_specific_cloak_command_check),
+            build_script.index(banshee_unit_specific_cloak_command_apply),
+        )
+        self.assertLess(
+            build_script.index(banshee_unit_specific_cloak_command_apply),
+            build_script.index(allied_cloak_observation_confirmation_check),
+        )
+        self.assertLess(
+            build_script.index(allied_cloak_observation_confirmation_check),
+            build_script.index(allied_cloak_observation_confirmation_apply),
+        )
+        self.assertLess(
+            build_script.index(allied_cloak_observation_confirmation_apply),
+            build_script.index(explicit_ability_caster_ownership_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_ability_caster_ownership_check),
+            build_script.index(explicit_ability_caster_ownership_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_ability_caster_ownership_apply),
+            build_script.index(explicit_ability_staging_single_flight_check),
+        )
+        self.assertLess(
+            build_script.index(explicit_ability_staging_single_flight_check),
+            build_script.index(explicit_ability_staging_single_flight_apply),
+        )
+        self.assertLess(
+            build_script.index(explicit_ability_staging_single_flight_apply),
+            build_script.index(blackboard_copy),
         )
         self.assertLess(
             build_script.index('git -C "${MICROMACHINE_DIR}" reset --hard\n'),
@@ -2338,9 +3988,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "VOI_MICROMACHINE_BLACKBOARD_DIR",
             "--live-hold",
             "--blackboard-dir",
+            "--enemy-difficulty",
             "--max-attempts",
             "build_tank_defensive_hold_profile",
             "build_bio_pressure_profile",
+            "build_manual_live_autonomy_profile",
+            'publish_profile "manual_live_autonomy"',
             "latest_modulation.kv",
             "preserve_existing_live_modulation",
             "manual live mode preserved existing tactical blackboard command",
@@ -2383,10 +4036,13 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "verify_build_identity",
             "stale build identity",
             'SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-1}"',
+            'SMOKE_ENEMY_DIFFICULTY="${SMOKE_ENEMY_DIFFICULTY:-7}"',
+            'SMOKE_ENEMY_DIFFICULTY="${SMOKE_ENEMY_DIFFICULTY:-1}"',
+            "SMOKE_ENEMY_DIFFICULTY must be an integer from 1 to 10",
             "has_live_hold_preflight_evidence",
             "MicroMachine manual live hold preflight passed",
             "MicroMachine live hold preflight did not pass",
-            "MicroMachine manual live hold active",
+            "MicroMachine manual live autonomy active",
             "automatic aggressive smoke profile is disabled",
             "smoke_attempts.json",
             "MicroMachine smoke retrying after retryable frame-0 startup failure",

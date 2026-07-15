@@ -23,6 +23,7 @@ from starcraft_commander.micromachine_runtime import (
     MICROMACHINE_STRATEGY_PROFILE_KEYS,
     build_aggressive_pressure_profile,
     build_defensive_hold_profile,
+    build_manual_live_autonomy_profile,
     build_micromachine_strategy_profile,
     flatten_blackboard_update,
     micromachine_strategy_profile_catalog,
@@ -147,6 +148,19 @@ class MicroMachineRuntimePathsTest(unittest.TestCase):
 
 
 class MicroMachineInterventionProfileTest(unittest.TestCase):
+    def test_manual_live_autonomy_profile_does_not_hold_combat(self) -> None:
+        profile = build_manual_live_autonomy_profile()
+
+        self.assertEqual("micromachine_manual_live_autonomy", profile.goal)
+        self.assertEqual("macro", profile.command_layer.value)
+        self.assertEqual(32, profile.workers.repeat_order_guard_frames)
+        self.assertEqual("standing_order", profile.lifetime.mode)
+        self.assertFalse(profile.emergency.hold_position)
+        self.assertEqual(0.0, profile.combat.aggression)
+        self.assertEqual(0.0, profile.combat.defend_bias)
+        self.assertEqual(0.0, profile.scouting.scout_priority)
+        self.assertEqual(0.0, profile.squad.defense_bias)
+
     def test_defensive_and_aggressive_profiles_bias_managers_without_raw_control(self) -> None:
         defensive = build_defensive_hold_profile()
         aggressive = build_aggressive_pressure_profile()
@@ -229,6 +243,7 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         drop = doctrine_vectors["drop_harassment"]
         macro = doctrine_vectors["expand_macro"]
         anti_air = doctrine_vectors["anti_air_response"]
+        scouting = doctrine_vectors["scouting_map_control"]
 
         self.assertGreater(
             marine.production.queue_biases.to_dict()["TERRAN_MARINE"],
@@ -260,6 +275,14 @@ class MicroMachineInterventionProfileTest(unittest.TestCase):
         self.assertGreater(
             anti_air.production.queue_biases.to_dict()["TERRAN_VIKINGFIGHTER"],
             marine.production.queue_biases.to_dict().get("TERRAN_VIKINGFIGHTER", -1.0),
+        )
+        self.assertGreater(
+            scouting.production.queue_biases.to_dict()["TERRAN_MARINE"],
+            0,
+        )
+        self.assertIn(
+            "TERRAN_MARINE",
+            scouting.tactical_task.production_targets,
         )
         self.assertLess(
             mech.production.production_continuity_bias,
