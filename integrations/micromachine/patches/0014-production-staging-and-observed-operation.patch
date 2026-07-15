@@ -319,7 +319,7 @@ diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
 index 6c34f2e..fd46ad0 100644
 --- a/src/GameCommander.cpp
 +++ b/src/GameCommander.cpp
-@@ -181,8 +181,17 @@ void GameCommander::updateVoiPolicyBlackboard()
+@@ -181,8 +181,16 @@ void GameCommander::updateVoiPolicyBlackboard()
          return;
      }
  
@@ -328,8 +328,7 @@ index 6c34f2e..fd46ad0 100644
 +        "lifetime.completion_state",
 +        "active");
 +    const bool semanticLifetimeActive = completionState == "active"
-+        && (lifetimeMode == "until_completed"
-+            || lifetimeMode == "until_cancelled"
++        && (lifetimeMode == "until_cancelled"
 +            || lifetimeMode == "standing_order");
      if (!m_voiPolicyBlackboard.isProtocolCompatible()
 -        || m_voiPolicyBlackboard.isExpired(m_bot.GetGameLoop())) {

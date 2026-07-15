@@ -392,7 +392,7 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "raw runtime control"):
                 blackboard.read_latest_update(current_frame=1)
 
-    def test_read_latest_update_keeps_active_semantic_operation_after_lease(self) -> None:
+    def test_read_latest_update_expires_unfinished_semantic_operation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             blackboard = MicroMachineFilesystemBlackboard(directory)
             vector = PolicyModulationVector(
@@ -409,11 +409,8 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
                 update_id="semantic-operation",
             )
 
-            latest = blackboard.read_latest_update(current_frame=10_000)
-
-            self.assertIsNotNone(latest)
-            assert latest is not None
-            self.assertEqual("semantic-operation", latest.update_id)
+            with self.assertRaisesRegex(ValueError, "stale"):
+                blackboard.read_latest_update(current_frame=10_000)
 
     def test_ingests_telemetry_and_builds_dashboard_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

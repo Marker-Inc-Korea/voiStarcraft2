@@ -50,6 +50,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
+from weakref import WeakValueDictionary
 
 from starcraft_commander.micromachine_bridge import require_micromachine_update_id
 from starcraft_commander.micromachine_command_execution import (
@@ -408,6 +409,60 @@ def _micromachine_compile_result_history_path(
     )
 
 
+_MICROMACHINE_COMPILE_RESULT_LOCKS_GUARD = threading.Lock()
+_MICROMACHINE_COMPILE_RESULT_LOCKS: WeakValueDictionary[
+    str,
+    threading.Lock,
+] = WeakValueDictionary()
+
+
+def _micromachine_compile_result_lock(blackboard_dir: str) -> threading.Lock:
+    """Return one process-local persistence lock per resolved blackboard."""
+
+    key = os.path.realpath(os.path.abspath(blackboard_dir))
+    with _MICROMACHINE_COMPILE_RESULT_LOCKS_GUARD:
+        return _MICROMACHINE_COMPILE_RESULT_LOCKS.setdefault(
+            key,
+            threading.Lock(),
+        )
+
+
+def _micromachine_compile_result_order(
+    payload: Mapping[str, object],
+) -> tuple[int, int]:
+    """Order results by request acceptance, never by completion time."""
+
+    accepted_at_unix_ns = payload.get("accepted_at_unix_ns")
+    if type(accepted_at_unix_ns) is not int or accepted_at_unix_ns < 0:
+        written_at_unix = payload.get("written_at_unix")
+        accepted_at_unix_ns = (
+            int(written_at_unix * 1_000_000_000)
+            if isinstance(written_at_unix, (int, float))
+            and not isinstance(written_at_unix, bool)
+            else 0
+        )
+    acceptance_ordinal = payload.get("acceptance_ordinal")
+    if type(acceptance_ordinal) is not int or acceptance_ordinal < 0:
+        acceptance_ordinal = 0
+    return accepted_at_unix_ns, acceptance_ordinal
+
+
+def _micromachine_compile_result_is_newer(
+    candidate: Mapping[str, object],
+    current: Mapping[str, object] | None,
+) -> bool:
+    if current is None:
+        return True
+    candidate_order = _micromachine_compile_result_order(candidate)
+    current_order = _micromachine_compile_result_order(current)
+    if candidate_order != current_order:
+        return candidate_order > current_order
+    return (
+        str(candidate.get("update_id", "") or "").strip()
+        == str(current.get("update_id", "") or "").strip()
+    )
+
+
 def _new_micromachine_update_id() -> str:
     return f"voi-mm-{uuid.uuid4().hex}"
 
@@ -437,30 +492,45 @@ def _write_micromachine_compile_result(
     blackboard_dir: str,
     payload: Mapping[str, object],
 ) -> tuple[str, ...]:
-    """Persist latest/history records independently and return safe warnings."""
+    """Persist ordered latest/history records and return safe warnings."""
 
     document = dict(payload)
     update_id = str(document.get("update_id", "") or "").strip()
     document.update(_micromachine_compile_result_metadata(blackboard_dir, update_id))
     warnings: list[str] = []
-    try:
-        _atomic_write_json(_micromachine_compile_result_path(blackboard_dir), document)
-    except Exception as error:  # noqa: BLE001 - persistence is never publish control flow.
-        warnings.append(f"latest compile result persistence failed: {type(error).__name__}")
-    if not update_id:
-        return tuple(warnings)
-    history_path = _micromachine_compile_result_history_path(
-        blackboard_dir,
-        update_id,
-    )
-    try:
-        _atomic_write_json(history_path, document)
-    except Exception as error:  # noqa: BLE001 - persistence is never publish control flow.
-        warnings.append(f"compile result history persistence failed: {type(error).__name__}")
-    try:
-        _prune_micromachine_compile_result_history(blackboard_dir)
-    except Exception as error:  # noqa: BLE001 - retention is best effort.
-        warnings.append(f"compile result history retention failed: {type(error).__name__}")
+    with _micromachine_compile_result_lock(blackboard_dir):
+        latest = _read_micromachine_compile_result(blackboard_dir)
+        if _micromachine_compile_result_is_newer(document, latest):
+            try:
+                _atomic_write_json(
+                    _micromachine_compile_result_path(blackboard_dir),
+                    document,
+                )
+            except Exception as error:  # noqa: BLE001 - persistence is never publish control flow.
+                warnings.append(
+                    "latest compile result persistence failed: "
+                    f"{type(error).__name__}"
+                )
+        if not update_id:
+            return tuple(warnings)
+        history_path = _micromachine_compile_result_history_path(
+            blackboard_dir,
+            update_id,
+        )
+        try:
+            _atomic_write_json(history_path, document)
+        except Exception as error:  # noqa: BLE001 - persistence is never publish control flow.
+            warnings.append(
+                "compile result history persistence failed: "
+                f"{type(error).__name__}"
+            )
+        try:
+            _prune_micromachine_compile_result_history(blackboard_dir)
+        except Exception as error:  # noqa: BLE001 - retention is best effort.
+            warnings.append(
+                "compile result history retention failed: "
+                f"{type(error).__name__}"
+            )
     return tuple(warnings)
 
 
@@ -2229,6 +2299,8 @@ class _MicroMachineModulationRequest:
     deadline_monotonic: float | None = None
     emergency: bool = False
     emergency_epoch: int = 0
+    accepted_at_unix_ns: int = 0
+    acceptance_ordinal: int = 0
     publish_committed: bool = False
 
 
@@ -2972,6 +3044,7 @@ class SessionLoopBridge:
             _MicroMachineModulationRequest,
         ] = {}
         self._micromachine_emergency_epochs: dict[str, tuple[int, str]] = {}
+        self._micromachine_acceptance_ordinals: dict[str, int] = {}
         self._queue_sequence = 0
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -3132,6 +3205,14 @@ class SessionLoopBridge:
                     f"MicroMachine update_id is already queued: {update_id}."
                 )
             request_blackboard = os.path.realpath(request.blackboard_dir)
+            request.accepted_at_unix_ns = time.time_ns()
+            request.acceptance_ordinal = (
+                self._micromachine_acceptance_ordinals.get(request_blackboard, 0)
+                + 1
+            )
+            self._micromachine_acceptance_ordinals[request_blackboard] = (
+                request.acceptance_ordinal
+            )
             request.emergency_epoch = self._micromachine_emergency_epochs.get(
                 request_blackboard,
                 (0, ""),
@@ -3421,6 +3502,8 @@ class SessionLoopBridge:
                     "command_queue": result["command_queue"],
                     "duration_ms": 0,
                     "result": result,
+                    "accepted_at_unix_ns": request.accepted_at_unix_ns,
+                    "acceptance_ordinal": request.acceptance_ordinal,
                     "written_at_unix": time.time(),
                 }
                 _write_micromachine_compile_result(
@@ -3594,6 +3677,12 @@ class SessionLoopBridge:
             "command_queue": payload.get("command_queue"),
             "duration_ms": duration_ms,
             "result": result_snapshot,
+            "accepted_at_unix_ns": (
+                request.accepted_at_unix_ns if request is not None else time.time_ns()
+            ),
+            "acceptance_ordinal": (
+                request.acceptance_ordinal if request is not None else 0
+            ),
             "written_at_unix": time.time(),
         }
         compile_document.update(result_metadata)

@@ -693,6 +693,15 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, patch)
 
+        semantic_lifetime_block = patch[
+            patch.index("const bool semanticLifetimeActive") :
+            patch.index(
+                "if (!m_voiPolicyBlackboard.isProtocolCompatible()",
+                patch.index("const bool semanticLifetimeActive"),
+            )
+        ]
+        self.assertNotIn('lifetimeMode == "until_completed"', semantic_lifetime_block)
+
         for source_path in (
             "src/BuildingManager.cpp",
             "src/CombatCommander.cpp",

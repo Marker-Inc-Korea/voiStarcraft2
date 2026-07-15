@@ -2875,6 +2875,111 @@ class SessionLoopBridgeTest(unittest.TestCase):
             self.assertEqual("superseded", stream["slow-normal"]["status"])
             self.assertEqual("published", stream["urgent-retreat"]["status"])
 
+    def test_latest_compile_result_preserves_request_acceptance_order(self):
+        normal_write_ready = threading.Event()
+        release_normal_write = threading.Event()
+        self.addCleanup(release_normal_write.set)
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        original_write = web_gui._write_micromachine_compile_result
+
+        def delay_normal_result(blackboard_dir, payload):
+            if payload.get("update_id") == "normal-first":
+                normal_write_ready.set()
+                if not release_normal_write.wait(2):
+                    raise TimeoutError("normal result persistence was not released")
+            return original_write(blackboard_dir, payload)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                web_gui,
+                "_write_micromachine_compile_result",
+                side_effect=delay_normal_result,
+            ),
+        ):
+            bridge.submit_micromachine_modulation_background(
+                "메인 병력으로 압박해",
+                blackboard_dir=directory,
+                provider_output={
+                    "goal": "normal pressure",
+                    "override_level": "directive",
+                    "command_layer": "operation",
+                    "ttl_seconds": 120,
+                    "combat": {"aggression": 0.7},
+                    "tactical_task": {
+                        "task_type": "pressure_with_main_army",
+                        "task_id": "normal-pressure",
+                        "min_units": 1,
+                        "allow_partial": True,
+                    },
+                },
+                current_frame=10,
+                update_id="normal-first",
+            )
+            self.assertTrue(
+                normal_write_ready.wait(1),
+                "normal result did not reach delayed post-publish persistence",
+            )
+
+            bridge.submit_micromachine_modulation_background(
+                "긴급 즉시 후퇴",
+                blackboard_dir=directory,
+                provider_output={
+                    "goal": "emergency retreat",
+                    "override_level": "emergency",
+                    "command_layer": "emergency",
+                    "ttl_seconds": 45,
+                    "emergency": {
+                        "cancel_attacks": True,
+                        "force_retreat": True,
+                    },
+                },
+                current_frame=11,
+                update_id="emergency-second",
+            )
+
+            deadline = time.monotonic() + 2
+            latest_result = {}
+            while time.monotonic() < deadline:
+                latest_result = (
+                    web_gui._read_micromachine_compile_result(directory) or {}
+                )
+                if latest_result.get("update_id") == "emergency-second":
+                    break
+                time.sleep(0.02)
+            self.assertEqual("emergency-second", latest_result.get("update_id"))
+
+            release_normal_write.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with bridge._micromachine_request_lock:
+                    pending = "normal-first" in bridge._micromachine_requests
+                if not pending:
+                    break
+                time.sleep(0.02)
+
+            latest_result = web_gui._read_micromachine_compile_result(directory)
+            self.assertIsNotNone(latest_result)
+            self.assertEqual("emergency-second", latest_result["update_id"])
+            self.assertEqual(2, latest_result["acceptance_ordinal"])
+
+            status = bridge.micromachine_status(blackboard_dir=directory)
+            self.assertEqual(
+                "emergency-second",
+                status["latest_request"]["update_id"],
+            )
+            stream = {
+                item.get("compile_result", {}).get("update_id"): item
+                for item in status["modulation_results"]
+            }
+            self.assertEqual(
+                {"normal-first", "emergency-second"},
+                set(stream),
+            )
+
     def test_emergency_commit_blocks_normal_publish_from_stale_snapshot(self):
         normal_snapshot_ready = threading.Event()
         release_normal = threading.Event()

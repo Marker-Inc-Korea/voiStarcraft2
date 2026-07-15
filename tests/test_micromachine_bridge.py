@@ -120,7 +120,7 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
         )
         json.dumps(document, ensure_ascii=False)
 
-    def test_semantic_lifetimes_survive_transport_ttl(self) -> None:
+    def test_only_persistent_lifetimes_survive_transport_ttl(self) -> None:
         standing = MicroMachineBlackboardUpdate(
             update_id="standing",
             issued_at_frame=10,
@@ -150,7 +150,7 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
         )
 
         self.assertFalse(standing.is_stale(21))
-        self.assertFalse(transient.is_stale(21))
+        self.assertTrue(transient.is_stale(21))
 
     def test_manager_bias_domains_ignore_neutral_defaults(self) -> None:
         neutral = MicroMachineBlackboardUpdate(
@@ -239,7 +239,11 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
             semantic_update.to_dict(),
             current_frame=semantic_update.expires_at_frame + 10_000,
         )
-        self.assertTrue(semantic.accepted, semantic.to_dict())
+        self.assertFalse(semantic.accepted)
+        self.assertEqual(
+            MicroMachineBridgeFailureMode.STALE_MODULATION,
+            semantic.failure_mode,
+        )
 
         invalid = validate_micromachine_blackboard_update(
             {
