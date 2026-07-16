@@ -3050,7 +3050,11 @@ def _extract_composition_requirements(
         ("TERRAN_MARAUDER", "frontline", r"(?:불곰|marauder|marauders)"),
         ("TERRAN_REAPER", "worker_harass", r"(?:사신|reaper|reapers)"),
         ("TERRAN_GHOST", "spellcaster", r"(?:유령|ghost|ghosts)"),
-        ("TERRAN_HELLION", "worker_harass", r"(?:화염차|hellion|hellions)"),
+        (
+            "TERRAN_HELLION",
+            "worker_harass",
+            r"(?:화염기갑병|화염차|hellbats?|hellions?)",
+        ),
         ("TERRAN_WIDOWMINE", "ambush", r"(?:땅거미지뢰|지뢰|widow\s*mine|widow\s*mines)"),
         ("TERRAN_CYCLONE", "kite", r"(?:사이클론|cyclone|cyclones)"),
         ("TERRAN_THOR", "anti_air", r"(?:토르|thor|thors)"),

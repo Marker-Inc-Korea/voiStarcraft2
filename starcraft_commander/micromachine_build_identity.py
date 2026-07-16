@@ -378,6 +378,13 @@ DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH: Final[Path] =
     / "patches"
     / "0050-explicit-ability-staging-single-flight.patch"
 )
+DEFAULT_MICROMACHINE_ALL_TERRAN_COMBAT_SCOUTS_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0051-all-terran-combat-scouts.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -551,6 +558,9 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_explicit_ability_staging_single_flight_patch: Path = (
         DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH
+    )
+    micromachine_all_terran_combat_scouts_patch: Path = (
+        DEFAULT_MICROMACHINE_ALL_TERRAN_COMBAT_SCOUTS_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -871,6 +881,9 @@ def build_micromachine_build_identity(
                 config.micromachine_explicit_ability_staging_single_flight_patch
             )
         ),
+        "micromachine_all_terran_combat_scouts_patch_sha256": _sha256_file(
+            config.micromachine_all_terran_combat_scouts_patch
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -960,7 +973,7 @@ def build_micromachine_build_identity(
     }
     identity = "sha256:" + _sha256_json(identity_material)
     return {
-        "schema_version": 50,
+        "schema_version": 51,
         "identity": identity,
         "ok": not failures,
         "failures": failures,
@@ -1129,6 +1142,9 @@ def build_micromachine_build_identity(
             ),
             "micromachine_explicit_ability_staging_single_flight_patch": str(
                 config.micromachine_explicit_ability_staging_single_flight_patch
+            ),
+            "micromachine_all_terran_combat_scouts_patch": str(
+                config.micromachine_all_terran_combat_scouts_patch
             ),
             "s2client_patch": str(config.s2client_patch),
             "hook_manifest": str(config.hook_manifest),
@@ -1557,6 +1573,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-all-terran-combat-scouts-patch",
+        default=str(DEFAULT_MICROMACHINE_ALL_TERRAN_COMBAT_SCOUTS_PATCH),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -1746,6 +1766,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             micromachine_explicit_ability_staging_single_flight_patch=Path(
                 args.micromachine_explicit_ability_staging_single_flight_patch
+            ),
+            micromachine_all_terran_combat_scouts_patch=Path(
+                args.micromachine_all_terran_combat_scouts_patch
             ),
             s2client_patch=Path(args.s2client_patch),
             hook_manifest=Path(args.hook_manifest),

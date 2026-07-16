@@ -61,6 +61,7 @@ BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH_FILE="${REPO_ROOT}/integrations/microm
 ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0048-allied-cloak-observation-confirmation.patch"
 EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0049-explicit-ability-caster-ownership.patch"
 EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0050-explicit-ability-staging-single-flight.patch"
+ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0051-all-terran-combat-scouts.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 
@@ -269,6 +270,8 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 rm -f \
@@ -355,6 +358,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-allied-cloak-observation-confirmation-patch "${ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE}" \
   --micromachine-explicit-ability-caster-ownership-patch "${EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE}" \
   --micromachine-explicit-ability-staging-single-flight-patch "${EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE}" \
+  --micromachine-all-terran-combat-scouts-patch "${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --finalize-build-attestation \
   --output "${MICROMACHINE_BUILD_IDENTITY_REPORT}"

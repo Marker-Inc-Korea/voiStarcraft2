@@ -1,0 +1,72 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index fb8bcc4..842b73a 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -1083,7 +1083,7 @@ bool voiUnitMatchesCompositionToken(const Unit & unit, const std::string & token
+ 			|| (token == "TERRAN_MARAUDER" && type == sc2::UNIT_TYPEID::TERRAN_MARAUDER)
+ 			|| (token == "TERRAN_REAPER" && type == sc2::UNIT_TYPEID::TERRAN_REAPER)
+ 			|| (token == "TERRAN_GHOST" && type == sc2::UNIT_TYPEID::TERRAN_GHOST)
+-			|| (token == "TERRAN_HELLION" && type == sc2::UNIT_TYPEID::TERRAN_HELLION)
++			|| (token == "TERRAN_HELLION" && (type == sc2::UNIT_TYPEID::TERRAN_HELLION || type == sc2::UNIT_TYPEID::TERRAN_HELLIONTANK))
+ 			|| (token == "TERRAN_WIDOWMINE" && (type == sc2::UNIT_TYPEID::TERRAN_WIDOWMINE || type == sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED))
+ 			|| (token == "TERRAN_CYCLONE" && type == sc2::UNIT_TYPEID::TERRAN_CYCLONE)
+ 			|| (token == "TERRAN_THOR" && (type == sc2::UNIT_TYPEID::TERRAN_THOR || type == sc2::UNIT_TYPEID::TERRAN_THORAP))
+@@ -1141,7 +1141,7 @@ bool voiSc2UnitMatchesRoleToken(const sc2::Unit * unit, const std::string & toke
+ 			|| (token == "TERRAN_MARAUDER" && type == sc2::UNIT_TYPEID::TERRAN_MARAUDER)
+ 			|| (token == "TERRAN_REAPER" && type == sc2::UNIT_TYPEID::TERRAN_REAPER)
+ 			|| (token == "TERRAN_GHOST" && type == sc2::UNIT_TYPEID::TERRAN_GHOST)
+-			|| (token == "TERRAN_HELLION" && type == sc2::UNIT_TYPEID::TERRAN_HELLION)
++			|| (token == "TERRAN_HELLION" && (type == sc2::UNIT_TYPEID::TERRAN_HELLION || type == sc2::UNIT_TYPEID::TERRAN_HELLIONTANK))
+ 			|| (token == "TERRAN_WIDOWMINE" && (type == sc2::UNIT_TYPEID::TERRAN_WIDOWMINE || type == sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED))
+ 			|| (token == "TERRAN_CYCLONE" && type == sc2::UNIT_TYPEID::TERRAN_CYCLONE)
+ 			|| (token == "TERRAN_THOR" && (type == sc2::UNIT_TYPEID::TERRAN_THOR || type == sc2::UNIT_TYPEID::TERRAN_THORAP))
+@@ -5534,6 +5534,7 @@ void CombatCommander::updateScoutSquad()
+ 					sc2::UNIT_TYPEID::TERRAN_GHOST);
+ 			}
+ 			addScoutType("TERRAN_HELLION", sc2::UNIT_TYPEID::TERRAN_HELLION);
++			addScoutType("TERRAN_HELLION", sc2::UNIT_TYPEID::TERRAN_HELLIONTANK);
+ 			addScoutType("TERRAN_WIDOWMINE", sc2::UNIT_TYPEID::TERRAN_WIDOWMINE);
+ 			addScoutType("TERRAN_WIDOWMINE", sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED);
+ 			addScoutType("TERRAN_CYCLONE", sc2::UNIT_TYPEID::TERRAN_CYCLONE);
+diff --git a/src/RangedManager.cpp b/src/RangedManager.cpp
+index 2284b75..9a4789b 100644
+--- a/src/RangedManager.cpp
++++ b/src/RangedManager.cpp
+@@ -294,8 +294,14 @@ void RangedManager::executeMicro()
+ 	}
+ 
+ 	sc2::Units otherSquadsUnits;
++	auto & squadData = m_bot.Commander().Combat().getSquadData();
+ 	for (auto & unit : m_bot.Commander().Combat().GetCombatUnits())
+ 	{
++		const Squad * owningSquad = squadData.getUnitSquad(unit);
++		if (owningSquad != nullptr && owningSquad->getName() == "Scout")
++		{
++			continue;
++		}
+ 		const sc2::Unit * unitPtr = unit.getUnitPtr();
+ 		if (!Util::Contains(unitPtr, rangedUnits))
+ 			otherSquadsUnits.push_back(unitPtr);
+@@ -584,7 +590,9 @@ void RangedManager::HarassLogicForUnit(const sc2::Unit* rangedUnit, sc2::Units &
+ 		const bool vikingShouldSupport = isViking
+ 			&& !scoutViking
+ 			&& (!mainAttackViking || mainAttackVikingSupportRole);
+-		if (!isCycloneHelper && (isMedivac || isRaven || (((/*isMarine ||*/ vikingShouldSupport) || isHellion) && m_order.getType() != SquadOrderTypes::Defend)) && m_order.getType() != SquadOrderTypes::Clear)
++		if (!preserveScoutOrder
++			&& !isCycloneHelper
++			&& (isMedivac || isRaven || (((/*isMarine ||*/ vikingShouldSupport) || isHellion) && m_order.getType() != SquadOrderTypes::Defend)) && m_order.getType() != SquadOrderTypes::Clear)
+ 		{
+ 			goal = GetBestSupportPosition(rangedUnit, allCombatAllies);
+ 			goalDescription = "Support";
+@@ -3532,6 +3540,11 @@ bool RangedManager::ExecuteHealLogic(const sc2::Unit * medivac, const sc2::Units
+ 	if (medivac->unit_type != sc2::UNIT_TYPEID::TERRAN_MEDIVAC)
+ 		return false;
+ 	
++	const Squad * owningSquad = m_bot.Commander().Combat().getSquadData().getUnitSquad(
++		Unit(medivac, m_bot));
++	if (owningSquad != nullptr && owningSquad->getName() == "Scout")
++		return false;
++
+ 	if (shouldHeal)
+ 		return false;
+ 	
