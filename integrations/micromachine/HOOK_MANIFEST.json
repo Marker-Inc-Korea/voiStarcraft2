@@ -258,6 +258,11 @@
       "path": "patches/0050-explicit-ability-staging-single-flight.patch",
       "order": 50,
       "scope": "bind an issued explicit-ability staging Move to its exact caster and staging target for the full route lifetime, suppress duplicate submissions while position observations show progress, and release that ownership only when the existing stalled-route detector rejects and re-resolves the route"
+    },
+    {
+      "path": "patches/0051-all-terran-combat-scouts.patch",
+      "order": 51,
+      "scope": "treat Hellion and transformed Hellbat forms as the same TERRAN_HELLION composition and role token, include Hellbats in explicit Scout squad candidate selection, preserve Scout order ownership over Hellion, Medivac, and Raven support fallbacks, and exclude Scout-owned units from cross-squad threat or healing control so every standard Terran combat-unit family can follow its bounded scouting target"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

@@ -1416,6 +1416,59 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(1, vector.scope.min_units)
         self.assertEqual(1, vector.scope.max_units)
 
+    def test_keyword_provider_accepts_every_standard_terran_combat_unit_for_scouting(
+        self,
+    ) -> None:
+        cases = (
+            ("마린", "TERRAN_MARINE"),
+            ("불곰", "TERRAN_MARAUDER"),
+            ("사신", "TERRAN_REAPER"),
+            ("유령", "TERRAN_GHOST"),
+            ("화염차", "TERRAN_HELLION"),
+            ("화염기갑병", "TERRAN_HELLION"),
+            ("땅거미지뢰", "TERRAN_WIDOWMINE"),
+            ("사이클론", "TERRAN_CYCLONE"),
+            ("토르", "TERRAN_THOR"),
+            ("공성전차", "TERRAN_SIEGETANK"),
+            ("의료선", "TERRAN_MEDIVAC"),
+            ("바이킹", "TERRAN_VIKINGFIGHTER"),
+            ("해방선", "TERRAN_LIBERATOR"),
+            ("밴시", "TERRAN_BANSHEE"),
+            ("밤까마귀", "TERRAN_RAVEN"),
+            ("전투순양함", "TERRAN_BATTLECRUISER"),
+        )
+        for unit_name, expected_unit_type in cases:
+            with self.subTest(unit_name=unit_name):
+                backend = MicroMachineInMemoryBlackboard()
+                session = MicroMachineLiveTextSession(
+                    backend,
+                    KeywordPolicyModulationProvider(),
+                )
+                result = session.submit_text(
+                    f"{unit_name}으로 적 본진 정찰해",
+                    current_frame=100,
+                    update_id=f"scout-{expected_unit_type.lower()}",
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                assert result.update is not None
+                vector = result.update.vector
+                self.assertEqual("scout_with_units", vector.tactical_task.task_type)
+                self.assertEqual(
+                    (expected_unit_type,),
+                    vector.tactical_task.unit_classes,
+                )
+                self.assertEqual(1, vector.scope.min_units)
+                self.assertEqual(1, vector.scope.max_units)
+                self.assertFalse(vector.scope.allow_partial_scope)
+                self.assertFalse(vector.tactical_task.allow_partial)
+                self.assertEqual(1, len(vector.composition_requirements))
+                self.assertEqual(
+                    expected_unit_type,
+                    vector.composition_requirements[0].unit_type,
+                )
+                self.assertEqual(1, vector.composition_requirements[0].count)
+
     def test_keyword_provider_maps_flank_route_attack_to_flank_bias(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())

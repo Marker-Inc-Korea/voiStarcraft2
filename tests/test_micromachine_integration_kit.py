@@ -182,6 +182,11 @@ EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE = (
     / "patches"
     / "0050-explicit-ability-staging-single-flight.patch"
 )
+ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0051-all-terran-combat-scouts.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -1369,6 +1374,67 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertIn(f"diff --git a/{source} b/{source}", patch)
 
+    def test_all_terran_combat_scouts_patch_closes_assignment_and_order_ownership(
+        self,
+    ) -> None:
+        patch = _read_patch_text(ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE)
+        added_lines = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        self.assertEqual(
+            2,
+            added_lines.count(
+                'token == "TERRAN_HELLION" && '
+                "(type == sc2::UNIT_TYPEID::TERRAN_HELLION || "
+                "type == sc2::UNIT_TYPEID::TERRAN_HELLIONTANK)"
+            ),
+        )
+        self.assertIn(
+            'addScoutType("TERRAN_HELLION", '
+            "sc2::UNIT_TYPEID::TERRAN_HELLIONTANK);",
+            added_lines,
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/RangedManager.cpp b/src/RangedManager.cpp"
+            ),
+        )
+        self.assertIn(
+            "if (!preserveScoutOrder\n"
+            "\t\t\t&& !isCycloneHelper\n"
+            "\t\t\t&& (isMedivac || isRaven",
+            added_lines,
+        )
+        self.assertIn(
+            "\tconst Squad * owningSquad = "
+            "m_bot.Commander().Combat().getSquadData().getUnitSquad(\n"
+            "\t\tUnit(medivac, m_bot));\n"
+            '\tif (owningSquad != nullptr && owningSquad->getName() == "Scout")\n'
+            "\t\treturn false;",
+            added_lines,
+        )
+        self.assertIn(
+            " \tsc2::Units otherSquadsUnits;\n"
+            "+\tauto & squadData = "
+            "m_bot.Commander().Combat().getSquadData();\n"
+            " \tfor (auto & unit : "
+            "m_bot.Commander().Combat().GetCombatUnits())\n"
+            " \t{\n"
+            "+\t\tconst Squad * owningSquad = squadData.getUnitSquad(unit);\n"
+            '+\t\tif (owningSquad != nullptr && owningSquad->getName() == "Scout")',
+            patch,
+        )
+
     def test_semantic_operation_patch_closes_identity_and_bio_production_gaps(
         self,
     ) -> None:
@@ -2533,6 +2599,23 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertIn(
             {
+                "path": "patches/0051-all-terran-combat-scouts.patch",
+                "order": 51,
+                "scope": (
+                    "treat Hellion and transformed Hellbat forms as the same "
+                    "TERRAN_HELLION composition and role token, include "
+                    "Hellbats in explicit Scout squad candidate selection, "
+                    "preserve Scout order ownership over Hellion, Medivac, and "
+                    "Raven support fallbacks, and exclude Scout-owned units from "
+                    "cross-squad threat or healing control so every standard "
+                    "Terran combat-unit family can follow its bounded scouting "
+                    "target"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
                 "path": (
                     "patches/"
                     "0047-banshee-unit-specific-cloak-command.patch"
@@ -2993,7 +3076,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0050`",
+            "through `0051`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -3559,6 +3642,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0048-allied-cloak-observation-confirmation.patch",
             "0049-explicit-ability-caster-ownership.patch",
             "0050-explicit-ability-staging-single-flight.patch",
+            "0051-all-terran-combat-scouts.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -3607,6 +3691,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE",
             "EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE",
             "EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE",
+            "ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -3836,6 +3921,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '--ignore-space-change --whitespace=nowarn '
             '"${EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE}"'
         )
+        all_terran_combat_scouts_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}"'
+        )
+        all_terran_combat_scouts_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}"'
+        )
         blackboard_copy = (
             'cp "${BLACKBOARD_HEADER_FILE}" '
             '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
@@ -3962,6 +4057,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertLess(
             build_script.index(explicit_ability_staging_single_flight_apply),
+            build_script.index(all_terran_combat_scouts_check),
+        )
+        self.assertLess(
+            build_script.index(all_terran_combat_scouts_check),
+            build_script.index(all_terran_combat_scouts_apply),
+        )
+        self.assertLess(
+            build_script.index(all_terran_combat_scouts_apply),
             build_script.index(blackboard_copy),
         )
         self.assertLess(
