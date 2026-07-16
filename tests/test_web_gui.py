@@ -512,6 +512,17 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, page)
+        self.assertNotIn(
+            'id="micromachine-intervention-dashboard" aria-live=',
+            page,
+        )
+        self.assertRegex(
+            page,
+            (
+                r'id="command-console-announcement"\s+'
+                r'class="sr-only"\s+role="status"\s+aria-live="polite"'
+            ),
+        )
 
     def test_micromachine_modulation_endpoint_publishes_to_blackboard(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -4381,7 +4392,7 @@ assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
 assert(pendingStatus.textContent.includes("LLM 응답을 기다리는 중"));
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
 assert.strictEqual(logBox.querySelectorAll(".typing-indicator").length, 1);
-assert.strictEqual(logBox.querySelector(".message-pending").getAttribute("role"), "status");
+assert.strictEqual(logBox.querySelector(".message-pending").getAttribute("role"), null);
 assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
 assert(document.getElementById("voice-recording-entry"));
 assert.strictEqual(logBox.querySelector(".voice-wave").querySelectorAll("span").length, 5);
@@ -4676,7 +4687,30 @@ var nodes = {
   "micromachine-command-execution": element("micromachine-command-execution"),
   "micromachine-refusal": element("micromachine-refusal"),
   "micromachine-log-snippets": element("micromachine-log-snippets", "ul"),
-  "micromachine-raw-evidence": element("micromachine-raw-evidence", "pre")
+  "micromachine-raw-evidence": element("micromachine-raw-evidence", "pre"),
+  "active-command-console": element("active-command-console", "section"),
+  "command-console-title": element("command-console-title", "h2"),
+  "command-console-state": element("command-console-state", "span"),
+  "command-console-announcement": element("command-console-announcement", "span"),
+  "command-console-intent": element("command-console-intent", "strong"),
+  "command-console-units": element("command-console-units", "strong"),
+  "command-console-action": element("command-console-action", "strong"),
+  "command-console-target": element("command-console-target", "strong"),
+  "command-console-verification": element("command-console-verification", "strong"),
+  "command-console-technical": element("command-console-technical", "pre"),
+  "command-stage-interpret": element("command-stage-interpret"),
+  "command-stage-assign": element("command-stage-assign"),
+  "command-stage-execute": element("command-stage-execute"),
+  "command-stage-verify": element("command-stage-verify"),
+  "command-refresh-button": element("command-refresh-button", "button"),
+  "command-revise-button": element("command-revise-button", "button"),
+  "command-retreat-button": element("command-retreat-button", "button"),
+  "battlefield-link-badge": element("battlefield-link-badge", "span"),
+  "battlefield-command-state": element("battlefield-command-state"),
+  "battlefield-frame": element("battlefield-frame"),
+  "battlefield-force": element("battlefield-force"),
+  "battlefield-posture": element("battlefield-posture"),
+  "battlefield-control-summary": element("battlefield-control-summary")
 };
 nodes["log"] = logBox;
 nodes["llm-model-select"].value = "gpt-test";
@@ -4775,9 +4809,9 @@ function response(status, data) {
     var intervention = data.intervention || {};
     var execution = intervention.command_execution || {};
     var updateId = String(
+      compileResult.update_id ||
       data.update_id ||
       update.update_id ||
-      compileResult.update_id ||
       execution.command_id ||
       ""
     );
@@ -4820,9 +4854,9 @@ const assert = require("assert");
     var intervention = data.intervention || {};
     var execution = intervention.command_execution || {};
     var updateId = String(
+      compileResult.update_id ||
       data.update_id ||
       update.update_id ||
-      compileResult.update_id ||
       execution.command_id ||
       ""
     );
@@ -4849,7 +4883,7 @@ const assert = require("assert");
     return Boolean(pendingFor(scopeId, updateId));
   }
   function rememberServerPending(text, updateId, scopeId) {
-    var pendingId = appendPendingCommand(text);
+    var pendingId = appendMicroMachinePendingPlan(text);
     rememberPendingMicroMachineAsync(
       text,
       serverResult(
@@ -4862,6 +4896,37 @@ const assert = require("assert");
       pendingId
     );
     return pendingId;
+  }
+  function observedExecutionStages(effectEvidence) {
+    return [
+      { name: "parsed", ok: true, manager: "CommandGateway", evidence: {} },
+      { name: "reduced", ok: true, manager: "PolicyReducer", evidence: {} },
+      { name: "consumed_by_manager", ok: true, manager: "CombatCommander", evidence: {} },
+      {
+        name: "queued_or_assigned",
+        ok: true,
+        manager: "CombatCommander",
+        evidence: { assigned_unit_count: 4, commanded_unit_type: "marine" }
+      },
+      {
+        name: "order_issued",
+        ok: true,
+        manager: "Squad",
+        evidence: { last_issued_action: "attack", target_x: 120, target_y: 44 }
+      },
+      {
+        name: "action_issued",
+        ok: true,
+        manager: "RangedManager",
+        evidence: { last_actual_command: "attack", commanded_unit_type: "marine" }
+      },
+      {
+        name: "effect_observed",
+        ok: true,
+        manager: "TacticalEvidence",
+        evidence: effectEvidence || { confirmation_effect: "requested movement observed" }
+      }
+    ];
   }
   pollState();
   await flushPromises();
@@ -4889,6 +4954,14 @@ const assert = require("assert");
   requests = [];
   setCommandMode(COMMAND_MODE_MICROMACHINE);
   assert.strictEqual(requests.length, 0);
+  beginActiveCommandConsole("같은 연속 명령", "");
+  var firstCommandAnnouncement = nodes["command-console-announcement"].textContent;
+  beginActiveCommandConsole("같은 연속 명령", "");
+  var secondCommandAnnouncement = nodes["command-console-announcement"].textContent;
+  assert(firstCommandAnnouncement.includes("같은 연속 명령"));
+  assert(secondCommandAnnouncement.includes("같은 연속 명령"));
+  assert.notStrictEqual(firstCommandAnnouncement, secondCommandAnnouncement);
+  resetActiveCommandConsole();
   assert.strictEqual(buildMicroMachineModulationPayload("marine rush").response_language, "en");
   assert.strictEqual(buildMicroMachineModulationPayload("마린 러쉬").response_language, "ko");
   assert.strictEqual(buildMicroMachineModulationPayload("进攻").response_language, "zh");
@@ -4922,6 +4995,9 @@ const assert = require("assert");
   assert.strictEqual(firstBody.ttl_seconds, 600);
   assert.strictEqual(pendingCommandCount(), 1);
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
+  var pendingMessage = logBox.querySelectorAll(".message-pending")[0];
+  assert.strictEqual(pendingMessage.getAttribute("role"), null);
+  assert.strictEqual(pendingMessage.getAttribute("aria-live"), null);
 
   var originalRenderMicroMachineStatus = renderMicroMachineStatus;
   renderMicroMachineStatus = function () {
@@ -4959,6 +5035,237 @@ const assert = require("assert");
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
   assert(!logBox.textContent.includes("attack_gate="));
   assert.strictEqual(nodes["command-input"].value, "");
+
+  rememberServerPending("4마린 전진 상태 추적", "stage-contract");
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "stage-contract",
+      vector: { goal: "4 marine advance" }
+    },
+    update: { update_id: "stage-contract" },
+    intervention: {
+      latest_update_id: "stage-contract",
+      telemetry_frame: 120,
+      command_execution: {
+        command_id: "stage-contract",
+        state: "consumed_by_manager",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: [
+          { name: "parsed", ok: true, manager: "CommandGateway" },
+          { name: "reduced", ok: true, manager: "PolicyReducer" },
+          { name: "consumed_by_manager", ok: true, manager: "CombatCommander" }
+        ]
+      }
+    }
+  }));
+  assert(!nodes["active-command-console"].className.includes("command-console-verified"));
+  assert.notStrictEqual(nodes["micromachine-applied-badge"].className, "micro-badge micro-badge-applied");
+  assert.strictEqual(nodes["command-console-state"].textContent, "MicroMachine 배정 중");
+  assert(nodes["command-stage-interpret"].className.includes("stage-done"));
+  assert(!nodes["command-stage-interpret"].className.includes("stage-verified"));
+  assert(hasPending(SERVER_SCOPE_A, "stage-contract"));
+
+  var issuedStages = observedExecutionStages().slice(0, 6);
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "stage-contract",
+      vector: { goal: "4 marine advance" }
+    },
+    update: { update_id: "stage-contract" },
+    intervention: {
+      latest_update_id: "stage-contract",
+      telemetry_frame: 200,
+      command_execution: {
+        command_id: "stage-contract",
+        state: "action_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: issuedStages
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "전장에서 실행 중");
+  assert(nodes["active-command-console"].className.includes("command-console-executing"));
+  assert(!nodes["active-command-console"].className.includes("command-console-verified"));
+  assert(nodes["command-console-action"].textContent.includes("attack"));
+  assert(nodes["command-console-verification"].textContent.includes("실제 이동"));
+  assert(nodes["command-stage-execute"].className.includes("stage-done"));
+  assert(!nodes["command-stage-execute"].className.includes("stage-verified"));
+  assert(hasPending(SERVER_SCOPE_A, "stage-contract"));
+
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "stage-contract"
+    },
+    update: { update_id: "stage-contract" },
+    intervention: {
+      latest_update_id: "stage-contract",
+      telemetry_frame: 150,
+      command_execution: {
+        command_id: "stage-contract",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "stale effect must stay ignored"
+        })
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "전장에서 실행 중");
+  assert(!nodes["active-command-console"].className.includes("command-console-verified"));
+  assert(!nodes["command-console-verification"].textContent.includes("stale effect"));
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].className,
+    "micro-badge micro-badge-active"
+  );
+
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "stage-contract"
+    },
+    update: { update_id: "stage-contract" },
+    intervention: {
+      latest_update_id: "stage-contract",
+      telemetry_frame: 100,
+      command_execution: {
+        command_id: "stage-contract",
+        state: "consumed_by_manager",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: [
+          { name: "parsed", ok: true, manager: "CommandGateway" },
+          { name: "reduced", ok: true, manager: "PolicyReducer" }
+        ]
+      }
+    }
+  }));
+  assert.strictEqual(
+    nodes["command-console-state"].textContent,
+    "전장에서 실행 중",
+    "older telemetry must not regress the active operation card"
+  );
+  assert(nodes["command-console-action"].textContent.includes("attack"));
+
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "stage-contract",
+      assistant_message: "실제 전진을 확인했습니다."
+    },
+    update: { update_id: "stage-contract" },
+    intervention: {
+      latest_update_id: "stage-contract",
+      telemetry_frame: 220,
+      command_execution: {
+        command_id: "stage-contract",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "four marines moved away from home"
+        })
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert(nodes["active-command-console"].className.includes("command-console-verified"));
+  assert(nodes["command-stage-interpret"].className.includes("stage-verified"));
+  assert(nodes["command-stage-assign"].className.includes("stage-verified"));
+  assert(nodes["command-stage-execute"].className.includes("stage-verified"));
+  assert(nodes["command-stage-verify"].className.includes("stage-verified"));
+  assert(nodes["command-console-announcement"].textContent.includes("실행 확인"));
+  assert(nodes["command-console-announcement"].textContent.includes("four marines moved away from home"));
+  assert.strictEqual(nodes["micromachine-applied-badge"].className, "micro-badge micro-badge-applied");
+  assert(!hasPending(SERVER_SCOPE_A, "stage-contract"));
+
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    compile_result: {
+      status: "refused",
+      update_id: "external-refused-b",
+      refusal_reason: "external B could not be compiled"
+    },
+    latest_request: {
+      update_id: "external-refused-b",
+      command_text: "external B refused order",
+      status: "refused",
+      is_active_update: false
+    },
+    update: { update_id: "stage-contract" },
+    intervention: {
+      latest_update_id: "stage-contract",
+      telemetry_frame: 220,
+      command_execution: {
+        command_id: "stage-contract",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages()
+      }
+    }
+  }));
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "external-refused-b");
+  assert.strictEqual(nodes["command-console-title"].textContent, "external B refused order");
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(nodes["command-console-verification"].textContent.includes("external B could not be compiled"));
+
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "external-handoff-b",
+      vector: { goal: "external B takes battlefield control" }
+    },
+    update: { update_id: "external-handoff-b" },
+    intervention: {
+      latest_update_id: "external-handoff-b",
+      telemetry_frame: 230,
+      command_execution: {
+        command_id: "external-handoff-b",
+        state: "action_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages().slice(0, 6)
+      }
+    }
+  }));
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "external-handoff-b");
+  assert.strictEqual(
+    nodes["command-console-title"].textContent,
+    "external B takes battlefield control"
+  );
+  assert.strictEqual(nodes["command-console-state"].textContent, "전장에서 실행 중");
 
   rememberServerPending("active A consumed", "race-active-a");
   rememberServerPending("latest B refused", "race-failed-b");
@@ -5013,6 +5320,9 @@ const assert = require("assert");
   assert(logBox.textContent.includes("latest B refused"));
   assert(logBox.textContent.includes("active pressure"));
   assert(logBox.textContent.includes("provider auth failed"));
+  assert.strictEqual(nodes["command-console-title"].textContent, "latest B refused");
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(!nodes["command-console-technical"].textContent.includes("race-active-a"));
   assert(nodes["micromachine-command-execution"].textContent.includes("state=completed"));
   assert(nodes["micromachine-command-execution"].textContent.includes("four_marine_attack"));
   var activeEntry = logBox.querySelectorAll(".log-entry").find(function (entry) {
@@ -5020,6 +5330,81 @@ const assert = require("assert");
   });
   assert(activeEntry);
   assert(!activeEntry.textContent.includes("provider auth failed"));
+
+  rememberServerPending("혼합 payload 실행 A", "mixed-active-a");
+  rememberServerPending("혼합 payload compile B", "mixed-compile-b");
+  var mixedPayload = serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "mixed-compile-b"
+    },
+    latest_request: {
+      update_id: "mixed-compile-b",
+      status: "compiled",
+      is_active_update: false
+    },
+    update: { update_id: "mixed-active-a" },
+    intervention: {
+      latest_update_id: "mixed-active-a",
+      command_execution: {
+        command_id: "mixed-active-a",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "mixed A effect"
+        })
+      }
+    }
+  });
+  var mixedCompileResultId = mixedPayload.result_id;
+  renderMicroMachineStatus(mixedPayload);
+  assert(!hasPending(SERVER_SCOPE_A, "mixed-active-a"));
+  assert(hasPending(SERVER_SCOPE_A, "mixed-compile-b"));
+  assert.strictEqual(
+    Boolean(
+      consumedMicroMachineResultIdsByScope[SERVER_SCOPE_A] &&
+      consumedMicroMachineResultIdsByScope[SERVER_SCOPE_A][mixedCompileResultId]
+    ),
+    false,
+    "active A completion must not consume compile B result identity"
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "mixed-compile-b"
+    },
+    update: { update_id: "mixed-compile-b" },
+    intervention: {
+      latest_update_id: "mixed-compile-b",
+      command_execution: {
+        command_id: "mixed-compile-b",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "mixed B effect"
+        })
+      }
+    }
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "mixed-compile-b"));
+  var mixedCompileEntries = logBox.querySelectorAll(".log-entry").filter(function(entry) {
+    return entry.textContent.includes("혼합 payload compile B");
+  });
+  assert.strictEqual(
+    mixedCompileEntries.length,
+    1,
+    mixedCompileEntries.map(function(entry) { return entry.textContent; }).join("\\n---\\n")
+  );
 
   rememberServerPending("스트림 결과 A", "stream-result-a");
   rememberServerPending("스트림 결과 B", "stream-result-b");
@@ -5051,6 +5436,76 @@ const assert = require("assert");
   assert(!hasPending(SERVER_SCOPE_A, "stream-result-b"));
   assert(logBox.textContent.includes("stream failure A"));
   assert(logBox.textContent.includes("stream failure B"));
+
+  resetActiveCommandConsole();
+  renderMicroMachineStatus(serverResult({
+    enabled: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "high-frame-active"
+    },
+    update: { update_id: "high-frame-active" },
+    intervention: {
+      latest_update_id: "high-frame-active",
+      telemetry_frame: 950,
+      command_execution: {
+        command_id: "high-frame-active",
+        state: "action_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages().slice(0, 6)
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "전장에서 실행 중");
+  var staleFramePendingId = appendPendingCommand("낮은 frame에도 완료될 다른 명령");
+  rememberPendingMicroMachineAsync(
+    "낮은 frame에도 완료될 다른 명령",
+    serverResult({
+      async_publish: true,
+      update_id: "stale-frame-stream-result"
+    }),
+    staleFramePendingId,
+    false
+  );
+  renderMicroMachineStatus(serverResult({
+    enabled: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "high-frame-active"
+    },
+    update: { update_id: "high-frame-active" },
+    modulation_results: [
+      {
+        status: "publish_failed",
+        compile_result: {
+          status: "refused",
+          update_id: "stale-frame-stream-result",
+          refusal_reason: "terminal result survives stale active frame"
+        }
+      }
+    ],
+    intervention: {
+      latest_update_id: "high-frame-active",
+      telemetry_frame: 940,
+      command_execution: {
+        command_id: "high-frame-active",
+        state: "action_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages().slice(0, 6)
+      }
+    }
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "stale-frame-stream-result"));
+  assert(logBox.textContent.includes("terminal result survives stale active frame"));
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "high-frame-active");
+  assert.strictEqual(activeCommandConsoleRecord.telemetryFrame, 950);
+  resetActiveCommandConsole();
 
   rememberServerPending("소비 후 효과 대기 테스트", "consumed-still-running");
   renderMicroMachineStatus(serverResult({
@@ -5106,8 +5561,14 @@ const assert = require("assert");
   });
   assert(failedExecutionEntry);
   assert(failedExecutionEntry.textContent.includes("공격 명령을 전술 큐에 반영했습니다."));
-  assert(failedExecutionEntry.textContent.includes("실행 상태: failed"));
+  assert(failedExecutionEntry.textContent.includes("실행 실패"));
+  assert(failedExecutionEntry.textContent.includes("실제 효과 확인까지 도달하지 못했습니다"));
+  assert(failedExecutionEntry.textContent.includes("차단 원인"));
   assert(failedExecutionEntry.textContent.includes("TacticalEvidence"));
+  assert(nodes["command-console-verification"].textContent.includes("TacticalEvidence"));
+  assert(nodes["command-console-verification"].textContent.includes("No observed tactical effect"));
+  assert(nodes["command-console-announcement"].textContent.includes("실행 실패"));
+  assert(nodes["command-console-announcement"].textContent.includes("No observed tactical effect"));
   assert.strictEqual(pendingCommandCount(), 0);
 
   rememberServerPending("LLM 경계 완료 테스트", "async-boundary-complete");
@@ -5131,7 +5592,10 @@ const assert = require("assert");
         state: "completed",
         completed: true,
         failed: false,
-        expired: false
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "boundary effect observed"
+        })
       }
     }
   }));
@@ -5140,28 +5604,50 @@ const assert = require("assert");
   });
   assert(boundaryEntry);
   assert(boundaryEntry.textContent.includes("경계에서도 정상 완료"));
-  assert(boundaryEntry.textContent.includes("실행 상태: completed"));
-  assert(!boundaryEntry.textContent.includes("120초 안에 완료되지 않았습니다"));
+  assert(boundaryEntry.textContent.includes("실행 확인"));
+  assert(!boundaryEntry.textContent.includes("효과 확인 지연"));
 
   rememberServerPending("LLM 응답 만료 테스트", "async-timeout");
   var asyncCreatedAt = pendingFor(SERVER_SCOPE_A, "async-timeout").createdAt;
   expirePendingMicroMachineAsync(
     asyncCreatedAt + MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS + 1
   );
-  assert(!hasPending(SERVER_SCOPE_A, "async-timeout"));
+  assert(hasPending(SERVER_SCOPE_A, "async-timeout"));
+  assert.strictEqual(
+    pendingFor(SERVER_SCOPE_A, "async-timeout").observationTimedOut,
+    true
+  );
   assert.strictEqual(pendingCommandCount(), 0);
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
-  assert(logBox.textContent.includes("120초 안에 완료되지 않았습니다"));
+  assert(nodes["command-console-state"].textContent.includes("효과 확인 지연"));
+  assert(nodes["command-console-verification"].textContent.includes("늦게 도착한 실제 효과"));
   renderMicroMachineStatus(serverResult({
     ok: true,
     consumption_status: "consumed",
     compile_result: {
       status: "compiled",
       update_id: "async-timeout",
-      source: "llm"
+      source: "llm",
+      assistant_message: "늦게 도착한 완료도 반영합니다."
     },
-    update: { update_id: "async-timeout" }
+    update: { update_id: "async-timeout" },
+    intervention: {
+      latest_update_id: "async-timeout",
+      command_execution: {
+        command_id: "async-timeout",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "late effect observed"
+        })
+      }
+    }
   }));
+  assert(!hasPending(SERVER_SCOPE_A, "async-timeout"));
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert(nodes["command-console-verification"].textContent.includes("late effect observed"));
   assert.strictEqual(
     logBox.querySelectorAll(".log-entry").filter(function (entry) {
       return entry.textContent.includes("LLM 응답 만료 테스트");
@@ -5196,7 +5682,14 @@ const assert = require("assert");
   assert.strictEqual(pendingCommandCount(), 0);
   assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
   assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
-  assert(logBox.textContent.includes("pending을 해제했습니다"));
+  assert.strictEqual(nodes["command-console-state"].textContent, "게이트웨이 응답 지연");
+  assert(nodes["command-console-verification"].textContent.includes("실패로 확정하지 않고"));
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function (entry) {
+      return entry.textContent.includes("응답이 없어도 pending은 풀어");
+    }).length,
+    0
+  );
   requests[2].deferred.resolve(response(202, {
     ok: true,
     accepted: true,
@@ -5207,19 +5700,133 @@ const assert = require("assert");
   }));
   await flushPromises();
   await flushPromises();
-  assert(!Object.prototype.hasOwnProperty.call(
-    pendingMicroMachineAsyncUpdates,
-    "late-after-submit-timeout"
-  ));
+  assert(hasPending(SERVER_SCOPE_A, "late-after-submit-timeout"));
   assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(nodes["command-console-state"].textContent, "명령 해석 중");
+  renderMicroMachineStatus = originalRenderMicroMachineStatus;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "late-after-submit-timeout",
+      assistant_message: "지연된 게이트웨이 응답 이후 실행을 확인했습니다."
+    },
+    update: { update_id: "late-after-submit-timeout" },
+    intervention: {
+      latest_update_id: "late-after-submit-timeout",
+      command_execution: {
+        command_id: "late-after-submit-timeout",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "late gateway result reconciled"
+        })
+      }
+    }
+  }));
+  assert(!hasPending(SERVER_SCOPE_A, "late-after-submit-timeout"));
   assert.strictEqual(
     logBox.querySelectorAll(".log-entry").filter(function (entry) {
       return entry.textContent.includes("응답이 없어도 pending은 풀어");
     }).length,
     1
   );
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
 
-  renderMicroMachineStatus = originalRenderMicroMachineStatus;
+  var repeatedText = "같은 문장으로 4마린 공격해";
+  var repeatedOldPendingId = appendMicroMachinePendingPlan(repeatedText);
+  rememberPendingMicroMachineAsync(
+    repeatedText,
+    serverResult({
+      async_publish: true,
+      update_id: "same-text-old"
+    }),
+    repeatedOldPendingId
+  );
+  var repeatedOldCreatedAt = pendingFor(SERVER_SCOPE_A, "same-text-old").createdAt;
+  expirePendingMicroMachineAsync(
+    repeatedOldCreatedAt + MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS + 1
+  );
+  assert.strictEqual(
+    pendingFor(SERVER_SCOPE_A, "same-text-old").pendingId,
+    repeatedOldPendingId
+  );
+  assert.strictEqual(pendingCommandCount(), 0);
+  var repeatedNewPendingId = appendMicroMachinePendingPlan(repeatedText);
+  assert.notStrictEqual(repeatedOldPendingId, repeatedNewPendingId);
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "same-text-old",
+      command_text: repeatedText
+    },
+    latest_request: {
+      update_id: "same-text-old",
+      command_text: repeatedText
+    },
+    update: { update_id: "same-text-old" },
+    intervention: {
+      latest_update_id: "same-text-old",
+      command_execution: {
+        command_id: "same-text-old",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "old repeated command effect"
+        })
+      }
+    }
+  }));
+  assert.strictEqual(activeCommandConsoleRecord.pendingId, repeatedNewPendingId);
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "");
+  assert.strictEqual(nodes["command-console-state"].textContent, "명령 해석 중");
+  assert(!nodes["active-command-console"].className.includes("command-console-verified"));
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert.deepStrictEqual(pendingCommandTexts(), [repeatedText]);
+  rememberPendingMicroMachineAsync(
+    repeatedText,
+    serverResult({
+      async_publish: true,
+      update_id: "same-text-new"
+    }),
+    repeatedNewPendingId
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: "same-text-new"
+    },
+    update: { update_id: "same-text-new" },
+    intervention: {
+      latest_update_id: "same-text-new",
+      command_execution: {
+        command_id: "same-text-new",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "new repeated command effect"
+        })
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert(nodes["command-console-verification"].textContent.includes("new repeated command effect"));
+  assert(!nodes["command-console-verification"].textContent.includes("old repeated command effect"));
+
   nodes["command-input"].value = "마린으로 앞마당 압박해";
   nodes["command-form"].dispatchEvent({
     type: "submit",
@@ -5261,6 +5868,10 @@ const assert = require("assert");
   await flushPromises();
   assert.strictEqual(pendingCommandCount(), 2);
   assert(!logBox.textContent.includes("stale pressure"));
+  assert.strictEqual(
+    nodes["command-console-title"].textContent,
+    "아니 4마린으로 적 본진 우회 공격해"
+  );
   requests[4].deferred.resolve(response(202, {
     ok: true,
     accepted: true,
@@ -5329,7 +5940,10 @@ const assert = require("assert");
         state: "completed",
         completed: true,
         failed: false,
-        expired: false
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "flank reached enemy main"
+        })
       },
       lifetime: {
         mode: "until_completed",
@@ -5341,9 +5955,15 @@ const assert = require("assert");
   assert.strictEqual(pendingCommandCount(), 0);
   assert(logBox.textContent.includes("latest flank"));
   assert(logBox.textContent.includes("최신 우회 공격 명령으로 steering했습니다."));
-  assert(logBox.textContent.includes("실행 상태: completed"));
-  assert(logBox.textContent.includes("command_queue | category=tactical | action=supersede_tactical"));
-  assert(logBox.textContent.includes("lifetime=mode=until_completed"));
+  assert(logBox.textContent.includes("실행 확인"));
+  assert(logBox.textContent.includes("작전 변경"));
+  assert(!logBox.textContent.includes("command_queue |"));
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert(nodes["active-command-console"].className.includes("command-console-verified"));
+  assert(nodes["command-stage-interpret"].className.includes("stage-verified"));
+  assert(nodes["command-stage-assign"].className.includes("stage-verified"));
+  assert(nodes["command-stage-execute"].className.includes("stage-verified"));
+  assert(nodes["command-stage-verify"].className.includes("stage-verified"));
 
   rememberServerPending("마린 중심 생산 유지", "preserved-macro");
   rememberServerPending("4마린으로 우회 공격", "merged-operation");
@@ -5413,7 +6033,8 @@ const assert = require("assert");
         state: "completed",
         completed: true,
         failed: false,
-        expired: false
+        expired: false,
+        stages: observedExecutionStages()
       }
     }
   }));
@@ -5422,7 +6043,9 @@ const assert = require("assert");
     return entry.textContent.includes("4마린으로 우회 공격");
   });
   assert(mergedOperationEntry);
-  assert(mergedOperationEntry.textContent.includes("preserved_ids=preserved-macro"));
+  assert(mergedOperationEntry.textContent.includes("지속 명령 유지"));
+  assert(mergedOperationEntry.textContent.includes("명령 통합"));
+  assert(!mergedOperationEntry.textContent.includes("preserved_ids="));
   assert.strictEqual(
     logBox.querySelectorAll(".log-entry").filter(function (entry) {
       return entry.textContent.includes("마린 중심 생산 유지");
@@ -5481,7 +6104,8 @@ const assert = require("assert");
         state: "completed",
         completed: true,
         failed: false,
-        expired: false
+        expired: false,
+        stages: observedExecutionStages()
       }
     }
   }));
@@ -5489,9 +6113,168 @@ const assert = require("assert");
     return entry.textContent.includes("중복 edge 교체 명령");
   });
   assert(overlapEntry);
-  assert(overlapEntry.textContent.includes("superseded_ids=overlap-predecessor"));
-  assert(!overlapEntry.textContent.includes("preserved_ids=overlap-predecessor"));
+  assert(overlapEntry.textContent.includes("작전 변경"));
+  assert(!overlapEntry.textContent.includes("지속 명령 유지"));
+  assert(!overlapEntry.textContent.includes("superseded_ids="));
   assert.strictEqual(pendingCommandCount(), 0);
+
+  rememberServerPending("실행 중 교체되는 명령", "superseded-running");
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "superseded-running"
+    },
+    update: { update_id: "superseded-running" },
+    intervention: {
+      latest_update_id: "superseded-running",
+      telemetry_frame: 700,
+      command_execution: {
+        command_id: "superseded-running",
+        state: "action_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages().slice(0, 6)
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "전장에서 실행 중");
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "superseded",
+    compile_result: {
+      status: "compiled",
+      update_id: "superseded-running"
+    },
+    update: { update_id: "superseded-running" },
+    intervention: {
+      latest_update_id: "superseded-running",
+      telemetry_frame: 710,
+      command_execution: {
+        command_id: "superseded-running",
+        state: "superseded",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: []
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "작전 교체");
+  assert(nodes["active-command-console"].className.includes("command-console-superseded"));
+  assert(!hasPending(SERVER_SCOPE_A, "superseded-running"));
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function (entry) {
+      return entry.textContent.includes("실행 중 교체되는 명령");
+    }).length,
+    1
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "superseded-running"
+    },
+    update: { update_id: "superseded-running" },
+    intervention: {
+      latest_update_id: "superseded-running",
+      telemetry_frame: 720,
+      command_execution: {
+        command_id: "superseded-running",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "late effect must not revive superseded order"
+        })
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "작전 교체");
+  assert(nodes["active-command-console"].className.includes("command-console-superseded"));
+  assert(!nodes["active-command-console"].className.includes("command-console-verified"));
+  assert(!nodes["command-console-verification"].textContent.includes("late effect must not revive"));
+  assert.strictEqual(
+    logBox.querySelectorAll(".log-entry").filter(function (entry) {
+      return entry.textContent.includes("실행 중 교체되는 명령");
+    }).length,
+    1
+  );
+
+  rememberServerPending("실패 terminal 고정 명령", "failed-terminal-sticky");
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "failed-terminal-sticky"
+    },
+    update: { update_id: "failed-terminal-sticky" },
+    intervention: {
+      latest_update_id: "failed-terminal-sticky",
+      telemetry_frame: 730,
+      command_execution: {
+        command_id: "failed-terminal-sticky",
+        state: "failed",
+        completed: false,
+        failed: true,
+        expired: false,
+        blocker_manager: "CombatCommander",
+        blocker_reason: "no eligible combat units",
+        stages: []
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(nodes["command-console-verification"].textContent.includes("no eligible combat units"));
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "failed-terminal-sticky"
+    },
+    update: { update_id: "failed-terminal-sticky" },
+    intervention: {
+      latest_update_id: "failed-terminal-sticky",
+      telemetry_frame: 740,
+      command_execution: {
+        command_id: "failed-terminal-sticky",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "late effect must not revive failed order"
+        })
+      }
+    }
+  }));
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(nodes["active-command-console"].className.includes("command-console-blocked"));
+  assert(!nodes["active-command-console"].className.includes("command-console-verified"));
+  assert(!nodes["command-console-verification"].textContent.includes("late effect must not revive"));
+
+  var supersededModel = commandConsoleStageModel({
+    status: "superseded",
+    intervention: {
+      command_execution: {
+        command_id: "superseded-ui-contract",
+        state: "superseded",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: []
+      }
+    }
+  });
+  assert.strictEqual(supersededModel.superseded, true);
+  assert.strictEqual(supersededModel.blocked, false);
+  assert(commandConsoleClassName(supersededModel).includes("command-console-superseded"));
 
   assert.strictEqual(
     looksLikeMicroMachineEmergencyCommand("공격을 취소하지 말고 계속 압박해"),
@@ -5630,7 +6413,10 @@ const assert = require("assert");
         state: "completed",
         completed: true,
         failed: false,
-        expired: false
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "retreat movement observed"
+        })
       }
     }
   }));
@@ -5640,9 +6426,8 @@ const assert = require("assert");
   });
   assert(emergencyEntry);
   assert(emergencyEntry.textContent.includes("긴급 후퇴를 최우선 명령으로 적용했습니다."));
-  assert(emergencyEntry.textContent.includes("superseded_previous=true"));
-  assert(emergencyEntry.textContent.includes("stale-before-emergency"));
-  assert(emergencyEntry.textContent.includes("older-root-command"));
+  assert(emergencyEntry.textContent.includes("작전 변경"));
+  assert(!emergencyEntry.textContent.includes("superseded_previous=true"));
   assert.strictEqual(
     logBox.querySelectorAll(".log-entry").filter(function (entry) {
       return entry.textContent.includes("오래된 일반 공격");
@@ -5663,7 +6448,8 @@ const assert = require("assert");
         state: "completed",
         completed: true,
         failed: false,
-        expired: false
+        expired: false,
+        stages: observedExecutionStages()
       }
     }
   });
@@ -5691,7 +6477,8 @@ const assert = require("assert");
         state: "completed",
         completed: true,
         failed: false,
-        expired: false
+        expired: false,
+        stages: observedExecutionStages()
       }
     }
   }));
@@ -5765,7 +6552,8 @@ const assert = require("assert");
         state: "completed",
         completed: true,
         failed: false,
-        expired: false
+        expired: false,
+        stages: observedExecutionStages()
       }
     }
   }));
@@ -5788,6 +6576,388 @@ const assert = require("assert");
   }, SERVER_SCOPE_A));
   assert(!hasPending(SERVER_SCOPE_A, "shared-id"));
   assert(hasPending(SERVER_SCOPE_B, "shared-id"));
+
+  renderMicroMachineStatus(serverResult({
+    enabled: true,
+    status: "published",
+    intervention: {
+      latest_update_id: "old-directory-evidence",
+      telemetry_frame: 799,
+      tactical_posture: "old-directory-posture",
+      command_execution: {
+        command_id: "old-directory-evidence",
+        state: "action_issued",
+        stages: observedExecutionStages().slice(0, 6)
+      },
+      log_snippets: [
+        { source: "old.log", line: "old-directory-marker" }
+      ]
+    }
+  }, SERVER_SCOPE_A));
+  assert(nodes["micromachine-raw-evidence"].textContent.includes("old-directory-marker"));
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-accepted-scope-a";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-accepted-scope-a");
+  assert(!hasPending(SERVER_SCOPE_B, "shared-id"));
+  assert.strictEqual(nodes["micromachine-latest-update"].textContent, "-");
+  assert.strictEqual(nodes["micromachine-frame"].textContent, "-");
+  assert.strictEqual(nodes["micromachine-command-execution"].textContent, "-");
+  assert(!nodes["micromachine-raw-evidence"].textContent.includes("old-directory-marker"));
+  assert(nodes["micromachine-status"].textContent.includes("새 MicroMachine blackboard"));
+  nodes["command-input"].value = "accepted scope A async order";
+  nodes["command-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  var acceptedScopeARequest = requests[requests.length - 1];
+  acceptedScopeARequest.deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: true,
+    status: "queued",
+    update_id: "accepted-scope-a"
+  }, SERVER_SCOPE_A)));
+  await flushPromises();
+  await flushPromises();
+  assert(hasPending(SERVER_SCOPE_A, "accepted-scope-a"));
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-accepted-scope-b";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-accepted-scope-b");
+  assert(!hasPending(SERVER_SCOPE_A, "accepted-scope-a"));
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "");
+
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-slow-poll";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-slow-poll");
+  var slowPollStart = requests.length;
+  pollMicroMachineStatus();
+  pollMicroMachineStatus();
+  assert.strictEqual(requests.length, slowPollStart + 1);
+  var slowPollFirst = requests[slowPollStart];
+  slowPollFirst.deferred.resolve(response(200, {
+    enabled: true,
+    status: "slow-first-applied",
+    dashboard: { telemetry: { frame: 801 } }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(requests.length, slowPollStart + 2);
+  var slowPollSecond = requests[slowPollStart + 1];
+  assert(nodes["micromachine-status"].textContent.includes("slow-first-applied"));
+  assert.strictEqual(microMachinePollAppliedSeq, microMachinePollRequestSeq - 1);
+  slowPollSecond.deferred.resolve(response(200, {
+    enabled: true,
+    status: "slow-second-applied",
+    dashboard: { telemetry: { frame: 802 } }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert(nodes["micromachine-status"].textContent.includes("slow-second-applied"));
+  assert.strictEqual(microMachinePollAppliedSeq, microMachinePollRequestSeq);
+
+  var stuckPollStart = requests.length;
+  pollMicroMachineStatus();
+  pollMicroMachineStatus();
+  assert.strictEqual(requests.length, stuckPollStart + 1);
+  var stuckPoll = requests[stuckPollStart];
+  var stuckPollTimeout = timeoutCallbacks[timeoutCallbacks.length - 1];
+  stuckPollTimeout();
+  assert.strictEqual(requests.length, stuckPollStart + 2);
+  assert.strictEqual(microMachinePollInFlight, true);
+  assert(nodes["micromachine-status"].textContent.includes("새 요청으로 재시도"));
+  if (stuckPoll.options.signal) {
+    assert.strictEqual(stuckPoll.options.signal.aborted, true);
+  }
+  stuckPoll.deferred.resolve(response(200, {
+    enabled: true,
+    status: "timed-out poll must be ignored",
+    dashboard: { telemetry: { frame: 999 } }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert(!nodes["micromachine-status"].textContent.includes("timed-out poll must be ignored"));
+  var retryPoll = requests[stuckPollStart + 1];
+  retryPoll.deferred.resolve(response(200, {
+    enabled: true,
+    status: "timeout retry recovered",
+    dashboard: { telemetry: { frame: 803 } }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert(nodes["micromachine-status"].textContent.includes("timeout retry recovered"));
+  assert.strictEqual(microMachinePollInFlight, false);
+
+  var failedPollStart = requests.length;
+  pollMicroMachineStatus();
+  pollMicroMachineStatus();
+  assert.strictEqual(requests.length, failedPollStart + 1);
+  var failedPoll = requests[failedPollStart];
+  failedPoll.deferred.resolve(response(500, {
+    error: "newest poll failed"
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert(nodes["micromachine-status"].textContent.includes("newest poll failed"));
+  assert.strictEqual(requests.length, failedPollStart + 2);
+  var queuedPollAfterFailure = requests[failedPollStart + 1];
+  queuedPollAfterFailure.deferred.resolve(response(200, {
+    enabled: true,
+    status: "queued poll recovered",
+    dashboard: { telemetry: { frame: 803 } }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert(nodes["micromachine-status"].textContent.includes("queued poll recovered"));
+  assert.strictEqual(microMachinePollInFlight, false);
+
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-submit-scope-a";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-submit-scope-a");
+  var pendingCountBeforeStaleSubmit = pendingCommandCount();
+  nodes["command-input"].value = "scope A late order";
+  nodes["command-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  var staleSubmitRequest = requests[requests.length - 1];
+  var staleSubmitPendingId = activeCommandConsoleRecord.pendingId;
+  assert(staleSubmitPendingId);
+  assert.strictEqual(pendingCommandCount(), pendingCountBeforeStaleSubmit + 1);
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-submit-scope-b";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-submit-scope-b");
+  var currentScopePollStart = requests.length;
+  pollMicroMachineStatus();
+  var currentScopePoll = requests[currentScopePollStart];
+  currentScopePoll.deferred.resolve(response(200, serverResult({
+    enabled: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "scope-b-current-order",
+      vector: { goal: "scope B current order" }
+    },
+    update: { update_id: "scope-b-current-order" },
+    intervention: {
+      latest_update_id: "scope-b-current-order",
+      telemetry_frame: 810,
+      command_execution: {
+        command_id: "scope-b-current-order",
+        state: "action_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages().slice(0, 6)
+      }
+    }
+  }, SERVER_SCOPE_B)));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(nodes["command-console-title"].textContent, "scope B current order");
+  staleSubmitRequest.deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "scope-a-late-order",
+    compile_result: {
+      status: "compiled",
+      update_id: "scope-a-late-order",
+      vector: { goal: "scope A late order" }
+    },
+    update: { update_id: "scope-a-late-order" }
+  }, SERVER_SCOPE_A)));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(nodes["command-console-title"].textContent, "scope B current order");
+  assert.strictEqual(activeCommandConsoleRecord.scopeId, SERVER_SCOPE_B);
+  assert(!logBox.textContent.includes("scope A late order"));
+  assert.strictEqual(pendingCommandCount(), pendingCountBeforeStaleSubmit);
+
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-scope-a";
+  microMachinePollBlackboardDir = "/tmp/voi-mm-scope-a";
+  var scopePollStart = requests.length;
+  pollMicroMachineStatus();
+  assert.strictEqual(requests.length, scopePollStart + 1);
+  var staleScopePoll = requests[scopePollStart];
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-scope-b";
+  pollMicroMachineStatus();
+  assert.strictEqual(requests.length, scopePollStart + 2);
+  assert.strictEqual(nodes["command-console-announcement"].textContent, "");
+  var latestScopePoll = requests[scopePollStart + 1];
+  staleScopePoll.deferred.resolve(response(200, serverResult({
+    enabled: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "scope-a-effect",
+      vector: { goal: "stale scope A effect" }
+    },
+    update: { update_id: "scope-a-effect" },
+    intervention: {
+      latest_update_id: "scope-a-effect",
+      goal: "stale scope A effect",
+      command_execution: {
+        command_id: "scope-a-effect",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "scope A should be ignored"
+        })
+      }
+    }
+  }, SERVER_SCOPE_A)));
+  latestScopePoll.deferred.resolve(response(200, serverResult({
+    enabled: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      update_id: "scope-b-effect",
+      vector: { goal: "current scope B effect" }
+    },
+    update: { update_id: "scope-b-effect" },
+    intervention: {
+      latest_update_id: "scope-b-effect",
+      goal: "current scope B effect",
+      command_execution: {
+        command_id: "scope-b-effect",
+        state: "completed",
+        completed: true,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages({
+          confirmation_effect: "scope B is current"
+        })
+      }
+    }
+  }, SERVER_SCOPE_B)));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(activeCommandConsoleRecord.scopeId, SERVER_SCOPE_B);
+  assert.strictEqual(nodes["command-console-title"].textContent, "current scope B effect");
+  assert(nodes["command-console-verification"].textContent.includes("scope B is current"));
+  assert(!nodes["command-console-verification"].textContent.includes("scope A should be ignored"));
+
+  nodes["micromachine-command-input"].value = "고급 직접 publish timeout";
+  var directTimeoutStart = requests.length;
+  nodes["micromachine-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  assert.strictEqual(requests.length, directTimeoutStart + 1);
+  var directTimeoutRequest = requests[directTimeoutStart];
+  timeoutCallbacks[timeoutCallbacks.length - 1]();
+  assert.strictEqual(nodes["command-console-state"].textContent, "게이트웨이 응답 지연");
+  assert(nodes["command-console-verification"].textContent.includes("실패로 확정하지 않고"));
+
+  nodes["micromachine-command-input"].value = "고급 직접 publish A";
+  var directPublishStart = requests.length;
+  nodes["micromachine-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  assert.strictEqual(requests.length, directPublishStart + 1);
+  assert.strictEqual(
+    nodes["command-console-title"].textContent,
+    "고급 직접 publish A"
+  );
+  var directPublishARequest = requests[directPublishStart];
+  var directPublishAOperationId = activeCommandConsoleRecord.pendingId;
+  var directPublishATimeout = timeoutCallbacks[timeoutCallbacks.length - 1];
+  directTimeoutRequest.deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "direct-publish-timeout-late",
+    compile_result: {
+      status: "compiled",
+      update_id: "direct-publish-timeout-late",
+      vector: { goal: "late timeout response must not replace direct A" }
+    },
+    update: { update_id: "direct-publish-timeout-late" }
+  }, SERVER_SCOPE_B)));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(nodes["command-console-title"].textContent, "고급 직접 publish A");
+  nodes["micromachine-command-input"].value = "고급 직접 publish B";
+  nodes["micromachine-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  assert.strictEqual(requests.length, directPublishStart + 2);
+  assert.strictEqual(nodes["command-console-title"].textContent, "고급 직접 publish B");
+  var directPublishBRequest = requests[directPublishStart + 1];
+  var directPublishBOperationId = activeCommandConsoleRecord.pendingId;
+  assert.notStrictEqual(directPublishAOperationId, directPublishBOperationId);
+  directPublishATimeout();
+  assert.strictEqual(nodes["command-console-title"].textContent, "고급 직접 publish B");
+  assert.strictEqual(nodes["command-console-state"].textContent, "명령 해석 중");
+  directPublishBRequest.deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "direct-publish-b",
+    compile_result: {
+      status: "compiled",
+      update_id: "direct-publish-b",
+      vector: { goal: "direct publish B battlefield operation" }
+    },
+    update: { update_id: "direct-publish-b" }
+  }, SERVER_SCOPE_B)));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "direct-publish-b");
+  assert.strictEqual(activeCommandConsoleRecord.scopeId, SERVER_SCOPE_B);
+  directPublishARequest.deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "direct-publish-a",
+    compile_result: {
+      status: "compiled",
+      update_id: "direct-publish-a",
+      vector: { goal: "stale direct publish A operation" }
+    },
+    update: { update_id: "direct-publish-a" }
+  }, SERVER_SCOPE_B)));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "direct-publish-b");
+  assert.strictEqual(nodes["command-console-title"].textContent, "고급 직접 publish B");
+
+  nodes["micromachine-command-input"].value = "고급 직접 publish 실패";
+  var directPublishFailureStart = requests.length;
+  nodes["micromachine-form"].dispatchEvent({
+    type: "submit",
+    preventDefault: function () {}
+  });
+  var directPublishFailureRequest = requests[directPublishFailureStart];
+  directPublishFailureRequest.deferred.resolve(response(500, {
+    error: "direct publish backend down"
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(nodes["command-console-title"].textContent, "고급 직접 publish 실패");
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(nodes["command-console-verification"].textContent.includes("direct publish backend down"));
+
+  var requestCountBeforeEmergency = requests.length;
+  nodes["command-retreat-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(requests.length, requestCountBeforeEmergency + 1);
+  var emergencyButtonRequest = requests[requests.length - 1];
+  assert.strictEqual(emergencyButtonRequest.url, "/api/micromachine/modulate");
+  assert.strictEqual(
+    JSON.parse(emergencyButtonRequest.options.body).text,
+    "긴급 전군 즉시 후퇴해"
+  );
+  assert.strictEqual(
+    nodes["command-console-title"].textContent,
+    "긴급 전군 즉시 후퇴해"
+  );
 })().catch(function (error) {
   console.error(error && error.stack ? error.stack : error);
   process.exit(1);
@@ -5806,6 +6976,35 @@ const assert = require("assert");
             )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_active_command_console_accessibility_and_color_contract(self):
+        page = render_web_gui_page()
+        self.assertLess(
+            page.index('id="active-command-console"'),
+            page.index('class="runtime-mode-panel"'),
+        )
+        self.assertIn('id="command-console-announcement"', page)
+        self.assertIn('class="sr-only"', page)
+        self.assertIn('role="status"', page)
+        self.assertIn(
+            '<p id="assistant-pending-status" class="assistant-pending-status"></p>',
+            page,
+        )
+        self.assertIn('<div id="log" aria-live="off" role="log"></div>', page)
+        self.assertIn('<div id="micromachine-status" aria-live="off">', page)
+        self.assertNotIn('botMessage.setAttribute("role", "status")', page)
+        self.assertNotIn('botMessage.setAttribute("aria-live", "polite")', page)
+        self.assertEqual(page.count('class="command-stage" role="listitem"'), 4)
+        self.assertIn(
+            ".command-stage.stage-done {\n"
+            "    color: #7dd3fc;",
+            page,
+        )
+        self.assertIn(
+            ".command-stage.stage-verified {\n"
+            "    color: #7ee7b0;",
+            page,
+        )
+
     def test_chat_panel_is_bounded_and_log_scrolls_internally(self):
         page = render_web_gui_page()
         for fragment in (
@@ -5816,8 +7015,9 @@ const assert = require("assert");
             "display: flex; flex-direction: column; gap: 16px; scrollbar-gutter: stable;",
             "#briefing-panel, #llm-panel, #micromachine-panel {",
             "grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));",
-            "#log {\n    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;",
-            "#command-panel { height: 68vh; min-height: 0; max-height: 68vh; }",
+            "#log {\n    order: 3;\n    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;",
+            "#command-panel { height: auto; min-height: 0; max-height: none; overflow: visible; }",
+            "#log { min-height: clamp(280px, 42vh, 520px); max-height: 52vh; }",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, page)
