@@ -4178,6 +4178,10 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       linear-gradient(145deg, #02030b 0%, #070c22 42%, #10061c 100%);
     overflow-x: hidden;
   }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
   .space-background {
     position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
     contain: paint;
@@ -4240,6 +4244,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   @media (prefers-reduced-motion: reduce) {
     .star-depth { animation: none; transform: none; will-change: auto; }
+    .command-stage.stage-current::before { animation: none; }
   }
   @media (prefers-contrast: more) {
     :root {
@@ -4257,7 +4262,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .space-background, .space-background::before, .space-background::after, .star-depth { display: none; }
     .language-switcher button, .connection-pill, #command-panel, #state-panel,
     .metric-card, .collapsible-panel, .message, #log, #command-form,
-    .runtime-mode-panel, .mode-option {
+    .runtime-mode-panel, .mode-option, .active-command-console,
+    .battlefield-control-overview, .command-console-field, .command-stage {
       forced-color-adjust: auto; background: Canvas; color: CanvasText;
       border-color: CanvasText; box-shadow: none; backdrop-filter: none;
     }
@@ -4326,6 +4332,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     border-radius: 999px; padding: 8px 10px; font-weight: 800; cursor: pointer;
   }
   .runtime-mode-panel {
+    order: 2;
     padding: 16px 22px; border-bottom: 1px solid var(--line);
     background: linear-gradient(180deg, rgba(2, 6, 23, 0.5), rgba(8, 13, 32, 0.34));
   }
@@ -4374,6 +4381,141 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     flex: 1 1 160px; margin-top: 0 !important; padding: 10px 12px !important;
     background: rgba(255, 255, 255, 0.9) !important; color: #071225 !important;
   }
+  .active-command-console {
+    order: 1;
+    position: relative; margin: 14px 18px 0; padding: 16px;
+    border: 1px solid rgba(77, 238, 234, 0.3); border-radius: 22px;
+    background:
+      linear-gradient(135deg, rgba(5, 16, 34, 0.96), rgba(8, 27, 37, 0.9)),
+      radial-gradient(circle at 86% 18%, rgba(77, 238, 234, 0.2), transparent 34%);
+    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    overflow: hidden;
+  }
+  .active-command-console::after {
+    content: ""; position: absolute; top: 0; left: 0; width: 34%; height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+    transition: width 0.3s ease, background 0.3s ease;
+  }
+  .active-command-console.command-console-assigning::after { width: 58%; }
+  .active-command-console.command-console-executing::after {
+    width: 82%; background: linear-gradient(90deg, var(--amber), var(--accent));
+  }
+  .active-command-console.command-console-verified::after {
+    width: 100%; background: linear-gradient(90deg, #4ade80, var(--accent));
+  }
+  .active-command-console.command-console-blocked::after {
+    width: 100%; background: linear-gradient(90deg, var(--red), var(--amber));
+  }
+  .active-command-console.command-console-superseded::after {
+    width: 100%; background: linear-gradient(90deg, var(--amber), var(--accent));
+  }
+  .command-console-header {
+    display: flex; justify-content: space-between; gap: 14px; align-items: flex-start;
+  }
+  .command-console-kicker {
+    display: block; margin-bottom: 5px; color: var(--accent);
+    font-size: 0.68rem; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase;
+  }
+  .command-console-title {
+    margin: 0; color: var(--ink); font-size: 1rem; line-height: 1.35;
+    font-weight: 900; letter-spacing: -0.02em; overflow-wrap: anywhere;
+  }
+  .command-console-state {
+    flex: 0 0 auto; padding: 6px 9px; border: 1px solid var(--line);
+    border-radius: 999px; color: var(--amber); background: rgba(245, 158, 11, 0.12);
+    font-size: 0.7rem; font-weight: 900; white-space: nowrap;
+  }
+  .command-console-verified .command-console-state {
+    color: #4ade80; border-color: rgba(74, 222, 128, 0.34); background: rgba(34, 197, 94, 0.12);
+  }
+  .command-console-executing .command-console-state {
+    color: var(--accent); border-color: rgba(77, 238, 234, 0.34); background: rgba(77, 238, 234, 0.1);
+  }
+  .command-console-blocked .command-console-state {
+    color: #ff9eb2; border-color: rgba(255, 107, 138, 0.38); background: rgba(255, 107, 138, 0.12);
+  }
+  .command-console-superseded .command-console-state {
+    color: var(--amber); border-color: rgba(255, 209, 102, 0.38); background: rgba(255, 209, 102, 0.12);
+  }
+  .command-stage-rail {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px;
+    margin: 14px 0 12px;
+  }
+  .command-stage {
+    position: relative; min-width: 0; padding: 9px 8px 8px 26px;
+    border: 1px solid var(--line); border-radius: 12px;
+    background: rgba(255, 255, 255, 0.05); color: var(--muted);
+    font-size: 0.68rem; font-weight: 900; line-height: 1.25;
+  }
+  .command-stage::before {
+    content: ""; position: absolute; left: 9px; top: 50%; width: 8px; height: 8px;
+    margin-top: -4px; border: 1px solid currentColor; border-radius: 999px;
+  }
+  .command-stage.stage-current {
+    color: var(--accent); border-color: rgba(77, 238, 234, 0.35);
+    background: rgba(77, 238, 234, 0.09);
+  }
+  .command-stage.stage-current::before {
+    background: currentColor; box-shadow: 0 0 0 4px rgba(77, 238, 234, 0.11);
+    animation: command-stage-pulse 1.2s ease-in-out infinite;
+  }
+  .command-stage.stage-done {
+    color: #7dd3fc; border-color: rgba(56, 189, 248, 0.3);
+    background: rgba(14, 165, 233, 0.08);
+  }
+  .command-stage.stage-done::before { background: currentColor; }
+  .command-stage.stage-verified {
+    color: #7ee7b0; border-color: rgba(74, 222, 128, 0.3);
+    background: rgba(34, 197, 94, 0.08);
+  }
+  .command-stage.stage-verified::before { background: currentColor; }
+  .command-stage.stage-blocked {
+    color: #ff9eb2; border-color: rgba(255, 107, 138, 0.34);
+    background: rgba(255, 107, 138, 0.09);
+  }
+  @keyframes command-stage-pulse {
+    0%, 100% { opacity: 0.5; transform: scale(0.84); }
+    50% { opacity: 1; transform: scale(1.12); }
+  }
+  .command-console-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+  }
+  .command-console-field {
+    min-width: 0; padding: 9px 10px; border: 1px solid rgba(136, 169, 255, 0.18);
+    border-radius: 13px; background: rgba(255, 255, 255, 0.045);
+  }
+  .command-console-field span {
+    display: block; margin-bottom: 4px; color: var(--muted);
+    font-size: 0.64rem; font-weight: 900; letter-spacing: 0.05em;
+  }
+  .command-console-field strong {
+    display: block; color: var(--ink); font-size: 0.76rem; line-height: 1.35;
+    font-weight: 800; overflow-wrap: anywhere;
+  }
+  .command-console-verification {
+    grid-column: 1 / -1; border-color: rgba(77, 238, 234, 0.24);
+  }
+  .command-console-actions {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 11px;
+  }
+  .command-console-actions button {
+    margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
+    color: var(--ink); background: rgba(255, 255, 255, 0.07);
+    font-size: 0.7rem; font-weight: 900; cursor: pointer;
+  }
+  .command-console-actions .command-emergency-button {
+    margin-left: auto; color: #fff1f4; border-color: rgba(255, 107, 138, 0.4);
+    background: rgba(255, 107, 138, 0.13);
+  }
+  .command-console-technical {
+    margin-top: 10px; color: var(--muted); font-size: 0.7rem;
+  }
+  .command-console-technical summary { cursor: pointer; color: var(--accent); font-weight: 900; }
+  .command-console-technical pre {
+    max-height: 140px; overflow: auto; margin: 7px 0 0; padding: 9px;
+    border: 1px solid var(--line); border-radius: 10px; background: rgba(0, 0, 0, 0.24);
+    color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere;
+  }
   #state-panel {
     min-width: 0; min-height: 0; max-height: calc(100vh - 160px); overflow-y: auto;
     display: flex; flex-direction: column; gap: 16px; scrollbar-gutter: stable;
@@ -4382,6 +4524,52 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   #state-panel > * { min-width: 0; }
   #state-panel h2, #llm-panel h2, #briefing-panel h2 { margin: 0; font-size: 1rem; letter-spacing: -0.02em; }
+  .battlefield-control-overview {
+    position: relative; padding: 16px; border: 1px solid rgba(77, 238, 234, 0.3);
+    border-radius: 22px; overflow: hidden;
+    background:
+      linear-gradient(145deg, rgba(4, 13, 30, 0.96), rgba(8, 30, 38, 0.78)),
+      radial-gradient(circle at 100% 0, rgba(255, 209, 102, 0.15), transparent 40%);
+  }
+  .battlefield-control-overview::after {
+    content: ""; position: absolute; right: -44px; top: -44px; width: 126px; height: 126px;
+    border: 1px solid rgba(77, 238, 234, 0.16); border-radius: 999px;
+    box-shadow: 0 0 0 22px rgba(77, 238, 234, 0.025), 0 0 0 44px rgba(77, 238, 234, 0.018);
+    pointer-events: none;
+  }
+  .battlefield-control-header {
+    position: relative; z-index: 1; display: flex; justify-content: space-between;
+    gap: 12px; align-items: center; margin-bottom: 12px;
+  }
+  .battlefield-control-header h2 { margin: 0; }
+  .battlefield-link-badge {
+    padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--amber); background: rgba(245, 158, 11, 0.11);
+    font-size: 0.68rem; font-weight: 900;
+  }
+  .battlefield-link-badge.control-linked {
+    color: #4ade80; border-color: rgba(74, 222, 128, 0.34); background: rgba(34, 197, 94, 0.11);
+  }
+  .battlefield-control-grid {
+    position: relative; z-index: 1; display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0;
+  }
+  .battlefield-control-grid > div {
+    min-width: 0; padding: 10px; border: 1px solid rgba(136, 169, 255, 0.18);
+    border-radius: 13px; background: rgba(255, 255, 255, 0.045);
+  }
+  .battlefield-control-grid dt {
+    margin: 0 0 4px; color: var(--muted); font-size: 0.66rem; font-weight: 900;
+  }
+  .battlefield-control-grid dd {
+    margin: 0; color: var(--ink); font-size: 0.82rem; font-weight: 900;
+    overflow-wrap: anywhere;
+  }
+  .battlefield-control-summary {
+    position: relative; z-index: 1; margin: 10px 0 0; padding-top: 10px;
+    border-top: 1px solid var(--line); color: var(--muted);
+    font-size: 0.78rem; line-height: 1.45;
+  }
   .dashboard-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
     gap: 12px; margin: 0;
@@ -4510,6 +4698,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .micro-badge-applied { color: #4ade80; background: rgba(34, 197, 94, 0.14); }
   .micro-badge-active { color: var(--accent); background: rgba(77, 238, 234, 0.12); }
   .micro-badge-pending { color: var(--amber); background: rgba(245, 158, 11, 0.14); }
+  .micro-badge-blocked { color: #ff9eb2; background: rgba(255, 107, 138, 0.14); }
   .micro-intervention-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; margin: 0;
   }
@@ -4540,6 +4729,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   #micromachine-log-snippets li { margin-bottom: 6px; overflow-wrap: anywhere; }
   #log {
+    order: 3;
     flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px;
     scrollbar-gutter: stable;
     background:
@@ -4620,6 +4810,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .status-clarification { color: __COLOR_CLARIFICATION__; }
   .status-read_only { color: __COLOR_READ_ONLY__; }
   #command-form {
+    order: 4;
     display: flex; gap: 12px; padding: 16px 18px; border-top: 1px solid var(--line);
     background: rgba(7, 13, 34, 0.72);
   }
@@ -4668,7 +4859,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .connection-pill { display: inline-block; margin-top: 12px; }
     main { grid-template-columns: 1fr; gap: 16px; }
     .quick-commands { max-width: none; min-width: 0; justify-content: flex-start; }
-    #command-panel { height: 68vh; min-height: 0; max-height: 68vh; }
+    #command-panel { height: auto; min-height: 0; max-height: none; overflow: visible; }
+    #log { min-height: clamp(280px, 42vh, 520px); max-height: 52vh; }
     #state-panel { max-height: none; }
   }
   @media (max-width: 620px) {
@@ -4682,10 +4874,22 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .space-background::after { inset: 36% -38% -12% 8%; width: 128vw; height: 128vw; opacity: 0.36; }
     .star-depth-far { opacity: 0.24; }
     .star-depth-near { opacity: 0.28; }
+    body { padding: 8px; }
     .chat-header { display: block; }
+    .chat-header, .runtime-mode-panel, #command-form { padding-left: 14px; padding-right: 14px; }
     .quick-commands { margin-top: 12px; }
-    .dashboard-grid, .mode-options, .micro-scope-grid, .micro-intervention-grid, .provider-options { grid-template-columns: 1fr; }
+    .runtime-mode-title, .command-console-header { display: block; }
+    .command-console-state { display: inline-block; margin-top: 9px; }
+    .dashboard-grid, .mode-options, .micro-scope-grid, .micro-intervention-grid,
+    .provider-options, .command-console-grid, .battlefield-control-grid { grid-template-columns: 1fr; }
+    .command-stage-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .active-command-console { margin: 10px 10px 0; padding: 13px; }
+    .command-console-actions { display: grid; grid-template-columns: 1fr; }
+    .command-console-actions button { width: 100%; }
+    .command-console-actions .command-emergency-button { margin-left: 0; }
+    #log { min-height: 320px; max-height: 58vh; }
     #command-form { flex-direction: column; }
+    #voice-button, #send-button { width: 100%; }
     .message { max-width: 94%; }
   }
 </style>
@@ -4714,15 +4918,70 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       <div>
         <p class="chat-title" data-i18n="chatTitle">커맨더 채팅</p>
         <p class="chat-subtitle" data-i18n="chatSubtitle">명령, 질문, 상태 확인을 한 창에서 처리합니다.</p>
-        <p id="assistant-pending-status" class="assistant-pending-status" aria-live="polite"></p>
+        <p id="assistant-pending-status" class="assistant-pending-status"></p>
       </div>
       <div class="quick-commands">
-        <button type="button" data-command="상태확인" data-i18n="quickStatus">상태확인</button>
-        <button type="button" data-command="정찰보내" data-i18n="quickScout">정찰보내</button>
-        <button type="button" data-command="SCV 여러개 뽑아" data-i18n="quickScv">SCV 생산</button>
-        <button type="button" data-command="건물 위치 지정 가능?" data-i18n="quickPosition">위치 질문</button>
+        <button type="button" data-command="현재 작전과 병력 상태를 보고해" data-i18n="quickStatus">작전상황</button>
+        <button type="button" data-command="마린 1기로 적 본진 정찰해" data-i18n="quickScout">1마린 정찰</button>
+        <button type="button" data-command="주력 병력을 편성해서 적진을 공격해" data-i18n="quickScv">주력 공격</button>
+        <button type="button" data-command="긴급 전군 후퇴해" data-i18n="quickPosition">전군 후퇴</button>
       </div>
     </div>
+    <section id="active-command-console"
+             class="active-command-console command-console-idle"
+             aria-labelledby="command-console-title">
+      <div class="command-console-header">
+        <div>
+          <span class="command-console-kicker" data-i18n="commandConsoleKicker">Active field order</span>
+          <h2 id="command-console-title" class="command-console-title" data-i18n="commandConsoleIdleTitle">명령을 입력하면 실제 실행 단계가 여기에 표시됩니다.</h2>
+        </div>
+        <span id="command-console-state"
+              class="command-console-state"
+              data-i18n="commandConsoleIdleState">명령 대기</span>
+        <span id="command-console-announcement"
+              class="sr-only"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"></span>
+      </div>
+      <div id="command-stage-rail" class="command-stage-rail" role="list">
+        <div id="command-stage-interpret" class="command-stage" role="listitem" data-command-stage="interpret" data-i18n="commandStageInterpret">명령 해석</div>
+        <div id="command-stage-assign" class="command-stage" role="listitem" data-command-stage="assign" data-i18n="commandStageAssign">유닛 배정</div>
+        <div id="command-stage-execute" class="command-stage" role="listitem" data-command-stage="execute" data-i18n="commandStageExecute">SC2 실행</div>
+        <div id="command-stage-verify" class="command-stage" role="listitem" data-command-stage="verify" data-i18n="commandStageVerify">효과 확인</div>
+      </div>
+      <div class="command-console-grid">
+        <div class="command-console-field">
+          <span data-i18n="commandConsoleIntent">작전 해석</span>
+          <strong id="command-console-intent" data-i18n="commandConsoleWaiting">대기 중</strong>
+        </div>
+        <div class="command-console-field">
+          <span data-i18n="commandConsoleUnits">배정된 전력</span>
+          <strong id="command-console-units" data-i18n="commandConsoleWaiting">대기 중</strong>
+        </div>
+        <div class="command-console-field">
+          <span data-i18n="commandConsoleAction">실제 명령</span>
+          <strong id="command-console-action" data-i18n="commandConsoleWaiting">대기 중</strong>
+        </div>
+        <div class="command-console-field">
+          <span data-i18n="commandConsoleTarget">목표</span>
+          <strong id="command-console-target" data-i18n="commandConsoleWaiting">대기 중</strong>
+        </div>
+        <div class="command-console-field command-console-verification">
+          <span data-i18n="commandConsoleVerification">화면에서 확인해야 할 결과</span>
+          <strong id="command-console-verification" data-i18n="commandConsoleWaiting">대기 중</strong>
+        </div>
+      </div>
+      <div class="command-console-actions">
+        <button id="command-refresh-button" type="button" data-i18n="commandConsoleRefresh">실행 상태 새로고침</button>
+        <button id="command-revise-button" type="button" data-i18n="commandConsoleRevise">현재 명령 수정</button>
+        <button id="command-retreat-button" class="command-emergency-button" type="button" data-i18n="commandConsoleRetreat">긴급 전군 후퇴</button>
+      </div>
+      <details class="command-console-technical">
+        <summary data-i18n="commandConsoleTechnical">기술 상세 보기</summary>
+        <pre id="command-console-technical">{}</pre>
+      </details>
+    </section>
     <section class="runtime-mode-panel" aria-label="Command runtime mode">
       <p class="runtime-mode-title">
         <span data-i18n="runtimeModeTitle">명령 라우팅 모드</span>
@@ -4756,7 +5015,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         <button id="runtime-refresh-button" type="button" data-i18n="runtimeRefreshButton">런타임 상태 확인</button>
       </div>
     </section>
-    <div id="log" aria-live="polite" role="log"></div>
+    <div id="log" aria-live="off" role="log"></div>
     <form id="command-form">
       <input id="command-input" type="text" autocomplete="off" autofocus
              placeholder="대화하듯 입력하세요. 예: 보급고 지어 / 음성지원도 되나?">
@@ -4765,7 +5024,31 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     </form>
   </section>
   <aside id="state-panel">
-    <h2 data-i18n="dashboardTitle">전장 대시보드</h2>
+    <section id="battlefield-control-overview" class="battlefield-control-overview">
+      <div class="battlefield-control-header">
+        <h2 data-i18n="dashboardTitle">전장 통제</h2>
+        <span id="battlefield-link-badge" class="battlefield-link-badge" data-i18n="battlefieldLinkWaiting">MicroMachine 대기</span>
+      </div>
+      <dl class="battlefield-control-grid">
+        <div>
+          <dt data-i18n="battlefieldCommandState">현재 명령</dt>
+          <dd id="battlefield-command-state" data-i18n="commandConsoleIdleState">명령 대기</dd>
+        </div>
+        <div>
+          <dt data-i18n="battlefieldFrame">전장 프레임</dt>
+          <dd id="battlefield-frame">-</dd>
+        </div>
+        <div>
+          <dt data-i18n="battlefieldForce">통제 병력</dt>
+          <dd id="battlefield-force">-</dd>
+        </div>
+        <div>
+          <dt data-i18n="battlefieldPosture">현재 자세</dt>
+          <dd id="battlefield-posture">-</dd>
+        </div>
+      </dl>
+      <p id="battlefield-control-summary" class="battlefield-control-summary" data-i18n="battlefieldControlWaiting">명령을 입력하면 MicroMachine의 실제 배정·실행·효과 확인 상태를 추적합니다.</p>
+    </section>
     <dl class="dashboard-grid">
       <div class="metric-card"><dt data-i18n="minerals">미네랄</dt><dd id="state-minerals">-</dd></div>
       <div class="metric-card"><dt data-i18n="vespene">가스</dt><dd id="state-vespene">-</dd></div>
@@ -4878,8 +5161,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         </div>
         <button type="submit" data-i18n="microMachineSend">고급 직접 publish 전송</button>
       </form>
-      <div id="micromachine-status" aria-live="polite">왼쪽 커맨더 채팅 또는 고급 직접 publish 입력을 기다리는 중입니다.</div>
-      <section id="micromachine-intervention-dashboard" aria-live="polite">
+      <div id="micromachine-status" aria-live="off">왼쪽 커맨더 채팅 또는 고급 직접 publish 입력을 기다리는 중입니다.</div>
+      <section id="micromachine-intervention-dashboard">
         <div class="micro-intervention-header">
           <strong data-i18n="microMachineDashboardTitle">DSL intervention dashboard</strong>
           <span id="micromachine-applied-badge" class="micro-badge micro-badge-pending" data-i18n="microMachinePending">텔레메트리 대기</span>
@@ -4977,6 +5260,7 @@ var COMPACT_KEEP_EVENTS = 24;
 var MAX_MESSAGE_PREVIEW_CHARS = 280;
 var MICROMACHINE_CHAT_TIMEOUT_MS = 35000;
 var MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS = 120000;
+var MICROMACHINE_STATUS_POLL_TIMEOUT_MS = 12000;
 var trimmedChatEvents = 0;
 var recentEvents = [];
 var archivedChatEvents = [];
@@ -4984,6 +5268,17 @@ var pendingMicroMachineAsyncUpdates = {};
 var deferredPendingMicroMachineTransfers = {};
 var knownPendingMicroMachineUpdateKeys = {};
 var consumedMicroMachineResultIdsByScope = {};
+var microMachinePollRequestSeq = 0;
+var microMachinePollAppliedSeq = 0;
+var microMachinePollBlackboardDir = null;
+var microMachineBlackboardContextGeneration = 0;
+var microMachineCommandAnnouncementSeq = 0;
+var microMachineSubmissionSeq = 0;
+var microMachinePollInFlight = false;
+var microMachinePollQueued = false;
+var microMachinePollActiveRequestSeq = 0;
+var microMachinePollAbortController = null;
+var microMachinePollTimeoutId = null;
 var compactedContext = {
   total: 0,
   successful: 0,
@@ -4999,6 +5294,20 @@ var pendingCommandSeq = 0;
 var pendingNodes = {};
 var pendingAggregateId = "pending-aggregate";
 var latestMicroMachinePlanText = "";
+var activeCommandConsoleRecord = {
+  pendingId: "",
+  scopeId: "",
+  updateId: "",
+  text: "",
+  state: "idle",
+  data: null,
+  startedAt: 0,
+  stageRank: 0,
+  telemetryFrame: -1,
+  observationTimedOut: false,
+  submissionDelayed: false,
+  announcementOrdinal: 0
+};
 var latestState = null;
 var briefingAdviceToggleEnabled = false;
 var recognition = null;
@@ -5092,12 +5401,36 @@ var I18N = {
     runtimeReady: "Legacy live GUI 준비됨",
     runtimeBlocked: "런타임 시작 보류",
     runtimeFailed: "런타임 시작 실패",
-    quickStatus: "상태확인",
-    quickScout: "정찰보내",
-    quickScv: "SCV 생산",
-    quickPosition: "위치 질문",
+    quickStatus: "작전상황",
+    quickScout: "1마린 정찰",
+    quickScv: "주력 공격",
+    quickPosition: "전군 후퇴",
     send: "전송",
-    dashboardTitle: "전장 대시보드",
+    dashboardTitle: "전장 통제",
+    battlefieldLinkWaiting: "MicroMachine 대기",
+    battlefieldLinkConnected: "전장 링크 연결",
+    battlefieldCommandState: "현재 명령",
+    battlefieldFrame: "전장 프레임",
+    battlefieldForce: "통제 병력",
+    battlefieldPosture: "현재 자세",
+    battlefieldControlWaiting: "명령을 입력하면 MicroMachine의 실제 배정·실행·효과 확인 상태를 추적합니다.",
+    commandConsoleKicker: "Active field order",
+    commandConsoleIdleTitle: "명령을 입력하면 실제 실행 단계가 여기에 표시됩니다.",
+    commandConsoleIdleState: "명령 대기",
+    commandConsoleWaiting: "대기 중",
+    commandConsoleIntent: "작전 해석",
+    commandConsoleUnits: "배정된 전력",
+    commandConsoleAction: "실제 명령",
+    commandConsoleTarget: "목표",
+    commandConsoleVerification: "화면에서 확인해야 할 결과",
+    commandConsoleRefresh: "실행 상태 새로고침",
+    commandConsoleRevise: "현재 명령 수정",
+    commandConsoleRetreat: "긴급 전군 후퇴",
+    commandConsoleTechnical: "기술 상세 보기",
+    commandStageInterpret: "명령 해석",
+    commandStageAssign: "유닛 배정",
+    commandStageExecute: "SC2 실행",
+    commandStageVerify: "효과 확인",
     minerals: "미네랄",
     vespene: "가스",
     supply: "보급",
@@ -5254,12 +5587,36 @@ var I18N = {
     runtimeReady: "Legacy live GUI ready",
     runtimeBlocked: "Runtime start blocked",
     runtimeFailed: "Runtime start failed",
-    quickStatus: "Status",
-    quickScout: "Scout",
-    quickScv: "Train SCV",
-    quickPosition: "Placement Help",
+    quickStatus: "Battle report",
+    quickScout: "1-Marine scout",
+    quickScv: "Main attack",
+    quickPosition: "Full retreat",
     send: "Send",
-    dashboardTitle: "Battlefield Dashboard",
+    dashboardTitle: "Battlefield Control",
+    battlefieldLinkWaiting: "Waiting for MicroMachine",
+    battlefieldLinkConnected: "Battlefield link online",
+    battlefieldCommandState: "Current order",
+    battlefieldFrame: "Battlefield frame",
+    battlefieldForce: "Controlled force",
+    battlefieldPosture: "Current posture",
+    battlefieldControlWaiting: "Issue an order to track actual MicroMachine assignment, SC2 action, and observed effect.",
+    commandConsoleKicker: "Active field order",
+    commandConsoleIdleTitle: "Issue an order to see each real execution stage here.",
+    commandConsoleIdleState: "Waiting for order",
+    commandConsoleWaiting: "Waiting",
+    commandConsoleIntent: "Interpreted operation",
+    commandConsoleUnits: "Assigned force",
+    commandConsoleAction: "Actual command",
+    commandConsoleTarget: "Target",
+    commandConsoleVerification: "Result to verify on screen",
+    commandConsoleRefresh: "Refresh execution",
+    commandConsoleRevise: "Revise current order",
+    commandConsoleRetreat: "Emergency retreat",
+    commandConsoleTechnical: "Show technical details",
+    commandStageInterpret: "Interpret",
+    commandStageAssign: "Assign units",
+    commandStageExecute: "Execute in SC2",
+    commandStageVerify: "Verify effect",
     minerals: "Minerals",
     vespene: "Vespene",
     supply: "Supply",
@@ -5416,12 +5773,36 @@ var I18N = {
     runtimeReady: "Legacy live GUI 已就绪",
     runtimeBlocked: "runtime 启动被阻止",
     runtimeFailed: "runtime 启动失败",
-    quickStatus: "状态",
-    quickScout: "侦察",
-    quickScv: "生产 SCV",
-    quickPosition: "位置帮助",
+    quickStatus: "作战状态",
+    quickScout: "1名陆战队员侦察",
+    quickScv: "主力进攻",
+    quickPosition: "全军撤退",
     send: "发送",
-    dashboardTitle: "战场仪表盘",
+    dashboardTitle: "战场控制",
+    battlefieldLinkWaiting: "等待 MicroMachine",
+    battlefieldLinkConnected: "战场链路已连接",
+    battlefieldCommandState: "当前命令",
+    battlefieldFrame: "战场帧",
+    battlefieldForce: "受控部队",
+    battlefieldPosture: "当前姿态",
+    battlefieldControlWaiting: "输入命令后，将追踪 MicroMachine 的实际分配、SC2 动作与效果确认。",
+    commandConsoleKicker: "Active field order",
+    commandConsoleIdleTitle: "输入命令后，这里会显示每个实际执行阶段。",
+    commandConsoleIdleState: "等待命令",
+    commandConsoleWaiting: "等待中",
+    commandConsoleIntent: "作战解析",
+    commandConsoleUnits: "已分配部队",
+    commandConsoleAction: "实际命令",
+    commandConsoleTarget: "目标",
+    commandConsoleVerification: "需要在画面确认的结果",
+    commandConsoleRefresh: "刷新执行状态",
+    commandConsoleRevise: "修改当前命令",
+    commandConsoleRetreat: "紧急全军撤退",
+    commandConsoleTechnical: "查看技术详情",
+    commandStageInterpret: "命令解析",
+    commandStageAssign: "单位分配",
+    commandStageExecute: "SC2 执行",
+    commandStageVerify: "效果确认",
     minerals: "晶体矿",
     vespene: "瓦斯",
     supply: "补给",
@@ -5632,6 +6013,9 @@ function applyLanguage(lang) {
   updateAssistantPendingState();
   renderChatTrimNote();
   if (latestState) { renderStrategyBriefing(latestState); }
+  if (activeCommandConsoleRecord.data) {
+    renderActiveCommandConsole(activeCommandConsoleRecord.data, true);
+  }
 }
 
 function appendCompactText(parent, text, className) {
@@ -5940,8 +6324,6 @@ function renderPendingAggregate(latestText) {
   botMessage.className = "message message-bot message-pending";
   botMessage.setAttribute("data-full-text", t("assistantThinking"));
   botMessage.setAttribute("data-status", "pending");
-  botMessage.setAttribute("role", "status");
-  botMessage.setAttribute("aria-live", "polite");
   botMessage.setAttribute("aria-label", t("assistantWaiting"));
   var botMeta = document.createElement("span");
   botMeta.className = "message-meta";
@@ -5972,7 +6354,9 @@ function clearPendingMicroMachinePlan() {
 
 function appendMicroMachinePendingPlan(text) {
   latestMicroMachinePlanText = text;
-  return appendPendingCommand(text);
+  var pendingId = appendPendingCommand(text);
+  beginActiveCommandConsole(text, pendingId);
+  return pendingId;
 }
 
 function appendVoiceRecordingBubble() {
@@ -6109,6 +6493,13 @@ function renderMicroMachineStatePlaceholder() {
   setText("state-availability", t("microMachineStateDashboardDisabled"));
   setText("connection-status", t("microMachineStateConnection"));
   setText("strategy-briefing", t("microMachineStateBriefing"));
+  if (!activeCommandConsoleRecord.data) {
+    setMicroMachineText("battlefield-command-state", t("commandConsoleIdleState"));
+    setMicroMachineText("battlefield-frame", "-");
+    setMicroMachineText("battlefield-force", "-");
+    setMicroMachineText("battlefield-posture", "-");
+    setMicroMachineText("battlefield-control-summary", t("battlefieldControlWaiting"));
+  }
 }
 
 function renderState(data) {
@@ -7100,6 +7491,910 @@ function setMicroMachineText(id, value) {
   node.textContent = String(value);
 }
 
+function commandUiText(ko, en, zh) {
+  if (currentLang === "en") { return en; }
+  if (currentLang === "zh") { return zh; }
+  return ko;
+}
+
+function microMachineExecutionStage(execution, name) {
+  var stages = execution && Array.isArray(execution.stages)
+    ? execution.stages
+    : [];
+  for (var index = 0; index < stages.length; index += 1) {
+    if (stages[index] && stages[index].name === name) {
+      return stages[index];
+    }
+  }
+  return null;
+}
+
+function microMachineExecutionEffectObserved(execution) {
+  var stage = microMachineExecutionStage(execution, "effect_observed");
+  return Boolean(stage && stage.ok === true);
+}
+
+function microMachineExecutionActionIssued(execution) {
+  var orderStage = microMachineExecutionStage(execution, "order_issued");
+  var actionStage = microMachineExecutionStage(execution, "action_issued");
+  return Boolean(
+    (orderStage && orderStage.ok === true) ||
+    (actionStage && actionStage.ok === true)
+  );
+}
+
+function commandConsoleDataUpdateIds(data) {
+  var compileResult = (data && data.compile_result) || {};
+  var update = (data && data.update) || {};
+  var latestRequest = (data && data.latest_request) || {};
+  var intervention = (data && data.intervention) || {};
+  var execution = intervention.command_execution || {};
+  var values = [
+    data && data.update_id,
+    update.update_id,
+    execution.command_id,
+    intervention.latest_update_id,
+    latestRequest.update_id,
+    compileResult.update_id
+  ];
+  var result = [];
+  values.forEach(function(value) {
+    var normalized = String(value || "");
+    if (normalized && result.indexOf(normalized) === -1) {
+      result.push(normalized);
+    }
+  });
+  return result;
+}
+
+function commandConsolePreferredUpdateId(data) {
+  var compileResult = (data && data.compile_result) || {};
+  var latestRequest = (data && data.latest_request) || {};
+  var compileUpdateId = String(compileResult.update_id || "");
+  var latestRequestUpdateId = String(latestRequest.update_id || "");
+  var latestRequestTerminal = Boolean(
+    compileResult.refusal_reason ||
+    compileResult.clarification_prompt ||
+    compileResult.status === "refused" ||
+    compileResult.status === "clarification_required" ||
+    data && data.status === "publish_failed" ||
+    data && data.status === "superseded"
+  );
+  if (
+    compileUpdateId &&
+    latestRequestUpdateId === compileUpdateId &&
+    latestRequest.is_active_update === false &&
+    latestRequestTerminal
+  ) {
+    return compileUpdateId;
+  }
+  var intervention = (data && data.intervention) || {};
+  var execution = intervention.command_execution || {};
+  return String(
+    execution.command_id ||
+    (data && data.update && data.update.update_id) ||
+    intervention.latest_update_id ||
+    compileUpdateId ||
+    latestRequestUpdateId ||
+    data && data.update_id ||
+    ""
+  );
+}
+
+function handoffActiveCommandConsole(data, scopeId, updateId) {
+  var compileResult = (data && data.compile_result) || {};
+  var latestRequest = (data && data.latest_request) || {};
+  microMachineCommandAnnouncementSeq += 1;
+  activeCommandConsoleRecord = {
+    pendingId: "",
+    scopeId: scopeId,
+    updateId: updateId,
+    text: String(
+      latestRequest.command_text ||
+      compileResult.command_text ||
+      data.command_text ||
+      commandConsoleGoal(data, "")
+    ),
+    state: "interpreting",
+    data: null,
+    startedAt: Date.now(),
+    stageRank: 0,
+    telemetryFrame: -1,
+    observationTimedOut: false,
+    submissionDelayed: false,
+    announcementOrdinal: microMachineCommandAnnouncementSeq
+  };
+}
+
+function beginActiveCommandConsole(text, pendingId) {
+  microMachineCommandAnnouncementSeq += 1;
+  activeCommandConsoleRecord = {
+    pendingId: pendingId || "",
+    scopeId: "",
+    updateId: "",
+    text: String(text || ""),
+    state: "interpreting",
+    data: {
+      status: "queued",
+      command_text: String(text || ""),
+      consumption_status: "pending_compile"
+    },
+    startedAt: Date.now(),
+    stageRank: 0,
+    telemetryFrame: -1,
+    observationTimedOut: false,
+    submissionDelayed: false,
+    announcementOrdinal: microMachineCommandAnnouncementSeq
+  };
+  renderActiveCommandConsole(activeCommandConsoleRecord.data, true);
+}
+
+function resetActiveCommandConsole() {
+  activeCommandConsoleRecord = {
+    pendingId: "",
+    scopeId: "",
+    updateId: "",
+    text: "",
+    state: "idle",
+    data: null,
+    startedAt: 0,
+    stageRank: 0,
+    telemetryFrame: -1,
+    observationTimedOut: false,
+    submissionDelayed: false,
+    announcementOrdinal: 0
+  };
+  var consoleNode = document.getElementById("active-command-console");
+  if (consoleNode) {
+    consoleNode.className = "active-command-console command-console-idle";
+  }
+  setMicroMachineText("command-console-title", t("commandConsoleIdleTitle"));
+  setMicroMachineText("command-console-state", t("commandConsoleIdleState"));
+  [
+    "command-console-intent",
+    "command-console-units",
+    "command-console-action",
+    "command-console-target",
+    "command-console-verification"
+  ].forEach(function(id) {
+    setMicroMachineText(id, t("commandConsoleWaiting"));
+  });
+  ["interpret", "assign", "execute", "verify"].forEach(function(stageName) {
+    var stageNode = document.getElementById("command-stage-" + stageName);
+    if (!stageNode) { return; }
+    stageNode.className = "command-stage";
+    stageNode.setAttribute("role", "listitem");
+    stageNode.setAttribute("aria-current", "false");
+    stageNode.setAttribute(
+      "aria-label",
+      stageNode.textContent + ": " + commandUiText("대기", "waiting", "等待")
+    );
+  });
+  setMicroMachineText("command-console-technical", "{}");
+  var announcement = document.getElementById("command-console-announcement");
+  if (announcement) {
+    announcement.textContent = "";
+  }
+  setMicroMachineText("battlefield-command-state", t("commandConsoleIdleState"));
+  setMicroMachineText("battlefield-frame", "-");
+  setMicroMachineText("battlefield-force", "-");
+  setMicroMachineText("battlefield-posture", "-");
+  setMicroMachineText("battlefield-control-summary", t("battlefieldControlWaiting"));
+  var badge = document.getElementById("battlefield-link-badge");
+  if (badge) {
+    badge.className = "battlefield-link-badge";
+    badge.textContent = t("battlefieldLinkWaiting");
+  }
+}
+
+function bindActiveCommandConsoleUpdate(text, pendingId, scopeId, updateId) {
+  var normalizedText = String(text || "");
+  if (
+    activeCommandConsoleRecord.pendingId &&
+    pendingId &&
+    activeCommandConsoleRecord.pendingId !== pendingId
+  ) {
+    return false;
+  }
+  if (
+    activeCommandConsoleRecord.text &&
+    normalizedText &&
+    activeCommandConsoleRecord.text !== normalizedText &&
+    activeCommandConsoleRecord.pendingId
+  ) {
+    return false;
+  }
+  activeCommandConsoleRecord.text = normalizedText || activeCommandConsoleRecord.text;
+  activeCommandConsoleRecord.pendingId = pendingId || activeCommandConsoleRecord.pendingId;
+  activeCommandConsoleRecord.scopeId = String(scopeId || activeCommandConsoleRecord.scopeId || "");
+  activeCommandConsoleRecord.updateId = String(updateId || activeCommandConsoleRecord.updateId || "");
+  return true;
+}
+
+function shouldRenderActiveCommandConsoleData(data) {
+  if (!data || typeof data !== "object") { return false; }
+  var scopeId = microMachineScopeId(data);
+  if (
+    activeCommandConsoleRecord.scopeId &&
+    scopeId &&
+    activeCommandConsoleRecord.scopeId !== scopeId
+  ) {
+    return false;
+  }
+  var updateIds = commandConsoleDataUpdateIds(data);
+  if (activeCommandConsoleRecord.updateId) {
+    var currentUpdateIncluded = (
+      updateIds.indexOf(activeCommandConsoleRecord.updateId) !== -1
+    );
+    var preferredUpdateId = commandConsolePreferredUpdateId(data);
+    var currentModel = commandConsoleStageModel(
+      activeCommandConsoleRecord.data || {}
+    );
+    if (
+      currentUpdateIncluded &&
+      (
+        !preferredUpdateId ||
+        preferredUpdateId === activeCommandConsoleRecord.updateId ||
+        !currentModel.terminal
+      )
+    ) {
+      return true;
+    }
+    var handoffUpdateId = (
+      preferredUpdateId &&
+      preferredUpdateId !== activeCommandConsoleRecord.updateId
+    )
+      ? preferredUpdateId
+      : (!currentUpdateIncluded && updateIds.length ? updateIds[0] : "");
+    if (!currentModel.terminal || !handoffUpdateId) {
+      return currentUpdateIncluded;
+    }
+    var candidateFrame = commandConsoleTelemetryFrame(data);
+    if (
+      candidateFrame >= 0 &&
+      activeCommandConsoleRecord.telemetryFrame >= 0 &&
+      candidateFrame < activeCommandConsoleRecord.telemetryFrame
+    ) {
+      return currentUpdateIncluded;
+    }
+    handoffActiveCommandConsole(data, scopeId, handoffUpdateId);
+    return true;
+  }
+  if (activeCommandConsoleRecord.pendingId) {
+    return false;
+  }
+  if (!activeCommandConsoleRecord.text) {
+    return Boolean(updateIds.length || data.command_text);
+  }
+  var latestRequest = (data && data.latest_request) || {};
+  var commandText = String(
+    data.command_text ||
+    latestRequest.command_text ||
+    ""
+  );
+  return Boolean(commandText && commandText === activeCommandConsoleRecord.text);
+}
+
+function commandConsoleDataForUpdate(data, updateId) {
+  if (!data || typeof data !== "object" || !updateId) { return data; }
+  var result = Object.assign({}, data);
+  var compileResult = data.compile_result || {};
+  var update = data.update || {};
+  var latestRequest = data.latest_request || {};
+  var intervention = Object.assign({}, data.intervention || {});
+  var execution = intervention.command_execution || {};
+  if (compileResult.update_id && String(compileResult.update_id) !== updateId) {
+    result.compile_result = {};
+  }
+  if (update.update_id && String(update.update_id) !== updateId) {
+    result.update = {};
+  }
+  if (latestRequest.update_id && String(latestRequest.update_id) !== updateId) {
+    result.latest_request = null;
+  }
+  if (execution.command_id && String(execution.command_id) !== updateId) {
+    intervention.command_execution = {};
+  }
+  if (
+    intervention.latest_update_id &&
+    String(intervention.latest_update_id) !== updateId &&
+    !(execution.command_id && String(execution.command_id) === updateId)
+  ) {
+    intervention = { command_execution: intervention.command_execution || {} };
+  }
+  result.intervention = intervention;
+  return result;
+}
+
+function commandConsoleTelemetryFrame(data) {
+  var intervention = (data && data.intervention) || {};
+  var dashboard = (data && data.dashboard) || {};
+  var telemetry = dashboard.telemetry || {};
+  var value = intervention.telemetry_frame;
+  if (value === null || value === undefined || value === "") {
+    value = telemetry.frame;
+  }
+  var frame = Number(value);
+  return Number.isFinite(frame) ? frame : -1;
+}
+
+function commandConsoleStageRank(model) {
+  if (model.effectObserved || model.blocked || model.superseded) { return 4; }
+  if (model.actionIssued) { return 3; }
+  if (model.assignmentReady) { return 2; }
+  if (model.interpreted) { return 1; }
+  return 0;
+}
+
+function shouldAdvanceActiveCommandConsole(model, telemetryFrame) {
+  var currentData = activeCommandConsoleRecord.data || {};
+  var currentModel = commandConsoleStageModel(currentData);
+  var candidateRank = commandConsoleStageRank(model);
+  if (currentModel.effectObserved && !model.effectObserved) {
+    return false;
+  }
+  if (currentModel.superseded && !model.superseded) {
+    return false;
+  }
+  if (currentModel.blocked && !model.blocked) {
+    return false;
+  }
+  if (
+    telemetryFrame >= 0 &&
+    activeCommandConsoleRecord.telemetryFrame >= 0 &&
+    telemetryFrame < activeCommandConsoleRecord.telemetryFrame
+  ) {
+    return false;
+  }
+  if (candidateRank < activeCommandConsoleRecord.stageRank) {
+    return false;
+  }
+  return true;
+}
+
+function commandConsoleStageState(stageName, model) {
+  var order = ["interpret", "assign", "execute", "verify"];
+  var stageIndex = order.indexOf(stageName);
+  var currentIndex = order.indexOf(model.currentStage);
+  if (model.blocked && stageIndex === currentIndex) { return "stage-blocked"; }
+  if (model.effectObserved && model.done[stageName]) { return "stage-verified"; }
+  if (model.done[stageName]) { return "stage-done"; }
+  if (!model.terminal && stageIndex === currentIndex) { return "stage-current"; }
+  return "";
+}
+
+function commandConsoleStageModel(data) {
+  var compileResult = (data && data.compile_result) || {};
+  var intervention = (data && data.intervention) || {};
+  var execution = intervention.command_execution || {};
+  var parsed = microMachineExecutionStage(execution, "parsed");
+  var reduced = microMachineExecutionStage(execution, "reduced");
+  var consumed = microMachineExecutionStage(execution, "consumed_by_manager");
+  var assigned = microMachineExecutionStage(execution, "queued_or_assigned");
+  var effectObserved = microMachineExecutionEffectObserved(execution);
+  var actionIssued = Boolean(
+    effectObserved ||
+    microMachineExecutionActionIssued(execution)
+  );
+  var assignmentReady = Boolean(
+    actionIssued ||
+    (
+      consumed && consumed.ok === true &&
+      assigned && assigned.ok === true
+    )
+  );
+  var interpreted = Boolean(
+    assignmentReady ||
+    (parsed && parsed.ok === true && reduced && reduced.ok === true) ||
+    compileResult.status === "compiled" ||
+    data && data.status === "published"
+  );
+  var refused = Boolean(
+    compileResult.refusal_reason ||
+    compileResult.clarification_prompt ||
+    data && data.accepted === false ||
+    data && data.status === "publish_failed"
+  );
+  var superseded = Boolean(
+    data && data.status === "superseded" ||
+    execution.state === "superseded"
+  );
+  var failed = Boolean(
+    refused ||
+    execution.failed === true ||
+    execution.expired === true ||
+    execution.state === "failed" ||
+    execution.state === "expired" ||
+    (
+      (execution.completed === true || execution.state === "completed") &&
+      !effectObserved
+    )
+  );
+  var currentStage = "interpret";
+  if (interpreted) { currentStage = "assign"; }
+  if (assignmentReady) { currentStage = "execute"; }
+  if (actionIssued) { currentStage = "verify"; }
+  if (effectObserved) { currentStage = "verify"; }
+  if (failed && execution.state) {
+    if (execution.state === "parsed" || execution.state === "reduced" || execution.state === "published") {
+      currentStage = "interpret";
+    } else if (
+      execution.state === "consumed_by_manager" ||
+      execution.state === "queued_or_assigned"
+    ) {
+      currentStage = "assign";
+    } else if (
+      execution.state === "order_issued" ||
+      execution.state === "action_issued"
+    ) {
+      currentStage = "execute";
+    } else {
+      currentStage = "verify";
+    }
+  }
+  return {
+    execution: execution,
+    interpreted: interpreted,
+    assignmentReady: assignmentReady,
+    actionIssued: actionIssued,
+    effectObserved: effectObserved,
+    observationDelayed: Boolean(data && data.command_console_observation_delayed),
+    submissionDelayed: Boolean(data && data.command_console_submission_delayed),
+    refused: refused,
+    superseded: superseded,
+    blocked: failed,
+    terminal: failed || superseded || effectObserved,
+    currentStage: currentStage,
+    done: {
+      interpret: interpreted,
+      assign: assignmentReady,
+      execute: actionIssued,
+      verify: effectObserved
+    }
+  };
+}
+
+function commandConsoleEvidenceValue(execution, stageNames, keys) {
+  for (var stageIndex = 0; stageIndex < stageNames.length; stageIndex += 1) {
+    var stage = microMachineExecutionStage(execution, stageNames[stageIndex]);
+    var evidence = stage && stage.evidence && typeof stage.evidence === "object"
+      ? stage.evidence
+      : {};
+    for (var keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      var value = evidence[keys[keyIndex]];
+      if (value !== null && value !== undefined && value !== "" && value !== 0) {
+        return value;
+      }
+    }
+  }
+  return "";
+}
+
+function commandConsoleAssignedForce(model) {
+  var execution = model.execution;
+  var typeValue = commandConsoleEvidenceValue(
+    execution,
+    ["action_issued", "queued_or_assigned", "order_issued"],
+    [
+      "scout_last_commanded_unit_type",
+      "commanded_unit_type",
+      "actor_unit_type",
+      "unit_type",
+      "item"
+    ]
+  );
+  var countValue = commandConsoleEvidenceValue(
+    execution,
+    ["queued_or_assigned", "action_issued", "order_issued"],
+    [
+      "assigned_unit_count",
+      "assigned_count",
+      "scout_scope_assigned_unit_count",
+      "scout_marine_assigned_count",
+      "main_attack_assigned_unit_count",
+      "planned_count"
+    ]
+  );
+  var tagValue = commandConsoleEvidenceValue(
+    execution,
+    ["action_issued", "order_issued", "queued_or_assigned"],
+    [
+      "scout_last_commanded_unit_tag",
+      "commanded_unit_tag",
+      "actor_unit_tag",
+      "unit_tag"
+    ]
+  );
+  var parts = [];
+  if (typeValue) { parts.push(String(typeValue)); }
+  if (countValue) { parts.push(String(countValue) + commandUiText("기", " unit(s)", " 个")); }
+  if (tagValue) { parts.push("#" + String(tagValue)); }
+  if (parts.length) { return parts.join(" · "); }
+  var assignedStage = microMachineExecutionStage(execution, "queued_or_assigned");
+  if (assignedStage && assignedStage.ok === true) {
+    return commandUiText(
+      (assignedStage.manager || "MicroMachine") + "에서 편성 또는 생산 큐를 확정했습니다.",
+      (assignedStage.manager || "MicroMachine") + " confirmed assignment or production queue.",
+      (assignedStage.manager || "MicroMachine") + " 已确认编队或生产队列。"
+    );
+  }
+  return commandUiText("조건에 맞는 유닛 또는 생산 대기", "Waiting for eligible units or production", "等待符合条件的单位或生产");
+}
+
+function commandConsoleActualAction(model) {
+  var execution = model.execution;
+  var action = commandConsoleEvidenceValue(
+    execution,
+    ["action_issued", "order_issued"],
+    [
+      "last_actual_command",
+      "scout_last_issued_action",
+      "last_issued_action",
+      "cast_submitted_action",
+      "last_actual_production_command",
+      "last_building_command",
+      "action"
+    ]
+  );
+  if (action) { return String(action); }
+  if (model.actionIssued) {
+    return commandUiText("SC2 명령 전송 경로 도달", "SC2 command submission path reached", "已到达 SC2 命令提交路径");
+  }
+  return commandUiText("구체적인 이동·공격·생산 명령 대기", "Waiting for a concrete move, attack, or production command", "等待具体的移动、攻击或生产命令");
+}
+
+function commandConsoleTarget(data, model) {
+  var intervention = (data && data.intervention) || {};
+  var scope = intervention.tactical_scope || {};
+  var requested = scope.requested || {};
+  var gate = intervention.attack_gate || {};
+  var execution = model.execution;
+  var location = requested.location_intent || commandConsoleEvidenceValue(
+    execution,
+    ["order_issued", "action_issued", "queued_or_assigned"],
+    ["location_intent", "target", "target_name", "target_location"]
+  );
+  var x = gate.order_x;
+  var y = gate.order_y;
+  if ((x === null || x === undefined) || (y === null || y === undefined)) {
+    x = commandConsoleEvidenceValue(
+      execution,
+      ["action_issued", "order_issued"],
+      ["target_x", "order_x", "x"]
+    );
+    y = commandConsoleEvidenceValue(
+      execution,
+      ["action_issued", "order_issued"],
+      ["target_y", "order_y", "y"]
+    );
+  }
+  var parts = [];
+  if (location) { parts.push(String(location)); }
+  if (
+    x !== null && x !== undefined && x !== "" &&
+    y !== null && y !== undefined && y !== ""
+  ) {
+    parts.push("(" + x + ", " + y + ")");
+  }
+  return parts.length
+    ? parts.join(" · ")
+    : commandUiText("목표 좌표 또는 전술 위치 계산 대기", "Waiting for target coordinates or tactical location", "等待目标坐标或战术位置");
+}
+
+function commandConsoleVerification(data, model) {
+  var intervention = (data && data.intervention) || {};
+  var compileResult = (data && data.compile_result) || {};
+  var tacticalEvidence = intervention.tactical_evidence || {};
+  var effectStage = microMachineExecutionStage(model.execution, "effect_observed");
+  var effectEvidence = effectStage && effectStage.evidence && typeof effectStage.evidence === "object"
+    ? effectStage.evidence
+    : {};
+  var observedEffects = Array.isArray(tacticalEvidence.observed_effects)
+    ? tacticalEvidence.observed_effects
+    : [];
+  var confirmation = effectEvidence.confirmation_effect || effectEvidence.observed_effect || "";
+  var maxDistance = (
+    effectEvidence.max_home_distance ||
+    effectEvidence.scout_max_home_distance ||
+    effectEvidence.scout_marine_max_home_distance ||
+    effectEvidence.main_attack_max_home_distance ||
+    ""
+  );
+  var parts = [];
+  if (observedEffects.length) { parts.push(observedEffects.join(", ")); }
+  if (confirmation) { parts.push(String(confirmation)); }
+  if (maxDistance) {
+    parts.push(commandUiText(
+      "본진 최대 이탈 거리 " + maxDistance,
+      "max distance from home " + maxDistance,
+      "离主基地最大距离 " + maxDistance
+    ));
+  }
+  if (model.effectObserved) {
+    return commandUiText("실제 게임 상태 확인 완료: ", "Observed in live game state: ", "已在实际游戏状态确认：") +
+      (parts.length ? parts.join(" · ") : commandUiText("요청 효과 관측", "requested effect observed", "已观察到请求效果"));
+  }
+  if (model.submissionDelayed) {
+    return commandUiText(
+      "웹 게이트웨이 응답이 지연되고 있습니다. 실패로 확정하지 않고 같은 명령 응답을 계속 기다립니다.",
+      "The web gateway response is delayed. The order is still tracked and has not been marked failed.",
+      "网页网关响应延迟。该命令仍在跟踪中，尚未判定为失败。"
+    );
+  }
+  if (model.observationDelayed) {
+    return commandUiText(
+      "SC2 실행 결과 관측이 지연되고 있습니다. 명령 identity는 유지하며 늦게 도착한 실제 효과를 계속 반영합니다.",
+      "SC2 effect observation is delayed. The command identity is preserved so a late real effect can still reconcile.",
+      "SC2 效果观察延迟。命令标识会保留，稍后到达的真实效果仍会继续同步。"
+    );
+  }
+  if (model.blocked) {
+    var blockerManager = model.execution.blocker_manager || "TacticalEvidence";
+    var blockerReason = (
+      model.execution.blocker_reason ||
+      compileResult.refusal_reason ||
+      compileResult.clarification_prompt ||
+      intervention.refusal_reason ||
+      ((model.execution.completed === true || model.execution.state === "completed")
+        ? commandUiText(
+          "effect_observed 증거가 없습니다.",
+          "effect_observed evidence is missing.",
+          "缺少 effect_observed 证据。"
+        )
+        : commandUiText(
+          "실제 효과 확인 단계에서 중단되었습니다.",
+          "Execution stopped during effect verification.",
+          "执行在效果确认阶段停止。"
+        ))
+    );
+    return commandUiText(
+      "실행 중단: ",
+      "Execution stopped: ",
+      "执行停止："
+    ) + blockerManager + " · " + blockerReason;
+  }
+  if (model.actionIssued) {
+    return commandUiText(
+      "SC2 명령은 전송됐습니다. 실제 이동·공격·능력 변화를 확인 중입니다.",
+      "The SC2 command was submitted. Waiting for movement, attack, or ability change.",
+      "SC2 命令已提交，正在确认移动、攻击或技能变化。"
+    );
+  }
+  if (model.assignmentReady) {
+    return commandUiText(
+      "유닛 또는 생산 작업이 배정됐습니다. 실제 SC2 명령 전송을 기다립니다.",
+      "Units or production work are assigned. Waiting for the SC2 command.",
+      "单位或生产任务已分配，正在等待 SC2 命令。"
+    );
+  }
+  if (model.interpreted) {
+    return commandUiText(
+      "명령 해석은 끝났습니다. MicroMachine의 유닛 배정을 기다립니다.",
+      "Interpretation is complete. Waiting for MicroMachine assignment.",
+      "命令解析完成，正在等待 MicroMachine 分配单位。"
+    );
+  }
+  return commandUiText("명령 구조를 해석하고 있습니다.", "Interpreting the command structure.", "正在解析命令结构。");
+}
+
+function commandConsoleStateLabel(model) {
+  if (model.effectObserved) {
+    return commandUiText("실행 확인", "Execution verified", "执行已确认");
+  }
+  if (model.superseded) {
+    return commandUiText("작전 교체", "Order superseded", "作战已替换");
+  }
+  if (model.blocked) {
+    return commandUiText("실행 실패", "Execution blocked", "执行失败");
+  }
+  if (model.submissionDelayed) {
+    return commandUiText("게이트웨이 응답 지연", "Gateway response delayed", "网关响应延迟");
+  }
+  if (model.observationDelayed) {
+    return commandUiText("효과 확인 지연", "Effect check delayed", "效果确认延迟");
+  }
+  if (model.actionIssued) {
+    return commandUiText("전장에서 실행 중", "Executing in battle", "战场执行中");
+  }
+  if (model.assignmentReady) {
+    return commandUiText("유닛 편성 완료", "Force assigned", "部队已分配");
+  }
+  if (model.interpreted) {
+    return commandUiText("MicroMachine 배정 중", "MicroMachine assigning", "MicroMachine 正在分配");
+  }
+  return commandUiText("명령 해석 중", "Interpreting order", "正在解析命令");
+}
+
+function commandConsoleClassName(model) {
+  if (model.effectObserved) { return "active-command-console command-console-verified"; }
+  if (model.superseded) { return "active-command-console command-console-superseded"; }
+  if (model.blocked) { return "active-command-console command-console-blocked"; }
+  if (model.submissionDelayed) { return "active-command-console command-console-interpreting"; }
+  if (model.observationDelayed) { return "active-command-console command-console-executing"; }
+  if (model.actionIssued) { return "active-command-console command-console-executing"; }
+  if (model.assignmentReady) { return "active-command-console command-console-assigning"; }
+  return "active-command-console command-console-interpreting";
+}
+
+function commandConsoleGoal(data, fallbackText) {
+  var compileResult = (data && data.compile_result) || {};
+  var vector = compileResult.vector || {};
+  var intervention = (data && data.intervention) || {};
+  var execution = intervention.command_execution || {};
+  var activePlan = execution.active_plan || {};
+  return String(
+    intervention.goal ||
+    activePlan.goal ||
+    vector.goal ||
+    data && data.command_text ||
+    fallbackText ||
+    ""
+  );
+}
+
+function renderActiveCommandConsole(data, force) {
+  var consoleNode = document.getElementById("active-command-console");
+  if (!consoleNode || !data || typeof data !== "object") { return; }
+  if (!force && !shouldRenderActiveCommandConsoleData(data)) { return; }
+  var updateIds = commandConsoleDataUpdateIds(data);
+  if (updateIds.length && !activeCommandConsoleRecord.updateId) {
+    activeCommandConsoleRecord.updateId = updateIds[0];
+  }
+  if (!activeCommandConsoleRecord.scopeId) {
+    activeCommandConsoleRecord.scopeId = microMachineScopeId(data);
+  }
+  var scopedData = commandConsoleDataForUpdate(
+    data,
+    activeCommandConsoleRecord.updateId
+  );
+  if (activeCommandConsoleRecord.observationTimedOut) {
+    scopedData = Object.assign({}, scopedData, {
+      command_console_observation_delayed: true
+    });
+  }
+  if (activeCommandConsoleRecord.submissionDelayed) {
+    scopedData = Object.assign({}, scopedData, {
+      command_console_submission_delayed: true
+    });
+  }
+  var model = commandConsoleStageModel(scopedData);
+  var telemetryFrame = commandConsoleTelemetryFrame(scopedData);
+  if (!force && !shouldAdvanceActiveCommandConsole(model, telemetryFrame)) {
+    return;
+  }
+  if (model.effectObserved || model.blocked || model.superseded) {
+    activeCommandConsoleRecord.observationTimedOut = false;
+    activeCommandConsoleRecord.submissionDelayed = false;
+    if (scopedData.command_console_observation_delayed) {
+      scopedData = Object.assign({}, scopedData);
+      delete scopedData.command_console_observation_delayed;
+      model = commandConsoleStageModel(scopedData);
+    }
+  }
+  activeCommandConsoleRecord.data = scopedData;
+  activeCommandConsoleRecord.stageRank = Math.max(
+    activeCommandConsoleRecord.stageRank,
+    commandConsoleStageRank(model)
+  );
+  activeCommandConsoleRecord.telemetryFrame = Math.max(
+    activeCommandConsoleRecord.telemetryFrame,
+    telemetryFrame
+  );
+  activeCommandConsoleRecord.state = commandConsoleStateLabel(model);
+  consoleNode.className = commandConsoleClassName(model);
+  var title = activeCommandConsoleRecord.text || String(scopedData.command_text || "") ||
+    commandConsoleGoal(scopedData, activeCommandConsoleRecord.text);
+  setMicroMachineText("command-console-title", title || t("commandConsoleIdleTitle"));
+  setMicroMachineText("command-console-state", activeCommandConsoleRecord.state);
+  setMicroMachineText(
+    "command-console-intent",
+    commandConsoleGoal(scopedData, activeCommandConsoleRecord.text) ||
+      commandUiText("명령 해석 중", "Interpreting order", "正在解析命令")
+  );
+  setMicroMachineText("command-console-units", commandConsoleAssignedForce(model));
+  setMicroMachineText("command-console-action", commandConsoleActualAction(model));
+  setMicroMachineText("command-console-target", commandConsoleTarget(scopedData, model));
+  var verificationText = commandConsoleVerification(scopedData, model);
+  setMicroMachineText("command-console-verification", verificationText);
+  ["interpret", "assign", "execute", "verify"].forEach(function(stageName) {
+    var stageNode = document.getElementById("command-stage-" + stageName);
+    if (stageNode) {
+      var stageState = commandConsoleStageState(stageName, model);
+      var stageLabel = stageState === "stage-done" || stageState === "stage-verified"
+        ? commandUiText("완료", "done", "已完成")
+        : (stageState === "stage-current"
+          ? commandUiText("진행 중", "in progress", "进行中")
+          : (stageState === "stage-blocked"
+            ? commandUiText("차단", "blocked", "受阻")
+            : commandUiText("대기", "waiting", "等待")));
+      stageNode.className = "command-stage " + stageState;
+      stageNode.setAttribute("role", "listitem");
+      stageNode.setAttribute("aria-current", stageState === "stage-current" ? "step" : "false");
+      stageNode.setAttribute("aria-label", stageNode.textContent + ": " + stageLabel);
+    }
+  });
+  var technical = document.getElementById("command-console-technical");
+  if (technical) {
+    technical.textContent = JSON.stringify({
+      update_id: activeCommandConsoleRecord.updateId,
+      state: model.execution.state || data.status || "",
+      blocker_manager: model.execution.blocker_manager || "",
+      blocker_reason: model.execution.blocker_reason || "",
+      stages: model.execution.stages || [],
+      command_queue: microMachineCommandQueue(scopedData),
+      observation_delayed: model.observationDelayed,
+      submission_delayed: model.submissionDelayed
+    }, null, 2);
+  }
+  var announcement = document.getElementById("command-console-announcement");
+  if (announcement) {
+    var announcementText = commandUiText("명령 ", "Order ", "命令 ") +
+      String(activeCommandConsoleRecord.announcementOrdinal || 0) +
+      ": " + (title || commandConsoleGoal(scopedData, "")) +
+      ". " + activeCommandConsoleRecord.state + ". " + verificationText;
+    if (announcement.textContent !== announcementText) {
+      announcement.textContent = announcementText;
+    }
+  }
+  renderBattlefieldControlOverview(scopedData, model);
+}
+
+function renderActiveCommandFailure(text, error, pendingId) {
+  if (
+    activeCommandConsoleRecord.pendingId &&
+    pendingId &&
+    activeCommandConsoleRecord.pendingId !== pendingId
+  ) {
+    return;
+  }
+  activeCommandConsoleRecord.text = String(text || activeCommandConsoleRecord.text || "");
+  var message = error && error.message ? error.message : String(error || "");
+  renderActiveCommandConsole({
+    command_text: activeCommandConsoleRecord.text,
+    accepted: false,
+    status: "publish_failed",
+    compile_result: { refusal_reason: message },
+    intervention: {
+      command_execution: {
+        command_id: activeCommandConsoleRecord.updateId,
+        state: "failed",
+        failed: true,
+        completed: false,
+        expired: false,
+        blocker_manager: "CommandGateway",
+        blocker_reason: message,
+        stages: []
+      }
+    }
+  }, true);
+}
+
+function renderBattlefieldControlOverview(data, model) {
+  var intervention = (data && data.intervention) || {};
+  var managers = intervention.manager_snapshot || {};
+  var combat = managers.CombatCommander || {};
+  var scout = managers.ScoutManager || {};
+  var frame = intervention.telemetry_frame;
+  var badge = document.getElementById("battlefield-link-badge");
+  if (badge) {
+    var linked = frame !== null && frame !== undefined && frame !== "";
+    badge.className = "battlefield-link-badge" + (linked ? " control-linked" : "");
+    badge.textContent = linked ? t("battlefieldLinkConnected") : t("battlefieldLinkWaiting");
+  }
+  setMicroMachineText("battlefield-command-state", commandConsoleStateLabel(model));
+  setMicroMachineText("battlefield-frame", frame);
+  var forceParts = [];
+  if (combat.combat_unit_count !== null && combat.combat_unit_count !== undefined) {
+    forceParts.push(commandUiText("전투 ", "combat ", "战斗 ") + combat.combat_unit_count);
+  }
+  if (scout.scout_unit_count !== null && scout.scout_unit_count !== undefined) {
+    forceParts.push(commandUiText("정찰 ", "scout ", "侦察 ") + scout.scout_unit_count);
+  }
+  setMicroMachineText("battlefield-force", forceParts.length ? forceParts.join(" · ") : "-");
+  setMicroMachineText("battlefield-posture", intervention.tactical_posture || "-");
+  setMicroMachineText("battlefield-control-summary", commandConsoleVerification(data, model));
+}
+
 function summarizeMicroMachineManagers(managers) {
   if (!managers || typeof managers !== "object") { return "-"; }
   var parts = [];
@@ -7289,18 +8584,38 @@ function renderMicroMachineLogSnippets(snippets) {
 function updateMicroMachineBadge(intervention, status) {
   var badge = document.getElementById("micromachine-applied-badge");
   if (!badge) { return; }
+  var execution = (intervention && intervention.command_execution) || {};
+  var effectObserved = microMachineExecutionEffectObserved(execution);
+  var actionIssued = microMachineExecutionActionIssued(execution);
   badge.className = "micro-badge micro-badge-pending";
-  if (intervention && intervention.applied) {
+  if (effectObserved) {
     badge.className = "micro-badge micro-badge-applied";
-    badge.textContent = t("microMachineConsumed");
+    badge.textContent = commandUiText("실행 확인", "Effect verified", "效果已确认");
     return;
   }
-  if (intervention && intervention.policy_active) {
+  if (
+    execution.failed === true ||
+    execution.expired === true ||
+    execution.state === "failed" ||
+    execution.state === "expired"
+  ) {
+    badge.className = "micro-badge micro-badge-blocked";
+    badge.textContent = commandUiText("실행 실패", "Execution blocked", "执行失败");
+    return;
+  }
+  if (actionIssued) {
     badge.className = "micro-badge micro-badge-active";
-    badge.textContent = "policy_active";
+    badge.textContent = commandUiText("전장에서 실행 중", "Executing in SC2", "正在 SC2 执行");
     return;
   }
-  badge.textContent = status || t("microMachinePending");
+  if (intervention && intervention.applied) {
+    badge.className = "micro-badge micro-badge-active";
+    badge.textContent = commandUiText("배정·실행 대기", "Waiting for assignment/action", "等待分配与执行");
+    return;
+  }
+  badge.textContent = status === "consumed"
+    ? commandUiText("MicroMachine이 명령을 읽음", "MicroMachine read the order", "MicroMachine 已读取命令")
+    : commandUiText("실행 상태 대기", "Waiting for execution state", "等待执行状态");
 }
 
 function renderMicroMachineIntervention(data) {
@@ -7345,12 +8660,43 @@ function renderMicroMachineIntervention(data) {
   }
 }
 
+function microMachineStatusIsStaleForActiveCommand(data) {
+  if (!activeCommandConsoleRecord.updateId) { return false; }
+  var updateIds = commandConsoleDataUpdateIds(data || {});
+  if (updateIds.indexOf(activeCommandConsoleRecord.updateId) === -1) {
+    return false;
+  }
+  var preferredUpdateId = commandConsolePreferredUpdateId(data || {});
+  if (
+    preferredUpdateId &&
+    preferredUpdateId !== activeCommandConsoleRecord.updateId
+  ) {
+    return false;
+  }
+  var telemetryFrame = commandConsoleTelemetryFrame(data || {});
+  return Boolean(
+    telemetryFrame >= 0 &&
+    activeCommandConsoleRecord.telemetryFrame >= 0 &&
+    telemetryFrame < activeCommandConsoleRecord.telemetryFrame
+  );
+}
+
 function renderMicroMachineStatus(data) {
   var node = document.getElementById("micromachine-status");
   if (!node) { return; }
   if (!data || data.enabled === false) {
     node.textContent = (data && data.error) || "MicroMachine modulation disabled.";
+    renderActiveCommandConsole(data || {});
     renderMicroMachineIntervention(data || {});
+    return;
+  }
+  var modulationResults = Array.isArray(data.modulation_results)
+    ? data.modulation_results
+    : [];
+  modulationResults.forEach(function(result) {
+    maybeAppendMicroMachineAsyncCompletion(result);
+  });
+  if (microMachineStatusIsStaleForActiveCommand(data)) {
     return;
   }
   var dashboard = data.dashboard || {};
@@ -7382,14 +8728,14 @@ function renderMicroMachineStatus(data) {
     parts.push(t("microMachineClarification") + ": " + data.compile_result.clarification_prompt);
   }
   if (dashboard.last_failure) { parts.push("failure " + dashboard.last_failure); }
-  node.textContent = parts.length ? parts.join(" | ") : t("microMachinePending");
+  var statusText = parts.length ? parts.join(" | ") : t("microMachinePending");
+  if (node.textContent !== statusText) {
+    node.textContent = statusText;
+  }
+  if (!(data && data.command_console_skip_render)) {
+    renderActiveCommandConsole(data);
+  }
   renderMicroMachineIntervention(data);
-  var modulationResults = Array.isArray(data.modulation_results)
-    ? data.modulation_results
-    : [];
-  modulationResults.forEach(function(result) {
-    maybeAppendMicroMachineAsyncCompletion(result);
-  });
   maybeAppendMicroMachineAsyncCompletion(data);
 }
 
@@ -7407,20 +8753,141 @@ function safeRenderMicroMachineStatus(data) {
   }
 }
 
+function synchronizeMicroMachineBlackboardDirectory(directory) {
+  var normalized = String(directory || "").trim();
+  if (microMachinePollBlackboardDir === null) {
+    microMachinePollBlackboardDir = normalized;
+    return false;
+  }
+  if (microMachinePollBlackboardDir === normalized) {
+    return false;
+  }
+  microMachinePollBlackboardDir = normalized;
+  microMachineBlackboardContextGeneration += 1;
+  microMachinePollQueued = false;
+  if (
+    microMachinePollAbortController &&
+    typeof microMachinePollAbortController.abort === "function"
+  ) {
+    microMachinePollAbortController.abort();
+  }
+  if (microMachinePollTimeoutId !== null && window.clearTimeout) {
+    window.clearTimeout(microMachinePollTimeoutId);
+  }
+  microMachinePollAbortController = null;
+  microMachinePollTimeoutId = null;
+  microMachinePollInFlight = false;
+  microMachinePollActiveRequestSeq = 0;
+  pendingMicroMachineAsyncUpdates = {};
+  deferredPendingMicroMachineTransfers = {};
+  knownPendingMicroMachineUpdateKeys = {};
+  consumedMicroMachineResultIdsByScope = {};
+  latestMicroMachinePlanText = "";
+  clearPendingMicroMachinePlan();
+  resetActiveCommandConsole();
+  renderMicroMachineIntervention({});
+  var statusNode = document.getElementById("micromachine-status");
+  if (statusNode) {
+    statusNode.textContent = commandUiText(
+      "새 MicroMachine blackboard 상태를 기다리는 중입니다.",
+      "Waiting for the new MicroMachine blackboard state.",
+      "正在等待新的 MicroMachine blackboard 状态。"
+    );
+  }
+  return true;
+}
+
+function finishMicroMachinePoll(requestSeq) {
+  if (microMachinePollActiveRequestSeq !== requestSeq) { return; }
+  if (microMachinePollTimeoutId !== null && window.clearTimeout) {
+    window.clearTimeout(microMachinePollTimeoutId);
+  }
+  microMachinePollInFlight = false;
+  microMachinePollActiveRequestSeq = 0;
+  microMachinePollAbortController = null;
+  microMachinePollTimeoutId = null;
+  if (microMachinePollQueued) {
+    microMachinePollQueued = false;
+    pollMicroMachineStatus();
+  }
+}
+
 function pollMicroMachineStatus() {
   var input = document.getElementById("micromachine-blackboard-dir");
   var suffix = authQuery;
   var directory = input ? input.value.trim() : "";
+  synchronizeMicroMachineBlackboardDirectory(directory);
+  if (microMachinePollInFlight) {
+    microMachinePollQueued = true;
+    return;
+  }
   if (directory) {
     suffix += (suffix ? "&" : "?") + "blackboard_dir=" + encodeURIComponent(directory);
   }
-  fetch("/api/micromachine/status" + suffix)
-    .then(parseJsonResponse)
-    .then(renderMicroMachineStatus)
-    .catch(function (error) {
+  microMachinePollRequestSeq += 1;
+  var requestSeq = microMachinePollRequestSeq;
+  var contextGeneration = microMachineBlackboardContextGeneration;
+  microMachinePollInFlight = true;
+  microMachinePollActiveRequestSeq = requestSeq;
+  microMachinePollAbortController = typeof AbortController !== "undefined"
+    ? new AbortController()
+    : null;
+  var fetchOptions = microMachinePollAbortController
+    ? { signal: microMachinePollAbortController.signal }
+    : undefined;
+  if (window.setTimeout) {
+    microMachinePollTimeoutId = window.setTimeout(function() {
+      if (
+        contextGeneration !== microMachineBlackboardContextGeneration ||
+        microMachinePollActiveRequestSeq !== requestSeq
+      ) {
+        return;
+      }
+      if (
+        microMachinePollAbortController &&
+        typeof microMachinePollAbortController.abort === "function"
+      ) {
+        microMachinePollAbortController.abort();
+      }
       expirePendingMicroMachineAsync();
       var node = document.getElementById("micromachine-status");
-      if (node) { node.textContent = t("microMachineFailed") + ": " + error.message; }
+      if (node) {
+        node.textContent = commandUiText(
+          "MicroMachine 상태 확인이 지연되어 새 요청으로 재시도합니다.",
+          "MicroMachine status timed out; retrying with a fresh request.",
+          "MicroMachine 状态请求超时，正在使用新请求重试。"
+        );
+      }
+      microMachinePollQueued = true;
+      finishMicroMachinePoll(requestSeq);
+    }, MICROMACHINE_STATUS_POLL_TIMEOUT_MS);
+  }
+  fetch("/api/micromachine/status" + suffix, fetchOptions)
+    .then(parseJsonResponse)
+    .then(function(data) {
+      if (
+        contextGeneration === microMachineBlackboardContextGeneration &&
+        microMachinePollActiveRequestSeq === requestSeq &&
+        requestSeq >= microMachinePollAppliedSeq
+      ) {
+        microMachinePollAppliedSeq = requestSeq;
+        renderMicroMachineStatus(data);
+      }
+      finishMicroMachinePoll(requestSeq);
+    })
+    .catch(function (error) {
+      if (
+        contextGeneration === microMachineBlackboardContextGeneration &&
+        microMachinePollActiveRequestSeq === requestSeq &&
+        requestSeq >= microMachinePollAppliedSeq &&
+        error && error.name !== "AbortError"
+      ) {
+        microMachinePollAppliedSeq = requestSeq;
+        expirePendingMicroMachineAsync();
+        var node = document.getElementById("micromachine-status");
+        if (node) { node.textContent = t("microMachineFailed") + ": " + error.message; }
+      }
+      finishMicroMachinePoll(requestSeq);
     });
 }
 
@@ -7496,7 +8963,7 @@ function looksLikeMicroMachineEmergencyCommand(text) {
   // Display-only classifier retained for local affordances; it never retires
   // pending work. Server command_queue edges are the sole authority for that.
   var normalized = " " + String(text || "").toLowerCase()
-    .replace(/\s+/g, " ")
+    .replace(/\\s+/g, " ")
     .trim() + " ";
   if (
     /(?:취소|중지|중단|후퇴|퇴각|철수).{0,12}(?:하지 마|말고|금지|없이)|(?:후퇴|퇴각|철수).{0,12}(?:아니|안 하)|\\b(?:no retreat|do not stop|never retreat|retreat is not an option)\\b|(?:不要|禁止).{0,4}(?:撤退|取消|停止)/.test(normalized)
@@ -7504,10 +8971,10 @@ function looksLikeMicroMachineEmergencyCommand(text) {
     return false;
   }
   return (
-    /^(?:(?:긴급|즉시|당장|지금|전원|모두)\s*)*(?:후퇴|퇴각|철수)(?:\s*(?:해|하라|하세요|해라|해줘|해\s*주세요|진행해|시작해))?[.!]?$/.test(normalized.trim()) ||
-    /^(?:please\s+)?(?:emergency\s+)?(?:retreat|fall\s+back)(?:\s+(?:now|immediately))?[.!]?$/.test(normalized.trim()) ||
-    /^(?:(?:立即|马上|紧急)\s*)?撤退(?:吧|！|。)?$/.test(normalized.trim()) ||
-    /(?:공격|러시|러쉬|압박|작전|진격)(?:을|를|은|는)?\s*(?:취소|중지|중단|멈춰|그만)|(?:cancel|abort|stop)\s+(?:the\s+)?(?:attack|attacking|rush|pressure|operation|advance)|(?:attack|rush|pressure|operation|advance)\s+(?:cancel|abort|stop)|(?:取消|停止)\s*(?:进攻|攻击|行动)|(?:进攻|攻击|行动)\s*(?:取消|停止)/.test(normalized)
+    /^(?:(?:긴급|즉시|당장|지금|전원|모두)\\s*)*(?:후퇴|퇴각|철수)(?:\\s*(?:해|하라|하세요|해라|해줘|해\\s*주세요|진행해|시작해))?[.!]?$/.test(normalized.trim()) ||
+    /^(?:please\\s+)?(?:emergency\\s+)?(?:retreat|fall\\s+back)(?:\\s+(?:now|immediately))?[.!]?$/.test(normalized.trim()) ||
+    /^(?:(?:立即|马上|紧急)\\s*)?撤退(?:吧|！|。)?$/.test(normalized.trim()) ||
+    /(?:공격|러시|러쉬|압박|작전|진격)(?:을|를|은|는)?\\s*(?:취소|중지|중단|멈춰|그만)|(?:cancel|abort|stop)\\s+(?:the\\s+)?(?:attack|attacking|rush|pressure|operation|advance)|(?:attack|rush|pressure|operation|advance)\\s+(?:cancel|abort|stop)|(?:取消|停止)\\s*(?:进攻|攻击|行动)|(?:进攻|攻击|行动)\\s*(?:取消|停止)/.test(normalized)
   );
 }
 
@@ -7549,7 +9016,7 @@ function pendingMicroMachineRecord(scopeId, updateId) {
   ] || null;
 }
 
-function rememberPendingMicroMachineAsync(text, data, pendingId) {
+function rememberPendingMicroMachineAsync(text, data, pendingId, bindConsole) {
   var scopeId = microMachineScopeId(data);
   var updateId = data && data.update_id;
   if (
@@ -7568,6 +9035,7 @@ function rememberPendingMicroMachineAsync(text, data, pendingId) {
     text: text,
     pendingId: pendingId || "",
     createdAt: Date.now(),
+    observationTimedOut: false,
     supersededUpdateIds: [],
     preservedUpdateIds: [],
     preservedCommandTexts: []
@@ -7576,6 +9044,25 @@ function rememberPendingMicroMachineAsync(text, data, pendingId) {
   pendingMicroMachineAsyncUpdates[pendingKey] = record;
   knownPendingMicroMachineUpdateKeys[pendingKey] = true;
   applyDeferredPendingMicroMachineTransfers(scopeId, updateId);
+  if (
+    bindConsole !== false &&
+    bindActiveCommandConsoleUpdate(text, pendingId, scopeId, updateId)
+  ) {
+    activeCommandConsoleRecord.submissionDelayed = false;
+    renderActiveCommandConsole(Object.assign({}, data, {
+      command_text: text,
+      intervention: data.intervention || {
+        command_execution: {
+          command_id: updateId,
+          state: "parsed",
+          completed: false,
+          failed: false,
+          expired: false,
+          stages: []
+        }
+      }
+    }), true);
+  }
   return record;
 }
 
@@ -7761,9 +9248,9 @@ function exactMicroMachinePredecessorEdges(data, scopeId, currentUpdateId) {
 
 function microMachineAsyncTimeoutError() {
   return new Error(
-    "MicroMachine LLM 컴파일/적용 상태가 " +
+    "MicroMachine 실행 효과가 " +
     Math.round(MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS / 1000) +
-    "초 안에 완료되지 않았습니다. pending을 종료했습니다. 명령 적용 여부를 telemetry에서 확인한 뒤 다시 시도해 주세요."
+    "초 안에 관측되지 않았습니다. 명령 추적은 유지하며 늦게 도착한 실제 효과를 계속 반영합니다."
   );
 }
 
@@ -7772,15 +9259,30 @@ function expirePendingMicroMachineAsync(nowMs) {
   Object.keys(pendingMicroMachineAsyncUpdates || {}).forEach(function(key) {
     var pending = pendingMicroMachineAsyncUpdates[key];
     var createdAt = pending && Number(pending.createdAt);
-    if (!createdAt || currentTime - createdAt < MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS) {
+    if (
+      !createdAt ||
+      pending.observationTimedOut ||
+      currentTime - createdAt < MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS
+    ) {
       return;
     }
-    delete pendingMicroMachineAsyncUpdates[key];
-    safelyAppendMicroMachineChatFailure(
-      (pending && pending.text) || "",
-      microMachineAsyncTimeoutError(),
-      pending && pending.pendingId
-    );
+    pending.observationTimedOut = true;
+    removePendingById(pending.pendingId);
+    if (
+      activeCommandConsoleRecord.updateId === pending.updateId &&
+      (
+        !activeCommandConsoleRecord.scopeId ||
+        activeCommandConsoleRecord.scopeId === pending.scopeId
+      )
+    ) {
+      activeCommandConsoleRecord.observationTimedOut = true;
+      renderActiveCommandConsole(
+        Object.assign({}, activeCommandConsoleRecord.data || {}, {
+          command_console_observation_delayed: true
+        }),
+        true
+      );
+    }
   });
 }
 
@@ -7793,10 +9295,7 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     return;
   }
   var consumedResultIds = consumedMicroMachineResultIdsByScope[scopeId] || {};
-  if (consumedResultIds[resultId]) {
-    expirePendingMicroMachineAsync();
-    return;
-  }
+  var resultAlreadyConsumed = Boolean(consumedResultIds[resultId]);
   var compileResult = data.compile_result || {};
   var update = data.update || {};
   var intervention = data.intervention || {};
@@ -7842,6 +9341,7 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     candidateUpdateIds.push(executionUpdateId);
   }
   var terminalHandled = false;
+  var resultIdentityHandled = false;
   candidateUpdateIds.forEach(function(updateId) {
     var pending = pendingMicroMachineRecord(scopeId, updateId);
     if (!updateId || !pending) { return; }
@@ -7850,6 +9350,7 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     var executionState = updateId === executionUpdateId ? execution.state : "";
     var terminalExecution = Boolean(terminalExecutionStates[executionState]);
     if (!terminalForUpdate && !terminalExecution) { return; }
+    if (updateId === compileUpdateId && resultAlreadyConsumed) { return; }
     delete pendingMicroMachineAsyncUpdates[
       microMachinePendingKey(scopeId, updateId)
     ];
@@ -7883,18 +9384,27 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     var outcomeStatus = "partially_executed";
     if (terminalForUpdate) {
       outcomeStatus = "clarification";
-    } else if (executionState === "completed") {
+    } else if (
+      executionState === "completed" &&
+      microMachineExecutionEffectObserved(execution)
+    ) {
       outcomeStatus = "executed";
+    } else if (executionState === "completed") {
+      outcomeStatus = "blocked";
     } else if (executionState === "superseded") {
       outcomeStatus = "clarification";
     } else if (executionState === "failed" || executionState === "expired") {
       outcomeStatus = "blocked";
     }
     terminalHandled = true;
+    if (updateId === compileUpdateId) {
+      resultIdentityHandled = true;
+    }
     safelyAppendMicroMachineChatResult(
       pending.text,
       Object.assign({}, narrationData, {
-        chat_outcome_status: outcomeStatus
+        chat_outcome_status: outcomeStatus,
+        command_console_skip_render: true
       }),
       pending.pendingId
     );
@@ -7902,7 +9412,7 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
   // A predecessor edge is non-terminal for the replacement update. The
   // server intentionally keeps one immutable result_id per update while its
   // execution advances, so only terminal chat delivery may consume that ID.
-  if (terminalHandled) {
+  if (terminalHandled && resultIdentityHandled) {
     consumedResultIds[resultId] = true;
     consumedMicroMachineResultIdsByScope[scopeId] = consumedResultIds;
   }
@@ -7926,96 +9436,103 @@ function microMachineChatNarration(data) {
   var compileResult = (data && data.compile_result) || {};
   var vector = compileResult.vector || {};
   var assistantMessage = microMachineAssistantMessage(compileResult, vector);
+  var execution = intervention.command_execution || {};
+  var model = commandConsoleStageModel(data || {});
   var parts = [];
   if (assistantMessage) { parts.push(assistantMessage); }
   if (data && data.status === "queued") {
-    parts.push("LLM이 MicroMachine DSL을 해석 중입니다.");
-    if (data.message) { parts.push(data.message); }
+    parts.push(commandUiText(
+      "명령을 해석하고 있습니다. 같은 작전 카드에서 다음 단계가 계속 갱신됩니다.",
+      "Interpreting the order. The same operation card will keep updating.",
+      "正在解析命令，同一张作战卡会持续更新。"
+    ));
   } else if (compileResult.refusal_reason || compileResult.clarification_prompt || data && data.accepted === false) {
-    parts.push("MicroMachine blackboard에 publish하지 않았습니다.");
+    parts.push(commandUiText(
+      "명령을 실행하지 못했습니다.",
+      "The order could not be executed.",
+      "无法执行该命令。"
+    ));
     if (compileResult.refusal_reason) { parts.push(compileResult.refusal_reason); }
     if (compileResult.clarification_prompt) { parts.push(compileResult.clarification_prompt); }
+  } else if (model.effectObserved) {
+    parts.push(commandUiText(
+      "실행 확인: 실제 게임 상태에서 명령 효과를 확인했습니다.",
+      "Execution verified: the requested effect was observed in the game state.",
+      "执行已确认：已在游戏状态中观察到请求效果。"
+    ));
+  } else if (model.blocked) {
+    parts.push(commandUiText(
+      "실행 실패: 실제 효과 확인까지 도달하지 못했습니다.",
+      "Execution blocked: the order did not reach observed effect confirmation.",
+      "执行失败：命令未达到实际效果确认。"
+    ));
+  } else if (model.actionIssued) {
+    parts.push(commandUiText(
+      "실행 중: SC2 명령은 전송됐고 실제 효과를 확인하고 있습니다.",
+      "Executing: the SC2 command was submitted and effect verification is pending.",
+      "执行中：SC2 命令已提交，正在确认实际效果。"
+    ));
+  } else if (model.assignmentReady) {
+    parts.push(commandUiText(
+      "유닛 또는 생산 작업을 배정했습니다. 실제 SC2 명령 전송을 기다립니다.",
+      "Units or production work are assigned. Waiting for SC2 command submission.",
+      "单位或生产任务已分配，正在等待提交 SC2 命令。"
+    ));
+  } else if (model.interpreted) {
+    parts.push(commandUiText(
+      "명령 해석이 끝났습니다. MicroMachine이 유닛을 편성하고 있습니다.",
+      "Interpretation is complete. MicroMachine is assigning units.",
+      "命令解析完成，MicroMachine 正在分配单位。"
+    ));
   } else {
-    parts.push(t("microMachineChatPublished"));
-    parts.push("해석: " + (intervention.goal || vector.goal || (data && data.command_text) || "전술 의도"));
-    parts.push("적용 증거: MicroMachine manager bias로 publish됨");
-    if (data && data.provider_source) {
-      parts.push("provider_source=" + data.provider_source);
-    } else if (compileResult.source) {
-      parts.push("provider_source=" + compileResult.source);
-    }
-    if (data && data.consumption_status && data.consumption_status !== "consumed") {
-      parts.push(t("microMachineChatQueued") + " (" + data.consumption_status + ")");
-    }
-    if (data && data.consumption_status === "consumed") {
-      parts.push("MicroMachine telemetry가 이 update 소비를 확인했습니다.");
-    }
+    parts.push(commandUiText(
+      "명령을 MicroMachine 실행 경로로 전달하고 있습니다.",
+      "Sending the order into the MicroMachine execution path.",
+      "正在把命令送入 MicroMachine 执行路径。"
+    ));
   }
-  if (intervention.latest_update_id) { parts.push("update_id=" + intervention.latest_update_id); }
+  var goal = commandConsoleGoal(data || {});
+  if (goal) {
+    parts.push(commandUiText("작전: ", "Operation: ", "作战：") + goal);
+  }
   var commandQueue = (data && data.command_queue) || intervention.command_queue || compileResult.command_queue || {};
-  if (
-    commandQueue.category ||
-    commandQueue.action ||
-    commandQueue.merged_command_count ||
-    commandQueue.superseded_previous ||
-    (
-      Array.isArray(commandQueue.preserved_update_ids) &&
-      commandQueue.preserved_update_ids.length
-    ) ||
-    commandQueue.standing_order_preserved
-  ) {
-    var queueBits = ["command_queue"];
-    if (commandQueue.category) { queueBits.push("category=" + commandQueue.category); }
-    if (commandQueue.action) { queueBits.push("action=" + commandQueue.action); }
-    if (commandQueue.merged_command_count) {
-      queueBits.push("merged=" + commandQueue.merged_command_count);
-    }
-    if (commandQueue.superseded_previous) { queueBits.push("superseded_previous=true"); }
-    if (
-      Array.isArray(commandQueue.preserved_update_ids) &&
-      commandQueue.preserved_update_ids.length
-    ) {
-      queueBits.push(
-        "preserved_ids=" + commandQueue.preserved_update_ids.slice(0, 8).join(",")
+  var supersededIds = Array.isArray(commandQueue.superseded_update_ids)
+    ? commandQueue.superseded_update_ids
+    : [];
+  var preservedIds = Array.isArray(commandQueue.preserved_update_ids)
+    ? commandQueue.preserved_update_ids
+    : [];
+  if (supersededIds.length || commandQueue.superseded_previous) {
+    parts.push(commandUiText(
+      "작전 변경: 이전 명령 " + Math.max(1, supersededIds.length) + "건을 새 명령으로 교체했습니다.",
+      "Order change: replaced " + Math.max(1, supersededIds.length) + " previous order(s).",
+      "作战变更：已用新命令替换 " + Math.max(1, supersededIds.length) + " 条旧命令。"
+    ));
+  }
+  if (preservedIds.length || commandQueue.standing_order_preserved) {
+    parts.push(commandUiText(
+      "지속 명령 유지: 기존 전략 지시 " + Math.max(1, preservedIds.length) + "건은 계속 적용됩니다.",
+      "Standing orders preserved: " + Math.max(1, preservedIds.length) + " strategic directive(s) remain active.",
+      "持续命令保留：" + Math.max(1, preservedIds.length) + " 条战略指令继续生效。"
+    ));
+  }
+  if (commandQueue.merged_command_count) {
+    parts.push(commandUiText(
+      "명령 통합: " + commandQueue.merged_command_count + "개의 지시를 하나의 작전으로 묶었습니다.",
+      "Order merge: combined " + commandQueue.merged_command_count + " directives into one operation.",
+      "命令合并：已把 " + commandQueue.merged_command_count + " 条指令合并为一个作战。"
+    ));
+  }
+  if (model.blocked) {
+    var blocker = execution.blocker_reason || compileResult.refusal_reason || intervention.refusal_reason || "";
+    var blockerManager = execution.blocker_manager || "";
+    if (blocker) {
+      parts.push(
+        commandUiText("차단 원인: ", "Blocker: ", "阻塞原因：") +
+        (blockerManager ? blockerManager + " · " : "") +
+        blocker
       );
     }
-    if (commandQueue.superseded_by_update_id) {
-      queueBits.push("superseded_by=" + commandQueue.superseded_by_update_id);
-    }
-    if (
-      Array.isArray(commandQueue.superseded_update_ids) &&
-      commandQueue.superseded_update_ids.length
-    ) {
-      queueBits.push(
-        "superseded_ids=" + commandQueue.superseded_update_ids.slice(0, 8).join(",")
-      );
-    }
-    if (commandQueue.standing_order_preserved) { queueBits.push("standing_order_preserved=true"); }
-    parts.push(queueBits.join(" | "));
-  }
-  if (intervention.tactical_posture) { parts.push("posture=" + intervention.tactical_posture); }
-  var lifetimeText = formatMicroMachineLifetime(intervention.lifetime);
-  if (lifetimeText !== "-") { parts.push("lifetime=" + lifetimeText); }
-  if (Array.isArray(intervention.manager_bias_domains) && intervention.manager_bias_domains.length) {
-    parts.push("domains=" + intervention.manager_bias_domains.join(", "));
-  }
-  var gateText = formatMicroMachineAttackGate(intervention.attack_gate);
-  if (gateText !== "-") {
-    parts.push("attack_gate=" + gateText);
-  }
-  if (intervention.refusal_reason && parts.indexOf(intervention.refusal_reason) < 0) {
-    parts.push(intervention.refusal_reason);
-  }
-  var execution = intervention.command_execution || {};
-  if (execution.state) {
-    var executionBits = ["실행 상태: " + execution.state];
-    if (execution.blocker_manager) {
-      executionBits.push(
-        "blocker=" + execution.blocker_manager +
-        (execution.blocker_reason ? ": " + execution.blocker_reason : "")
-      );
-    }
-    parts.push(executionBits.join(" | "));
   }
   return parts.join("\\n");
 }
@@ -8027,17 +9544,28 @@ function removeMicroMachineChatPending(text, pendingId) {
 }
 
 function appendMicroMachineChatResult(text, data, pendingId) {
+  if (!(data && data.command_console_skip_render)) {
+    renderActiveCommandConsole(data || {});
+  }
   var removed = removeMicroMachineChatPending(text, pendingId);
   if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
   var accepted = data && data.accepted !== false && data.ok !== false;
   var outcomeStatus = data && data.chat_outcome_status;
+  var execution = data && data.intervention && data.intervention.command_execution
+    ? data.intervention.command_execution
+    : {};
   if (
     outcomeStatus !== "executed" &&
     outcomeStatus !== "partially_executed" &&
     outcomeStatus !== "clarification" &&
     outcomeStatus !== "blocked"
   ) {
-    outcomeStatus = accepted ? "partially_executed" : "clarification";
+    outcomeStatus = accepted && microMachineExecutionEffectObserved(execution)
+      ? "executed"
+      : (accepted ? "partially_executed" : "clarification");
+  }
+  if (outcomeStatus === "executed" && !microMachineExecutionEffectObserved(execution)) {
+    outcomeStatus = "partially_executed";
   }
   appendLog({
     command_text: text,
@@ -8050,6 +9578,7 @@ function appendMicroMachineChatResult(text, data, pendingId) {
 }
 
 function appendMicroMachineChatFailure(text, error, pendingId) {
+  renderActiveCommandFailure(text, error, pendingId);
   var removed = removeMicroMachineChatPending(text, pendingId);
   if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
   appendLog({
@@ -8094,26 +9623,77 @@ function safelyAppendMicroMachineChatFailure(text, error, pendingId) {
   }
 }
 
-function microMachineTimeoutError() {
-  return new Error(
-    "MicroMachine publish 응답이 " + Math.round(MICROMACHINE_CHAT_TIMEOUT_MS / 1000) +
-    "초 안에 돌아오지 않았습니다. pending을 해제했습니다. 런타임/브라우저 탭을 새로고침하고 다시 시도해 주세요."
+function markMicroMachineSubmitDelayed(text, pendingId) {
+  var removed = removeMicroMachineChatPending(text, pendingId);
+  if (removed && text === latestMicroMachinePlanText) {
+    latestMicroMachinePlanText = "";
+  }
+  if (
+    activeCommandConsoleRecord.pendingId &&
+    pendingId &&
+    activeCommandConsoleRecord.pendingId !== pendingId
+  ) {
+    return;
+  }
+  activeCommandConsoleRecord.submissionDelayed = true;
+  renderActiveCommandConsole(Object.assign(
+    {},
+    activeCommandConsoleRecord.data || {},
+    {
+      command_text: text,
+      command_console_submission_delayed: true
+    }
+  ), true);
+  var statusNode = document.getElementById("micromachine-status");
+  if (statusNode) {
+    statusNode.textContent = commandUiText(
+      "MicroMachine 게이트웨이 응답이 지연되고 있습니다. 실패로 확정하지 않고 계속 추적합니다.",
+      "The MicroMachine gateway response is delayed. Tracking continues without marking failure.",
+      "MicroMachine 网关响应延迟。系统会继续跟踪，不会判定失败。"
+    );
+  }
+}
+
+function microMachineSubmitContextIsCurrent(contextGeneration, blackboardDirectory) {
+  var input = document.getElementById("micromachine-blackboard-dir");
+  var currentDirectory = input
+    ? String(input.value || "").trim()
+    : String(microMachinePollBlackboardDir || "").trim();
+  return (
+    contextGeneration === microMachineBlackboardContextGeneration &&
+    blackboardDirectory === currentDirectory
   );
+}
+
+function discardStaleMicroMachineSubmit(text, pendingId) {
+  var removed = removeMicroMachineChatPending(text, pendingId);
+  if (removed && text === latestMicroMachinePlanText) {
+    latestMicroMachinePlanText = "";
+  }
+  updateAssistantPendingState();
 }
 
 function submitMicroMachineModulation(payload, options) {
   options = options || {};
   var statusNode = document.getElementById("micromachine-status");
   if (statusNode) { statusNode.textContent = t("microMachineSending"); }
-  var timedOut = false;
+  var contextGeneration = microMachineBlackboardContextGeneration;
+  var blackboardDirectory = String(payload.blackboard_dir || "").trim();
+  var operationId = String(options.operationId || options.pendingId || "");
   var timeoutId = null;
-  if (options.appendChat && options.timeoutMs !== 0 && window.setTimeout) {
+  if (
+    (options.appendChat || operationId) &&
+    options.timeoutMs !== 0 &&
+    window.setTimeout
+  ) {
     timeoutId = window.setTimeout(function () {
-      timedOut = true;
-      safelyAppendMicroMachineChatFailure(
+      if (!microMachineSubmitContextIsCurrent(contextGeneration, blackboardDirectory)) {
+        discardStaleMicroMachineSubmit(payload.text || "", options.pendingId);
+        return;
+      }
+      markMicroMachineSubmitDelayed(
         payload.text || "",
-        microMachineTimeoutError(),
-        options.pendingId
+        operationId || options.pendingId
       );
     }, options.timeoutMs || MICROMACHINE_CHAT_TIMEOUT_MS);
   }
@@ -8131,34 +9711,76 @@ function submitMicroMachineModulation(payload, options) {
     .then(parseJsonResponse)
     .then(function (data) {
       clearSubmitTimeout();
-      if (!timedOut && data && data.async_publish) {
+      if (!microMachineSubmitContextIsCurrent(contextGeneration, blackboardDirectory)) {
+        discardStaleMicroMachineSubmit(payload.text || "", options.pendingId);
+        return data;
+      }
+      var responseOwnsActiveConsole = Boolean(
+        !operationId ||
+        activeCommandConsoleRecord.pendingId === operationId
+      );
+      var responseUpdateId = String(
+        data && data.update_id ||
+        microMachineUpdateId(data || {}) ||
+        ""
+      );
+      if (responseUpdateId && responseOwnsActiveConsole) {
+        bindActiveCommandConsoleUpdate(
+          payload.text || "",
+          operationId,
+          microMachineScopeId(data || {}),
+          responseUpdateId
+        );
+      }
+      if (data && data.async_publish) {
         rememberPendingMicroMachineAsync(
           payload.text || "",
           data,
-          options.pendingId
+          options.pendingId,
+          responseOwnsActiveConsole
         );
       }
-      if (options.appendChat && !timedOut && !(data && data.async_publish)) {
+      if (options.appendChat && !(data && data.async_publish)) {
         safelyAppendMicroMachineChatResult(
           payload.text || "",
-          data,
+          Object.assign({}, data, {
+            command_console_skip_render: !responseOwnsActiveConsole
+          }),
           options.pendingId
         );
       }
-      safeRenderMicroMachineStatus(data);
-      if (!timedOut && options.clearInput && data.ok) { options.clearInput.value = ""; }
+      if (responseOwnsActiveConsole) {
+        safeRenderMicroMachineStatus(data);
+      }
+      if (options.clearInput && data.ok && responseOwnsActiveConsole) {
+        options.clearInput.value = "";
+      }
       return data;
     })
     .catch(function (error) {
       clearSubmitTimeout();
-      if (statusNode) {
+      if (!microMachineSubmitContextIsCurrent(contextGeneration, blackboardDirectory)) {
+        discardStaleMicroMachineSubmit(payload.text || "", options.pendingId);
+        throw error;
+      }
+      var failureOwnsActiveConsole = Boolean(
+        !operationId ||
+        activeCommandConsoleRecord.pendingId === operationId
+      );
+      if (statusNode && failureOwnsActiveConsole) {
         statusNode.textContent = t("microMachineFailed") + ": " + error.message;
       }
-      if (options.appendChat && !timedOut) {
+      if (options.appendChat) {
         safelyAppendMicroMachineChatFailure(
           payload.text || "",
           error,
           options.pendingId
+        );
+      } else if (failureOwnsActiveConsole) {
+        renderActiveCommandFailure(
+          payload.text || "",
+          error,
+          operationId
         );
       }
       throw error;
@@ -8172,9 +9794,18 @@ if (microMachineForm) {
     var commandInput = document.getElementById("micromachine-command-input");
     var text = commandInput.value.trim();
     if (!text) { return; }
+    synchronizeMicroMachineBlackboardDirectory(
+      optionalMicroMachineField("micromachine-blackboard-dir")
+    );
+    microMachineSubmissionSeq += 1;
+    var directOperationId = "direct-submit-" + microMachineSubmissionSeq;
+    beginActiveCommandConsole(text, directOperationId);
     submitMicroMachineModulation(
       buildMicroMachineModulationPayload(text),
-      { clearInput: commandInput }
+      {
+        clearInput: commandInput,
+        operationId: directOperationId
+      }
     ).catch(function () {});
   });
 }
@@ -8186,6 +9817,9 @@ document.getElementById("command-form").addEventListener("submit", function (eve
   if (!text) { return; }
   setCommandMode(selectedCommandMode());
   if (isMicroMachineCommandMode()) {
+    synchronizeMicroMachineBlackboardDirectory(
+      optionalMicroMachineField("micromachine-blackboard-dir")
+    );
     var pendingId = appendMicroMachinePendingPlan(text);
     var microPayload = buildMicroMachineModulationPayload(text);
     submitMicroMachineModulation(
@@ -8221,6 +9855,50 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-command]"), functi
     input.focus();
   });
 });
+
+function submitCommanderControlOrder(text) {
+  var input = document.getElementById("command-input");
+  var form = document.getElementById("command-form");
+  if (!input || !form) { return; }
+  input.value = text;
+  form.dispatchEvent(new Event("submit", { cancelable: true }));
+}
+
+var commandRefreshButton = document.getElementById("command-refresh-button");
+if (commandRefreshButton) {
+  commandRefreshButton.addEventListener("click", function () {
+    pollMicroMachineStatus();
+  });
+}
+
+var commandReviseButton = document.getElementById("command-revise-button");
+if (commandReviseButton) {
+  commandReviseButton.addEventListener("click", function () {
+    var input = document.getElementById("command-input");
+    if (!input) { return; }
+    input.value = activeCommandConsoleRecord.text || "";
+    input.focus();
+  });
+}
+
+var commandRetreatButton = document.getElementById("command-retreat-button");
+if (commandRetreatButton) {
+  commandRetreatButton.addEventListener("click", function () {
+    submitCommanderControlOrder(
+      currentLang === "en"
+        ? "Emergency: retreat all combat units now"
+        : (currentLang === "zh" ? "紧急全军立即撤退" : "긴급 전군 즉시 후퇴해")
+    );
+  });
+}
+
+var microMachineBlackboardInput = document.getElementById("micromachine-blackboard-dir");
+if (microMachineBlackboardInput) {
+  microMachineBlackboardInput.addEventListener("change", function () {
+    synchronizeMicroMachineBlackboardDirectory(microMachineBlackboardInput.value);
+    pollMicroMachineStatus();
+  });
+}
 
 Array.prototype.forEach.call(document.querySelectorAll("input[name='command-mode']"), function (input) {
   input.addEventListener("change", function () {
