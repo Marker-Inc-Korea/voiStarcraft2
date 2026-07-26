@@ -1,0 +1,3324 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 842b73a..cb30f92 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2,6 +2,7 @@
+ #include "Util.h"
+ #include "CCBot.h"
+ #include <algorithm>
++#include <cctype>
+ #include <cmath>
+ #include <list>
+ #include <sstream>
+@@ -1043,6 +1044,12 @@ std::string voiActionEvidence(const UnitAction & action)
+ 			<< "|attempt="
+ 			<< action.explicitAbilityAttemptGeneration;
+ 	}
++	if (!action.operationId.empty())
++	{
++		ss << "|operation_id=" << action.operationId
++			<< "|operation_generation="
++			<< action.operationGeneration;
++	}
+ 	return ss.str();
+ }
+ 
+@@ -1210,6 +1217,95 @@ std::string voiAbilityPolicyForUnit(CCBot & bot, const sc2::Unit * unit, const s
+ 	return "never";
+ }
+ 
++std::string voiOperationRoleForUnit(
++	const VoiOperationState * operation,
++	const sc2::Unit * unit)
++{
++	if (operation == nullptr || unit == nullptr)
++	{
++		return "";
++	}
++	const VoiOperationState::UnitRole * selectedRole = nullptr;
++	for (const auto & role : operation->unitRoles)
++	{
++		if (!role.role.empty()
++			&& voiSc2UnitMatchesRoleToken(unit, role.unitType)
++			&& (selectedRole == nullptr
++				|| role.priority >= selectedRole->priority))
++		{
++			selectedRole = &role;
++		}
++	}
++	if (selectedRole != nullptr)
++	{
++		return selectedRole->role;
++	}
++	for (const auto & requirement :
++		operation->compositionRequirements)
++	{
++		if (!requirement.role.empty()
++			&& voiSc2UnitMatchesRoleToken(
++				unit,
++				requirement.unitType))
++		{
++			return requirement.role;
++		}
++	}
++	return "";
++}
++
++std::string voiOperationAbilityPolicyForUnit(
++	const VoiOperationState * operation,
++	const sc2::Unit * unit,
++	const std::string & role)
++{
++	if (operation != nullptr && unit != nullptr)
++	{
++		const VoiOperationState::UnitRole * selectedRole = nullptr;
++		for (const auto & operationRole : operation->unitRoles)
++		{
++			if (!operationRole.abilityPolicy.empty()
++				&& voiSc2UnitMatchesRoleToken(
++					unit,
++					operationRole.unitType)
++				&& (selectedRole == nullptr
++					|| operationRole.priority
++						>= selectedRole->priority))
++			{
++				selectedRole = &operationRole;
++			}
++		}
++		if (selectedRole != nullptr)
++		{
++			return selectedRole->abilityPolicy;
++		}
++	}
++	if (role == "cloak_if_available"
++		|| role == "worker_harass"
++		|| role == "spellcaster"
++		|| role == "ambush"
++		|| role == "zone_control"
++		|| role == "siege_support"
++		|| role == "contain"
++		|| role == "defensive_hold")
++	{
++		return "if_available";
++	}
++	if (role == "yamato_high_value"
++		|| role == "capital_pressure"
++		|| role == "capital_ship"
++		|| role == "capital_ship_focus")
++	{
++		return "high_value_target";
++	}
++	if (role == "tactical_jump_escape"
++		|| role == "evac")
++	{
++		return "escape";
++	}
++	return "never";
++}
++
+ bool voiIsHighValueTarget(const sc2::Unit * target)
+ {
+ 	if (target == nullptr)
+@@ -1495,8 +1591,24 @@ float voiSquadUnitTypeMaxHomeDistance(
+ 
+ CCPosition voiHomePosition(CCBot & bot)
+ {
++	const CCPosition observedStart = bot.GetStartLocation();
++	if (observedStart != CCPosition()
++		&& bot.Map().isValidPosition(observedStart))
++	{
++		return observedStart;
++	}
+ 	const BaseLocation * selfBase = bot.Bases().getPlayerStartingBaseLocation(Players::Self);
+-	return selfBase ? selfBase->getPosition() : bot.GetStartLocation();
++	if (selfBase != nullptr)
++	{
++		const CCPosition depotPosition = selfBase->getDepotPosition();
++		if (depotPosition != CCPosition()
++			&& bot.Map().isValidPosition(depotPosition))
++		{
++			return depotPosition;
++		}
++		return selfBase->getPosition();
++	}
++	return bot.Map().center();
+ }
+ 
+ CCPosition voiTacticalNukeContainmentPosition(
+@@ -1554,22 +1666,73 @@ CCPosition voiFarthestEnemyStartPosition(CCBot & bot)
+ 	CCPosition farthestPosition;
+ 	float farthestDistance = 0.0f;
+ 	const CCPosition homePosition = voiHomePosition(bot);
+-	for (const auto & enemyStart : bot.GetEnemyStartLocations())
++	auto considerCandidate =
++		[&](const CCPosition & candidate)
++		{
++			if (!bot.Map().isValidPosition(candidate)
++				|| !voiIsRemoteCombatTarget(
++					bot,
++					candidate))
++			{
++				return;
++			}
++			const float distance =
++				Util::DistSq(candidate, homePosition);
++			if (farthestPosition == CCPosition()
++				|| distance > farthestDistance)
++			{
++				farthestPosition = candidate;
++				farthestDistance = distance;
++			}
++		};
++	for (const auto & enemyStart :
++		bot.GetEnemyStartLocations())
++	{
++		considerCandidate(enemyStart);
++	}
++	if (farthestPosition != CCPosition())
++	{
++		return farthestPosition;
++	}
++	for (const auto * startingBase :
++		bot.Bases().getStartingBaseLocations())
++	{
++		if (startingBase != nullptr)
++		{
++			considerCandidate(
++				startingBase->getDepotPosition());
++		}
++	}
++	if (farthestPosition != CCPosition())
++	{
++		return farthestPosition;
++	}
++	for (const auto * base : bot.Bases().getBaseLocations())
+ 	{
+-		const float distance = Util::DistSq(enemyStart, homePosition);
+-		if (farthestPosition == CCPosition() || distance > farthestDistance)
++		if (base != nullptr)
+ 		{
+-			farthestPosition = enemyStart;
+-			farthestDistance = distance;
++			considerCandidate(base->getDepotPosition());
+ 		}
+ 	}
++	if (farthestPosition != CCPosition())
++	{
++		return farthestPosition;
++	}
++	const CCPosition playableCenter =
++		(bot.Map().mapMin() + bot.Map().mapMax()) / 2.0f;
++	considerCandidate(
++		playableCenter
++			+ (playableCenter - homePosition));
+ 	return farthestPosition;
+ }
+ 
+ CCPosition voiEnemyMainCombatTarget(CCBot & bot)
+ {
+ 	const BaseLocation * enemyBaseLocation = bot.Bases().getPlayerStartingBaseLocation(Players::Enemy);
+-	if (enemyBaseLocation && voiIsRemoteCombatTarget(bot, enemyBaseLocation->getDepotPosition()))
++	if (enemyBaseLocation
++		&& voiIsRemoteCombatTarget(
++			bot,
++			enemyBaseLocation->getDepotPosition()))
+ 	{
+ 		return enemyBaseLocation->getDepotPosition();
+ 	}
+@@ -1578,7 +1741,7 @@ CCPosition voiEnemyMainCombatTarget(CCBot & bot)
+ 	{
+ 		return enemyStart;
+ 	}
+-	return enemyBaseLocation ? enemyBaseLocation->getDepotPosition() : enemyStart;
++	return CCPosition();
+ }
+ 
+ CCPosition voiObservedEnemyCombatTarget(CCBot & bot)
+@@ -1634,7 +1797,10 @@ bool voiHasObservedEnemyLocationEvidence(CCBot & bot)
+ CCPosition voiEnemyNaturalCombatTarget(CCBot & bot)
+ {
+ 	const BaseLocation * enemyNatural = bot.Bases().getPlayerNat(Players::Enemy);
+-	if (enemyNatural && voiIsRemoteCombatTarget(bot, enemyNatural->getDepotPosition()))
++	if (enemyNatural
++		&& voiIsRemoteCombatTarget(
++			bot,
++			enemyNatural->getDepotPosition()))
+ 	{
+ 		return enemyNatural->getDepotPosition();
+ 	}
+@@ -1717,6 +1883,265 @@ CCPosition voiResolveCombatLocationIntent(CCBot & bot, const std::string & locat
+ 	return fallbackPosition;
+ }
+ 
++bool voiIsOperationSquadName(const std::string & squadName)
++{
++	return squadName.rfind("VoiOp:", 0) == 0;
++}
++
++bool voiIsValidOperationId(const std::string & operationId)
++{
++	if (operationId.empty() || operationId.size() > 128)
++	{
++		return false;
++	}
++	for (const unsigned char value : operationId)
++	{
++		if (!std::isalnum(value)
++			&& value != '.'
++			&& value != ':'
++			&& value != '_'
++			&& value != '-')
++		{
++			return false;
++		}
++	}
++	return true;
++}
++
++bool voiIsSupportedOperationUnit(const Unit & unit)
++{
++	if (!unit.isValid()
++		|| !unit.isAlive()
++		|| unit.getType().isWorker()
++		|| unit.getType().isBuilding())
++	{
++		return false;
++	}
++	for (const std::string & token : {
++		"TERRAN_MARINE",
++		"TERRAN_MARAUDER",
++		"TERRAN_REAPER",
++		"TERRAN_GHOST",
++		"TERRAN_HELLION",
++		"TERRAN_WIDOWMINE",
++		"TERRAN_CYCLONE",
++		"TERRAN_THOR",
++		"TERRAN_SIEGETANK",
++		"TERRAN_MEDIVAC",
++		"TERRAN_VIKINGFIGHTER",
++		"TERRAN_LIBERATOR",
++		"TERRAN_BANSHEE",
++		"TERRAN_RAVEN",
++		"TERRAN_BATTLECRUISER" })
++	{
++		if (voiUnitMatchesCompositionToken(unit, token))
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++CCPosition voiResolveOperationTarget(
++	CCBot & bot,
++	const std::string & taskType,
++	const std::string & locationIntent,
++	const CCPosition & explicitTarget)
++{
++	if (explicitTarget != CCPosition()
++		&& bot.Map().isValidPosition(explicitTarget))
++	{
++		return explicitTarget;
++	}
++	if (locationIntent == "home"
++		|| locationIntent == "self_main"
++		|| locationIntent == "main_base")
++	{
++		return voiHomePosition(bot);
++	}
++	if (locationIntent == "natural"
++		|| locationIntent == "self_natural")
++	{
++		const BaseLocation * natural =
++			bot.Bases().getPlayerNat(Players::Self);
++		return natural ? natural->getPosition() : voiHomePosition(bot);
++	}
++	if (locationIntent == "last_seen_enemy_army"
++		|| locationIntent == "observed_enemy")
++	{
++		return voiObservedEnemyCombatTarget(bot);
++	}
++	if (taskType == "defend" && locationIntent.empty())
++	{
++		return voiHomePosition(bot);
++	}
++	const CCPosition observedTarget = voiObservedEnemyCombatTarget(bot);
++	const CCPosition fallbackTarget = observedTarget != CCPosition()
++		? observedTarget
++		: voiEnemyMainCombatTarget(bot);
++	return voiResolveCombatLocationIntent(
++		bot,
++		locationIntent,
++		fallbackTarget);
++}
++
++std::string voiResolveOperationTargetEvidence(
++	CCBot & bot,
++	const std::string & locationIntent,
++	const CCPosition & explicitTarget,
++	const CCPosition & resolvedTarget)
++{
++	if (resolvedTarget == CCPosition())
++	{
++		return "unresolved";
++	}
++	if (explicitTarget != CCPosition())
++	{
++		return "explicit";
++	}
++	if (locationIntent == "home"
++		|| locationIntent == "self_main"
++		|| locationIntent == "main_base")
++	{
++		return "self_observed";
++	}
++	if (locationIntent == "natural"
++		|| locationIntent == "self_natural")
++	{
++		return "self_natural";
++	}
++	const CCPosition observedEnemy =
++		voiObservedEnemyCombatTarget(bot);
++	if (observedEnemy != CCPosition()
++		&& Util::DistSq(
++			observedEnemy,
++			resolvedTarget) <= 4.0f)
++	{
++		return "observed_enemy";
++	}
++	const BaseLocation * enemyBase =
++		bot.Bases().getPlayerStartingBaseLocation(
++			Players::Enemy);
++	if (enemyBase != nullptr
++		&& voiIsRemoteCombatTarget(
++			bot,
++			enemyBase->getDepotPosition())
++		&& Util::DistSq(
++			enemyBase->getDepotPosition(),
++			resolvedTarget) <= 4.0f)
++	{
++		return "known_enemy_base";
++	}
++	if (locationIntent == "enemy_main"
++		|| locationIntent == "enemy_base"
++		|| locationIntent == "enemy_start"
++		|| locationIntent == "enemy_start_location"
++		|| locationIntent == "enemy_natural"
++		|| locationIntent == "contain_enemy_natural"
++		|| locationIntent == "enemy_front")
++	{
++		return "search_candidate";
++	}
++	return "resolved";
++}
++
++CCPosition voiResolveOperationRouteWaypoint(
++	CCBot & bot,
++	const std::string & routeType,
++	const CCPosition & target)
++{
++	if (target == CCPosition()
++		|| routeType.empty()
++		|| routeType == "direct"
++		|| routeType == "shortest")
++	{
++		return target;
++	}
++	const bool leftRoute =
++		routeType == "flank_left"
++		|| routeType == "left_flank";
++	const bool rightRoute =
++		routeType == "flank_right"
++		|| routeType == "right_flank";
++	const bool safeRoute =
++		routeType == "safe"
++		|| routeType == "safe_route"
++		|| routeType == "safe_path"
++		|| routeType == "avoid_enemy_strength";
++	if (!leftRoute && !rightRoute && !safeRoute)
++	{
++		return target;
++	}
++	const CCPosition home = voiHomePosition(bot);
++	const CCPosition direction = target - home;
++	const float distance = std::sqrt(
++		direction.x * direction.x + direction.y * direction.y);
++	if (distance <= 12.0f)
++	{
++		return target;
++	}
++	const CCPosition forward = direction / distance;
++	const CCPosition lateral(-forward.y, forward.x);
++	const float side = rightRoute ? -1.0f : 1.0f;
++	const float lateralDistance = safeRoute ? 8.0f : 14.0f;
++	for (float progress : {0.55f, 0.45f, 0.65f})
++	{
++		for (float candidateSide : {side, -side})
++		{
++			const CCPosition candidate =
++				home + forward * (distance * progress)
++					+ lateral
++						* (lateralDistance * candidateSide);
++			if (bot.Map().isValidPosition(candidate)
++				&& bot.Map().isWalkable(candidate)
++				&& bot.Map().isConnected(home, candidate))
++			{
++				return candidate;
++			}
++		}
++	}
++	return target;
++}
++
++std::string voiOperationJsonEscape(const std::string & value)
++{
++	std::ostringstream escaped;
++	for (const unsigned char character : value)
++	{
++		switch (character)
++		{
++		case '"':
++			escaped << "\\\"";
++			break;
++		case '\\':
++			escaped << "\\\\";
++			break;
++		case '\b':
++			escaped << "\\b";
++			break;
++		case '\f':
++			escaped << "\\f";
++			break;
++		case '\n':
++			escaped << "\\n";
++			break;
++		case '\r':
++			escaped << "\\r";
++			break;
++		case '\t':
++			escaped << "\\t";
++			break;
++		default:
++			if (character >= 0x20)
++			{
++				escaped << static_cast<char>(character);
++			}
++			break;
++		}
++	}
++	return escaped.str();
++}
++
+ bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosition & wallCenterTile)
+ {
+ 	if (squad.getUnits().empty())
+@@ -1738,139 +2163,1455 @@ bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosit
+ 		return false;
+ 	}
+ 
+-	const BaseLocation * selfBase = bot.Bases().getPlayerStartingBaseLocation(Players::Self);
+-	const CCPosition homePosition = selfBase ? selfBase->getPosition() : bot.GetStartLocation();
+-	if (Util::DistSq(order.getPosition(), homePosition) < 22.0f * 22.0f)
++	const BaseLocation * selfBase = bot.Bases().getPlayerStartingBaseLocation(Players::Self);
++	const CCPosition homePosition = selfBase ? selfBase->getPosition() : bot.GetStartLocation();
++	if (Util::DistSq(order.getPosition(), homePosition) < 22.0f * 22.0f)
++	{
++		return false;
++	}
++
++	const CCPosition wallCenter = Util::GetPosition(wallCenterTile);
++	for (const auto & unit : squad.getUnits())
++	{
++		if (!voiIsMobileAttackUnit(unit) || unit.isFlying())
++		{
++			continue;
++		}
++		const bool stillAtHome = Util::DistSq(unit.getPosition(), homePosition) <= 18.0f * 18.0f;
++		const bool waitingAtWall = wallCenter != CCPosition()
++			&& Util::DistSq(unit.getPosition(), wallCenter) <= 16.0f * 16.0f;
++		if (stillAtHome || waitingAtWall)
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++int voiCountUnitsNearPosition(const std::vector<Unit> & units, const CCPosition & position, float radius)
++{
++	int count = 0;
++	const float radiusSq = radius * radius;
++	for (const auto & unit : units)
++	{
++		if (unit.isValid() && Util::DistSq(unit.getPosition(), position) <= radiusSq)
++		{
++			++count;
++		}
++	}
++	return count;
++}
++
++bool voiHasVisibleEnemyNearSquad(const std::vector<Unit> & units, CCBot & bot, float radius)
++{
++	const float radiusSq = radius * radius;
++	for (const auto & enemy : bot.GetKnownEnemyUnits())
++	{
++		if (!enemy.isValid() || !enemy.isAlive() || !enemy.isVisible())
++		{
++			continue;
++		}
++		for (const auto & unit : units)
++		{
++			if (unit.isValid() && Util::DistSq(unit, enemy) <= radiusSq)
++			{
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
++bool voiPositionIsNearProducerFootprint(const CCPosition & position, CCBot & bot, float radius)
++{
++	if (position == CCPosition())
++	{
++		return true;
++	}
++	for (const auto & unitPair : bot.GetAllyUnits())
++	{
++		const Unit & unit = unitPair.second;
++		if (!unit.isValid() || !unit.getType().isBuilding())
++		{
++			continue;
++		}
++		const sc2::UNIT_TYPEID type = unit.getAPIUnitType();
++		const bool productionBuilding =
++			type == sc2::UNIT_TYPEID::TERRAN_BARRACKS
++			|| type == sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING
++			|| type == sc2::UNIT_TYPEID::TERRAN_FACTORY
++			|| type == sc2::UNIT_TYPEID::TERRAN_FACTORYFLYING
++			|| type == sc2::UNIT_TYPEID::TERRAN_STARPORT
++			|| type == sc2::UNIT_TYPEID::TERRAN_STARPORTFLYING;
++		if (productionBuilding && Util::DistSq(position, unit.getPosition()) <= radius * radius)
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++CCPosition voiForwardRallyPosition(CCBot & bot, const CCPosition & operationTarget)
++{
++	const CCPosition home = voiHomePosition(bot);
++	CCPosition target = operationTarget;
++	if (!voiIsRemoteCombatTarget(bot, target))
++	{
++		target = voiEnemyMainCombatTarget(bot);
++	}
++	const CCPosition directionVector = target - home;
++	const float distance = std::sqrt(
++		directionVector.x * directionVector.x + directionVector.y * directionVector.y);
++	if (distance <= 1.0f)
++	{
++		return home;
++	}
++
++	const CCPosition forward = directionVector / distance;
++	const CCPosition lateral(-forward.y, forward.x);
++	for (float forwardDistance : {18.0f, 15.0f, 12.0f, 9.0f})
++	{
++		for (float lateralDistance : {0.0f, 4.0f, -4.0f, 7.0f, -7.0f})
++		{
++			const CCPosition candidate = home + forward * forwardDistance + lateral * lateralDistance;
++			if (!bot.Map().isValidPosition(candidate)
++				|| !bot.Map().isWalkable(candidate)
++				|| !bot.Map().isConnected(home, candidate)
++				|| voiPositionIsNearProducerFootprint(candidate, bot, 8.0f))
++			{
++				continue;
++			}
++			return candidate;
++		}
++	}
++	return home + forward * std::min(8.0f, distance * 0.25f);
++}
++}
++
++CombatCommander::CombatCommander(CCBot & bot)
++    : m_bot(bot)
++    , m_squadData(bot)
++    , m_initialized(false)
++    , m_attackStarted(false)
++	, m_currentBaseExplorationIndex(0)
++	, m_currentBaseScoutingIndex(0)
++{
++}
++
++VoiOperationState * CombatCommander::findVoiOperation(
++	const std::string & operationId,
++	uint64_t generation)
++{
++	for (auto & operation : m_voiOperations)
++	{
++		if (operation.operationId == operationId
++			&& operation.generation == generation)
++		{
++			return &operation;
++		}
++	}
++	return nullptr;
++}
++
++const VoiOperationState * CombatCommander::findVoiOperation(
++	const std::string & operationId,
++	uint64_t generation) const
++{
++	for (const auto & operation : m_voiOperations)
++	{
++		if (operation.operationId == operationId
++			&& operation.generation == generation)
++		{
++			return &operation;
++		}
++	}
++	return nullptr;
++}
++
++VoiOperationState * CombatCommander::findVoiOperationBySquad(
++	const std::string & squadName)
++{
++	for (auto & operation : m_voiOperations)
++	{
++		if (operation.squadName == squadName)
++		{
++			return &operation;
++		}
++	}
++	return nullptr;
++}
++
++const VoiOperationState * CombatCommander::findVoiOperationBySquad(
++	const std::string & squadName) const
++{
++	for (const auto & operation : m_voiOperations)
++	{
++		if (operation.squadName == squadName)
++		{
++			return &operation;
++		}
++	}
++	return nullptr;
++}
++
++bool CombatCommander::isVoiOperationOwnedUnit(sc2::Tag tag) const
++{
++	return m_voiOperationUnitOwners.find(tag)
++		!= m_voiOperationUnitOwners.end();
++}
++
++bool CombatCommander::isCurrentVoiOperationAction(
++	const sc2::Unit * unit,
++	const UnitAction & action)
++{
++	if (unit == nullptr
++		|| action.operationId.empty()
++		|| action.operationGeneration == 0)
++	{
++		return false;
++	}
++	const auto owner = m_voiOperationUnitOwners.find(unit->tag);
++	if (owner == m_voiOperationUnitOwners.end()
++		|| owner->second.first != action.operationId
++		|| owner->second.second != action.operationGeneration)
++	{
++		return false;
++	}
++	const VoiOperationState * operation = findVoiOperation(
++		action.operationId,
++		action.operationGeneration);
++	return operation != nullptr
++		&& !operation->completed
++		&& operation->squadName == action.squad
++		&& m_squadData.squadExists(operation->squadName)
++		&& m_squadData.getSquad(
++			operation->squadName).containsUnit(unit->tag);
++}
++
++void CombatCommander::releaseVoiOperation(
++	VoiOperationState & operation,
++	const std::string & reason,
++	bool terminal)
++{
++	std::vector<Unit> unitsToRestore;
++	if (!operation.squadName.empty()
++		&& m_squadData.squadExists(operation.squadName))
++	{
++		unitsToRestore =
++			m_squadData.getSquad(operation.squadName).getUnits();
++		m_squadData.removeSquad(operation.squadName);
++	}
++	for (const auto & unit : unitsToRestore)
++	{
++		const auto owner =
++			m_voiOperationUnitOwners.find(unit.getTag());
++		if (owner != m_voiOperationUnitOwners.end()
++			&& owner->second.first == operation.operationId
++			&& owner->second.second == operation.generation)
++		{
++			m_voiOperationUnitOwners.erase(owner);
++		}
++		const auto previous =
++			operation.previousSquadByTag.find(unit.getTag());
++		std::string restoreSquad =
++			previous != operation.previousSquadByTag.end()
++				? previous->second
++				: "Backup";
++		if (voiIsOperationSquadName(restoreSquad)
++			|| !m_squadData.squadExists(restoreSquad))
++		{
++			restoreSquad =
++				m_squadData.squadExists("Backup")
++					? "Backup"
++					: "Idle";
++		}
++		if (m_squadData.squadExists(restoreSquad)
++			&& unit.isValid()
++			&& unit.isAlive())
++		{
++			m_squadData.assignUnitToSquad(
++				unit,
++				m_squadData.getSquad(restoreSquad));
++		}
++	}
++	for (auto owner = m_voiOperationUnitOwners.begin();
++		owner != m_voiOperationUnitOwners.end();)
++	{
++		if (owner->second.first == operation.operationId
++			&& owner->second.second == operation.generation)
++		{
++			owner = m_voiOperationUnitOwners.erase(owner);
++		}
++		else
++		{
++			++owner;
++		}
++	}
++	for (auto action = unitActions.begin();
++		action != unitActions.end();)
++	{
++		if (action->second.operationId == operation.operationId
++			&& action->second.operationGeneration
++				== operation.generation)
++		{
++			action = unitActions.erase(action);
++		}
++		else
++		{
++			++action;
++		}
++	}
++	operation.assignedUnitTags.clear();
++	operation.assignedCount = 0;
++	operation.previousSquadByTag.clear();
++	operation.submittedPositions.clear();
++	operation.blockedReason = reason;
++	if (terminal)
++	{
++		operation.completed = true;
++		operation.status = "COMPLETED";
++	}
++	else
++	{
++		operation.status = "BLOCKED";
++	}
++}
++
++void CombatCommander::recordVoiOperationSubmission(
++	const sc2::Unit * unit,
++	const UnitAction & action)
++{
++	if (!isCurrentVoiOperationAction(unit, action))
++	{
++		return;
++	}
++	VoiOperationState * operation = findVoiOperation(
++		action.operationId,
++		action.operationGeneration);
++	if (operation == nullptr)
++	{
++		return;
++	}
++	const uint32_t frame = m_bot.GetGameLoop();
++	if (operation->submittedFrame == 0)
++	{
++		operation->submittedFrame = frame;
++	}
++	if (operation->submittedPositions.find(unit->tag)
++		== operation->submittedPositions.end())
++	{
++		operation->submittedPositions[unit->tag] = unit->pos;
++	}
++	operation->lastActionFrame = frame;
++	operation->lastAction = voiActionEvidence(action);
++	if (operation->status != "BLOCKED"
++		&& operation->status != "MOVING"
++		&& operation->status != "ENGAGED"
++		&& operation->status != "COMPLETED")
++	{
++		operation->status = "SUBMITTED";
++	}
++}
++
++void CombatCommander::observeVoiOperations()
++{
++	const uint32_t currentFrame = m_bot.GetGameLoop();
++	const CCPosition home = voiHomePosition(m_bot);
++	for (auto & operation : m_voiOperations)
++	{
++		if (operation.completed
++			|| operation.squadName.empty()
++			|| !m_squadData.squadExists(operation.squadName))
++		{
++			continue;
++		}
++		Squad & squad = m_squadData.getSquad(operation.squadName);
++		for (auto owner = m_voiOperationUnitOwners.begin();
++			owner != m_voiOperationUnitOwners.end();)
++		{
++			if (owner->second.first == operation.operationId
++				&& owner->second.second == operation.generation
++				&& !squad.containsUnit(owner->first))
++			{
++				operation.previousSquadByTag.erase(owner->first);
++				operation.submittedPositions.erase(owner->first);
++				owner = m_voiOperationUnitOwners.erase(owner);
++			}
++			else
++			{
++				++owner;
++			}
++		}
++		std::vector<Unit> observedUnits;
++		std::vector<sc2::Tag> observedTags;
++		for (const auto & unit : squad.getUnits())
++		{
++			const auto owner =
++				m_voiOperationUnitOwners.find(unit.getTag());
++			if (!unit.isValid()
++				|| !unit.isAlive()
++				|| owner == m_voiOperationUnitOwners.end()
++				|| owner->second.first != operation.operationId
++				|| owner->second.second != operation.generation)
++			{
++				continue;
++			}
++			observedUnits.push_back(unit);
++			observedTags.push_back(unit.getTag());
++			operation.maxHomeDistance = std::max(
++				operation.maxHomeDistance,
++				Util::Dist(unit.getPosition(), home));
++		}
++		std::sort(observedTags.begin(), observedTags.end());
++		operation.assignedUnitTags = observedTags;
++		operation.assignedCount =
++			static_cast<int>(observedTags.size());
++		if (operation.submittedFrame == 0
++			|| currentFrame <= operation.submittedFrame
++			|| observedUnits.empty())
++		{
++			continue;
++		}
++
++		bool observedMovement = false;
++		for (const auto & unit : observedUnits)
++		{
++			const auto submitted =
++				operation.submittedPositions.find(unit.getTag());
++			if (submitted != operation.submittedPositions.end()
++				&& Util::DistSq(
++					unit.getPosition(),
++					submitted->second) >= 1.0f)
++			{
++				observedMovement = true;
++				break;
++			}
++		}
++		const bool observedEnemy =
++			voiHasVisibleEnemyNearSquad(
++				observedUnits,
++				m_bot,
++				14.0f);
++		if (observedEnemy)
++		{
++			operation.lastEnemyFrame = currentFrame;
++			operation.engaged = true;
++			operation.status = "ENGAGED";
++		}
++		else if (observedMovement
++			&& operation.status != "ENGAGED")
++		{
++			operation.status = "MOVING";
++		}
++
++		const int majority = std::max(
++			1,
++			static_cast<int>(
++				std::ceil(
++					static_cast<float>(
++						observedUnits.size()) * 0.60f)));
++		if (!operation.routeStageComplete
++			&& operation.activeTargetPosition != CCPosition()
++			&& voiCountUnitsNearPosition(
++				observedUnits,
++				operation.activeTargetPosition,
++				8.0f) >= majority)
++		{
++			operation.routeStageComplete = true;
++			operation.activeTargetPosition =
++				operation.targetPosition;
++			const int orderType =
++				operation.taskType == "scout"
++					? SquadOrderTypes::Scout
++					: (operation.taskType == "defend"
++						? SquadOrderTypes::Defend
++						: SquadOrderTypes::Attack);
++			squad.setSquadOrder(
++				SquadOrder(
++					orderType,
++					operation.targetPosition,
++					operation.taskType == "scout"
++						? ScoutOrderRadius
++						: DefaultOrderRadius,
++					operation.status));
++		}
++
++		const float completionRadius =
++			operation.taskType == "scout" ? 5.0f : 8.0f;
++		const bool targetReached =
++			operation.targetPosition != CCPosition()
++			&& voiCountUnitsNearPosition(
++				observedUnits,
++				operation.targetPosition,
++				completionRadius) >= majority;
++		bool completed = false;
++		if (operation.taskType == "scout")
++		{
++			completed = targetReached;
++		}
++		else if (operation.taskType == "attack"
++			&& targetReached
++			&& !observedEnemy
++			&& m_bot.Map().isExplored(
++				operation.targetPosition))
++		{
++			completed = !operation.engaged
++				|| (operation.lastEnemyFrame > 0
++					&& currentFrame
++						>= operation.lastEnemyFrame + 44u);
++		}
++		if (completed)
++		{
++			releaseVoiOperation(
++				operation,
++				"objective_observed_complete",
++				true);
++		}
++	}
++}
++
++void CombatCommander::reconcileVoiOperation(
++	VoiOperationState & operation)
++{
++	const bool staticBlock =
++		operation.blockedReason == "missing_operation_id"
++		|| operation.blockedReason == "invalid_operation_id"
++		|| operation.blockedReason == "unsupported_task_type"
++		|| operation.blockedReason == "invalid_target"
++		|| operation.blockedReason == "cancelled_by_policy";
++	if (operation.completed || staticBlock)
++	{
++		return;
++	}
++	if (operation.targetPosition == CCPosition()
++		|| !m_bot.Map().isValidPosition(
++			operation.targetPosition))
++	{
++		operation.status = "BLOCKED";
++		operation.blockedReason = "invalid_target";
++		return;
++	}
++	if (!m_squadData.squadExists(operation.squadName))
++	{
++		const int orderType =
++			operation.taskType == "scout"
++				? SquadOrderTypes::Scout
++				: (operation.taskType == "defend"
++					? SquadOrderTypes::Defend
++					: SquadOrderTypes::Attack);
++		m_squadData.addSquad(
++			operation.squadName,
++			Squad(
++				operation.squadName,
++				SquadOrder(
++					orderType,
++					operation.activeTargetPosition,
++					operation.taskType == "scout"
++						? ScoutOrderRadius
++						: DefaultOrderRadius,
++					operation.status),
++				ExplicitOperationPriority,
++				m_bot));
++	}
++	Squad & squad = m_squadData.getSquad(operation.squadName);
++	squad.setPriority(ExplicitOperationPriority);
++
++	auto restoreUnit = [&](const Unit & unit)
++	{
++		squad.removeUnit(unit);
++		const auto owner =
++			m_voiOperationUnitOwners.find(unit.getTag());
++		if (owner != m_voiOperationUnitOwners.end()
++			&& owner->second.first == operation.operationId
++			&& owner->second.second == operation.generation)
++		{
++			m_voiOperationUnitOwners.erase(owner);
++		}
++		std::string restoreSquad = "Backup";
++		const auto previous =
++			operation.previousSquadByTag.find(unit.getTag());
++		if (previous != operation.previousSquadByTag.end())
++		{
++			restoreSquad = previous->second;
++		}
++		if (voiIsOperationSquadName(restoreSquad)
++			|| !m_squadData.squadExists(restoreSquad))
++		{
++			restoreSquad =
++				m_squadData.squadExists("Backup")
++					? "Backup"
++					: "Idle";
++		}
++		if (m_squadData.squadExists(restoreSquad)
++			&& unit.isValid()
++			&& unit.isAlive())
++		{
++			m_squadData.assignUnitToSquad(
++				unit,
++				m_squadData.getSquad(restoreSquad));
++		}
++		operation.previousSquadByTag.erase(unit.getTag());
++		operation.submittedPositions.erase(unit.getTag());
++	};
++
++	std::vector<Unit> invalidUnits;
++	for (const auto & unit : squad.getUnits())
++	{
++		const auto owner =
++			m_voiOperationUnitOwners.find(unit.getTag());
++		if (!unit.isValid()
++			|| !unit.isAlive()
++			|| owner == m_voiOperationUnitOwners.end()
++			|| owner->second.first != operation.operationId
++			|| owner->second.second != operation.generation
++			|| (!operation.unitClasses.empty()
++				&& !voiUnitMatchesCompositionList(
++					unit,
++					operation.unitClasses)))
++		{
++			invalidUnits.push_back(unit);
++		}
++	}
++	for (const auto & unit : invalidUnits)
++	{
++		restoreUnit(unit);
++	}
++	if (!operation.allowPartial
++		&& !operation.compositionRequirements.empty())
++	{
++		std::map<std::string, int> retainedByType;
++		std::vector<Unit> nonCompositionUnits;
++		for (const auto & unit : squad.getUnits())
++		{
++			const VoiOperationState::CompositionRequirement * matched =
++				nullptr;
++			for (const auto & requirement :
++				operation.compositionRequirements)
++			{
++				if (voiUnitMatchesCompositionToken(
++					unit,
++					requirement.unitType))
++				{
++					matched = &requirement;
++					break;
++				}
++			}
++			if (matched == nullptr
++				|| retainedByType[matched->unitType]
++					>= matched->count)
++			{
++				nonCompositionUnits.push_back(unit);
++				continue;
++			}
++			retainedByType[matched->unitType]++;
++		}
++		for (const auto & unit : nonCompositionUnits)
++		{
++			restoreUnit(unit);
++		}
++	}
++
++	auto eligibleCandidate =
++		[&](const Unit & unit, const std::string & requiredType)
++		{
++			if (!voiIsSupportedOperationUnit(unit)
++				|| isVoiOperationOwnedUnit(unit.getTag())
++				|| (!requiredType.empty()
++					&& !voiUnitMatchesCompositionToken(
++						unit,
++						requiredType))
++				|| (!operation.unitClasses.empty()
++					&& !voiUnitMatchesCompositionList(
++						unit,
++						operation.unitClasses)))
++			{
++				return false;
++			}
++			if (voiTacticalNukeTaskRequested(m_bot)
++				&& unit.getAPIUnitType()
++					== sc2::UNIT_TYPEID::TERRAN_GHOST)
++			{
++				return false;
++			}
++			if (unit.getTag()
++					== m_voiExplicitAbilityStagingActorTag
++				|| unit.getTag()
++					== m_lastVoiExplicitAbilityActorTag)
++			{
++				return false;
++			}
++			const Squad * current =
++				m_squadData.getUnitSquad(unit);
++			return current == nullptr
++				|| (!voiIsOperationSquadName(
++						current->getName())
++					&& current->getPriority()
++						< TacticalAbilityPriority);
++		};
++	auto assignUnit = [&](const Unit & unit)
++	{
++		Squad * previous =
++			m_squadData.getUnitSquad(unit);
++		operation.previousSquadByTag[unit.getTag()] =
++			previous ? previous->getName() : "Backup";
++		m_squadData.assignUnitToSquad(unit, squad);
++		m_voiOperationUnitOwners[unit.getTag()] =
++			std::make_pair(
++				operation.operationId,
++				operation.generation);
++	};
++	auto sortedCandidates =
++		[&](const std::string & requiredType)
++		{
++			std::vector<Unit> candidates;
++			for (const auto & unit : m_combatUnits)
++			{
++				if (eligibleCandidate(unit, requiredType))
++				{
++					candidates.push_back(unit);
++				}
++			}
++			const CCPosition home = voiHomePosition(m_bot);
++			std::sort(
++				candidates.begin(),
++				candidates.end(),
++				[&](const Unit & left, const Unit & right)
++				{
++					return Util::DistSq(
++						left.getPosition(),
++						home)
++						< Util::DistSq(
++							right.getPosition(),
++							home);
++				});
++			return candidates;
++		};
++
++	for (const auto & requirement :
++		operation.compositionRequirements)
+ 	{
+-		return false;
++		int assignedForType = 0;
++		for (const auto & unit : squad.getUnits())
++		{
++			if (voiUnitMatchesCompositionToken(
++				unit,
++				requirement.unitType))
++			{
++				++assignedForType;
++			}
++		}
++		const int needed =
++			std::max(0, requirement.count - assignedForType);
++		auto candidates = sortedCandidates(requirement.unitType);
++		for (int index = 0;
++			index < needed
++				&& index
++					< static_cast<int>(candidates.size());
++			++index)
++		{
++			assignUnit(candidates[index]);
++		}
+ 	}
+ 
+-	const CCPosition wallCenter = Util::GetPosition(wallCenterTile);
+-	for (const auto & unit : squad.getUnits())
++	bool exactCompositionSatisfied = true;
++	for (const auto & requirement :
++		operation.compositionRequirements)
+ 	{
+-		if (!voiIsMobileAttackUnit(unit) || unit.isFlying())
++		int assignedForType = 0;
++		for (const auto & unit : squad.getUnits())
+ 		{
+-			continue;
++			if (voiUnitMatchesCompositionToken(
++				unit,
++				requirement.unitType))
++			{
++				++assignedForType;
++			}
+ 		}
+-		const bool stillAtHome = Util::DistSq(unit.getPosition(), homePosition) <= 18.0f * 18.0f;
+-		const bool waitingAtWall = wallCenter != CCPosition()
+-			&& Util::DistSq(unit.getPosition(), wallCenter) <= 16.0f * 16.0f;
+-		if (stillAtHome || waitingAtWall)
++		if (assignedForType < requirement.count)
+ 		{
+-			return true;
++			exactCompositionSatisfied = false;
++			break;
+ 		}
+ 	}
+-	return false;
+-}
+ 
+-int voiCountUnitsNearPosition(const std::vector<Unit> & units, const CCPosition & position, float radius)
+-{
+-	int count = 0;
+-	const float radiusSq = radius * radius;
+-	for (const auto & unit : units)
++	if (operation.allowPartial || exactCompositionSatisfied)
+ 	{
+-		if (unit.isValid() && Util::DistSq(unit.getPosition(), position) <= radiusSq)
++		auto candidates = sortedCandidates("");
++		for (const auto & unit : candidates)
+ 		{
+-			++count;
++			if (static_cast<int>(squad.getUnits().size())
++				>= operation.maxUnits)
++			{
++				break;
++			}
++			assignUnit(unit);
+ 		}
+ 	}
+-	return count;
+-}
+ 
+-bool voiHasVisibleEnemyNearSquad(const std::vector<Unit> & units, CCBot & bot, float radius)
+-{
+-	const float radiusSq = radius * radius;
+-	for (const auto & enemy : bot.GetKnownEnemyUnits())
++	if (static_cast<int>(squad.getUnits().size())
++		> operation.maxUnits)
+ 	{
+-		if (!enemy.isValid() || !enemy.isAlive() || !enemy.isVisible())
++		std::vector<Unit> excessUnits;
++		const auto currentUnits = squad.getUnits();
++		for (int index = operation.maxUnits;
++			index < static_cast<int>(currentUnits.size());
++			++index)
+ 		{
+-			continue;
++			excessUnits.push_back(currentUnits[index]);
+ 		}
+-		for (const auto & unit : units)
++		for (const auto & unit : excessUnits)
+ 		{
+-			if (unit.isValid() && Util::DistSq(unit, enemy) <= radiusSq)
+-			{
+-				return true;
+-			}
++			restoreUnit(unit);
+ 		}
+ 	}
+-	return false;
+-}
+ 
+-bool voiPositionIsNearProducerFootprint(const CCPosition & position, CCBot & bot, float radius)
+-{
+-	if (position == CCPosition())
++	operation.assignedUnitTags.clear();
++	for (const auto & unit : squad.getUnits())
+ 	{
+-		return true;
++		const auto owner =
++			m_voiOperationUnitOwners.find(unit.getTag());
++		if (owner != m_voiOperationUnitOwners.end()
++			&& owner->second.first == operation.operationId
++			&& owner->second.second == operation.generation)
++		{
++			operation.assignedUnitTags.push_back(unit.getTag());
++		}
++	}
++	std::sort(
++		operation.assignedUnitTags.begin(),
++		operation.assignedUnitTags.end());
++	operation.assignedCount =
++		static_cast<int>(operation.assignedUnitTags.size());
++
++	const bool emergencyRetreat =
++		m_bot.Commander().getVoiPolicyBool(
++			"emergency.force_retreat",
++			false)
++		|| (operation.taskType == "attack"
++			&& m_bot.Commander().getVoiPolicyBool(
++				"emergency.cancel_attacks",
++				false));
++	if (emergencyRetreat)
++	{
++		operation.status = "BLOCKED";
++		operation.blockedReason =
++			"emergency_retreat_preempted";
++		squad.setSquadOrder(
++			SquadOrder(
++				SquadOrderTypes::Retreat,
++				voiHomePosition(m_bot),
++				DefaultOrderRadius,
++				"Retreat"));
++		return;
+ 	}
+-	for (const auto & unitPair : bot.GetAllyUnits())
++	const bool enoughUnits =
++		operation.assignedCount >= operation.minUnits
++		&& (operation.allowPartial
++			|| exactCompositionSatisfied);
++	const bool mayLaunchPartial =
++		operation.allowPartial
++		&& operation.assignedCount > 0;
++	if (!enoughUnits && !mayLaunchPartial)
++	{
++		operation.status = "BLOCKED";
++		operation.blockedReason =
++			!exactCompositionSatisfied
++				? "composition_prerequisites_pending"
++				: (operation.assignedCount == 0
++				? "no_available_units"
++				: "insufficient_units");
++		squad.setSquadOrder(
++			SquadOrder(
++				SquadOrderTypes::Idle,
++				voiHomePosition(m_bot),
++				DefaultOrderRadius,
++				operation.status));
++		return;
++	}
++	if (operation.assignedFrame == 0)
+ 	{
+-		const Unit & unit = unitPair.second;
+-		if (!unit.isValid() || !unit.getType().isBuilding())
+-		{
+-			continue;
+-		}
+-		const sc2::UNIT_TYPEID type = unit.getAPIUnitType();
+-		const bool productionBuilding =
+-			type == sc2::UNIT_TYPEID::TERRAN_BARRACKS
+-			|| type == sc2::UNIT_TYPEID::TERRAN_BARRACKSFLYING
+-			|| type == sc2::UNIT_TYPEID::TERRAN_FACTORY
+-			|| type == sc2::UNIT_TYPEID::TERRAN_FACTORYFLYING
+-			|| type == sc2::UNIT_TYPEID::TERRAN_STARPORT
+-			|| type == sc2::UNIT_TYPEID::TERRAN_STARPORTFLYING;
+-		if (productionBuilding && Util::DistSq(position, unit.getPosition()) <= radius * radius)
+-		{
+-			return true;
+-		}
++		operation.assignedFrame = m_bot.GetGameLoop();
+ 	}
+-	return false;
++	operation.blockedReason.clear();
++	if (operation.status == "RECEIVED"
++		|| operation.status == "ASSIGNED"
++		|| operation.status == "BLOCKED")
++	{
++		operation.status = "ASSIGNED";
++	}
++	const int orderType =
++		operation.taskType == "scout"
++			? SquadOrderTypes::Scout
++			: (operation.taskType == "defend"
++				? SquadOrderTypes::Defend
++				: SquadOrderTypes::Attack);
++	const float orderRadius =
++		operation.taskType == "scout"
++			? ScoutOrderRadius
++			: DefaultOrderRadius;
++	squad.setSquadOrder(
++		SquadOrder(
++			orderType,
++			operation.activeTargetPosition,
++			orderRadius,
++			operation.status));
+ }
+ 
+-CCPosition voiForwardRallyPosition(CCBot & bot, const CCPosition & operationTarget)
++void CombatCommander::updateVoiOperations()
+ {
+-	const CCPosition home = voiHomePosition(bot);
+-	CCPosition target = operationTarget;
+-	if (!voiIsRemoteCombatTarget(bot, target))
++	observeVoiOperations();
++	if (!m_bot.Commander().isVoiPolicyActive())
+ 	{
+-		target = voiEnemyMainCombatTarget(bot);
++		for (auto & operation : m_voiOperations)
++		{
++			if (!operation.completed)
++			{
++				releaseVoiOperation(
++					operation,
++					"policy_inactive_or_expired",
++					false);
++			}
++		}
++		return;
+ 	}
+-	const CCPosition directionVector = target - home;
+-	const float distance = std::sqrt(
+-		directionVector.x * directionVector.x + directionVector.y * directionVector.y);
+-	if (distance <= 1.0f)
++
++	const std::string policyUpdateId =
++		m_bot.Commander().getVoiPolicyString(
++			"update_id",
++			"");
++	m_voiOperationPolicyUpdateId = policyUpdateId;
++	const int operationCount = std::min(
++		32,
++		std::max(
++			0,
++			m_bot.Commander().getVoiPolicyInt(
++				"operations.count",
++				0)));
++	if (operationCount == 0)
+ 	{
+-		return home;
++		for (auto & operation : m_voiOperations)
++		{
++			releaseVoiOperation(
++				operation,
++				"removed_from_policy",
++				false);
++		}
++		m_voiOperations.clear();
++		m_voiOperationUnitOwners.clear();
++		return;
+ 	}
+ 
+-	const CCPosition forward = directionVector / distance;
+-	const CCPosition lateral(-forward.y, forward.x);
+-	for (float forwardDistance : {18.0f, 15.0f, 12.0f, 9.0f})
++	std::vector<VoiOperationState> requestedOperations;
++	std::map<std::string, size_t> requestedById;
++	for (int index = 0; index < operationCount; ++index)
+ 	{
+-		for (float lateralDistance : {0.0f, 4.0f, -4.0f, 7.0f, -7.0f})
++		const std::string prefix =
++			"operations." + std::to_string(index);
++		VoiOperationState requested;
++		const std::string rawOperationId =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".operation_id",
++				"");
++		requested.operationId = rawOperationId.empty()
++			? "missing-operation-" + std::to_string(index)
++			: rawOperationId;
++		requested.generation =
++			static_cast<uint64_t>(
++				std::max(
++					1,
++					m_bot.Commander().getVoiPolicyInt(
++						prefix + ".generation",
++						1)));
++		requested.policyUpdateId = policyUpdateId;
++		requested.receivedFrame = m_bot.GetGameLoop();
++		requested.taskType =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".tactical_task.task_type",
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".task_type",
++					""));
++		if (requested.taskType == "scout_with_units")
+ 		{
+-			const CCPosition candidate = home + forward * forwardDistance + lateral * lateralDistance;
+-			if (!bot.Map().isValidPosition(candidate)
+-				|| !bot.Map().isWalkable(candidate)
+-				|| !bot.Map().isConnected(home, candidate)
+-				|| voiPositionIsNearProducerFootprint(candidate, bot, 8.0f))
++			requested.taskType = "scout";
++		}
++		else if (requested.taskType
++			== "pressure_with_main_army")
++		{
++			requested.taskType = "attack";
++		}
++		else if (requested.taskType
++			== "defend_with_units")
++		{
++			requested.taskType = "defend";
++		}
++		requested.routeType =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".route_intent.route_type",
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".route_type",
++					"direct"));
++		requested.locationIntent =
++			m_bot.Commander().getVoiPolicyString(
++				prefix
++					+ ".tactical_task.location_intent",
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".target_intent.target_type",
++					m_bot.Commander().getVoiPolicyString(
++						prefix + ".location_intent",
++						"")));
++		requested.unitClasses =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".scope.unit_classes",
++				m_bot.Commander().getVoiPolicyString(
++					prefix
++						+ ".tactical_task.unit_classes",
++					m_bot.Commander().getVoiPolicyString(
++						prefix + ".unit_classes",
++						"")));
++		requested.minUnits = std::max(
++			0,
++			m_bot.Commander().getVoiPolicyInt(
++				prefix + ".tactical_task.min_units",
++				m_bot.Commander().getVoiPolicyInt(
++					prefix + ".scope.min_units",
++					m_bot.Commander().getVoiPolicyInt(
++						prefix + ".min_units",
++						1))));
++		requested.maxUnits = std::max(
++			0,
++			m_bot.Commander().getVoiPolicyInt(
++				prefix + ".tactical_task.max_units",
++				m_bot.Commander().getVoiPolicyInt(
++					prefix + ".scope.max_units",
++					m_bot.Commander().getVoiPolicyInt(
++						prefix + ".max_units",
++						0))));
++		requested.allowPartial =
++			m_bot.Commander().getVoiPolicyBool(
++				prefix + ".tactical_task.allow_partial",
++				m_bot.Commander().getVoiPolicyBool(
++					prefix + ".scope.allow_partial",
++					m_bot.Commander().getVoiPolicyBool(
++						prefix + ".allow_partial",
++						true)));
++
++		const std::string requirementCountValue =
++			m_bot.Commander().getVoiPolicyString(
++				prefix
++					+ ".composition_requirements.count",
++				"");
++		const int requirementCount =
++			requirementCountValue.empty()
++				? 32
++				: std::min(
++					32,
++					std::max(
++						0,
++						m_bot.Commander().getVoiPolicyInt(
++							prefix
++								+ ".composition_requirements.count",
++							0)));
++		int requestedCompositionUnits = 0;
++		for (int requirementIndex = 0;
++			requirementIndex < requirementCount;
++			++requirementIndex)
++		{
++			const std::string requirementPrefix =
++				prefix + ".composition_requirements."
++					+ std::to_string(requirementIndex);
++			const std::string unitType =
++				m_bot.Commander().getVoiPolicyString(
++					requirementPrefix + ".unit_type",
++					"");
++			const int count = std::max(
++				0,
++				m_bot.Commander().getVoiPolicyInt(
++					requirementPrefix + ".count",
++					0));
++			if (!unitType.empty() && count > 0)
++			{
++				requested.compositionRequirements.push_back(
++					{
++						unitType,
++						count,
++						m_bot.Commander().getVoiPolicyString(
++							requirementPrefix + ".role",
++							"")
++					});
++				requestedCompositionUnits += count;
++			}
++		}
++		const int unitRoleCount = std::min(
++			32,
++			std::max(
++				0,
++				m_bot.Commander().getVoiPolicyInt(
++					prefix + ".unit_roles.count",
++					0)));
++		for (int roleIndex = 0;
++			roleIndex < unitRoleCount;
++			++roleIndex)
++		{
++			const std::string rolePrefix =
++				prefix + ".unit_roles."
++					+ std::to_string(roleIndex);
++			const std::string unitType =
++				m_bot.Commander().getVoiPolicyString(
++					rolePrefix + ".unit_type",
++					"");
++			const std::string role =
++				m_bot.Commander().getVoiPolicyString(
++					rolePrefix + ".role",
++					"");
++			if (unitType.empty() || role.empty())
+ 			{
+ 				continue;
+ 			}
+-			return candidate;
++			requested.unitRoles.push_back(
++				{
++					unitType,
++					role,
++					m_bot.Commander().getVoiPolicyString(
++						rolePrefix + ".ability_policy",
++						""),
++					m_bot.Commander().getVoiPolicyFloat(
++						rolePrefix + ".priority",
++						0.0f)
++				});
++		}
++		if (requested.maxUnits == 0)
++		{
++			requested.maxUnits =
++				requestedCompositionUnits > 0
++					? requestedCompositionUnits
++					: std::max(1, requested.minUnits);
++		}
++		requested.maxUnits = std::max(
++			1,
++			requested.maxUnits);
++		requested.minUnits = std::min(
++			requested.maxUnits,
++			requested.minUnits);
++		if (requestedCompositionUnits > 0
++			&& !requested.allowPartial)
++		{
++			requested.minUnits = std::min(
++				requested.maxUnits,
++				std::max(
++					requested.minUnits,
++					requestedCompositionUnits));
++		}
++
++		const std::string targetXValue =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".target_intent.target_x",
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".target_x",
++					""));
++		const std::string targetYValue =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".target_intent.target_y",
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".target_y",
++					""));
++		CCPosition explicitTarget;
++		if (!targetXValue.empty() && !targetYValue.empty())
++		{
++			explicitTarget = CCPosition(
++				m_bot.Commander().getVoiPolicyFloat(
++					prefix + ".target_intent.target_x",
++					m_bot.Commander().getVoiPolicyFloat(
++						prefix + ".target_x",
++						0.0f)),
++				m_bot.Commander().getVoiPolicyFloat(
++					prefix + ".target_intent.target_y",
++					m_bot.Commander().getVoiPolicyFloat(
++						prefix + ".target_y",
++						0.0f)));
++		}
++		requested.targetPosition = voiResolveOperationTarget(
++			m_bot,
++			requested.taskType,
++			requested.locationIntent,
++			explicitTarget);
++		requested.targetEvidence =
++			voiResolveOperationTargetEvidence(
++				m_bot,
++				requested.locationIntent,
++				explicitTarget,
++				requested.targetPosition);
++		requested.targetX = requested.targetPosition.x;
++		requested.targetY = requested.targetPosition.y;
++		requested.activeTargetPosition =
++			voiResolveOperationRouteWaypoint(
++				m_bot,
++				requested.routeType,
++				requested.targetPosition);
++		requested.routeStageComplete =
++			requested.activeTargetPosition
++				== requested.targetPosition;
++		requested.squadName =
++			voiIsValidOperationId(rawOperationId)
++				? "VoiOp:" + rawOperationId + ":"
++					+ std::to_string(
++						requested.generation)
++				: "VoiOp:invalid:"
++					+ std::to_string(index) + ":"
++					+ std::to_string(
++						requested.generation);
++
++		const bool requestedCompleted =
++			m_bot.Commander().getVoiPolicyBool(
++				prefix + ".completed",
++				false)
++			|| m_bot.Commander().getVoiPolicyString(
++					prefix + ".status",
++					"") == "COMPLETED";
++		const bool requestedCancelled =
++			m_bot.Commander().getVoiPolicyBool(
++				prefix + ".cancelled",
++				false)
++			|| m_bot.Commander().getVoiPolicyString(
++					prefix + ".status",
++					"") == "CANCELLED";
++		if (rawOperationId.empty())
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				"missing_operation_id";
++		}
++		else if (!voiIsValidOperationId(rawOperationId))
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				"invalid_operation_id";
++		}
++		else if (requested.taskType != "scout"
++			&& requested.taskType != "attack"
++			&& requested.taskType != "defend")
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				"unsupported_task_type";
++		}
++		else if (requested.targetPosition == CCPosition()
++			|| !m_bot.Map().isValidPosition(
++				requested.targetPosition))
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason = "invalid_target";
++		}
++		else if (requestedCancelled)
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				"cancelled_by_policy";
++		}
++		else if (requestedCompleted)
++		{
++			requested.status = "COMPLETED";
++			requested.completed = true;
++		}
++
++		const auto duplicate =
++			requestedById.find(requested.operationId);
++		if (duplicate == requestedById.end())
++		{
++			requestedById[requested.operationId] =
++				requestedOperations.size();
++			requestedOperations.push_back(requested);
++		}
++		else if (requested.generation
++			> requestedOperations[
++				duplicate->second].generation)
++		{
++			requestedOperations[duplicate->second] =
++				requested;
++		}
++	}
++
++	for (size_t index = 0;
++		index < m_voiOperations.size();)
++	{
++		bool retained = false;
++		for (const auto & requested : requestedOperations)
++		{
++			if (m_voiOperations[index].operationId
++					== requested.operationId
++				&& m_voiOperations[index].generation
++					== requested.generation)
++			{
++				retained = true;
++				break;
++			}
++		}
++		if (!retained)
++		{
++			releaseVoiOperation(
++				m_voiOperations[index],
++				"replaced_or_removed",
++				false);
++			m_voiOperations.erase(
++				m_voiOperations.begin() + index);
++		}
++		else
++		{
++			++index;
+ 		}
+ 	}
+-	return home + forward * std::min(8.0f, distance * 0.25f);
+-}
+-}
+ 
+-CombatCommander::CombatCommander(CCBot & bot)
+-    : m_bot(bot)
+-    , m_squadData(bot)
+-    , m_initialized(false)
+-    , m_attackStarted(false)
+-	, m_currentBaseExplorationIndex(0)
+-	, m_currentBaseScoutingIndex(0)
+-{
++	for (const auto & requested : requestedOperations)
++	{
++		VoiOperationState * existing = findVoiOperation(
++			requested.operationId,
++			requested.generation);
++		if (existing == nullptr)
++		{
++			m_voiOperations.push_back(requested);
++			continue;
++		}
++		const bool targetChanged =
++			existing->targetPosition
++				!= requested.targetPosition
++			|| existing->routeType
++				!= requested.routeType;
++		existing->policyUpdateId = policyUpdateId;
++		existing->taskType = requested.taskType;
++		existing->routeType = requested.routeType;
++		existing->unitClasses = requested.unitClasses;
++		existing->locationIntent = requested.locationIntent;
++		existing->minUnits = requested.minUnits;
++		existing->maxUnits = requested.maxUnits;
++		existing->allowPartial = requested.allowPartial;
++		existing->compositionRequirements =
++			requested.compositionRequirements;
++		existing->unitRoles = requested.unitRoles;
++		existing->targetPosition =
++			requested.targetPosition;
++		existing->targetEvidence =
++			requested.targetEvidence;
++		existing->targetX = requested.targetX;
++		existing->targetY = requested.targetY;
++		existing->squadName = requested.squadName;
++		if (targetChanged)
++		{
++			existing->activeTargetPosition =
++				requested.activeTargetPosition;
++			existing->routeStageComplete =
++				requested.routeStageComplete;
++		}
++		if (requested.completed)
++		{
++			releaseVoiOperation(
++				*existing,
++				"completed_by_policy",
++				true);
++		}
++		else if (!requested.blockedReason.empty())
++		{
++			releaseVoiOperation(
++				*existing,
++				requested.blockedReason,
++				false);
++		}
++		else if (existing->status == "BLOCKED")
++		{
++			existing->status = "RECEIVED";
++			existing->blockedReason.clear();
++		}
++	}
++
++	for (auto & operation : m_voiOperations)
++	{
++		reconcileVoiOperation(operation);
++	}
++}
++
++std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
++{
++	std::ostringstream payload;
++	payload << "{"
++		<< "\"policy_update_id\":\""
++		<< voiOperationJsonEscape(
++			m_voiOperationPolicyUpdateId)
++		<< "\",\"operations\":[";
++	for (size_t index = 0;
++		index < m_voiOperations.size();
++		++index)
++	{
++		const auto & operation = m_voiOperations[index];
++		if (index > 0)
++		{
++			payload << ",";
++		}
++		payload << "{"
++			<< "\"operation_id\":\""
++			<< voiOperationJsonEscape(
++				operation.operationId)
++			<< "\","
++			<< "\"generation\":"
++			<< operation.generation << ","
++			<< "\"task_type\":\""
++			<< voiOperationJsonEscape(
++				operation.taskType)
++			<< "\","
++			<< "\"status\":\""
++			<< voiOperationJsonEscape(
++				operation.status)
++			<< "\","
++			<< "\"assigned_unit_tags\":[";
++		for (size_t tagIndex = 0;
++			tagIndex < operation.assignedUnitTags.size();
++			++tagIndex)
++		{
++			if (tagIndex > 0)
++			{
++				payload << ",";
++			}
++			payload << operation.assignedUnitTags[tagIndex];
++		}
++		payload << "],"
++			<< "\"assigned_count\":"
++			<< operation.assignedCount << ","
++			<< "\"target_x\":"
++			<< operation.targetX << ","
++			<< "\"target_y\":"
++			<< operation.targetY << ","
++			<< "\"route_type\":\""
++			<< voiOperationJsonEscape(
++				operation.routeType)
++			<< "\","
++			<< "\"target_evidence\":\""
++			<< voiOperationJsonEscape(
++				operation.targetEvidence)
++			<< "\","
++			<< "\"received_frame\":"
++			<< operation.receivedFrame << ","
++			<< "\"assigned_frame\":"
++			<< operation.assignedFrame << ","
++			<< "\"submitted_frame\":"
++			<< operation.submittedFrame << ","
++			<< "\"last_action_frame\":"
++			<< operation.lastActionFrame << ","
++			<< "\"max_home_distance\":"
++			<< operation.maxHomeDistance << ","
++			<< "\"engaged\":"
++			<< (operation.engaged ? "true" : "false")
++			<< ","
++			<< "\"completed\":"
++			<< (operation.completed ? "true" : "false")
++			<< ","
++			<< "\"blocked_reason\":\""
++			<< voiOperationJsonEscape(
++				operation.blockedReason)
++			<< "\","
++			<< "\"last_action\":\""
++			<< voiOperationJsonEscape(
++				operation.lastAction)
++			<< "\"}";
++	}
++	payload << "]}";
++	return payload.str();
+ }
+ 
+ void CombatCommander::bindCurrentVoiExplicitAbilityAttempt(
+@@ -2014,6 +3755,7 @@ void CombatCommander::onStart()
+ 			m_bot));
+ 
+ 	//The influence maps are initialised earlier so we can use the blocked tiles influence map to place the turrets
++	updateVoiOperations();
+ }
+ 
+ void CombatCommander::updateVoiTacticalNukeSquad()
+@@ -3961,6 +5703,7 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
+ 	Util::CCUnitsToSc2Units(combatUnits, units);
+ 	m_unitsAbilities = m_bot.Query()->GetAbilitiesForUnits(units);
+ 	updateVoiTacticalNukeSquad();
++	updateVoiOperations();
+ 
+ 	m_bot.StartProfiling("0.10.4.0    updateInfluenceMaps");
+ 	updateInfluenceMaps();
+@@ -4010,7 +5753,6 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
+ 		m_bot.StopProfiling("0.10.4.2.4    updateAttackSquads");
+     }
+ #endif // !NO_MICRO
+-	drawCombatInformation();
+ 	m_bot.StopProfiling("0.10.4.2    updateSquads");
+ 
+ 	m_bot.StartProfiling("0.10.4.1    m_squadData.onFrame");
+@@ -4023,6 +5765,7 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
+ 	m_bot.StartProfiling("0.10.4.6    ExecuteActions");
+ 	ExecuteActions();
+ 	m_bot.StopProfiling("0.10.4.6    ExecuteActions");
++	drawCombatInformation();
+ 
+ 	m_bot.StartProfiling("0.10.4.4    lowPriorityCheck");
+ 	lowPriorityCheck();
+@@ -7423,7 +9166,9 @@ void CombatCommander::updateDefenseSquads()
+ 		Squad & squad = kv.second;
+ 		SquadOrder & order = squad.getSquadOrder();
+ 
+-		if (order.getType() != SquadOrderTypes::Defend || squad.getName() == "ScoutDefense")
++		if (order.getType() != SquadOrderTypes::Defend
++			|| squad.getName() == "ScoutDefense"
++			|| voiIsOperationSquadName(squad.getName()))
+ 		{
+ 			continue;
+ 		}
+@@ -8267,6 +10012,128 @@ void CombatCommander::drawCombatInformation()
+ 		const auto color = m_winAttackSimulation ? sc2::Colors::Green : sc2::Colors::Red;
+ 		m_bot.Map().drawTextScreen(0.25f, 0.01f, str, color);
+     }
++	drawVoiOperationHud();
++}
++
++void CombatCommander::drawVoiOperationHud()
++{
++	if (m_voiOperations.empty())
++	{
++		return;
++	}
++	float screenY = 0.08f;
++	for (const auto & operation : m_voiOperations)
++	{
++		CCColor color = sc2::Colors::White;
++		if (operation.status == "BLOCKED")
++		{
++			color = sc2::Colors::Red;
++		}
++		else if (operation.status == "COMPLETED")
++		{
++			color = sc2::Colors::Green;
++		}
++		else if (operation.status == "ENGAGED")
++		{
++			color = sc2::Colors::Purple;
++		}
++		else if (operation.status == "MOVING")
++		{
++			color = sc2::Colors::Teal;
++		}
++
++		std::ostringstream card;
++		card << "VOI " << operation.operationId
++			<< "#" << operation.generation
++			<< " " << operation.taskType
++			<< " [" << operation.status << "]"
++			<< " units=" << operation.assignedCount
++			<< " route=" << operation.routeType
++			<< " target=" << operation.locationIntent
++			<< "(" << operation.targetEvidence << ")";
++		if (operation.status == "BLOCKED"
++			&& !operation.blockedReason.empty())
++		{
++			card << " reason=" << operation.blockedReason;
++		}
++		m_bot.Map().drawTextScreen(
++			0.01f,
++			screenY,
++			card.str(),
++			color);
++		screenY += 0.025f;
++
++		if (operation.targetPosition != CCPosition()
++			&& m_bot.Map().isValidPosition(
++				operation.targetPosition))
++		{
++			m_bot.Map().drawCircle(
++				operation.targetPosition,
++				3.0f,
++				color);
++			m_bot.Map().drawText(
++				operation.targetPosition,
++				operation.operationId + " "
++					+ operation.targetEvidence,
++				color);
++		}
++		if (operation.squadName.empty()
++			|| !m_squadData.squadExists(
++				operation.squadName))
++		{
++			continue;
++		}
++		const Squad & squad =
++			m_squadData.getSquad(operation.squadName);
++		if (!squad.isEmpty())
++		{
++			const CCPosition center = squad.calcCenter();
++			if (!operation.routeStageComplete
++				&& operation.activeTargetPosition
++					!= CCPosition())
++			{
++				m_bot.Map().drawLine(
++					center,
++					operation.activeTargetPosition,
++					color);
++				m_bot.Map().drawLine(
++					operation.activeTargetPosition,
++					operation.targetPosition,
++					color);
++				m_bot.Map().drawCircle(
++					operation.activeTargetPosition,
++					2.0f,
++					color);
++			}
++			else if (operation.targetPosition
++				!= CCPosition())
++			{
++				m_bot.Map().drawLine(
++					center,
++					operation.targetPosition,
++					color);
++			}
++		}
++		for (const auto & unit : squad.getUnits())
++		{
++			const auto owner =
++				m_voiOperationUnitOwners.find(
++					unit.getTag());
++			if (owner == m_voiOperationUnitOwners.end()
++				|| owner->second.first
++					!= operation.operationId
++				|| owner->second.second
++					!= operation.generation)
++			{
++				continue;
++			}
++			m_bot.Map().drawText(
++				unit.getPosition(),
++				operation.operationId + " "
++					+ operation.status,
++				color);
++		}
++	}
+ }
+ 
+ CCPosition CombatCommander::getMainAttackLocation()
+@@ -8634,6 +10501,53 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ 	{
+ 		return false;
+ 	}
++	const VoiOperationState * ownedOperation = nullptr;
++	const auto operationOwner =
++		m_voiOperationUnitOwners.find(unit->tag);
++	if (operationOwner != m_voiOperationUnitOwners.end())
++	{
++		ownedOperation =
++			findVoiOperation(
++				operationOwner->second.first,
++				operationOwner->second.second);
++		const bool ownerMatches =
++			ownedOperation != nullptr
++			&& !ownedOperation->completed
++			&& m_squadData.squadExists(
++				ownedOperation->squadName)
++			&& m_squadData.getSquad(
++				ownedOperation->squadName).containsUnit(
++					unit->tag)
++			&& (action.squad.empty()
++				|| action.squad
++					== ownedOperation->squadName);
++		if (!ownerMatches)
++		{
++			m_lastVoiActionSkippedCount++;
++			m_lastVoiActionFrame =
++				m_bot.GetGameLoop();
++			m_lastVoiSkippedAction =
++				"operation_ownership_rejected|"
++				+ voiActionEvidence(action);
++			return false;
++		}
++		action.squad = ownedOperation->squadName;
++		action.operationId = ownedOperation->operationId;
++		action.operationGeneration =
++			ownedOperation->generation;
++	}
++	else if (!action.operationId.empty()
++		|| action.operationGeneration != 0
++		|| voiIsOperationSquadName(action.squad))
++	{
++		m_lastVoiActionSkippedCount++;
++		m_lastVoiActionFrame =
++			m_bot.GetGameLoop();
++		m_lastVoiSkippedAction =
++			"operation_non_owner_rejected|"
++			+ voiActionEvidence(action);
++		return false;
++	}
+ 	const bool directExplicitAction =
+ 		action.description.rfind("VoiExplicitAbility:", 0) == 0
+ 		|| action.description.rfind(
+@@ -8718,13 +10632,26 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ 	const std::string voiRole =
+ 		m_bot.Commander().isVoiPolicyActive()
+ 			&& !directExplicitAction
+-			? voiRoleForUnit(m_bot, unit)
++			? (ownedOperation != nullptr
++				? voiOperationRoleForUnit(
++					ownedOperation,
++					unit)
++				: voiRoleForUnit(m_bot, unit))
+ 			: "";
+ 	const bool preserveScoutObjective = action.squad == "Scout";
+ 	bool voiRoleBiasedAction = false;
+ 	if (!voiRole.empty())
+ 	{
+-		const std::string abilityPolicy = voiAbilityPolicyForUnit(m_bot, unit, voiRole);
++		const std::string abilityPolicy =
++			ownedOperation != nullptr
++				? voiOperationAbilityPolicyForUnit(
++					ownedOperation,
++					unit,
++					voiRole)
++				: voiAbilityPolicyForUnit(
++					m_bot,
++					unit,
++					voiRole);
+ 		const float roleHomeDistance = Util::Dist(unit->pos, voiHomePosition(m_bot));
+ 		if (m_lastVoiUnitRoleUnitTag != unit->tag || m_lastVoiUnitRole != voiRole)
+ 		{
+@@ -9129,6 +11056,21 @@ void CombatCommander::CleanActions(const std::vector<Unit> &combatUnits)
+ 			unitsToClear.push_back(rangedUnit);
+ 			continue;
+ 		}
++		const bool operationAction =
++			!action.operationId.empty()
++			|| action.operationGeneration != 0
++			|| voiIsOperationSquadName(action.squad);
++		if ((operationAction
++				&& !isCurrentVoiOperationAction(
++					rangedUnit,
++					action))
++			|| (!operationAction
++				&& isVoiOperationOwnedUnit(
++					rangedUnit->tag)))
++		{
++			unitsToClear.push_back(rangedUnit);
++			continue;
++		}
+ 
+ 		// If the unit changed squad
+ 		if (action.squad != "" && (!m_squadData.squadExists(action.squad) || !m_squadData.getSquad(action.squad).containsUnit(rangedUnit->tag)))
+@@ -9162,6 +11104,39 @@ void CombatCommander::ExecuteActions()
+ 		// Uninitialized action
+ 		if (action.description.empty())
+ 			continue;
++		const bool operationAction =
++			!action.operationId.empty()
++			|| action.operationGeneration != 0
++			|| voiIsOperationSquadName(action.squad);
++		if ((operationAction
++				&& !isCurrentVoiOperationAction(
++					rangedUnit,
++					action))
++			|| (!operationAction
++				&& isVoiOperationOwnedUnit(
++					rangedUnit->tag)))
++		{
++			action.finished = true;
++			m_lastVoiActionSkippedCount++;
++			m_lastVoiActionFrame =
++				m_bot.GetGameLoop();
++			m_lastVoiSkippedAction =
++				"stale_operation_action|"
++				+ voiActionEvidence(action);
++			continue;
++		}
++		const VoiOperationState * commandEpochOperation =
++			!action.operationId.empty()
++				&& action.operationGeneration > 0
++				? findVoiOperation(
++					action.operationId,
++					action.operationGeneration)
++				: nullptr;
++		const bool forceOperationCommandEpoch =
++			commandEpochOperation != nullptr
++			&& commandEpochOperation->submittedPositions.find(
++				rangedUnit->tag)
++				== commandEpochOperation->submittedPositions.end();
+ 
+ 		/*if (m_logVikingActions && rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER)
+ 		{
+@@ -9234,9 +11209,14 @@ void CombatCommander::ExecuteActions()
+ 			switch (action.microActionType)
+ 			{
+ 			case MicroActionType::AttackMove:
+-				if (rangedUnit->unit_type != Util::GetWorkerType().getAPIUnitType() && distToGoal < (action.description == "MoveToGoalOrder" ? 10.f : 0.1f))
++				if (!forceOperationCommandEpoch
++					&& rangedUnit->unit_type != Util::GetWorkerType().getAPIUnitType()
++					&& distToGoal < (action.description == "MoveToGoalOrder" ? 10.f : 0.1f))
+ 					skip = true;
+-				else if (!rangedUnit->orders.empty() && rangedUnit->orders[0].ability_id == sc2::ABILITY_ID::ATTACK && rangedUnit->orders[0].target_unit_tag == 0)
++				else if (!forceOperationCommandEpoch
++					&& !rangedUnit->orders.empty()
++					&& rangedUnit->orders[0].ability_id == sc2::ABILITY_ID::ATTACK
++					&& rangedUnit->orders[0].target_unit_tag == 0)
+ 				{
+ 					const auto orderPos = rangedUnit->orders[0].target_pos;
+ 					const auto orderDirection = Util::Normalized(orderPos - rangedUnit->pos);
+@@ -9260,7 +11240,10 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				break;
+ 			case MicroActionType::AttackUnit:
+-				if (!rangedUnit->orders.empty() && rangedUnit->orders[0].ability_id == sc2::ABILITY_ID::ATTACK && rangedUnit->orders[0].target_unit_tag == action.target->tag)
++				if (!forceOperationCommandEpoch
++					&& !rangedUnit->orders.empty()
++					&& rangedUnit->orders[0].ability_id == sc2::ABILITY_ID::ATTACK
++					&& rangedUnit->orders[0].target_unit_tag == action.target->tag)
+ 					skip = true;
+ 				if (!skip)
+ 				{
+@@ -9269,11 +11252,15 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				break;
+ 			case MicroActionType::Move:
+-				if (rangedUnit->unit_type == Util::GetWorkerType().getAPIUnitType() && distToGoal < 1.0f)
++				if (!forceOperationCommandEpoch
++					&& rangedUnit->unit_type == Util::GetWorkerType().getAPIUnitType()
++					&& distToGoal < 1.0f)
+ 					skip = true;
+-				else if (distToGoal < (action.description == "MoveToGoalOrder" ? 10.f : 0.1f))
++				else if (!forceOperationCommandEpoch
++					&& distToGoal < (action.description == "MoveToGoalOrder" ? 10.f : 0.1f))
+ 					skip = true;
+-				else if (!explicitScoutOrderAction
++				else if (!forceOperationCommandEpoch
++					&& !explicitScoutOrderAction
+ 					&& !rangedUnit->orders.empty()
+ 					&& rangedUnit->orders[0].ability_id == sc2::ABILITY_ID::MOVE)
+ 				{
+@@ -9480,6 +11467,9 @@ void CombatCommander::ExecuteActions()
+ 		
+ 		if (issuedCommand)
+ 		{
++			recordVoiOperationSubmission(
++				rangedUnit,
++				action);
+ 			if (m_bot.Config().LogArmyActions)
+ 			{
+ 				std::stringstream ss;
+@@ -9700,9 +11690,23 @@ void CombatCommander::ExecuteActions()
+ 						m_maxVoiExplicitAbilityActorHomeDistance,
+ 						m_lastVoiExplicitAbilityActorHomeDistance);
+ 			}
+-			const std::string executedVoiRole = m_bot.Commander().isVoiPolicyActive()
+-				? voiRoleForUnit(m_bot, rangedUnit)
+-				: "";
++			const VoiOperationState * executedOperation =
++				!action.operationId.empty()
++					&& action.operationGeneration > 0
++					? findVoiOperation(
++						action.operationId,
++						action.operationGeneration)
++					: nullptr;
++			const std::string executedVoiRole =
++				m_bot.Commander().isVoiPolicyActive()
++					? (executedOperation != nullptr
++						? voiOperationRoleForUnit(
++							executedOperation,
++							rangedUnit)
++						: voiRoleForUnit(
++							m_bot,
++							rangedUnit))
++					: "";
+ 			if (!executedVoiRole.empty())
+ 			{
+ 				const float roleHomeDistance = Util::Dist(rangedUnit->pos, voiHomePosition(m_bot));
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 8370953..be6c76d 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -118,6 +118,8 @@ struct UnitAction
+ 	std::string explicitAbilityUpdateId = "";
+ 	std::string explicitAbilityTaskId = "";
+ 	std::string explicitAbilityName = "";
++	std::string operationId = "";
++	uint64_t operationGeneration = 0;
+ 
+ 	UnitAction& operator=(const UnitAction&) = default;
+ 
+@@ -134,10 +136,67 @@ struct UnitAction
+ 			&& explicitAbilityTaskId
+ 				== unitAction.explicitAbilityTaskId
+ 			&& explicitAbilityName
+-				== unitAction.explicitAbilityName;
++				== unitAction.explicitAbilityName
++			&& operationId == unitAction.operationId
++			&& operationGeneration
++				== unitAction.operationGeneration;
+ 	}
+ };
+ 
++struct VoiOperationState
++{
++	struct CompositionRequirement
++	{
++		std::string unitType;
++		int count = 0;
++		std::string role;
++	};
++
++	struct UnitRole
++	{
++		std::string unitType;
++		std::string role;
++		std::string abilityPolicy;
++		float priority = 0.0f;
++	};
++
++	std::string operationId;
++	uint64_t generation = 0;
++	std::string taskType;
++	std::string status = "RECEIVED";
++	std::vector<sc2::Tag> assignedUnitTags;
++	int assignedCount = 0;
++	float targetX = 0.0f;
++	float targetY = 0.0f;
++	std::string routeType;
++	std::string targetEvidence;
++	uint32_t receivedFrame = 0;
++	uint32_t assignedFrame = 0;
++	uint32_t submittedFrame = 0;
++	uint32_t lastActionFrame = 0;
++	float maxHomeDistance = 0.0f;
++	bool engaged = false;
++	bool completed = false;
++	std::string blockedReason;
++	std::string lastAction;
++
++	std::string policyUpdateId;
++	std::string squadName;
++	std::string unitClasses;
++	std::string locationIntent;
++	int minUnits = 1;
++	int maxUnits = 1;
++	bool allowPartial = true;
++	bool routeStageComplete = true;
++	uint32_t lastEnemyFrame = 0;
++	CCPosition targetPosition = CCPosition();
++	CCPosition activeTargetPosition = CCPosition();
++	std::vector<CompositionRequirement> compositionRequirements;
++	std::vector<UnitRole> unitRoles;
++	std::map<sc2::Tag, CCPosition> submittedPositions;
++	std::map<sc2::Tag, std::string> previousSquadByTag;
++};
++
+ const float CYCLONE_PREFERRED_MAX_DISTANCE_TO_HELPER = 4.f;
+ 
+ class CombatCommander
+@@ -379,6 +438,9 @@ class CombatCommander
+ 	std::set<const sc2::Unit *> m_addonBlockingTanks;
+ 	std::set<Unit> m_backstabbers;	// Workers that backstab the enemy probes when probe rushed
+ 	std::map<int, long> m_cachedBiles;	// <corrosive bile location (mapkey generated with Util::ToMapKey), last frame seen>
++	std::vector<VoiOperationState> m_voiOperations;
++	std::map<sc2::Tag, std::pair<std::string, uint64_t>> m_voiOperationUnitOwners;
++	std::string m_voiOperationPolicyUpdateId;
+ 	bool m_workersStacked = false;
+ 	bool m_firstProxyReaperWentThroughNatural = false;
+ 	const sc2::Unit * m_firstProxyReaperToGoThroughNatural = nullptr;
+@@ -430,8 +492,33 @@ class CombatCommander
+ 	void			findMainBaseSiegePositions();
+ 	void			drawMainBaseSiegePositions();
+ 	void			drawCombatInformation();
++	void			drawVoiOperationHud();
+ 	void			drawInfluenceMaps();
+ 	void			drawBlockedTiles();
++	void			updateVoiOperations();
++	void			observeVoiOperations();
++	void			reconcileVoiOperation(VoiOperationState & operation);
++	void			releaseVoiOperation(
++						VoiOperationState & operation,
++						const std::string & reason,
++						bool terminal);
++	void			recordVoiOperationSubmission(
++						const sc2::Unit * unit,
++						const UnitAction & action);
++	VoiOperationState * findVoiOperation(
++						const std::string & operationId,
++						uint64_t generation);
++	const VoiOperationState * findVoiOperation(
++						const std::string & operationId,
++						uint64_t generation) const;
++	VoiOperationState * findVoiOperationBySquad(
++						const std::string & squadName);
++	const VoiOperationState * findVoiOperationBySquad(
++						const std::string & squadName) const;
++	bool			isCurrentVoiOperationAction(
++						const sc2::Unit * unit,
++						const UnitAction & action);
++	bool			isVoiOperationOwnedUnit(sc2::Tag tag) const;
+ 	void			bindCurrentVoiExplicitAbilityAttempt(UnitAction & action) const;
+ 	bool			isCurrentVoiExplicitAbilityAttempt(const UnitAction & action) const;
+ 	void			discardVoiExplicitAbilityActions();
+@@ -630,6 +717,7 @@ public:
+ 	void updateVoiTacticalNukeSquad();
+ 	void updateVoiTacticalNukeAction();
+ 	void updateVoiExplicitAbilityAction();
++	std::string getVoiOperationDirectorTelemetryJson() const;
+ 	SquadData & getSquadData() { return m_squadData; }
+ 	const std::vector<CCTilePosition> & getMainBaseSiegePositions() const { return m_mainBaseSiegePositions; }
+ 	sc2::Units & getMainBaseSiegeTanks() { return m_mainBaseSiegeTanks; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index efc1006..b6d05f7 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -895,6 +895,9 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"last_skipped_action\":\"" << voiJsonEscape(m_combatCommander.getVoiSkippedAction()) << "\","
+         << "\"consumed_axes\":\"combat.aggression,combat.defend_bias,combat.attack_timing_bias,combat.commitment_level,combat.attack_condition_override,combat.retreat_patience_bias,combat.rally_before_attack_bias,combat.kite_bias,scope.min_units,scope.max_units,scope.army_group,scope.unit_classes,scouting.scout_priority,squad.squad_role_biases.marine_scout,tactical_task.task_type,tactical_task.unit_classes,tactical_task.location_intent,tactical_task.min_units,tactical_task.max_units,tactical_task.priority,composition_requirements.*,unit_roles.*,unit_roles.*.ability_policy,route_intent.route_type,target_intent.target_type\""
+         << "},"
++        << "\"OperationDirector\":"
++        << m_combatCommander.getVoiOperationDirectorTelemetryJson()
++        << ","
+         << "\"Squad\":{"
+         << "\"active\":true,"
+         << "\"contain_bias\":" << m_voiPolicyBlackboard.getFloat("squad.contain_bias", 0.0f) << ","
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 6a1922c..5e76b05 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -57,9 +57,104 @@ bool voiCommaListContains(const std::string & commaList, const std::string & nee
+ 	return false;
+ }
+ 
++int voiParallelOperationCount(CCBot & bot)
++{
++	return std::min(
++		32,
++		std::max(
++			0,
++			bot.Commander().getVoiPolicyInt(
++				"operations.count",
++				0)));
++}
++
++bool voiParallelOperationTaskListContains(
++	CCBot & bot,
++	const std::string & field,
++	const std::string & needle)
++{
++	for (int operationIndex = 0;
++		operationIndex < voiParallelOperationCount(bot);
++		++operationIndex)
++	{
++		const std::string value =
++			bot.Commander().getVoiPolicyString(
++				"operations."
++					+ std::to_string(operationIndex)
++					+ ".tactical_task."
++					+ field,
++				"");
++		if (voiCommaListContains(value, needle))
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++float voiParallelOperationTaskPriority(CCBot & bot)
++{
++	float priority = 0.0f;
++	for (int operationIndex = 0;
++		operationIndex < voiParallelOperationCount(bot);
++		++operationIndex)
++	{
++		priority = std::max(
++			priority,
++			bot.Commander().getVoiPolicyFloat(
++				"operations."
++					+ std::to_string(operationIndex)
++					+ ".tactical_task.priority",
++				0.0f));
++	}
++	return priority;
++}
++
+ int voiRequestedCompositionCount(CCBot & bot, const std::string & policyUnitType)
+ {
+ 	int requestedCount = 0;
++	const int operationCount = voiParallelOperationCount(bot);
++	if (operationCount > 0)
++	{
++		for (int operationIndex = 0;
++			operationIndex < operationCount;
++			++operationIndex)
++		{
++			const std::string operationPrefix =
++				"operations."
++				+ std::to_string(operationIndex)
++				+ ".composition_requirements";
++			const int requirementCount = std::min(
++				32,
++				std::max(
++					0,
++					bot.Commander().getVoiPolicyInt(
++						operationPrefix + ".count",
++						0)));
++			for (int requirementIndex = 0;
++				requirementIndex < requirementCount;
++				++requirementIndex)
++			{
++				const std::string prefix =
++					operationPrefix + "."
++						+ std::to_string(
++							requirementIndex);
++				const std::string requestedUnitType =
++					bot.Commander().getVoiPolicyString(
++						prefix + ".unit_type",
++						"");
++				if (requestedUnitType == policyUnitType)
++				{
++					requestedCount += std::max(
++						0,
++						bot.Commander().getVoiPolicyInt(
++							prefix + ".count",
++							0));
++				}
++			}
++		}
++		return requestedCount;
++	}
+ 	for (int i = 0; i < 32; ++i)
+ 	{
+ 		const std::string prefix = "composition_requirements." + std::to_string(i);
+@@ -221,6 +316,244 @@ bool voiTacticalTaskWithinDuration(CCBot & bot)
+ 	return currentFrame <= issuedAtFrame + durationFrames;
+ }
+ 
++bool voiExplicitTacticalPrerequisiteRequested(
++	CCBot & bot,
++	const MetaType & type)
++{
++	if (!bot.Commander().isVoiPolicyActive()
++		|| !voiTacticalTaskWithinDuration(bot))
++	{
++		return false;
++	}
++
++	const auto taskListContains =
++		[&](const std::string & field, const char * token)
++		{
++			return voiCommaListContains(
++					bot.Commander().getVoiPolicyString(
++						"tactical_task." + field,
++						""),
++					token)
++				|| voiParallelOperationTaskListContains(
++					bot,
++					field,
++					token);
++		};
++	const auto taskListContainsAny =
++		[&](
++			const std::string & field,
++			std::initializer_list<const char *> tokens)
++		{
++			for (const char * token : tokens)
++			{
++				if (taskListContains(field, token))
++				{
++					return true;
++				}
++			}
++			return false;
++		};
++	const auto targetsAny =
++		[&](std::initializer_list<const char *> tokens)
++		{
++			return taskListContainsAny(
++				"production_targets",
++				tokens);
++		};
++	const auto classesAny =
++		[&](std::initializer_list<const char *> tokens)
++		{
++			return taskListContainsAny(
++				"unit_classes",
++				tokens);
++		};
++
++	const bool needsBarracks =
++		targetsAny({
++			"TERRAN_BARRACKS",
++			"BARRACKS_TECHLAB",
++			"TERRAN_BARRACKSTECHLAB",
++			"TERRAN_GHOSTACADEMY",
++			"TERRAN_FACTORY",
++			"FACTORY_TECHLAB",
++			"TERRAN_FACTORYTECHLAB",
++			"TERRAN_ARMORY",
++			"TERRAN_STARPORT",
++			"STARPORT_TECHLAB",
++			"TERRAN_STARPORTTECHLAB",
++			"TERRAN_FUSIONCORE",
++			"TERRAN_MARINE",
++			"TERRAN_MARAUDER",
++			"TERRAN_REAPER",
++			"TERRAN_GHOST",
++			"TERRAN_NUKE",
++			"TERRAN_HELLION",
++			"TERRAN_WIDOWMINE",
++			"TERRAN_CYCLONE",
++			"TERRAN_THOR",
++			"TERRAN_SIEGETANK",
++			"TERRAN_MEDIVAC",
++			"TERRAN_VIKINGFIGHTER",
++			"TERRAN_LIBERATOR",
++			"TERRAN_BANSHEE",
++			"TERRAN_RAVEN",
++			"TERRAN_BATTLECRUISER" })
++		|| classesAny({
++			"TERRAN_MARINE",
++			"TERRAN_MARAUDER",
++			"TERRAN_REAPER",
++			"TERRAN_GHOST",
++			"TERRAN_HELLION",
++			"TERRAN_WIDOWMINE",
++			"TERRAN_CYCLONE",
++			"TERRAN_THOR",
++			"TERRAN_SIEGETANK",
++			"TERRAN_MEDIVAC",
++			"TERRAN_VIKINGFIGHTER",
++			"TERRAN_LIBERATOR",
++			"TERRAN_BANSHEE",
++			"TERRAN_RAVEN",
++			"TERRAN_BATTLECRUISER" });
++	const bool needsBarracksTechLab =
++		targetsAny({
++			"BARRACKS_TECHLAB",
++			"TERRAN_BARRACKSTECHLAB",
++			"TERRAN_GHOSTACADEMY",
++			"TERRAN_MARAUDER",
++			"TERRAN_GHOST",
++			"TERRAN_NUKE" })
++		|| classesAny({
++			"TERRAN_MARAUDER",
++			"TERRAN_GHOST" });
++	const bool needsGhostAcademy =
++		targetsAny({
++			"TERRAN_GHOSTACADEMY",
++			"TERRAN_GHOST",
++			"TERRAN_NUKE" })
++		|| classesAny({ "TERRAN_GHOST" });
++	const bool needsFactory =
++		targetsAny({
++			"TERRAN_FACTORY",
++			"FACTORY_TECHLAB",
++			"TERRAN_FACTORYTECHLAB",
++			"FACTORY_REACTOR",
++			"TERRAN_FACTORYREACTOR",
++			"TERRAN_ARMORY",
++			"TERRAN_STARPORT",
++			"STARPORT_TECHLAB",
++			"TERRAN_STARPORTTECHLAB",
++			"STARPORT_REACTOR",
++			"TERRAN_STARPORTREACTOR",
++			"TERRAN_FUSIONCORE",
++			"TERRAN_HELLION",
++			"TERRAN_WIDOWMINE",
++			"TERRAN_CYCLONE",
++			"TERRAN_THOR",
++			"TERRAN_SIEGETANK",
++			"TERRAN_MEDIVAC",
++			"TERRAN_VIKINGFIGHTER",
++			"TERRAN_LIBERATOR",
++			"TERRAN_BANSHEE",
++			"TERRAN_RAVEN",
++			"TERRAN_BATTLECRUISER" })
++		|| classesAny({
++			"TERRAN_HELLION",
++			"TERRAN_WIDOWMINE",
++			"TERRAN_CYCLONE",
++			"TERRAN_THOR",
++			"TERRAN_SIEGETANK",
++			"TERRAN_MEDIVAC",
++			"TERRAN_VIKINGFIGHTER",
++			"TERRAN_LIBERATOR",
++			"TERRAN_BANSHEE",
++			"TERRAN_RAVEN",
++			"TERRAN_BATTLECRUISER" });
++	const bool needsFactoryTechLab =
++		targetsAny({
++			"FACTORY_TECHLAB",
++			"TERRAN_FACTORYTECHLAB",
++			"TERRAN_CYCLONE",
++			"TERRAN_THOR",
++			"TERRAN_SIEGETANK" })
++		|| classesAny({
++			"TERRAN_CYCLONE",
++			"TERRAN_THOR",
++			"TERRAN_SIEGETANK" });
++	const bool needsFactoryReactor =
++		targetsAny({
++			"FACTORY_REACTOR",
++			"TERRAN_FACTORYREACTOR" });
++	const bool needsArmory =
++		targetsAny({
++			"TERRAN_ARMORY",
++			"TERRAN_THOR" })
++		|| classesAny({ "TERRAN_THOR" });
++	const bool needsStarport =
++		targetsAny({
++			"TERRAN_STARPORT",
++			"STARPORT_TECHLAB",
++			"TERRAN_STARPORTTECHLAB",
++			"STARPORT_REACTOR",
++			"TERRAN_STARPORTREACTOR",
++			"TERRAN_FUSIONCORE",
++			"TERRAN_MEDIVAC",
++			"TERRAN_VIKINGFIGHTER",
++			"TERRAN_LIBERATOR",
++			"TERRAN_BANSHEE",
++			"TERRAN_RAVEN",
++			"TERRAN_BATTLECRUISER" })
++		|| classesAny({
++			"TERRAN_MEDIVAC",
++			"TERRAN_VIKINGFIGHTER",
++			"TERRAN_LIBERATOR",
++			"TERRAN_BANSHEE",
++			"TERRAN_RAVEN",
++			"TERRAN_BATTLECRUISER" });
++	const bool needsStarportTechLab =
++		targetsAny({
++			"STARPORT_TECHLAB",
++			"TERRAN_STARPORTTECHLAB",
++			"TERRAN_BANSHEE",
++			"TERRAN_RAVEN",
++			"TERRAN_BATTLECRUISER" })
++		|| classesAny({
++			"TERRAN_BANSHEE",
++			"TERRAN_RAVEN",
++			"TERRAN_BATTLECRUISER" });
++	const bool needsStarportReactor =
++		targetsAny({
++			"STARPORT_REACTOR",
++			"TERRAN_STARPORTREACTOR" });
++	const bool needsFusionCore =
++		targetsAny({
++			"TERRAN_FUSIONCORE",
++			"TERRAN_BATTLECRUISER" })
++		|| classesAny({ "TERRAN_BATTLECRUISER" });
++
++	return (type == MetaTypeEnum::Barracks
++			&& needsBarracks)
++		|| (type == MetaTypeEnum::BarracksTechLab
++			&& needsBarracksTechLab)
++		|| (type == MetaTypeEnum::GhostAcademy
++			&& needsGhostAcademy)
++		|| (type == MetaTypeEnum::Factory
++			&& needsFactory)
++		|| (type == MetaTypeEnum::FactoryTechLab
++			&& needsFactoryTechLab)
++		|| (type == MetaTypeEnum::FactoryReactor
++			&& needsFactoryReactor)
++		|| (type == MetaTypeEnum::Armory
++			&& needsArmory)
++		|| (type == MetaTypeEnum::Starport
++			&& needsStarport)
++		|| (type == MetaTypeEnum::StarportTechLab
++			&& needsStarportTechLab)
++		|| (type == MetaTypeEnum::StarportReactor
++			&& needsStarportReactor)
++		|| (type == MetaTypeEnum::FusionCore
++			&& needsFusionCore);
++}
++
+ const std::vector<std::pair<std::string, MetaType>> & voiExactCompositionTypes()
+ {
+ 	static const std::vector<std::pair<std::string, MetaType>> types = {
+@@ -246,11 +579,33 @@ const std::vector<std::pair<std::string, MetaType>> & voiExactCompositionTypes()
+ bool voiExactCompositionActive(CCBot & bot)
+ {
+ 	if (!bot.Commander().isVoiPolicyActive()
+-		|| !bot.Commander().hasVoiPolicyDomain("composition_requirements")
+ 		|| !voiTacticalTaskWithinDuration(bot))
+ 	{
+ 		return false;
+ 	}
++	const bool parallelOperations =
++		bot.Commander().hasVoiPolicyDomain("operations")
++		&& bot.Commander().getVoiPolicyInt(
++			"operations.count",
++			0) > 0;
++	if (parallelOperations)
++	{
++		for (const auto & entry : voiExactCompositionTypes())
++		{
++			if (voiRequestedCompositionCount(
++				bot,
++				entry.first) > 0)
++			{
++				return true;
++			}
++		}
++		return false;
++	}
++	if (!bot.Commander().hasVoiPolicyDomain(
++		"composition_requirements"))
++	{
++		return false;
++	}
+ 	const std::string taskType = bot.Commander().getVoiPolicyString("tactical_task.task_type", "");
+ 	const std::string lifetimeMode = bot.Commander().getVoiPolicyString("lifetime.mode", "");
+ 	if (taskType == "sustain_production"
+@@ -604,26 +959,14 @@ int voiCompletedProducersWithAttachedAddon(
+ bool isVoiExplicitTacticalPrerequisiteBuilding(CCBot & bot, const MetaType & type)
+ {
+ 	if (!bot.Commander().isVoiPolicyActive() ||
+-		!type.isUnit() ||
++			!type.isUnit() ||
+ 		!type.getUnitType().isBuilding())
+ 	{
+ 		return false;
+ 	}
+-
+-	const std::string requestedTargets = bot.Commander().getVoiPolicyString(
+-		"tactical_task.production_targets",
+-		"");
+-	switch ((sc2::UNIT_TYPEID)type.getUnitType().getAPIUnitType())
+-	{
+-		case sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY:
+-			return voiCommaListContains(requestedTargets, "TERRAN_GHOSTACADEMY");
+-		case sc2::UNIT_TYPEID::TERRAN_ARMORY:
+-			return voiCommaListContains(requestedTargets, "TERRAN_ARMORY");
+-		case sc2::UNIT_TYPEID::TERRAN_FUSIONCORE:
+-			return voiCommaListContains(requestedTargets, "TERRAN_FUSIONCORE");
+-		default:
+-			return false;
+-	}
++	return voiExplicitTacticalPrerequisiteRequested(
++		bot,
++		type);
+ }
+ 
+ bool isBootstrapPlacementCritical(CCBot & bot, const MetaType & type)
+@@ -765,6 +1108,10 @@ bool voiDoctrineRequestsTechTransition(CCBot & bot, const MetaType & type)
+ 	{
+ 		return false;
+ 	}
++	if (voiExplicitTacticalPrerequisiteRequested(bot, type))
++	{
++		return true;
++	}
+ 
+ 	const std::string doctrine = bot.Commander().getVoiPolicyString("strategy.doctrine", "");
+ 	const float factoryBias = voiMaxBias(bot, "production.queue_biases.TERRAN_FACTORY", "production.production_facility_biases.TERRAN_FACTORY", "tech.structure_biases.TERRAN_FACTORY");
+@@ -1659,6 +2006,17 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
+ 	const bool voiEarlyRefineryRequested =
+ 		currentItem.type == MetaTypeEnum::Refinery
+ 		&& (!m_initialBuildOrderFinished || voiFactoryTransitionRequested || voiStarportTransitionRequested);
++	if (voiDoctrineRequestsTechTransition(
++			m_bot,
++			currentItem.type))
++	{
++		Util::Log(
++			__FUNCTION__,
++			"VOI explicit tech transition bypassed opening strategy veto for "
++				+ currentItem.type.getName(),
++			m_bot);
++		return false;
++	}
+ 	if (currentItem.type.getUnitType().isRefinery() && !m_bot.Strategy().isWorkerRushed())
+ 	{
+ 		const bool hasCompletedBarracks = completedBarracksCount > 0;
+@@ -3369,7 +3727,6 @@ bool ProductionManager::shouldUseVoiDirectAddonCommand(const UnitType & type) co
+ 
+ 	const std::string updateId = m_bot.Commander().getVoiPolicyString("update_id", "");
+ 	const std::string doctrine = m_bot.Commander().getVoiPolicyString("strategy.doctrine", "");
+-	const std::string tacticalProductionTargets = m_bot.Commander().getVoiPolicyString("tactical_task.production_targets", "");
+ 	float explicitAddonBias = 0.0f;
+ 	bool tacticalTargetRequested = false;
+ 	if (canonicalItemName == "BarracksTechLab")
+@@ -3378,8 +3735,9 @@ bool ProductionManager::shouldUseVoiDirectAddonCommand(const UnitType & type) co
+ 			m_bot,
+ 			"production.queue_biases.BARRACKS_TECHLAB",
+ 			"production.addon_biases.BARRACKS_TECHLAB");
+-		tacticalTargetRequested = voiCommaListContains(tacticalProductionTargets, "BARRACKS_TECHLAB")
+-			|| voiCommaListContains(tacticalProductionTargets, "TERRAN_BARRACKSTECHLAB");
++		tacticalTargetRequested = voiExplicitTacticalPrerequisiteRequested(
++			m_bot,
++			MetaTypeEnum::BarracksTechLab);
+ 	}
+ 	else if (canonicalItemName == "FactoryTechLab")
+ 	{
+@@ -3387,8 +3745,9 @@ bool ProductionManager::shouldUseVoiDirectAddonCommand(const UnitType & type) co
+ 			m_bot,
+ 			"production.queue_biases.FACTORY_TECHLAB",
+ 			"production.addon_biases.FACTORY_TECHLAB");
+-		tacticalTargetRequested = voiCommaListContains(tacticalProductionTargets, "FACTORY_TECHLAB")
+-			|| voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORYTECHLAB");
++		tacticalTargetRequested = voiExplicitTacticalPrerequisiteRequested(
++			m_bot,
++			MetaTypeEnum::FactoryTechLab);
+ 	}
+ 	else if (canonicalItemName == "StarportTechLab")
+ 	{
+@@ -3396,8 +3755,9 @@ bool ProductionManager::shouldUseVoiDirectAddonCommand(const UnitType & type) co
+ 			m_bot,
+ 			"production.queue_biases.STARPORT_TECHLAB",
+ 			"production.addon_biases.STARPORT_TECHLAB");
+-		tacticalTargetRequested = voiCommaListContains(tacticalProductionTargets, "STARPORT_TECHLAB")
+-			|| voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORTTECHLAB");
++		tacticalTargetRequested = voiExplicitTacticalPrerequisiteRequested(
++			m_bot,
++			MetaTypeEnum::StarportTechLab);
+ 	}
+ 	else if (canonicalItemName == "StarportReactor")
+ 	{
+@@ -3405,8 +3765,9 @@ bool ProductionManager::shouldUseVoiDirectAddonCommand(const UnitType & type) co
+ 			m_bot,
+ 			"production.queue_biases.STARPORT_REACTOR",
+ 			"production.addon_biases.STARPORT_REACTOR");
+-		tacticalTargetRequested = voiCommaListContains(tacticalProductionTargets, "STARPORT_REACTOR")
+-			|| voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORTREACTOR");
++		tacticalTargetRequested = voiExplicitTacticalPrerequisiteRequested(
++			m_bot,
++			MetaTypeEnum::StarportReactor);
+ 	}
+ 	const std::string canonicalQueueItemName =
+ 		voiCanonicalProductionItemName(m_lastVoiDoctrineQueueItem);
+@@ -3618,8 +3979,16 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const std::string tacticalTaskAbility = m_bot.Commander().getVoiPolicyString("tactical_task.ability", "");
+ 	const std::string tacticalTaskUnitClasses = m_bot.Commander().getVoiPolicyString("tactical_task.unit_classes", "");
+ 	const std::string tacticalProductionTargets = m_bot.Commander().getVoiPolicyString("tactical_task.production_targets", "");
+-	const float tacticalTaskPriority = std::max(0.0f, m_bot.Commander().getVoiPolicyFloat("tactical_task.priority", 0.0f));
++	const float tacticalTaskPriority = std::max({
++		0.0f,
++		m_bot.Commander().getVoiPolicyFloat(
++			"tactical_task.priority",
++			0.0f),
++		voiParallelOperationTaskPriority(m_bot) });
+ 	const bool tacticalTaskActive = voiTacticalTaskWithinDuration(m_bot);
++	const bool parallelOperationProduction =
++		voiParallelOperationCount(m_bot) > 0
++		&& voiExactCompositionActive(m_bot);
+ 	const bool taskSustainProduction = tacticalTaskActive && tacticalTaskType == "sustain_production";
+ 	const bool taskTechTransition = tacticalTaskActive && tacticalTaskType == "tech_transition";
+ 	const bool taskExpandCommandCenter = tacticalTaskActive && tacticalTaskType == "expand_or_land_command_center";
+@@ -3628,7 +3997,9 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		&& !tacticalTaskAbility.empty()
+ 		&& tacticalTaskAbility != "tactical_nuke";
+ 	const bool taskTechOrAbilityProduction =
+-		taskTechTransition || taskExecuteExplicitAbility;
++		taskTechTransition
++		|| taskExecuteExplicitAbility
++		|| parallelOperationProduction;
+ 	const float productionContinuityBias = m_bot.Commander().getVoiPolicyFloat("production.production_continuity_bias", 0.0f);
+ 	const std::string lifetimeMode = m_bot.Commander().getVoiPolicyString("lifetime.mode", "");
+ 	const bool standingSustainProduction = taskSustainProduction
+@@ -3662,59 +4033,75 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	}
+ 	const bool continuousGasComposition =
+ 		continuousCompositionProduction && requestedCompositionGasPerWave > 0;
+-	const bool taskTargetsScv = voiCommaListContains(tacticalProductionTargets, "TERRAN_SCV") || voiCommaListContains(tacticalProductionTargets, "SCV");
+-	const bool taskTargetsSupplyDepot = voiCommaListContains(tacticalProductionTargets, "TERRAN_SUPPLYDEPOT");
+-	const bool taskTargetsCommandCenter = voiCommaListContains(tacticalProductionTargets, "TERRAN_COMMANDCENTER");
+-	const bool taskTargetsBarracks = voiCommaListContains(tacticalProductionTargets, "TERRAN_BARRACKS");
+-	const bool taskTargetsBarracksTechLab = voiCommaListContains(tacticalProductionTargets, "BARRACKS_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_BARRACKSTECHLAB");
+-	const bool taskTargetsGhostAcademy = voiCommaListContains(tacticalProductionTargets, "TERRAN_GHOSTACADEMY");
+-	const bool taskTargetsFactory = voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORY");
+-	const bool taskTargetsFactoryTechLab = voiCommaListContains(tacticalProductionTargets, "FACTORY_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_FACTORYTECHLAB");
+-	const bool taskTargetsArmory = voiCommaListContains(tacticalProductionTargets, "TERRAN_ARMORY");
+-	const bool taskTargetsStarport = voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORT");
+-	const bool taskTargetsStarportTechLab = voiCommaListContains(tacticalProductionTargets, "STARPORT_TECHLAB") || voiCommaListContains(tacticalProductionTargets, "TERRAN_STARPORTTECHLAB");
+-	const bool taskTargetsFusionCore = voiCommaListContains(tacticalProductionTargets, "TERRAN_FUSIONCORE");
+-	const bool taskTargetsMarine = voiCommaListContains(tacticalProductionTargets, "TERRAN_MARINE");
+-	const bool taskTargetsMarauder = voiCommaListContains(tacticalProductionTargets, "TERRAN_MARAUDER");
+-	const bool taskTargetsReaper = voiCommaListContains(tacticalProductionTargets, "TERRAN_REAPER");
+-	const bool taskTargetsGhost = voiCommaListContains(tacticalProductionTargets, "TERRAN_GHOST");
++	const auto taskTargets = [&](const std::string & token)
++	{
++		return voiCommaListContains(tacticalProductionTargets, token)
++			|| voiParallelOperationTaskListContains(
++				m_bot,
++				"production_targets",
++				token);
++	};
++	const auto taskCastsWith = [&](const std::string & token)
++	{
++		return voiCommaListContains(tacticalTaskUnitClasses, token)
++			|| voiParallelOperationTaskListContains(
++				m_bot,
++				"unit_classes",
++				token);
++	};
++	const bool taskTargetsScv = taskTargets("TERRAN_SCV") || taskTargets("SCV");
++	const bool taskTargetsSupplyDepot = taskTargets("TERRAN_SUPPLYDEPOT");
++	const bool taskTargetsCommandCenter = taskTargets("TERRAN_COMMANDCENTER");
++	const bool taskTargetsBarracks = taskTargets("TERRAN_BARRACKS");
++	const bool taskTargetsBarracksTechLab = taskTargets("BARRACKS_TECHLAB") || taskTargets("TERRAN_BARRACKSTECHLAB");
++	const bool taskTargetsGhostAcademy = taskTargets("TERRAN_GHOSTACADEMY");
++	const bool taskTargetsFactory = taskTargets("TERRAN_FACTORY");
++	const bool taskTargetsFactoryTechLab = taskTargets("FACTORY_TECHLAB") || taskTargets("TERRAN_FACTORYTECHLAB");
++	const bool taskTargetsArmory = taskTargets("TERRAN_ARMORY");
++	const bool taskTargetsStarport = taskTargets("TERRAN_STARPORT");
++	const bool taskTargetsStarportTechLab = taskTargets("STARPORT_TECHLAB") || taskTargets("TERRAN_STARPORTTECHLAB");
++	const bool taskTargetsFusionCore = taskTargets("TERRAN_FUSIONCORE");
++	const bool taskTargetsMarine = taskTargets("TERRAN_MARINE");
++	const bool taskTargetsMarauder = taskTargets("TERRAN_MARAUDER");
++	const bool taskTargetsReaper = taskTargets("TERRAN_REAPER");
++	const bool taskTargetsGhost = taskTargets("TERRAN_GHOST");
+ 	const bool taskTargetsNuke =
+-		voiCommaListContains(tacticalProductionTargets, "TERRAN_NUKE")
+-		|| voiCommaListContains(tacticalProductionTargets, "NUKE");
++		taskTargets("TERRAN_NUKE")
++		|| taskTargets("NUKE");
+ 	const bool taskExecuteTacticalNuke = tacticalTaskActive
+ 		&& tacticalTaskType == "execute_ability"
+ 		&& tacticalTaskAbility == "tactical_nuke"
+ 		&& taskTargetsNuke;
+-	const bool taskTargetsSiegeTank = voiCommaListContains(tacticalProductionTargets, "TERRAN_SIEGETANK");
+-	const bool taskTargetsHellion = voiCommaListContains(tacticalProductionTargets, "TERRAN_HELLION");
+-	const bool taskTargetsWidowMine = voiCommaListContains(tacticalProductionTargets, "TERRAN_WIDOWMINE");
+-	const bool taskTargetsCyclone = voiCommaListContains(tacticalProductionTargets, "TERRAN_CYCLONE");
+-	const bool taskTargetsThor = voiCommaListContains(tacticalProductionTargets, "TERRAN_THOR");
+-	const bool taskTargetsMedivac = voiCommaListContains(tacticalProductionTargets, "TERRAN_MEDIVAC");
+-	const bool taskTargetsViking = voiCommaListContains(tacticalProductionTargets, "TERRAN_VIKINGFIGHTER");
+-	const bool taskTargetsLiberator = voiCommaListContains(tacticalProductionTargets, "TERRAN_LIBERATOR");
+-	const bool taskTargetsBanshee = voiCommaListContains(tacticalProductionTargets, "TERRAN_BANSHEE");
+-	const bool taskTargetsRaven = voiCommaListContains(tacticalProductionTargets, "TERRAN_RAVEN");
+-	const bool taskTargetsBattlecruiser = voiCommaListContains(tacticalProductionTargets, "TERRAN_BATTLECRUISER");
+-	const bool taskTargetsStimpack = voiCommaListContains(tacticalProductionTargets, "STIMPACK");
+-	const bool taskTargetsGhostCloak = voiCommaListContains(tacticalProductionTargets, "GHOST_CLOAK");
+-	const bool taskTargetsBansheeCloak = voiCommaListContains(tacticalProductionTargets, "BANSHEE_CLOAK");
+-	const bool taskTargetsYamatoCannon = voiCommaListContains(tacticalProductionTargets, "YAMATO_CANNON");
+-	const bool taskCasterMarine = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_MARINE");
+-	const bool taskCasterMarauder = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_MARAUDER");
+-	const bool taskCasterReaper = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_REAPER");
+-	const bool taskCasterGhost = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_GHOST");
+-	const bool taskCasterHellion = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_HELLION");
+-	const bool taskCasterWidowMine = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_WIDOWMINE");
+-	const bool taskCasterCyclone = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_CYCLONE");
+-	const bool taskCasterThor = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_THOR");
+-	const bool taskCasterSiegeTank = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_SIEGETANK");
+-	const bool taskCasterMedivac = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_MEDIVAC");
+-	const bool taskCasterViking = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_VIKINGFIGHTER");
+-	const bool taskCasterLiberator = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_LIBERATOR");
+-	const bool taskCasterBanshee = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_BANSHEE");
+-	const bool taskCasterRaven = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_RAVEN");
+-	const bool taskCasterBattlecruiser = voiCommaListContains(tacticalTaskUnitClasses, "TERRAN_BATTLECRUISER");
++	const bool taskTargetsSiegeTank = taskTargets("TERRAN_SIEGETANK");
++	const bool taskTargetsHellion = taskTargets("TERRAN_HELLION");
++	const bool taskTargetsWidowMine = taskTargets("TERRAN_WIDOWMINE");
++	const bool taskTargetsCyclone = taskTargets("TERRAN_CYCLONE");
++	const bool taskTargetsThor = taskTargets("TERRAN_THOR");
++	const bool taskTargetsMedivac = taskTargets("TERRAN_MEDIVAC");
++	const bool taskTargetsViking = taskTargets("TERRAN_VIKINGFIGHTER");
++	const bool taskTargetsLiberator = taskTargets("TERRAN_LIBERATOR");
++	const bool taskTargetsBanshee = taskTargets("TERRAN_BANSHEE");
++	const bool taskTargetsRaven = taskTargets("TERRAN_RAVEN");
++	const bool taskTargetsBattlecruiser = taskTargets("TERRAN_BATTLECRUISER");
++	const bool taskTargetsStimpack = taskTargets("STIMPACK");
++	const bool taskTargetsGhostCloak = taskTargets("GHOST_CLOAK");
++	const bool taskTargetsBansheeCloak = taskTargets("BANSHEE_CLOAK");
++	const bool taskTargetsYamatoCannon = taskTargets("YAMATO_CANNON");
++	const bool taskCasterMarine = taskCastsWith("TERRAN_MARINE");
++	const bool taskCasterMarauder = taskCastsWith("TERRAN_MARAUDER");
++	const bool taskCasterReaper = taskCastsWith("TERRAN_REAPER");
++	const bool taskCasterGhost = taskCastsWith("TERRAN_GHOST");
++	const bool taskCasterHellion = taskCastsWith("TERRAN_HELLION");
++	const bool taskCasterWidowMine = taskCastsWith("TERRAN_WIDOWMINE");
++	const bool taskCasterCyclone = taskCastsWith("TERRAN_CYCLONE");
++	const bool taskCasterThor = taskCastsWith("TERRAN_THOR");
++	const bool taskCasterSiegeTank = taskCastsWith("TERRAN_SIEGETANK");
++	const bool taskCasterMedivac = taskCastsWith("TERRAN_MEDIVAC");
++	const bool taskCasterViking = taskCastsWith("TERRAN_VIKINGFIGHTER");
++	const bool taskCasterLiberator = taskCastsWith("TERRAN_LIBERATOR");
++	const bool taskCasterBanshee = taskCastsWith("TERRAN_BANSHEE");
++	const bool taskCasterRaven = taskCastsWith("TERRAN_RAVEN");
++	const bool taskCasterBattlecruiser = taskCastsWith("TERRAN_BATTLECRUISER");
+ 	const bool explicitAbilityNeedsBarracksTechLab = taskExecuteExplicitAbility
+ 		&& (taskTargetsBarracksTechLab
+ 			|| taskTargetsStimpack
+diff --git a/src/SquadData.cpp b/src/SquadData.cpp
+index 792bd26..aaa3e01 100644
+--- a/src/SquadData.cpp
++++ b/src/SquadData.cpp
+@@ -2,6 +2,14 @@
+ #include "CCBot.h"
+ #include "Util.h"
+ 
++namespace
++{
++bool voiIsOperationSquad(const std::string & squadName)
++{
++	return squadName.rfind("VoiOp:", 0) == 0;
++}
++}
++
+ SquadData::SquadData(CCBot & bot)
+     : m_bot(bot)
+ {
+@@ -175,6 +183,13 @@ void SquadData::assignUnitToSquad(const Unit & unit, Squad & squad)
+ 
+     if (previousSquad)
+     {
++		if (voiIsOperationSquad(previousSquad->getName())
++			&& previousSquad->getName() != squad.getName()
++			&& previousSquad->getPriority()
++				>= squad.getPriority())
++		{
++			return;
++		}
+         previousSquad->removeUnit(unit);
+     }
+ 
+@@ -187,6 +202,14 @@ bool SquadData::canAssignUnitToSquad(const Unit & unit, const Squad & newSquad,
+ 
+ 	if (currentSquad && currentSquad->getName() == newSquad.getName())
+ 		return false;
++	if (currentSquad
++		&& voiIsOperationSquad(currentSquad->getName())
++		&& !voiIsOperationSquad(newSquad.getName())
++		&& currentSquad->getPriority()
++			>= newSquad.getPriority())
++	{
++		return false;
++	}
+ 
+     // make sure strictly less than so we don't reassign to the same newSquad etc
+     bool canAssign = !currentSquad || currentSquad->getPriority() < newSquad.getPriority();
+@@ -206,4 +229,4 @@ Squad & SquadData::getSquad(const std::string & squadName)
+ {
+     BOT_ASSERT(squadExists(squadName), "Trying to access squad that doesn't exist: %s", squadName.c_str());
+     return m_squads.at(squadName);
+-}
+\ No newline at end of file
++}

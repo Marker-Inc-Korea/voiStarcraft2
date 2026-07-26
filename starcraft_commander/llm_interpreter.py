@@ -19,6 +19,7 @@ must be built.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -685,6 +686,16 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
     command_schema = {
         "type": "object",
         "properties": {
+            "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_.:-]+$",
+                "description": (
+                    "Stable operation id reused for follow-up updates to the "
+                    "same independently controlled force."
+                ),
+            },
             "goal": {"type": "string", "minLength": 1},
             "command_layer": {
                 "type": "string",
@@ -770,6 +781,16 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
             "clarification_prompt": {"type": "string", "minLength": 1},
             "refusal_reason": {"type": "string", "minLength": 1},
             "command": command_schema,
+            "commands": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "items": command_schema,
+                "description": (
+                    "Independent commands that must remain simultaneous rather "
+                    "than superseding each other."
+                ),
+            },
         },
         "required": ["status", "assistant_message"],
         "allOf": [
@@ -778,7 +799,16 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
                     "properties": {"status": {"const": status}},
                     "required": ["status"],
                 },
-                "then": {"required": list(required_fields)},
+                "then": (
+                    {
+                        "anyOf": [
+                            {"required": ["command"]},
+                            {"required": ["commands"]},
+                        ]
+                    }
+                    if status == "compiled"
+                    else {"required": list(required_fields)}
+                ),
             }
             for status, required_fields in (
                 {
@@ -796,8 +826,8 @@ def build_compact_policy_modulation_system_prompt() -> str:
     """Render the low-latency semantic parser prompt for Responses providers."""
 
     return (
-        "Convert exactly one StarCraft II commander utterance into the forced "
-        "tool's compact semantic command. Do not emit the full manager DSL; "
+        "Convert exactly one StarCraft II commander utterance into one or more "
+        "forced-tool compact semantic commands. Do not emit the full manager DSL; "
         "Python deterministically expands prerequisites, TTL, manager biases, "
         "squad scope, and production plans.\n"
         "Rules:\n"
@@ -820,16 +850,20 @@ def build_compact_policy_modulation_system_prompt() -> str:
         "5. For a Ghost tactical nuke use micro + execute_ability + "
         "ability=tactical_nuke + location_intent. For flank/alternate-route "
         "orders use flank_left or flank_right and preserve explicit direction.\n"
-        "6. Read commander_context.recent_commands. Resolve follow-ups such as "
+        "6. Use commands[] when one utterance creates independent forces, for "
+        "example a scout operation and an assault operation. Give every item a "
+        "stable operation_id and reuse it for follow-up changes to that operation. "
+        "Use command for backward-compatible single-command output.\n"
+        "7. Read commander_context.recent_commands. Resolve follow-ups such as "
         "'그 병력', '왼쪽으로', or '더 강하게' into a complete command while "
         "preserving compatible macro/operation/micro layers. A new command only "
         "supersedes its own layer; emergency interrupts all layers.\n"
-        "7. Set standing_order=true for '계속', '게임 내내', '끝까지', or "
+        "8. Set standing_order=true for '계속', '게임 내내', '끝까지', or "
         "until-cancelled intent. Otherwise Python selects a bounded lifecycle.\n"
-        "8. assistant_message must be a natural answer in "
+        "9. assistant_message must be a natural answer in "
         "commander_context.response_language and must describe the interpreted "
         "action without claiming success before runtime confirmation.\n"
-        f"9. {LLM_PROMPT_INJECTION_GUARD}"
+        f"10. {LLM_PROMPT_INJECTION_GUARD}"
     )
 
 
@@ -1207,6 +1241,43 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
         },
         "additionalProperties": False,
     }
+    operation_schema = {
+        "type": "object",
+        "properties": {
+            "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_.:-]+$",
+                "description": (
+                    "Stable identifier reused when updating, cancelling, or "
+                    "reinforcing this operation."
+                ),
+            },
+            "goal": {"type": "string", "minLength": 1},
+            "command_layer": {
+                "type": "string",
+                "enum": sorted(MICROMACHINE_COMMAND_LAYERS),
+            },
+            "tactical_task": tactical_task_schema,
+            "scope": scope_schema,
+            "lifetime": lifetime_schema,
+            "composition_requirements": {
+                "type": "array",
+                "maxItems": 32,
+                "items": composition_requirement_schema,
+            },
+            "unit_roles": {
+                "type": "array",
+                "maxItems": 32,
+                "items": unit_role_schema,
+            },
+            "route_intent": route_intent_schema,
+            "target_intent": target_intent_schema,
+        },
+        "required": ["operation_id", "goal"],
+        "additionalProperties": False,
+    }
     constraint_schema = {
         "type": "object",
         "properties": {
@@ -1271,6 +1342,15 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
             },
             "route_intent": route_intent_schema,
             "target_intent": target_intent_schema,
+            "operations": {
+                "type": "array",
+                "maxItems": 32,
+                "items": operation_schema,
+                "description": (
+                    "Independently addressable simultaneous tactical operations. "
+                    "operation_id values must be unique and stable."
+                ),
+            },
             "constraints": {
                 "type": "array",
                 "maxItems": 32,
@@ -1467,7 +1547,15 @@ def build_policy_modulation_system_prompt() -> str:
         "avoid_enemy_strength=true. Do not represent an explicit flank command "
         "with combat.flank_bias or squad.flank_bias alone. Preserve an explicit "
         "left/right direction exactly.\n"
-        "7. Set command_layer to macro for economy/production/tech standing "
+        "7. Use modulation.operations when the user requests independently "
+        "controlled simultaneous forces, such as one scout group and one attack "
+        "group. Every operation requires a unique stable operation_id plus its "
+        "own tactical_task, scope, lifetime, composition_requirements, "
+        "unit_roles, route_intent, and target_intent. Reuse operation_id for "
+        "follow-up updates, cancellation, reinforcement, or retargeting. Keep "
+        "the legacy top-level tactical fields only for a single operation; never "
+        "silently project the first of multiple operations into them.\n"
+        "8. Set command_layer to macro for economy/production/tech standing "
         "orders, operation for scout or army operations, micro for "
         "execute_ability, and emergency for interrupt/retreat overrides. "
         "A composition doctrine such as '마린 중심으로 가라' or 'focus on "
@@ -1485,15 +1573,15 @@ def build_policy_modulation_system_prompt() -> str:
         "target. A genuinely new operation or ability must emit a complete new "
         "tactical_task so that it supersedes the previous command in that same "
         "layer.\n"
-        "8. Biases are bounded floats. Positive values increase preference, "
+        "9. Biases are bounded floats. Positive values increase preference, "
         "negative values reduce preference. Do not pretend that a bias directly "
         "clicks or commands a unit.\n"
-        "9. Always include assistant_message. It is the chat answer shown to "
+        "10. Always include assistant_message. It is the chat answer shown to "
         "the user and must be written in commander_context.response_language "
         "when present; otherwise match the user's utterance language. Explain "
         "the selected strategic interpretation, the main manager biases, and "
         "any uncertainty without using template-like debug wording.\n"
-        f"10. {LLM_PROMPT_INJECTION_GUARD}"
+        f"11. {LLM_PROMPT_INJECTION_GUARD}"
     )
 
 
@@ -2857,7 +2945,7 @@ def _extract_tool_input(response: object) -> Mapping[str, object] | None:
 
 
 def _compact_policy_commander_context(value: object) -> object:
-    """Keep only the latest semantic command per reducer layer for the LLM."""
+    """Keep latest operation identities and legacy reducer layers for the LLM."""
 
     if not isinstance(value, Mapping):
         return value
@@ -2874,21 +2962,54 @@ def _compact_policy_commander_context(value: object) -> object:
         result["recent_commands"] = []
         return result
 
+    latest_by_operation: dict[str, tuple[int, dict[str, object]]] = {}
     latest_by_layer: dict[str, tuple[int, dict[str, object]]] = {}
     unlayered: list[tuple[int, dict[str, object]]] = []
     for index, item in enumerate(recent_commands):
         if not isinstance(item, Mapping):
             continue
-        compact = _compact_recent_policy_command(item)
-        layer = str(compact.get("command_layer", "") or "").strip()
-        if layer in MICROMACHINE_COMMAND_LAYERS:
-            latest_by_layer[layer] = (index, compact)
-        else:
-            unlayered.append((index, compact))
-    selected = [*latest_by_layer.values(), *unlayered[-2:]]
+        for compact in _compact_recent_policy_commands(item):
+            operation_id = str(compact.get("operation_id", "") or "").strip()
+            layer = str(compact.get("command_layer", "") or "").strip()
+            if operation_id:
+                latest_by_operation[operation_id] = (index, compact)
+            elif layer in MICROMACHINE_COMMAND_LAYERS:
+                latest_by_layer[layer] = (index, compact)
+            else:
+                unlayered.append((index, compact))
+    selected = [
+        *latest_by_operation.values(),
+        *latest_by_layer.values(),
+        *unlayered[-2:],
+    ]
     selected.sort(key=lambda entry: entry[0])
-    result["recent_commands"] = [entry for _, entry in selected[-4:]]
+    result["recent_commands"] = [entry for _, entry in selected[-8:]]
     return result
+
+
+def _compact_recent_policy_commands(
+    value: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    operations = value.get("operations")
+    if not isinstance(operations, Sequence) or isinstance(
+        operations,
+        (str, bytes, bytearray),
+    ):
+        return (_compact_recent_policy_command(value),)
+    result: list[dict[str, object]] = []
+    for operation in operations:
+        if not isinstance(operation, Mapping):
+            continue
+        merged = {
+            **dict(value),
+            **dict(operation),
+            "update_id": value.get("update_id", ""),
+            "command_text": value.get("command_text", ""),
+            "consumption_status": value.get("consumption_status", ""),
+            "execution_status": value.get("execution_status", ""),
+        }
+        result.append(_compact_recent_policy_command(merged))
+    return tuple(result) or (_compact_recent_policy_command(value),)
 
 
 def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, object]:
@@ -2914,6 +3035,7 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
         ),
     }
     return {
+        "operation_id": str(value.get("operation_id", "") or "")[:128],
         "update_id": str(value.get("update_id", "") or "")[:160],
         "command_text": str(value.get("command_text", "") or "")[:500],
         "command_layer": str(value.get("command_layer", "") or "")[:32],
@@ -2945,6 +3067,24 @@ def _lower_compact_policy_modulation_tool_input(
     if "modulation" in tool_input:
         return tool_input
     status = str(tool_input.get("status", "") or "").strip().lower()
+    raw_commands = tool_input.get("commands")
+    if status == "compiled" and isinstance(raw_commands, Sequence) and not isinstance(
+        raw_commands,
+        (str, bytes, bytearray),
+    ):
+        if "command" in tool_input:
+            return {
+                "status": "refused",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "refusal_reason": (
+                    "compact policy output cannot contain both command and commands."
+                ),
+            }
+        return _lower_compact_policy_commands(
+            tool_input,
+            raw_commands=raw_commands,
+            command_text=command_text,
+        )
     command = tool_input.get("command")
     if status != "compiled" or not isinstance(command, Mapping):
         return tool_input
@@ -3185,10 +3325,196 @@ def _lower_compact_policy_modulation_tool_input(
         if type(fresh_observation) is bool:
             scouting["require_fresh_enemy_observation"] = fresh_observation
 
+    explicit_operation_id = str(command.get("operation_id", "") or "").strip()
+    if explicit_operation_id:
+        tactical_task = modulation.get("tactical_task")
+        if isinstance(tactical_task, dict) and task_type:
+            tactical_task.setdefault("task_id", explicit_operation_id)
+        modulation["operations"] = [
+            _compact_operation_from_modulation(
+                modulation,
+                operation_id=explicit_operation_id,
+                goal=goal,
+                command_layer=command_layer,
+            )
+        ]
+
     return {
         "status": "compiled",
         "assistant_message": tool_input.get("assistant_message", ""),
         "modulation": modulation,
+    }
+
+
+def _lower_compact_policy_commands(
+    tool_input: Mapping[str, object],
+    *,
+    raw_commands: Sequence[object],
+    command_text: str,
+) -> Mapping[str, object]:
+    if not raw_commands:
+        return {
+            "status": "refused",
+            "assistant_message": tool_input.get("assistant_message", ""),
+            "refusal_reason": "compact policy commands must contain at least one command.",
+        }
+    operations: list[dict[str, object]] = []
+    command_layers: list[str] = []
+    ttl_seconds: list[int] = []
+    for index, raw_command in enumerate(raw_commands):
+        if not isinstance(raw_command, Mapping):
+            return {
+                "status": "refused",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "refusal_reason": f"compact policy commands[{index}] must be a mapping.",
+            }
+        operation_goal = str(raw_command.get("goal", "") or "").strip() or command_text
+        command_with_id = dict(raw_command)
+        command_with_id.setdefault(
+            "operation_id",
+            _stable_compact_operation_id(raw_command),
+        )
+        lowered = _lower_compact_policy_modulation_tool_input(
+            {
+                "status": "compiled",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "command": command_with_id,
+            },
+            command_text=operation_goal,
+        )
+        modulation = lowered.get("modulation")
+        if not isinstance(modulation, Mapping):
+            return lowered
+        lowered_operations = modulation.get("operations")
+        if not isinstance(lowered_operations, Sequence) or isinstance(
+            lowered_operations,
+            (str, bytes, bytearray),
+        ) or not lowered_operations:
+            return {
+                "status": "refused",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "refusal_reason": (
+                    f"compact policy commands[{index}] did not lower to an operation."
+                ),
+            }
+        operation = lowered_operations[0]
+        if not isinstance(operation, Mapping):
+            return {
+                "status": "refused",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "refusal_reason": (
+                    f"compact policy commands[{index}] produced an invalid operation."
+                ),
+            }
+        operations.append(dict(operation))
+        command_layers.append(
+            str(operation.get("command_layer", "") or "").strip()
+        )
+        raw_ttl = modulation.get("ttl_seconds", 120)
+        if type(raw_ttl) is int:
+            ttl_seconds.append(raw_ttl)
+
+    aggregate_layer = (
+        command_layers[0]
+        if command_layers and len(set(command_layers)) == 1
+        else "operation"
+    )
+    if aggregate_layer == "emergency":
+        override_level = "emergency"
+    elif aggregate_layer in {"operation", "micro"}:
+        override_level = "directive"
+    else:
+        override_level = "bias"
+    return {
+        "status": "compiled",
+        "assistant_message": tool_input.get("assistant_message", ""),
+        "modulation": {
+            "goal": command_text,
+            "source": "llm",
+            "override_level": override_level,
+            "command_layer": aggregate_layer,
+            "confidence": 0.86,
+            "ttl_seconds": max(ttl_seconds, default=120),
+            "operations": operations,
+            "tags": [
+                "llm_compact_semantic",
+                "parallel_operations",
+            ],
+            "rationale": (
+                "Compact semantic LLM commands deterministically lowered to "
+                "independently addressable MicroMachine operations."
+            ),
+        },
+    }
+
+
+def _stable_compact_operation_id(command: Mapping[str, object]) -> str:
+    explicit = str(command.get("operation_id", "") or "").strip()
+    if explicit:
+        return explicit
+    encoded = json.dumps(
+        dict(command),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"op-{hashlib.sha256(encoded).hexdigest()[:16]}"
+
+
+def _compact_operation_from_modulation(
+    modulation: Mapping[str, object],
+    *,
+    operation_id: str,
+    goal: str,
+    command_layer: str,
+) -> dict[str, object]:
+    return {
+        "operation_id": operation_id,
+        "goal": goal,
+        "command_layer": command_layer,
+        "tactical_task": dict(
+            modulation.get("tactical_task")
+            if isinstance(modulation.get("tactical_task"), Mapping)
+            else {}
+        ),
+        "scope": dict(
+            modulation.get("scope")
+            if isinstance(modulation.get("scope"), Mapping)
+            else {}
+        ),
+        "lifetime": dict(
+            modulation.get("lifetime")
+            if isinstance(modulation.get("lifetime"), Mapping)
+            else {}
+        ),
+        "composition_requirements": list(
+            modulation.get("composition_requirements")
+            if isinstance(modulation.get("composition_requirements"), Sequence)
+            and not isinstance(
+                modulation.get("composition_requirements"),
+                (str, bytes, bytearray),
+            )
+            else ()
+        ),
+        "unit_roles": list(
+            modulation.get("unit_roles")
+            if isinstance(modulation.get("unit_roles"), Sequence)
+            and not isinstance(
+                modulation.get("unit_roles"),
+                (str, bytes, bytearray),
+            )
+            else ()
+        ),
+        "route_intent": dict(
+            modulation.get("route_intent")
+            if isinstance(modulation.get("route_intent"), Mapping)
+            else {}
+        ),
+        "target_intent": dict(
+            modulation.get("target_intent")
+            if isinstance(modulation.get("target_intent"), Mapping)
+            else {}
+        ),
     }
 
 
@@ -3835,10 +4161,26 @@ def _policy_modulation_has_tactical_task(output: Mapping[str, object]) -> bool:
     if not isinstance(modulation, Mapping):
         return False
     tactical_task = modulation.get("tactical_task")
-    if not isinstance(tactical_task, Mapping):
+    if isinstance(tactical_task, Mapping):
+        task_type = str(tactical_task.get("task_type", "") or "").strip()
+        if task_type:
+            return True
+    operations = modulation.get("operations")
+    if not isinstance(operations, Sequence) or isinstance(
+        operations,
+        (str, bytes, bytearray),
+    ):
         return False
-    task_type = str(tactical_task.get("task_type", "") or "").strip()
-    return bool(task_type)
+    return any(
+        isinstance(operation, Mapping)
+        and isinstance(operation.get("tactical_task"), Mapping)
+        and bool(
+            str(
+                operation["tactical_task"].get("task_type", "") or ""
+            ).strip()
+        )
+        for operation in operations
+    )
 
 
 _FLANK_NEGATION_PATTERNS: Final[tuple[str, ...]] = (
@@ -4102,19 +4444,20 @@ def _route_semantic_coverage_error(
     expected_routes = _explicit_flank_routes(command_text)
     if not expected_routes:
         return ""
-    route_intent = vector.get("route_intent")
-    route = route_intent if isinstance(route_intent, Mapping) else {}
-    route_type = str(route.get("route_type", "") or "").strip()
-    avoid_enemy_strength = route.get("avoid_enemy_strength") is True
-    if route_type not in expected_routes or not avoid_enemy_strength:
-        rendered = "|".join(sorted(expected_routes))
-        return (
-            "LLM policy modulation lost explicit flank route semantics: "
-            f"route_intent.route_type must be {rendered} and "
-            "route_intent.avoid_enemy_strength must be true; flank_bias alone "
-            "is insufficient."
-        )
-    return ""
+    for view in _policy_operation_views(vector):
+        route_intent = view.get("route_intent")
+        route = route_intent if isinstance(route_intent, Mapping) else {}
+        route_type = str(route.get("route_type", "") or "").strip()
+        avoid_enemy_strength = route.get("avoid_enemy_strength") is True
+        if route_type in expected_routes and avoid_enemy_strength:
+            return ""
+    rendered = "|".join(sorted(expected_routes))
+    return (
+        "LLM policy modulation lost explicit flank route semantics: "
+        f"route_intent.route_type must be {rendered} and "
+        "route_intent.avoid_enemy_strength must be true; flank_bias alone "
+        "is insufficient."
+    )
 
 
 def _explicit_flank_routes(command_text: str) -> frozenset[str]:
@@ -4140,42 +4483,45 @@ def _composition_semantic_coverage_error(
     if not requirements:
         return ""
     represented: dict[str, int] = {}
-    raw_requirements = vector.get("composition_requirements")
-    if isinstance(raw_requirements, (list, tuple)):
-        for item in raw_requirements:
-            if not isinstance(item, Mapping):
-                continue
-            unit_type = str(item.get("unit_type", "") or "").strip()
-            count = item.get("count")
-            if (
-                unit_type
-                and type(count) is not bool
-                and isinstance(count, (int, float))
-            ):
-                represented[unit_type] = max(
-                    represented.get(unit_type, 0),
-                    int(count),
-                )
+    views = _policy_operation_views(vector)
+    for view in views:
+        raw_requirements = view.get("composition_requirements")
+        if isinstance(raw_requirements, (list, tuple)):
+            for item in raw_requirements:
+                if not isinstance(item, Mapping):
+                    continue
+                unit_type = str(item.get("unit_type", "") or "").strip()
+                count = item.get("count")
+                if (
+                    unit_type
+                    and type(count) is not bool
+                    and isinstance(count, (int, float))
+                ):
+                    represented[unit_type] = max(
+                        represented.get(unit_type, 0),
+                        int(count),
+                    )
 
     if len(requirements) == 1:
         unit_type, count = next(iter(requirements.items()))
         if represented.get(unit_type) == count:
             return ""
-        for domain_name in ("tactical_task", "scope"):
-            domain_value = vector.get(domain_name)
-            domain = domain_value if isinstance(domain_value, Mapping) else {}
-            classes = domain.get("unit_classes")
-            unit_classes = {
-                str(item)
-                for item in classes
-                if isinstance(item, str)
-            } if isinstance(classes, (list, tuple)) else set()
-            if (
-                unit_type in unit_classes
-                and domain.get("min_units") == count
-                and domain.get("max_units") == count
-            ):
-                return ""
+        for view in views:
+            for domain_name in ("tactical_task", "scope"):
+                domain_value = view.get(domain_name)
+                domain = domain_value if isinstance(domain_value, Mapping) else {}
+                classes = domain.get("unit_classes")
+                unit_classes = {
+                    str(item)
+                    for item in classes
+                    if isinstance(item, str)
+                } if isinstance(classes, (list, tuple)) else set()
+                if (
+                    unit_type in unit_classes
+                    and domain.get("min_units") == count
+                    and domain.get("max_units") == count
+                ):
+                    return ""
     elif all(represented.get(unit_type) == count for unit_type, count in requirements.items()):
         return ""
 
@@ -4232,19 +4578,20 @@ def _ability_semantic_coverage_error(
     if not requirements:
         return ""
     represented: set[str] = set()
-    tactical_task = vector.get("tactical_task")
-    if isinstance(tactical_task, Mapping):
-        ability = str(tactical_task.get("ability", "") or "").strip()
-        if ability:
-            represented.add(ability)
-    unit_roles = vector.get("unit_roles")
-    if isinstance(unit_roles, (list, tuple)):
-        represented.update(
-            str(item.get("ability_policy", "") or "").strip()
-            for item in unit_roles
-            if isinstance(item, Mapping)
-            and str(item.get("ability_policy", "") or "").strip()
-        )
+    for view in _policy_operation_views(vector):
+        tactical_task = view.get("tactical_task")
+        if isinstance(tactical_task, Mapping):
+            ability = str(tactical_task.get("ability", "") or "").strip()
+            if ability:
+                represented.add(ability)
+        unit_roles = view.get("unit_roles")
+        if isinstance(unit_roles, (list, tuple)):
+            represented.update(
+                str(item.get("ability_policy", "") or "").strip()
+                for item in unit_roles
+                if isinstance(item, Mapping)
+                and str(item.get("ability_policy", "") or "").strip()
+            )
     missing = [
         sorted(allowed)
         for allowed in requirements
@@ -4367,6 +4714,7 @@ def _has_substantive_policy_modulation(modulation: Mapping[str, object]) -> bool
         "scope",
         "tactical_task",
         "emergency",
+        "operations",
         "constraints",
     }
     for key in domain_keys:
@@ -4378,6 +4726,23 @@ def _has_substantive_policy_modulation(modulation: Mapping[str, object]) -> bool
         if isinstance(value, (list, tuple)) and bool(value):
             return True
     return False
+
+
+def _policy_operation_views(
+    vector: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    views: list[Mapping[str, object]] = [vector]
+    operations = vector.get("operations")
+    if isinstance(operations, Sequence) and not isinstance(
+        operations,
+        (str, bytes, bytearray),
+    ):
+        views.extend(
+            operation
+            for operation in operations
+            if isinstance(operation, Mapping)
+        )
+    return tuple(views)
 
 
 def _parse_combo_plan_steps(

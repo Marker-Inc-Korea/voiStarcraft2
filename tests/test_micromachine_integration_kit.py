@@ -187,6 +187,11 @@ ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE = (
     / "patches"
     / "0051-all-terran-combat-scouts.patch"
 )
+PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0052-parallel-operations-ingame-hud.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -204,6 +209,86 @@ def _read_patch_text(path: Path) -> str:
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
+    def test_parallel_operations_close_operation_scoped_production_prerequisites(
+        self,
+    ) -> None:
+        patch = _read_patch_text(PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE)
+
+        for term in (
+            "int voiParallelOperationCount(CCBot & bot)",
+            "bool voiParallelOperationTaskListContains(",
+            "float voiParallelOperationTaskPriority(CCBot & bot)",
+            '".tactical_task."',
+            '"production_targets"',
+            '"unit_classes"',
+            '".tactical_task.priority"',
+            "parallelOperationProduction",
+            'taskTargets("TERRAN_FACTORY")',
+            'taskTargets("FACTORY_TECHLAB")',
+            'taskTargets("TERRAN_SIEGETANK")',
+            'taskTargets("TERRAN_STARPORT")',
+            'taskTargets("STARPORT_TECHLAB")',
+            'taskTargets("TERRAN_FUSIONCORE")',
+            'taskTargets("TERRAN_BATTLECRUISER")',
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+    def test_parallel_operations_override_strategy_vetoes_and_force_a_command_epoch(
+        self,
+    ) -> None:
+        patch = _read_patch_text(PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE)
+
+        for term in (
+            "bool voiExplicitTacticalPrerequisiteRequested(",
+            '\"operations.\"',
+            '\"production_targets\"',
+            '\"unit_classes\"',
+            "type == MetaTypeEnum::Barracks",
+            "type == MetaTypeEnum::BarracksTechLab",
+            "type == MetaTypeEnum::GhostAcademy",
+            "type == MetaTypeEnum::Factory",
+            "type == MetaTypeEnum::FactoryTechLab",
+            "type == MetaTypeEnum::FactoryReactor",
+            "type == MetaTypeEnum::Armory",
+            "type == MetaTypeEnum::Starport",
+            "type == MetaTypeEnum::StarportTechLab",
+            "type == MetaTypeEnum::StarportReactor",
+            "type == MetaTypeEnum::FusionCore",
+            "VOI explicit tech transition bypassed opening strategy veto",
+            "const VoiOperationState * commandEpochOperation",
+            "const bool forceOperationCommandEpoch",
+            "commandEpochOperation->submittedPositions.find(",
+            "rangedUnit->tag",
+            "== commandEpochOperation->submittedPositions.end()",
+            "if (!forceOperationCommandEpoch",
+            "recordVoiOperationSubmission(",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+    def test_parallel_operations_use_authoritative_home_and_truthful_remote_targets(
+        self,
+    ) -> None:
+        patch = _read_patch_text(PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE)
+
+        for term in (
+            "const CCPosition observedStart = bot.GetStartLocation();",
+            "return observedStart;",
+            "bot.Bases().getStartingBaseLocations()",
+            "bot.Bases().getBaseLocations()",
+            "const CCPosition playableCenter",
+            "return CCPosition();",
+            "voiResolveOperationTargetEvidence(",
+            '"search_candidate"',
+            'routeType == "safe_path"',
+            "std::string targetEvidence;",
+            '\\"target_evidence\\"',
+            "operation.locationIntent",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
     def test_live_tactical_patch_locks_runtime_operation_invariants(self) -> None:
         patch = _read_patch_text(TACTICAL_PATCH_FILE)
 
@@ -2616,6 +2701,26 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertIn(
             {
+                "path": "patches/0052-parallel-operations-ingame-hud.patch",
+                "order": 52,
+                "scope": (
+                    "consume indexed parallel operations, aggregate every "
+                    "operation-scoped tactical production target, unit class, "
+                    "priority, and exact composition into prerequisite closure "
+                    "for Terran bio, Factory, Starport, Ghost, Armory, and "
+                    "Fusion Core lanes, maintain operation_id and generation "
+                    "scoped dynamic squads with exclusive unit-tag ownership, "
+                    "protect operation units from autonomous reassignment, "
+                    "execute scout, attack, and defend tasks through existing "
+                    "Squad micro, emit operation-scoped observed telemetry, "
+                    "and draw truthful in-game HUD lifecycle, route, and target "
+                    "state"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
                 "path": (
                     "patches/"
                     "0047-banshee-unit-specific-cloak-command.patch"
@@ -3076,7 +3181,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0051`",
+            "through `0052`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -3643,6 +3748,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0049-explicit-ability-caster-ownership.patch",
             "0050-explicit-ability-staging-single-flight.patch",
             "0051-all-terran-combat-scouts.patch",
+            "0052-parallel-operations-ingame-hud.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -3692,6 +3798,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE",
             "EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE",
             "ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE",
+            "PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -3700,6 +3807,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-allied-cloak-observation-confirmation-patch",
             "--micromachine-explicit-ability-caster-ownership-patch",
             "--micromachine-explicit-ability-staging-single-flight-patch",
+            "--micromachine-parallel-operations-ingame-hud-patch",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",
@@ -3931,6 +4039,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '--ignore-space-change --whitespace=nowarn '
             '"${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}"'
         )
+        parallel_operations_ingame_hud_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE}"'
+        )
+        parallel_operations_ingame_hud_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE}"'
+        )
         blackboard_copy = (
             'cp "${BLACKBOARD_HEADER_FILE}" '
             '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
@@ -4065,6 +4183,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertLess(
             build_script.index(all_terran_combat_scouts_apply),
+            build_script.index(parallel_operations_ingame_hud_check),
+        )
+        self.assertLess(
+            build_script.index(parallel_operations_ingame_hud_check),
+            build_script.index(parallel_operations_ingame_hud_apply),
+        )
+        self.assertLess(
+            build_script.index(parallel_operations_ingame_hud_apply),
             build_script.index(blackboard_copy),
         )
         self.assertLess(

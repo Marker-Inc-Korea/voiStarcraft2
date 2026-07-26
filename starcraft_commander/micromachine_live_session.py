@@ -854,12 +854,17 @@ class MicroMachineLiveTextSession:
             layer_action = _live_command_layer_action_for_result(
                 compile_result,
                 previous_layers=previous_layers,
+                previous_update=previous_update,
             )
             reducer_category = _live_command_category(
                 text,
                 compile_result.vector.to_dict(),
             )
-            if layer_action in {"merge_cross_layer", "supersede_same_layer"}:
+            if layer_action in {
+                "merge_cross_layer",
+                "supersede_same_layer",
+                "upsert_operations",
+            }:
                 compile_result = _merge_live_standing_orders(
                     compile_result,
                     previous_update=previous_update,
@@ -1321,7 +1326,7 @@ def _reduce_live_command_queue(
         "parent_command_ids": parent_ids,
         "preserved_update_ids": (
             parent_ids
-            if layer_action == "merge_cross_layer"
+            if layer_action in {"merge_cross_layer", "upsert_operations"}
             else []
         ),
         "superseded_update_ids": (
@@ -1336,6 +1341,29 @@ def _reduce_live_command_queue(
         "superseded_previous": bool(superseded_layers),
         "command_text": command_text,
     }
+    previous_operation_ids = _operation_ids(previous_payload or {})
+    incoming_operation_ids = _operation_ids(
+        incoming_layer_payload
+        if incoming_layer_payload is not None
+        else vector_payload
+    )
+    queue_summary["previous_operation_ids"] = list(previous_operation_ids)
+    queue_summary["incoming_operation_ids"] = list(incoming_operation_ids)
+    queue_summary["active_operation_ids"] = list(
+        dict.fromkeys((*previous_operation_ids, *incoming_operation_ids))
+        if layer_action == "upsert_operations"
+        else incoming_operation_ids
+    )
+    queue_summary["updated_operation_ids"] = list(
+        operation_id
+        for operation_id in incoming_operation_ids
+        if operation_id in previous_operation_ids
+    )
+    queue_summary["added_operation_ids"] = list(
+        operation_id
+        for operation_id in incoming_operation_ids
+        if operation_id not in previous_operation_ids
+    )
     reduced_payload = deepcopy(vector_payload)
     reduced_tags = _merge_string_lists(
         (),
@@ -1406,13 +1434,20 @@ def _reduce_live_command_queue(
         reduced_payload.get("tags", ()),
         layer_state,
     )
-    _sync_lifetime_duration_fields(
-        reduced_payload,
-        _projected_tactical_task_lifetime(
-            layer_state,
-            fallback=transient_lifetime,
-        ),
-    )
+    operation_count = len(_operation_ids(reduced_payload))
+    if operation_count > 1:
+        _ensure_operation_lifetimes(reduced_payload, transient_lifetime)
+        _clear_legacy_operation_projection(reduced_payload)
+    else:
+        _sync_lifetime_duration_fields(
+            reduced_payload,
+            _projected_tactical_task_lifetime(
+                layer_state,
+                fallback=transient_lifetime,
+            ),
+        )
+        if operation_count == 1:
+            _sync_single_operation_projection(reduced_payload)
     queue_summary["lifetime_mode"] = transient_lifetime["mode"]
     queue_summary["ttl_seconds"] = transient_lifetime["ttl_seconds"]
     queue_summary["completion_conditions"] = list(transient_lifetime["completion_conditions"])
@@ -1452,6 +1487,12 @@ def _live_command_reducer_action_for_result(
     previous_category = (
         _live_command_category("", previous_payload) if previous_payload else None
     )
+    if (
+        _operation_ids(incoming_payload)
+        and previous_payload is not None
+        and _operation_ids(previous_payload)
+    ):
+        return "merge_parallel_operations"
     return _live_command_reducer_action(
         category,
         previous_category=previous_category,
@@ -1464,12 +1505,20 @@ def _live_command_layer_action_for_result(
     compile_result: PolicyModulationCompileResult,
     *,
     previous_layers: Sequence[str],
+    previous_update: MicroMachineBlackboardUpdate | None = None,
 ) -> str:
     if not compile_result.ok or compile_result.vector is None:
         return compile_result.status.value
+    previous_payload = (
+        previous_update.vector.to_dict()
+        if previous_update is not None
+        else None
+    )
     return _live_command_layer_action(
         compile_result.vector.command_layer.value,
         previous_layers=previous_layers,
+        previous_payload=previous_payload,
+        incoming_payload=compile_result.vector.to_dict(),
     )
 
 
@@ -1477,12 +1526,25 @@ def _live_command_layer_action(
     command_layer: str,
     *,
     previous_layers: Sequence[str],
+    previous_payload: Mapping[str, object] | None = None,
+    incoming_payload: Mapping[str, object] | None = None,
 ) -> str:
     if command_layer == CommandLayer.EMERGENCY.value:
         return "overwrite_all_layers"
     if not previous_layers:
         return "activate_layer"
     if command_layer in previous_layers:
+        if (
+            command_layer in {
+                CommandLayer.OPERATION.value,
+                CommandLayer.MICRO.value,
+            }
+            and previous_payload is not None
+            and incoming_payload is not None
+            and _operation_ids(previous_payload)
+            and _operation_ids(incoming_payload)
+        ):
+            return "upsert_operations"
         return "supersede_same_layer"
     return "merge_cross_layer"
 
@@ -1502,6 +1564,8 @@ def _reduced_command_layers(
         return preserved, superseded, _ordered_command_layers(
             (*preserved, command_layer)
         )
+    if layer_action == "upsert_operations":
+        return previous, (), _ordered_command_layers((*previous, command_layer))
     if layer_action == "merge_cross_layer":
         return previous, (), _ordered_command_layers((*previous, command_layer))
     return (), (), _ordered_command_layers((command_layer,))
@@ -1604,6 +1668,24 @@ def _live_command_category(
         and not _has_conditional_tactical_retreat_intent(normalized_text)
     ):
         return LiveCommandCategory.EMERGENCY
+    operation_task_types = {
+        str(
+            _mapping_value(operation, "tactical_task").get("task_type", "")
+            or ""
+        )
+        for operation in _explicit_operations(payload)
+    }
+    operation_task_types.discard("")
+    if operation_task_types:
+        if operation_task_types <= {"scout_with_units"}:
+            return LiveCommandCategory.SCOUTING
+        if operation_task_types & _TACTICAL_ONLY_TASK_TYPES or (
+            "scout_with_units" in operation_task_types
+            and len(operation_task_types) > 1
+        ):
+            return LiveCommandCategory.TACTICAL
+        if operation_task_types <= _PRODUCTION_TASK_TYPES:
+            return LiveCommandCategory.PRODUCTION
     task_type = _task_type(payload)
     command_layer = str(payload.get("command_layer", "") or "")
     if task_type in _PRODUCTION_TASK_TYPES:
@@ -1690,6 +1772,9 @@ def _live_command_lifetime(
             ),
             "reason": "short emergency override window",
         }
+    operation_lifetime = _parallel_operations_lifetime(payload)
+    if operation_lifetime is not None:
+        return operation_lifetime
     if category is LiveCommandCategory.SCOUTING or task_type == "scout_with_units":
         if _has_standing_text_intent(command_text):
             return {
@@ -1801,6 +1886,63 @@ def _live_command_lifetime(
         "ttl_seconds": max(1, min(900, ttl_seconds)),
         "completion_conditions": ("ttl_expired",),
         "reason": "default bounded TTL",
+    }
+
+
+def _parallel_operations_lifetime(
+    payload: Mapping[str, object],
+) -> dict[str, object] | None:
+    operations = _explicit_operations(payload)
+    if not operations:
+        return None
+
+    provider_ttl = max(0, int(_float_at(payload, ("ttl_seconds",))))
+    ttl_seconds = provider_ttl
+    persistent = False
+    completion_conditions: list[str] = []
+    for operation in operations:
+        lifetime = _mapping_value(operation, "lifetime")
+        mode = str(lifetime.get("mode", "") or "").strip().lower()
+        operation_persistent = mode in {"until_cancelled", "standing_order"}
+        persistent = persistent or operation_persistent
+        task = _mapping_value(operation, "tactical_task")
+        scope = _mapping_value(operation, "scope")
+        operation_ttl = max(
+            int(_float_at(task, ("duration_seconds",))),
+            int(_float_at(scope, ("duration_seconds",))),
+        )
+        if operation_persistent:
+            operation_ttl = max(operation_ttl, 900)
+        elif str(task.get("task_type", "") or "") == "execute_ability":
+            operation_ttl = max(
+                operation_ttl,
+                _EXPLICIT_ABILITY_PREREQUISITE_BUDGET_SECONDS,
+            )
+        ttl_seconds = max(ttl_seconds, operation_ttl)
+        conditions = lifetime.get("completion_conditions", ())
+        if isinstance(conditions, Sequence) and not isinstance(
+            conditions,
+            (str, bytes, bytearray),
+        ):
+            completion_conditions.extend(
+                str(condition)
+                for condition in conditions
+                if str(condition)
+            )
+
+    ttl_seconds = max(1, min(900, ttl_seconds or 300))
+    if persistent:
+        completion_conditions.append("cancelled_by_user")
+    if not completion_conditions:
+        completion_conditions.extend(("order_issued", "target_reached"))
+    return {
+        "mode": "until_cancelled" if persistent else "until_completed",
+        "ttl_seconds": ttl_seconds,
+        "completion_conditions": tuple(dict.fromkeys(completion_conditions)),
+        "reason": (
+            "parallel operation lifetime preserves the longest operation, "
+            "standing order, or provider execution window"
+        ),
     }
 
 
@@ -1938,7 +2080,40 @@ def _updated_live_layer_state(
             )
     previous_same_layer = state.get(incoming_layer)
     effective_incoming_payload = incoming_payload
+    operation_generation_high_water: dict[str, int] = {}
     if (
+        previous_same_layer is not None
+        and incoming_layer
+        in {
+            CommandLayer.OPERATION.value,
+            CommandLayer.MICRO.value,
+        }
+        and _operation_ids(incoming_payload)
+        and _operation_ids(_live_layer_payload(previous_same_layer))
+    ):
+        previous_metadata = _live_layer_metadata(previous_same_layer)
+        raw_high_water = previous_metadata.get(
+            "operation_generation_high_water",
+            {},
+        )
+        if isinstance(raw_high_water, Mapping):
+            operation_generation_high_water = {
+                str(operation_id): max(1, int(generation))
+                for operation_id, generation in raw_high_water.items()
+                if str(operation_id)
+                and type(generation) is int
+                and generation > 0
+            }
+        (
+            effective_incoming_payload,
+            operation_generation_high_water,
+        ) = _merge_parallel_operation_payloads(
+            _live_layer_payload(previous_same_layer),
+            incoming_payload,
+            generation_high_water=operation_generation_high_water,
+        )
+        effective_incoming_payload["command_layer"] = incoming_layer
+    elif (
         previous_same_layer is not None
         and incoming_layer != CommandLayer.EMERGENCY.value
         and not _task_type(incoming_payload)
@@ -1958,6 +2133,20 @@ def _updated_live_layer_state(
             lifetime=incoming_lifetime,
         ),
     )
+    if not operation_generation_high_water:
+        operation_generation_high_water = {
+            str(operation["operation_id"]): max(
+                1,
+                int(operation.get("generation", 1) or 1),
+            )
+            for operation in _explicit_operations(effective_incoming_payload)
+        }
+    if operation_generation_high_water:
+        incoming_metadata = _live_layer_metadata(incoming_entry)
+        incoming_metadata["operation_generation_high_water"] = dict(
+            operation_generation_high_water
+        )
+        incoming_entry["metadata"] = incoming_metadata
     if incoming_lifetime is not None:
         incoming_metadata = _live_layer_metadata(incoming_entry)
         incoming_metadata["lifetime_mode"] = str(
@@ -2022,6 +2211,129 @@ def _project_live_layer_state(
         projected["tactical_task"] = projected_task
     projected.pop("command_layer", None)
     return projected
+
+
+def _explicit_operations(
+    payload: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    raw_operations = payload.get("operations", ())
+    if not isinstance(raw_operations, Sequence) or isinstance(
+        raw_operations,
+        (str, bytes, bytearray),
+    ):
+        return ()
+    return tuple(
+        deepcopy(dict(operation))
+        for operation in raw_operations
+        if isinstance(operation, Mapping)
+        and str(operation.get("operation_id", "") or "").strip()
+    )
+
+
+def _operation_ids(payload: Mapping[str, object]) -> tuple[str, ...]:
+    return tuple(
+        str(operation.get("operation_id", "") or "").strip()
+        for operation in _explicit_operations(payload)
+    )
+
+
+def _merge_parallel_operation_payloads(
+    previous_payload: Mapping[str, object],
+    incoming_payload: Mapping[str, object],
+    *,
+    generation_high_water: Mapping[str, int] | None = None,
+) -> tuple[dict[str, object], dict[str, int]]:
+    merged = _merge_live_vector_payloads(previous_payload, incoming_payload)
+    high_water = {
+        str(operation_id): max(1, int(generation))
+        for operation_id, generation in (generation_high_water or {}).items()
+        if str(operation_id)
+        and type(generation) is int
+        and generation > 0
+    }
+    registry: dict[str, dict[str, object]] = {
+        str(operation["operation_id"]): operation
+        for operation in _explicit_operations(previous_payload)
+        if not _operation_declares_terminal_state(operation)
+    }
+    for operation in _explicit_operations(previous_payload):
+        operation_id = str(operation["operation_id"])
+        high_water[operation_id] = max(
+            high_water.get(operation_id, 0),
+            max(1, int(operation.get("generation", 1) or 1)),
+        )
+    for operation in _explicit_operations(incoming_payload):
+        operation_id = str(operation["operation_id"])
+        previous_generation = high_water.get(operation_id, 0)
+        operation["generation"] = previous_generation + 1
+        high_water[operation_id] = int(operation["generation"])
+        registry[operation_id] = operation
+    merged["operations"] = list(registry.values())
+    merged["goal"] = _merged_goal(previous_payload, incoming_payload)
+    if len(registry) > 1:
+        _clear_legacy_operation_projection(merged)
+    return merged, high_water
+
+
+def _operation_declares_terminal_state(operation: Mapping[str, object]) -> bool:
+    lifetime = _mapping_value(operation, "lifetime")
+    return str(lifetime.get("completion_state", "") or "").strip().lower() in {
+        "cancelled",
+        "completed",
+        "expired",
+        "failed",
+        "superseded",
+    }
+
+
+def _clear_legacy_operation_projection(payload: dict[str, object]) -> None:
+    payload["tactical_task"] = {}
+    payload["scope"] = {}
+    payload["lifetime"] = {}
+    payload["composition_requirements"] = []
+    payload["unit_roles"] = []
+    payload["route_intent"] = {}
+    payload["target_intent"] = {}
+
+
+def _ensure_operation_lifetimes(
+    payload: dict[str, object],
+    fallback: Mapping[str, object],
+) -> None:
+    operations = list(_explicit_operations(payload))
+    normalized: list[dict[str, object]] = []
+    for operation in operations:
+        lifetime = dict(_mapping_value(operation, "lifetime"))
+        if not str(lifetime.get("mode", "") or ""):
+            lifetime = {
+                "mode": str(fallback.get("mode", "") or ""),
+                "completion_conditions": list(
+                    fallback.get("completion_conditions", ())
+                ),
+                "completion_state": "active",
+                "reason": str(fallback.get("reason", "") or ""),
+            }
+        operation["lifetime"] = lifetime
+        normalized.append(operation)
+    payload["operations"] = normalized
+
+
+def _sync_single_operation_projection(payload: dict[str, object]) -> None:
+    operations = list(_explicit_operations(payload))
+    if len(operations) != 1:
+        return
+    operation = operations[0]
+    for domain in (
+        "tactical_task",
+        "scope",
+        "lifetime",
+        "composition_requirements",
+        "unit_roles",
+        "route_intent",
+        "target_intent",
+    ):
+        operation[domain] = deepcopy(payload.get(domain, {}))
+    payload["operations"] = [operation]
 
 
 def _canonical_live_layer_payload(
@@ -2140,7 +2452,12 @@ def _live_layer_state_entry_from_mapping(
         completion_state=str(metadata.get("completion_state", "active") or "active"),
     )
     normalized_metadata = _live_layer_metadata(normalized)
-    for key in ("lifetime_mode", "ttl_seconds", "completion_conditions"):
+    for key in (
+        "lifetime_mode",
+        "ttl_seconds",
+        "completion_conditions",
+        "operation_generation_high_water",
+    ):
         if key in metadata:
             normalized_metadata[key] = deepcopy(metadata[key])
     normalized["metadata"] = normalized_metadata
@@ -2596,6 +2913,7 @@ def _standing_order_context(update: MicroMachineBlackboardUpdate) -> dict[str, o
         "tech": vector.tech.to_dict(),
         "production": vector.production.to_dict(),
         "tactical_task": vector.tactical_task.to_dict(),
+        "operations": [operation.to_dict() for operation in vector.operations],
         "tags": list(vector.tags),
     }
 
@@ -2619,6 +2937,7 @@ def _recent_command_context(
         "production": vector.production.to_dict(),
         "scope": vector.scope.to_dict(),
         "tactical_task": vector.tactical_task.to_dict(),
+        "operations": [operation.to_dict() for operation in vector.operations],
         "tags": list(vector.tags),
     }
 

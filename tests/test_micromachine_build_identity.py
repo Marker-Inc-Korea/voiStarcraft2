@@ -28,7 +28,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             write_build_identity_report(report, output)
 
             self.assertTrue(report["ok"], report)
-            self.assertEqual(51, report["schema_version"])
+            self.assertEqual(52, report["schema_version"])
             self.assertTrue(str(report["identity"]).startswith("sha256:"))
             self.assertEqual(report["identity"], read_build_identity(output))
             self.assertIn(
@@ -435,6 +435,14 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_all_terran_combat_scouts_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_parallel_operations_ingame_hud_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_parallel_operations_ingame_hud_patch_sha256",
                 report["checksums"],
             )
             self.assertIn("source_attestation", report["paths"])
@@ -1757,6 +1765,62 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["failures"],
             )
 
+    def test_parallel_operations_ingame_hud_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_parallel_operations_ingame_hud_patch_sha256"
+            )
+
+            config.micromachine_parallel_operations_ingame_hud_patch.write_text(
+                "changed parallel operations in-game HUD\n"
+            )
+            write_micromachine_source_attestation(config)
+            write_micromachine_build_attestation(config)
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_parallel_operations_ingame_hud_cli_defaults_to_patch_0052(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0052-parallel-operations-ingame-hud.patch",
+            Path(args.micromachine_parallel_operations_ingame_hud_patch).name,
+        )
+
+    def test_missing_parallel_operations_ingame_hud_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_parallel_operations_ingame_hud_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_parallel_operations_ingame_hud_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
     def test_missing_source_attestation_marks_identity_not_ok(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2086,6 +2150,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_all_terran_combat_scouts_patch = (
             root / "micromachine-all-terran-combat-scouts.patch"
         )
+        micromachine_parallel_operations_ingame_hud_patch = (
+            root / "micromachine-parallel-operations-ingame-hud.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -2143,6 +2210,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_explicit_ability_caster_ownership_patch,
             micromachine_explicit_ability_staging_single_flight_patch,
             micromachine_all_terran_combat_scouts_patch,
+            micromachine_parallel_operations_ingame_hud_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -2297,6 +2365,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_all_terran_combat_scouts_patch=(
                 micromachine_all_terran_combat_scouts_patch
+            ),
+            micromachine_parallel_operations_ingame_hud_patch=(
+                micromachine_parallel_operations_ingame_hud_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

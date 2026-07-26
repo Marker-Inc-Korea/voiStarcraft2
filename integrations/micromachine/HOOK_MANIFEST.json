@@ -263,6 +263,11 @@
       "path": "patches/0051-all-terran-combat-scouts.patch",
       "order": 51,
       "scope": "treat Hellion and transformed Hellbat forms as the same TERRAN_HELLION composition and role token, include Hellbats in explicit Scout squad candidate selection, preserve Scout order ownership over Hellion, Medivac, and Raven support fallbacks, and exclude Scout-owned units from cross-squad threat or healing control so every standard Terran combat-unit family can follow its bounded scouting target"
+    },
+    {
+      "path": "patches/0052-parallel-operations-ingame-hud.patch",
+      "order": 52,
+      "scope": "consume indexed parallel operations, aggregate every operation-scoped tactical production target, unit class, priority, and exact composition into prerequisite closure for Terran bio, Factory, Starport, Ghost, Armory, and Fusion Core lanes, maintain operation_id and generation scoped dynamic squads with exclusive unit-tag ownership, protect operation units from autonomous reassignment, execute scout, attack, and defend tasks through existing Squad micro, emit operation-scoped observed telemetry, and draw truthful in-game HUD lifecycle, route, and target state"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

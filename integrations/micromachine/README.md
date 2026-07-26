@@ -65,6 +65,7 @@ Verified upstream:
 | `patches/0049-explicit-ability-caster-ownership.patch` | Gives the selected explicit-ability caster exclusive movement/action ownership during staging and confirmation, preventing Squad or unit micro from overwriting the order and causing per-frame SC2 command resubmission; direct explicit actions and completed attempts remain unblocked. |
 | `patches/0050-explicit-ability-staging-single-flight.patch` | Binds an issued explicit-ability staging MOVE to its caster and target for the route lifetime, suppressing duplicate submissions while position observations show progress and releasing ownership only when bounded stalled-route recovery rejects the route. |
 | `patches/0051-all-terran-combat-scouts.patch` | Treats Hellion and transformed Hellbat forms as one composition/role token, includes Hellbats in Scout squad selection, prevents Hellion, Medivac, and Raven support fallbacks from replacing an active Scout order, and excludes Scout-owned units from cross-squad threat/healing control. |
+| `patches/0052-parallel-operations-ingame-hud.patch` | Consumes indexed parallel operations, aggregates each operation's production targets, unit classes, priority, and exact composition into complete Terran prerequisite lanes, creates operation/generation-scoped dynamic squads with exclusive unit-tag ownership, protects their units from autonomous reassignment, executes scout/attack/defend through existing Squad micro, records operation-scoped observed telemetry, and renders truthful in-game lifecycle, route, and target HUD state. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -138,7 +139,7 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0051`, then copies the blackboard header. The
+through `0052`, then copies the blackboard header. The
 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its

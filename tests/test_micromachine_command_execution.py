@@ -3,6 +3,7 @@ import unittest
 from starcraft_commander.micromachine_command_execution import (
     LIVE_QA_SCENARIOS,
     classify_micromachine_command_execution,
+    classify_micromachine_operation_executions,
 )
 from starcraft_commander.micromachine_tactical_evidence import (
     MicroMachineTacticalEvidence,
@@ -68,6 +69,511 @@ def _telemetry(
 
 
 class MicroMachineCommandExecutionTest(unittest.TestCase):
+    def test_parallel_operations_are_classified_from_independent_evidence(self) -> None:
+        update = {
+            "update_id": "parallel-a",
+            "issued_at_frame": 100,
+            "expires_at_frame": 2_000,
+            "vector": {
+                "goal": "parallel scout and attack",
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "goal": "two marines scout",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "min_units": 2,
+                            "max_units": 2,
+                        },
+                    },
+                    {
+                        "operation_id": "assault-bravo",
+                        "goal": "four marines attack",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "min_units": 4,
+                            "max_units": 4,
+                        },
+                    },
+                ],
+            },
+        }
+        telemetry = {
+            "frame": 500,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "parallel-a",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "status": "completed",
+                            "received_frame": 110,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "last_action_frame": 180,
+                            "assigned_unit_tags": [11, 12],
+                            "assigned_count": 2,
+                            "max_home_distance": 24.0,
+                            "completed": True,
+                            "last_action": "MoveToGoalOrder|operation=recon-alpha",
+                        },
+                        {
+                            "operation_id": "assault-bravo",
+                            "status": "assigned",
+                            "received_frame": 115,
+                            "assigned_frame": 125,
+                            "submitted_frame": 0,
+                            "assigned_unit_tags": [21, 22, 23, 24],
+                            "assigned_count": 4,
+                            "max_home_distance": 2.0,
+                        },
+                    ],
+                }
+            },
+        }
+
+        reports = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=500,
+        )
+
+        by_id = {report.operation_id: report for report in reports}
+        self.assertTrue(by_id["recon-alpha"].ok, by_id["recon-alpha"].to_dict())
+        self.assertEqual("completed", by_id["recon-alpha"].state)
+        self.assertFalse(by_id["assault-bravo"].ok)
+        self.assertEqual("queued_or_assigned", by_id["assault-bravo"].state)
+        assault_stages = {
+            stage.name: stage for stage in by_id["assault-bravo"].stages
+        }
+        self.assertFalse(assault_stages["action_issued"].ok)
+        self.assertFalse(assault_stages["effect_observed"].ok)
+
+    def test_duplicate_unit_ownership_blocks_parallel_operations(self) -> None:
+        update = {
+            "update_id": "parallel-conflict",
+            "issued_at_frame": 100,
+            "expires_at_frame": 2_000,
+            "vector": {
+                "goal": "parallel operations",
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "tactical_task": {"task_type": "scout_with_units"},
+                    },
+                    {
+                        "operation_id": "assault-bravo",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army"
+                        },
+                    },
+                ],
+            },
+        }
+        telemetry = {
+            "frame": 500,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "parallel-conflict",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "status": "moving",
+                            "received_frame": 110,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "assigned_unit_tags": [11, 99],
+                            "assigned_count": 2,
+                            "max_home_distance": 18.0,
+                        },
+                        {
+                            "operation_id": "assault-bravo",
+                            "status": "moving",
+                            "received_frame": 110,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "assigned_unit_tags": [99, 21, 22, 23],
+                            "assigned_count": 4,
+                            "max_home_distance": 18.0,
+                        },
+                    ],
+                }
+            },
+        }
+
+        reports = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=500,
+        )
+
+        self.assertEqual(2, len(reports))
+        for report in reports:
+            with self.subTest(operation_id=report.operation_id):
+                self.assertTrue(report.failed)
+                self.assertEqual("blocked", report.state)
+                self.assertEqual("OperationDirector", report.blocker_manager)
+                self.assertIn("Duplicate unit ownership", report.blocker_reason)
+
+    def test_operation_execution_ignores_stale_generation(self) -> None:
+        update = {
+            "update_id": "redirected-operation",
+            "issued_at_frame": 500,
+            "expires_at_frame": 2_000,
+            "vector": {
+                "operations": [
+                    {
+                        "operation_id": "assault-bravo",
+                        "generation": 2,
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                        },
+                    }
+                ]
+            },
+        }
+        telemetry = {
+            "frame": 600,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "redirected-operation",
+                    "operations": [
+                        {
+                            "operation_id": "assault-bravo",
+                            "generation": 1,
+                            "status": "completed",
+                            "received_frame": 100,
+                            "assigned_frame": 110,
+                            "submitted_frame": 120,
+                            "assigned_unit_tags": [11, 12, 13, 14],
+                            "assigned_count": 4,
+                            "max_home_distance": 30.0,
+                            "completed": True,
+                        }
+                    ],
+                }
+            },
+        }
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=600,
+        )[0]
+
+        self.assertEqual(2, report.operation_generation)
+        self.assertFalse(report.ok)
+        self.assertEqual("published", report.state)
+
+    def test_preserved_generation_keeps_prior_submission_evidence(self) -> None:
+        update = {
+            "update_id": "parallel-addition",
+            "issued_at_frame": 500,
+            "expires_at_frame": 2_000,
+            "vector": {
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "generation": 1,
+                        "tactical_task": {"task_type": "scout_with_units"},
+                    }
+                ]
+            },
+        }
+        telemetry = {
+            "frame": 600,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "parallel-addition",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "status": "moving",
+                            "received_frame": 100,
+                            "assigned_frame": 110,
+                            "submitted_frame": 120,
+                            "assigned_unit_tags": [11],
+                            "assigned_count": 1,
+                            "max_home_distance": 18.0,
+                        }
+                    ],
+                }
+            },
+        }
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=600,
+        )[0]
+
+        self.assertEqual("moving", report.state)
+        self.assertTrue(
+            {stage.name: stage.ok for stage in report.stages}["action_issued"]
+        )
+
+    def test_operation_archive_preserves_effect_after_policy_expiry(self) -> None:
+        update = {
+            "update_id": "archive-expiry",
+            "issued_at_frame": 100,
+            "expires_at_frame": 2_000,
+            "vector": {
+                "operations": [
+                    {
+                        "operation_id": "assault-bravo",
+                        "generation": 1,
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                        },
+                    }
+                ]
+            },
+        }
+        archived = {
+            "frame": 500,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "archive-expiry",
+                    "operations": [
+                        {
+                            "operation_id": "assault-bravo",
+                            "generation": 1,
+                            "status": "engaged",
+                            "received_frame": 110,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "last_action_frame": 450,
+                            "last_action": "AttackTarget|operation=assault-bravo",
+                            "assigned_unit_tags": [21],
+                            "assigned_count": 1,
+                            "max_home_distance": 112.0,
+                            "engaged": True,
+                        }
+                    ],
+                }
+            },
+        }
+        latest = {
+            "frame": 700,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "archive-expiry",
+                    "operations": [
+                        {
+                            "operation_id": "assault-bravo",
+                            "generation": 1,
+                            "status": "blocked",
+                            "blocked_reason": "policy_inactive_or_expired",
+                            "assigned_unit_tags": [],
+                            "assigned_count": 0,
+                        }
+                    ],
+                }
+            },
+        }
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=latest,
+            telemetry_archive=(archived,),
+            latest_frame=700,
+        )[0]
+
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertFalse(report.failed, report.to_dict())
+        self.assertTrue(report.expired, report.to_dict())
+        self.assertEqual("expired", report.state)
+        self.assertTrue(stages["queued_or_assigned"].ok)
+        self.assertTrue(stages["action_issued"].ok)
+        self.assertTrue(stages["effect_observed"].ok)
+        self.assertEqual(112.0, stages["effect_observed"].evidence["max_home_distance"])
+
+    def test_transient_prerequisite_block_is_not_terminal_failure(self) -> None:
+        update = {
+            "update_id": "transient-block",
+            "issued_at_frame": 100,
+            "expires_at_frame": 2_000,
+            "vector": {
+                "operations": [
+                    {
+                        "operation_id": "assault-bravo",
+                        "generation": 1,
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                        },
+                    }
+                ]
+            },
+        }
+        telemetry = {
+            "frame": 500,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "transient-block",
+                    "operations": [
+                        {
+                            "operation_id": "assault-bravo",
+                            "generation": 1,
+                            "status": "blocked",
+                            "blocked_reason": "composition_prerequisites_pending",
+                            "received_frame": 110,
+                            "assigned_unit_tags": [],
+                            "assigned_count": 0,
+                        }
+                    ],
+                }
+            },
+        }
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=500,
+        )[0]
+
+        self.assertFalse(report.failed, report.to_dict())
+        self.assertFalse(report.expired, report.to_dict())
+        self.assertEqual("blocked", report.state)
+        self.assertEqual(
+            "composition_prerequisites_pending",
+            report.blocker_reason,
+        )
+
+    def test_hard_operation_block_remains_terminal_failure(self) -> None:
+        update = {
+            "update_id": "hard-block",
+            "issued_at_frame": 100,
+            "expires_at_frame": 2_000,
+            "vector": {
+                "operations": [
+                    {
+                        "operation_id": "assault-bravo",
+                        "generation": 1,
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                        },
+                    }
+                ]
+            },
+        }
+        telemetry = {
+            "frame": 500,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "hard-block",
+                    "operations": [
+                        {
+                            "operation_id": "assault-bravo",
+                            "generation": 1,
+                            "status": "blocked",
+                            "blocked_reason": "invalid_target",
+                            "received_frame": 110,
+                        }
+                    ],
+                }
+            },
+        }
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=500,
+        )[0]
+
+        self.assertTrue(report.failed, report.to_dict())
+        self.assertEqual("blocked", report.state)
+        self.assertEqual("invalid_target", report.blocker_reason)
+
+    def test_historical_assignment_does_not_create_current_ownership_conflict(
+        self,
+    ) -> None:
+        update = {
+            "update_id": "tag-reassignment",
+            "issued_at_frame": 100,
+            "expires_at_frame": 2_000,
+            "vector": {
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "generation": 1,
+                        "tactical_task": {"task_type": "scout_with_units"},
+                    },
+                    {
+                        "operation_id": "assault-bravo",
+                        "generation": 1,
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                        },
+                    },
+                ]
+            },
+        }
+        archived = {
+            "frame": 300,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "tag-reassignment",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "status": "moving",
+                            "received_frame": 110,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "assigned_unit_tags": [99],
+                            "assigned_count": 1,
+                            "max_home_distance": 18.0,
+                        }
+                    ],
+                }
+            },
+        }
+        latest = {
+            "frame": 500,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "tag-reassignment",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "status": "blocked",
+                            "blocked_reason": "composition_prerequisites_pending",
+                            "assigned_unit_tags": [],
+                            "assigned_count": 0,
+                        },
+                        {
+                            "operation_id": "assault-bravo",
+                            "generation": 1,
+                            "status": "moving",
+                            "received_frame": 400,
+                            "assigned_frame": 410,
+                            "submitted_frame": 420,
+                            "assigned_unit_tags": [99],
+                            "assigned_count": 1,
+                            "max_home_distance": 20.0,
+                        },
+                    ],
+                }
+            },
+        }
+
+        reports = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=latest,
+            telemetry_archive=(archived,),
+            latest_frame=500,
+        )
+
+        by_id = {report.operation_id: report for report in reports}
+        self.assertFalse(by_id["recon-alpha"].failed, by_id["recon-alpha"].to_dict())
+        self.assertFalse(
+            by_id["assault-bravo"].failed,
+            by_id["assault-bravo"].to_dict(),
+        )
+
     def test_publish_only_cannot_complete_command(self) -> None:
         report = classify_micromachine_command_execution(
             latest_update=_update(),

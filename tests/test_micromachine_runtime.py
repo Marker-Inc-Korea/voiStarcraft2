@@ -45,6 +45,7 @@ from starcraft_commander.policy_modulation import (
     ScoutingModulation,
     SquadModulation,
     StrategyModulation,
+    TacticalOperationModulation,
     TacticalScopeModulation,
     TacticalTaskModulation,
     TargetIntentModulation,
@@ -625,6 +626,7 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
         text = flatten_blackboard_update(update)
 
         self.assertIn("protocol_version=voi-mm-bridge/v1\n", text)
+        self.assertIn("bridge_capabilities=parallel_operations_v2\n", text)
         self.assertIn("source=human\n", text)
         self.assertIn("override_level=constraint\n", text)
         self.assertIn("strategy.posture=defensive\n", text)
@@ -687,6 +689,63 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
             text,
         )
         self.assertIn("unit_roles.8.unit_type=TERRAN_BATTLECRUISER\n", text)
+
+    def test_flatten_parallel_operation_nested_sequences_for_cpp(self) -> None:
+        update = MicroMachineBlackboardUpdate(
+            update_id="parallel-nested",
+            vector=PolicyModulationVector(
+                goal="mixed operation",
+                operations=(
+                    TacticalOperationModulation(
+                        operation_id="assault-bravo",
+                        goal="탱크와 마린 우회 공격",
+                        generation=4,
+                        tactical_task=TacticalTaskModulation(
+                            task_type="pressure_with_main_army",
+                            min_units=5,
+                            max_units=5,
+                            allow_partial=False,
+                        ),
+                        composition_requirements=(
+                            CompositionRequirement(
+                                "tank",
+                                count=2,
+                                role="siege_support",
+                            ),
+                            CompositionRequirement(
+                                "marine",
+                                count=3,
+                                role="frontline",
+                            ),
+                        ),
+                        unit_roles=(
+                            UnitRoleAssignment(
+                                "tank",
+                                role="siege_support",
+                                ability_policy="if_available",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            issued_at_frame=22,
+        )
+
+        text = flatten_blackboard_update(update)
+
+        self.assertIn("operations.count=1\n", text)
+        self.assertIn("operations.0.generation=4\n", text)
+        self.assertIn("operations.0.composition_requirements.count=2\n", text)
+        self.assertIn(
+            "operations.0.composition_requirements.0.unit_type=TERRAN_SIEGETANK\n",
+            text,
+        )
+        self.assertIn("operations.0.composition_requirements.0.count=2\n", text)
+        self.assertIn("operations.0.unit_roles.count=1\n", text)
+        self.assertIn(
+            "operations.0.unit_roles.0.ability_policy=if_available\n",
+            text,
+        )
 
     def test_flatten_update_rejects_injected_kv_keys(self) -> None:
         update = MicroMachineBlackboardUpdate(

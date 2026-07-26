@@ -21,6 +21,7 @@ from typing import Final, Protocol, runtime_checkable
 
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+    MICROMACHINE_PARALLEL_OPERATIONS_CAPABILITY,
     MicroMachineBlackboardUpdate,
     MicroMachineBridgeFailureMode,
     MicroMachineTelemetry,
@@ -1560,6 +1561,7 @@ def flatten_blackboard_update(update: MicroMachineBlackboardUpdate) -> str:
         ("override_level", vector["override_level"]),
         ("confidence", vector["confidence"]),
         ("ttl_seconds", vector["ttl_seconds"]),
+        ("bridge_capabilities", MICROMACHINE_PARALLEL_OPERATIONS_CAPABILITY),
         ("manager_bias_domains", ",".join(update.manager_bias_domains)),
     ]
     for domain in (
@@ -1588,6 +1590,17 @@ def flatten_blackboard_update(update: MicroMachineBlackboardUpdate) -> str:
             for index, item in enumerate(value):
                 if isinstance(item, Mapping):
                     _flatten_mapping(rows, f"{domain}.{index}", item)
+    operations = vector.get("operations", ())
+    if isinstance(operations, Sequence) and not isinstance(
+        operations,
+        (str, bytes, bytearray),
+    ):
+        operation_items = tuple(
+            item for item in operations if isinstance(item, Mapping)
+        )
+        rows.append(("operations.count", len(operation_items)))
+        for index, operation in enumerate(operation_items):
+            _flatten_mapping(rows, f"operations.{index}", operation)
     constraints = vector.get("constraints", ())
     if isinstance(constraints, list):
         rows.append(("constraints.count", len(constraints)))
@@ -1612,10 +1625,38 @@ def _flatten_mapping(
         flat_key = f"{prefix}.{key}"
         if isinstance(value, Mapping):
             _flatten_mapping(rows, flat_key, value)
-        elif isinstance(value, list):
-            rows.append((flat_key, ",".join(str(item) for item in value)))
+        elif isinstance(value, Sequence) and not isinstance(
+            value,
+            (str, bytes, bytearray),
+        ):
+            _flatten_sequence(rows, flat_key, value)
         else:
             rows.append((flat_key, value))
+
+
+def _flatten_sequence(
+    rows: list[tuple[str, object]],
+    prefix: str,
+    values: Sequence[object],
+) -> None:
+    object_sequence = prefix.rsplit(".", 1)[-1] in {
+        "operations",
+        "composition_requirements",
+        "unit_roles",
+        "building_tasks",
+        "constraints",
+    }
+    if object_sequence or any(isinstance(value, Mapping) for value in values):
+        if any(not isinstance(value, Mapping) for value in values):
+            raise ValueError(
+                f"{prefix} must contain only mappings when serialized as objects."
+            )
+        rows.append((f"{prefix}.count", len(values)))
+        for index, value in enumerate(values):
+            assert isinstance(value, Mapping)
+            _flatten_mapping(rows, f"{prefix}.{index}", value)
+        return
+    rows.append((prefix, ",".join(str(value) for value in values)))
 
 
 def _format_kv_key(key: str) -> str:

@@ -1603,6 +1603,99 @@ class TargetIntentModulation:
 
 
 @dataclass(frozen=True)
+class TacticalOperationModulation:
+    """One independently addressable manager-level tactical operation."""
+
+    operation_id: str
+    goal: str
+    generation: int = 1
+    command_layer: CommandLayer | str = ""
+    tactical_task: TacticalTaskModulation = field(default_factory=TacticalTaskModulation)
+    scope: TacticalScopeModulation = field(default_factory=TacticalScopeModulation)
+    lifetime: LifetimeModulation = field(default_factory=LifetimeModulation)
+    composition_requirements: tuple[CompositionRequirement, ...] = ()
+    unit_roles: tuple[UnitRoleAssignment, ...] = ()
+    route_intent: RouteIntentModulation = field(default_factory=RouteIntentModulation)
+    target_intent: TargetIntentModulation = field(default_factory=TargetIntentModulation)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "operation_id",
+            _validate_optional_identifier("operation_id", self.operation_id),
+        )
+        object.__setattr__(self, "goal", _require_text("goal", self.goal))
+        if (
+            type(self.generation) is bool
+            or not isinstance(self.generation, int)
+            or not 1 <= self.generation <= 2_147_483_647
+        ):
+            raise ValueError(
+                "generation must be an integer between 1 and 2147483647."
+            )
+        object.__setattr__(
+            self,
+            "tactical_task",
+            _coerce_domain(self.tactical_task, TacticalTaskModulation),
+        )
+        object.__setattr__(
+            self,
+            "scope",
+            _coerce_domain(self.scope, TacticalScopeModulation),
+        )
+        object.__setattr__(
+            self,
+            "lifetime",
+            _coerce_domain(self.lifetime, LifetimeModulation),
+        )
+        object.__setattr__(
+            self,
+            "composition_requirements",
+            _validate_composition_requirements(self.composition_requirements),
+        )
+        object.__setattr__(
+            self,
+            "unit_roles",
+            _validate_unit_role_assignments(self.unit_roles),
+        )
+        object.__setattr__(
+            self,
+            "route_intent",
+            _coerce_domain(self.route_intent, RouteIntentModulation),
+        )
+        object.__setattr__(
+            self,
+            "target_intent",
+            _coerce_domain(self.target_intent, TargetIntentModulation),
+        )
+        object.__setattr__(
+            self,
+            "command_layer",
+            _coerce_command_layer(
+                self.command_layer,
+                inferred=_infer_tactical_operation_layer(self),
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "goal": self.goal,
+            "generation": self.generation,
+            "command_layer": self.command_layer.value,
+            "tactical_task": self.tactical_task.to_dict(),
+            "scope": self.scope.to_dict(),
+            "lifetime": self.lifetime.to_dict(),
+            "composition_requirements": [
+                requirement.to_dict() for requirement in self.composition_requirements
+            ],
+            "unit_roles": [assignment.to_dict() for assignment in self.unit_roles],
+            "route_intent": self.route_intent.to_dict(),
+            "target_intent": self.target_intent.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class PolicySafetyConstraint:
     """A bounded constraint that a bridge may enforce against bot managers."""
 
@@ -1651,6 +1744,7 @@ class PolicyModulationVector:
     building_tasks: tuple[BuildingTask, ...] = ()
     route_intent: RouteIntentModulation = field(default_factory=RouteIntentModulation)
     target_intent: TargetIntentModulation = field(default_factory=TargetIntentModulation)
+    operations: tuple[TacticalOperationModulation, ...] = ()
     constraints: tuple[PolicySafetyConstraint, ...] = ()
     tags: tuple[str, ...] = ()
     rationale: str = ""
@@ -1734,6 +1828,26 @@ class PolicyModulationVector:
             "target_intent",
             _coerce_domain(self.target_intent, TargetIntentModulation),
         )
+        operations = _validate_tactical_operations(self.operations)
+        legacy_projection = _legacy_operation_projection(self)
+        has_legacy_operation = _has_legacy_operation_payload(self)
+        if operations:
+            if len(operations) > 1 and has_legacy_operation:
+                raise ValueError(
+                    "legacy single-operation fields cannot accompany multiple operations."
+                )
+            if len(operations) == 1:
+                operation = operations[0]
+                operation_projection = _operation_projection(operation)
+                if (
+                    has_legacy_operation
+                    and legacy_projection != operation_projection
+                ):
+                    raise ValueError(
+                        "legacy single-operation fields conflict with operations[0]."
+                    )
+                _clear_legacy_operation_fields(self)
+        object.__setattr__(self, "operations", operations)
         object.__setattr__(
             self,
             "constraints",
@@ -1813,6 +1927,10 @@ class PolicyModulationVector:
                 "target_intent",
                 TargetIntentModulation,
             ),
+            operations=_tactical_operations_from_mapping(
+                mapping.get("operations", ()),
+                default_goal=_text_from_mapping(mapping, "goal"),
+            ),
             constraints=_constraints_from_mapping(mapping.get("constraints", ())),
             tags=_string_tuple_from_mapping(mapping.get("tags", ()), "tags"),
             rationale=str(mapping.get("rationale", "")),
@@ -1821,7 +1939,7 @@ class PolicyModulationVector:
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-ready policy modulation vector."""
 
-        return {
+        payload = {
             "goal": self.goal,
             "source": self.source.value,
             "override_level": self.override_level.value,
@@ -1848,10 +1966,14 @@ class PolicyModulationVector:
             "building_tasks": [task.to_dict() for task in self.building_tasks],
             "route_intent": self.route_intent.to_dict(),
             "target_intent": self.target_intent.to_dict(),
+            "operations": [operation.to_dict() for operation in self.operations],
             "constraints": [constraint.to_dict() for constraint in self.constraints],
             "tags": list(self.tags),
             "rationale": self.rationale,
         }
+        if len(self.operations) == 1:
+            payload.update(_operation_projection(self.operations[0]))
+        return payload
 
 
 def _coerce_source(value: object) -> PolicyModulationSource:
@@ -1919,6 +2041,11 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
         or any(emergency.values())
     ):
         return CommandLayer.EMERGENCY
+    if vector.operations:
+        operation_layers = {operation.command_layer for operation in vector.operations}
+        if len(operation_layers) == 1:
+            return next(iter(operation_layers))
+        return CommandLayer.OPERATION
     if vector.tactical_task.task_type == "execute_ability":
         return CommandLayer.MICRO
     if vector.tactical_task.task_type in {
@@ -1949,6 +2076,31 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
     ):
         return CommandLayer.OPERATION
     return CommandLayer.MACRO
+
+
+def _infer_tactical_operation_layer(
+    operation: TacticalOperationModulation,
+) -> CommandLayer:
+    task_type = operation.tactical_task.task_type
+    if task_type == "execute_ability":
+        return CommandLayer.MICRO
+    if task_type in {"scout_with_units", "pressure_with_main_army"}:
+        return CommandLayer.OPERATION
+    if task_type in {
+        "sustain_production",
+        "tech_transition",
+        "expand_or_land_command_center",
+    }:
+        return CommandLayer.MACRO
+    if (
+        operation.route_intent.route_type
+        or operation.route_intent.avoid_enemy_strength
+        or operation.target_intent.target_type
+        or operation.target_intent.priority > 0.0
+        or operation.scope != TacticalScopeModulation()
+    ):
+        return CommandLayer.OPERATION
+    return CommandLayer.OPERATION
 
 
 def _coerce_biases(value: object) -> WeightedBiases:
@@ -2049,6 +2201,109 @@ def _validate_unit_role_assignments(
         if previous is None or assignment.priority >= previous.priority:
             merged[assignment.unit_type] = assignment
     return tuple(merged.values())
+
+
+def _validate_tactical_operations(
+    values: object,
+) -> tuple[TacticalOperationModulation, ...]:
+    operations = _validate_object_sequence(
+        "operations",
+        values,
+        TacticalOperationModulation,
+    )
+    operation_ids: set[str] = set()
+    for operation in operations:
+        assert isinstance(operation, TacticalOperationModulation)
+        if operation.operation_id in operation_ids:
+            raise ValueError(
+                f"operations contains duplicate operation_id: {operation.operation_id!r}."
+            )
+        operation_ids.add(operation.operation_id)
+    return tuple(operations)
+
+
+def _tactical_operations_from_mapping(
+    values: object,
+    *,
+    default_goal: str,
+) -> tuple[TacticalOperationModulation, ...]:
+    if values is None:
+        return ()
+    if not _is_non_text_sequence(values):
+        raise ValueError("operations must be a sequence.")
+    normalized: list[object] = []
+    for value in values:
+        if isinstance(value, TacticalOperationModulation):
+            normalized.append(value)
+            continue
+        if not isinstance(value, Mapping):
+            raise ValueError(
+                "operations must contain mappings or TacticalOperationModulation."
+            )
+        operation = dict(value)
+        operation.setdefault("goal", default_goal)
+        normalized.append(operation)
+    return _validate_tactical_operations(normalized)
+
+
+def _operation_projection(
+    operation: TacticalOperationModulation,
+) -> dict[str, object]:
+    return {
+        "tactical_task": operation.tactical_task.to_dict(),
+        "scope": operation.scope.to_dict(),
+        "lifetime": operation.lifetime.to_dict(),
+        "composition_requirements": [
+            requirement.to_dict()
+            for requirement in operation.composition_requirements
+        ],
+        "unit_roles": [assignment.to_dict() for assignment in operation.unit_roles],
+        "route_intent": operation.route_intent.to_dict(),
+        "target_intent": operation.target_intent.to_dict(),
+    }
+
+
+def _legacy_operation_projection(
+    vector: PolicyModulationVector,
+) -> dict[str, object]:
+    return {
+        "tactical_task": vector.tactical_task.to_dict(),
+        "scope": vector.scope.to_dict(),
+        "lifetime": vector.lifetime.to_dict(),
+        "composition_requirements": [
+            requirement.to_dict()
+            for requirement in vector.composition_requirements
+        ],
+        "unit_roles": [assignment.to_dict() for assignment in vector.unit_roles],
+        "route_intent": vector.route_intent.to_dict(),
+        "target_intent": vector.target_intent.to_dict(),
+    }
+
+
+def _has_legacy_operation_payload(vector: PolicyModulationVector) -> bool:
+    return any(
+        (
+            vector.tactical_task != TacticalTaskModulation(),
+            vector.scope != TacticalScopeModulation(),
+            vector.lifetime != LifetimeModulation(),
+            bool(vector.composition_requirements),
+            bool(vector.unit_roles),
+            vector.route_intent != RouteIntentModulation(),
+            vector.target_intent != TargetIntentModulation(),
+        )
+    )
+
+
+def _clear_legacy_operation_fields(
+    vector: PolicyModulationVector,
+) -> None:
+    object.__setattr__(vector, "tactical_task", TacticalTaskModulation())
+    object.__setattr__(vector, "scope", TacticalScopeModulation())
+    object.__setattr__(vector, "lifetime", LifetimeModulation())
+    object.__setattr__(vector, "composition_requirements", ())
+    object.__setattr__(vector, "unit_roles", ())
+    object.__setattr__(vector, "route_intent", RouteIntentModulation())
+    object.__setattr__(vector, "target_intent", TargetIntentModulation())
 
 
 def _object_sequence_from_mapping(

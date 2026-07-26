@@ -1,11 +1,160 @@
 # voiStarcraft2
 
-말하면 스타가 움직인다.
+**말하면 스타가 움직인다.**
 
-voiStarcraft2 turns Korean text or voice commands into semantic
-StarCraft commands. It does **not** emulate mouse clicks or screen input.
-Commands are interpreted into a typed Intent DSL, validated against game state,
-planned as semantic actions, and executed through game API boundaries.
+voiStarcraft2 is a human-in-the-loop StarCraft II battlefield commander. Korean
+or English text and voice instructions are compiled into bounded semantic
+operations that MicroMachine executes through the official SC2 API.
+
+The product goal is not "chat beside a bot." The user must be able to divide
+forces, issue simultaneous missions, reinforce or cancel one mission, and see
+truthful evidence that the selected units received and carried out those
+orders.
+
+## Capability Boundary
+
+```text
+User intent
+   |
+   v
+LLM semantic compiler          Called once per utterance, not once per frame
+   |
+   v
+Validated Macro / Operation / Micro / Emergency DSL
+   |
+   v
+MicroMachine managers          Own production, assignment, safety, and micro
+   |
+   v
+SC2 API command submission     Move, attack, build, train, and valid abilities
+   |
+   v
+Observed game effect           Movement, engagement, cast, completion, failure
+```
+
+voiStarcraft2 is **bounded HITL**, not a frame-by-frame RTS remote control.
+The user specifies outcomes, force composition, roles, routes, targets,
+abilities, building placement intent, and persistence. MicroMachine still
+checks unit availability, prerequisites, pathing, threats, ability legality,
+and concrete SC2 targets before issuing commands.
+
+| Boundary | Supported |
+| --- | --- |
+| "마린 2기는 정찰, 4기는 우회 공격" | Yes. Independent operation IDs, squads, unit ownership, targets, and evidence. |
+| "탱크를 생산하고 공성 모드로 압박" | Yes. Production prerequisites plus bounded operation and ability policy. |
+| "바이킹은 정찰, 지상군은 공격" | Yes. Different unit compositions can run concurrently. |
+| "적 본진에 핵을 사용" | Yes, when Ghost, payload, vision, range, and safety gates are satisfied. |
+| Raw unit tags, arbitrary coordinates, mouse clicks | No. These bypass the semantic and safety boundary. |
+| Guaranteed success regardless of resources or game state | No. Blocked reasons and missing prerequisites remain visible. |
+| Human multiplayer qualification | Not yet. It is an explicit follow-up milestone. |
+
+## Command Model
+
+| Layer | Lifetime and responsibility |
+| --- | --- |
+| `Macro` | Economy, supply, production, tech, expansion, and standing composition. Usually persists until completed, superseded, or cancelled. |
+| `Operation` | Independent scout, attack, defense, contain, harass, or regroup missions. Multiple operation IDs may coexist. |
+| `Micro` | Explicit bounded ability or mode request such as siege, cloak, burrow, stim, unload, or tactical nuke. |
+| `Emergency` | Retreat, hold, cancel attacks, worker evacuation, or repair priority. Explicitly preempts affected lower layers. |
+
+Each operation carries its own:
+
+```text
+operation_id
+goal
+task type
+unit composition and count
+unit roles
+route intent
+target intent
+lifetime and completion conditions
+```
+
+The live reducer uses `operation_id` as an upsert key. A follow-up with the same
+ID reinforces or redirects that operation. A different ID remains parallel.
+An emergency is never silently treated as another ordinary operation.
+
+## Parallel Operations
+
+Representative command:
+
+```text
+마린 2기는 적 본진을 정찰하고,
+마린 4기는 오른쪽 길로 적 멀티를 공격해.
+```
+
+Runtime model:
+
+```text
+operations[]
+   |
+   +-> recon-alpha   -> VoiOp:recon-alpha   -> exclusive unit tags -> Scout order
+   |
+   +-> assault-bravo -> VoiOp:assault-bravo -> exclusive unit tags -> Attack order
+```
+
+One authoritative ownership map prevents a unit from belonging to two active
+operations. Autonomous `MainAttack`, `Scout`, defense, and support logic may not
+steal operation-owned units. Updating one operation increments its generation
+without deleting unrelated operations.
+
+## Terran Unit Coverage
+
+The operation model is not Marine-specific. It reuses MicroMachine's existing
+Squad, RangedManager, MeleeManager, detector, transport, siege, cloak, and
+ability logic for supported Terran combat families:
+
+| Family | Units and behavior |
+| --- | --- |
+| Bio | Marine, Marauder, Reaper, Ghost: focus fire, kite, stim/ability policy, scouting, assault, defense. |
+| Factory | Hellion/Hellbat, Widow Mine, Cyclone, Siege Tank, Thor: morph or deploy states, range control, siege support, target priority. |
+| Support air | Medivac, Raven: healing, transport/unload, detection, and supported utility abilities under squad ownership. |
+| Combat air | Viking, Banshee, Liberator, Battlecruiser: air or ground mode policy, cloak, siege/deploy, kiting, target selection, and operation following. |
+
+Production requests include deterministic prerequisite lowering. For example,
+requesting Tanks may add Factory, Refinery, Tech Lab, supply, and resource
+priorities before the operation waits for eligible Tanks. This lowering is
+aggregated across every active operation rather than reading only a legacy
+top-level task, so a Marine scout can run while an independent Tank, Viking,
+Ghost, or capital-ship operation builds its own prerequisite lane. Building
+placement uses semantic anchors and SC2 placement/pathing queries, not random
+coordinates.
+
+## Truthful Execution Evidence
+
+The UI and telemetry distinguish transport from execution:
+
+| Stage | Meaning |
+| --- | --- |
+| `parsed` | The utterance became valid semantic DSL. |
+| `published` | The update was written to the blackboard. No gameplay success is claimed. |
+| `consumed_by_manager` | Patched MicroMachine read the matching update and operation ID. |
+| `queued_or_assigned` | An exclusive eligible unit set was assigned. |
+| `order_issued` | A concrete Squad order was created. |
+| `action_issued` | The SC2 API command path accepted an action. |
+| `effect_observed` | Movement, engagement, cast state, target arrival, or another game effect was observed. |
+
+`published` is never rendered as "executing." Operation telemetry is keyed by
+`update_id + operation_id`, uses monotonic frames, detects duplicate ownership,
+and records the first blocking manager and reason.
+
+## Operator UX
+
+The web cockpit presents one card per operation rather than one global command
+bubble. Each card shows mission, force, target, route, lifecycle, assigned unit
+count, last SC2 action, movement or engagement evidence, and terminal state.
+Late responses and stale telemetry cannot overwrite a newer operation card.
+
+The patched in-game HUD mirrors the same operation identity and evidence inside
+StarCraft II so the operator can confirm commands without leaving the game:
+
+```text
+[recon-alpha]  2 Marine  enemy_main     assigned -> moving
+[assault-bravo] 4 Marine flank_right    action issued -> engaged
+```
+
+The web cockpit remains the command surface. The in-game HUD is evidence and
+situational feedback, not a hidden mouse or keyboard automation layer.
 
 ## Status
 
@@ -13,19 +162,23 @@ planned as semantic actions, and executed through game API boundaries.
 | --- | --- |
 | Dry-run SC2 pipeline | Implemented and tested. Runs without StarCraft II. |
 | Legacy live SC2 commander | Implemented and locally connected through python-sc2. This is compatibility mode, not MicroMachine. |
-| MicroMachine policy cockpit | Implemented as the default web text/voice route. It publishes bounded deep DSL modulation to the MicroMachine blackboard. |
+| MicroMachine policy cockpit | Default web text/voice route. Uses forced-tool LLM output, deterministic validation, and fail-closed publishing. |
+| Parallel operations | Implemented through explicit `operations[]`, stable IDs, live upsert semantics, dynamic operation squads, and exclusive unit ownership. |
+| All-unit operation model | Implemented for supported Terran combat families by reusing existing MicroMachine Squad and unit ability micro. |
+| Web operation UX | Per-operation cards, isolated telemetry, monotonic lifecycle updates, and truthful published/executing distinction. |
+| In-game HUD | Patched MicroMachine overlay for operation identity, force, route, target, assignment, action, movement, engagement, and blockers. |
 | Voice input | Implemented behind optional `[voice]` dependencies. |
 | LLM command interpreter | Required for legacy python-sc2 live commands and production MicroMachine free-form text modulation. OpenAI/GPT is the default; Anthropic is still supported. |
 | Web GUI | Implemented as a localhost-first stdlib server with token-protected network mode. Default chat/voice mode is MicroMachine; legacy commander is explicit opt-in. |
 | Event memory | Implemented and used by state reports and GUI history. |
 | Standing orders | Implemented for continuous SCV production and supply-block prevention. |
 | Brood War / BWAPI | Semantic executor boundary implemented; real BWAPI adapter still requires a BWAPI machine. |
+| Human multiplayer | Deferred. Current qualification target is local AI/custom-game operation control. |
 
-Current offline verification:
+Current verification command:
 
 ```bash
 python3 -m pytest -q
-# 1649 passed, 5 skipped, 4509 subtests passed
 ```
 
 The suite does not require StarCraft II, `burnysc2`, BWAPI, LLM credentials,
@@ -338,11 +491,15 @@ The executable inventory lives in [docs/intent-inventory.md](docs/intent-invento
 ```text
 Default MicroMachine cockpit:
 Korean text / voice
-  -> bounded MicroMachine DSL compiler/provider
-  -> PolicyModulationVector
-  -> MicroMachine blackboard backend
-  -> patched MicroMachine C++ managers
-  -> telemetry / tactical logs / dashboard
+  -> forced-tool LLM semantic compiler
+  -> deterministic PolicyModulationVector validation
+  -> Macro state + operations[] registry + Micro/Emergency overlays
+  -> flat MicroMachine blackboard
+  -> patched C++ OperationDirector / CombatCommander / Squad
+  -> RangedManager / MeleeManager / unit ability logic
+  -> SC2 API
+  -> operation-scoped telemetry
+  -> web cards + in-game HUD
 
 Legacy python-sc2 commander mode:
 Korean text / voice
@@ -377,10 +534,16 @@ Important modules:
   chat/voice route is MicroMachine DSL, legacy python-sc2 commander is opt-in,
   and `/api/runtime/start|status` launch/status the selected runtime.
 - `starcraft_commander/micromachine_live_session.py` — text/LLM/UI provider
-  sidecar that publishes bounded modulation to MicroMachine.
+  sidecar that merges standing Macro state, upserts independent operations,
+  applies dynamic lifetimes, and publishes bounded modulation.
 - `starcraft_commander/micromachine_runtime.py` — MicroMachine blackboard
-  backend and telemetry contract.
+  backend, indexed `operations.N.*` KV protocol, and telemetry contract.
+- `starcraft_commander/micromachine_command_execution.py` — operation-scoped
+  execution classifier from parse through observed gameplay effect.
 - `starcraft_commander/llm_interpreter.py` — schema-gated OpenAI/Anthropic interpreter.
+- `integrations/micromachine/patches/` — ordered C++ integration patches,
+  including dynamic operation squads, exclusive ownership, all-unit scout and
+  combat behavior, abilities, production closure, and in-game HUD.
 - `broodwar_commander/bw_executor.py` — BWAPI-style semantic plans and executor.
 
 Detailed design docs:
@@ -398,11 +561,18 @@ Detailed design docs:
 - Blocked commands do not mutate state.
 - Partial or skipped work is never narrated as success.
 - Rejections include Korean reason and alternative.
-- The LLM can only produce schema-validated canonical intents.
+- The LLM can only produce schema-validated intents or policy operations.
 - The LLM is called per user utterance, never per game frame.
 - MicroMachine cockpit input publishes only bounded DSL modulation; no raw
   unit tags, python-sc2 calls, s2client-api calls, keyboard hooks, OCR, or
   mouse automation are fallback paths.
+- Missing forced-tool or structured JSON output fails closed. Smoke keyword
+  lowering is test-only and is never presented as LLM execution.
+- A unit tag has one authoritative operation owner. Duplicate ownership blocks
+  the affected operations instead of silently double-commanding the unit.
+- Unknown enemy locations are resolved from allowed map/start-location
+  information and observed game state. Runtime evidence must not claim fresh
+  enemy observation before it exists.
 - Legacy python-sc2 commander mode is visibly opt-in and must not be treated as
   MicroMachine production evidence.
 - Web GUI binds to `127.0.0.1` by default; network companion mode requires a token.
@@ -424,6 +594,65 @@ Check import hygiene:
 
 Expected output for the second command is `[]`.
 
+Clean patched MicroMachine build:
+
+```bash
+integrations/micromachine/scripts/build_macos_local.sh
+```
+
+The build is not accepted unless
+`/private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/voi_build_identity.json`
+exists and verifies the binary, pinned source commits, patch checksums, and
+attestations.
+
+Local live QA:
+
+```bash
+integrations/micromachine/scripts/smoke_macos_local.sh \
+  --live-hold \
+  --blackboard-dir /private/tmp/voi-mm-live \
+  --max-attempts 1
+```
+
+Then issue a parallel command against the same blackboard from the web cockpit
+or the live-session CLI. A pass requires separate operation IDs, non-overlapping
+assigned unit tags, SC2 action submission, and observed movement or engagement.
+
+## Project Direction
+
+The project has deliberately moved through four stages:
+
+1. **Semantic boundary first.** Commands were separated from mouse clicks and
+   raw API calls through typed intents and executor abstractions.
+2. **MicroMachine integration.** The production path moved from legacy
+   python-sc2 control to manager-level blackboard modulation.
+3. **Execution honesty.** Telemetry and UI stopped treating "published" or
+   "manager mentioned the command" as proof that units moved.
+4. **Battlefield command.** The current architecture supports persistent Macro
+   intent plus multiple independently owned operations, explicit micro, and
+   emergency steering.
+
+The design principles going forward are:
+
+- LLM interpretation once per utterance, never inside the game-frame loop.
+- Deterministic schema validation and prerequisite lowering after the LLM.
+- MicroMachine remains responsible for tactical safety and unit micro.
+- User intent remains visible as stable operation identities instead of
+  dissolving into one global aggression bias.
+- Runtime claims require SC2 command and observed-effect evidence.
+- Local credentials, MyProxy configuration, machine paths, and API keys never
+  enter source control.
+
+## Roadmap
+
+| Milestone | Scope |
+| --- | --- |
+| Live parallel-operation qualification | Repeatable matrix across scout, attack, defense, mixed ground/air, abilities, cancellation, reinforcement, and blockers. |
+| Richer tactical decomposition | Multi-stage routes, regroup conditions, synchronized support, and context-aware operation reinforcement without frame scripting. |
+| Replay and evaluation learning | Compare intended operation outcomes with replay evidence and improve deterministic planning policies. |
+| Multiplayer qualification | Custom-game protocol, fair-information review, disconnect/recovery policy, anti-cheat constraints, and human-match test signoff. |
+| Brood War adapter | Real BWAPI execution behind the existing semantic boundary. |
+
 ## Remaining Real-World Validation
 
 These require external software and are intentionally not claimed as completed:
@@ -431,3 +660,5 @@ These require external software and are intentionally not claimed as completed:
 - Build and validate a real BWAPI binding adapter on a Brood War + BWAPI setup.
 - Run broader live LLM checks across OpenAI and Anthropic models beyond the
   local web-key configuration smoke test.
+- Qualify the operation system against human multiplayer. Current work does not
+  claim ladder or human-match readiness.

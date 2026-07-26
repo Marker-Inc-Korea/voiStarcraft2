@@ -29,6 +29,109 @@ class StaticModulationProvider:
 
 
 class PolicyModulationProviderCompilerTest(unittest.TestCase):
+    def test_compiles_simultaneous_scout_and_attack_operations_in_isolation(
+        self,
+    ) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "정찰과 공격을 동시에 수행",
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "goal": "마린 1기로 적 본진 정찰",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "scout",
+                            "unit_classes": ["marine"],
+                            "location_intent": "enemy_main",
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "marine",
+                                "count": 1,
+                                "role": "recon",
+                            }
+                        ],
+                        "route_intent": {"route_type": "safe_path"},
+                    },
+                    {
+                        "operation_id": "assault-bravo",
+                        "goal": "탱크 3기로 적 앞마당 우회 공격",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "attack",
+                            "unit_classes": ["tank"],
+                            "location_intent": "enemy_natural",
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "tank",
+                                "count": 3,
+                                "role": "siege",
+                            }
+                        ],
+                        "route_intent": {
+                            "route_type": "flank_right",
+                            "avoid_enemy_strength": True,
+                        },
+                        "target_intent": {
+                            "target_type": "production",
+                            "priority": 0.9,
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        self.assertEqual(2, len(result.vector.operations))
+        scout, attack = result.vector.operations
+        self.assertEqual("recon-alpha", scout.operation_id)
+        self.assertEqual("scout_with_units", scout.tactical_task.task_type)
+        self.assertEqual(("TERRAN_MARINE",), scout.tactical_task.unit_classes)
+        self.assertEqual(1, scout.tactical_task.min_units)
+        self.assertEqual(1, scout.tactical_task.max_units)
+        self.assertEqual("safe_path", scout.route_intent.route_type)
+        self.assertEqual("", scout.target_intent.target_type)
+        self.assertEqual("assault-bravo", attack.operation_id)
+        self.assertEqual(
+            "pressure_with_main_army",
+            attack.tactical_task.task_type,
+        )
+        self.assertEqual(("TERRAN_SIEGETANK",), attack.tactical_task.unit_classes)
+        self.assertEqual(3, attack.tactical_task.min_units)
+        self.assertEqual(3, attack.tactical_task.max_units)
+        self.assertEqual("flank_right", attack.route_intent.route_type)
+        self.assertEqual("production", attack.target_intent.target_type)
+        self.assertEqual("", result.vector.tactical_task.task_type)
+
+    def test_provider_rejects_duplicate_operation_ids(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "두 작전",
+                "operations": [
+                    {
+                        "operation_id": "duplicate",
+                        "goal": "정찰",
+                        "tactical_task": {"task_type": "scout_with_units"},
+                    },
+                    {
+                        "operation_id": "duplicate",
+                        "goal": "공격",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("duplicate operation_id", result.refusal_reason)
+
     def test_exact_composition_lowers_every_supported_terran_combat_unit_chain(
         self,
     ) -> None:

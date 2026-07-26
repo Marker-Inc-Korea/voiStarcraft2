@@ -97,6 +97,7 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
                 "scouting",
                 "economy",
                 "workers",
+                "operations",
             },
             domains,
         )

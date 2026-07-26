@@ -919,12 +919,796 @@ def _bounded_float(
     return numeric
 
 
+def _micromachine_payload_update_id(payload: Mapping[str, object]) -> str:
+    update = payload.get("update")
+    compile_result = payload.get("compile_result")
+    intervention = payload.get("intervention")
+    execution = (
+        intervention.get("command_execution")
+        if isinstance(intervention, Mapping)
+        else None
+    )
+    return str(
+        (
+            update.get("update_id")
+            if isinstance(update, Mapping)
+            else None
+        )
+        or payload.get("update_id")
+        or (
+            compile_result.get("update_id")
+            if isinstance(compile_result, Mapping)
+            else None
+        )
+        or (
+            execution.get("command_id")
+            if isinstance(execution, Mapping)
+            else None
+        )
+        or ""
+    ).strip()
+
+
+def _micromachine_operation_updates(
+    update: Mapping[str, object],
+) -> list[tuple[str, dict[str, object]]]:
+    """Expand one blackboard update into operation-specific update views."""
+
+    update_id = str(update.get("update_id", "") or "").strip()
+    vector = update.get("vector")
+    vector_payload = dict(vector) if isinstance(vector, Mapping) else {}
+    raw_operations = vector_payload.get("operations")
+    operation_payloads: list[dict[str, object]] = []
+    if isinstance(raw_operations, Mapping):
+        for operation_key, raw_operation in raw_operations.items():
+            if not isinstance(raw_operation, Mapping):
+                continue
+            operation = dict(raw_operation)
+            operation.setdefault("operation_id", str(operation_key))
+            operation_payloads.append(operation)
+    elif isinstance(raw_operations, Sequence) and not isinstance(
+        raw_operations,
+        (str, bytes),
+    ):
+        operation_payloads.extend(
+            dict(raw_operation)
+            for raw_operation in raw_operations
+            if isinstance(raw_operation, Mapping)
+        )
+
+    if not operation_payloads:
+        tactical_task = vector_payload.get("tactical_task")
+        task_id = (
+            str(tactical_task.get("task_id", "") or "").strip()
+            if isinstance(tactical_task, Mapping)
+            else ""
+        )
+        operation_id = (
+            str(vector_payload.get("operation_id", "") or "").strip()
+            or task_id
+            or update_id
+        )
+        operation_update = dict(update)
+        operation_update["operation_id"] = operation_id
+        operation_update["vector"] = vector_payload
+        return [(operation_id, operation_update)] if operation_id else []
+
+    expanded: list[tuple[str, dict[str, object]]] = []
+    seen_ids: set[str] = set()
+    for index, operation in enumerate(operation_payloads):
+        nested_vector = operation.get("vector")
+        operation_vector = dict(vector_payload)
+        operation_vector.pop("operations", None)
+        if isinstance(nested_vector, Mapping):
+            operation_vector.update(dict(nested_vector))
+        operation_vector.update(
+            {
+                key: value
+                for key, value in operation.items()
+                if key not in {"operation_id", "vector"}
+            }
+        )
+        tactical_task = operation_vector.get("tactical_task")
+        task_id = (
+            str(tactical_task.get("task_id", "") or "").strip()
+            if isinstance(tactical_task, Mapping)
+            else ""
+        )
+        operation_id = (
+            str(operation.get("operation_id", "") or "").strip()
+            or task_id
+            or f"{update_id}:operation-{index + 1}"
+        )
+        if operation_id in seen_ids:
+            operation_id = f"{operation_id}:{index + 1}"
+        seen_ids.add(operation_id)
+        operation_vector["operation_id"] = operation_id
+        operation_update = dict(update)
+        operation_update["operation_id"] = operation_id
+        operation_update["vector"] = operation_vector
+        expanded.append((operation_id, operation_update))
+    return expanded
+
+
+def _micromachine_operation_director_entries(
+    telemetry_document: Mapping[str, object],
+) -> dict[tuple[str, int], dict[str, object]]:
+    managers = telemetry_document.get("managers")
+    operation_director = (
+        managers.get("OperationDirector")
+        if isinstance(managers, Mapping)
+        else None
+    )
+    raw_operations = (
+        operation_director.get("operations")
+        if isinstance(operation_director, Mapping)
+        else None
+    )
+    entries: dict[tuple[str, int], dict[str, object]] = {}
+    if isinstance(raw_operations, Mapping):
+        iterator = raw_operations.items()
+    elif isinstance(raw_operations, Sequence) and not isinstance(
+        raw_operations,
+        (str, bytes),
+    ):
+        iterator = (("", item) for item in raw_operations)
+    else:
+        iterator = ()
+    for operation_key, raw_entry in iterator:
+        if not isinstance(raw_entry, Mapping):
+            continue
+        entry = dict(raw_entry)
+        operation_id = str(
+            entry.get("operation_id") or operation_key or ""
+        ).strip()
+        if not operation_id:
+            continue
+        generation = (
+            entry.get("generation")
+            if type(entry.get("generation")) is int
+            and int(entry.get("generation")) > 0
+            else 1
+        )
+        entry["operation_id"] = operation_id
+        entry["generation"] = generation
+        entries[(operation_id, generation)] = entry
+    return entries
+
+
+def _micromachine_operation_telemetry_document(
+    telemetry_document: Mapping[str, object],
+    *,
+    update_id: str,
+    operation_id: str,
+    operation_generation: int = 1,
+) -> tuple[dict[str, object], dict[str, object] | None]:
+    """Return only OperationDirector evidence owned by one operation."""
+
+    entry = _micromachine_operation_director_entries(telemetry_document).get(
+        (operation_id, operation_generation)
+    )
+    if entry is None:
+        return {}, None
+    entry_update_id = str(
+        entry.get("update_id")
+        or entry.get("policy_update_id")
+        or entry.get("active_update_id")
+        or ""
+    ).strip()
+    if entry_update_id and update_id and entry_update_id != update_id:
+        return {}, None
+    scoped_entry = dict(entry)
+    scoped_entry.setdefault("operation_id", operation_id)
+    if update_id:
+        scoped_entry.setdefault("update_id", update_id)
+    frame = scoped_entry.get("telemetry_frame", telemetry_document.get("frame"))
+    active_ids = _string_list(
+        telemetry_document.get("active_modulation_ids", ())
+    )
+    if update_id and update_id not in active_ids:
+        active_ids.append(update_id)
+    return (
+        {
+            "frame": frame,
+            "active_modulation_ids": active_ids,
+            "managers": {"OperationDirector": scoped_entry},
+        },
+        scoped_entry,
+    )
+
+
+def _micromachine_operation_signal(
+    entry: Mapping[str, object],
+    section_name: str,
+    *,
+    boolean_keys: Sequence[str],
+    frame_keys: Sequence[str] = (),
+    count_keys: Sequence[str] = (),
+    accepted_statuses: Sequence[str] = (),
+) -> tuple[bool, dict[str, object]]:
+    section = entry.get(section_name)
+    section_payload = dict(section) if isinstance(section, Mapping) else {}
+    evidence = dict(section_payload)
+    sources = (section_payload, entry)
+    signaled = False
+    for source in sources:
+        if any(_truthy(source.get(key)) for key in boolean_keys):
+            signaled = True
+        if any(type(source.get(key)) is int for key in frame_keys):
+            signaled = True
+        if any(
+            isinstance(source.get(key), (int, float))
+            and not isinstance(source.get(key), bool)
+            and float(source.get(key)) > 0
+            for key in count_keys
+        ):
+            signaled = True
+        status = str(source.get("status", "") or "").strip().lower()
+        if status and status in accepted_statuses:
+            signaled = True
+    for key in (*boolean_keys, *frame_keys, *count_keys):
+        if key in entry and key not in evidence:
+            evidence[key] = entry[key]
+    return signaled, evidence
+
+
+def _micromachine_operation_command_execution(
+    *,
+    update_id: str,
+    operation_id: str,
+    operation_generation: int,
+    operation_telemetry: Mapping[str, object],
+    fallback: Mapping[str, object],
+) -> dict[str, object]:
+    if not operation_telemetry:
+        result = dict(fallback)
+        result.setdefault("operation_id", operation_id)
+        result.setdefault("operation_generation", operation_generation)
+        return result
+
+    received, received_evidence = _micromachine_operation_signal(
+        operation_telemetry,
+        "received",
+        boolean_keys=("received", "command_received"),
+        frame_keys=("received_frame", "command_received_frame"),
+        accepted_statuses=("received", "accepted", "parsed", "reduced"),
+    )
+    assigned, assignment_evidence = _micromachine_operation_signal(
+        operation_telemetry,
+        "assignment",
+        boolean_keys=("assigned", "assignment_ready"),
+        frame_keys=("assigned_frame", "assignment_frame"),
+        count_keys=("assigned_unit_count", "assigned_count"),
+        accepted_statuses=("assigned", "ready", "partial"),
+    )
+    submitted, submission_evidence = _micromachine_operation_signal(
+        operation_telemetry,
+        "submission",
+        boolean_keys=(
+            "submitted",
+            "command_submitted",
+            "action_issued",
+            "order_issued",
+        ),
+        frame_keys=("submitted_frame", "submission_frame", "action_frame"),
+        count_keys=("submitted_count", "command_submitted_count", "action_count"),
+        accepted_statuses=("submitted", "issued", "accepted", "success"),
+    )
+    moving, movement_evidence = _micromachine_operation_signal(
+        operation_telemetry,
+        "movement",
+        boolean_keys=("moving", "movement_observed", "target_reached"),
+        frame_keys=("movement_frame", "movement_observed_frame", "target_reached_frame"),
+        count_keys=("moved_unit_count",),
+        accepted_statuses=("moving", "observed", "target_reached"),
+    )
+    engaged, engagement_evidence = _micromachine_operation_signal(
+        operation_telemetry,
+        "engagement",
+        boolean_keys=("engaged", "engagement_observed", "damage_dealt"),
+        frame_keys=("engagement_frame", "engagement_observed_frame"),
+        count_keys=("engaged_unit_count", "attack_count"),
+        accepted_statuses=("engaged", "observed", "combat"),
+    )
+    terminal = operation_telemetry.get("terminal")
+    terminal_payload = dict(terminal) if isinstance(terminal, Mapping) else {}
+    terminal_state = str(
+        terminal_payload.get("state")
+        or terminal_payload.get("status")
+        or operation_telemetry.get("terminal_state")
+        or operation_telemetry.get("state")
+        or ""
+    ).strip().lower()
+    completed = terminal_state in {"completed", "succeeded", "success"}
+    superseded = terminal_state in {"superseded", "replaced", "cancelled", "canceled"}
+    expired = terminal_state == "expired"
+    blocked = terminal_state in {"blocked", "failed", "rejected"} or expired
+    effect_observed = moving or engaged
+
+    stages: list[dict[str, object]] = []
+    if received or assigned or submitted or effect_observed or terminal_state:
+        stages.extend(
+            (
+                {
+                    "name": "parsed",
+                    "ok": True,
+                    "manager": "OperationDirector",
+                    "evidence": received_evidence,
+                },
+                {
+                    "name": "reduced",
+                    "ok": True,
+                    "manager": "OperationDirector",
+                    "evidence": {"operation_id": operation_id},
+                },
+                {
+                    "name": "consumed_by_manager",
+                    "ok": True,
+                    "manager": "OperationDirector",
+                    "evidence": {"operation_id": operation_id},
+                },
+            )
+        )
+    if assigned:
+        stages.append(
+            {
+                "name": "queued_or_assigned",
+                "ok": True,
+                "manager": "OperationDirector",
+                "evidence": assignment_evidence,
+            }
+        )
+    if submitted:
+        stages.extend(
+            (
+                {
+                    "name": "order_issued",
+                    "ok": True,
+                    "manager": "OperationDirector",
+                    "evidence": submission_evidence,
+                },
+                {
+                    "name": "action_issued",
+                    "ok": True,
+                    "manager": "OperationDirector",
+                    "evidence": submission_evidence,
+                },
+            )
+        )
+    if effect_observed:
+        effect_evidence = {
+            "operation_id": operation_id,
+            "movement": movement_evidence if moving else {},
+            "engagement": engagement_evidence if engaged else {},
+            "confirmation_effect": (
+                "engagement observed"
+                if engaged
+                else "movement observed"
+            ),
+        }
+        stages.append(
+            {
+                "name": "effect_observed",
+                "ok": True,
+                "manager": "OperationDirector",
+                "evidence": effect_evidence,
+            }
+        )
+
+    state = "published"
+    if received:
+        state = "consumed_by_manager"
+    if assigned:
+        state = "queued_or_assigned"
+    if submitted:
+        state = "action_issued"
+    if effect_observed:
+        state = "effect_observed"
+    if terminal_state:
+        state = terminal_state
+    blocker_reason = str(
+        terminal_payload.get("reason")
+        or operation_telemetry.get("blocker_reason")
+        or operation_telemetry.get("reason")
+        or ""
+    )
+    return {
+        "command_id": update_id,
+        "operation_id": operation_id,
+        "operation_generation": operation_generation,
+        "state": state,
+        "completed": completed,
+        "failed": blocked,
+        "expired": expired,
+        "superseded": superseded,
+        "blocker_manager": "OperationDirector" if blocked else "",
+        "blocker_reason": blocker_reason,
+        "stages": stages,
+        "telemetry": dict(operation_telemetry),
+    }
+
+
+def _micromachine_operation_mission(
+    operation_update: Mapping[str, object],
+) -> str:
+    vector = _mapping_child(operation_update, "vector")
+    tactical_task = _mapping_child(vector, "tactical_task")
+    task_type = str(tactical_task.get("task_type", "") or "").lower()
+    goal = str(vector.get("goal", "") or "").lower()
+    command_layer = str(vector.get("command_layer", "") or "").lower()
+    if "scout" in task_type or any(
+        token in goal for token in ("scout", "recon", "정찰", "탐색")
+    ):
+        return "scouting"
+    if any(token in task_type for token in ("attack", "pressure", "harass", "contain")):
+        return "attack"
+    if any(token in goal for token in ("attack", "pressure", "rush", "공격", "압박", "러시", "러쉬")):
+        return "attack"
+    if any(token in goal for token in ("defend", "hold", "수비", "방어", "사수")):
+        return "defense"
+    if _mapping_child(vector, "emergency"):
+        return "emergency"
+    if command_layer == "macro" or _mapping_child(vector, "production"):
+        return "production"
+    return command_layer or "operation"
+
+
+def _micromachine_operation_disposition(
+    execution: Mapping[str, object],
+    *,
+    active: bool,
+    transport_status: str,
+) -> str:
+    state = str(execution.get("state", "") or "").strip().lower()
+    if execution.get("superseded") is True or state in {
+        "superseded",
+        "replaced",
+        "cancelled",
+        "canceled",
+    }:
+        return "superseded"
+    if execution.get("expired") is True or state == "expired":
+        return "expired"
+    if execution.get("failed") is True or state in {"blocked", "failed", "rejected"}:
+        return "blocked"
+    if execution.get("completed") is True or state in {
+        "completed",
+        "succeeded",
+        "success",
+    }:
+        return "completed"
+    if transport_status in {"publish_failed", "refused", "clarification_required"}:
+        return "blocked"
+    return "active" if active else "pending"
+
+
+def _micromachine_operation_status_payload(
+    operation_update: Mapping[str, object],
+    *,
+    operation_id: str,
+    operation_count: int,
+    active: bool,
+    telemetry: object | None,
+    blackboard_dir: str,
+    result_item: Mapping[str, object] | None,
+    compile_result: Mapping[str, object] | None,
+) -> dict[str, object]:
+    update_id = str(operation_update.get("update_id", "") or "").strip()
+    operation_vector = _mapping_child(operation_update, "vector")
+    operation_generation = (
+        operation_vector.get("generation")
+        if type(operation_vector.get("generation")) is int
+        and int(operation_vector.get("generation")) > 0
+        else 1
+    )
+    telemetry_document = _telemetry_to_mapping(telemetry)
+    operation_telemetry_document, operation_telemetry = (
+        _micromachine_operation_telemetry_document(
+            telemetry_document,
+            update_id=update_id,
+            operation_id=operation_id,
+            operation_generation=operation_generation,
+        )
+    )
+    consumption_status = _micromachine_consumption_status(
+        operation_update if active else None,
+        telemetry,
+    )
+    telemetry_active_ids = set(
+        _string_list(telemetry_document.get("active_modulation_ids", ()))
+    )
+    issued_at_frame = operation_update.get("issued_at_frame")
+    if (
+        active
+        and type(issued_at_frame) is not int
+        and update_id
+        and update_id in telemetry_active_ids
+    ):
+        consumption_status = "consumed"
+    evidence_log_snippets = _micromachine_recent_tactical_log_snippets(
+        blackboard_dir,
+        update_id=update_id,
+        limit=None,
+    )
+    use_legacy_telemetry = operation_count == 1 and operation_telemetry is None
+    intervention = _micromachine_intervention_summary(
+        operation_update,
+        telemetry if use_legacy_telemetry else operation_telemetry_document,
+        consumption_status=consumption_status,
+        log_snippets=evidence_log_snippets[-8:],
+        evidence_log_snippets=evidence_log_snippets,
+        compile_result=compile_result,
+    )
+    result_intervention = (
+        result_item.get("intervention")
+        if isinstance(result_item, Mapping)
+        else None
+    )
+    if (
+        not active
+        and operation_telemetry is None
+        and isinstance(result_intervention, Mapping)
+    ):
+        result_execution = result_intervention.get("command_execution")
+        result_operation_id = (
+            str(result_execution.get("operation_id", "") or "").strip()
+            if isinstance(result_execution, Mapping)
+            else ""
+        )
+        if operation_count == 1 or result_operation_id == operation_id:
+            intervention = dict(result_intervention)
+    fallback_execution = intervention.get("command_execution")
+    if not isinstance(fallback_execution, Mapping):
+        fallback_execution = {}
+    command_execution = _micromachine_operation_command_execution(
+        update_id=update_id,
+        operation_id=operation_id,
+        operation_generation=operation_generation,
+        operation_telemetry=operation_telemetry or {},
+        fallback=fallback_execution,
+    )
+    intervention = dict(intervention)
+    intervention["command_execution"] = command_execution
+    intervention["operation_id"] = operation_id
+    vector = _mapping_child(operation_update, "vector")
+    command_text = ""
+    if isinstance(result_item, Mapping):
+        command_text = str(result_item.get("command_text", "") or "")
+    if not command_text and isinstance(compile_result, Mapping):
+        command_text = str(compile_result.get("command_text", "") or "")
+    command_text = command_text or str(vector.get("goal", "") or "")
+    scope_id = (
+        _micromachine_blackboard_scope_id(blackboard_dir)
+        if blackboard_dir
+        else str(
+            result_item.get("blackboard_scope_id", "")
+            if isinstance(result_item, Mapping)
+            else ""
+        )
+    )
+    transport_status = (
+        "published"
+        if active
+        else str(
+            (
+                result_item.get("status")
+                if isinstance(result_item, Mapping)
+                else None
+            )
+            or "pending"
+        )
+    )
+    disposition = _micromachine_operation_disposition(
+        command_execution,
+        active=active,
+        transport_status=transport_status,
+    )
+    telemetry_frame = intervention.get("telemetry_frame")
+    telemetry_current = bool(
+        operation_telemetry is not None
+        and type(telemetry_frame) is int
+        and consumption_status == "consumed"
+    )
+    operation_key = (
+        f"{scope_id}\0{operation_id}\0{operation_generation}"
+        if scope_id
+        else f"{operation_id}\0{operation_generation}"
+    )
+    return {
+        "operation_key": operation_key,
+        "operation_id": operation_id,
+        "operation_generation": operation_generation,
+        "update_id": update_id,
+        "command_text": command_text,
+        "mission": _micromachine_operation_mission(operation_update),
+        "active": active,
+        "transport_status": transport_status,
+        "consumption_status": consumption_status,
+        "compile_result": (
+            dict(compile_result)
+            if isinstance(compile_result, Mapping)
+            else {}
+        ),
+        "update": dict(operation_update),
+        "intervention": intervention,
+        "command_queue": (
+            dict(result_item.get("command_queue"))
+            if isinstance(result_item, Mapping)
+            and isinstance(result_item.get("command_queue"), Mapping)
+            else {}
+        ),
+        "telemetry_frame": telemetry_frame,
+        "telemetry_current": telemetry_current,
+        "disposition": disposition,
+    }
+
+
+def _micromachine_operations_payload(
+    dashboard: Mapping[str, object],
+    *,
+    telemetry: object | None,
+    blackboard_dir: str,
+    compile_result: object | None,
+    result_stream: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    updates = dashboard.get("active_updates")
+    active_updates = [
+        dict(update)
+        for update in updates
+        if isinstance(update, Mapping)
+    ] if isinstance(updates, list) else []
+    stream_items = [dict(item) for item in result_stream if isinstance(item, Mapping)]
+    latest_compile = (
+        dict(compile_result)
+        if isinstance(compile_result, Mapping)
+        else None
+    )
+    latest_compile_update_id = (
+        str(latest_compile.get("update_id", "") or "").strip()
+        if latest_compile is not None
+        else ""
+    )
+    if latest_compile_update_id and not any(
+        _micromachine_payload_update_id(item) == latest_compile_update_id
+        for item in stream_items
+    ):
+        stream_items.append(
+            {
+                "status": str(latest_compile.get("status", "") or ""),
+                "command_text": str(latest_compile.get("command_text", "") or ""),
+                "compile_result": latest_compile,
+            }
+        )
+    stream_by_update_id = {
+        update_id: item
+        for item in stream_items
+        if (update_id := _micromachine_payload_update_id(item))
+    }
+    telemetry_active_update_ids = set(
+        _string_list(
+            _telemetry_to_mapping(telemetry).get(
+                "active_modulation_ids",
+                (),
+            )
+        )
+    )
+    operations: list[dict[str, object]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    active_update_ids: set[str] = set()
+    for update in active_updates:
+        update_id = str(update.get("update_id", "") or "").strip()
+        if not update_id:
+            continue
+        active_update_ids.add(update_id)
+        expanded = _micromachine_operation_updates(update)
+        result_item = stream_by_update_id.get(update_id)
+        scoped_compile = (
+            _micromachine_compile_result_for_update(
+                result_item.get("compile_result")
+                if isinstance(result_item, Mapping)
+                else latest_compile,
+                update_id=update_id,
+            )
+        )
+        for operation_id, operation_update in expanded:
+            operations.append(
+                _micromachine_operation_status_payload(
+                    operation_update,
+                    operation_id=operation_id,
+                    operation_count=len(expanded),
+                    active=True,
+                    telemetry=telemetry,
+                    blackboard_dir=blackboard_dir,
+                    result_item=result_item,
+                    compile_result=scoped_compile,
+                )
+            )
+            seen_keys.add((update_id, operation_id))
+
+    for result_item in stream_items:
+        update_id = _micromachine_payload_update_id(result_item)
+        if not update_id or update_id in active_update_ids:
+            continue
+        result_is_active = update_id in telemetry_active_update_ids
+        result_update = result_item.get("update")
+        compile_payload = result_item.get("compile_result")
+        if isinstance(result_update, Mapping):
+            update = dict(result_update)
+        else:
+            vector = (
+                compile_payload.get("vector")
+                if isinstance(compile_payload, Mapping)
+                else None
+            )
+            update = {
+                "update_id": update_id,
+                "vector": (
+                    dict(vector)
+                    if isinstance(vector, Mapping)
+                    else {"goal": str(result_item.get("command_text", "") or "")}
+                ),
+                "manager_bias_domains": [],
+            }
+        update.setdefault("update_id", update_id)
+        expanded = _micromachine_operation_updates(update)
+        scoped_compile = _micromachine_compile_result_for_update(
+            compile_payload,
+            update_id=update_id,
+        )
+        for operation_id, operation_update in expanded:
+            identity = (update_id, operation_id)
+            if identity in seen_keys:
+                continue
+            operations.append(
+                _micromachine_operation_status_payload(
+                    operation_update,
+                    operation_id=operation_id,
+                    operation_count=len(expanded),
+                    active=result_is_active,
+                    telemetry=telemetry,
+                    blackboard_dir=blackboard_dir,
+                    result_item=result_item,
+                    compile_result=scoped_compile,
+                )
+            )
+            seen_keys.add(identity)
+    return operations
+
+
+def _micromachine_operation_summary(
+    operations: Sequence[Mapping[str, object]],
+) -> dict[str, int]:
+    summary = {
+        "total": len(operations),
+        "active": 0,
+        "scouting": 0,
+        "attacking": 0,
+        "blocked": 0,
+        "completed": 0,
+    }
+    for operation in operations:
+        disposition = str(operation.get("disposition", "") or "")
+        mission = str(operation.get("mission", "") or "")
+        if disposition == "active":
+            summary["active"] += 1
+        if mission == "scouting":
+            summary["scouting"] += 1
+        if mission == "attack":
+            summary["attacking"] += 1
+        if disposition in {"blocked", "expired", "superseded"}:
+            summary["blocked"] += 1
+        if disposition == "completed":
+            summary["completed"] += 1
+    return summary
+
+
 def _micromachine_status_payload(
     dashboard: Mapping[str, object],
     *,
     telemetry: object | None = None,
     blackboard_dir: str = "",
     compile_result: object | None = None,
+    result_stream: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     """Promote latest blackboard state into the same top-level UI contract."""
 
@@ -968,11 +1752,34 @@ def _micromachine_status_payload(
     )
     if command_queue:
         intervention["command_queue"] = command_queue
+    operations = _micromachine_operations_payload(
+        dashboard,
+        telemetry=telemetry,
+        blackboard_dir=blackboard_dir,
+        compile_result=compile_result,
+        result_stream=result_stream,
+    )
+    representative = next(
+        (operation for operation in operations if operation.get("active") is True),
+        None,
+    )
+    if isinstance(representative, Mapping):
+        representative_update = representative.get("update")
+        representative_intervention = representative.get("intervention")
+        if isinstance(representative_update, Mapping):
+            latest = representative_update
+        if isinstance(representative_intervention, Mapping):
+            intervention = dict(representative_intervention)
+        consumption_status = str(
+            representative.get("consumption_status", consumption_status) or ""
+        )
     return {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
         "update": dict(latest) if latest is not None else None,
         "intervention": intervention,
+        "operations": operations,
+        "operation_summary": _micromachine_operation_summary(operations),
         "compile_result": dict(compile_result) if isinstance(compile_result, Mapping) else None,
         "latest_request": latest_request,
         "latest_request_consumption_status": (
@@ -1026,6 +1833,12 @@ def _micromachine_status_with_runtime_gate(
         telemetry=None,
         blackboard_dir=blackboard_dir,
         compile_result=result.get("compile_result"),
+        result_stream=(
+            result.get("modulation_results")
+            if isinstance(result.get("modulation_results"), Sequence)
+            and not isinstance(result.get("modulation_results"), (str, bytes))
+            else ()
+        ),
     )
     result.update(rebuilt)
     result["runtime_status"] = runtime_status
@@ -3713,6 +4526,10 @@ class SessionLoopBridge:
         compile_document = _read_micromachine_compile_result(root)
         compile_result = _latest_compile_result_payload(compile_document)
         compile_history = _read_micromachine_compile_result_history(root)
+        compile_result_stream = _micromachine_compile_result_stream(
+            compile_history,
+            blackboard_dir=root,
+        )
         result_metadata = _micromachine_compile_result_metadata(
             root,
             (
@@ -3730,12 +4547,10 @@ class SessionLoopBridge:
                 telemetry=telemetry,
                 blackboard_dir=root,
                 compile_result=compile_result,
+                result_stream=compile_result_stream,
             ),
         }
-        payload["modulation_results"] = _micromachine_compile_result_stream(
-            compile_history,
-            blackboard_dir=root,
-        )
+        payload["modulation_results"] = compile_result_stream
         self._update_micromachine_recent_lifecycle(root, payload)
         return payload
 
@@ -4262,8 +5077,9 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .space-background, .space-background::before, .space-background::after, .star-depth { display: none; }
     .language-switcher button, .connection-pill, #command-panel, #state-panel,
     .metric-card, .collapsible-panel, .message, #log, #command-form,
-    .runtime-mode-panel, .mode-option, .active-command-console,
-    .battlefield-control-overview, .command-console-field, .command-stage {
+    .runtime-mode-panel, .mode-option, .operation-console, .operation-card,
+    .active-command-console, .battlefield-control-overview,
+    .command-console-field, .command-stage {
       forced-color-adjust: auto; background: Canvas; color: CanvasText;
       border-color: CanvasText; box-shadow: none; backdrop-filter: none;
     }
@@ -4380,6 +5196,118 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .runtime-actions button {
     flex: 1 1 160px; margin-top: 0 !important; padding: 10px 12px !important;
     background: rgba(255, 255, 255, 0.9) !important; color: #071225 !important;
+  }
+  .operation-console {
+    order: 1; margin: 14px 18px 0; padding: 14px;
+    border: 1px solid rgba(136, 169, 255, 0.28); border-radius: 22px;
+    background:
+      linear-gradient(145deg, rgba(4, 11, 29, 0.96), rgba(10, 23, 46, 0.9)),
+      radial-gradient(circle at 10% 0, rgba(77, 238, 234, 0.14), transparent 36%);
+    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.24);
+  }
+  .operation-console-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 12px; margin-bottom: 10px;
+  }
+  .operation-console-title {
+    margin: 0; color: var(--ink); font-size: 0.94rem; font-weight: 900;
+  }
+  .operation-console-hint {
+    margin: 4px 0 0; color: var(--muted); font-size: 0.72rem; line-height: 1.4;
+  }
+  .operation-summary {
+    flex: 0 0 auto; padding: 6px 9px; border: 1px solid var(--line);
+    border-radius: 999px; color: var(--accent); background: rgba(77, 238, 234, 0.08);
+    font-size: 0.68rem; font-weight: 900; white-space: nowrap;
+  }
+  .operation-list {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+    gap: 10px; max-height: 390px; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+  .operation-empty {
+    margin: 0; padding: 12px; border: 1px dashed var(--line); border-radius: 14px;
+    color: var(--muted); font-size: 0.78rem; text-align: center;
+  }
+  .operation-card {
+    position: relative; min-width: 0; padding: 12px;
+    border: 1px solid rgba(136, 169, 255, 0.22); border-radius: 17px;
+    background: rgba(255, 255, 255, 0.045); overflow: hidden;
+  }
+  .operation-card::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--amber);
+  }
+  .operation-card.command-console-executing::before { background: var(--accent); }
+  .operation-card.command-console-verified::before { background: #4ade80; }
+  .operation-card.command-console-blocked::before { background: var(--red); }
+  .operation-card.command-console-superseded::before { background: var(--amber); }
+  .operation-card-header {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  }
+  .operation-card-kicker {
+    display: block; margin-bottom: 4px; color: var(--accent);
+    font-size: 0.62rem; font-weight: 900; letter-spacing: 0.11em;
+    text-transform: uppercase; overflow-wrap: anywhere;
+  }
+  .operation-card-title {
+    margin: 0; color: var(--ink); font-size: 0.86rem; line-height: 1.35;
+    font-weight: 900; overflow-wrap: anywhere;
+  }
+  .operation-card-state {
+    flex: 0 0 auto; padding: 5px 7px; border: 1px solid var(--line);
+    border-radius: 999px; color: var(--amber); background: rgba(245, 158, 11, 0.1);
+    font-size: 0.62rem; font-weight: 900; white-space: nowrap;
+  }
+  .operation-card.command-console-executing .operation-card-state {
+    color: var(--accent); border-color: rgba(77, 238, 234, 0.34);
+  }
+  .operation-card.command-console-verified .operation-card-state {
+    color: #4ade80; border-color: rgba(74, 222, 128, 0.34);
+  }
+  .operation-card.command-console-blocked .operation-card-state {
+    color: #ff9eb2; border-color: rgba(255, 107, 138, 0.38);
+  }
+  .operation-stage-line {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 5px; margin: 10px 0;
+  }
+  .operation-stage {
+    min-width: 0; padding: 5px 4px; border: 1px solid var(--line);
+    border-radius: 8px; color: var(--muted); background: rgba(255, 255, 255, 0.035);
+    font-size: 0.58rem; font-weight: 900; text-align: center;
+  }
+  .operation-stage.stage-current { color: var(--accent); border-color: rgba(77, 238, 234, 0.35); }
+  .operation-stage.stage-done { color: #7dd3fc; border-color: rgba(56, 189, 248, 0.3); }
+  .operation-stage.stage-verified { color: #7ee7b0; border-color: rgba(74, 222, 128, 0.3); }
+  .operation-stage.stage-blocked { color: #ff9eb2; border-color: rgba(255, 107, 138, 0.34); }
+  .operation-card-details {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+  }
+  .operation-card-detail {
+    min-width: 0; padding: 7px 8px; border: 1px solid rgba(136, 169, 255, 0.16);
+    border-radius: 10px; background: rgba(255, 255, 255, 0.035);
+  }
+  .operation-card-detail.operation-card-verification { grid-column: 1 / -1; }
+  .operation-card-detail span {
+    display: block; margin-bottom: 3px; color: var(--muted);
+    font-size: 0.58rem; font-weight: 900;
+  }
+  .operation-card-detail strong {
+    display: block; color: var(--ink); font-size: 0.68rem; line-height: 1.35;
+    font-weight: 800; overflow-wrap: anywhere;
+  }
+  .operation-card-actions {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px;
+  }
+  .operation-card-actions button {
+    margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px;
+    color: var(--ink); background: rgba(255, 255, 255, 0.07);
+    font-size: 0.62rem; font-weight: 900; cursor: pointer;
+  }
+  .operation-card-actions button:disabled { opacity: 0.48; cursor: not-allowed; }
+  .operation-card-actions .operation-cancel-button {
+    color: #fff1f4; border-color: rgba(255, 107, 138, 0.36);
   }
   .active-command-console {
     order: 1;
@@ -4878,11 +5806,14 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .chat-header { display: block; }
     .chat-header, .runtime-mode-panel, #command-form { padding-left: 14px; padding-right: 14px; }
     .quick-commands { margin-top: 12px; }
-    .runtime-mode-title, .command-console-header { display: block; }
+    .runtime-mode-title, .operation-console-header, .command-console-header { display: block; }
     .command-console-state { display: inline-block; margin-top: 9px; }
     .dashboard-grid, .mode-options, .micro-scope-grid, .micro-intervention-grid,
-    .provider-options, .command-console-grid, .battlefield-control-grid { grid-template-columns: 1fr; }
+    .provider-options, .operation-list, .operation-card-details,
+    .command-console-grid, .battlefield-control-grid { grid-template-columns: 1fr; }
     .command-stage-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .operation-console { margin: 10px 10px 0; padding: 12px; }
+    .operation-summary { display: inline-block; margin-top: 9px; }
     .active-command-console { margin: 10px 10px 0; padding: 13px; }
     .command-console-actions { display: grid; grid-template-columns: 1fr; }
     .command-console-actions button { width: 100%; }
@@ -4927,6 +5858,28 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         <button type="button" data-command="긴급 전군 후퇴해" data-i18n="quickPosition">전군 후퇴</button>
       </div>
     </div>
+    <section id="operation-console"
+             class="operation-console"
+             aria-labelledby="operation-console-title">
+      <div class="operation-console-header">
+        <div>
+          <h2 id="operation-console-title"
+              class="operation-console-title">병렬 전장 작전</h2>
+          <p class="operation-console-hint">정찰·공격·수비 작전을 서로 덮어쓰지 않고 실제 실행 증거별로 추적합니다.</p>
+        </div>
+        <span id="operation-summary"
+              class="operation-summary"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true">활성 작전 0개</span>
+      </div>
+      <div id="operation-list"
+           class="operation-list"
+           role="list"
+           aria-label="MicroMachine 병렬 작전 목록">
+        <p class="operation-empty">아직 추적 중인 작전이 없습니다.</p>
+      </div>
+    </section>
     <section id="active-command-console"
              class="active-command-console command-console-idle"
              aria-labelledby="command-console-title">
@@ -5274,6 +6227,7 @@ var microMachinePollBlackboardDir = null;
 var microMachineBlackboardContextGeneration = 0;
 var microMachineCommandAnnouncementSeq = 0;
 var microMachineSubmissionSeq = 0;
+var operationRecordSeq = 0;
 var microMachinePollInFlight = false;
 var microMachinePollQueued = false;
 var microMachinePollActiveRequestSeq = 0;
@@ -5294,6 +6248,9 @@ var pendingCommandSeq = 0;
 var pendingNodes = {};
 var pendingAggregateId = "pending-aggregate";
 var latestMicroMachinePlanText = "";
+var operationRecords = {};
+var operationRecordOrder = [];
+var operationConsoleScopeId = "";
 var activeCommandConsoleRecord = {
   pendingId: "",
   scopeId: "",
@@ -7626,6 +8583,7 @@ function beginActiveCommandConsole(text, pendingId) {
     submissionDelayed: false,
     announcementOrdinal: microMachineCommandAnnouncementSeq
   };
+  beginOperationRecord(text, pendingId);
   renderActiveCommandConsole(activeCommandConsoleRecord.data, true);
 }
 
@@ -7644,6 +8602,7 @@ function resetActiveCommandConsole() {
     submissionDelayed: false,
     announcementOrdinal: 0
   };
+  resetOperationConsoleRegistry();
   var consoleNode = document.getElementById("active-command-console");
   if (consoleNode) {
     consoleNode.className = "active-command-console command-console-idle";
@@ -7708,6 +8667,12 @@ function bindActiveCommandConsoleUpdate(text, pendingId, scopeId, updateId) {
   activeCommandConsoleRecord.pendingId = pendingId || activeCommandConsoleRecord.pendingId;
   activeCommandConsoleRecord.scopeId = String(scopeId || activeCommandConsoleRecord.scopeId || "");
   activeCommandConsoleRecord.updateId = String(updateId || activeCommandConsoleRecord.updateId || "");
+  bindOperationRecordUpdate(
+    activeCommandConsoleRecord.text,
+    pendingId,
+    activeCommandConsoleRecord.scopeId,
+    activeCommandConsoleRecord.updateId
+  );
   return true;
 }
 
@@ -8232,6 +9197,644 @@ function commandConsoleGoal(data, fallbackText) {
   );
 }
 
+function operationRecordKey(scopeId, operationId) {
+  return String(scopeId || "") + "\u0000" + String(operationId || "");
+}
+
+function operationPayloadScopeId(operation, data) {
+  var explicitScope = String(
+    operation && operation.blackboard_scope_id ||
+    data && data.blackboard_scope_id ||
+    ""
+  );
+  if (explicitScope) { return explicitScope; }
+  var operationKey = String(operation && operation.operation_key || "");
+  var separatorIndex = operationKey.indexOf("\u0000");
+  return separatorIndex >= 0 ? operationKey.slice(0, separatorIndex) : microMachineScopeId(data || {});
+}
+
+function operationPayloadUpdateId(operation) {
+  var update = (operation && operation.update) || {};
+  var compileResult = (operation && operation.compile_result) || {};
+  var intervention = (operation && operation.intervention) || {};
+  var execution = intervention.command_execution || {};
+  return String(
+    operation && operation.update_id ||
+    update.update_id ||
+    compileResult.update_id ||
+    execution.command_id ||
+    ""
+  );
+}
+
+function operationPayloadOperationId(operation) {
+  var update = (operation && operation.update) || {};
+  var vector = update.vector || {};
+  var intervention = (operation && operation.intervention) || {};
+  var execution = intervention.command_execution || {};
+  return String(
+    operation && operation.operation_id ||
+    execution.operation_id ||
+    intervention.operation_id ||
+    update.operation_id ||
+    vector.operation_id ||
+    operationPayloadUpdateId(operation) ||
+    ""
+  );
+}
+
+function commandOperationPayloads(data) {
+  if (!data || typeof data !== "object") { return []; }
+  if (Array.isArray(data.operations) && data.operations.length) {
+    return data.operations.filter(function(operation) {
+      return operation && typeof operation === "object";
+    });
+  }
+  var payloads = [];
+  var updateIds = commandConsoleDataUpdateIds(data);
+  if (updateIds.length || data.command_text) {
+    var updateId = commandConsolePreferredUpdateId(data) || updateIds[0] || "";
+    payloads.push({
+      operation_id: updateId,
+      update_id: updateId,
+      command_text: data.command_text || "",
+      transport_status: data.status || "",
+      consumption_status: data.consumption_status || "",
+      compile_result: data.compile_result || {},
+      update: data.update || {},
+      intervention: data.intervention || {},
+      command_queue: data.command_queue || {},
+      telemetry_frame: commandConsoleTelemetryFrame(data),
+      disposition: ""
+    });
+  }
+  if (!payloads.length && Array.isArray(data.modulation_results)) {
+    data.modulation_results.forEach(function(result) {
+      commandOperationPayloads(result).forEach(function(operation) {
+        payloads.push(operation);
+      });
+    });
+  }
+  return payloads;
+}
+
+function commandOperationData(operation, parentData) {
+  var operationId = operationPayloadOperationId(operation);
+  var updateId = operationPayloadUpdateId(operation);
+  var scopeId = operationPayloadScopeId(operation, parentData);
+  var intervention = Object.assign({}, operation.intervention || {});
+  if (
+    (intervention.telemetry_frame === null ||
+      intervention.telemetry_frame === undefined ||
+      intervention.telemetry_frame === "") &&
+    operation.telemetry_frame !== null &&
+    operation.telemetry_frame !== undefined
+  ) {
+    intervention.telemetry_frame = operation.telemetry_frame;
+  }
+  var disposition = String(operation.disposition || "");
+  var status = String(
+    operation.transport_status ||
+    operation.status ||
+    parentData && parentData.status ||
+    ""
+  );
+  if (disposition === "superseded") { status = "superseded"; }
+  if (
+    disposition === "blocked" &&
+    !(intervention.command_execution && intervention.command_execution.failed)
+  ) {
+    status = "publish_failed";
+  }
+  return {
+    status: status,
+    command_text: String(operation.command_text || ""),
+    consumption_status: String(operation.consumption_status || ""),
+    compile_result: operation.compile_result || {},
+    latest_request: operation.latest_request || null,
+    update: operation.update || {},
+    intervention: intervention,
+    command_queue: operation.command_queue || {},
+    dashboard: parentData && parentData.dashboard || {},
+    blackboard_scope_id: scopeId,
+    operation_id: operationId,
+    operation_key: String(
+      operation.operation_key ||
+      operationRecordKey(scopeId, operationId)
+    ),
+    operation_disposition: disposition,
+    operation_mission: String(operation.mission || "operation"),
+    telemetry_current: operation.telemetry_current === true
+  };
+}
+
+function operationRecordDisposition(model, data) {
+  if (model.effectObserved) { return "completed"; }
+  if (model.superseded) { return "superseded"; }
+  if (model.blocked) {
+    return data.operation_disposition === "expired" ? "expired" : "blocked";
+  }
+  return String(data.operation_disposition || "active");
+}
+
+function resetOperationConsoleRegistry() {
+  operationRecords = {};
+  operationRecordOrder = [];
+  operationConsoleScopeId = "";
+  var list = document.getElementById("operation-list");
+  if (list) {
+    list.textContent = "";
+    var empty = document.createElement("p");
+    empty.className = "operation-empty";
+    empty.textContent = commandUiText(
+      "아직 추적 중인 작전이 없습니다.",
+      "No operations are being tracked yet.",
+      "尚无正在跟踪的作战。"
+    );
+    list.appendChild(empty);
+  }
+  setMicroMachineText(
+    "operation-summary",
+    commandUiText("활성 작전 0개", "0 active operations", "0 个活跃作战")
+  );
+}
+
+function beginOperationRecord(text, pendingId) {
+  operationRecordSeq += 1;
+  var clientId = String(pendingId || ("client-operation-" + operationRecordSeq));
+  var key = operationRecordKey("pending", clientId);
+  operationRecords[key] = {
+    key: key,
+    pendingId: clientId,
+    scopeId: "",
+    updateId: "",
+    operationId: clientId,
+    text: String(text || ""),
+    data: {
+      status: "queued",
+      command_text: String(text || ""),
+      consumption_status: "pending_compile",
+      operation_id: clientId
+    },
+    stageRank: 0,
+    telemetryFrame: -1,
+    terminal: false,
+    disposition: "pending",
+    createdAt: Date.now(),
+    domId: "operation-card-" + operationRecordSeq,
+    node: null
+  };
+  operationRecordOrder.push(key);
+  renderOperationRecords();
+  return operationRecords[key];
+}
+
+function rekeyOperationRecord(record, newKey) {
+  if (!record || !newKey || record.key === newKey) { return record; }
+  var oldKey = record.key;
+  delete operationRecords[oldKey];
+  record.key = newKey;
+  operationRecords[newKey] = record;
+  var index = operationRecordOrder.indexOf(oldKey);
+  if (index >= 0) {
+    operationRecordOrder[index] = newKey;
+  }
+  return record;
+}
+
+function bindOperationRecordUpdate(text, pendingId, scopeId, updateId) {
+  var record = null;
+  Object.keys(operationRecords).some(function(key) {
+    var candidate = operationRecords[key];
+    if (
+      candidate &&
+      candidate.pendingId &&
+      pendingId &&
+      candidate.pendingId === pendingId
+    ) {
+      record = candidate;
+      return true;
+    }
+    return false;
+  });
+  if (!record) { return false; }
+  record.text = String(text || record.text || "");
+  record.scopeId = String(scopeId || record.scopeId || "");
+  record.updateId = String(updateId || record.updateId || "");
+  if (record.updateId) {
+    record.operationId = record.updateId;
+    rekeyOperationRecord(
+      record,
+      operationRecordKey(record.scopeId, record.operationId)
+    );
+  }
+  renderOperationRecords();
+  return true;
+}
+
+function operationRecordForCandidate(key, updateId) {
+  if (operationRecords[key]) { return operationRecords[key]; }
+  var match = null;
+  Object.keys(operationRecords).some(function(recordKey) {
+    var candidate = operationRecords[recordKey];
+    if (
+      candidate &&
+      updateId &&
+      candidate.updateId === updateId &&
+      (
+        candidate.pendingId ||
+        !candidate.operationId ||
+        candidate.operationId === updateId
+      )
+    ) {
+      match = candidate;
+      return true;
+    }
+    return false;
+  });
+  return match;
+}
+
+function reconcileOperationRecord(operation, parentData) {
+  var data = commandOperationData(operation, parentData);
+  var operationId = String(data.operation_id || "");
+  var updateId = operationPayloadUpdateId(operation);
+  var scopeId = String(data.blackboard_scope_id || "");
+  if (!operationId) { return null; }
+  var key = String(
+    data.operation_key ||
+    operationRecordKey(scopeId, operationId)
+  );
+  var record = operationRecordForCandidate(key, updateId);
+  var model = commandConsoleStageModel(data);
+  var telemetryFrame = commandConsoleTelemetryFrame(data);
+  var stageRank = commandConsoleStageRank(model);
+  if (record && record.terminal) {
+    return record;
+  }
+  if (
+    record &&
+    telemetryFrame >= 0 &&
+    record.telemetryFrame >= 0 &&
+    telemetryFrame < record.telemetryFrame
+  ) {
+    return record;
+  }
+  if (record && stageRank < record.stageRank) {
+    return record;
+  }
+  if (!record) {
+    operationRecordSeq += 1;
+    record = {
+      key: key,
+      pendingId: "",
+      scopeId: scopeId,
+      updateId: updateId,
+      operationId: operationId,
+      text: "",
+      data: null,
+      stageRank: 0,
+      telemetryFrame: -1,
+      terminal: false,
+      disposition: "pending",
+      createdAt: Date.now(),
+      domId: "operation-card-" + operationRecordSeq,
+      node: null
+    };
+    operationRecords[key] = record;
+    operationRecordOrder.push(key);
+  } else {
+    rekeyOperationRecord(record, key);
+  }
+  record.pendingId = "";
+  record.scopeId = scopeId || record.scopeId;
+  record.updateId = updateId || record.updateId;
+  record.operationId = operationId;
+  record.text = String(
+    data.command_text ||
+    commandConsoleGoal(data, record.text) ||
+    record.text ||
+    operationId
+  );
+  record.data = data;
+  record.stageRank = Math.max(record.stageRank, stageRank);
+  record.telemetryFrame = Math.max(record.telemetryFrame, telemetryFrame);
+  record.terminal = model.terminal;
+  record.disposition = operationRecordDisposition(model, data);
+  return record;
+}
+
+function operationAppendDetail(container, label, value, extraClass) {
+  var detail = document.createElement("div");
+  detail.className = "operation-card-detail" + (extraClass ? " " + extraClass : "");
+  var labelNode = document.createElement("span");
+  labelNode.textContent = label;
+  var valueNode = document.createElement("strong");
+  valueNode.textContent = value;
+  detail.appendChild(labelNode);
+  detail.appendChild(valueNode);
+  container.appendChild(detail);
+}
+
+function operationActionButton(record, label, action, handler) {
+  var button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.setAttribute("data-operation-action", action);
+  button.setAttribute("data-operation-key", record.key);
+  button.setAttribute(
+    "aria-label",
+    label + ": " + (record.text || record.operationId)
+  );
+  if (action === "cancel") {
+    button.className = "operation-cancel-button";
+    button.disabled = record.terminal;
+  }
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function focusOperationRecord(record) {
+  if (!record || !record.data) { return; }
+  microMachineCommandAnnouncementSeq += 1;
+  activeCommandConsoleRecord = {
+    pendingId: "",
+    scopeId: record.scopeId,
+    updateId: record.updateId,
+    text: record.text,
+    state: "interpreting",
+    data: record.data,
+    startedAt: record.createdAt,
+    stageRank: record.stageRank,
+    telemetryFrame: record.telemetryFrame,
+    observationTimedOut: false,
+    submissionDelayed: false,
+    announcementOrdinal: microMachineCommandAnnouncementSeq
+  };
+  renderActiveCommandConsole(record.data, true);
+}
+
+function renderOperationCard(record) {
+  var data = record.data || {
+    status: "queued",
+    command_text: record.text,
+    consumption_status: "pending_compile",
+    operation_id: record.operationId
+  };
+  var model = commandConsoleStageModel(data);
+  var card = record.node || document.createElement("article");
+  record.node = card;
+  card.textContent = "";
+  card.id = record.domId;
+  card.className = commandConsoleClassName(model).replace(
+    "active-command-console",
+    "operation-card"
+  );
+  card.setAttribute("role", "listitem");
+  card.setAttribute("data-operation-key", record.key);
+  card.setAttribute("data-operation-id", record.operationId);
+  card.setAttribute("aria-labelledby", record.domId + "-title");
+
+  var header = document.createElement("div");
+  header.className = "operation-card-header";
+  var titleGroup = document.createElement("div");
+  var kicker = document.createElement("span");
+  kicker.className = "operation-card-kicker";
+  kicker.textContent = String(data.operation_mission || "operation") +
+    " · " + record.operationId;
+  var title = document.createElement("h3");
+  title.id = record.domId + "-title";
+  title.className = "operation-card-title";
+  title.textContent = record.text || commandConsoleGoal(data, record.operationId);
+  titleGroup.appendChild(kicker);
+  titleGroup.appendChild(title);
+  var state = document.createElement("span");
+  state.id = record.domId + "-status";
+  state.className = "operation-card-state";
+  state.setAttribute("role", "status");
+  state.setAttribute("aria-live", "polite");
+  state.setAttribute("aria-atomic", "true");
+  state.textContent = commandConsoleStateLabel(model);
+  header.appendChild(titleGroup);
+  header.appendChild(state);
+  card.appendChild(header);
+
+  var stageLine = document.createElement("div");
+  stageLine.className = "operation-stage-line";
+  stageLine.setAttribute("role", "list");
+  [
+    ["interpret", commandUiText("해석", "Interpret", "解析")],
+    ["assign", commandUiText("배정", "Assign", "分配")],
+    ["execute", commandUiText("제출", "Submit", "提交")],
+    ["verify", commandUiText("관측", "Observe", "观察")]
+  ].forEach(function(stageDefinition) {
+    var stageName = stageDefinition[0];
+    var stage = document.createElement("span");
+    var stageState = commandConsoleStageState(stageName, model);
+    stage.className = "operation-stage " + stageState;
+    stage.setAttribute("role", "listitem");
+    stage.setAttribute(
+      "aria-current",
+      stageState === "stage-current" ? "step" : "false"
+    );
+    stage.textContent = stageDefinition[1];
+    stageLine.appendChild(stage);
+  });
+  card.appendChild(stageLine);
+
+  var details = document.createElement("div");
+  details.className = "operation-card-details";
+  operationAppendDetail(
+    details,
+    commandUiText("배정 전력", "Assigned force", "已分配兵力"),
+    commandConsoleAssignedForce(model)
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("실제 SC2 명령", "Actual SC2 command", "实际 SC2 命令"),
+    commandConsoleActualAction(model)
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("목표", "Target", "目标"),
+    commandConsoleTarget(data, model)
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("실행 증거", "Execution evidence", "执行证据"),
+    commandConsoleVerification(data, model),
+    "operation-card-verification"
+  );
+  card.appendChild(details);
+
+  var actions = document.createElement("div");
+  actions.className = "operation-card-actions";
+  actions.appendChild(
+    operationActionButton(
+      record,
+      commandUiText("대표 보기", "View", "查看"),
+      "view",
+      function() { focusOperationRecord(record); }
+    )
+  );
+  actions.appendChild(
+    operationActionButton(
+      record,
+      commandUiText("수정", "Revise", "修改"),
+      "revise",
+      function() {
+        var input = document.getElementById("command-input");
+        if (!input) { return; }
+        input.value = record.text || "";
+        input.focus();
+      }
+    )
+  );
+  actions.appendChild(
+    operationActionButton(
+      record,
+      commandUiText("작전 취소", "Cancel operation", "取消作战"),
+      "cancel",
+      function() {
+        if (record.terminal) { return; }
+        submitCommanderControlOrder(
+          currentLang === "en"
+            ? "Cancel operation " + record.operationId
+            : (currentLang === "zh"
+              ? "取消作战 " + record.operationId
+              : "작전 " + record.operationId + " 취소해")
+        );
+      }
+    )
+  );
+  card.appendChild(actions);
+  return card;
+}
+
+function pruneOperationRecords() {
+  var maximumRecords = 24;
+  if (operationRecordOrder.length <= maximumRecords) { return; }
+  var removable = operationRecordOrder.filter(function(key) {
+    return operationRecords[key] && operationRecords[key].terminal;
+  });
+  while (
+    operationRecordOrder.length > maximumRecords &&
+    removable.length
+  ) {
+    var key = removable.shift();
+    delete operationRecords[key];
+    var index = operationRecordOrder.indexOf(key);
+    if (index >= 0) { operationRecordOrder.splice(index, 1); }
+  }
+}
+
+function renderOperationRecords() {
+  var list = document.getElementById("operation-list");
+  if (!list) { return; }
+  pruneOperationRecords();
+  list.textContent = "";
+  var visibleRecords = operationRecordOrder.map(function(key) {
+    return operationRecords[key];
+  }).filter(function(record) {
+    return Boolean(record);
+  });
+  if (!visibleRecords.length) {
+    var empty = document.createElement("p");
+    empty.className = "operation-empty";
+    empty.textContent = commandUiText(
+      "아직 추적 중인 작전이 없습니다.",
+      "No operations are being tracked yet.",
+      "尚无正在跟踪的作战。"
+    );
+    list.appendChild(empty);
+  } else {
+    visibleRecords.forEach(function(record) {
+      list.appendChild(renderOperationCard(record));
+    });
+  }
+  var activeCount = visibleRecords.filter(function(record) {
+    return !record.terminal;
+  }).length;
+  var blockedCount = visibleRecords.filter(function(record) {
+    return record.disposition === "blocked" ||
+      record.disposition === "expired" ||
+      record.disposition === "superseded";
+  }).length;
+  setMicroMachineText(
+    "operation-summary",
+    commandUiText(
+      "활성 " + activeCount + " · 종료/차단 " + blockedCount,
+      activeCount + " active · " + blockedCount + " terminal/blocked",
+      "活跃 " + activeCount + " · 结束/受阻 " + blockedCount
+    )
+  );
+}
+
+function renderOperationConsole(data) {
+  if (!data || typeof data !== "object") { return false; }
+  var operations = commandOperationPayloads(data);
+  var scopeId = microMachineScopeId(data);
+  if (!scopeId && operations.length) {
+    scopeId = operationPayloadScopeId(operations[0], data);
+  }
+  if (
+    operationConsoleScopeId &&
+    scopeId &&
+    operationConsoleScopeId !== scopeId
+  ) {
+    return false;
+  }
+  if (!operationConsoleScopeId && scopeId) {
+    operationConsoleScopeId = scopeId;
+  }
+  operations.forEach(function(operation) {
+    reconcileOperationRecord(operation, data);
+  });
+  renderOperationRecords();
+  return Boolean(operations.length);
+}
+
+function renderOperationFailure(text, error, pendingId) {
+  var record = null;
+  Object.keys(operationRecords).some(function(key) {
+    var candidate = operationRecords[key];
+    if (candidate && candidate.pendingId === pendingId) {
+      record = candidate;
+      return true;
+    }
+    return false;
+  });
+  var operationId = record ? record.operationId : String(pendingId || "");
+  reconcileOperationRecord(
+    {
+      operation_id: operationId,
+      update_id: record ? record.updateId : "",
+      command_text: String(text || record && record.text || ""),
+      transport_status: "publish_failed",
+      compile_result: {
+        status: "refused",
+        refusal_reason: error && error.message ? error.message : String(error || "")
+      },
+      intervention: {
+        command_execution: {
+          command_id: record ? record.updateId : "",
+          operation_id: operationId,
+          state: "failed",
+          failed: true,
+          completed: false,
+          expired: false,
+          blocker_manager: "CommandGateway",
+          blocker_reason: error && error.message ? error.message : String(error || ""),
+          stages: []
+        }
+      },
+      disposition: "blocked"
+    },
+    { blackboard_scope_id: record ? record.scopeId : "" }
+  );
+  renderOperationRecords();
+}
+
 function renderActiveCommandConsole(data, force) {
   var consoleNode = document.getElementById("active-command-console");
   if (!consoleNode || !data || typeof data !== "object") { return; }
@@ -8349,6 +9952,7 @@ function renderActiveCommandFailure(text, error, pendingId) {
   }
   activeCommandConsoleRecord.text = String(text || activeCommandConsoleRecord.text || "");
   var message = error && error.message ? error.message : String(error || "");
+  renderOperationFailure(activeCommandConsoleRecord.text, error, pendingId);
   renderActiveCommandConsole({
     command_text: activeCommandConsoleRecord.text,
     accepted: false,
@@ -8686,6 +10290,7 @@ function renderMicroMachineStatus(data) {
   if (!node) { return; }
   if (!data || data.enabled === false) {
     node.textContent = (data && data.error) || "MicroMachine modulation disabled.";
+    renderOperationConsole(data || {});
     renderActiveCommandConsole(data || {});
     renderMicroMachineIntervention(data || {});
     return;
@@ -8696,6 +10301,7 @@ function renderMicroMachineStatus(data) {
   modulationResults.forEach(function(result) {
     maybeAppendMicroMachineAsyncCompletion(result);
   });
+  renderOperationConsole(data);
   if (microMachineStatusIsStaleForActiveCommand(data)) {
     return;
   }
@@ -9636,6 +11242,15 @@ function markMicroMachineSubmitDelayed(text, pendingId) {
     return;
   }
   activeCommandConsoleRecord.submissionDelayed = true;
+  Object.keys(operationRecords).forEach(function(key) {
+    var record = operationRecords[key];
+    if (!record || record.pendingId !== pendingId) { return; }
+    record.data = Object.assign({}, record.data || {}, {
+      command_text: text,
+      command_console_submission_delayed: true
+    });
+  });
+  renderOperationRecords();
   renderActiveCommandConsole(Object.assign(
     {},
     activeCommandConsoleRecord.data || {},
@@ -9724,13 +11339,21 @@ function submitMicroMachineModulation(payload, options) {
         microMachineUpdateId(data || {}) ||
         ""
       );
-      if (responseUpdateId && responseOwnsActiveConsole) {
-        bindActiveCommandConsoleUpdate(
+      if (responseUpdateId) {
+        bindOperationRecordUpdate(
           payload.text || "",
           operationId,
           microMachineScopeId(data || {}),
           responseUpdateId
         );
+        if (responseOwnsActiveConsole) {
+          bindActiveCommandConsoleUpdate(
+            payload.text || "",
+            operationId,
+            microMachineScopeId(data || {}),
+            responseUpdateId
+          );
+        }
       }
       if (data && data.async_publish) {
         rememberPendingMicroMachineAsync(
@@ -9751,6 +11374,8 @@ function submitMicroMachineModulation(payload, options) {
       }
       if (responseOwnsActiveConsole) {
         safeRenderMicroMachineStatus(data);
+      } else {
+        renderOperationConsole(data);
       }
       if (options.clearInput && data.ok && responseOwnsActiveConsole) {
         options.clearInput.value = "";
@@ -9766,6 +11391,11 @@ function submitMicroMachineModulation(payload, options) {
       var failureOwnsActiveConsole = Boolean(
         !operationId ||
         activeCommandConsoleRecord.pendingId === operationId
+      );
+      renderOperationFailure(
+        payload.text || "",
+        error,
+        operationId || options.pendingId
       );
       if (statusNode && failureOwnsActiveConsole) {
         statusNode.textContent = t("microMachineFailed") + ": " + error.message;

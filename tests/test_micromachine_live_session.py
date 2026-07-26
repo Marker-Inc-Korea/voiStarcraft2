@@ -513,6 +513,238 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             emergency.command_queue["active_command_layers"],
         )
 
+    def test_parallel_operations_coexist_and_same_id_is_updated(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        recon = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "독립 정찰 작전",
+                    "command_layer": "operation",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "goal": "마린 2기로 적 본진 정찰",
+                            "command_layer": "operation",
+                            "tactical_task": {
+                                "task_type": "scout_with_units",
+                                "task_id": "recon-alpha",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "location_intent": "enemy_main",
+                                "min_units": 2,
+                                "max_units": 2,
+                                "allow_partial": False,
+                            },
+                            "scope": {
+                                "army_group": "scout",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "location_intent": "enemy_main",
+                                "min_units": 2,
+                                "max_units": 2,
+                                "allow_partial_scope": False,
+                            },
+                        }
+                    ],
+                }
+            ),
+        ).submit_text(
+            "마린 2기로 적 본진 정찰",
+            current_frame=100,
+            update_id="parallel-recon",
+        )
+        self.assertTrue(recon.ok, recon.to_dict())
+
+        assault = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "독립 공격 작전",
+                    "command_layer": "operation",
+                    "operations": [
+                        {
+                            "operation_id": "assault-bravo",
+                            "goal": "마린 4기로 적 멀티 공격",
+                            "command_layer": "operation",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "task_id": "assault-bravo",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "location_intent": "enemy_natural",
+                                "min_units": 4,
+                                "max_units": 4,
+                                "allow_partial": False,
+                            },
+                            "scope": {
+                                "army_group": "harass",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "location_intent": "enemy_natural",
+                                "min_units": 4,
+                                "max_units": 4,
+                                "allow_partial_scope": False,
+                            },
+                        }
+                    ],
+                }
+            ),
+        ).submit_text(
+            "마린 4기로 적 멀티 공격",
+            current_frame=120,
+            update_id="parallel-assault",
+        )
+
+        self.assertTrue(assault.ok, assault.to_dict())
+        self.assertEqual(
+            "upsert_operations",
+            assault.command_queue["layer_action"],
+        )
+        self.assertEqual(
+            ["recon-alpha", "assault-bravo"],
+            assault.command_queue["active_operation_ids"],
+        )
+        assert assault.update is not None
+        operations = {
+            operation.operation_id: operation
+            for operation in assault.update.vector.operations
+        }
+        self.assertEqual({"recon-alpha", "assault-bravo"}, set(operations))
+        self.assertEqual(
+            "enemy_main",
+            operations["recon-alpha"].scope.location_intent,
+        )
+        self.assertEqual(
+            "enemy_natural",
+            operations["assault-bravo"].scope.location_intent,
+        )
+        self.assertEqual(1, operations["recon-alpha"].generation)
+        self.assertEqual(1, operations["assault-bravo"].generation)
+
+        reinforced = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "공격 작전 증원",
+                    "command_layer": "operation",
+                    "operations": [
+                        {
+                            "operation_id": "assault-bravo",
+                            "goal": "마린 6기로 적 본진 공격",
+                            "command_layer": "operation",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "task_id": "assault-bravo",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "location_intent": "enemy_main",
+                                "min_units": 6,
+                                "max_units": 6,
+                                "allow_partial": False,
+                            },
+                            "scope": {
+                                "army_group": "harass",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "location_intent": "enemy_main",
+                                "min_units": 6,
+                                "max_units": 6,
+                                "allow_partial_scope": False,
+                            },
+                        }
+                    ],
+                }
+            ),
+        ).submit_text(
+            "assault-bravo를 마린 6기로 강화해서 본진 공격",
+            current_frame=140,
+            update_id="parallel-reinforce",
+        )
+
+        self.assertTrue(reinforced.ok, reinforced.to_dict())
+        self.assertEqual(
+            ["assault-bravo"],
+            reinforced.command_queue["updated_operation_ids"],
+        )
+        assert reinforced.update is not None
+        reinforced_operations = {
+            operation.operation_id: operation
+            for operation in reinforced.update.vector.operations
+        }
+        self.assertEqual({"recon-alpha", "assault-bravo"}, set(reinforced_operations))
+        self.assertEqual(
+            6,
+            reinforced_operations["assault-bravo"].tactical_task.min_units,
+        )
+        self.assertEqual(
+            "enemy_main",
+            reinforced_operations["assault-bravo"].target_intent.target_type
+            or reinforced_operations["assault-bravo"].scope.location_intent,
+        )
+        self.assertEqual(1, reinforced_operations["recon-alpha"].generation)
+        self.assertEqual(2, reinforced_operations["assault-bravo"].generation)
+
+    def test_parallel_operation_lifetime_uses_longest_operation_window(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        result = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "parallel recon and assault",
+                    "command_layer": "operation",
+                    "ttl_seconds": 120,
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "goal": "marine recon",
+                            "tactical_task": {
+                                "task_type": "scout_with_units",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "duration_seconds": 600,
+                                "min_units": 1,
+                                "max_units": 1,
+                            },
+                            "lifetime": {
+                                "mode": "until_completed",
+                                "completion_conditions": ["target_reached"],
+                            },
+                        },
+                        {
+                            "operation_id": "assault-bravo",
+                            "goal": "tank assault",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "unit_classes": ["TERRAN_SIEGETANK"],
+                                "duration_seconds": 900,
+                                "min_units": 1,
+                                "max_units": 1,
+                            },
+                            "lifetime": {
+                                "mode": "until_completed",
+                                "completion_conditions": ["target_reached"],
+                            },
+                        },
+                    ],
+                }
+            ),
+        ).submit_text(
+            "마린 정찰과 탱크 공격을 병렬로 수행해",
+            current_frame=100,
+            update_id="parallel-lifetime",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        self.assertEqual(900, result.command_queue["ttl_seconds"])
+        self.assertEqual("until_completed", result.command_queue["lifetime_mode"])
+        self.assertEqual(900, result.update.vector.ttl_seconds)
+        self.assertEqual("", result.update.vector.lifetime.mode)
+        self.assertEqual(
+            {"until_completed"},
+            {
+                operation.lifetime.mode
+                for operation in result.update.vector.operations
+            },
+        )
+        self.assertEqual(19_900, result.update.expires_at_frame)
+
     def test_second_micro_replaces_only_micro_and_preserves_operation(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         operation = MicroMachineLiveTextSession(
@@ -628,6 +860,68 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual("execute_ability", vector.tactical_task.task_type)
         self.assertEqual("micro-nuke-natural", vector.tactical_task.task_id)
         self.assertEqual("enemy_natural", vector.tactical_task.location_intent)
+
+    def test_operation_generation_high_water_survives_terminal_tombstone(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+
+        def submit(
+            *,
+            update_id: str,
+            current_frame: int,
+            completion_state: str = "active",
+        ):
+            return MicroMachineLiveTextSession(
+                backend,
+                StaticJsonPolicyModulationProvider(
+                    {
+                        "goal": "reusable operation id",
+                        "command_layer": "operation",
+                        "operations": [
+                            {
+                                "operation_id": "recon-alpha",
+                                "goal": "마린 정찰",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "unit_classes": ["TERRAN_MARINE"],
+                                    "min_units": 1,
+                                    "max_units": 1,
+                                },
+                                "lifetime": {
+                                    "mode": "until_completed",
+                                    "completion_state": completion_state,
+                                },
+                            }
+                        ],
+                    }
+                ),
+            ).submit_text(
+                "recon-alpha 상태 갱신",
+                current_frame=current_frame,
+                update_id=update_id,
+            )
+
+        first = submit(update_id="generation-one", current_frame=100)
+        terminal = submit(
+            update_id="generation-two-terminal",
+            current_frame=120,
+            completion_state="cancelled",
+        )
+        restarted = submit(
+            update_id="generation-three",
+            current_frame=140,
+        )
+
+        self.assertTrue(first.ok, first.to_dict())
+        self.assertTrue(terminal.ok, terminal.to_dict())
+        self.assertTrue(restarted.ok, restarted.to_dict())
+        assert first.update is not None
+        assert terminal.update is not None
+        assert restarted.update is not None
+        self.assertEqual(1, first.update.vector.operations[0].generation)
+        self.assertEqual(2, terminal.update.vector.operations[0].generation)
+        self.assertEqual(3, restarted.update.vector.operations[0].generation)
 
     def test_same_layer_operation_modifier_preserves_existing_task_context(
         self,
