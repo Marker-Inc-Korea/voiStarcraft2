@@ -268,6 +268,11 @@
       "path": "patches/0052-parallel-operations-ingame-hud.patch",
       "order": 52,
       "scope": "consume indexed parallel operations, aggregate every operation-scoped tactical production target, unit class, priority, and exact composition into prerequisite closure for Terran bio, Factory, Starport, Ghost, Armory, and Fusion Core lanes, maintain operation_id and generation scoped dynamic squads with exclusive unit-tag ownership, protect operation units from autonomous reassignment, execute scout, attack, and defend tasks through existing Squad micro, emit operation-scoped observed telemetry, and draw truthful in-game HUD lifecycle, route, and target state"
+    },
+    {
+      "path": "patches/0053-parallel-operation-lifecycle-review-closure.patch",
+      "order": 53,
+      "scope": "fail closed on empty policy update identity, exclude terminal, expired, and unsupported parallel operations from production, consume operation-scoped lifetime, deadline, completion, and strict partial-scope semantics, distinguish frame-zero command submission from missing evidence, release terminal ownership, and expose lifecycle and owned-unit telemetry for live verification"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

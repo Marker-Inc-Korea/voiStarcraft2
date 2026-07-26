@@ -871,6 +871,204 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertIn("commands[1]", output["refusal_reason"])
         self.assertIn("scout, attack, or defend", output["refusal_reason"])
 
+    def test_full_provider_accepts_each_supported_operation_task(self) -> None:
+        cases = (
+            ("recon-alpha", "scout_with_units", "enemy_main"),
+            ("assault-bravo", "pressure_with_main_army", "enemy_natural"),
+            ("defense-charlie", "defend_with_units", "home"),
+        )
+
+        for operation_id, task_type, location_intent in cases:
+            with self.subTest(task_type=task_type):
+                payload = {
+                    "status": "compiled",
+                    "assistant_message": "독립 작전을 편성합니다.",
+                    "modulation": {
+                        "goal": f"{task_type} operation",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "goal": f"{task_type} operation",
+                                "command_layer": "operation",
+                                "tactical_task": {
+                                    "task_type": task_type,
+                                    "unit_classes": ["TERRAN_MARINE"],
+                                    "location_intent": location_intent,
+                                    "min_units": 1,
+                                    "max_units": 1,
+                                },
+                                "scope": {
+                                    "unit_classes": ["TERRAN_MARINE"],
+                                    "location_intent": location_intent,
+                                    "min_units": 1,
+                                    "max_units": 1,
+                                },
+                            }
+                        ],
+                    },
+                }
+                interpreter, fake_client = _make_llm_interpreter(
+                    _tool_response(payload)
+                )
+
+                output = interpreter.propose_policy_modulation(
+                    types.SimpleNamespace(command_text=f"run {task_type}")
+                )
+
+                self.assertEqual("compiled", output["status"], output)
+                self.assertEqual(1, output["llm_attempt_count"])
+                self.assertEqual(1, len(fake_client.calls))
+                compiled = compile_policy_modulation_provider_output(output)
+                self.assertTrue(compiled.ok, compiled.to_dict())
+                assert compiled.vector is not None
+                self.assertEqual(1, len(compiled.vector.operations))
+                self.assertEqual(
+                    task_type,
+                    compiled.vector.operations[0].tactical_task.task_type,
+                )
+
+    def test_full_provider_accepts_mixed_supported_operations(self) -> None:
+        operations = [
+            {
+                "operation_id": "recon-alpha",
+                "goal": "마린 정찰",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "location_intent": "enemy_main",
+                },
+            },
+            {
+                "operation_id": "assault-bravo",
+                "goal": "탱크 공격",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_SIEGETANK"],
+                    "location_intent": "enemy_natural",
+                },
+            },
+            {
+                "operation_id": "defense-charlie",
+                "goal": "바이킹 수비",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "defend_with_units",
+                    "unit_classes": ["TERRAN_VIKINGFIGHTER"],
+                    "location_intent": "home",
+                },
+            },
+        ]
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰, 공격, 수비 작전을 동시에 편성합니다.",
+            "modulation": {
+                "goal": "parallel recon assault and defense",
+                "operations": operations,
+            },
+        }
+        interpreter, fake_client = _make_llm_interpreter(_tool_response(payload))
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="정찰대, 공격대, 수비대를 독립적으로 운용해"
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        self.assertEqual(1, output["llm_attempt_count"])
+        self.assertEqual(1, len(fake_client.calls))
+        compiled = compile_policy_modulation_provider_output(output)
+        self.assertTrue(compiled.ok, compiled.to_dict())
+        assert compiled.vector is not None
+        self.assertEqual(
+            [
+                "scout_with_units",
+                "pressure_with_main_army",
+                "defend_with_units",
+            ],
+            [
+                operation.tactical_task.task_type
+                for operation in compiled.vector.operations
+            ],
+        )
+
+    def test_full_provider_rejects_non_operation_tasks_fail_closed(self) -> None:
+        cases = (
+            (
+                "execute ability",
+                {
+                    "task_type": "execute_ability",
+                    "ability": "siege_mode",
+                    "unit_classes": ["TERRAN_SIEGETANK"],
+                },
+            ),
+            (
+                "macro",
+                {
+                    "task_type": "sustain_production",
+                    "production_targets": ["TERRAN_MARINE"],
+                },
+            ),
+            ("empty task type", {"task_type": ""}),
+            ("missing tactical task", None),
+        )
+
+        for case_name, tactical_task in cases:
+            with self.subTest(case_name=case_name):
+                operation = {
+                    "operation_id": "invalid-alpha",
+                    "goal": "invalid independent operation",
+                    "command_layer": "operation",
+                }
+                if tactical_task is not None:
+                    operation["tactical_task"] = tactical_task
+                payload = {
+                    "status": "compiled",
+                    "assistant_message": "독립 작전을 편성합니다.",
+                    "modulation": {
+                        "goal": "invalid parallel operation",
+                        "operations": [operation],
+                    },
+                }
+                interpreter, fake_client = _make_llm_interpreter(
+                    _tool_response(payload),
+                    _tool_response(payload),
+                )
+
+                with mock.patch(
+                    "starcraft_commander.llm_interpreter."
+                    "compile_policy_modulation_provider_output",
+                    side_effect=AssertionError(
+                        "invalid operations must fail before provider compile"
+                    ),
+                ) as compiler:
+                    output = interpreter.propose_policy_modulation(
+                        types.SimpleNamespace(
+                            command_text="run invalid independent operation"
+                        )
+                    )
+
+                self.assertEqual("refused", output["status"], output)
+                self.assertEqual("contract_error", output["failure_kind"])
+                self.assertEqual(2, output["llm_attempt_count"])
+                self.assertEqual(2, len(fake_client.calls))
+                compiler.assert_not_called()
+                self.assertNotIn("modulation", output)
+                self.assertIn(
+                    "operations[0] tactical_task.task_type",
+                    output["refusal_reason"],
+                )
+                self.assertIn(
+                    "scout, attack, or defend",
+                    output["refusal_reason"],
+                )
+                self.assertIn(
+                    "top-level modulation envelope",
+                    output["refusal_reason"],
+                )
+
     def test_compact_generated_operation_id_is_deterministic(self) -> None:
         payload = {
             "status": "compiled",
@@ -2267,6 +2465,20 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         operation_properties = rich_properties["operations"]["items"]["properties"]
         self.assertIn("operation_id", operation_properties)
         self.assertIn("tactical_task", operation_properties)
+        self.assertIn(
+            "tactical_task",
+            rich_properties["operations"]["items"]["required"],
+        )
+        operation_task_schema = operation_properties["tactical_task"]
+        self.assertIn("task_type", operation_task_schema["required"])
+        self.assertEqual(
+            {
+                "scout_with_units",
+                "pressure_with_main_army",
+                "defend_with_units",
+            },
+            set(operation_task_schema["properties"]["task_type"]["enum"]),
+        )
         self.assertIn("scope", operation_properties)
         self.assertIn("lifetime", operation_properties)
         self.assertIn("composition_requirements", operation_properties)

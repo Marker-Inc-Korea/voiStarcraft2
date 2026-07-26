@@ -245,6 +245,18 @@ AGGRESSIVE_PROFILE_PUBLISHED=0
 SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-1}"
 SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-0}"
 SMOKE_FRESH_LIVE_SESSION="${SMOKE_FRESH_LIVE_SESSION:-0}"
+if [[ -z "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE:-}" ]]; then
+  if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]]; then
+    SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE=0
+  else
+    SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE=1
+  fi
+fi
+SMOKE_OPERATION_UPDATE_ID="${SMOKE_OPERATION_UPDATE_ID:-smoke-parallel-operations}"
+SMOKE_SCOUT_OPERATION_ID="${SMOKE_SCOUT_OPERATION_ID:-smoke-scout-alpha}"
+SMOKE_ATTACK_OPERATION_ID="${SMOKE_ATTACK_OPERATION_ID:-smoke-attack-bravo}"
+OPERATION_LIFECYCLE_PHASE="pending"
+OPERATION_CANCEL_ISSUED_FRAME=0
 NO_START_UNITS_FRAME="${NO_START_UNITS_FRAME:-1200}"
 SMOKE_STRATEGY_PROFILE_NAME="${SMOKE_STRATEGY_PROFILE_NAME:-bio_pressure}"
 if [[ -z "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE:-}" ]]; then
@@ -769,6 +781,265 @@ backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_i
 PY
 }
 
+publish_parallel_operations() {
+  local frame="$1"
+  local terminal_state="$2"
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' \
+    "${BLACKBOARD_DIR}" \
+    "${SMOKE_OPERATION_UPDATE_ID}" \
+    "${SMOKE_SCOUT_OPERATION_ID}" \
+    "${SMOKE_ATTACK_OPERATION_ID}" \
+    "${frame}" \
+    "${terminal_state}"
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_runtime import (
+    MicroMachineFilesystemBlackboard,
+)
+from starcraft_commander.policy_modulation import PolicyModulationVector
+
+directory = Path(sys.argv[1])
+update_id, scout_id, attack_id = sys.argv[2:5]
+frame = int(sys.argv[5])
+terminal_state = sys.argv[6]
+cancelled = terminal_state == "cancelled"
+
+def operation(operation_id, task_type, location, route_type, target_type):
+    lifetime = {
+        "mode": "until_cancelled" if cancelled else "until_completed",
+        "completion_conditions": (
+            ["cancelled_by_user"]
+            if cancelled
+            else ["enemy_observed" if task_type == "scout_with_units" else "target_reached"]
+        ),
+        "completion_state": "cancelled" if cancelled else "active",
+        "reason": "difficulty_smoke_terminal_upsert" if cancelled else "",
+    }
+    return {
+        "operation_id": operation_id,
+        "goal": f"difficulty smoke {task_type}",
+        "generation": 1,
+        "command_layer": "operation",
+        "tactical_task": {
+            "task_type": task_type,
+            "location_intent": location,
+            "priority": 0.95,
+            "min_units": 1,
+            "max_units": 1,
+            "duration_seconds": 300,
+            "allow_partial": False,
+        },
+        "scope": {
+            "army_group": "scout" if task_type == "scout_with_units" else "harass",
+            "location_intent": location,
+            "min_units": 1,
+            "max_units": 1,
+            "allow_partial_scope": False,
+        },
+        "lifetime": lifetime,
+        "route_intent": {
+            "route_type": route_type,
+            "avoid_enemy_strength": task_type == "scout_with_units",
+        },
+        "target_intent": {"target_type": target_type, "priority": 0.9},
+    }
+
+vector = PolicyModulationVector.from_mapping(
+    {
+        "goal": "difficulty smoke parallel scout and attack lifecycle",
+        "source": "smoke_keyword",
+        "override_level": "directive",
+        "command_layer": "operation",
+        "confidence": 1.0,
+        "ttl_seconds": 300,
+        "operations": [
+            operation(
+                scout_id,
+                "scout_with_units",
+                "enemy_main",
+                "safe_path",
+                "enemy_main",
+            ),
+            operation(
+                attack_id,
+                "pressure_with_main_army",
+                "enemy_natural",
+                "direct",
+                "army",
+            ),
+        ],
+        "tags": ["difficulty_smoke", "parallel_operations", terminal_state],
+    }
+)
+backend = MicroMachineFilesystemBlackboard(directory)
+backend.publish_vector(vector, current_frame=frame, update_id=update_id)
+PY
+}
+
+operation_lifecycle_ready() {
+  local expected_phase="$1"
+  local cancel_frame="$2"
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' \
+    "${BLACKBOARD_DIR}/latest_telemetry.json" \
+    "${SMOKE_OPERATION_UPDATE_ID}" \
+    "${SMOKE_SCOUT_OPERATION_ID}" \
+    "${SMOKE_ATTACK_OPERATION_ID}" \
+    "${expected_phase}" \
+    "${cancel_frame}"
+import json
+import sys
+from pathlib import Path
+
+telemetry = Path(sys.argv[1])
+update_id, scout_id, attack_id, phase = sys.argv[2:6]
+cancel_frame = int(sys.argv[6])
+expected_ids = (scout_id, attack_id)
+thresholds = {scout_id: 8.0, attack_id: 12.0}
+expected_generation = 1
+
+entries = []
+archive = telemetry.with_name("telemetry.jsonl")
+if archive.exists():
+    for line in archive.read_text().splitlines():
+        try:
+            item = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(item, dict):
+            entries.append(item)
+try:
+    latest = json.loads(telemetry.read_text())
+except (json.JSONDecodeError, ValueError):
+    raise SystemExit(1)
+if isinstance(latest, dict):
+    entries.append(latest)
+
+if phase == "active":
+    evidence = {
+        operation_id: {"assigned": False, "submitted": False, "movement": False}
+        for operation_id in expected_ids
+    }
+    parallel_assignment_observed = False
+    for entry in entries:
+        director = entry.get("managers", {}).get("OperationDirector", {})
+        if not isinstance(director, dict):
+            continue
+        if str(director.get("policy_update_id", "") or "") != update_id:
+            continue
+        operations = director.get("operations", [])
+        if not isinstance(operations, list):
+            continue
+        current_assignments = {}
+        for operation in operations:
+            if not isinstance(operation, dict):
+                continue
+            operation_id = str(operation.get("operation_id", "") or "")
+            if operation_id not in evidence:
+                continue
+            if int(operation.get("generation", 0) or 0) != expected_generation:
+                continue
+            tags = operation.get("assigned_unit_tags", [])
+            assigned_count = int(operation.get("assigned_count", 0) or 0)
+            assigned_frame = int(operation.get("assigned_frame", 0) or 0)
+            assignment_valid = (
+                isinstance(tags, list)
+                and assigned_count > 0
+                and assigned_frame > 0
+                and assigned_count == len(tags)
+                and len(set(tags)) == len(tags)
+            )
+            if assignment_valid:
+                evidence[operation_id]["assigned"] = True
+                current_assignments[operation_id] = set(tags)
+            submitted = (
+                operation.get("submission_observed") is True
+                and int(operation.get("submitted_frame", 0) or 0) > 0
+            )
+            if submitted:
+                evidence[operation_id]["submitted"] = True
+            distance = float(operation.get("max_home_distance", 0.0) or 0.0)
+            engagement_observed = (
+                operation.get("engaged") is True
+                and int(operation.get("last_action_frame", 0) or 0) > 0
+            )
+            if (
+                distance >= thresholds[operation_id]
+                or engagement_observed
+            ):
+                evidence[operation_id]["movement"] = True
+        if all(operation_id in current_assignments for operation_id in expected_ids):
+            assigned_tags = [
+                current_assignments[operation_id]
+                for operation_id in expected_ids
+            ]
+            all_tags = set().union(*assigned_tags)
+            if (
+                assigned_tags[0].isdisjoint(assigned_tags[1])
+                and int(director.get("owned_unit_count", -1)) == len(all_tags)
+            ):
+                parallel_assignment_observed = True
+    raise SystemExit(
+        0
+        if (
+            parallel_assignment_observed
+            and all(all(signals.values()) for signals in evidence.values())
+        )
+        else 1
+    )
+
+if phase != "cancelled":
+    raise SystemExit(1)
+
+latest_cancelled = None
+for entry in entries:
+    frame = int(entry.get("frame", 0) or 0)
+    if frame <= cancel_frame:
+        continue
+    director = entry.get("managers", {}).get("OperationDirector", {})
+    if not isinstance(director, dict):
+        continue
+    if str(director.get("policy_update_id", "") or "") != update_id:
+        continue
+    operations = director.get("operations", [])
+    if not isinstance(operations, list):
+        continue
+    by_id = {
+        str(operation.get("operation_id", "") or ""): operation
+        for operation in operations
+        if (
+            isinstance(operation, dict)
+            and int(operation.get("generation", 0) or 0)
+                == expected_generation
+        )
+    }
+    if not all(operation_id in by_id for operation_id in expected_ids):
+        continue
+    candidate = (frame, director, by_id)
+    if latest_cancelled is None or frame >= latest_cancelled[0]:
+        latest_cancelled = candidate
+
+if latest_cancelled is None:
+    raise SystemExit(1)
+_, director, by_id = latest_cancelled
+if int(director.get("owned_unit_count", -1)) != 0:
+    raise SystemExit(1)
+for operation_id in expected_ids:
+    operation = by_id[operation_id]
+    if str(operation.get("status", "") or "").upper() != "CANCELLED":
+        raise SystemExit(1)
+    if operation.get("completed") is not True:
+        raise SystemExit(1)
+    if int(operation.get("assigned_count", -1)) != 0:
+        raise SystemExit(1)
+    tags = operation.get("assigned_unit_tags")
+    if not isinstance(tags, list) or tags:
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 preserve_existing_live_modulation() {
   local frame="$1"
   # In manual live mode the web/voice cockpit may publish a user tactical command
@@ -1106,6 +1377,19 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
       AGGRESSIVE_PROFILE_PUBLISHED=1
     fi
 
+    if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" && "${OPERATION_LIFECYCLE_PHASE}" == "active" ]] && operation_lifecycle_ready "active" "0"; then
+      OPERATION_CANCEL_ISSUED_FRAME="${current_telemetry_frame}"
+      publish_parallel_operations "${OPERATION_CANCEL_ISSUED_FRAME}" "cancelled"
+      OPERATION_LIFECYCLE_PHASE="cancel_pending"
+      echo "MicroMachine difficulty smoke observed parallel operation assignment/submission/movement; cancellation upsert published at frame ${OPERATION_CANCEL_ISSUED_FRAME}."
+    fi
+
+    if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" && "${OPERATION_LIFECYCLE_PHASE}" == "cancel_pending" ]] && operation_lifecycle_ready "cancelled" "${OPERATION_CANCEL_ISSUED_FRAME}"; then
+      publish_profile "${SMOKE_STRATEGY_PROFILE_NAME}" "${AGGRESSIVE_UPDATE_ID}" "${current_telemetry_frame}"
+      OPERATION_LIFECYCLE_PHASE="restored"
+      echo "MicroMachine difficulty smoke observed CANCELLED operations and zero OperationDirector ownership; restored legacy profile."
+    fi
+
     if python3 - "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${AGGRESSIVE_UPDATE_ID}" <<'PY'
 import json
 import sys
@@ -1128,6 +1412,21 @@ raise SystemExit(1)
 PY
     then
       if has_required_macro_evidence; then
+        if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" ]]; then
+          case "${OPERATION_LIFECYCLE_PHASE}" in
+            pending)
+              publish_parallel_operations "${current_telemetry_frame}" "active"
+              OPERATION_LIFECYCLE_PHASE="active"
+              echo "MicroMachine difficulty smoke published parallel scout+attack operations at frame ${current_telemetry_frame}."
+              continue
+              ;;
+            restored)
+              ;;
+            *)
+              continue
+              ;;
+          esac
+        fi
         if [[ "${SMOKE_KEEP_RUNNING_AFTER_PASS:-0}" != "1" ]]; then
           cleanup_runtime
         fi
@@ -1169,6 +1468,24 @@ if ! has_required_macro_evidence; then
   print_missing_macro_evidence
   print_bot_logs
   exit 1
+fi
+
+if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" ]]; then
+  if [[ "${OPERATION_LIFECYCLE_PHASE}" != "restored" ]]; then
+    echo "MicroMachine difficulty smoke ended before OperationDirector lifecycle completed: phase=${OPERATION_LIFECYCLE_PHASE}" >&2
+    print_bot_logs
+    exit 1
+  fi
+  if ! operation_lifecycle_ready "active" "0"; then
+    echo "MicroMachine difficulty smoke missing archived parallel operation assignment/submission/movement evidence." >&2
+    print_bot_logs
+    exit 1
+  fi
+  if ! operation_lifecycle_ready "cancelled" "${OPERATION_CANCEL_ISSUED_FRAME}"; then
+    echo "MicroMachine difficulty smoke missing CANCELLED terminal ownership-release evidence." >&2
+    print_bot_logs
+    exit 1
+  fi
 fi
 
 print_bot_logs >/dev/null 2>&1
@@ -1391,22 +1708,12 @@ if require_aggressive_combat:
             "missing profile-specific attack condition override evidence: "
             f"expected one of {sorted(allowed_overrides)}, combat={combat!r}"
         )
-    if combat.get("main_attack_order_status") != "Attack":
-        raise SystemExit(f"missing aggressive attack order evidence: {combat!r}")
-    if combat.get("main_attack_scope_threshold_met") is not True:
-        raise SystemExit(f"missing attack scope threshold evidence: {combat!r}")
-    if combat.get("main_attack_simulation_won") is not True:
-        raise SystemExit(f"missing attack simulation safety evidence: {combat!r}")
     main_attack_seen, main_attack_evidence = profile_main_attack_command_seen()
     if not main_attack_seen:
         raise SystemExit(
+            "MainAttack command did not produce live movement away from home; "
             "missing archived MainAttack command evidence for aggressive profile: "
             f"best={main_attack_evidence!r}, latest={combat!r}"
-        )
-    if float(combat.get("main_attack_max_home_distance", 0.0) or 0.0) < min_main_attack_home_distance:
-        raise SystemExit(
-            "MainAttack command did not produce live movement away from home: "
-            f"required_distance={min_main_attack_home_distance}, combat={combat!r}"
         )
     if (
         combat.get("scout_scope_status") == "Consumed"

@@ -392,6 +392,15 @@ DEFAULT_MICROMACHINE_PARALLEL_OPERATIONS_INGAME_HUD_PATCH: Final[Path] = (
     / "patches"
     / "0052-parallel-operations-ingame-hud.patch"
 )
+DEFAULT_MICROMACHINE_PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH: Final[
+    Path
+] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0053-parallel-operation-lifecycle-review-closure.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -571,6 +580,9 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_parallel_operations_ingame_hud_patch: Path = (
         DEFAULT_MICROMACHINE_PARALLEL_OPERATIONS_INGAME_HUD_PATCH
+    )
+    micromachine_parallel_operation_lifecycle_review_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -899,6 +911,11 @@ def build_micromachine_build_identity(
                 config.micromachine_parallel_operations_ingame_hud_patch
             )
         ),
+        "micromachine_parallel_operation_lifecycle_review_closure_patch_sha256": (
+            _sha256_file(
+                config.micromachine_parallel_operation_lifecycle_review_closure_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1163,6 +1180,9 @@ def build_micromachine_build_identity(
             ),
             "micromachine_parallel_operations_ingame_hud_patch": str(
                 config.micromachine_parallel_operations_ingame_hud_patch
+            ),
+            "micromachine_parallel_operation_lifecycle_review_closure_patch": str(
+                config.micromachine_parallel_operation_lifecycle_review_closure_patch
             ),
             "s2client_patch": str(config.s2client_patch),
             "hook_manifest": str(config.hook_manifest),
@@ -1601,6 +1621,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_PARALLEL_OPERATIONS_INGAME_HUD_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-parallel-operation-lifecycle-review-closure-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -1796,6 +1822,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             micromachine_parallel_operations_ingame_hud_patch=Path(
                 args.micromachine_parallel_operations_ingame_hud_patch
+            ),
+            micromachine_parallel_operation_lifecycle_review_closure_patch=Path(
+                args.micromachine_parallel_operation_lifecycle_review_closure_patch
             ),
             s2client_patch=Path(args.s2client_patch),
             hook_manifest=Path(args.hook_manifest),

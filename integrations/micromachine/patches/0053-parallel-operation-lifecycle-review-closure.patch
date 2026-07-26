@@ -1,0 +1,533 @@
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -177,6 +177,7 @@
+ 	float maxHomeDistance = 0.0f;
+ 	bool engaged = false;
+ 	bool completed = false;
++	bool submissionObserved = false;
+ 	std::string blockedReason;
+ 	std::string lastAction;
+ 
+@@ -184,6 +185,11 @@
+ 	std::string squadName;
+ 	std::string unitClasses;
+ 	std::string locationIntent;
++	std::string lifetimeMode;
++	std::string completionConditions;
++	int durationSeconds = 0;
++	uint64_t deadlineFrame = 0;
++	bool standing = false;
+ 	int minUnits = 1;
+ 	int maxUnits = 1;
+ 	bool allowPartial = true;
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2473,6 +2473,8 @@
+ 	}
+ 	else
+ 	{
++		operation.submissionObserved = false;
++		operation.submittedFrame = 0;
+ 		operation.status = "BLOCKED";
+ 	}
+ }
+@@ -2493,9 +2495,10 @@
+ 		return;
+ 	}
+ 	const uint32_t frame = m_bot.GetGameLoop();
+-	if (operation->submittedFrame == 0)
++	if (!operation->submissionObserved)
+ 	{
+ 		operation->submittedFrame = frame;
++		operation->submissionObserved = true;
+ 	}
+ 	if (operation->submittedPositions.find(unit->tag)
+ 		== operation->submittedPositions.end())
+@@ -2519,6 +2522,19 @@
+ 	const CCPosition home = voiHomePosition(m_bot);
+ 	for (auto & operation : m_voiOperations)
+ 	{
++		if (!operation.completed
++			&& !operation.standing
++			&& operation.deadlineFrame > 0
++			&& static_cast<uint64_t>(currentFrame)
++				> operation.deadlineFrame)
++		{
++			releaseVoiOperation(
++				operation,
++				"operation_deadline_expired",
++				true);
++			operation.status = "EXPIRED";
++			continue;
++		}
+ 		if (operation.completed
+ 			|| operation.squadName.empty()
+ 			|| !m_squadData.squadExists(operation.squadName))
+@@ -2566,7 +2582,7 @@
+ 		operation.assignedUnitTags = observedTags;
+ 		operation.assignedCount =
+ 			static_cast<int>(observedTags.size());
+-		if (operation.submittedFrame == 0
++		if (!operation.submissionObserved
+ 			|| currentFrame <= operation.submittedFrame
+ 			|| observedUnits.empty())
+ 		{
+@@ -2644,23 +2660,44 @@
+ 				observedUnits,
+ 				operation.targetPosition,
+ 				completionRadius) >= majority;
+-		bool completed = false;
+-		if (operation.taskType == "scout")
++		bool objectiveCompleted = false;
++		if (!operation.standing
++			&& operation.lifetimeMode != "until_cancelled")
+ 		{
+-			completed = targetReached;
+-		}
+-		else if (operation.taskType == "attack"
+-			&& targetReached
+-			&& !observedEnemy
+-			&& m_bot.Map().isExplored(
+-				operation.targetPosition))
+-		{
+-			completed = !operation.engaged
+-				|| (operation.lastEnemyFrame > 0
+-					&& currentFrame
+-						>= operation.lastEnemyFrame + 44u);
++			if (!operation.completionConditions.empty())
++			{
++				objectiveCompleted =
++					(voiCommaListContains(
++						operation.completionConditions,
++						"order_issued")
++						&& operation.submissionObserved)
++					|| (voiCommaListContains(
++						operation.completionConditions,
++						"target_reached")
++						&& targetReached)
++					|| (voiCommaListContains(
++						operation.completionConditions,
++						"enemy_observed")
++						&& observedEnemy);
++			}
++			else if (operation.taskType == "scout"
++				|| operation.taskType == "defend")
++			{
++				objectiveCompleted = targetReached;
++			}
++			else if (operation.taskType == "attack"
++				&& targetReached
++				&& !observedEnemy
++				&& m_bot.Map().isExplored(
++					operation.targetPosition))
++			{
++				objectiveCompleted = !operation.engaged
++					|| (operation.lastEnemyFrame > 0
++						&& currentFrame
++							>= operation.lastEnemyFrame + 44u);
++			}
+ 		}
+-		if (completed)
++		if (objectiveCompleted)
+ 		{
+ 			releaseVoiOperation(
+ 				operation,
+@@ -3186,14 +3223,62 @@
+ 					m_bot.Commander().getVoiPolicyInt(
+ 						prefix + ".max_units",
+ 						0))));
++		const bool hasScopeAllowPartial =
++			m_bot.Commander().hasVoiPolicyKey(
++				prefix + ".scope.allow_partial_scope");
++		const bool hasTaskAllowPartial =
++			m_bot.Commander().hasVoiPolicyKey(
++				prefix
++					+ ".tactical_task.allow_partial");
+ 		requested.allowPartial =
+-			m_bot.Commander().getVoiPolicyBool(
+-				prefix + ".tactical_task.allow_partial",
+-				m_bot.Commander().getVoiPolicyBool(
+-					prefix + ".scope.allow_partial",
+-					m_bot.Commander().getVoiPolicyBool(
++			hasScopeAllowPartial
++				? m_bot.Commander().getVoiPolicyBool(
++					prefix
++						+ ".scope.allow_partial_scope",
++					true)
++				: (hasTaskAllowPartial
++					? m_bot.Commander().getVoiPolicyBool(
++						prefix
++							+ ".tactical_task.allow_partial",
++						true)
++					: m_bot.Commander().getVoiPolicyBool(
+ 						prefix + ".allow_partial",
+-						true)));
++						true));
++		requested.lifetimeMode =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".lifetime.mode",
++				"until_completed");
++		requested.completionConditions =
++			m_bot.Commander().getVoiPolicyString(
++				prefix
++					+ ".lifetime.completion_conditions",
++				"");
++		requested.durationSeconds = std::max(
++			0,
++			m_bot.Commander().getVoiPolicyInt(
++				prefix
++					+ ".tactical_task.duration_seconds",
++				m_bot.Commander().getVoiPolicyInt(
++					prefix + ".scope.duration_seconds",
++					0)));
++		requested.standing =
++			requested.lifetimeMode == "standing_order"
++			|| requested.lifetimeMode == "until_cancelled";
++		if (!requested.standing
++			&& requested.durationSeconds > 0)
++		{
++			const uint64_t issuedAtFrame =
++				static_cast<uint64_t>(
++					std::max(
++						0,
++						m_bot.Commander().getVoiPolicyInt(
++							"issued_at_frame",
++							0)));
++			requested.deadlineFrame =
++				issuedAtFrame
++				+ static_cast<uint64_t>(
++					requested.durationSeconds) * 22u;
++		}
+ 
+ 		const std::string requirementCountValue =
+ 			m_bot.Commander().getVoiPolicyString(
+@@ -3390,6 +3475,10 @@
+ 			requestedStatus == "FAILED"
+ 			|| requestedStatus == "failed"
+ 			|| requestedCompletionState == "failed";
++		const bool requestedSuperseded =
++			requestedStatus == "SUPERSEDED"
++			|| requestedStatus == "superseded"
++			|| requestedCompletionState == "superseded";
+ 		if (rawOperationId.empty())
+ 		{
+ 			requested.status = "BLOCKED";
+@@ -3437,6 +3526,13 @@
+ 			requested.completed = true;
+ 			requested.blockedReason =
+ 				"failed_by_policy";
++		}
++		else if (requestedSuperseded)
++		{
++			requested.status = "SUPERSEDED";
++			requested.completed = true;
++			requested.blockedReason =
++				"superseded_by_policy";
+ 		}
+ 		else if (requestedCompleted)
+ 		{
+@@ -3511,6 +3607,12 @@
+ 		existing->routeType = requested.routeType;
+ 		existing->unitClasses = requested.unitClasses;
+ 		existing->locationIntent = requested.locationIntent;
++		existing->lifetimeMode = requested.lifetimeMode;
++		existing->completionConditions =
++			requested.completionConditions;
++		existing->durationSeconds = requested.durationSeconds;
++		existing->deadlineFrame = requested.deadlineFrame;
++		existing->standing = requested.standing;
+ 		existing->minUnits = requested.minUnits;
+ 		existing->maxUnits = requested.maxUnits;
+ 		existing->allowPartial = requested.allowPartial;
+@@ -3530,6 +3632,9 @@
+ 				requested.activeTargetPosition;
+ 			existing->routeStageComplete =
+ 				requested.routeStageComplete;
++			existing->submissionObserved = false;
++			existing->submittedFrame = 0;
++			existing->submittedPositions.clear();
+ 		}
+ 		if (requested.completed)
+ 		{
+@@ -3570,7 +3675,9 @@
+ 		<< "\"policy_update_id\":\""
+ 		<< voiOperationJsonEscape(
+ 			m_voiOperationPolicyUpdateId)
+-		<< "\",\"operations\":[";
++		<< "\",\"owned_unit_count\":"
++		<< m_voiOperationUnitOwners.size()
++		<< ",\"operations\":[";
+ 	for (size_t index = 0;
+ 		index < m_voiOperations.size();
+ 		++index)
+@@ -3613,11 +3720,26 @@
+ 			<< operation.targetX << ","
+ 			<< "\"target_y\":"
+ 			<< operation.targetY << ","
+-			<< "\"route_type\":\""
+-			<< voiOperationJsonEscape(
+-				operation.routeType)
+-			<< "\","
+-			<< "\"target_evidence\":\""
++				<< "\"route_type\":\""
++				<< voiOperationJsonEscape(
++					operation.routeType)
++				<< "\","
++				<< "\"lifetime_mode\":\""
++				<< voiOperationJsonEscape(
++					operation.lifetimeMode)
++				<< "\","
++				<< "\"completion_conditions\":\""
++				<< voiOperationJsonEscape(
++					operation.completionConditions)
++				<< "\","
++				<< "\"duration_seconds\":"
++				<< operation.durationSeconds << ","
++				<< "\"deadline_frame\":"
++				<< operation.deadlineFrame << ","
++				<< "\"standing\":"
++				<< (operation.standing ? "true" : "false")
++				<< ","
++				<< "\"target_evidence\":\""
+ 			<< voiOperationJsonEscape(
+ 				operation.targetEvidence)
+ 			<< "\","
+@@ -3625,8 +3747,13 @@
+ 			<< operation.receivedFrame << ","
+ 			<< "\"assigned_frame\":"
+ 			<< operation.assignedFrame << ","
+-			<< "\"submitted_frame\":"
+-			<< operation.submittedFrame << ","
++				<< "\"submitted_frame\":"
++				<< operation.submittedFrame << ","
++				<< "\"submission_observed\":"
++				<< (operation.submissionObserved
++					? "true"
++					: "false")
++				<< ","
+ 			<< "\"last_action_frame\":"
+ 			<< operation.lastActionFrame << ","
+ 			<< "\"max_home_distance\":"
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -68,6 +68,118 @@
+ 				0)));
+ }
+ 
++bool voiParallelOperationTerminalState(const std::string & value)
++{
++	return value == "COMPLETED"
++		|| value == "completed"
++		|| value == "CANCELLED"
++		|| value == "cancelled"
++		|| value == "EXPIRED"
++		|| value == "expired"
++		|| value == "FAILED"
++		|| value == "failed"
++		|| value == "SUPERSEDED"
++		|| value == "superseded";
++}
++
++bool voiParallelOperationIsActive(CCBot & bot, int operationIndex)
++{
++	if (!bot.Commander().isVoiPolicyActive()
++		|| operationIndex < 0
++		|| operationIndex >= voiParallelOperationCount(bot))
++	{
++		return false;
++	}
++
++	const std::string prefix =
++		"operations." + std::to_string(operationIndex);
++	const std::string operationId =
++		bot.Commander().getVoiPolicyString(
++			prefix + ".operation_id",
++			"");
++	const std::string taskType =
++		bot.Commander().getVoiPolicyString(
++			prefix + ".tactical_task.task_type",
++			"");
++	if (operationId.empty()
++		|| (taskType != "scout_with_units"
++			&& taskType != "pressure_with_main_army"
++			&& taskType != "defend_with_units")
++		|| bot.Commander().getVoiPolicyBool(
++			prefix + ".completed",
++			false)
++		|| bot.Commander().getVoiPolicyBool(
++			prefix + ".cancelled",
++			false)
++		|| voiParallelOperationTerminalState(
++			bot.Commander().getVoiPolicyString(
++				prefix + ".status",
++				""))
++		|| voiParallelOperationTerminalState(
++			bot.Commander().getVoiPolicyString(
++				prefix + ".lifetime.completion_state",
++				"active")))
++	{
++		return false;
++	}
++
++	const std::string lifetimeMode =
++		bot.Commander().getVoiPolicyString(
++			prefix + ".lifetime.mode",
++			"");
++	if (lifetimeMode == "standing_order"
++		|| lifetimeMode == "until_cancelled")
++	{
++		return true;
++	}
++
++	const int tacticalDurationSeconds = std::max(
++		0,
++		bot.Commander().getVoiPolicyInt(
++			prefix + ".tactical_task.duration_seconds",
++			0));
++	const int durationSeconds =
++		tacticalDurationSeconds > 0
++			? tacticalDurationSeconds
++			: std::max(
++				0,
++				bot.Commander().getVoiPolicyInt(
++					prefix + ".scope.duration_seconds",
++					0));
++	if (durationSeconds == 0)
++	{
++		return true;
++	}
++
++	const uint64_t issuedAtFrame =
++		static_cast<uint64_t>(
++			std::max(
++				0,
++				bot.Commander().getVoiPolicyInt(
++					"issued_at_frame",
++					0)));
++	const uint64_t deadlineFrame =
++		issuedAtFrame
++		+ static_cast<uint64_t>(durationSeconds) * 22u;
++	return static_cast<uint64_t>(bot.GetCurrentFrame())
++		<= deadlineFrame;
++}
++
++int voiActiveParallelOperationCount(CCBot & bot)
++{
++	int activeCount = 0;
++	for (int operationIndex = 0;
++		operationIndex < voiParallelOperationCount(bot);
++		++operationIndex)
++	{
++		if (voiParallelOperationIsActive(bot, operationIndex))
++		{
++			++activeCount;
++		}
++	}
++	return activeCount;
++}
++
+ bool voiParallelOperationTaskListContains(
+ 	CCBot & bot,
+ 	const std::string & field,
+@@ -77,6 +189,10 @@
+ 		operationIndex < voiParallelOperationCount(bot);
+ 		++operationIndex)
+ 	{
++		if (!voiParallelOperationIsActive(bot, operationIndex))
++		{
++			continue;
++		}
+ 		const std::string value =
+ 			bot.Commander().getVoiPolicyString(
+ 				"operations."
+@@ -99,6 +215,10 @@
+ 		operationIndex < voiParallelOperationCount(bot);
+ 		++operationIndex)
+ 	{
++		if (!voiParallelOperationIsActive(bot, operationIndex))
++		{
++			continue;
++		}
+ 		priority = std::max(
+ 			priority,
+ 			bot.Commander().getVoiPolicyFloat(
+@@ -120,6 +240,10 @@
+ 			operationIndex < operationCount;
+ 			++operationIndex)
+ 		{
++			if (!voiParallelOperationIsActive(bot, operationIndex))
++			{
++				continue;
++			}
+ 			const std::string operationPrefix =
+ 				"operations."
+ 				+ std::to_string(operationIndex)
+@@ -578,16 +702,13 @@
+ 
+ bool voiExactCompositionActive(CCBot & bot)
+ {
+-	if (!bot.Commander().isVoiPolicyActive()
+-		|| !voiTacticalTaskWithinDuration(bot))
++	if (!bot.Commander().isVoiPolicyActive())
+ 	{
+ 		return false;
+ 	}
+ 	const bool parallelOperations =
+ 		bot.Commander().hasVoiPolicyDomain("operations")
+-		&& bot.Commander().getVoiPolicyInt(
+-			"operations.count",
+-			0) > 0;
++		&& voiActiveParallelOperationCount(bot) > 0;
+ 	if (parallelOperations)
+ 	{
+ 		for (const auto & entry : voiExactCompositionTypes())
+@@ -601,6 +722,10 @@
+ 		}
+ 		return false;
+ 	}
++	if (!voiTacticalTaskWithinDuration(bot))
++	{
++		return false;
++	}
+ 	if (!bot.Commander().hasVoiPolicyDomain(
+ 		"composition_requirements"))
+ 	{
+@@ -3987,7 +4112,7 @@
+ 		voiParallelOperationTaskPriority(m_bot) });
+ 	const bool tacticalTaskActive = voiTacticalTaskWithinDuration(m_bot);
+ 	const bool parallelOperationProduction =
+-		voiParallelOperationCount(m_bot) > 0
++		voiActiveParallelOperationCount(m_bot) > 0
+ 		&& voiExactCompositionActive(m_bot);
+ 	const bool taskSustainProduction = tacticalTaskActive && tacticalTaskType == "sustain_production";
+ 	const bool taskTechTransition = tacticalTaskActive && tacticalTaskType == "tech_transition";
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -189,13 +189,16 @@
+     const std::string completionState = m_voiPolicyBlackboard.getString(
+         "lifetime.completion_state",
+         "active");
+-    const bool semanticLifetimeActive = completionState == "active"
+-        && (lifetimeMode == "until_cancelled"
+-            || lifetimeMode == "standing_order");
+-    if (!m_voiPolicyBlackboard.isProtocolCompatible()
+-        || (m_voiPolicyBlackboard.isExpired(m_bot.GetGameLoop())
+-            && !semanticLifetimeActive)) {
+-        return;
++	const bool semanticLifetimeActive = completionState == "active"
++		&& (lifetimeMode == "until_cancelled"
++			|| lifetimeMode == "standing_order");
++	const std::string updateId =
++		m_voiPolicyBlackboard.getString("update_id", "");
++	if (!m_voiPolicyBlackboard.isProtocolCompatible()
++		|| updateId.empty()
++		|| (m_voiPolicyBlackboard.isExpired(m_bot.GetGameLoop())
++			&& !semanticLifetimeActive)) {
++		return;
+     }
+ 
+     m_voiPolicyActive = true;

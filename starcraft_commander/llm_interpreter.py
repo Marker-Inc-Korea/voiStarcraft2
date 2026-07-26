@@ -229,6 +229,15 @@ _POLICY_MODULATION_STATUS_REQUIRED_FIELDS: Final[
 }
 """Status-dependent required fields in the forced-tool envelope."""
 
+_PARALLEL_OPERATION_TASK_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "scout_with_units",
+        "pressure_with_main_army",
+        "defend_with_units",
+    }
+)
+"""Task types that may own independent forces inside operations[]."""
+
 DEFAULT_COMBO_FAILURE_POLICY: Final[str] = "stop_on_step_failure"
 """Conservative ComboPlan policy used when a planner omits one."""
 
@@ -1083,6 +1092,22 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
         },
         "additionalProperties": False,
     }
+    operation_tactical_task_schema = {
+        **tactical_task_schema,
+        "properties": {
+            **tactical_task_schema["properties"],
+            "task_type": {
+                **tactical_task_schema["properties"]["task_type"],
+                "enum": sorted(_PARALLEL_OPERATION_TASK_TYPES),
+                "description": (
+                    "Independent operation task: scout, attack, or defend only. "
+                    "Macro, ability, and emergency tasks stay in the top-level "
+                    "modulation envelope."
+                ),
+            },
+        },
+        "required": ["task_type"],
+    }
     lifetime_schema = {
         "type": "object",
         "properties": {
@@ -1260,7 +1285,7 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
                 "type": "string",
                 "enum": sorted(MICROMACHINE_COMMAND_LAYERS),
             },
-            "tactical_task": tactical_task_schema,
+            "tactical_task": operation_tactical_task_schema,
             "scope": scope_schema,
             "lifetime": lifetime_schema,
             "composition_requirements": {
@@ -1276,7 +1301,7 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
             "route_intent": route_intent_schema,
             "target_intent": target_intent_schema,
         },
-        "required": ["operation_id", "goal"],
+        "required": ["operation_id", "goal", "tactical_task"],
         "additionalProperties": False,
     }
     constraint_schema = {
@@ -1554,7 +1579,11 @@ def build_policy_modulation_system_prompt() -> str:
         "group. Every operation requires a unique stable operation_id plus its "
         "own tactical_task, scope, lifetime, composition_requirements, "
         "unit_roles, route_intent, and target_intent. Reuse operation_id for "
-        "follow-up updates, cancellation, reinforcement, or retargeting. Keep "
+        "follow-up updates, cancellation, reinforcement, or retargeting. "
+        "Inside operations, tactical_task.task_type must be exactly "
+        "scout_with_units, pressure_with_main_army, or defend_with_units. Keep "
+        "macro production, tech, expansion, execute_ability, and emergency "
+        "tasks in the top-level modulation envelope. Keep "
         "the legacy top-level tactical fields only for a single operation; never "
         "silently project the first of multiple operations into them.\n"
         "8. Set command_layer to macro for economy/production/tech standing "
@@ -3371,11 +3400,7 @@ def _lower_compact_policy_commands(
                 "refusal_reason": f"compact policy commands[{index}] must be a mapping.",
             }
         task_type = str(raw_command.get("task_type", "") or "").strip()
-        if task_type not in {
-            "scout_with_units",
-            "pressure_with_main_army",
-            "defend_with_units",
-        }:
+        if task_type not in _PARALLEL_OPERATION_TASK_TYPES:
             return {
                 "status": "refused",
                 "assistant_message": tool_input.get("assistant_message", ""),
@@ -4040,6 +4065,9 @@ def _policy_modulation_contract_error(
 ) -> str:
     """Return one repairable contract error after canonical DSL validation."""
 
+    operation_error = _full_policy_operations_contract_error(output)
+    if operation_error:
+        return operation_error
     if (
         _policy_modulation_requires_tactical_task(command_text)
         and not _policy_modulation_has_tactical_task(output)
@@ -4066,6 +4094,40 @@ def _policy_modulation_contract_error(
             or "LLM policy modulation unexpectedly requested clarification."
         )
     return compiled.refusal_reason or "LLM policy modulation failed schema validation."
+
+
+def _full_policy_operations_contract_error(
+    output: Mapping[str, object],
+) -> str:
+    """Reject non-operation task types before the provider compiler can run."""
+
+    modulation = output.get("modulation")
+    if not isinstance(modulation, Mapping):
+        return ""
+    operations = modulation.get("operations")
+    if not isinstance(operations, Sequence) or isinstance(
+        operations,
+        (str, bytes, bytearray),
+    ):
+        return ""
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, Mapping):
+            continue
+        tactical_task = operation.get("tactical_task")
+        task_type = (
+            str(tactical_task.get("task_type", "") or "").strip()
+            if isinstance(tactical_task, Mapping)
+            else ""
+        )
+        if task_type not in _PARALLEL_OPERATION_TASK_TYPES:
+            return (
+                f"full policy operations[{index}] tactical_task.task_type "
+                "must be a scout, attack, or defend operation; macro "
+                "production, tech, expansion, abilities, and emergency "
+                "commands must use the top-level modulation envelope for "
+                "their manager layer."
+            )
+    return ""
 
 
 def _with_policy_modulation_diagnostics(

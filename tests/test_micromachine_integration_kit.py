@@ -192,6 +192,11 @@ PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE = (
     / "patches"
     / "0052-parallel-operations-ingame-hud.patch"
 )
+PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0053-parallel-operation-lifecycle-review-closure.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -289,6 +294,42 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, patch)
+
+    def test_parallel_operation_lifecycle_review_closure_is_fail_closed(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE
+        )
+
+        for term in (
+            "bool voiParallelOperationIsActive(CCBot & bot, int operationIndex)",
+            "bool voiParallelOperationTerminalState(",
+            'taskType != "scout_with_units"',
+            'taskType != "pressure_with_main_army"',
+            'taskType != "defend_with_units"',
+            'prefix + ".lifetime.completion_state"',
+            "voiActiveParallelOperationCount(m_bot) > 0",
+            'prefix + ".scope.allow_partial_scope"',
+            'prefix + ".lifetime.mode"',
+            '".lifetime.completion_conditions"',
+            "requested.deadlineFrame",
+            'operation.status = "EXPIRED";',
+            'requested.status = "SUPERSEDED";',
+            '"superseded_by_policy"',
+            "submissionObserved",
+            '\\"submission_observed\\"',
+            '\\"owned_unit_count\\"',
+            'm_voiPolicyBlackboard.getString("update_id", "")',
+            "updateId.empty()",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertIn(
+            '-\t\t\t\t\tprefix + ".scope.allow_partial",',
+            patch,
+        )
 
     def test_live_tactical_patch_locks_runtime_operation_invariants(self) -> None:
         patch = _read_patch_text(TACTICAL_PATCH_FILE)
@@ -2724,6 +2765,25 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             {
                 "path": (
                     "patches/"
+                    "0053-parallel-operation-lifecycle-review-closure.patch"
+                ),
+                "order": 53,
+                "scope": (
+                    "fail closed on empty policy update identity, exclude "
+                    "terminal, expired, and unsupported parallel operations "
+                    "from production, consume operation-scoped lifetime, "
+                    "deadline, completion, and strict partial-scope semantics, "
+                    "distinguish frame-zero command submission from missing "
+                    "evidence, release terminal ownership, and expose lifecycle "
+                    "and owned-unit telemetry for live verification"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
                     "0047-banshee-unit-specific-cloak-command.patch"
                 ),
                 "order": 47,
@@ -3184,7 +3244,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0052`",
+            "through `0053`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -3752,6 +3812,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0050-explicit-ability-staging-single-flight.patch",
             "0051-all-terran-combat-scouts.patch",
             "0052-parallel-operations-ingame-hud.patch",
+            "0053-parallel-operation-lifecycle-review-closure.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -3802,6 +3863,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE",
             "ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE",
             "PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE",
+            "PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -3811,6 +3873,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-explicit-ability-caster-ownership-patch",
             "--micromachine-explicit-ability-staging-single-flight-patch",
             "--micromachine-parallel-operations-ingame-hud-patch",
+            "--micromachine-parallel-operation-lifecycle-review-closure-patch",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",
@@ -4284,6 +4347,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "MICROMACHINE_BUILD_IDENTITY_REPORT",
             "verify_build_identity",
             "stale build identity",
+            "SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE",
+            "SMOKE_OPERATION_UPDATE_ID",
+            "publish_parallel_operations",
+            "operation_lifecycle_ready",
+            '"owned_unit_count"',
+            '"submission_observed"',
+            '"assigned_unit_tags"',
+            '"CANCELLED"',
+            "parallel operation assignment/submission/movement",
+            "CANCELLED terminal ownership-release evidence",
             'SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-1}"',
             'SMOKE_ENEMY_DIFFICULTY="${SMOKE_ENEMY_DIFFICULTY:-7}"',
             'SMOKE_ENEMY_DIFFICULTY="${SMOKE_ENEMY_DIFFICULTY:-1}"',
@@ -4396,6 +4469,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn(
             'int(combat.get("main_attack_unit_count", 0)) < '
             'int(combat.get("main_attack_scope_min_units", 1))',
+            smoke_script,
+        )
+        self.assertNotIn(
+            'if combat.get("main_attack_order_status") != "Attack":',
             smoke_script,
         )
         self.assertNotIn(") || true", smoke_script)
