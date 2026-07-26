@@ -2033,6 +2033,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "active_modulation_ids": [update_id],
             "managers": {
                 "OperationDirector": {
+                    "policy_update_id": update_id,
                     "operations": [
                         {
                             "operation_id": "recon-alpha",
@@ -2152,6 +2153,243 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "must-not-be-copied",
             json.dumps(payload["operations"], ensure_ascii=False),
         )
+
+    def test_micromachine_operation_flat_zero_frames_are_not_success(self):
+        execution = web_gui._micromachine_operation_command_execution(
+            update_id="parallel-zero-frames",
+            operation_id="recon-zero",
+            operation_generation=1,
+            operation_telemetry={
+                "operation_id": "recon-zero",
+                "generation": 1,
+                "task_type": "scout",
+                "status": "",
+                "assigned_unit_tags": [],
+                "assigned_count": 0,
+                "target_x": 120.0,
+                "target_y": 44.0,
+                "route_type": "direct",
+                "target_evidence": "",
+                "received_frame": 0,
+                "assigned_frame": 0,
+                "submitted_frame": 0,
+                "last_action_frame": 0,
+                "movement_frame": 0,
+                "engagement_frame": 0,
+                "max_home_distance": 0.0,
+                "engaged": False,
+                "completed": False,
+                "blocked_reason": "",
+                "last_action": "",
+            },
+            fallback={},
+        )
+
+        self.assertEqual("published", execution["state"])
+        self.assertFalse(execution["completed"])
+        self.assertFalse(execution["failed"])
+        self.assertEqual(
+            set(),
+            {
+                stage["name"]
+                for stage in execution["stages"]
+                if stage["name"]
+                in {
+                    "consumed_by_manager",
+                    "queued_or_assigned",
+                    "order_issued",
+                    "action_issued",
+                    "effect_observed",
+                }
+            },
+        )
+
+    def test_micromachine_operation_root_update_id_is_fail_closed(self):
+        update_id = "parallel-current-update"
+
+        def telemetry_document(root_update_id=...):
+            director = {
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "generation": 1,
+                        "task_type": "scout",
+                        "status": "ASSIGNED",
+                        "assigned_unit_tags": [11],
+                        "assigned_count": 1,
+                        "received_frame": 205,
+                        "assigned_frame": 206,
+                        "submitted_frame": 0,
+                        "last_action_frame": 0,
+                        "max_home_distance": 0.0,
+                        "engaged": False,
+                        "completed": False,
+                        "blocked_reason": "",
+                        "last_action": "",
+                    }
+                ]
+            }
+            if root_update_id is not ...:
+                director["policy_update_id"] = root_update_id
+            return {
+                "frame": 240,
+                "active_modulation_ids": [update_id],
+                "managers": {"OperationDirector": director},
+            }
+
+        with self.subTest("matching root id is propagated"):
+            document, entry = web_gui._micromachine_operation_telemetry_document(
+                telemetry_document(update_id),
+                update_id=update_id,
+                operation_id="recon-alpha",
+                operation_generation=1,
+            )
+            self.assertIsNotNone(entry)
+            self.assertEqual(update_id, entry["policy_update_id"])
+            self.assertEqual(
+                update_id,
+                document["managers"]["OperationDirector"]["policy_update_id"],
+            )
+
+        with self.subTest("mismatched root id is rejected"):
+            document, entry = web_gui._micromachine_operation_telemetry_document(
+                telemetry_document("parallel-stale-update"),
+                update_id=update_id,
+                operation_id="recon-alpha",
+                operation_generation=1,
+            )
+            self.assertEqual({}, document)
+            self.assertIsNone(entry)
+
+        with self.subTest("conflicting entry id is rejected"):
+            document_with_conflict = telemetry_document(update_id)
+            director = document_with_conflict["managers"]["OperationDirector"]
+            director["operations"][0]["update_id"] = "parallel-stale-entry"
+            document, entry = web_gui._micromachine_operation_telemetry_document(
+                document_with_conflict,
+                update_id=update_id,
+                operation_id="recon-alpha",
+                operation_generation=1,
+            )
+            self.assertEqual({}, document)
+            self.assertIsNone(entry)
+
+        with self.subTest("missing root id is rejected"):
+            document, entry = web_gui._micromachine_operation_telemetry_document(
+                telemetry_document(),
+                update_id=update_id,
+                operation_id="recon-alpha",
+                operation_generation=1,
+            )
+            self.assertEqual({}, document)
+            self.assertIsNone(entry)
+
+    def test_micromachine_operation_flat_terminal_fields_drive_execution(self):
+        flat_telemetry = {
+            "operation_id": "assault-bravo",
+            "generation": 1,
+            "task_type": "attack",
+            "status": "SUBMITTED",
+            "assigned_unit_tags": [21, 22, 23, 24],
+            "assigned_count": 4,
+            "target_x": 130.0,
+            "target_y": 48.0,
+            "route_type": "flank",
+            "target_evidence": "observed_enemy_structure",
+            "received_frame": 205,
+            "assigned_frame": 206,
+            "submitted_frame": 207,
+            "last_action_frame": 207,
+            "max_home_distance": 14.0,
+            "engaged": False,
+            "completed": False,
+            "cancelled": False,
+            "blocked_reason": "",
+            "last_action": "AttackMove|operation=assault-bravo",
+        }
+        cases = (
+            (
+                "status completed",
+                {"status": "COMPLETED"},
+                {
+                    "state": "completed",
+                    "completed": True,
+                    "failed": False,
+                    "superseded": False,
+                    "blocker_reason": "",
+                    "disposition": "completed",
+                },
+            ),
+            (
+                "completed flag",
+                {"completed": True},
+                {
+                    "state": "completed",
+                    "completed": True,
+                    "failed": False,
+                    "superseded": False,
+                    "blocker_reason": "",
+                    "disposition": "completed",
+                },
+            ),
+            (
+                "blocked status and reason",
+                {
+                    "status": "BLOCKED",
+                    "blocked_reason": "insufficient_eligible_units",
+                },
+                {
+                    "state": "blocked",
+                    "completed": False,
+                    "failed": True,
+                    "superseded": False,
+                    "blocker_reason": "insufficient_eligible_units",
+                    "disposition": "blocked",
+                },
+            ),
+            (
+                "cancelled flag",
+                {
+                    "cancelled": True,
+                    "blocked_reason": "cancelled_by_policy",
+                },
+                {
+                    "state": "cancelled",
+                    "completed": False,
+                    "failed": False,
+                    "superseded": True,
+                    "blocker_reason": "cancelled_by_policy",
+                    "disposition": "superseded",
+                },
+            ),
+        )
+
+        for case_name, overrides, expected in cases:
+            with self.subTest(case_name):
+                operation_telemetry = dict(flat_telemetry)
+                operation_telemetry.update(overrides)
+                execution = web_gui._micromachine_operation_command_execution(
+                    update_id="parallel-terminal-update",
+                    operation_id="assault-bravo",
+                    operation_generation=1,
+                    operation_telemetry=operation_telemetry,
+                    fallback={},
+                )
+                disposition = web_gui._micromachine_operation_disposition(
+                    execution,
+                    active=True,
+                    transport_status="published",
+                )
+
+                for key in (
+                    "state",
+                    "completed",
+                    "failed",
+                    "superseded",
+                    "blocker_reason",
+                ):
+                    self.assertEqual(expected[key], execution[key])
+                self.assertEqual(expected["disposition"], disposition)
 
     def test_micromachine_status_keeps_terminal_result_as_separate_operation(self):
         dashboard = {

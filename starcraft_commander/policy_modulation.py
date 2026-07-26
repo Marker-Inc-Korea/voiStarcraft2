@@ -86,6 +86,7 @@ MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
         "",
         "scout_with_units",
         "pressure_with_main_army",
+        "defend_with_units",
         "sustain_production",
         "tech_transition",
         "expand_or_land_command_center",
@@ -1832,9 +1833,18 @@ class PolicyModulationVector:
         legacy_projection = _legacy_operation_projection(self)
         has_legacy_operation = _has_legacy_operation_payload(self)
         if operations:
-            if len(operations) > 1 and has_legacy_operation:
-                raise ValueError(
-                    "legacy single-operation fields cannot accompany multiple operations."
+            if len(operations) > 1:
+                if _has_legacy_operation_payload(
+                    self,
+                    include_aggregate_lifetime=False,
+                ):
+                    raise ValueError(
+                        "legacy single-operation fields cannot accompany "
+                        "multiple operations."
+                    )
+                _clear_legacy_operation_fields(
+                    self,
+                    preserve_aggregate_lifetime=True,
                 )
             if len(operations) == 1:
                 operation = operations[0]
@@ -2280,12 +2290,19 @@ def _legacy_operation_projection(
     }
 
 
-def _has_legacy_operation_payload(vector: PolicyModulationVector) -> bool:
+def _has_legacy_operation_payload(
+    vector: PolicyModulationVector,
+    *,
+    include_aggregate_lifetime: bool = True,
+) -> bool:
     return any(
         (
             vector.tactical_task != TacticalTaskModulation(),
             vector.scope != TacticalScopeModulation(),
-            vector.lifetime != LifetimeModulation(),
+            (
+                include_aggregate_lifetime
+                and vector.lifetime != LifetimeModulation()
+            ),
             bool(vector.composition_requirements),
             bool(vector.unit_roles),
             vector.route_intent != RouteIntentModulation(),
@@ -2296,10 +2313,13 @@ def _has_legacy_operation_payload(vector: PolicyModulationVector) -> bool:
 
 def _clear_legacy_operation_fields(
     vector: PolicyModulationVector,
+    *,
+    preserve_aggregate_lifetime: bool = False,
 ) -> None:
     object.__setattr__(vector, "tactical_task", TacticalTaskModulation())
     object.__setattr__(vector, "scope", TacticalScopeModulation())
-    object.__setattr__(vector, "lifetime", LifetimeModulation())
+    if not preserve_aggregate_lifetime:
+        object.__setattr__(vector, "lifetime", LifetimeModulation())
     object.__setattr__(vector, "composition_requirements", ())
     object.__setattr__(vector, "unit_roles", ())
     object.__setattr__(vector, "route_intent", RouteIntentModulation())

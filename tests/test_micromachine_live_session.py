@@ -735,7 +735,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(900, result.command_queue["ttl_seconds"])
         self.assertEqual("until_completed", result.command_queue["lifetime_mode"])
         self.assertEqual(900, result.update.vector.ttl_seconds)
-        self.assertEqual("", result.update.vector.lifetime.mode)
+        self.assertEqual("until_completed", result.update.vector.lifetime.mode)
         self.assertEqual(
             {"until_completed"},
             {
@@ -922,6 +922,114 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(1, first.update.vector.operations[0].generation)
         self.assertEqual(2, terminal.update.vector.operations[0].generation)
         self.assertEqual(3, restarted.update.vector.operations[0].generation)
+
+    def test_single_operation_terminal_lifetime_survives_projection(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        result = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "cancel one operation",
+                    "command_layer": "operation",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "goal": "cancel marine recon",
+                            "tactical_task": {
+                                "task_type": "scout_with_units",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "min_units": 1,
+                                "max_units": 1,
+                            },
+                            "lifetime": {
+                                "mode": "until_cancelled",
+                                "completion_conditions": ["cancelled_by_user"],
+                                "completion_state": "cancelled",
+                            },
+                        }
+                    ],
+                }
+            ),
+        ).submit_text(
+            "recon-alpha 정찰을 취소해",
+            current_frame=100,
+            update_id="cancel-recon-alpha",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        self.assertEqual(
+            "cancelled",
+            result.update.vector.operations[0].lifetime.completion_state,
+        )
+        serialized_vector = result.update.to_dict()["vector"]
+        assert isinstance(serialized_vector, dict)
+        serialized_lifetime = serialized_vector["lifetime"]
+        assert isinstance(serialized_lifetime, dict)
+        self.assertEqual(
+            "cancelled",
+            serialized_lifetime["completion_state"],
+        )
+
+    def test_parallel_standing_operation_keeps_aggregate_lifetime_active(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        result = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "persistent parallel operations",
+                    "command_layer": "operation",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "goal": "keep scouting",
+                            "tactical_task": {
+                                "task_type": "scout_with_units",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "min_units": 1,
+                                "max_units": 1,
+                            },
+                            "lifetime": {
+                                "mode": "standing_order",
+                                "completion_conditions": ["cancelled_by_user"],
+                                "completion_state": "active",
+                            },
+                        },
+                        {
+                            "operation_id": "assault-bravo",
+                            "goal": "keep attacking",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "unit_classes": ["TERRAN_SIEGETANK"],
+                                "min_units": 1,
+                                "max_units": 1,
+                            },
+                            "lifetime": {
+                                "mode": "until_cancelled",
+                                "completion_conditions": ["cancelled_by_user"],
+                                "completion_state": "active",
+                            },
+                        },
+                    ],
+                }
+            ),
+        ).submit_text(
+            "정찰과 공격을 취소할 때까지 계속해",
+            current_frame=100,
+            update_id="persistent-parallel",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        self.assertEqual("until_cancelled", result.update.vector.lifetime.mode)
+        self.assertEqual("active", result.update.vector.lifetime.completion_state)
+        self.assertIsNotNone(
+            backend.read_latest_update(
+                current_frame=result.update.expires_at_frame + 1,
+            )
+        )
 
     def test_same_layer_operation_modifier_preserves_existing_task_context(
         self,

@@ -1284,6 +1284,8 @@ def profile_main_attack_command_seen():
         command_frame = int(combat_entry.get("main_attack_last_action_frame", 0) or 0)
         command_count = int(combat_entry.get("main_attack_actual_command_issued_count", 0) or 0)
         status = str(combat_entry.get("main_attack_order_status", "") or "")
+        unit_count = int(combat_entry.get("main_attack_unit_count", 0) or 0)
+        min_units = int(combat_entry.get("main_attack_scope_min_units", 1) or 1)
         max_home_distance = float(combat_entry.get("main_attack_max_home_distance", 0.0) or 0.0)
         best = {
             "frame": frame,
@@ -1291,6 +1293,8 @@ def profile_main_attack_command_seen():
             "main_attack_last_action_frame": command_frame,
             "main_attack_last_issued_action": command,
             "main_attack_order_status": status,
+            "main_attack_unit_count": unit_count,
+            "main_attack_scope_min_units": min_units,
             "main_attack_scope_threshold_met": combat_entry.get("main_attack_scope_threshold_met"),
             "main_attack_simulation_won": combat_entry.get("main_attack_simulation_won"),
             "main_attack_max_home_distance": max_home_distance,
@@ -1304,6 +1308,7 @@ def profile_main_attack_command_seen():
             and status == "Attack"
             and combat_entry.get("main_attack_scope_threshold_met") is True
             and combat_entry.get("main_attack_simulation_won") is True
+            and unit_count >= min_units
             and command_frame > 0
             and command_frame >= aggressive_issued_at_frame
             and max_home_distance >= min_main_attack_home_distance
@@ -1398,8 +1403,6 @@ if require_aggressive_combat:
             "missing archived MainAttack command evidence for aggressive profile: "
             f"best={main_attack_evidence!r}, latest={combat!r}"
         )
-    if int(combat.get("main_attack_unit_count", 0)) < int(combat.get("main_attack_scope_min_units", 1)):
-        raise SystemExit(f"attack order did not satisfy scope units: {combat!r}")
     if float(combat.get("main_attack_max_home_distance", 0.0) or 0.0) < min_main_attack_home_distance:
         raise SystemExit(
             "MainAttack command did not produce live movement away from home: "

@@ -841,6 +841,7 @@ def build_compact_policy_modulation_system_prompt() -> str:
         "tech_transition for prerequisites or non-expansion buildings; "
         "expand_or_land_command_center for expansion/landing; scout_with_units "
         "for unit scouting; pressure_with_main_army for attack/harass; "
+        "defend_with_units for an independently assigned defense force; "
         "execute_ability for an explicit ability. Emergency may use an empty "
         "task_type.\n"
         "4. Put every explicit combat unit/count in unit_requests. Use one "
@@ -1517,7 +1518,8 @@ def build_policy_modulation_system_prompt() -> str:
         "Set strategy.doctrine to the closest supported doctrine label when a "
         "specific doctrine is present.\n"
         "5. Use tactical_task when the user asks for a concrete bounded outcome: "
-        "scout_with_units, pressure_with_main_army, sustain_production, "
+        "scout_with_units, pressure_with_main_army, defend_with_units, "
+        "sustain_production, "
         "tech_transition, expand_or_land_command_center, or execute_ability. "
         "For an explicit unit ability, use task_type=execute_ability and one "
         "supported semantic ability such as marine_stimpack, "
@@ -3173,7 +3175,7 @@ def _lower_compact_policy_modulation_tool_input(
     if not army_group:
         if task_type == "scout_with_units":
             army_group = "scout"
-        elif task_type == "pressure_with_main_army":
+        elif task_type in {"pressure_with_main_army", "defend_with_units"}:
             army_group = "main"
 
     modulation: dict[str, object] = {
@@ -3367,6 +3369,22 @@ def _lower_compact_policy_commands(
                 "status": "refused",
                 "assistant_message": tool_input.get("assistant_message", ""),
                 "refusal_reason": f"compact policy commands[{index}] must be a mapping.",
+            }
+        task_type = str(raw_command.get("task_type", "") or "").strip()
+        if task_type not in {
+            "scout_with_units",
+            "pressure_with_main_army",
+            "defend_with_units",
+        }:
+            return {
+                "status": "refused",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "refusal_reason": (
+                    f"compact policy commands[{index}] task_type must be a "
+                    "scout, attack, or defend operation; macro production, "
+                    "tech, expansion, abilities, and emergency commands must "
+                    "use the single command envelope for their manager layer."
+                ),
             }
         operation_goal = str(raw_command.get("goal", "") or "").strip() or command_text
         command_with_id = dict(raw_command)
@@ -3672,7 +3690,11 @@ def _compact_command_layer(
         return "emergency"
     if task_type == "execute_ability":
         return "micro"
-    if task_type in {"scout_with_units", "pressure_with_main_army"}:
+    if task_type in {
+        "scout_with_units",
+        "pressure_with_main_army",
+        "defend_with_units",
+    }:
         return "operation"
     if task_type in {
         "sustain_production",
@@ -3737,6 +3759,8 @@ def _compact_ttl_seconds(
         return 240
     if task_type == "pressure_with_main_army":
         return 600
+    if task_type == "defend_with_units":
+        return 600
     return 300
 
 
@@ -3751,6 +3775,7 @@ def _compact_task_duration_seconds(
     return {
         "scout_with_units": 180,
         "pressure_with_main_army": 300,
+        "defend_with_units": 300,
         "sustain_production": 300,
         "tech_transition": 600,
         "expand_or_land_command_center": 600,
@@ -3786,6 +3811,7 @@ def _compact_lifetime(
     completion = {
         "scout_with_units": "enemy_observed",
         "pressure_with_main_army": "target_reached",
+        "defend_with_units": "target_reached",
         "sustain_production": "unit_count_reached",
         "tech_transition": "building_completed",
         "expand_or_land_command_center": "building_completed",
@@ -3879,6 +3905,16 @@ def _apply_compact_command_biases(
             }
         )
         squad.update({"main_army_bias": priority, "reinforce_bias": 0.4})
+    elif task_type == "defend_with_units":
+        strategy["posture"] = "defensive"
+        combat.update(
+            {
+                "defend_bias": priority,
+                "preserve_army_bias": max(0.7, priority - 0.1),
+                "rally_before_attack_bias": 0.8,
+            }
+        )
+        squad.update({"main_army_bias": 0.35, "reinforce_bias": priority})
     elif task_type in {"sustain_production", "tech_transition"}:
         production["production_continuity_bias"] = (
             max(0.8, priority) if standing_order else priority

@@ -706,6 +706,11 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
                             max_units=5,
                             allow_partial=False,
                         ),
+                        lifetime=LifetimeModulation(
+                            mode="until_cancelled",
+                            completion_conditions=("cancelled_by_user",),
+                            completion_state="cancelled",
+                        ),
                         composition_requirements=(
                             CompositionRequirement(
                                 "tank",
@@ -735,6 +740,10 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
 
         self.assertIn("operations.count=1\n", text)
         self.assertIn("operations.0.generation=4\n", text)
+        self.assertIn(
+            "operations.0.lifetime.completion_state=cancelled\n",
+            text,
+        )
         self.assertIn("operations.0.composition_requirements.count=2\n", text)
         self.assertIn(
             "operations.0.composition_requirements.0.unit_type=TERRAN_SIEGETANK\n",

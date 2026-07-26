@@ -91,10 +91,14 @@ LLM_ONLY_PROVIDER_REQUIRED_REASON = (
 _PRODUCTION_TASK_TYPES = frozenset(
     {"sustain_production", "tech_transition", "expand_or_land_command_center"}
 )
-_TRANSIENT_TASK_TYPES = frozenset({"scout_with_units", "pressure_with_main_army"})
+_TRANSIENT_TASK_TYPES = frozenset(
+    {"scout_with_units", "pressure_with_main_army", "defend_with_units"}
+)
 _MICRO_TASK_TYPES = frozenset({"execute_ability"})
 _ACTIVE_TASK_TYPES = _TRANSIENT_TASK_TYPES | _MICRO_TASK_TYPES
-_TACTICAL_ONLY_TASK_TYPES = frozenset({"pressure_with_main_army", "execute_ability"})
+_TACTICAL_ONLY_TASK_TYPES = frozenset(
+    {"pressure_with_main_army", "defend_with_units", "execute_ability"}
+)
 _PERSISTENT_LIVE_DOMAINS = ("strategy", "economy", "workers", "tech", "production")
 _TACTICAL_LIVE_DOMAINS = ("combat", "scouting", "squad", "scope")
 _LIVE_STANDING_MERGE_WARNING = "live_standing_orders_merged"
@@ -1412,7 +1416,9 @@ def _reduce_live_command_queue(
     reduced_payload["lifetime"] = {
         "mode": update_lifetime["mode"],
         "completion_conditions": update_lifetime["completion_conditions"],
-        "completion_state": "active",
+        "completion_state": str(
+            update_lifetime.get("completion_state", "active") or "active"
+        ),
         "reason": update_lifetime["reason"],
     }
     state_incoming_payload = (
@@ -1899,11 +1905,21 @@ def _parallel_operations_lifetime(
     provider_ttl = max(0, int(_float_at(payload, ("ttl_seconds",))))
     ttl_seconds = provider_ttl
     persistent = False
+    operation_modes: list[str] = []
+    operation_states: list[str] = []
     completion_conditions: list[str] = []
     for operation in operations:
         lifetime = _mapping_value(operation, "lifetime")
         mode = str(lifetime.get("mode", "") or "").strip().lower()
-        operation_persistent = mode in {"until_cancelled", "standing_order"}
+        completion_state = str(
+            lifetime.get("completion_state", "active") or "active"
+        ).strip().lower()
+        operation_modes.append(mode)
+        operation_states.append(completion_state)
+        operation_persistent = (
+            completion_state == "active"
+            and mode in {"until_cancelled", "standing_order"}
+        )
         persistent = persistent or operation_persistent
         task = _mapping_value(operation, "tactical_task")
         scope = _mapping_value(operation, "scope")
@@ -1935,10 +1951,35 @@ def _parallel_operations_lifetime(
         completion_conditions.append("cancelled_by_user")
     if not completion_conditions:
         completion_conditions.extend(("order_issued", "target_reached"))
+    active = any(state in {"", "active"} for state in operation_states)
+    if active:
+        completion_state = "active"
+    else:
+        completion_state = next(
+            (
+                state
+                for state in (
+                    "failed",
+                    "expired",
+                    "cancelled",
+                    "completed",
+                    "superseded",
+                )
+                if state in operation_states
+            ),
+            "completed",
+        )
+    if persistent:
+        aggregate_mode = "until_cancelled"
+    elif len(operation_modes) == 1 and operation_modes[0]:
+        aggregate_mode = operation_modes[0]
+    else:
+        aggregate_mode = "until_completed"
     return {
-        "mode": "until_cancelled" if persistent else "until_completed",
+        "mode": aggregate_mode,
         "ttl_seconds": ttl_seconds,
         "completion_conditions": tuple(dict.fromkeys(completion_conditions)),
+        "completion_state": completion_state,
         "reason": (
             "parallel operation lifetime preserves the longest operation, "
             "standing order, or provider execution window"
@@ -2289,7 +2330,6 @@ def _operation_declares_terminal_state(operation: Mapping[str, object]) -> bool:
 def _clear_legacy_operation_projection(payload: dict[str, object]) -> None:
     payload["tactical_task"] = {}
     payload["scope"] = {}
-    payload["lifetime"] = {}
     payload["composition_requirements"] = []
     payload["unit_roles"] = []
     payload["route_intent"] = {}
@@ -2332,7 +2372,7 @@ def _sync_single_operation_projection(payload: dict[str, object]) -> None:
         "route_intent",
         "target_intent",
     ):
-        operation[domain] = deepcopy(payload.get(domain, {}))
+        payload[domain] = deepcopy(operation.get(domain, {}))
     payload["operations"] = [operation]
 
 

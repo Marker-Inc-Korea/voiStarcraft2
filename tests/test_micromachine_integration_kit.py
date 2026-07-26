@@ -218,6 +218,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "int voiParallelOperationCount(CCBot & bot)",
             "bool voiParallelOperationTaskListContains(",
             "float voiParallelOperationTaskPriority(CCBot & bot)",
+            'prefix + ".lifetime.completion_state"',
             '".tactical_task."',
             '"production_targets"',
             '"unit_classes"',
@@ -3134,6 +3135,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "getBool",
             "isExpired",
             "isProtocolCompatible",
+            'lifetimeMode == "until_cancelled"',
+            'lifetimeMode == "standing_order"',
             "static_cast<std::uint32_t>(expiresAt)",
             "std::unordered_map",
         )
@@ -4329,8 +4332,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "combat.commitment_level",
             "combat.attack_condition_override",
             "main_attack_order_status",
+            "main_attack_unit_count",
+            "main_attack_scope_min_units",
             "main_attack_scope_threshold_met",
             "main_attack_simulation_won",
+            "and unit_count >= min_units",
             "SMOKE_MIN_MAIN_ATTACK_HOME_DISTANCE",
             "SMOKE_MIN_COMBAT_SCOUT_HOME_DISTANCE",
             "MainAttack command did not produce live movement away from home",
@@ -4387,6 +4393,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, smoke_script)
+        self.assertNotIn(
+            'int(combat.get("main_attack_unit_count", 0)) < '
+            'int(combat.get("main_attack_scope_min_units", 1))',
+            smoke_script,
+        )
         self.assertNotIn(") || true", smoke_script)
         self.assertIn('payload.get("frame", 0) < min_frame', smoke_script)
         for term in (

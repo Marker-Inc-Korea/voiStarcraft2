@@ -512,7 +512,7 @@ index 842b73a..cb30f92 100644
  bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosition & wallCenterTile)
  {
  	if (squad.getUnits().empty())
-@@ -1738,139 +2163,1455 @@ bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosit
+@@ -1738,139 +2163,1491 @@ bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosit
  		return false;
  	}
  
@@ -1793,20 +1793,36 @@ index 842b73a..cb30f92 100644
 +					+ std::to_string(
 +						requested.generation);
 +
++		const std::string requestedCompletionState =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".lifetime.completion_state",
++				"active");
++		const std::string requestedStatus =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".status",
++				"");
 +		const bool requestedCompleted =
 +			m_bot.Commander().getVoiPolicyBool(
 +				prefix + ".completed",
 +				false)
-+			|| m_bot.Commander().getVoiPolicyString(
-+					prefix + ".status",
-+					"") == "COMPLETED";
++			|| requestedStatus == "COMPLETED"
++			|| requestedStatus == "completed"
++			|| requestedCompletionState == "completed";
 +		const bool requestedCancelled =
 +			m_bot.Commander().getVoiPolicyBool(
 +				prefix + ".cancelled",
 +				false)
-+			|| m_bot.Commander().getVoiPolicyString(
-+					prefix + ".status",
-+					"") == "CANCELLED";
++			|| requestedStatus == "CANCELLED"
++			|| requestedStatus == "cancelled"
++			|| requestedCompletionState == "cancelled";
++		const bool requestedExpired =
++			requestedStatus == "EXPIRED"
++			|| requestedStatus == "expired"
++			|| requestedCompletionState == "expired";
++		const bool requestedFailed =
++			requestedStatus == "FAILED"
++			|| requestedStatus == "failed"
++			|| requestedCompletionState == "failed";
 +		if (rawOperationId.empty())
 +		{
 +			requested.status = "BLOCKED";
@@ -1836,9 +1852,24 @@ index 842b73a..cb30f92 100644
 +		}
 +		else if (requestedCancelled)
 +		{
-+			requested.status = "BLOCKED";
++			requested.status = "CANCELLED";
++			requested.completed = true;
 +			requested.blockedReason =
 +				"cancelled_by_policy";
++		}
++		else if (requestedExpired)
++		{
++			requested.status = "EXPIRED";
++			requested.completed = true;
++			requested.blockedReason =
++				"expired_by_policy";
++		}
++		else if (requestedFailed)
++		{
++			requested.status = "FAILED";
++			requested.completed = true;
++			requested.blockedReason =
++				"failed_by_policy";
 +		}
 +		else if (requestedCompleted)
 +		{
@@ -1948,8 +1979,13 @@ index 842b73a..cb30f92 100644
 +		{
 +			releaseVoiOperation(
 +				*existing,
-+				"completed_by_policy",
++				requested.blockedReason.empty()
++					? "completed_by_policy"
++					: requested.blockedReason,
 +				true);
++			existing->status = requested.status;
++			existing->blockedReason =
++				requested.blockedReason;
 +		}
 +		else if (!requested.blockedReason.empty())
 +		{

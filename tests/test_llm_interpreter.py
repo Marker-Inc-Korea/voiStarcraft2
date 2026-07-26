@@ -826,6 +826,51 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual("production", attack.target_intent.target_type)
         self.assertEqual("", compiled.vector.tactical_task.task_type)
 
+    def test_myproxy_compact_commands_reject_non_operation_tasks(self) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰과 생산을 동시에 진행합니다.",
+            "commands": [
+                {
+                    "operation_id": "recon-alpha",
+                    "goal": "마린 1기로 적 본진 정찰",
+                    "command_layer": "operation",
+                    "task_type": "scout_with_units",
+                    "unit_requests": [
+                        {
+                            "unit_type": "marine",
+                            "count": 1,
+                            "role": "scout",
+                        }
+                    ],
+                },
+                {
+                    "operation_id": "macro-bravo",
+                    "goal": "탱크 생산을 계속 유지",
+                    "command_layer": "macro",
+                    "task_type": "sustain_production",
+                    "production_targets": ["tank"],
+                    "standing_order": True,
+                },
+            ],
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="마린 정찰과 탱크 생산을 동시에 진행해"
+            )
+        )
+
+        self.assertEqual("refused", output["status"])
+        self.assertIn("commands[1]", output["refusal_reason"])
+        self.assertIn("scout, attack, or defend", output["refusal_reason"])
+
     def test_compact_generated_operation_id_is_deterministic(self) -> None:
         payload = {
             "status": "compiled",

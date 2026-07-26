@@ -54,6 +54,10 @@ from weakref import WeakValueDictionary
 
 from starcraft_commander.micromachine_bridge import require_micromachine_update_id
 from starcraft_commander.micromachine_command_execution import (
+    EXPIRY_OPERATION_REASONS,
+    HARD_OPERATION_BLOCK_REASONS,
+    HARD_OPERATION_STATUSES,
+    TRANSIENT_OPERATION_BLOCK_REASONS,
     classify_micromachine_command_execution,
 )
 from starcraft_commander.micromachine_tactical_evidence import (
@@ -1044,6 +1048,11 @@ def _micromachine_operation_director_entries(
         if isinstance(operation_director, Mapping)
         else None
     )
+    director_update_id = str(
+        operation_director.get("policy_update_id", "")
+        if isinstance(operation_director, Mapping)
+        else ""
+    ).strip()
     entries: dict[tuple[str, int], dict[str, object]] = {}
     if isinstance(raw_operations, Mapping):
         iterator = raw_operations.items()
@@ -1071,6 +1080,9 @@ def _micromachine_operation_director_entries(
         )
         entry["operation_id"] = operation_id
         entry["generation"] = generation
+        entry["_director_policy_update_id"] = director_update_id
+        if director_update_id:
+            entry.setdefault("policy_update_id", director_update_id)
         entries[(operation_id, generation)] = entry
     return entries
 
@@ -1089,18 +1101,23 @@ def _micromachine_operation_telemetry_document(
     )
     if entry is None:
         return {}, None
-    entry_update_id = str(
-        entry.get("update_id")
-        or entry.get("policy_update_id")
-        or entry.get("active_update_id")
-        or ""
+    director_update_id = str(
+        entry.get("_director_policy_update_id", "") or ""
     ).strip()
-    if entry_update_id and update_id and entry_update_id != update_id:
+    entry_update_ids = {
+        str(entry.get(key, "") or "").strip()
+        for key in ("update_id", "policy_update_id", "active_update_id")
+        if str(entry.get(key, "") or "").strip()
+    }
+    if (
+        not update_id
+        or director_update_id != update_id
+        or any(entry_update_id != update_id for entry_update_id in entry_update_ids)
+    ):
         return {}, None
     scoped_entry = dict(entry)
+    scoped_entry.pop("_director_policy_update_id", None)
     scoped_entry.setdefault("operation_id", operation_id)
-    if update_id:
-        scoped_entry.setdefault("update_id", update_id)
     frame = scoped_entry.get("telemetry_frame", telemetry_document.get("frame"))
     active_ids = _string_list(
         telemetry_document.get("active_modulation_ids", ())
@@ -1134,7 +1151,10 @@ def _micromachine_operation_signal(
     for source in sources:
         if any(_truthy(source.get(key)) for key in boolean_keys):
             signaled = True
-        if any(type(source.get(key)) is int for key in frame_keys):
+        if any(
+            type(source.get(key)) is int and int(source.get(key)) > 0
+            for key in frame_keys
+        ):
             signaled = True
         if any(
             isinstance(source.get(key), (int, float))
@@ -1219,6 +1239,37 @@ def _micromachine_operation_command_execution(
         or operation_telemetry.get("state")
         or ""
     ).strip().lower()
+    director_status = str(
+        operation_telemetry.get("status", "") or ""
+    ).strip().lower()
+    blocked_reason = str(
+        operation_telemetry.get("blocked_reason", "") or ""
+    ).strip().lower()
+    if not terminal_state:
+        if _truthy(operation_telemetry.get("cancelled")):
+            terminal_state = "cancelled"
+        elif director_status in {
+            "completed",
+            "cancelled",
+            "canceled",
+            "expired",
+            "failed",
+            "rejected",
+            "superseded",
+        }:
+            terminal_state = director_status
+        elif _truthy(operation_telemetry.get("completed")):
+            terminal_state = "completed"
+        elif director_status == "blocked":
+            if blocked_reason in EXPIRY_OPERATION_REASONS:
+                terminal_state = "expired"
+            elif (
+                blocked_reason in HARD_OPERATION_BLOCK_REASONS
+                or blocked_reason not in TRANSIENT_OPERATION_BLOCK_REASONS
+            ):
+                terminal_state = "blocked"
+        elif director_status in HARD_OPERATION_STATUSES:
+            terminal_state = director_status
     completed = terminal_state in {"completed", "succeeded", "success"}
     superseded = terminal_state in {"superseded", "replaced", "cancelled", "canceled"}
     expired = terminal_state == "expired"
@@ -1308,6 +1359,7 @@ def _micromachine_operation_command_execution(
         state = terminal_state
     blocker_reason = str(
         terminal_payload.get("reason")
+        or operation_telemetry.get("blocked_reason")
         or operation_telemetry.get("blocker_reason")
         or operation_telemetry.get("reason")
         or ""
