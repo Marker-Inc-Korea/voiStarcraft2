@@ -197,6 +197,11 @@ PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE = (
     / "patches"
     / "0053-parallel-operation-lifecycle-review-closure.patch"
 )
+AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0054-authoritative-parallel-operation-lifecycle.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -328,6 +333,36 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertIn(
             '-\t\t\t\t\tprefix + ".scope.allow_partial",',
+            patch,
+        )
+
+    def test_authoritative_parallel_operation_lifecycle_closes_review_blockers(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE
+        )
+
+        for term in (
+            "bool CombatCommander::hasVoiOperationState(",
+            "bool CombatCommander::isVoiOperationActive(",
+            "bot.Commander().Combat().hasVoiOperationState(",
+            "bot.Commander().Combat().isVoiOperationActive(",
+            'prefix + ".generation"',
+            'prefix + ".scope.allow_partial_scope"',
+            'prefix + ".tactical_task.allow_partial"',
+            'prefix + ".allow_partial"',
+            "operation->deadlineFrame",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn(
+            "+\t\texisting->deadlineFrame = requested.deadlineFrame;",
+            patch,
+        )
+        self.assertIn(
+            "-\t\texisting->deadlineFrame = requested.deadlineFrame;",
             patch,
         )
 
@@ -2693,6 +2728,24 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             {
                 "path": (
                     "patches/"
+                    "0054-authoritative-parallel-operation-lifecycle.patch"
+                ),
+                "order": 54,
+                "scope": (
+                    "make task-specific operation completion defaults exclude "
+                    "command submission, keep finite deadlines immutable for an "
+                    "existing operation_id and generation, make any explicit "
+                    "partial-scope false fail closed, and share CombatCommander "
+                    "runtime terminal state with ProductionManager as the "
+                    "authoritative operation lifecycle"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
                     "0049-explicit-ability-caster-ownership.patch"
                 ),
                 "order": 49,
@@ -3244,7 +3297,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0053`",
+            "through `0054`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -3745,6 +3798,24 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             with self.subTest(smoke_fresh_session_term=term):
                 self.assertIn(term, smoke_script)
         for term in (
+            "def first_modulation_issued_at_frame(update_id):",
+            "return min(int(entry.get(\"issued_at_frame\", 0) or 0) for entry in candidates)",
+            "aggressive_first_issued_at_frame",
+        ):
+            with self.subTest(smoke_republished_profile_epoch_term=term):
+                self.assertIn(term, smoke_script)
+        self.assertNotIn(
+            "return max(int(entry.get(\"issued_at_frame\", 0) or 0) for entry in candidates)",
+            smoke_script,
+        )
+        for term in (
+            "for _ in range(8):",
+            "except (json.JSONDecodeError, OSError, TypeError, ValueError):",
+            'if [[ -z "${current_telemetry_frame}" ]]; then',
+        ):
+            with self.subTest(smoke_stable_telemetry_frame_term=term):
+                self.assertIn(term, smoke_script)
+        for term in (
             "type(last_trace_frame_value) is not int",
             "last_trace_frame < 0",
             "worker_trace_frame < 0",
@@ -3813,6 +3884,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0051-all-terran-combat-scouts.patch",
             "0052-parallel-operations-ingame-hud.patch",
             "0053-parallel-operation-lifecycle-review-closure.patch",
+            "0054-authoritative-parallel-operation-lifecycle.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -3864,6 +3936,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE",
             "PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE",
             "PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE",
+            "AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -3874,6 +3947,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-explicit-ability-staging-single-flight-patch",
             "--micromachine-parallel-operations-ingame-hud-patch",
             "--micromachine-parallel-operation-lifecycle-review-closure-patch",
+            "--micromachine-authoritative-parallel-operation-lifecycle-patch",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",

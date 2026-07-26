@@ -163,7 +163,7 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 | Dry-run SC2 pipeline | Implemented and tested. Runs without StarCraft II. |
 | Legacy live SC2 commander | Implemented and locally connected through python-sc2. This is compatibility mode, not MicroMachine. |
 | MicroMachine policy cockpit | Default web text/voice route. Uses forced-tool LLM output, deterministic validation, and fail-closed publishing. |
-| Parallel operations | Implemented through explicit `operations[]`, stable IDs, live upsert semantics, dynamic operation squads, and exclusive unit ownership. |
+| Parallel operations | Implemented through explicit `operations[]`, stable IDs, immutable per-generation deadlines, runtime-authoritative lifecycle, live upsert semantics, dynamic operation squads, and exclusive unit ownership. |
 | All-unit operation model | Implemented for supported Terran combat families by reusing existing MicroMachine Squad and unit ability micro. |
 | Web operation UX | Per-operation cards, isolated telemetry, monotonic lifecycle updates, and truthful published/executing distinction. |
 | In-game HUD | Patched MicroMachine overlay for operation identity, force, route, target, assignment, action, movement, engagement, and blockers. |

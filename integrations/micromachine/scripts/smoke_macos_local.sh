@@ -1136,12 +1136,19 @@ telemetry_frame() {
   python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json"
 import json
 import sys
+import time
 from pathlib import Path
 
-try:
-    print(int(json.loads(Path(sys.argv[1]).read_text()).get("frame", 0)))
-except Exception:
-    raise SystemExit(1)
+path = Path(sys.argv[1])
+for _ in range(8):
+    try:
+        frame = int(json.loads(path.read_text()).get("frame", 0))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        time.sleep(0.05)
+        continue
+    print(frame)
+    raise SystemExit(0)
+raise SystemExit(1)
 PY
 }
 
@@ -1350,6 +1357,10 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
 
   if [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]]; then
     current_telemetry_frame="$(telemetry_frame || true)"
+    if [[ -z "${current_telemetry_frame}" ]]; then
+      sleep 1
+      continue
+    fi
     if has_no_start_units_bootstrap_blocker; then
       cleanup_runtime
       print_no_start_units_bootstrap_blocker
@@ -1550,7 +1561,7 @@ def iter_telemetry_entries():
             if isinstance(entry, dict):
                 yield entry
 
-def modulation_issued_at_frame(update_id):
+def first_modulation_issued_at_frame(update_id):
     candidates = []
     latest_modulation = telemetry.with_name("latest_modulation.json")
     if latest_modulation.exists():
@@ -1573,15 +1584,17 @@ def modulation_issued_at_frame(update_id):
                 candidates.append(entry)
     if not candidates:
         return None
-    return max(int(entry.get("issued_at_frame", 0) or 0) for entry in candidates)
+    return min(int(entry.get("issued_at_frame", 0) or 0) for entry in candidates)
 
-aggressive_issued_at_frame = modulation_issued_at_frame(aggressive_update_id)
-if require_aggressive_combat and aggressive_issued_at_frame is None:
+aggressive_first_issued_at_frame = first_modulation_issued_at_frame(
+    aggressive_update_id
+)
+if require_aggressive_combat and aggressive_first_issued_at_frame is None:
     raise SystemExit(
-        "missing aggressive modulation issued_at_frame evidence: "
+        "missing first aggressive modulation issued_at_frame evidence: "
         f"update_id={aggressive_update_id}, telemetry={telemetry}"
     )
-aggressive_issued_at_frame = int(aggressive_issued_at_frame or 0)
+aggressive_first_issued_at_frame = int(aggressive_first_issued_at_frame or 0)
 
 def profile_main_attack_command_seen():
     best = {}
@@ -1616,7 +1629,7 @@ def profile_main_attack_command_seen():
             "main_attack_simulation_won": combat_entry.get("main_attack_simulation_won"),
             "main_attack_max_home_distance": max_home_distance,
             "required_main_attack_home_distance": min_main_attack_home_distance,
-            "aggressive_issued_at_frame": aggressive_issued_at_frame,
+            "aggressive_first_issued_at_frame": aggressive_first_issued_at_frame,
         }
         issued_main_attack = "squad=MainAttack" in command
         if (
@@ -1627,7 +1640,7 @@ def profile_main_attack_command_seen():
             and combat_entry.get("main_attack_simulation_won") is True
             and unit_count >= min_units
             and command_frame > 0
-            and command_frame >= aggressive_issued_at_frame
+            and command_frame >= aggressive_first_issued_at_frame
             and max_home_distance >= min_main_attack_home_distance
         ):
             return True, best
@@ -1683,10 +1696,11 @@ if require_aggressive_combat:
         raise SystemExit(f"missing MainAttack CombatCommander action evidence: {combat!r}")
     if main_attack_command_frame <= 0:
         raise SystemExit(f"missing issued-only CombatCommander command frame evidence: {combat!r}")
-    if main_attack_command_frame < aggressive_issued_at_frame:
+    if main_attack_command_frame < aggressive_first_issued_at_frame:
         raise SystemExit(
             "MainAttack command evidence predates the aggressive modulation update: "
-            f"issued_at_frame={aggressive_issued_at_frame}, combat={combat!r}"
+            f"first_issued_at_frame={aggressive_first_issued_at_frame}, "
+            f"combat={combat!r}"
         )
     for axis in (
         "combat.retreat_patience_bias",

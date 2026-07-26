@@ -273,6 +273,11 @@
       "path": "patches/0053-parallel-operation-lifecycle-review-closure.patch",
       "order": 53,
       "scope": "fail closed on empty policy update identity, exclude terminal, expired, and unsupported parallel operations from production, consume operation-scoped lifetime, deadline, completion, and strict partial-scope semantics, distinguish frame-zero command submission from missing evidence, release terminal ownership, and expose lifecycle and owned-unit telemetry for live verification"
+    },
+    {
+      "path": "patches/0054-authoritative-parallel-operation-lifecycle.patch",
+      "order": 54,
+      "scope": "make task-specific operation completion defaults exclude command submission, keep finite deadlines immutable for an existing operation_id and generation, make any explicit partial-scope false fail closed, and share CombatCommander runtime terminal state with ProductionManager as the authoritative operation lifecycle"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

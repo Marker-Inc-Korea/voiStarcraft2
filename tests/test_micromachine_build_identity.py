@@ -456,6 +456,17 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 ),
                 report["checksums"],
             )
+            self.assertIn(
+                "micromachine_authoritative_parallel_operation_lifecycle_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_authoritative_parallel_operation_"
+                    "lifecycle_patch_sha256"
+                ),
+                report["checksums"],
+            )
             self.assertIn("source_attestation", report["paths"])
             self.assertIn("s2client_build_dir", report["paths"])
             self.assertIn("source_attestation_sha256", report["checksums"])
@@ -1893,6 +1904,18 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["failures"],
             )
 
+    def test_authoritative_parallel_operation_lifecycle_cli_defaults_to_patch_0054(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0054-authoritative-parallel-operation-lifecycle.patch",
+            Path(
+                args.micromachine_authoritative_parallel_operation_lifecycle_patch
+            ).name,
+        )
+
     def test_missing_source_attestation_marks_identity_not_ok(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2228,6 +2251,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_parallel_operation_lifecycle_review_closure_patch = (
             root / "micromachine-parallel-operation-lifecycle-review-closure.patch"
         )
+        micromachine_authoritative_parallel_operation_lifecycle_patch = (
+            root / "micromachine-authoritative-parallel-operation-lifecycle.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -2287,6 +2313,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_all_terran_combat_scouts_patch,
             micromachine_parallel_operations_ingame_hud_patch,
             micromachine_parallel_operation_lifecycle_review_closure_patch,
+            micromachine_authoritative_parallel_operation_lifecycle_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -2447,6 +2474,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_parallel_operation_lifecycle_review_closure_patch=(
                 micromachine_parallel_operation_lifecycle_review_closure_patch
+            ),
+            micromachine_authoritative_parallel_operation_lifecycle_patch=(
+                micromachine_authoritative_parallel_operation_lifecycle_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

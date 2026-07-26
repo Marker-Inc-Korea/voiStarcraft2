@@ -1441,8 +1441,9 @@ def _reduce_live_command_queue(
         layer_state,
     )
     operation_count = len(_operation_ids(reduced_payload))
+    if operation_count > 0:
+        _ensure_operation_lifetimes(reduced_payload)
     if operation_count > 1:
-        _ensure_operation_lifetimes(reduced_payload, transient_lifetime)
         _clear_legacy_operation_projection(reduced_payload)
     else:
         _sync_lifetime_duration_fields(
@@ -1909,7 +1910,9 @@ def _parallel_operations_lifetime(
     operation_states: list[str] = []
     completion_conditions: list[str] = []
     for operation in operations:
-        lifetime = _mapping_value(operation, "lifetime")
+        lifetime, default_duration = _normalized_parallel_operation_lifetime(
+            operation
+        )
         mode = str(lifetime.get("mode", "") or "").strip().lower()
         completion_state = str(
             lifetime.get("completion_state", "active") or "active"
@@ -1926,6 +1929,7 @@ def _parallel_operations_lifetime(
         operation_ttl = max(
             int(_float_at(task, ("duration_seconds",))),
             int(_float_at(scope, ("duration_seconds",))),
+            default_duration,
         )
         if operation_persistent:
             operation_ttl = max(operation_ttl, 900)
@@ -1949,8 +1953,6 @@ def _parallel_operations_lifetime(
     ttl_seconds = max(1, min(900, ttl_seconds or 300))
     if persistent:
         completion_conditions.append("cancelled_by_user")
-    if not completion_conditions:
-        completion_conditions.extend(("order_issued", "target_reached"))
     active = any(state in {"", "active"} for state in operation_states)
     if active:
         completion_state = "active"
@@ -2338,24 +2340,68 @@ def _clear_legacy_operation_projection(payload: dict[str, object]) -> None:
 
 def _ensure_operation_lifetimes(
     payload: dict[str, object],
-    fallback: Mapping[str, object],
 ) -> None:
     operations = list(_explicit_operations(payload))
     normalized: list[dict[str, object]] = []
     for operation in operations:
-        lifetime = dict(_mapping_value(operation, "lifetime"))
-        if not str(lifetime.get("mode", "") or ""):
-            lifetime = {
-                "mode": str(fallback.get("mode", "") or ""),
-                "completion_conditions": list(
-                    fallback.get("completion_conditions", ())
-                ),
-                "completion_state": "active",
-                "reason": str(fallback.get("reason", "") or ""),
-            }
+        lifetime, default_duration = _normalized_parallel_operation_lifetime(
+            operation
+        )
+        task = dict(_mapping_value(operation, "tactical_task"))
+        scope = _mapping_value(operation, "scope")
+        if (
+            default_duration > 0
+            and int(_float_at(task, ("duration_seconds",))) <= 0
+            and int(_float_at(scope, ("duration_seconds",))) <= 0
+        ):
+            task["duration_seconds"] = default_duration
+            operation["tactical_task"] = task
         operation["lifetime"] = lifetime
         normalized.append(operation)
     payload["operations"] = normalized
+
+
+def _normalized_parallel_operation_lifetime(
+    operation: Mapping[str, object],
+) -> tuple[dict[str, object], int]:
+    task = _mapping_value(operation, "tactical_task")
+    task_type = str(task.get("task_type", "") or "").strip().lower()
+    lifetime = dict(_mapping_value(operation, "lifetime"))
+    mode = str(lifetime.get("mode", "") or "").strip().lower()
+    standing = mode in {"standing_order", "until_cancelled"}
+    default_duration = 0 if standing else {
+        "scout_with_units": 180,
+        "pressure_with_main_army": 300,
+        "defend_with_units": 300,
+    }.get(task_type, 300)
+    if not mode:
+        mode = "until_completed"
+        lifetime["mode"] = mode
+    conditions = lifetime.get("completion_conditions", ())
+    if not isinstance(conditions, Sequence) or isinstance(
+        conditions,
+        (str, bytes, bytearray),
+    ):
+        conditions = ()
+    normalized_conditions = [str(condition) for condition in conditions if str(condition)]
+    if not normalized_conditions:
+        if mode in {"standing_order", "until_cancelled"}:
+            normalized_conditions = ["cancelled_by_user"]
+        else:
+            normalized_conditions = {
+                "scout_with_units": ["enemy_observed", "target_reached"],
+                "pressure_with_main_army": ["target_reached"],
+                "defend_with_units": ["target_reached"],
+            }.get(task_type, ["target_reached"])
+    lifetime["completion_conditions"] = normalized_conditions
+    lifetime["completion_state"] = str(
+        lifetime.get("completion_state", "active") or "active"
+    )
+    if not str(lifetime.get("reason", "") or ""):
+        lifetime["reason"] = (
+            f"{task_type or 'operation'} uses task-specific runtime completion"
+        )
+    return lifetime, default_duration
 
 
 def _sync_single_operation_projection(payload: dict[str, object]) -> None:
