@@ -1426,7 +1426,7 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
 
             self.assertTrue(report.ok, report.to_dict())
 
-    def test_rejects_tank_strategy_when_only_factory_was_issued(self) -> None:
+    def test_accepts_exact_factory_transition_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             update_id = "soak-tank_defensive_hold"
@@ -1470,17 +1470,7 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 ),
             )
 
-            self.assert_failure_codes(report, {"strategy_actual_command_missing"})
-            failure = [
-                item
-                for item in report.failures
-                if item.code == "strategy_actual_command_missing"
-            ][0]
-            self.assertEqual(
-                ["FactoryTechLab", "SiegeTank"],
-                failure.evidence["expected_actual_production_items"],
-            )
-            self.assertEqual(["Factory"], failure.evidence["observed_actual_items"])
+            self.assertTrue(report.ok, report.to_dict())
 
     def test_rejects_expected_strategy_queue_without_actual_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1530,7 +1520,7 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
                 if item.code == "strategy_actual_command_missing"
             ][0]
             self.assertEqual(
-                ["FactoryTechLab", "SiegeTank"],
+                ["Factory"],
                 failure.evidence["expected_actual_production_items"],
             )
             self.assertEqual([], failure.evidence["observed_actual_items"])
@@ -1690,6 +1680,10 @@ class MicroMachineSoakClassifierTest(unittest.TestCase):
             self.assertNotIn("Marine", failure.evidence["expected_actual_production_items"])
             self.assertIn("Marauder", failure.evidence["expected_actual_production_items"])
             self.assertIn("Marine", failure.evidence["observed_actual_items"])
+            self.assertIn(
+                "train_command|Marine@6240",
+                failure.evidence["observed_actual_commands"],
+            )
 
     def test_rejects_non_fresh_production_doctrine_false_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

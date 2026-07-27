@@ -1,0 +1,79 @@
+diff --git a/src/BuildOrderQueue.cpp b/src/BuildOrderQueue.cpp
+index 4f7687f..dd48d8f 100644
+--- a/src/BuildOrderQueue.cpp
++++ b/src/BuildOrderQueue.cpp
+@@ -1019,11 +1019,11 @@ bool MM::BuildOrderItem::operator < (const MM::BuildOrderItem & x) const
+ 	return std::tie(
+ 			voiTaskPriority,
+ 			priority,
+-			insertionSequence)
++			x.insertionSequence)
+ 		< std::tie(
+ 			x.voiTaskPriority,
+ 			x.priority,
+-			x.insertionSequence);
++			insertionSequence);
+ }
+ 
+ bool MM::BuildOrderItem::operator == (const MM::BuildOrderItem & x) const
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index d9fcc50..82c3c3a 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2393,13 +2393,21 @@ void CombatCommander::releaseVoiOperation(
+ 	const std::string & reason,
+ 	bool terminal)
+ {
++	const bool cleanupAlreadyRecorded =
++		operation.lastActionFrame > 0
++		&& (operation.lastAction.rfind(
++				"release_stop|",
++				0) == 0
++			|| operation.lastAction.rfind(
++				"release_no_owned_units|",
++				0) == 0);
+ 	std::vector<Unit> unitsToRestore;
++	bool issuedReleaseStop = false;
+ 	if (!operation.squadName.empty()
+ 		&& m_squadData.squadExists(operation.squadName))
+ 	{
+ 		unitsToRestore =
+ 			m_squadData.getSquad(operation.squadName).getUnits();
+-		bool issuedReleaseStop = false;
+ 		m_bot.GetCommandMutex().lock();
+ 		for (const auto & unit : unitsToRestore)
+ 		{
+@@ -2415,15 +2423,17 @@ void CombatCommander::releaseVoiOperation(
+ 			issuedReleaseStop = true;
+ 		}
+ 		m_bot.GetCommandMutex().unlock();
+-		if (issuedReleaseStop)
+-		{
+-			operation.lastAction =
+-				"release_stop|" + reason;
+-			operation.lastActionFrame =
+-				m_bot.GetGameLoop();
+-		}
+ 		m_squadData.removeSquad(operation.squadName);
+ 	}
++	if (!cleanupAlreadyRecorded)
++	{
++		operation.lastAction =
++			(issuedReleaseStop
++				? "release_stop|"
++				: "release_no_owned_units|") + reason;
++		operation.lastActionFrame =
++			m_bot.GetGameLoop();
++	}
+ 	for (const auto & unit : unitsToRestore)
+ 	{
+ 		const auto owner =
+@@ -3988,6 +3999,8 @@ void CombatCommander::updateVoiOperations()
+ 		{
+ 			existing->status = "RECEIVED";
+ 			existing->blockedReason.clear();
++			existing->lastAction.clear();
++			existing->lastActionFrame = 0;
+ 		}
+ 	}
+ 	std::sort(

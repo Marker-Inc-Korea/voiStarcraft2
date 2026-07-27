@@ -23,3 +23,7 @@ This file is the project-specific dual-license notice. The complete
 AGPL-3.0-or-later license text is distributed with this project at
 LICENSES/AGPL-3.0-or-later.txt. For commercial licensing terms, contact the
 copyright holder.
+
+Third-party components and patched upstream projects retain their own license
+and attribution requirements. A commercial voiStarcraft2 license does not
+waive those obligations. See THIRD_PARTY_NOTICES.md.

@@ -1610,6 +1610,7 @@ class TacticalOperationModulation:
     operation_id: str
     goal: str
     generation: int = 1
+    issued_at_frame: int = 0
     command_layer: CommandLayer | str = ""
     tactical_task: TacticalTaskModulation = field(default_factory=TacticalTaskModulation)
     scope: TacticalScopeModulation = field(default_factory=TacticalScopeModulation)
@@ -1633,6 +1634,14 @@ class TacticalOperationModulation:
         ):
             raise ValueError(
                 "generation must be an integer between 1 and 2147483647."
+            )
+        if (
+            type(self.issued_at_frame) is bool
+            or not isinstance(self.issued_at_frame, int)
+            or not 0 <= self.issued_at_frame <= 2_147_483_647
+        ):
+            raise ValueError(
+                "issued_at_frame must be an integer between 0 and 2147483647."
             )
         object.__setattr__(
             self,
@@ -1683,6 +1692,7 @@ class TacticalOperationModulation:
             "operation_id": self.operation_id,
             "goal": self.goal,
             "generation": self.generation,
+            "issued_at_frame": self.issued_at_frame,
             "command_layer": self.command_layer.value,
             "tactical_task": self.tactical_task.to_dict(),
             "scope": self.scope.to_dict(),
@@ -1831,7 +1841,6 @@ class PolicyModulationVector:
         )
         operations = _validate_tactical_operations(self.operations)
         legacy_projection = _legacy_operation_projection(self)
-        has_legacy_operation = _has_legacy_operation_payload(self)
         if operations:
             if len(operations) > 1:
                 if _has_legacy_operation_payload(
@@ -1849,14 +1858,43 @@ class PolicyModulationVector:
             if len(operations) == 1:
                 operation = operations[0]
                 operation_projection = _operation_projection(operation)
+                legacy_operation_projection = dict(legacy_projection)
+                legacy_operation_projection.pop("lifetime", None)
+                operation_projection_without_lifetime = dict(
+                    operation_projection
+                )
+                operation_projection_without_lifetime.pop("lifetime", None)
                 if (
-                    has_legacy_operation
-                    and legacy_projection != operation_projection
+                    _has_legacy_operation_payload(
+                        self,
+                        include_aggregate_lifetime=False,
+                    )
+                    and legacy_operation_projection
+                    != operation_projection_without_lifetime
                 ):
                     raise ValueError(
                         "legacy single-operation fields conflict with operations[0]."
                     )
-                _clear_legacy_operation_fields(self)
+                aggregate_lifetime = self.lifetime
+                operation_lifetime = operation.lifetime
+                if (
+                    aggregate_lifetime == LifetimeModulation()
+                    or (
+                        operation_lifetime.completion_state == "active"
+                        and operation_lifetime.mode
+                        in {"until_cancelled", "standing_order"}
+                    )
+                ):
+                    aggregate_lifetime = operation_lifetime
+                _clear_legacy_operation_fields(
+                    self,
+                    preserve_aggregate_lifetime=True,
+                )
+                object.__setattr__(
+                    self,
+                    "lifetime",
+                    aggregate_lifetime,
+                )
         object.__setattr__(self, "operations", operations)
         object.__setattr__(
             self,
@@ -1982,7 +2020,9 @@ class PolicyModulationVector:
             "rationale": self.rationale,
         }
         if len(self.operations) == 1:
-            payload.update(_operation_projection(self.operations[0]))
+            operation_projection = _operation_projection(self.operations[0])
+            operation_projection.pop("lifetime", None)
+            payload.update(operation_projection)
         return payload
 
 

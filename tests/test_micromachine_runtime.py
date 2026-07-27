@@ -348,6 +348,40 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             self.assertIn("emergency.prioritize_repair=true", kv)
             self.assertEqual(1, len(archive.read_text().splitlines()))
 
+    def test_publish_vector_stamps_nested_operation_epoch_in_serialized_outputs(
+        self,
+    ) -> None:
+        operation = TacticalOperationModulation(
+            operation_id="recon-alpha",
+            goal="scout the enemy main",
+        )
+        vector = PolicyModulationVector(
+            goal="publish one scouting operation",
+            operations=(operation,),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard = MicroMachineFilesystemBlackboard(directory)
+
+            update = blackboard.publish_vector(
+                vector,
+                current_frame=10_000,
+                update_id="operation-epoch",
+            )
+
+            document = json.loads(
+                (Path(directory) / LATEST_UPDATE_JSON_NAME).read_text()
+            )
+            kv = (Path(directory) / LATEST_UPDATE_KV_NAME).read_text()
+            self.assertEqual(10_000, update.vector.operations[0].issued_at_frame)
+            self.assertEqual(
+                10_000,
+                document["vector"]["operations"][0]["issued_at_frame"],
+            )
+            self.assertIn("operations.0.issued_at_frame=10000\n", kv)
+            self.assertEqual(0, operation.issued_at_frame)
+            self.assertIs(operation, vector.operations[0])
+
     def test_publish_rejects_unsafe_kv_key_without_partial_latest_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             blackboard = MicroMachineFilesystemBlackboard(directory)
@@ -491,6 +525,91 @@ class MicroMachineBackendAbstractionTest(unittest.TestCase):
                     self.assertEqual(104, telemetry.frame)
                     self.assertEqual(1, snapshot["active_modulation_count"])
                     self.assertIsInstance(backend, MicroMachineModulationBackend)
+
+    def test_direct_publish_update_preserves_past_and_fills_missing_epochs(
+        self,
+    ) -> None:
+        vector = PolicyModulationVector(
+            goal="publish operations with existing and missing epochs",
+            operations=(
+                TacticalOperationModulation(
+                    operation_id="existing-operation",
+                    goal="existing scouting order",
+                    issued_at_frame=1,
+                ),
+                TacticalOperationModulation(
+                    operation_id="new-operation",
+                    goal="new attack order",
+                ),
+            ),
+        )
+        source_update = MicroMachineBlackboardUpdate(
+            update_id="authoritative-operation-epoch",
+            vector=vector,
+            issued_at_frame=10_000,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            backends: list[MicroMachineModulationBackend] = [
+                MicroMachineFilesystemBlackboard(directory),
+                MicroMachineInMemoryBlackboard(),
+            ]
+
+            for backend in backends:
+                with self.subTest(backend=type(backend).__name__):
+                    published = backend.publish_update(
+                        source_update,
+                        current_frame=10_000,
+                    )
+
+                    self.assertEqual(
+                        (1, 10_000),
+                        tuple(
+                            operation.issued_at_frame
+                            for operation in published.vector.operations
+                        ),
+                    )
+
+        self.assertEqual(
+            (1, 0),
+            tuple(
+                operation.issued_at_frame
+                for operation in source_update.vector.operations
+            ),
+        )
+
+    def test_direct_publish_update_rejects_future_operation_epoch(self) -> None:
+        source_update = MicroMachineBlackboardUpdate(
+            update_id="future-operation-epoch",
+            vector=PolicyModulationVector(
+                goal="reject a future operation epoch",
+                operations=(
+                    TacticalOperationModulation(
+                        operation_id="future-operation",
+                        goal="future attack order",
+                        issued_at_frame=10_001,
+                    ),
+                ),
+            ),
+            issued_at_frame=10_000,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            backends: list[MicroMachineModulationBackend] = [
+                MicroMachineFilesystemBlackboard(directory),
+                MicroMachineInMemoryBlackboard(),
+            ]
+
+            for backend in backends:
+                with self.subTest(backend=type(backend).__name__):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "cannot be later than current_frame",
+                    ):
+                        backend.publish_update(
+                            source_update,
+                            current_frame=10_000,
+                        )
 
     def test_memory_backend_rejects_raw_payloads_at_telemetry_boundary(self) -> None:
         backend = MicroMachineInMemoryBlackboard()

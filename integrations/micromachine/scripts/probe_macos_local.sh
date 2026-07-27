@@ -7,7 +7,27 @@ ROOT_DIR="${ROOT_DIR:-/private/tmp/voi-micromachine-runtime}"
 S2CLIENT_DIR="${S2CLIENT_DIR:-${ROOT_DIR}/s2client-api}"
 S2CLIENT_BUILD_DIR="${S2CLIENT_BUILD_DIR:-${S2CLIENT_DIR}/build-latest}"
 PROBE_EXECUTABLE="${PROBE_EXECUTABLE:-${S2CLIENT_BUILD_DIR}/bin/voi_bootstrap_probe}"
-SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
+
+discover_sc2_root() {
+  local configured="${SC2_ROOT:-${SC2PATH:-}}"
+  if [[ -n "${configured}" ]]; then
+    printf '%s\n' "${configured/#\~/${HOME}}"
+    return
+  fi
+  local candidate
+  for candidate in \
+    "${HOME}/Desktop/StarCraft2/StarCraft II" \
+    "/Applications/StarCraft II" \
+    "${HOME}/Applications/StarCraft II"; do
+    if [[ -d "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return
+    fi
+  done
+  printf '%s\n' "/Applications/StarCraft II"
+}
+
+SC2_ROOT="$(discover_sc2_root)"
 SC2_LAUNCH_MODE="${SC2_LAUNCH_MODE:-auto}"
 SC2_BATTLENET_EXECUTABLE="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
 SC2_ATTACH_TIMEOUT_MS="${SC2_ATTACH_TIMEOUT_MS:-120000}"
@@ -44,7 +64,32 @@ resolve_latest_direct_sc2_executable() {
   local versions_dir="${SC2_ROOT}/Versions"
   if [[ -d "${versions_dir}" ]]; then
     local latest
-    latest="$(find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f | sort -r | head -n 1)"
+    latest="$(
+      find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f 2>/dev/null |
+        awk -F/ '
+          {
+            for (part = 1; part <= NF - 4; ++part) {
+              if ($part ~ /^Base[0-9]+$/ &&
+                  $(part + 1) == "SC2.app" &&
+                  $(part + 2) == "Contents" &&
+                  $(part + 3) == "MacOS" &&
+                  $(part + 4) == "SC2") {
+                version = substr($part, 5) + 0
+                if (!found || version > maximum) {
+                  found = 1
+                  maximum = version
+                  selected = $0
+                }
+              }
+            }
+          }
+          END {
+            if (found) {
+              print selected
+            }
+          }
+        '
+    )"
     if [[ -n "${latest}" && -x "${latest}" ]]; then
       printf '%s\n' "${latest}"
       return

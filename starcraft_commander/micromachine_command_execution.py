@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 import re
 from typing import Final
 
+from starcraft_commander.micromachine_bridge import (
+    MICROMACHINE_GAME_LOOPS_PER_SECOND,
+)
 from starcraft_commander.micromachine_tactical_evidence import (
     MicroMachineTacticalEvidence,
     explicit_ability_terminal_is_valid,
@@ -414,12 +417,29 @@ def classify_micromachine_operation_executions(
     )
     command_id = str(latest_update.get("update_id", "") or "")
     issued_at_frame = _int_value(latest_update.get("issued_at_frame"))
-    expires_at_frame = _int_value(latest_update.get("expires_at_frame"))
     latest_frame = max(latest_frame, _latest_frame(telemetry_entries))
+    operation_epochs: dict[tuple[str, int], tuple[int, int]] = {}
+    for operation in operations:
+        operation_id = str(operation.get("operation_id", "") or "")
+        operation_generation = max(
+            1,
+            _int_value(operation.get("generation")) or 1,
+        )
+        operation_issued_at_frame = _operation_issued_at_frame(
+            operation,
+            issued_at_frame,
+        )
+        operation_epochs[(operation_id, operation_generation)] = (
+            operation_issued_at_frame,
+            _operation_deadline_frame(
+                operation,
+                operation_issued_at_frame,
+            ),
+        )
     operation_payloads = _aggregate_operation_payloads(
         telemetry_entries,
         command_id=command_id,
-        issued_at_frame=issued_at_frame,
+        operation_epochs=operation_epochs,
     )
     ownership_conflicts = _operation_unit_ownership_conflicts(operation_payloads)
     reports: list[MicroMachineCommandExecutionReport] = []
@@ -433,6 +453,12 @@ def classify_micromachine_operation_executions(
             (operation_id, operation_generation),
             {},
         )
+        operation_issued_at_frame, operation_deadline_frame = (
+            operation_epochs.get(
+                (operation_id, operation_generation),
+                (issued_at_frame, 0),
+            )
+        )
         reports.append(
             _classify_operation_execution(
                 command_id=command_id,
@@ -440,8 +466,8 @@ def classify_micromachine_operation_executions(
                 operation_generation=operation_generation,
                 operation=operation,
                 telemetry_payload=payload,
-                issued_at_frame=issued_at_frame,
-                expires_at_frame=expires_at_frame,
+                issued_at_frame=operation_issued_at_frame,
+                deadline_frame=operation_deadline_frame,
                 latest_frame=latest_frame,
                 ownership_conflicts=ownership_conflicts,
             )
@@ -457,7 +483,7 @@ def _classify_operation_execution(
     operation: Mapping[str, object],
     telemetry_payload: Mapping[str, object],
     issued_at_frame: int,
-    expires_at_frame: int,
+    deadline_frame: int,
     latest_frame: int,
     ownership_conflicts: Mapping[int, tuple[str, ...]],
 ) -> MicroMachineCommandExecutionReport:
@@ -492,9 +518,14 @@ def _classify_operation_execution(
     )
     received_frame = _int_value(telemetry_payload.get("received_frame"))
     assigned_frame = _int_value(telemetry_payload.get("assigned_frame"))
-    submitted_frame = max(
-        _int_value(telemetry_payload.get("submitted_frame")),
-        _int_value(telemetry_payload.get("last_action_frame")),
+    submitted_frame = _int_value(telemetry_payload.get("submitted_frame"))
+    action_frame = _int_value(telemetry_payload.get("last_action_frame"))
+    last_action = str(telemetry_payload.get("last_action", "") or "")
+    terminal_cleanup_action = str(
+        telemetry_payload.get("terminal_cleanup_action", "") or ""
+    )
+    terminal_cleanup_action_frame = _int_value(
+        telemetry_payload.get("terminal_cleanup_action_frame")
     )
     max_home_distance = _number(
         telemetry_payload.get("max_home_distance")
@@ -502,6 +533,10 @@ def _classify_operation_execution(
     engaged = bool(telemetry_payload.get("engaged"))
     terminal_completed = bool(telemetry_payload.get("completed")) or (
         status == "completed"
+    )
+    terminal_cancelled = bool(
+        status in {"cancelled", "canceled"}
+        or blocked_reason == "cancelled_by_policy"
     )
     expiry_signal = (
         status == "expired" or blocked_reason in EXPIRY_OPERATION_REASONS
@@ -511,12 +546,15 @@ def _classify_operation_execution(
         and blocked_reason in TRANSIENT_OPERATION_BLOCK_REASONS
     )
     hard_blocked = bool(
-        status in HARD_OPERATION_STATUSES
-        or blocked_reason in HARD_OPERATION_BLOCK_REASONS
-        or (
-            status == "blocked"
-            and not transient_blocked
-            and not expiry_signal
+        not terminal_cancelled
+        and (
+            status in HARD_OPERATION_STATUSES
+            or blocked_reason in HARD_OPERATION_BLOCK_REASONS
+            or (
+                status == "blocked"
+                and not transient_blocked
+                and not expiry_signal
+            )
         )
     )
     conflicting_tags = tuple(
@@ -534,7 +572,7 @@ def _classify_operation_execution(
     displacement_threshold = 8.0 if task_type == "scout_with_units" else 12.0
     movement_observed = max_home_distance >= displacement_threshold
     effect_observed = bool(
-        submitted_frame > 0
+        action_frame > 0
         and (
             movement_observed
             or engaged
@@ -548,15 +586,14 @@ def _classify_operation_execution(
         and telemetry_generation == operation_generation
     )
     parsed = bool(command_id and operation_id and operation)
-    consumed = generation_matches
-    assigned = bool(generation_matches and assigned_count > 0)
-    submitted = bool(generation_matches and submitted_frame > 0)
-    operation_frame = max(
-        received_frame,
-        assigned_frame,
-        submitted_frame,
-        _int_value(telemetry_payload.get("frame")),
+    consumed = bool(generation_matches and received_frame > 0)
+    assigned = bool(
+        generation_matches
+        and assigned_frame > 0
+        and assigned_count > 0
     )
+    submitted = bool(generation_matches and submitted_frame > 0)
+    action_issued = bool(generation_matches and action_frame > 0)
     stages = (
         MicroMachineCommandStage(
             "parsed",
@@ -604,7 +641,7 @@ def _classify_operation_execution(
             "OperationDirector received this operation id."
             if consumed
             else "OperationDirector has not reported receipt for this operation.",
-            operation_frame,
+            received_frame,
             dict(telemetry_payload),
         ),
         MicroMachineCommandStage(
@@ -620,7 +657,7 @@ def _classify_operation_execution(
                     else "No operation-scoped unit assignment is reported."
                 )
             ),
-            operation_frame,
+            assigned_frame,
             {
                 "assigned_count": assigned_count,
                 "assigned_unit_tags": list(assigned_tags),
@@ -635,17 +672,27 @@ def _classify_operation_execution(
             if submitted
             else "No accepted operation-scoped order submission is reported.",
             submitted_frame,
-            {"last_action": str(telemetry_payload.get("last_action", "") or "")},
+            {
+                "last_action": last_action,
+                "terminal_cleanup_action": terminal_cleanup_action,
+                "terminal_cleanup_action_frame": terminal_cleanup_action_frame,
+            },
         ),
         MicroMachineCommandStage(
             "action_issued",
-            submitted,
+            action_issued,
             "SC2 API",
             "The SC2 action path accepted an operation-scoped command."
-            if submitted
+            if action_issued
             else "No accepted SC2 action is reported for this operation.",
-            submitted_frame,
-            {"submitted_frame": submitted_frame},
+            action_frame,
+            {
+                "submitted_frame": submitted_frame,
+                "last_action_frame": action_frame,
+                "last_action": last_action,
+                "terminal_cleanup_action": terminal_cleanup_action,
+                "terminal_cleanup_action_frame": terminal_cleanup_action_frame,
+            },
         ),
         MicroMachineCommandStage(
             "effect_observed",
@@ -654,21 +701,24 @@ def _classify_operation_execution(
             "Movement, engagement, or completion was observed for this operation."
             if effect_observed
             else "No operation-scoped movement or engagement effect is observed.",
-            operation_frame,
+            action_frame,
             {
                 "max_home_distance": max_home_distance,
                 "engaged": engaged,
                 "status": status,
+                "terminal_cleanup_action": terminal_cleanup_action,
+                "terminal_cleanup_action_frame": terminal_cleanup_action_frame,
             },
         ),
     )
     expired = bool(
         not terminal_completed
+        and not terminal_cancelled
         and (
             expiry_signal
             or (
-                expires_at_frame > 0
-                and latest_frame > expires_at_frame
+                deadline_frame > 0
+                and latest_frame > deadline_frame
             )
         )
     )
@@ -676,6 +726,7 @@ def _classify_operation_execution(
     completed = bool(
         terminal_completed
         and effect_observed
+        and not terminal_cancelled
         and not failed
         and not expired
     )
@@ -685,6 +736,12 @@ def _classify_operation_execution(
         blocker_reason = (
             "Duplicate unit ownership detected for tags: "
             + ",".join(str(tag) for tag in conflicting_tags)
+        )
+    elif terminal_cancelled:
+        blocker_manager = "OperationDirector"
+        blocker_reason = str(
+            telemetry_payload.get("blocked_reason", "")
+            or "Operation was cancelled."
         )
     elif hard_blocked:
         blocker_manager = "OperationDirector"
@@ -710,20 +767,22 @@ def _classify_operation_execution(
     else:
         blocker_manager = ""
         blocker_reason = ""
-    if completed:
+    if terminal_cancelled:
+        state = "cancelled"
+    elif completed:
         state = "completed"
     elif failed:
         state = status or "failed"
     elif expired:
         state = "expired"
-    elif status == "cancelled":
-        state = "cancelled"
     elif transient_blocked:
         state = "blocked"
     elif effect_observed:
         state = "engaged" if engaged or status == "engaged" else "moving"
-    elif submitted:
+    elif action_issued:
         state = "action_issued"
+    elif submitted:
+        state = "order_issued"
     elif assigned:
         state = "queued_or_assigned"
     elif consumed:
@@ -750,12 +809,14 @@ def _aggregate_operation_payloads(
     telemetry_entries: Sequence[Mapping[str, object]],
     *,
     command_id: str,
-    issued_at_frame: int,
+    operation_epochs: Mapping[tuple[str, int], tuple[int, int]],
 ) -> dict[tuple[str, int], dict[str, object]]:
     aggregate: dict[tuple[str, int], dict[str, object]] = {}
-    latest_frames: dict[tuple[str, int], int] = {}
+    latest_snapshot_frames: dict[tuple[str, int], int] = {}
+    if not command_id:
+        return aggregate
     for entry in telemetry_entries:
-        frame = _int_value(entry.get("frame"))
+        snapshot_frame = _int_value(entry.get("frame"))
         managers = entry.get("managers")
         if not isinstance(managers, Mapping):
             continue
@@ -763,27 +824,78 @@ def _aggregate_operation_payloads(
         if not isinstance(director, Mapping):
             continue
         policy_update_id = str(director.get("policy_update_id", "") or "")
-        if policy_update_id and policy_update_id != command_id:
+        if not policy_update_id or policy_update_id != command_id:
             continue
         for payload in _mapping_sequence(director.get("operations")):
             operation_id = str(payload.get("operation_id", "") or "")
             generation = max(1, _int_value(payload.get("generation")) or 1)
             operation_key = (operation_id, generation)
-            operation_frame = max(
-                frame,
-                _int_value(payload.get("frame")),
-                _int_value(payload.get("last_action_frame")),
-            )
+            epoch = operation_epochs.get(operation_key)
+            payload_snapshot_frame = snapshot_frame
             if (
                 not operation_id
                 or generation <= 0
-                or operation_frame < issued_at_frame
-                or operation_frame < latest_frames.get(operation_key, -1)
+                or epoch is None
+                or payload_snapshot_frame
+                < latest_snapshot_frames.get(operation_key, -1)
             ):
                 continue
+            issued_at_frame, deadline_frame = epoch
+            received_frame = _current_operation_evidence_frame(
+                payload.get("received_frame"),
+                issued_at_frame=issued_at_frame,
+                deadline_frame=deadline_frame,
+                snapshot_frame=payload_snapshot_frame,
+            )
+            assigned_frame = _current_operation_evidence_frame(
+                payload.get("assigned_frame"),
+                issued_at_frame=issued_at_frame,
+                deadline_frame=deadline_frame,
+                snapshot_frame=payload_snapshot_frame,
+            )
+            submitted_frame = _current_operation_evidence_frame(
+                payload.get("submitted_frame"),
+                issued_at_frame=issued_at_frame,
+                deadline_frame=deadline_frame,
+                snapshot_frame=payload_snapshot_frame,
+            )
+            action_frame = _current_operation_evidence_frame(
+                payload.get("last_action_frame"),
+                issued_at_frame=issued_at_frame,
+                deadline_frame=deadline_frame,
+                snapshot_frame=payload_snapshot_frame,
+            )
+            last_action = str(payload.get("last_action", "") or "")
+            terminal_cleanup_action = _operation_terminal_cleanup_action(
+                last_action
+            )
+            terminal_cleanup_action_frame = (
+                action_frame if terminal_cleanup_action else 0
+            )
+            if terminal_cleanup_action:
+                action_frame = 0
             normalized_payload = dict(payload)
             normalized_payload["generation"] = generation
             previous = aggregate.get(operation_key, {})
+            current_assigned_tags = tuple(
+                _int_value(tag)
+                for tag in _sequence_value(
+                    normalized_payload.get("assigned_unit_tags")
+                )
+                if _int_value(tag) > 0
+            )
+            if not current_assigned_tags:
+                latest_assigned_tags: tuple[int, ...] = ()
+            elif assigned_frame > 0:
+                latest_assigned_tags = current_assigned_tags
+            else:
+                latest_assigned_tags = tuple(
+                    _int_value(tag)
+                    for tag in _sequence_value(
+                        previous.get("latest_assigned_unit_tags")
+                    )
+                    if _int_value(tag) > 0
+                )
             ever_assigned_tags = tuple(
                 dict.fromkeys(
                     (
@@ -795,55 +907,168 @@ def _aggregate_operation_payloads(
                             if _int_value(tag) > 0
                         ),
                         *(
-                            _int_value(tag)
-                            for tag in _sequence_value(
-                                normalized_payload.get("assigned_unit_tags")
-                            )
-                            if _int_value(tag) > 0
+                            current_assigned_tags
+                            if assigned_frame > 0
+                            else ()
                         ),
                     )
                 )
             )
             normalized_payload["latest_assigned_unit_tags"] = list(
-                _sequence_value(normalized_payload.get("assigned_unit_tags"))
+                latest_assigned_tags
             )
             normalized_payload["ever_assigned_unit_tags"] = list(
                 ever_assigned_tags
             )
+            normalized_payload["assigned_count"] = (
+                max(
+                    len(current_assigned_tags),
+                    _int_value(normalized_payload.get("assigned_count")),
+                )
+                if assigned_frame > 0
+                else 0
+            )
             normalized_payload["ever_assigned_count"] = max(
                 len(ever_assigned_tags),
                 _int_value(previous.get("ever_assigned_count")),
-                _int_value(previous.get("assigned_count")),
-                _int_value(normalized_payload.get("assigned_count")),
+                _int_value(normalized_payload.get("assigned_count"))
+                if assigned_frame > 0
+                else 0,
             )
-            for key in (
-                "received_frame",
-                "assigned_frame",
-                "submitted_frame",
-                "last_action_frame",
+            for key, current_frame in (
+                ("received_frame", received_frame),
+                ("assigned_frame", assigned_frame),
+                ("submitted_frame", submitted_frame),
+                ("last_action_frame", action_frame),
             ):
                 normalized_payload[key] = max(
                     _int_value(previous.get(key)),
-                    _int_value(normalized_payload.get(key)),
+                    current_frame,
                 )
-            normalized_payload["max_home_distance"] = max(
-                _number(previous.get("max_home_distance")),
-                _number(normalized_payload.get("max_home_distance")),
+            normalized_payload["terminal_cleanup_action"] = str(
+                previous.get("terminal_cleanup_action", "") or ""
             )
-            normalized_payload["engaged"] = bool(
-                previous.get("engaged") or normalized_payload.get("engaged")
+            normalized_payload["terminal_cleanup_action_frame"] = _int_value(
+                previous.get("terminal_cleanup_action_frame")
             )
-            normalized_payload["completed"] = bool(
-                previous.get("completed") or normalized_payload.get("completed")
-            )
-            if (
-                not normalized_payload.get("last_action")
-                and previous.get("last_action")
-            ):
-                normalized_payload["last_action"] = previous["last_action"]
+            if terminal_cleanup_action_frame > 0:
+                normalized_payload["terminal_cleanup_action"] = (
+                    terminal_cleanup_action
+                )
+                normalized_payload["terminal_cleanup_action_frame"] = (
+                    terminal_cleanup_action_frame
+                )
+            if action_frame > 0:
+                normalized_payload["max_home_distance"] = max(
+                    _number(previous.get("max_home_distance")),
+                    _number(normalized_payload.get("max_home_distance")),
+                )
+                normalized_payload["engaged"] = bool(
+                    previous.get("engaged")
+                    or normalized_payload.get("engaged")
+                )
+                normalized_payload["completed"] = bool(
+                    previous.get("completed")
+                    or normalized_payload.get("completed")
+                )
+                if not last_action:
+                    normalized_payload["last_action"] = str(
+                        previous.get("last_action", "") or ""
+                    )
+                else:
+                    normalized_payload["last_action"] = last_action
+            else:
+                normalized_payload["max_home_distance"] = _number(
+                    previous.get("max_home_distance")
+                )
+                normalized_payload["engaged"] = bool(previous.get("engaged"))
+                normalized_payload["completed"] = bool(
+                    previous.get("completed")
+                )
+                normalized_payload["last_action"] = str(
+                    previous.get("last_action", "") or ""
+                )
             aggregate[operation_key] = normalized_payload
-            latest_frames[operation_key] = operation_frame
+            latest_snapshot_frames[operation_key] = payload_snapshot_frame
     return aggregate
+
+
+def _operation_issued_at_frame(
+    operation: Mapping[str, object],
+    update_issued_at_frame: int,
+) -> int:
+    if "issued_at_frame" in operation:
+        operation_issued_at_frame = max(
+            0,
+            _int_value(operation.get("issued_at_frame")),
+        )
+        if operation_issued_at_frame > 0 or update_issued_at_frame <= 0:
+            return operation_issued_at_frame
+    return max(0, update_issued_at_frame)
+
+
+def _operation_deadline_frame(
+    operation: Mapping[str, object],
+    issued_at_frame: int,
+) -> int:
+    lifetime = (
+        operation.get("lifetime")
+        if isinstance(operation.get("lifetime"), Mapping)
+        else {}
+    )
+    lifetime_mode = str(lifetime.get("mode", "") or "").strip().lower()
+    if lifetime_mode in {"standing_order", "until_cancelled"}:
+        return 0
+    for source in (operation, lifetime):
+        for field_name in ("deadline_frame", "expires_at_frame"):
+            deadline_frame = _int_value(source.get(field_name))
+            if deadline_frame > issued_at_frame:
+                return deadline_frame
+    tactical_task = (
+        operation.get("tactical_task")
+        if isinstance(operation.get("tactical_task"), Mapping)
+        else {}
+    )
+    scope = (
+        operation.get("scope")
+        if isinstance(operation.get("scope"), Mapping)
+        else {}
+    )
+    duration_seconds = _int_value(tactical_task.get("duration_seconds"))
+    if duration_seconds <= 0:
+        duration_seconds = _int_value(scope.get("duration_seconds"))
+    if duration_seconds <= 0:
+        return 0
+    return (
+        issued_at_frame
+        + duration_seconds * MICROMACHINE_GAME_LOOPS_PER_SECOND
+    )
+
+
+def _current_operation_evidence_frame(
+    value: object,
+    *,
+    issued_at_frame: int,
+    deadline_frame: int,
+    snapshot_frame: int,
+) -> int:
+    frame = _int_value(value)
+    if frame <= 0 or frame < issued_at_frame:
+        return 0
+    if deadline_frame > 0 and frame > deadline_frame:
+        return 0
+    if snapshot_frame > 0 and frame > snapshot_frame:
+        return 0
+    return frame
+
+
+def _operation_terminal_cleanup_action(last_action: object) -> str:
+    action = str(last_action or "").strip()
+    if action.lower().startswith(
+        ("release_stop|", "release_no_owned_units|")
+    ):
+        return action
+    return ""
 
 
 def _operation_unit_ownership_conflicts(

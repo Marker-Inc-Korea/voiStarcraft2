@@ -23,6 +23,11 @@ from starcraft_commander.micromachine_command_execution import (
     MicroMachineCommandExecutionReport,
     classify_micromachine_command_execution,
 )
+from starcraft_commander.micromachine_production_evidence import (
+    canonical_actual_production_item,
+    expected_production_pairs,
+    find_causal_production_evidence,
+)
 
 
 DEFAULT_REQUIRED_MACRO_TERMS: Final[tuple[str, ...]] = (
@@ -77,20 +82,6 @@ PRODUCTION_DOCTRINE_EVIDENCE_VALUES: Final[set[str]] = {
     "queued_existing",
     "command_issued",
 }
-EXPECTED_ACTUAL_PRODUCTION_ITEMS_BY_DOCTRINE: Final[Mapping[str, frozenset[str]]] = {
-    "marine_rush": frozenset({"Marine", "Barracks"}),
-    "bio_pressure": frozenset({"Marauder", "BarracksTechLab", "Starport", "Medivac"}),
-    "tank_defensive_hold": frozenset({"FactoryTechLab", "SiegeTank"}),
-    "siege_contain": frozenset({"FactoryTechLab", "SiegeTank"}),
-    "contain_enemy_natural": frozenset({"FactoryTechLab", "SiegeTank"}),
-    "mech_transition": frozenset({"Hellion", "Cyclone", "SiegeTank", "Thor"}),
-    "drop_harassment": frozenset({"Starport", "StarportReactor", "Medivac", "Hellion", "Reaper"}),
-    "worker_line_harassment": frozenset({"Starport", "StarportReactor", "Medivac", "Hellion", "Reaper"}),
-    "expand_macro": frozenset({"CommandCenter"}),
-    "anti_air_response": frozenset({"Starport", "EngineeringBay", "Viking"}),
-}
-"""Profile-specific actual build/train command items required for sign-off."""
-
 NON_PRODUCTION_STRATEGY_DOCTRINES: Final[frozenset[str]] = frozenset(
     {"scouting_map_control"}
 )
@@ -101,29 +92,6 @@ MIN_MAIN_ATTACK_HOME_DISTANCE: Final[float] = 12.0
 
 MIN_COMBAT_SCOUT_HOME_DISTANCE: Final[float] = 8.0
 """Minimum live distance from home required to prove a combat scout moved."""
-
-ACTUAL_PRODUCTION_ITEM_ALIASES: Final[Mapping[str, str]] = {
-    "TERRAN_SUPPLYDEPOT": "SupplyDepot",
-    "TERRAN_BARRACKS": "Barracks",
-    "TERRAN_BARRACKSTECHLAB": "BarracksTechLab",
-    "TERRAN_FACTORY": "Factory",
-    "TERRAN_FACTORYTECHLAB": "FactoryTechLab",
-    "TERRAN_STARPORT": "Starport",
-    "TERRAN_STARPORTREACTOR": "StarportReactor",
-    "TERRAN_COMMANDCENTER": "CommandCenter",
-    "TERRAN_ENGINEERINGBAY": "EngineeringBay",
-    "TERRAN_MARINE": "Marine",
-    "TERRAN_MARAUDER": "Marauder",
-    "TERRAN_REAPER": "Reaper",
-    "TERRAN_HELLION": "Hellion",
-    "TERRAN_CYCLONE": "Cyclone",
-    "TERRAN_THOR": "Thor",
-    "TERRAN_SIEGETANK": "SiegeTank",
-    "TERRAN_MEDIVAC": "Medivac",
-    "TERRAN_VIKINGFIGHTER": "Viking",
-}
-"""Raw s2client-api/MicroMachine item names normalized to DSL evidence names."""
-
 
 @dataclass(frozen=True)
 class MicroMachineSoakConfig:
@@ -875,7 +843,7 @@ def _production_supply_recovery_evidence(
                     evidence["last_supply_provider_command_update_id"] = str(
                         production.get("last_supply_provider_command_update_id", "") or ""
                     )
-        item = _canonical_actual_production_item(
+        item = canonical_actual_production_item(
             production.get("last_actual_production_command_item", "")
         )
         if item == "SupplyDepot":
@@ -1721,7 +1689,6 @@ def _classify_expected_strategy_consumption(
     if not _requires_production_intervention(config):
         return None
 
-    best: Mapping[str, object] | None = None
     observed_actions: set[str] = set()
     observed_items: set[str] = set()
     observed_doctrines: set[str] = set()
@@ -1778,48 +1745,44 @@ def _classify_expected_strategy_consumption(
         if item and item != "none":
             observed_items.add(item)
 
-        doctrine_ok = not expected_doctrine or (
-            doctrine == expected_doctrine and last_doctrine == expected_doctrine
-        )
-        action_ok = not expected_actions or action in expected_actions
-        item_ok = not expected_items or item in expected_items
-        if (
-            doctrine_ok
-            and action_ok
-            and item_ok
-            and _production_doctrine_action_seen(
-                production,
-                expected_update_id=expected_update_id,
-                min_doctrine_frame=min_doctrine_frame,
-            )
-        ):
-            best = production
-            break
-
-    if best is not None:
-        expected_actual_items = _expected_actual_production_items(config)
-        actual_seen, observed_actual_items, observed_actual_commands = (
-            _expected_actual_production_command_seen(
-                (*telemetry_archive, latest_telemetry),
-                expected_update_id=expected_update_id,
-                min_command_frame=min_doctrine_frame,
-                expected_items=expected_actual_items,
-            )
-        )
-        if actual_seen:
-            return None
+    expected_pairs = expected_production_pairs(
+        expected_doctrine,
+        expected_actions=expected_actions,
+        expected_items=expected_items,
+    )
+    causal_evidence = find_causal_production_evidence(
+        (*telemetry_archive, latest_telemetry),
+        expected_doctrine=expected_doctrine,
+        expected_update_id=expected_update_id,
+        expected_pairs=expected_pairs,
+        allowed_doctrine_evidence=PRODUCTION_DOCTRINE_EVIDENCE_VALUES,
+        min_doctrine_frame=min_doctrine_frame,
+    )
+    if causal_evidence.matched:
+        return None
+    if causal_evidence.doctrine_entry is not None:
         return MicroMachineSoakFailure(
             code="strategy_actual_command_missing",
             message=(
-                "ProductionManager consumed the expected strategy, but no matching "
-                "actual build/train/morph/upgrade command was observed for that "
-                "strategy and update."
+                "ProductionManager consumed the expected strategy action/item, "
+                "but its exact same-update SC2 command was not observed at or "
+                "after the doctrine frame."
             ),
             evidence={
                 "expected_strategy_doctrine": expected_doctrine,
-                "expected_actual_production_items": sorted(expected_actual_items),
-                "observed_actual_items": sorted(observed_actual_items),
-                "observed_actual_commands": sorted(observed_actual_commands),
+                "expected_production_pairs": [
+                    f"{action}|{item}"
+                    for action, item in sorted(causal_evidence.expected_pairs)
+                ],
+                "expected_actual_production_items": sorted(
+                    causal_evidence.expected_actual_items
+                ),
+                "observed_actual_items": sorted(
+                    causal_evidence.observed_actual_items
+                ),
+                "observed_actual_commands": sorted(
+                    causal_evidence.observed_actual_commands
+                ),
                 "latest_policy_update_id": expected_update_id,
             },
         )
@@ -1839,55 +1802,6 @@ def _classify_expected_strategy_consumption(
             "observed_items": sorted(observed_items),
         },
     )
-
-
-def _expected_actual_production_items(config: MicroMachineSoakConfig) -> set[str]:
-    if config.expected_strategy_doctrine in EXPECTED_ACTUAL_PRODUCTION_ITEMS_BY_DOCTRINE:
-        return set(EXPECTED_ACTUAL_PRODUCTION_ITEMS_BY_DOCTRINE[config.expected_strategy_doctrine])
-    return {_canonical_actual_production_item(item) for item in config.expected_production_items}
-
-
-def _canonical_actual_production_item(item: object) -> str:
-    raw = str(item or "").strip()
-    return ACTUAL_PRODUCTION_ITEM_ALIASES.get(raw, raw)
-
-
-def _expected_actual_production_command_seen(
-    telemetry_entries: Sequence[Mapping[str, object]],
-    *,
-    expected_update_id: str,
-    min_command_frame: int,
-    expected_items: set[str],
-) -> tuple[bool, set[str], set[str]]:
-    observed_actual_items: set[str] = set()
-    observed_actual_commands: set[str] = set()
-    for entry in telemetry_entries:
-        managers = entry.get("managers")
-        if not isinstance(managers, Mapping):
-            continue
-        production = managers.get("ProductionManager")
-        if not isinstance(production, Mapping):
-            continue
-        item = _canonical_actual_production_item(
-            production.get("last_actual_production_command_item", "")
-        )
-        kind = str(production.get("last_actual_production_command_kind", "") or "")
-        update_id = str(production.get("last_actual_production_command_update_id", "") or "")
-        frame = _int_value(production.get("last_actual_production_command_frame"))
-        count = _int_value(production.get("actual_production_command_issued_count"))
-        if item and item != "none":
-            observed_actual_items.add(item)
-        if item and item != "none" and kind and kind != "none":
-            observed_actual_commands.add(f"{kind}|{item}")
-        if (
-            count > 0
-            and (not expected_update_id or update_id == expected_update_id)
-            and (not expected_items or item in expected_items)
-            and frame > 0
-            and (min_command_frame <= 0 or frame >= min_command_frame)
-        ):
-            return True, observed_actual_items, observed_actual_commands
-    return False, observed_actual_items, observed_actual_commands
 
 
 def _classify_expected_tactical_actual_commands(

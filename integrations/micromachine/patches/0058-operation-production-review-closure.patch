@@ -1,0 +1,494 @@
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index 8caba43..0ba25fb 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -1009,6 +1009,13 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"operation_production_queue_purge_count\":" << m_productionManager.getVoiOperationProductionQueuePurgeCount() << ","
+         << "\"last_operation_production_queue_purge_frame\":" << m_productionManager.getLastVoiOperationProductionQueuePurgeFrame() << ","
+         << "\"last_operation_production_released_owner\":\"" << voiJsonEscape(m_productionManager.getLastVoiOperationProductionReleasedOwner()) << "\","
++        << "\"last_operation_production_queue_purge_event\":{"
++        << "\"operation_id\":\"" << voiJsonEscape(m_productionManager.getLastVoiOperationProductionQueuePurgeOperationId()) << "\","
++        << "\"generation\":" << m_productionManager.getLastVoiOperationProductionQueuePurgeGeneration() << ","
++        << "\"frame\":" << m_productionManager.getLastVoiOperationProductionQueuePurgeFrame() << ","
++        << "\"removed_count\":" << m_productionManager.getLastVoiOperationProductionQueuePurgeRemovedCount()
++        << "},"
++        << "\"operation_production_queue_purge_events\":" << m_productionManager.getVoiOperationProductionQueuePurgeEventsTelemetryJson() << ","
+         << "\"free_minerals\":" << m_bot.GetFreeMinerals() << ","
+         << "\"free_gas\":" << m_bot.GetFreeGas() << ","
+         << "\"current_supply\":" << m_bot.GetCurrentSupply() << ","
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 4aebca8..ff8fd3c 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -1,4 +1,5 @@
+ #include <initializer_list>
++#include <sstream>
+ #include "ProductionManager.h"
+ #include "Util.h"
+ #include "CCBot.h"
+@@ -7,6 +8,24 @@ const int MIN_VIKING_COUNT = 2;
+ 
+ namespace
+ {
++std::string voiProductionTelemetryJsonEscape(const std::string & value)
++{
++	std::ostringstream escaped;
++	for (const char character : value)
++	{
++		switch (character)
++		{
++			case '\\': escaped << "\\\\"; break;
++			case '"': escaped << "\\\""; break;
++			case '\n': escaped << "\\n"; break;
++			case '\r': escaped << "\\r"; break;
++			case '\t': escaped << "\\t"; break;
++			default: escaped << character; break;
++		}
++	}
++	return escaped.str();
++}
++
+ float voiMaxBias(CCBot & bot, const std::string & first, const std::string & second = "", const std::string & third = "", const std::string & fourth = "")
+ {
+ 	float value = bot.Commander().getVoiPolicyFloat(first, 0.0f);
+@@ -2514,14 +2533,84 @@ void ProductionManager::reconcileVoiParallelOperationProductionQueue()
+ 			owner.first,
+ 			owner.second);
+ 		m_voiTrackedOperationProductionOwners.erase(owner);
++		std::vector<uint32_t> releasedProductionTypeKeys;
++		const auto releasedBaselines =
++			m_voiOperationProductionBaselines.find(owner);
++		if (releasedBaselines
++			!= m_voiOperationProductionBaselines.end())
++		{
++			for (const auto & baseline :
++				releasedBaselines->second)
++			{
++				releasedProductionTypeKeys.push_back(
++					baseline.first);
++			}
++		}
+ 		m_voiOperationProductionBaselines.erase(owner);
++		for (const uint32_t productionTypeKey :
++			releasedProductionTypeKeys)
++		{
++			bool hasRemainingOwner = false;
++			for (const auto & remainingBaselines :
++				m_voiOperationProductionBaselines)
++			{
++				if (remainingBaselines.second.find(
++						productionTypeKey)
++					!= remainingBaselines.second.end())
++				{
++					hasRemainingOwner = true;
++					break;
++				}
++			}
++			if (!hasRemainingOwner)
++			{
++				m_voiOperationProductionLastRepresentedCount.erase(
++					productionTypeKey);
++				m_voiOperationProductionUnattributedLossDebt.erase(
++					productionTypeKey);
++			}
++		}
+ 		m_voiOperationProductionOwnerReleaseCount++;
+ 		if (removedItems > 0)
+ 		{
++			const uint32_t purgeFrame = m_bot.GetCurrentFrame();
+ 			m_voiOperationProductionQueuePurgeCount +=
+ 				static_cast<uint32_t>(removedItems);
+ 			m_lastVoiOperationProductionQueuePurgeFrame =
+-				m_bot.GetCurrentFrame();
++				purgeFrame;
++			m_lastVoiOperationProductionQueuePurgeOperationId =
++				owner.first;
++			m_lastVoiOperationProductionQueuePurgeGeneration =
++				owner.second;
++			m_lastVoiOperationProductionQueuePurgeRemovedCount =
++				removedItems;
++			m_voiOperationProductionQueuePurgeEvents.erase(
++				std::remove_if(
++					m_voiOperationProductionQueuePurgeEvents.begin(),
++					m_voiOperationProductionQueuePurgeEvents.end(),
++					[&owner](
++						const VoiOperationProductionQueuePurgeEvent &
++							event)
++					{
++						return event.operationId == owner.first
++							&& event.generation == owner.second;
++					}),
++				m_voiOperationProductionQueuePurgeEvents.end());
++			m_voiOperationProductionQueuePurgeEvents.push_back({
++				owner.first,
++				owner.second,
++				purgeFrame,
++				removedItems });
++			constexpr size_t maxPurgeEventHistory = 32;
++			if (m_voiOperationProductionQueuePurgeEvents.size()
++				> maxPurgeEventHistory)
++			{
++				m_voiOperationProductionQueuePurgeEvents.erase(
++					m_voiOperationProductionQueuePurgeEvents.begin(),
++					m_voiOperationProductionQueuePurgeEvents.begin()
++						+ (m_voiOperationProductionQueuePurgeEvents.size()
++							- maxPurgeEventHistory));
++			}
+ 		}
+ 		m_lastVoiOperationProductionReleasedOwner =
+ 			owner.first + "#" + std::to_string(owner.second);
+@@ -2538,6 +2627,36 @@ void ProductionManager::reconcileVoiParallelOperationProductionQueue()
+ 	}
+ }
+ 
++std::string
++ProductionManager::getVoiOperationProductionQueuePurgeEventsTelemetryJson()
++	const
++{
++	std::ostringstream telemetry;
++	telemetry << "[";
++	for (size_t index = 0;
++		index < m_voiOperationProductionQueuePurgeEvents.size();
++		++index)
++	{
++		if (index > 0)
++		{
++			telemetry << ",";
++		}
++		const auto & event =
++			m_voiOperationProductionQueuePurgeEvents[index];
++		telemetry
++			<< "{"
++			<< "\"operation_id\":\""
++			<< voiProductionTelemetryJsonEscape(event.operationId)
++			<< "\","
++			<< "\"generation\":" << event.generation << ","
++			<< "\"frame\":" << event.frame << ","
++			<< "\"removed_count\":" << event.removedCount
++			<< "}";
++	}
++	telemetry << "]";
++	return telemetry.str();
++}
++
+ // on unit destroy
+ void ProductionManager::onUnitDestroy(const Unit & unit)
+ {
+@@ -4763,6 +4882,16 @@ bool ProductionManager::reconcileVoiProductionClaimsForType(
+ 			}
+ 		}
+ 
++		struct OperationProductionState
++		{
++			const RequestedOperationProduction * requested = nullptr;
++			VoiOperationProductionBaseline * baseline = nullptr;
++			int ownedForOwner = 0;
++			int deployableRemaining = 0;
++			int reservedAssignable = 0;
++			int guaranteedProductionTarget = 0;
++		};
++		std::vector<OperationProductionState> productionStates;
+ 		for (const auto & requested : requestedByOwner)
+ 		{
+ 			const int ownedForOwner =
+@@ -4781,6 +4910,19 @@ bool ProductionManager::reconcileVoiProductionClaimsForType(
+ 					0,
+ 					requested.count
+ 						- deployableTarget);
++			const int representedForOwner =
++				std::min(
++					deployableTarget,
++					ownedForOwner);
++			const int deployableRemaining = std::max(
++				0,
++				deployableTarget
++					- representedForOwner);
++			const int reservedAssignable =
++				std::min(
++					assignableCapacity,
++					deployableRemaining);
++			assignableCapacity -= reservedAssignable;
+ 			auto & baselines =
+ 				m_voiOperationProductionBaselines[
+ 					requested.owner];
+@@ -4793,66 +4935,195 @@ bool ProductionManager::reconcileVoiProductionClaimsForType(
+ 					VoiOperationProductionBaseline {
+ 						representedCount,
+ 						ownedForOwner,
+-						assignableCapacity }).first;
++						ownedForOwner,
++						reservedAssignable,
++						0,
++						(deployableRemaining
++							- reservedAssignable)
++							+ guaranteedProductionTarget }).first;
+ 			}
++			productionStates.push_back({
++				&requested,
++				&baseline->second,
++				ownedForOwner,
++				deployableRemaining,
++				reservedAssignable,
++				guaranteedProductionTarget });
++		}
+ 
+-			const int representedForOwner =
+-				std::min(
+-					deployableTarget,
+-					ownedForOwner);
+-			const int deployableRemaining = std::max(
+-				0,
+-				deployableTarget
+-					- representedForOwner);
+-			const int reservedAssignable =
+-				std::min(
+-					assignableCapacity,
+-					deployableRemaining);
+-			assignableCapacity -= reservedAssignable;
+-			const int newCapacityUsedForDeployable =
+-				std::max(
++		int representedGrowthAvailable = 0;
++		int representedLoss = 0;
++		if (productionStates.empty())
++		{
++			m_voiOperationProductionLastRepresentedCount.erase(
++				productionTypeKey);
++			m_voiOperationProductionUnattributedLossDebt.erase(
++				productionTypeKey);
++		}
++		else
++		{
++			const auto previousRepresented =
++				m_voiOperationProductionLastRepresentedCount.find(
++					productionTypeKey);
++			if (previousRepresented
++				== m_voiOperationProductionLastRepresentedCount.end())
++			{
++				m_voiOperationProductionLastRepresentedCount[
++					productionTypeKey] = representedCount;
++			}
++			else
++			{
++				representedGrowthAvailable = std::max(
++					0,
++					representedCount - previousRepresented->second);
++				representedLoss = std::max(
+ 					0,
+-					reservedAssignable
+-						- baseline->second.assignableCount);
+-			const int representedGrowth =
++					previousRepresented->second - representedCount);
++				previousRepresented->second = representedCount;
++			}
++		}
++
++		for (auto & state : productionStates)
++		{
++			const int ownerSpecificLoss = std::max(
++				0,
++				state.baseline->lastOwnedCount
++					- state.ownedForOwner);
++			const int retracted = std::min(
++				ownerSpecificLoss,
++				state.baseline->attributedRepresentedGrowth);
++			state.baseline->attributedRepresentedGrowth -= retracted;
++			representedLoss = std::max(
++				0,
++				representedLoss - ownerSpecificLoss);
++			state.baseline->lastOwnedCount = state.ownedForOwner;
++		}
++
++		for (auto state = productionStates.rbegin();
++			state != productionStates.rend() && representedLoss > 0;
++			++state)
++		{
++			const int retracted = std::min(
++				representedLoss,
++				state->baseline->attributedRepresentedGrowth);
++			state->baseline->attributedRepresentedGrowth -= retracted;
++			representedLoss -= retracted;
++		}
++
++		if (!productionStates.empty())
++		{
++			auto & unattributedLossDebt =
++				m_voiOperationProductionUnattributedLossDebt[
++					productionTypeKey];
++			unattributedLossDebt += representedLoss;
++			const int growthConsumedByLossDebt = std::min(
++				representedGrowthAvailable,
++				unattributedLossDebt);
++			representedGrowthAvailable -= growthConsumedByLossDebt;
++			unattributedLossDebt -= growthConsumedByLossDebt;
++			if (unattributedLossDebt == 0)
++			{
++				m_voiOperationProductionUnattributedLossDebt.erase(
++					productionTypeKey);
++			}
++		}
++
++		for (auto & state : productionStates)
++		{
++			const int ownedProductionGrowth =
+ 				std::max(
+ 					0,
+-					representedCount
+-						- baseline->second.representedCount);
+-			const int ownedGrowth =
++					state.ownedForOwner
++						- state.baseline->ownedCount
++						- state.baseline
++							->initialReservedAssignable);
++			const int newCapacityUsedForDeployable =
+ 				std::max(
+ 					0,
+-					ownedForOwner
+-						- baseline->second.ownedCount);
++					state.reservedAssignable
++						- state.baseline
++							->initialReservedAssignable);
+ 			const int productionGrowthUsedForDeployable =
+ 				std::min(
+-					representedGrowth,
+-					ownedGrowth
++					state.baseline->attributedRepresentedGrowth,
++					ownedProductionGrowth
+ 						+ newCapacityUsedForDeployable);
+ 			const int guaranteedProductionCompleted =
+ 				std::max(
+ 					0,
+-					representedGrowth
++					state.baseline->attributedRepresentedGrowth
+ 						- productionGrowthUsedForDeployable);
+ 			const int guaranteedProductionOutstanding =
+ 				std::max(
+ 					0,
+-					guaranteedProductionTarget
++					state.guaranteedProductionTarget
+ 						- guaranteedProductionCompleted);
+ 			const int outstandingCount =
+-				(deployableRemaining
+-					- reservedAssignable)
++				(state.deployableRemaining
++					- state.reservedAssignable)
+ 				+ guaranteedProductionOutstanding;
++			state.baseline->productionTarget = std::max(
++				state.baseline->productionTarget,
++				state.baseline->attributedRepresentedGrowth
++					+ outstandingCount);
++		}
++
++		for (auto & state : productionStates)
++		{
++			const int attributable = std::min(
++				representedGrowthAvailable,
++				std::max(
++					0,
++					state.baseline->productionTarget
++						- state.baseline
++							->attributedRepresentedGrowth));
++			state.baseline->attributedRepresentedGrowth +=
++				attributable;
++			representedGrowthAvailable -= attributable;
++		}
++
++		for (const auto & state : productionStates)
++		{
++			const int ownedProductionGrowth =
++				std::max(
++					0,
++					state.ownedForOwner
++						- state.baseline->ownedCount
++						- state.baseline
++							->initialReservedAssignable);
++			const int newCapacityUsedForDeployable =
++				std::max(
++					0,
++					state.reservedAssignable
++						- state.baseline
++							->initialReservedAssignable);
++			const int productionGrowthUsedForDeployable =
++				std::min(
++					state.baseline->attributedRepresentedGrowth,
++					ownedProductionGrowth
++						+ newCapacityUsedForDeployable);
++			const int guaranteedProductionCompleted =
++				std::max(
++					0,
++					state.baseline->attributedRepresentedGrowth
++						- productionGrowthUsedForDeployable);
++			const int outstandingCount =
++				(state.deployableRemaining
++					- state.reservedAssignable)
++				+ std::max(
++					0,
++					state.guaranteedProductionTarget
++						- guaranteedProductionCompleted);
+ 			for (int index = 0;
+ 				index < outstandingCount;
+ 				++index)
+ 			{
+ 				claims.push_back({
+-					{ requested.owner },
++					{ state.requested->owner },
+ 					false,
+ 					"operation",
+-					requested.blocking,
+-					requested.taskPriority });
++					state.requested->blocking,
++					state.requested->taskPriority });
+ 			}
+ 		}
+ 	}
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+index a55e8ce..f1c3141 100644
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -92,16 +92,35 @@ class ProductionManager
+ 	{
+ 		int representedCount = 0;
+ 		int ownedCount = 0;
+-		int assignableCount = 0;
++		int lastOwnedCount = 0;
++		int initialReservedAssignable = 0;
++		int attributedRepresentedGrowth = 0;
++		int productionTarget = 0;
++	};
++	struct VoiOperationProductionQueuePurgeEvent
++	{
++		std::string operationId;
++		uint64_t generation = 0;
++		uint32_t frame = 0;
++		int removedCount = 0;
+ 	};
+ 	std::map<
+ 		MM::VoiBuildOrderOwner,
+ 		std::map<uint32_t, VoiOperationProductionBaseline>>
+ 			m_voiOperationProductionBaselines;
++	std::map<uint32_t, int>
++		m_voiOperationProductionLastRepresentedCount;
++	std::map<uint32_t, int>
++		m_voiOperationProductionUnattributedLossDebt;
+ 	uint32_t m_voiOperationProductionOwnerReleaseCount = 0;
+ 	uint32_t m_voiOperationProductionQueuePurgeCount = 0;
+ 	uint32_t m_lastVoiOperationProductionQueuePurgeFrame = 0;
+ 	std::string m_lastVoiOperationProductionReleasedOwner = "none";
++	std::string m_lastVoiOperationProductionQueuePurgeOperationId = "";
++	uint64_t m_lastVoiOperationProductionQueuePurgeGeneration = 0;
++	int m_lastVoiOperationProductionQueuePurgeRemovedCount = 0;
++	std::vector<VoiOperationProductionQueuePurgeEvent>
++		m_voiOperationProductionQueuePurgeEvents;
+ 	std::vector<sc2::UNIT_TYPEID> factoryUnitTypes = { sc2::UNIT_TYPEID::TERRAN_HELLION, sc2::UNIT_TYPEID::TERRAN_HELLIONTANK, sc2::UNIT_TYPEID::TERRAN_WIDOWMINE, sc2::UNIT_TYPEID::TERRAN_SIEGETANK, sc2::UNIT_TYPEID::TERRAN_CYCLONE, sc2::UNIT_TYPEID::TERRAN_THOR };
+ 
+ 	void	validateUpgradesProgress();
+@@ -236,6 +255,10 @@ public:
+ 	uint32_t getVoiOperationProductionQueuePurgeCount() const { return m_voiOperationProductionQueuePurgeCount; }
+ 	uint32_t getLastVoiOperationProductionQueuePurgeFrame() const { return m_lastVoiOperationProductionQueuePurgeFrame; }
+ 	const std::string & getLastVoiOperationProductionReleasedOwner() const { return m_lastVoiOperationProductionReleasedOwner; }
++	const std::string & getLastVoiOperationProductionQueuePurgeOperationId() const { return m_lastVoiOperationProductionQueuePurgeOperationId; }
++	uint64_t getLastVoiOperationProductionQueuePurgeGeneration() const { return m_lastVoiOperationProductionQueuePurgeGeneration; }
++	int getLastVoiOperationProductionQueuePurgeRemovedCount() const { return m_lastVoiOperationProductionQueuePurgeRemovedCount; }
++	std::string getVoiOperationProductionQueuePurgeEventsTelemetryJson() const;
+ 	int getVoiCommandCenterPlacementRetryCount() const;
+ 	uint32_t getVoiCommandCenterNextPlacementRetryFrame() const;
+ 	bool isVoiCommandCenterPlacementQuarantined() const;

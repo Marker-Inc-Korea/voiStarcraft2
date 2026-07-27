@@ -37,8 +37,8 @@
     "cmake_policy_compatibility_required": true
   },
   "runtime_evidence": {
-    "host_sc2_root": "/Users/jinminseong/Desktop/StarCraft2/StarCraft II",
-    "host_sc2_executable": "/Users/jinminseong/Desktop/StarCraft2/StarCraft II/Versions/Base97364/SC2.app/Contents/MacOS/SC2",
+    "host_sc2_root": "<local macOS StarCraft II installation>",
+    "host_sc2_executable": "<resolved Base97364 SC2 executable>",
     "map": "AcropolisLE.SC2Map",
     "first_direct_launch_result": "failed_with_ClientConnectionError_on_path_with_spaces_and_10000ms_timeout",
     "no_space_alias": "/private/tmp/voi-sc2-root",

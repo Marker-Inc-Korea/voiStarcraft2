@@ -9,7 +9,29 @@ S2CLIENT_DIR="${S2CLIENT_DIR:-${ROOT_DIR}/s2client-api}"
 MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
 MICROMACHINE_BUILD_IDENTITY_REPORT="${MICROMACHINE_BUILD_IDENTITY_REPORT:-${MICROMACHINE_BUILD_DIR}/voi_build_identity.json}"
 SOAK_REQUIRE_BUILD_IDENTITY="${SOAK_REQUIRE_BUILD_IDENTITY:-1}"
-SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
+SOAK_QUALIFICATION_TIER="${SOAK_QUALIFICATION_TIER:-production}"
+SOAK_MAP_POOL_MANIFEST="${SOAK_MAP_POOL_MANIFEST:-${SCRIPT_DIR}/../MICROMACHINE_MAP_POOL.json}"
+
+discover_sc2_root() {
+  local configured="${SC2_ROOT:-${SC2PATH:-}}"
+  if [[ -n "${configured}" ]]; then
+    printf '%s\n' "${configured/#\~/${HOME}}"
+    return
+  fi
+  local candidate
+  for candidate in \
+    "${HOME}/Desktop/StarCraft2/StarCraft II" \
+    "/Applications/StarCraft II" \
+    "${HOME}/Applications/StarCraft II"; do
+    if [[ -d "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return
+    fi
+  done
+  printf '%s\n' "/Applications/StarCraft II"
+}
+
+SC2_ROOT="$(discover_sc2_root)"
 SC2_LAUNCH_MODE="${SC2_LAUNCH_MODE:-auto}"
 SC2_BATTLENET_EXECUTABLE="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
 SC2_BATTLENET_GAME="${SC2_BATTLENET_GAME:-s2_kokr}"
@@ -36,7 +58,32 @@ resolve_latest_direct_sc2_executable() {
   local versions_dir="${SC2_ROOT}/Versions"
   if [[ -d "${versions_dir}" ]]; then
     local latest
-    latest="$(find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f | sort -r | head -n 1)"
+    latest="$(
+      find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f 2>/dev/null |
+        awk -F/ '
+          {
+            for (part = 1; part <= NF - 4; ++part) {
+              if ($part ~ /^Base[0-9]+$/ &&
+                  $(part + 1) == "SC2.app" &&
+                  $(part + 2) == "Contents" &&
+                  $(part + 3) == "MacOS" &&
+                  $(part + 4) == "SC2") {
+                version = substr($part, 5) + 0
+                if (!found || version > maximum) {
+                  found = 1
+                  maximum = version
+                  selected = $0
+                }
+              }
+            }
+          }
+          END {
+            if (found) {
+              print selected
+            }
+          }
+        '
+    )"
     if [[ -n "${latest}" && -x "${latest}" ]]; then
       printf '%s\n' "${latest}"
       return
@@ -95,11 +142,38 @@ resolve_map_file() {
   exit 2
 }
 
+validate_soak_qualification_tier() {
+  if [[ ! "${SOAK_QUALIFICATION_TIER}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "MicroMachine soak rejected: invalid SOAK_QUALIFICATION_TIER=${SOAK_QUALIFICATION_TIER}." >&2
+    exit 2
+  fi
+  if ! PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" \
+    python3 -m starcraft_commander.micromachine_map_pool \
+      --manifest "${SOAK_MAP_POOL_MANIFEST}" \
+      --tier "${SOAK_QUALIFICATION_TIER}" \
+      --field allow_failures >/dev/null; then
+    echo "MicroMachine soak rejected: unknown SOAK_QUALIFICATION_TIER=${SOAK_QUALIFICATION_TIER} in ${SOAK_MAP_POOL_MANIFEST}." >&2
+    exit 2
+  fi
+}
+
 prepare_launch_contract() {
+  validate_soak_qualification_tier
   if [[ ! -x "${SC2_EXECUTABLE}" ]]; then
     echo "MicroMachine soak rejected: SC2 executable is not runnable: ${SC2_EXECUTABLE}" >&2
     exit 2
   fi
+  local resolved_sc2_executable
+  resolved_sc2_executable="$(
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' \
+      "${SC2_EXECUTABLE}"
+  )"
+  if [[ "${SOAK_QUALIFICATION_TIER}" != "diagnostic" ]] &&
+    [[ ! "${resolved_sc2_executable}" =~ /Versions/Base[0-9]+/SC2\.app/Contents/MacOS/SC2$ ]]; then
+    echo "MicroMachine ${SOAK_QUALIFICATION_TIER} soak rejected: resolved SC2 executable must be a direct Versions/BaseNNNNN/SC2.app/Contents/MacOS/SC2 binary; Battle.net and wrapper executables are diagnostic-only: ${resolved_sc2_executable}" >&2
+    exit 2
+  fi
+  SC2_EXECUTABLE="${resolved_sc2_executable}"
   if [[ "${SC2_EXECUTABLE}" != "${SC2_BATTLENET_EXECUTABLE}" && "${SC2_USE_RUNTIME_DIR_ARGS}" == "1" ]]; then
     mkdir -p "${SC2_TEMP_DIR}"
   fi
@@ -215,6 +289,8 @@ SOAK_EXPECTED_TACTICAL_EFFECTS="${SOAK_EXPECTED_TACTICAL_EFFECTS:-}"
 SOAK_EXPECTED_STRATEGY_DOCTRINE="${SOAK_EXPECTED_STRATEGY_DOCTRINE:-}"
 SOAK_EXPECTED_PRODUCTION_ACTIONS="${SOAK_EXPECTED_PRODUCTION_ACTIONS:-}"
 SOAK_EXPECTED_PRODUCTION_ITEMS="${SOAK_EXPECTED_PRODUCTION_ITEMS:-}"
+
+validate_soak_qualification_tier
 
 if [[ -z "${SOAK_ATTEMPT_INDEX}" && "${SOAK_MAX_ATTEMPTS}" -gt 1 ]]; then
   mkdir -p "${SOAK_RUN_DIR}"
@@ -597,7 +673,7 @@ expected_strategy_contract() {
   local profile="$1"
   case "${profile}" in
     aggressive_pressure|bio_pressure)
-      printf '%s\t%s\t%s\n' "bio_pressure" "bio_marauder_techlab bio_marauder_support starport_transition medivac_drop_support" "BarracksTechLab Marauder Starport Medivac"
+      printf '%s\t%s\t%s\n' "bio_pressure" "bio_facility bio_marauder_techlab bio_ghost_techlab bio_marauder_support starport_transition medivac_drop_support" "Barracks BarracksTechLab Marauder Starport Medivac"
       ;;
     marine_rush)
       printf '%s\t%s\t%s\n' "marine_rush" "marine_pressure bio_facility" "Marine Barracks"

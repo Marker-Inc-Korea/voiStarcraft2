@@ -68,6 +68,11 @@ Verified upstream:
 | `patches/0052-parallel-operations-ingame-hud.patch` | Consumes indexed parallel operations, aggregates each operation's production targets, unit classes, priority, and exact composition into complete Terran prerequisite lanes, creates operation/generation-scoped dynamic squads with exclusive unit-tag ownership, protects their units from autonomous reassignment, executes scout/attack/defend through existing Squad micro, records operation-scoped observed telemetry, and renders truthful in-game lifecycle, route, and target HUD state. |
 | `patches/0053-parallel-operation-lifecycle-review-closure.patch` | Rejects empty policy identities, filters terminal, expired, and unsupported operations out of production, consumes operation-specific lifetime/deadline/completion and strict scope, preserves frame-zero submission evidence, releases terminal unit ownership, and exports lifecycle/ownership telemetry for live cancellation verification. |
 | `patches/0054-authoritative-parallel-operation-lifecycle.patch` | Keeps finite operation deadlines fixed to their first `(operation_id, generation)` registration, makes any explicit partial-scope `false` strict, and lets ProductionManager consume CombatCommander's runtime terminal state instead of continuing replacement production from stale policy JSON. |
+| `patches/0055-operation-production-ownership-and-restore-proof.patch` | Gives operation-created production and prerequisites explicit `(operation_id, generation)` ownership, removes only exclusively owned queue work when the operation ends, preserves shared macro items, consumes operation-specific issue frames, exposes purge telemetry, and makes live smoke prove a fresh post-cancel MainAttack command plus movement. |
+| `patches/0056-embedded-build-input-identity.patch` | Compiles the deterministic build-input identity into MicroMachine and exposes a side-effect-free query used to reject stale or rebound executables before live QA. |
+| `patches/0057-tech-gas-before-second-barracks.patch` | Persists the active policy's tech-gas requirement through queue consumption, keeps gas-dependent bio, mech, air, Ghost, and ability prerequisite lanes from spending the opening on a second Barracks before a Refinery is represented, leaves pure Marine production unblocked by unrelated Refinery work, promotes a required queued Refinery above blocking opening production, suppresses duplicate bootstrap while one is queued or building, and retains first-Barracks Marine bootstrap for defense and scouting. |
+| `patches/0058-operation-production-review-closure.patch` | Attributes each represented unit increase to one operation owner only when parallel operations request the same unit type, excludes initial reservations again when those existing units transition into operation ownership, retracts credit from the owner whose owned count fell, carries unattributed unit-loss debt forward so unrelated replacements cannot satisfy another operation, resets count and debt epochs when the last owner of a type is released, and retains a bounded owner-keyed purge-event history so same-frame cancellation evidence cannot be overwritten or borrowed from another operation. |
+| `patches/0059-production-fifo-and-zero-owner-cleanup.patch` | Restores FIFO execution among equal-priority production items despite back-of-queue selection, records operation/generation-scoped cleanup at a positive frame whether cancellation stopped live owned units or released an operation with no owned units remaining, and preserves the first terminal cleanup action and frame idempotently across later release passes. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -141,12 +146,14 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0054`, then copies the blackboard header. The
+through `0059`, then copies the blackboard header and generates the embedded
+identity header before compilation. The
 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its
-hash and size to the attested source inputs; replacement or non-executable
-binaries fail identity verification. Matrix production signoff consumes that
+hash, size, and executable-reported build-input identity to the attested source
+inputs; stale, rebound, replacement, or non-executable binaries fail identity
+verification. Matrix production signoff consumes that
 identity and blocks `unrecorded` or mismatched builds.
 
 ## Bootstrap Probe Gate
@@ -193,7 +200,15 @@ and manifest consistency without a local StarCraft II installation. The local
 smoke script is the runtime gate for the C++ bot: it removes stale telemetry,
 launches patched MicroMachine against local StarCraft II, and fails unless
 `latest_telemetry.json` reaches `MIN_TELEMETRY_FRAME` with the active
-`smoke-001` modulation and the bot actually executes the opening macro path.
+profile-derived strategy modulation and the bot actually executes the opening
+macro path. In the default `bio_pressure` run, startup owns strategy and
+production causal evidence under `smoke-bio_pressure-0`;
+`SMOKE_STRATEGY_EVIDENCE_UPDATE_ID` remains bound to that strategy update even
+when the lifecycle later publishes `smoke-parallel-operations`, republishes
+that operation update with the attack operation cancelled, and finally creates
+a unique `smoke-bio_pressure-restore-...` strategy update. The parallel update
+owns the separate scout/attack operation lifecycle evidence, while the restore
+update must produce a new autonomous MainAttack command and observed movement.
 The smoke pins the Terran strategy to `Terran_MarineRush` and uses a low
 computer difficulty so the gate measures connection, manager initialization,
 and opening macro execution rather than combat pressure. The smoke bootstrap
@@ -218,12 +233,19 @@ The smoke wrapper also has a bounded startup retry (`SMOKE_MAX_ATTEMPTS=3`,
 reaches the startup threshold, once any opening macro command appears, or once
 the logs show deterministic macro/bootstrap failures, the smoke stops
 immediately and writes `smoke_attempts.json` with the failed attempt details.
+Multi-attempt wrapper invocations use a unique run directory, remove previously
+promoted root telemetry/log artifacts before starting, and bind the summary to
+the run ID, repository HEAD, build identity, source-state digest, selected
+attempt directory, and every attempt status. Single-attempt and `--live-hold`
+runs write directly to the explicitly selected blackboard directory. A failed
+run therefore cannot be mistaken for an earlier successful multi-attempt smoke.
 
 ## Verified macOS Runtime
 
 The local machine smoke completed these boundaries on 2026-06-21:
 
-- StarCraft II install: `/Users/jinminseong/Desktop/StarCraft2/StarCraft II`
+- StarCraft II install: resolved from `SC2_ROOT`, then `SC2PATH`, then common
+  macOS installation locations
 - SC2 launcher used by `s2client-api`: `SC2_EXECUTABLE` when provided, otherwise `SC2_LAUNCH_MODE=auto`
 - Map: `AcropolisLE.SC2Map`
 - `s2client-api` commit: `614acc00abb5355e4c94a1b0279b46e9d845b7ce`
@@ -234,7 +256,8 @@ Launcher contract:
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `SC2_LAUNCH_MODE` | `auto` | `direct` forces a `Versions/Base*/SC2.app/Contents/MacOS/SC2` binary, `battlenet` forces the Battle.net wrapper, and `auto` prefers the pinned Base96883 binary when present, otherwise the latest direct Base binary. |
+| `SC2_LAUNCH_MODE` | `auto` | `direct` forces a `Versions/Base*/SC2.app/Contents/MacOS/SC2` binary, `battlenet` explicitly selects the diagnostic Battle.net wrapper, and `auto` prefers the pinned Base96883 binary when present, otherwise the numerically newest direct `BaseNNNNN` binary. Production and extended soak qualification reject Battle.net and fail if no runnable direct executable exists. |
+| `SOAK_QUALIFICATION_TIER` | `production` | Standalone soak qualification tier. The value must exist in `MICROMACHINE_MAP_POOL.json`; every tier except exact `diagnostic` resolves symlinks and requires the final executable path to match `Versions/BaseNNNNN/SC2.app/Contents/MacOS/SC2`. Wrapper executables are accepted only for explicitly diagnostic runs. The matrix always forwards `SOAK_MATRIX_QUALIFICATION_TIER` into this runtime guard. |
 | `SC2_ATTACH_TIMEOUT_MS` | `120000` | Explicit `s2client-api` attach timeout passed as `-t` so host `ExecuteInfo.txt` cannot shorten the launch window. |
 | `SC2_USE_RUNTIME_DIR_ARGS` | `0` | Opt-in direct-launch compatibility mode that passes `-dataDir ${SC2_ROOT_ALIAS} -tempDir ${SC2_TEMP_DIR}` through `VOI_SC2_EXTRA_ARGS`. Leave disabled on Base97364 hosts where those extra args prevent the SC2 API listener from opening. |
 | `SC2_ROOT_ALIAS` | `/private/tmp/voi-sc2-root` | Symlink alias for the local StarCraft II install; avoids whitespace splitting in `VOI_SC2_EXTRA_ARGS`. |

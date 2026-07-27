@@ -15,6 +15,7 @@ from typing import Final
 
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 56
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = (
     "bin/BotConfig.txt",
 )
@@ -410,6 +411,43 @@ DEFAULT_MICROMACHINE_AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH: Final[
     / "patches"
     / "0054-authoritative-parallel-operation-lifecycle.patch"
 )
+DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH: Final[
+    Path
+] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0055-operation-production-ownership-and-restore-proof.patch"
+)
+DEFAULT_MICROMACHINE_EMBEDDED_BUILD_INPUT_IDENTITY_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0056-embedded-build-input-identity.patch"
+)
+DEFAULT_MICROMACHINE_TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0057-tech-gas-before-second-barracks.patch"
+)
+DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0058-operation-production-review-closure.patch"
+)
+DEFAULT_MICROMACHINE_PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0059-production-fifo-and-zero-owner-cleanup.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -596,6 +634,21 @@ class MicroMachineBuildIdentityConfig:
     micromachine_authoritative_parallel_operation_lifecycle_patch: Path = (
         DEFAULT_MICROMACHINE_AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH
     )
+    micromachine_operation_production_ownership_restore_proof_patch: Path = (
+        DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH
+    )
+    micromachine_embedded_build_input_identity_patch: Path = (
+        DEFAULT_MICROMACHINE_EMBEDDED_BUILD_INPUT_IDENTITY_PATCH
+    )
+    micromachine_tech_gas_before_second_barracks_patch: Path = (
+        DEFAULT_MICROMACHINE_TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH
+    )
+    micromachine_operation_production_review_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH
+    )
+    micromachine_production_fifo_zero_owner_cleanup_patch: Path = (
+        DEFAULT_MICROMACHINE_PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH
+    )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
     map_pool: Path = DEFAULT_MAP_POOL
@@ -611,6 +664,10 @@ class MicroMachineBuildIdentityConfig:
         return self.source_attestation or (
             self.micromachine_build_dir / "voi_source_attestation.json"
         )
+
+    @property
+    def embedded_build_identity_header_path(self) -> Path:
+        return self.micromachine_dir / "src" / "voi_build_identity.hpp"
 
     @property
     def resolved_s2client_build_dir(self) -> Path:
@@ -933,6 +990,31 @@ def build_micromachine_build_identity(
                 config.micromachine_authoritative_parallel_operation_lifecycle_patch
             )
         ),
+        "micromachine_operation_production_ownership_restore_proof_patch_sha256": (
+            _sha256_file(
+                config.micromachine_operation_production_ownership_restore_proof_patch
+            )
+        ),
+        "micromachine_embedded_build_input_identity_patch_sha256": (
+            _sha256_file(
+                config.micromachine_embedded_build_input_identity_patch
+            )
+        ),
+        "micromachine_tech_gas_before_second_barracks_patch_sha256": (
+            _sha256_file(
+                config.micromachine_tech_gas_before_second_barracks_patch
+            )
+        ),
+        "micromachine_operation_production_review_closure_patch_sha256": (
+            _sha256_file(
+                config.micromachine_operation_production_review_closure_patch
+            )
+        ),
+        "micromachine_production_fifo_zero_owner_cleanup_patch_sha256": (
+            _sha256_file(
+                config.micromachine_production_fifo_zero_owner_cleanup_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -946,6 +1028,32 @@ def build_micromachine_build_identity(
             {
                 "code": "missing_required_build_input",
                 "checksum": checksum_name,
+            }
+        )
+
+    expected_build_input_identity = _build_input_identity(checksums)
+    embedded_header_identity = _read_embedded_build_identity_header(config)
+    embedded_binary_identity = (
+        _read_binary_build_input_identity(config)
+        if binary_is_executable
+        else None
+    )
+    if embedded_header_identity != expected_build_input_identity:
+        failures.append(
+            {
+                "code": "embedded_identity_header_mismatch",
+                "expected": expected_build_input_identity,
+                "actual": embedded_header_identity,
+                "path": str(config.embedded_build_identity_header_path),
+            }
+        )
+    if embedded_binary_identity != expected_build_input_identity:
+        failures.append(
+            {
+                "code": "embedded_binary_identity_mismatch",
+                "expected": expected_build_input_identity,
+                "actual": embedded_binary_identity,
+                "path": str(config.binary_path),
             }
         )
 
@@ -995,7 +1103,7 @@ def build_micromachine_build_identity(
                 "path": str(config.binary_path.resolve()),
                 "sha256": binary_sha256,
                 "size_bytes": binary_size,
-                "build_input_identity": expected_input_identity,
+                "build_input_identity": embedded_binary_identity,
             }
             if attested_binary != observed_binary:
                 failures.append(
@@ -1022,7 +1130,7 @@ def build_micromachine_build_identity(
     }
     identity = "sha256:" + _sha256_json(identity_material)
     return {
-        "schema_version": 52,
+        "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
         "identity": identity,
         "ok": not failures,
         "failures": failures,
@@ -1039,6 +1147,7 @@ def build_micromachine_build_identity(
             "binary_sha256": binary_sha256,
             "binary_size_bytes": binary_size,
             "binary_executable": binary_is_executable,
+            "embedded_build_input_identity": embedded_binary_identity,
         },
         "paths": {
             "micromachine_dir": str(config.micromachine_dir),
@@ -1204,6 +1313,24 @@ def build_micromachine_build_identity(
             "micromachine_authoritative_parallel_operation_lifecycle_patch": str(
                 config.micromachine_authoritative_parallel_operation_lifecycle_patch
             ),
+            "micromachine_operation_production_ownership_restore_proof_patch": str(
+                config.micromachine_operation_production_ownership_restore_proof_patch
+            ),
+            "micromachine_embedded_build_input_identity_patch": str(
+                config.micromachine_embedded_build_input_identity_patch
+            ),
+            "micromachine_tech_gas_before_second_barracks_patch": str(
+                config.micromachine_tech_gas_before_second_barracks_patch
+            ),
+            "micromachine_operation_production_review_closure_patch": str(
+                config.micromachine_operation_production_review_closure_patch
+            ),
+            "micromachine_production_fifo_zero_owner_cleanup_patch": str(
+                config.micromachine_production_fifo_zero_owner_cleanup_patch
+            ),
+            "embedded_build_identity_header": str(
+                config.embedded_build_identity_header_path
+            ),
             "s2client_patch": str(config.s2client_patch),
             "hook_manifest": str(config.hook_manifest),
             "map_pool": str(config.map_pool),
@@ -1211,6 +1338,81 @@ def build_micromachine_build_identity(
             "source_attestation": str(config.source_attestation_path),
         },
         "checksums": checksums,
+    }
+
+
+def micromachine_build_identity_admission_error(
+    recorded: Mapping[str, object],
+    current: Mapping[str, object],
+) -> str:
+    """Return the fail-closed live admission error for two identity reports."""
+
+    recorded_schema = recorded.get("schema_version")
+    current_schema = current.get("schema_version")
+    expected_schema = MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
+    if recorded_schema != expected_schema:
+        return (
+            "unsupported recorded build identity schema: "
+            f"expected={expected_schema} actual={recorded_schema!r}"
+        )
+    if current_schema != expected_schema:
+        return (
+            "unsupported current build identity schema: "
+            f"expected={expected_schema} actual={current_schema!r}"
+        )
+    if recorded.get("ok") is not True:
+        return (
+            "recorded build identity is not ok: "
+            f"{recorded.get('failures')}"
+        )
+    if current.get("ok") is not True:
+        return (
+            "current build identity is not ok: "
+            f"{current.get('failures')}"
+        )
+    if recorded.get("identity") != current.get("identity"):
+        return (
+            "stale build identity: "
+            f"recorded={recorded.get('identity')} "
+            f"current={current.get('identity')}"
+        )
+    return ""
+
+
+def build_runtime_workspace_identity(repo_root: Path | str) -> dict[str, object]:
+    """Hash Python runtime sources used by live smoke, including dirty files."""
+
+    root = Path(repo_root).resolve()
+    candidates: list[Path] = []
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        candidates.append(pyproject)
+    package_root = root / "starcraft_commander"
+    if package_root.is_dir():
+        candidates.extend(
+            path
+            for path in package_root.rglob("*.py")
+            if path.is_file() and "__pycache__" not in path.parts
+        )
+    files = []
+    for path in sorted(set(candidates), key=lambda item: item.relative_to(root).as_posix()):
+        checksum = _sha256_file(path)
+        if checksum is None:
+            raise ValueError(f"cannot hash runtime workspace source: {path}")
+        files.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": checksum,
+            }
+        )
+    if not files:
+        raise ValueError(
+            f"runtime workspace contains no Python source manifest: {root}"
+        )
+    material = {"files": files}
+    return {
+        "identity": "sha256:" + _sha256_json(material),
+        "files": files,
     }
 
 
@@ -1235,6 +1437,14 @@ def write_micromachine_source_attestation(
         raise ValueError(
             "cannot attest source state with missing build inputs: "
             + ", ".join(missing_inputs)
+        )
+    expected_input_identity = _build_input_identity(input_checksums)
+    embedded_header_identity = _read_embedded_build_identity_header(config)
+    if embedded_header_identity != expected_input_identity:
+        raise ValueError(
+            "cannot attest source state without matching embedded identity "
+            f"header: expected={expected_input_identity} "
+            f"actual={embedded_header_identity}"
         )
     micromachine_source_state = _git_source_state_sha256(
         config.micromachine_dir,
@@ -1264,7 +1474,7 @@ def write_micromachine_source_attestation(
         "stage": "source_attested",
         "micromachine_commit": micromachine_commit,
         "s2client_commit": s2client_commit,
-        "build_input_identity": _build_input_identity(input_checksums),
+        "build_input_identity": expected_input_identity,
         "micromachine_source_state_sha256": micromachine_source_state,
         "s2client_source_state_sha256": s2client_source_state,
         "s2client_build_state_sha256": s2client_build_state,
@@ -1291,6 +1501,12 @@ def write_micromachine_build_attestation(
             + ", ".join(missing_inputs)
         )
     expected_input_identity = _build_input_identity(input_checksums)
+    embedded_header_identity = _read_embedded_build_identity_header(config)
+    if embedded_header_identity != expected_input_identity:
+        raise ValueError(
+            "cannot finalize mismatched embedded identity header: "
+            f"expected={expected_input_identity} actual={embedded_header_identity}"
+        )
     observed_micro = _git_head(config.micromachine_dir)
     observed_s2 = _git_head(config.s2client_dir)
     observed_micro_source_state = _git_source_state_sha256(
@@ -1331,6 +1547,13 @@ def write_micromachine_build_attestation(
     binary_sha256 = _sha256_file(binary_path)
     if binary_sha256 is None:
         raise ValueError("cannot hash MicroMachine binary.")
+    embedded_binary_identity = _read_binary_build_input_identity(config)
+    if embedded_binary_identity != expected_input_identity:
+        raise ValueError(
+            "cannot finalize binary without matching embedded build input "
+            f"identity: expected={expected_input_identity} "
+            f"actual={embedded_binary_identity}"
+        )
 
     payload = dict(source_attestation)
     payload.update(
@@ -1341,7 +1564,7 @@ def write_micromachine_build_attestation(
                 "path": str(binary_path.resolve()),
                 "sha256": binary_sha256,
                 "size_bytes": binary_path.stat().st_size,
-                "build_input_identity": expected_input_identity,
+                "build_input_identity": embedded_binary_identity,
             },
         }
     )
@@ -1653,12 +1876,43 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-operation-production-ownership-restore-proof-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-embedded-build-input-identity-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EMBEDDED_BUILD_INPUT_IDENTITY_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-tech-gas-before-second-barracks-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-operation-production-review-closure-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-production-fifo-zero-owner-cleanup-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
     parser.add_argument("--blackboard-header", default=str(DEFAULT_BLACKBOARD_HEADER))
     parser.add_argument("--source-attestation")
     parser.add_argument("--initialize-source-attestation", action="store_true")
+    parser.add_argument("--write-embedded-identity-header", action="store_true")
     parser.add_argument("--finalize-build-attestation", action="store_true")
     parser.add_argument("--read-report")
     parser.add_argument("--output")
@@ -1855,6 +2109,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             micromachine_authoritative_parallel_operation_lifecycle_patch=Path(
                 args.micromachine_authoritative_parallel_operation_lifecycle_patch
             ),
+            micromachine_operation_production_ownership_restore_proof_patch=Path(
+                args.micromachine_operation_production_ownership_restore_proof_patch
+            ),
+            micromachine_embedded_build_input_identity_patch=Path(
+                args.micromachine_embedded_build_input_identity_patch
+            ),
+            micromachine_tech_gas_before_second_barracks_patch=Path(
+                args.micromachine_tech_gas_before_second_barracks_patch
+            ),
+            micromachine_operation_production_review_closure_patch=Path(
+                args.micromachine_operation_production_review_closure_patch
+            ),
+            micromachine_production_fifo_zero_owner_cleanup_patch=Path(
+                args.micromachine_production_fifo_zero_owner_cleanup_patch
+            ),
             s2client_patch=Path(args.s2client_patch),
             hook_manifest=Path(args.hook_manifest),
             map_pool=Path(args.map_pool),
@@ -1863,6 +2132,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.source_attestation) if args.source_attestation else None
             ),
         )
+    if args.write_embedded_identity_header:
+        write_micromachine_embedded_build_identity_header(config)
+        if (
+            not args.initialize_source_attestation
+            and not args.finalize_build_attestation
+            and not args.output
+            and not args.field
+        ):
+            return 0
     if args.initialize_source_attestation:
         write_micromachine_source_attestation(config)
         if not args.output and not args.field:
@@ -1925,6 +2203,75 @@ def _build_input_identity(checksums: Mapping[str, object]) -> str:
         and not key.endswith("_source_state_sha256")
     }
     return "sha256:" + _sha256_json(build_inputs)
+
+
+def write_micromachine_embedded_build_identity_header(
+    config: MicroMachineBuildIdentityConfig,
+) -> str:
+    """Generate the identity header that must be compiled into MicroMachine."""
+
+    input_checksums = _source_attestation_input_checksums(config)
+    missing_inputs = sorted(
+        name for name, checksum in input_checksums.items() if checksum is None
+    )
+    if missing_inputs:
+        raise ValueError(
+            "cannot generate embedded identity with missing build inputs: "
+            + ", ".join(missing_inputs)
+        )
+    identity = _build_input_identity(input_checksums)
+    header = (
+        "#pragma once\n"
+        f"#define VOI_BUILD_INPUT_IDENTITY {json.dumps(identity)}\n"
+    )
+    path = config.embedded_build_identity_header_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(header)
+    temporary.replace(path)
+    return identity
+
+
+def _read_embedded_build_identity_header(
+    config: MicroMachineBuildIdentityConfig,
+) -> str | None:
+    path = config.embedded_build_identity_header_path
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    prefix = "#define VOI_BUILD_INPUT_IDENTITY "
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        try:
+            value = json.loads(line[len(prefix) :])
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, str) and value else None
+    return None
+
+
+def _read_binary_build_input_identity(
+    config: MicroMachineBuildIdentityConfig,
+) -> str | None:
+    try:
+        completed = subprocess.run(
+            [str(config.binary_path), "--voi-build-input-identity"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        return None
+    identity = lines[0]
+    return identity if identity.startswith("sha256:") else None
 
 
 def _read_source_attestation(path: Path) -> Mapping[str, object] | None:

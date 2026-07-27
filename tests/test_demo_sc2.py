@@ -454,6 +454,49 @@ class LiveModeGuardTest(unittest.TestCase):
 class RunLiveWiringTest(unittest.TestCase):
     """run_live wiring pinned with importable fake sc2 modules."""
 
+    def test_run_live_normalizes_sc2_root_before_runtime_import(self) -> None:
+        configured_root = "~/custom-sc2-root"
+        captured = {}
+
+        def fail_after_environment_normalization() -> None:
+            captured["sc2path"] = os.environ.get("SC2PATH")
+            raise RuntimeError("stop before importing sc2")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SC2_ROOT": configured_root,
+                "SC2PATH": "/ignored-sc2path",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(
+                demo_sc2,
+                "require_python_sc2",
+                side_effect=fail_after_environment_normalization,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stop before importing sc2"):
+                    demo_sc2.run_live(demo_sc2.parse_args([]))
+
+        self.assertEqual(
+            os.path.abspath(os.path.expanduser(configured_root)),
+            captured["sc2path"],
+        )
+
+    def test_sc2_environment_normalization_falls_back_to_sc2path(self) -> None:
+        configured_path = "~/custom-sc2path"
+        with mock.patch.dict(
+            os.environ,
+            {"SC2_ROOT": "", "SC2PATH": configured_path},
+            clear=False,
+        ):
+            normalized = demo_sc2._normalize_sc2_install_environment()  # noqa: SLF001
+            self.assertEqual(
+                os.path.abspath(os.path.expanduser(configured_path)),
+                normalized,
+            )
+            self.assertEqual(normalized, os.environ["SC2PATH"])
+
     def test_run_live_wires_map_race_difficulty_and_realtime(self) -> None:
         captured = {}
 

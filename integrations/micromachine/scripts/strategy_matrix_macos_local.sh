@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 BLACKBOARD_ROOT="${BLACKBOARD_ROOT:-/private/tmp/voi-mm-strategy-matrix}"
 PROFILES=(${SMOKE_STRATEGY_MATRIX_PROFILES:-bio_pressure tank_defensive_hold mech_transition drop_harassment scouting_map_control expand_macro})
 MIN_TELEMETRY_FRAME="${MIN_TELEMETRY_FRAME:-5200}"
@@ -59,11 +60,16 @@ for profile in "${PROFILES[@]}"; do
     SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS}" \
     SMOKE_FORCE_STEP_MODE="${SMOKE_FORCE_STEP_MODE}" \
     "${SCRIPT_DIR}/smoke_macos_local.sh"; then
-    python3 - <<'PY' "${summary}" "${profile}" "${run_dir}"
+    PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${summary}" "${profile}" "${run_dir}"
 import json
 import sys
 import time
 from pathlib import Path
+
+from starcraft_commander.micromachine_production_evidence import (
+    expected_production_pairs,
+    find_causal_production_evidence,
+)
 
 summary = Path(sys.argv[1])
 profile = sys.argv[2]
@@ -101,20 +107,6 @@ def load_latest_or_archive(root):
 payload = load_latest_or_archive(root)
 production = payload.get("managers", {}).get("ProductionManager", {})
 workers = payload.get("managers", {}).get("WorkerManager", {})
-expected_contracts = {
-    "marine_rush": ({"marine_rush"}, {("marine_pressure", "Marine"), ("bio_facility", "Barracks")}),
-    "bio_pressure": ({"bio_pressure"}, {("bio_marauder_techlab", "BarracksTechLab"), ("bio_marauder_support", "Marauder"), ("starport_transition", "Starport"), ("medivac_drop_support", "Medivac")}),
-    "tank_defensive_hold": ({"tank_defensive_hold"}, {("factory_transition", "Factory"), ("factory_techlab", "FactoryTechLab"), ("siege_tank_composition", "SiegeTank")}),
-    "siege_contain": ({"siege_contain"}, {("factory_transition", "Factory"), ("factory_techlab", "FactoryTechLab"), ("siege_tank_composition", "SiegeTank")}),
-    "contain_enemy_natural": ({"contain_enemy_natural"}, {("factory_transition", "Factory"), ("factory_techlab", "FactoryTechLab"), ("siege_tank_composition", "SiegeTank")}),
-    "mech_transition": ({"mech_transition"}, {("factory_transition", "Factory"), ("factory_techlab", "FactoryTechLab"), ("hellion_harassment", "Hellion"), ("cyclone_mech", "Cyclone"), ("siege_tank_composition", "SiegeTank"), ("thor_mech", "Thor")}),
-    "drop_harassment": ({"drop_harassment"}, {("starport_transition", "Starport"), ("drop_reactor", "StarportReactor"), ("medivac_drop_support", "Medivac"), ("factory_transition", "Factory"), ("hellion_harassment", "Hellion"), ("reaper_harassment", "Reaper")}),
-    "worker_line_harassment": ({"worker_line_harassment"}, {("starport_transition", "Starport"), ("drop_reactor", "StarportReactor"), ("medivac_drop_support", "Medivac"), ("factory_transition", "Factory"), ("hellion_harassment", "Hellion"), ("reaper_harassment", "Reaper")}),
-    "scouting_map_control": ({"scouting_map_control"}, set()),
-    "expand_macro": ({"expand_macro"}, {("expand_macro", "CommandCenter")}),
-    "anti_air_response": ({"anti_air_response"}, {("starport_transition", "Starport"), ("anti_air_detection_support", "EngineeringBay"), ("anti_air_viking", "Viking")}),
-}
-allowed_evidence = {"queued", "queued_existing"}
 
 def production_entries():
     archive = root / "telemetry.jsonl"
@@ -130,40 +122,40 @@ def production_entries():
     yield payload
 
 def choose_summary_production():
-    expected_doctrines, expected_pairs = expected_contracts.get(
-        profile,
-        (set(), set()),
+    expected_doctrine = profile
+    expected_pairs = expected_production_pairs(
+        expected_doctrine,
     )
     expected_update_id = str(production.get("policy_update_id", "") or "")
     expected_issued_frame = int(production.get("policy_issued_at_frame", 0) or 0)
-    best = None
-    for entry in production_entries():
-        candidate = entry.get("managers", {}).get("ProductionManager", {})
-        if not isinstance(candidate, dict):
-            continue
-        doctrine = str(candidate.get("strategy_doctrine", "") or "")
-        last_doctrine = str(candidate.get("last_doctrine", "") or "")
-        action = str(candidate.get("last_doctrine_action", "") or "")
-        item = str(candidate.get("last_doctrine_queue_item", "") or "")
-        evidence = str(candidate.get("last_doctrine_evidence", "") or "")
-        update_id = str(candidate.get("policy_update_id", "") or "")
-        last_update_id = str(candidate.get("last_doctrine_update_id", "") or "")
-        if expected_doctrines and (
-            doctrine not in expected_doctrines or last_doctrine not in expected_doctrines
-        ):
-            continue
-        if expected_pairs and (action, item) not in expected_pairs:
-            continue
-        if evidence not in allowed_evidence:
-            continue
-        if not expected_update_id or update_id != expected_update_id or last_update_id != expected_update_id:
-            continue
-        if candidate.get("last_doctrine_fresh") is not True:
-            continue
-        if int(candidate.get("last_doctrine_frame", 0) or 0) < expected_issued_frame:
-            continue
-        best = candidate
-    return best or production
+    if not expected_pairs:
+        return production
+    causal = find_causal_production_evidence(
+        tuple(production_entries()),
+        expected_doctrine=expected_doctrine,
+        expected_update_id=expected_update_id,
+        expected_pairs=expected_pairs,
+        min_doctrine_frame=expected_issued_frame,
+    )
+    if not causal.matched:
+        raise SystemExit(
+            "strategy matrix summary missing causal production evidence: "
+            f"profile={profile}, expected_pairs={sorted(expected_pairs)}, "
+            f"observed_actions={sorted(causal.observed_actions)}, "
+            f"observed_actual_commands={sorted(causal.observed_actual_commands)}"
+        )
+    summary_candidate = dict(causal.doctrine_entry or {})
+    actual_candidate = causal.actual_command_entry or {}
+    for key in (
+        "actual_production_command_issued_count",
+        "last_actual_production_command",
+        "last_actual_production_command_kind",
+        "last_actual_production_command_item",
+        "last_actual_production_command_update_id",
+        "last_actual_production_command_frame",
+    ):
+        summary_candidate[key] = actual_candidate.get(key)
+    return summary_candidate
 
 summary_production = choose_summary_production()
 summary.write_text(

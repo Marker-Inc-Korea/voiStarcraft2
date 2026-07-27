@@ -227,6 +227,7 @@ if [[ "${SOAK_MATRIX_AGGREGATE_ONLY}" != "1" ]]; then
           SOAK_ENEMY_DIFFICULTY="${enemy_difficulty}" \
           SOAK_TARGET_FRAME="${SOAK_MATRIX_TARGET_FRAME}" \
           SOAK_TIMEOUT_SECONDS="${SOAK_MATRIX_TIMEOUT_SECONDS}" \
+          SOAK_QUALIFICATION_TIER="${SOAK_MATRIX_QUALIFICATION_TIER}" \
           "${SOAK_SCRIPT}"
         exit_code="$?"
         set -e

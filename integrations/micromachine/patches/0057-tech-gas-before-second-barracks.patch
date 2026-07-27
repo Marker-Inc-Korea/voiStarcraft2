@@ -1,0 +1,167 @@
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -76,6 +76,7 @@ class ProductionManager
+ 	uint32_t m_voiDoctrineBaselineFrame = 0;
+ 	std::map<sc2::UNIT_TYPEID, bool> m_voiDoctrineQueueBaseline;
+ 	std::map<sc2::UNIT_TYPEID, int> m_voiDoctrineUnitCountBaseline;
++	bool m_voiRequiresTechGasBeforeSecondBarracks = false;
+ 	std::map<sc2::UNIT_TYPEID, uint32_t> m_nextPlacementRetryFrame;
+ 	std::map<sc2::UNIT_TYPEID, int> m_placementRetryCount;
+ 	std::string m_voiCompositionProductionOperationKey = "";
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -2913,6 +2913,39 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentIt
+ 	const auto proxyMaraudersStrategy = m_bot.Strategy().getStartingStrategy() == PROXY_MARAUDERS;
+ 	const int barracksCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), false, true, true);
+ 	const int completedBarracksCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::Barracks.getUnitType(), true, true, true);
++	const int refineryCount = m_bot.UnitInfo().getUnitTypeCount(
++		Players::Self,
++		MetaTypeEnum::Refinery.getUnitType(),
++		false,
++		true,
++		true);
++	const bool barracksTaskActive = m_bot.Buildings().isBeingBuilt(
++		MetaTypeEnum::Barracks.getUnitType());
++	const bool refineryTaskActive = m_bot.Buildings().isBeingBuilt(
++		MetaTypeEnum::Refinery.getUnitType());
++	const bool firstBarracksRepresented =
++		barracksCount > 0
++		|| barracksTaskActive;
++	if (currentItem.type == MetaTypeEnum::Barracks
++		&& m_bot.Commander().isVoiPolicyActive()
++		&& m_voiRequiresTechGasBeforeSecondBarracks
++		&& firstBarracksRepresented
++		&& refineryCount == 0
++		&& (m_queue.contains(MetaTypeEnum::Refinery)
++			|| refineryTaskActive))
++	{
++		if (m_queue.contains(MetaTypeEnum::Refinery))
++		{
++			m_queue.promoteTypeToHighestPriority(
++				MetaTypeEnum::Refinery,
++				true);
++		}
++		Util::Log(
++			__FUNCTION__,
++			"VOI held a follow-up Barracks until the tech-gas Refinery was observed.",
++			m_bot);
++		return true;
++	}
+ 	const int starportCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, UnitType(sc2::UNIT_TYPEID::TERRAN_STARPORT, m_bot), false, true);
+ 	const int deadStarportCount = m_bot.GetDeadAllyUnitsCount(sc2::UNIT_TYPEID::TERRAN_STARPORT);
+ 	const auto baseCount = m_bot.Bases().getBaseCount(Players::Self, false);
+@@ -5955,6 +5987,8 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	const int engineeringBayCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::EngineeringBay.getUnitType(), false, true);
+ 	const int commandCenterCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::CommandCenter.getUnitType(), false, true, true);
+ 	const int orbitalCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, MetaTypeEnum::OrbitalCommand.getUnitType(), false, true, true);
++	const bool barracksTaskActive = m_bot.Buildings().isBeingBuilt(
++		MetaTypeEnum::Barracks.getUnitType());
+ 	const bool refineryTaskActive = m_bot.Buildings().isBeingBuilt(
+ 		MetaTypeEnum::Refinery.getUnitType());
+ 	const bool commandCenterTaskActive = m_bot.Buildings().isBeingBuilt(
+@@ -6130,11 +6164,38 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			|| effectiveMarauderBias > 0.25f
+ 			|| effectiveReaperBias > 0.25f
+ 			|| effectiveGhostBias > 0.25f)
+-		&& barracksCount == 0;
++		&& barracksCount == 0
++		&& !barracksTaskActive;
++	m_voiRequiresTechGasBeforeSecondBarracks =
++		wantsFactory
++		|| wantsStarport
++		|| wantsFactoryTechLab
++		|| wantsArmory
++		|| wantsStarportTechLab
++		|| wantsFusionCore
++		|| wantsGhostAcademy
++		|| explicitAbilityNeedsFactory
++		|| explicitAbilityNeedsFactoryTechLab
++		|| explicitAbilityNeedsArmory
++		|| explicitAbilityNeedsStarport
++		|| explicitAbilityNeedsStarportTechLab
++		|| explicitAbilityNeedsFusionCore
++		|| explicitAbilityNeedsGhostAcademy
++		|| effectiveMarauderBias > 0.25f
++		|| effectiveReaperBias > 0.25f
++		|| effectiveGhostBias > 0.25f
++		|| effectiveTankBias > 0.25f
++		|| effectiveWidowMineBias > 0.25f
++		|| effectiveLiberatorBias > 0.25f;
++	const bool techGasQueuedOrBuilding =
++		m_queue.contains(MetaTypeEnum::Refinery)
++		|| refineryTaskActive;
+ 	if (((wantsBioDoctrine
+ 				&& !explicitAbilityCasterPending
+ 				&& barracksCount < 2
+-				&& effectiveBarracksBias > 0.35f)
++				&& effectiveBarracksBias > 0.35f
++				&& (!m_voiRequiresTechGasBeforeSecondBarracks
++					|| refineryCount > 0))
+ 			|| needsTechBootstrapBarracks)
+ 		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, needsTechBootstrapBarracks ? "tech_bootstrap_barracks" : "bio_facility", needsTechBootstrapBarracks))
+ 	{
+@@ -6149,31 +6210,39 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 		return;
+ 	}
+ 	const bool needsTechBootstrapRefinery =
+-		(wantsFactory
+-			|| wantsStarport
+-			|| wantsFactoryTechLab
+-			|| wantsArmory
+-			|| wantsStarportTechLab
+-			|| wantsFusionCore
+-			|| wantsGhostAcademy
+-			|| explicitAbilityNeedsFactory
+-			|| explicitAbilityNeedsFactoryTechLab
+-			|| explicitAbilityNeedsArmory
+-			|| explicitAbilityNeedsStarport
+-			|| explicitAbilityNeedsStarportTechLab
+-			|| explicitAbilityNeedsFusionCore
+-			|| explicitAbilityNeedsGhostAcademy
+-			|| effectiveMarauderBias > 0.25f
+-			|| effectiveReaperBias > 0.25f
+-			|| effectiveGhostBias > 0.25f
+-			|| effectiveTankBias > 0.25f
+-			|| effectiveWidowMineBias > 0.25f
+-			|| effectiveLiberatorBias > 0.25f)
+-		&& completedBarracksCount > 0
++		m_voiRequiresTechGasBeforeSecondBarracks
++		&& (barracksCount > 0
++			|| barracksTaskActive)
+ 		&& refineryCount == 0;
+-	if (needsTechBootstrapRefinery && queueVoiDoctrineItem(MetaTypeEnum::Refinery, "tech_bootstrap_refinery", true))
++	if (needsTechBootstrapRefinery)
+ 	{
+-		return;
++		if (m_queue.contains(MetaTypeEnum::Refinery))
++		{
++			m_queue.promoteTypeToHighestPriority(
++				MetaTypeEnum::Refinery,
++				true);
++			recordVoiDoctrineConsumption(
++				MetaTypeEnum::Refinery,
++				"tech_bootstrap_refinery",
++				"queued_existing_promoted");
++			return;
++		}
++		if (refineryTaskActive)
++		{
++			recordVoiDoctrineConsumption(
++				MetaTypeEnum::Refinery,
++				"tech_bootstrap_refinery",
++				"building_existing");
++			return;
++		}
++		if (!techGasQueuedOrBuilding
++			&& queueVoiDoctrineItem(
++				MetaTypeEnum::Refinery,
++				"tech_bootstrap_refinery",
++				true))
++		{
++			return;
++		}
+ 	}
+ 	const int desiredMacroRefineryCount = std::min(6, completedTownHallCount * 2);
+ 	const int macroRefineryWorkerFloor = completedTownHallCount * 16 + refineryCount * 3 - 4;

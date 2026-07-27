@@ -102,7 +102,7 @@ without deleting unrelated operations.
 
 The operation model is not Marine-specific. It reuses MicroMachine's existing
 Squad, RangedManager, MeleeManager, detector, transport, siege, cloak, and
-ability logic for supported Terran combat families:
+ability code paths for supported Terran combat families:
 
 | Family | Units and behavior |
 | --- | --- |
@@ -119,6 +119,14 @@ top-level task, so a Marine scout can run while an independent Tank, Viking,
 Ghost, or capital-ship operation builds its own prerequisite lane. Building
 placement uses semantic anchors and SC2 placement/pathing queries, not random
 coordinates.
+
+This is a runtime support statement, not a claim that every family has passed
+the same live qualification matrix. Marine/Tank operation paths and selected
+support paths have direct live evidence. Ghost, Widow Mine, Raven, Liberator,
+Banshee, Viking, Thor, and Battlecruiser still require family-by-family
+`production -> exclusive assignment -> SC2 action -> observed effect -> HUD`
+qualification before the project can claim comprehensive all-Terran live
+coverage.
 
 ## Truthful Execution Evidence
 
@@ -164,7 +172,8 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 | Legacy live SC2 commander | Implemented and locally connected through python-sc2. This is compatibility mode, not MicroMachine. |
 | MicroMachine policy cockpit | Default web text/voice route. Uses forced-tool LLM output, deterministic validation, and fail-closed publishing. |
 | Parallel operations | Implemented through explicit `operations[]`, stable IDs, immutable per-generation deadlines, runtime-authoritative lifecycle, live upsert semantics, dynamic operation squads, and exclusive unit ownership. |
-| All-unit operation model | Implemented for supported Terran combat families by reusing existing MicroMachine Squad and unit ability micro. |
+| Terran operation runtime support | Implemented for supported Terran combat families by reusing existing MicroMachine Squad and unit ability code paths. |
+| Comprehensive all-Terran live qualification | Pending family-by-family evidence beyond the currently qualified Marine/Tank and selected support paths. |
 | Web operation UX | Per-operation cards, isolated telemetry, monotonic lifecycle updates, and truthful published/executing distinction. |
 | In-game HUD | Patched MicroMachine overlay for operation identity, force, route, target, assignment, action, movement, engagement, and blockers. |
 | Voice input | Implemented behind optional `[voice]` dependencies. |
@@ -174,6 +183,27 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 | Standing orders | Implemented for continuous SCV production and supply-block prevention. |
 | Brood War / BWAPI | Semantic executor boundary implemented; real BWAPI adapter still requires a BWAPI machine. |
 | Human multiplayer | Deferred. Current qualification target is local AI/custom-game operation control. |
+
+## Latest Qualification
+
+Production evidence collected on July 27, 2026:
+
+| Gate | Result |
+| --- | --- |
+| Python suite | Python 3.10, 3.11, and 3.12 each passed `1904 tests, 5357 subtests` in isolated `dev + llm` environments |
+| MicroMachine integration kit | `105 passed, 2091 subtests passed` |
+| Web operation UX | `131 passed, 261 subtests passed`, including truthful zero-owner cancellation cleanup |
+| Clean patched build | Build identity schema `56`, `ok=true`, identity `sha256:bdb1a8fbbf4ae8449ae8604e54f3a59fcd7e0a077755f17dc521ff225ccfbe0b`, embedded build-input identity `sha256:123adec4894c856c68df71d5f69e08072c8747e72b617b883de6fecccb638410`, binary SHA-256 `4413cec7eae52c04de31d0586ce42e42509dbf673f81d0c100538a715082f9a3` |
+| Fresh live smoke | Difficulty `10`, run ID `20260727T143156Z-27690-3244`, single attempt, final accepted frame `5250`, exit code `0` |
+| Tech-gas opening | A required Refinery was queued and promoted at frame `1527`; the first Barracks issued an actual SC2 command at `1561`, the Refinery issued its build command at `2616` and was observed building at `2689`, the second Barracks issued an actual command at `2655`, the Refinery completed at `3118`, and `3` live gas workers were observed by frame `3463` |
+| Parallel execution | The parallel update was published at frame `3716` and observed by the manager at `3731`; attack submitted at `3731`, reached `MOVING` at `3745` and `ENGAGED` at `4703`; scout submitted at `5030` and reached `MOVING` at `5046`; the operations used different exclusive unit tags. `MOVING` is set only after observed displacement from the per-unit SC2 submission position. |
+| Selective cancellation | Attack cancellation was published at frame `5030`; frame `5046` recorded matching-generation `release_stop`, released `smoke-attack-bravo#1`, and retained an owner-keyed purge event with exactly one exclusively owned queue item removed while the scout remained `MOVING`; every later archived terminal snapshot through frame `5085` preserved the same cleanup action and frame |
+| Autonomous restoration | Restore policy was issued at frame `5085` with MainAttack command baseline `4`; a fresh autonomous MainAttack action and same-unit movement were observed under the restore policy by frame `5091`, command count reached `8` at frame `5139`, and the final accepted snapshot recorded `31.1514` maximum home distance |
+| Provenance | Runtime manifest covered 36 Python source files and matched the schema-56 embedded build identity through smoke completion |
+
+This qualification proves the tested parallel operation and autonomous
+restoration path. It does not replace the family-by-family all-Terran live
+matrix described above.
 
 Current verification command:
 
@@ -191,7 +221,9 @@ Commercial closed-source use requires a paid commercial license from the
 copyright holder. If you do not obtain a commercial license, you must comply
 with the AGPL source-code disclosure obligations for the covered work. The
 project notice is in `LICENSE`; the complete AGPL text is included in
-`LICENSES/AGPL-3.0-or-later.txt`.
+`LICENSES/AGPL-3.0-or-later.txt`. MicroMachine and Blizzard s2client-api retain
+their upstream MIT notices in `THIRD_PARTY_NOTICES.md`; commercial licensing
+does not remove those attribution and notice obligations.
 
 ## Quickstart
 
@@ -269,7 +301,7 @@ pip install -e .              # core: dry-run, interpreter, validators, planners
 pip install -e '.[sc2]'       # live SC2 mode via burnysc2
 pip install -e '.[voice]'     # Korean push-to-talk via faster-whisper + sounddevice
 pip install -e '.[llm]'       # required LLM interpreter for live play
-pip install -e '.[dev]'       # pytest
+pip install -e '.[dev]'       # pytest + wheel/sdist build verification
 ```
 
 Live SC2 also requires a local StarCraft II installation and maps. See
@@ -368,7 +400,7 @@ python3 -m starcraft_commander.demo_sc2 --dry-run --gui 0
 For actual local play through the legacy python-sc2 commander:
 
 ```bash
-SC2PATH="/Users/jinminseong/Desktop/StarCraft2/StarCraft II" \
+SC2PATH="/path/to/StarCraft II" \
 python3 -m starcraft_commander.demo_sc2 \
   --map AcropolisLE --difficulty easy \
   --gui
@@ -396,7 +428,7 @@ python3 -m starcraft_commander.web_gui --dry-run --auto-launch-legacy-live
 For phone/tablet companion control on the same Wi-Fi:
 
 ```bash
-SC2PATH="/Users/jinminseong/Desktop/StarCraft2/StarCraft II" \
+SC2PATH="/path/to/StarCraft II" \
 python3 -m starcraft_commander.demo_sc2 \
   --map AcropolisLE --difficulty easy \
   --gui --gui-host 0.0.0.0 --gui-token "change-me-long-random-token"
@@ -461,11 +493,11 @@ python3 -m starcraft_commander.demo_sc2 --map AcropolisLE --difficulty easy --vo
 python3 -m starcraft_commander.demo_sc2 --map AcropolisLE --difficulty easy --gui
 ```
 
-This path has been locally smoke-tested against the StarCraft II install at
-`/Users/jinminseong/Desktop/StarCraft2/StarCraft II` with `AcropolisLE`,
-including the localhost GUI, state polling, OpenAI key status, SCV production,
-SCV scouting, mineral gathering, and Supply Depot construction commands. Follow
-[docs/sc2-smoke-test.md](docs/sc2-smoke-test.md) to repeat the test.
+This path has been locally smoke-tested against a macOS StarCraft II install
+with `AcropolisLE`, including the localhost GUI, state polling, OpenAI key
+status, SCV production, SCV scouting, mineral gathering, and Supply Depot
+construction commands. Follow [docs/sc2-smoke-test.md](docs/sc2-smoke-test.md)
+to repeat the test.
 
 ## Supported Intents
 
@@ -550,7 +582,6 @@ Detailed design docs:
 
 - [docs/architecture.md](docs/architecture.md)
 - [docs/contracts.md](docs/contracts.md)
-- [docs/claude-handoff.md](docs/claude-handoff.md)
 - [docs/sc2-collaboration-policy-tree.md](docs/sc2-collaboration-policy-tree.md)
 - [docs/sc2-smoke-test.md](docs/sc2-smoke-test.md)
 
@@ -640,8 +671,8 @@ The design principles going forward are:
 - User intent remains visible as stable operation identities instead of
   dissolving into one global aggression bias.
 - Runtime claims require SC2 command and observed-effect evidence.
-- Local credentials, MyProxy configuration, machine paths, and API keys never
-  enter source control.
+- Local credentials, MyProxy configuration, API keys, and private secret
+  configuration never enter source control.
 
 ## Roadmap
 

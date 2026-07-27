@@ -93,10 +93,27 @@ DEFAULT_WEB_GUI_PORT: Final[int] = 8350
 _REPO_ROOT: Final[str] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 """Repository root resolved from this module, independent of process cwd."""
 
-DEFAULT_SC2_INSTALL_PATH: Final[str] = (
-    "/Users/jinminseong/Desktop/StarCraft2/StarCraft II"
-)
-"""Default local StarCraft II install path used by auto live launch."""
+
+def _default_sc2_install_path() -> str:
+    """Resolve a portable local StarCraft II root for live launch."""
+
+    for variable in ("SC2_ROOT", "SC2PATH"):
+        configured = os.environ.get(variable, "").strip()
+        if configured:
+            return os.path.abspath(os.path.expanduser(configured))
+    candidates = (
+        os.path.expanduser("~/Desktop/StarCraft2/StarCraft II"),
+        "/Applications/StarCraft II",
+        os.path.expanduser("~/Applications/StarCraft II"),
+    )
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+    return "/Applications/StarCraft II"
+
+
+DEFAULT_SC2_INSTALL_PATH: Final[str] = _default_sc2_install_path()
+"""Environment-aware StarCraft II install path used by auto live launch."""
 
 DEFAULT_LIVE_MAP: Final[str] = "AcropolisLE"
 """Default map for opt-in legacy python-sc2 auto-launch sessions."""
@@ -1172,6 +1189,57 @@ def _micromachine_operation_signal(
     return signaled, evidence
 
 
+def _micromachine_terminal_cleanup_action(
+    operation_telemetry: Mapping[str, object],
+    *,
+    operation_id: str,
+    operation_generation: int,
+) -> dict[str, object]:
+    action = str(operation_telemetry.get("last_action", "") or "").strip()
+    normalized_action = action.lower()
+    telemetry_operation_id = str(
+        operation_telemetry.get("operation_id", "") or ""
+    ).strip()
+    telemetry_generation = operation_telemetry.get("generation")
+    frame = operation_telemetry.get("last_action_frame", 0)
+    if (
+        not normalized_action.startswith(
+            ("release_stop|", "release_no_owned_units|")
+        )
+        or telemetry_operation_id != operation_id
+        or type(telemetry_generation) is not int
+        or telemetry_generation != operation_generation
+        or type(frame) is not int
+        or frame <= 0
+    ):
+        return {}
+    return {
+        "action": action,
+        "frame": frame,
+        "operation_id": operation_id,
+        "generation": operation_generation,
+    }
+
+
+def _micromachine_execution_stage_ok(
+    execution: Mapping[str, object],
+    *stage_names: str,
+) -> bool:
+    stages = execution.get("stages")
+    if not isinstance(stages, Sequence) or isinstance(
+        stages,
+        (str, bytes, bytearray),
+    ):
+        return False
+    accepted = set(stage_names)
+    return any(
+        isinstance(stage, Mapping)
+        and str(stage.get("name", "") or "") in accepted
+        and stage.get("ok") is True
+        for stage in stages
+    )
+
+
 def _micromachine_operation_command_execution(
     *,
     update_id: str,
@@ -1186,6 +1254,11 @@ def _micromachine_operation_command_execution(
         result.setdefault("operation_generation", operation_generation)
         return result
 
+    terminal_cleanup = _micromachine_terminal_cleanup_action(
+        operation_telemetry,
+        operation_id=operation_id,
+        operation_generation=operation_generation,
+    )
     received, received_evidence = _micromachine_operation_signal(
         operation_telemetry,
         "received",
@@ -1230,6 +1303,22 @@ def _micromachine_operation_command_execution(
         count_keys=("engaged_unit_count", "attack_count"),
         accepted_statuses=("engaged", "observed", "combat"),
     )
+    if terminal_cleanup:
+        submitted = _micromachine_execution_stage_ok(
+            fallback,
+            "order_issued",
+            "action_issued",
+        )
+        moving = False
+        engaged = _micromachine_execution_stage_ok(
+            fallback,
+            "effect_observed",
+        )
+        if not submitted:
+            submission_evidence = {}
+        if not engaged:
+            movement_evidence = {}
+            engagement_evidence = {}
     terminal = operation_telemetry.get("terminal")
     terminal_payload = dict(terminal) if isinstance(terminal, Mapping) else {}
     terminal_state = str(
@@ -1376,6 +1465,7 @@ def _micromachine_operation_command_execution(
         "blocker_manager": "OperationDirector" if blocked else "",
         "blocker_reason": blocker_reason,
         "stages": stages,
+        "terminal_cleanup": terminal_cleanup,
         "telemetry": dict(operation_telemetry),
     }
 
@@ -3542,7 +3632,11 @@ class _LiveLaunchManager:
             self._error = ""
             self._last_line = ""
             env = os.environ.copy()
-            env["SC2PATH"] = env.get("SC2PATH", DEFAULT_SC2_INSTALL_PATH)
+            sc2_root = env.get("SC2_ROOT", "").strip()
+            if sc2_root:
+                env["SC2PATH"] = os.path.abspath(os.path.expanduser(sc2_root))
+            else:
+                env["SC2PATH"] = env.get("SC2PATH", DEFAULT_SC2_INSTALL_PATH)
             env[_api_key_env_var_for_provider(provider)] = api_key
             argv = [
                 sys.executable,
@@ -5679,6 +5773,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .micro-badge-active { color: var(--accent); background: rgba(77, 238, 234, 0.12); }
   .micro-badge-pending { color: var(--amber); background: rgba(245, 158, 11, 0.14); }
   .micro-badge-blocked { color: #ff9eb2; background: rgba(255, 107, 138, 0.14); }
+  .micro-badge-cancelled { color: var(--amber); background: rgba(245, 158, 11, 0.14); }
   .micro-intervention-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; margin: 0;
   }
@@ -8836,7 +8931,7 @@ function commandConsoleTelemetryFrame(data) {
 }
 
 function commandConsoleStageRank(model) {
-  if (model.effectObserved || model.blocked || model.superseded) { return 4; }
+  if (model.effectObserved || model.blocked || model.superseded || model.cancelled) { return 4; }
   if (model.actionIssued) { return 3; }
   if (model.assignmentReady) { return 2; }
   if (model.interpreted) { return 1; }
@@ -8848,6 +8943,9 @@ function shouldAdvanceActiveCommandConsole(model, telemetryFrame) {
   var currentModel = commandConsoleStageModel(currentData);
   var candidateRank = commandConsoleStageRank(model);
   if (currentModel.effectObserved && !model.effectObserved) {
+    return false;
+  }
+  if (currentModel.cancelled && !model.cancelled) {
     return false;
   }
   if (currentModel.superseded && !model.superseded) {
@@ -8888,7 +8986,51 @@ function commandConsoleStageModel(data) {
   var reduced = microMachineExecutionStage(execution, "reduced");
   var consumed = microMachineExecutionStage(execution, "consumed_by_manager");
   var assigned = microMachineExecutionStage(execution, "queued_or_assigned");
-  var effectObserved = microMachineExecutionEffectObserved(execution);
+  var observedEffect = microMachineExecutionEffectObserved(execution);
+  var executionState = String(execution.state || "").toLowerCase();
+  var blockerReason = String(execution.blocker_reason || "").toLowerCase();
+  var cancelled = Boolean(
+    executionState === "cancelled" ||
+    executionState === "canceled" ||
+    blockerReason === "cancelled_by_policy"
+  );
+  var cancellationCleanupVerified = Boolean(
+    cancelled &&
+    commandConsoleTerminalCleanupVerified({ execution: execution })
+  );
+  var superseded = Boolean(
+    !cancelled &&
+    (
+      data && data.status === "superseded" ||
+      executionState === "superseded" ||
+      executionState === "replaced"
+    )
+  );
+  var refused = Boolean(
+    compileResult.refusal_reason ||
+    compileResult.clarification_prompt ||
+    data && data.accepted === false ||
+    data && data.status === "publish_failed"
+  );
+  var failed = Boolean(
+    !cancelled &&
+    (
+      refused ||
+      execution.failed === true ||
+      execution.expired === true ||
+      executionState === "failed" ||
+      executionState === "expired" ||
+      executionState === "blocked" ||
+      executionState === "rejected" ||
+      (
+        (execution.completed === true || executionState === "completed") &&
+        !observedEffect
+      )
+    )
+  );
+  var effectObserved = Boolean(
+    observedEffect && !cancelled && !superseded && !failed
+  );
   var actionIssued = Boolean(
     effectObserved ||
     microMachineExecutionActionIssued(execution)
@@ -8905,27 +9047,6 @@ function commandConsoleStageModel(data) {
     (parsed && parsed.ok === true && reduced && reduced.ok === true) ||
     compileResult.status === "compiled" ||
     data && data.status === "published"
-  );
-  var refused = Boolean(
-    compileResult.refusal_reason ||
-    compileResult.clarification_prompt ||
-    data && data.accepted === false ||
-    data && data.status === "publish_failed"
-  );
-  var superseded = Boolean(
-    data && data.status === "superseded" ||
-    execution.state === "superseded"
-  );
-  var failed = Boolean(
-    refused ||
-    execution.failed === true ||
-    execution.expired === true ||
-    execution.state === "failed" ||
-    execution.state === "expired" ||
-    (
-      (execution.completed === true || execution.state === "completed") &&
-      !effectObserved
-    )
   );
   var currentStage = "interpret";
   if (interpreted) { currentStage = "assign"; }
@@ -8958,9 +9079,11 @@ function commandConsoleStageModel(data) {
     observationDelayed: Boolean(data && data.command_console_observation_delayed),
     submissionDelayed: Boolean(data && data.command_console_submission_delayed),
     refused: refused,
+    cancelled: cancelled,
+    cancellationCleanupVerified: cancellationCleanupVerified,
     superseded: superseded,
     blocked: failed,
-    terminal: failed || superseded || effectObserved,
+    terminal: cancellationCleanupVerified || failed || superseded || effectObserved,
     currentStage: currentStage,
     done: {
       interpret: interpreted,
@@ -9098,6 +9221,36 @@ function commandConsoleTarget(data, model) {
     : commandUiText("목표 좌표 또는 전술 위치 계산 대기", "Waiting for target coordinates or tactical location", "等待目标坐标或战术位置");
 }
 
+function commandConsoleTerminalCleanupVerified(model) {
+  var execution = (model && model.execution) || {};
+  var cleanup = execution.terminal_cleanup;
+  if (!cleanup || typeof cleanup !== "object") { return false; }
+  var action = String(cleanup.action || "").toLowerCase();
+  var frame = Number(cleanup.frame || 0);
+  var operationId = String(execution.operation_id || "");
+  var cleanupOperationId = String(cleanup.operation_id || "");
+  var generation = Number(execution.operation_generation || 0);
+  var cleanupGeneration = Number(cleanup.generation || 0);
+  return (
+    (
+      action.startsWith("release_stop|") ||
+      action.startsWith("release_no_owned_units|")
+    ) &&
+    frame > 0 &&
+    operationId !== "" &&
+    cleanupOperationId === operationId &&
+    generation > 0 &&
+    cleanupGeneration === generation
+  );
+}
+
+function commandConsoleTerminalCleanupStoppedOwnedUnits(model) {
+  var execution = (model && model.execution) || {};
+  var cleanup = execution.terminal_cleanup;
+  if (!cleanup || typeof cleanup !== "object") { return false; }
+  return String(cleanup.action || "").toLowerCase().startsWith("release_stop|");
+}
+
 function commandConsoleVerification(data, model) {
   var intervention = (data && data.intervention) || {};
   var compileResult = (data && data.compile_result) || {};
@@ -9126,6 +9279,43 @@ function commandConsoleVerification(data, model) {
       "max distance from home " + maxDistance,
       "离主基地最大距离 " + maxDistance
     ));
+  }
+  if (model.cancelled) {
+    var cancellationReason = (
+      model.execution.blocker_reason ||
+      commandUiText(
+        "사용자 또는 정책 명령으로 작전을 종료했습니다.",
+        "The operation was terminated by a user or policy order.",
+        "作战已由用户或策略命令终止。"
+      )
+    );
+    if (!commandConsoleTerminalCleanupVerified(model)) {
+      return commandUiText(
+        "작전 취소 요청 수락: terminal 상태를 확인했습니다. 유닛 정지·해제 증거를 기다립니다. ",
+        "Cancellation accepted: the terminal state is confirmed. Waiting for unit stop-and-release evidence. ",
+        "已接受取消请求：已确认终止状态，正在等待单位停止并释放的证据。"
+      ) + cancellationReason;
+    }
+    return (
+      commandConsoleTerminalCleanupStoppedOwnedUnits(model)
+        ? commandUiText(
+            "작전 취소: 소유 유닛의 기존 명령을 중지하고 작전에서 해제했습니다. ",
+            "Operation cancelled: owned units were stopped and released from the operation. ",
+            "作战已取消：所属单位已停止并从作战中释放。"
+          )
+        : commandUiText(
+            "작전 취소: 소유 유닛이 없어 중지 명령 없이 작전 해제를 확인했습니다. ",
+            "Operation cancelled: no owned units remained, so release was verified without a stop command. ",
+            "作战已取消：没有剩余所属单位，因此无需停止命令即可确认释放。"
+          )
+    ) + cancellationReason;
+  }
+  if (model.superseded) {
+    return commandUiText(
+      "작전 교체: 새 명령이 이 작전을 대체했습니다.",
+      "Order superseded: a newer order replaced this operation.",
+      "作战已替换：新命令替代了此作战。"
+    );
   }
   if (model.effectObserved) {
     return commandUiText("실제 게임 상태 확인 완료: ", "Observed in live game state: ", "已在实际游戏状态确认：") +
@@ -9195,14 +9385,24 @@ function commandConsoleVerification(data, model) {
 }
 
 function commandConsoleStateLabel(model) {
-  if (model.effectObserved) {
-    return commandUiText("실행 확인", "Execution verified", "执行已确认");
+  if (model.cancelled) {
+    if (!commandConsoleTerminalCleanupVerified(model)) {
+      return commandUiText(
+        "취소 정리 확인 중",
+        "Cancellation cleanup pending",
+        "正在确认取消清理"
+      );
+    }
+    return commandUiText("작전 취소", "Operation cancelled", "作战已取消");
   }
   if (model.superseded) {
     return commandUiText("작전 교체", "Order superseded", "作战已替换");
   }
   if (model.blocked) {
     return commandUiText("실행 실패", "Execution blocked", "执行失败");
+  }
+  if (model.effectObserved) {
+    return commandUiText("실행 확인", "Execution verified", "执行已确认");
   }
   if (model.submissionDelayed) {
     return commandUiText("게이트웨이 응답 지연", "Gateway response delayed", "网关响应延迟");
@@ -9223,9 +9423,14 @@ function commandConsoleStateLabel(model) {
 }
 
 function commandConsoleClassName(model) {
-  if (model.effectObserved) { return "active-command-console command-console-verified"; }
+  if (model.cancelled) {
+    return commandConsoleTerminalCleanupVerified(model)
+      ? "active-command-console command-console-superseded"
+      : "active-command-console command-console-executing";
+  }
   if (model.superseded) { return "active-command-console command-console-superseded"; }
   if (model.blocked) { return "active-command-console command-console-blocked"; }
+  if (model.effectObserved) { return "active-command-console command-console-verified"; }
   if (model.submissionDelayed) { return "active-command-console command-console-interpreting"; }
   if (model.observationDelayed) { return "active-command-console command-console-executing"; }
   if (model.actionIssued) { return "active-command-console command-console-executing"; }
@@ -9381,11 +9586,16 @@ function commandOperationData(operation, parentData) {
 }
 
 function operationRecordDisposition(model, data) {
-  if (model.effectObserved) { return "completed"; }
+  if (model.cancelled) {
+    return commandConsoleTerminalCleanupVerified(model)
+      ? "superseded"
+      : "active";
+  }
   if (model.superseded) { return "superseded"; }
   if (model.blocked) {
     return data.operation_disposition === "expired" ? "expired" : "blocked";
   }
+  if (model.effectObserved) { return "completed"; }
   return String(data.operation_disposition || "active");
 }
 
@@ -9430,6 +9640,7 @@ function beginOperationRecord(text, pendingId) {
     },
     stageRank: 0,
     telemetryFrame: -1,
+    operationGeneration: 0,
     terminal: false,
     disposition: "pending",
     createdAt: Date.now(),
@@ -9521,6 +9732,22 @@ function reconcileOperationRecord(operation, parentData) {
   var model = commandConsoleStageModel(data);
   var telemetryFrame = commandConsoleTelemetryFrame(data);
   var stageRank = commandConsoleStageRank(model);
+  var operationGeneration = Number(
+    model.execution.operation_generation ||
+    data.operation_generation ||
+    0
+  );
+  if (!Number.isFinite(operationGeneration) || operationGeneration < 0) {
+    operationGeneration = 0;
+  }
+  if (
+    record &&
+    record.operationGeneration > 0 &&
+    operationGeneration > 0 &&
+    record.operationGeneration !== operationGeneration
+  ) {
+    return record;
+  }
   if (record && record.terminal) {
     return record;
   }
@@ -9547,6 +9774,7 @@ function reconcileOperationRecord(operation, parentData) {
       data: null,
       stageRank: 0,
       telemetryFrame: -1,
+      operationGeneration: operationGeneration,
       terminal: false,
       disposition: "pending",
       createdAt: Date.now(),
@@ -9571,6 +9799,7 @@ function reconcileOperationRecord(operation, parentData) {
   record.data = data;
   record.stageRank = Math.max(record.stageRank, stageRank);
   record.telemetryFrame = Math.max(record.telemetryFrame, telemetryFrame);
+  record.operationGeneration = operationGeneration || record.operationGeneration;
   record.terminal = model.terminal;
   record.disposition = operationRecordDisposition(model, data);
   return record;
@@ -9917,7 +10146,7 @@ function renderActiveCommandConsole(data, force) {
   if (!force && !shouldAdvanceActiveCommandConsole(model, telemetryFrame)) {
     return;
   }
-  if (model.effectObserved || model.blocked || model.superseded) {
+  if (model.effectObserved || model.blocked || model.superseded || model.cancelled) {
     activeCommandConsoleRecord.observationTimedOut = false;
     activeCommandConsoleRecord.submissionDelayed = false;
     if (scopedData.command_console_observation_delayed) {
@@ -10241,25 +10470,40 @@ function updateMicroMachineBadge(intervention, status) {
   var badge = document.getElementById("micromachine-applied-badge");
   if (!badge) { return; }
   var execution = (intervention && intervention.command_execution) || {};
-  var effectObserved = microMachineExecutionEffectObserved(execution);
-  var actionIssued = microMachineExecutionActionIssued(execution);
+  var model = commandConsoleStageModel({
+    status: status,
+    intervention: intervention || {}
+  });
   badge.className = "micro-badge micro-badge-pending";
-  if (effectObserved) {
+  if (model.cancelled) {
+    if (!commandConsoleTerminalCleanupVerified(model)) {
+      badge.textContent = commandUiText(
+        "취소 정리 확인 중",
+        "Cancellation cleanup pending",
+        "正在确认取消清理"
+      );
+      return;
+    }
+    badge.className = "micro-badge micro-badge-cancelled";
+    badge.textContent = commandUiText("작전 취소", "Operation cancelled", "作战已取消");
+    return;
+  }
+  if (model.superseded) {
+    badge.className = "micro-badge micro-badge-cancelled";
+    badge.textContent = commandUiText("작전 교체", "Order superseded", "作战已替换");
+    return;
+  }
+  if (model.effectObserved) {
     badge.className = "micro-badge micro-badge-applied";
     badge.textContent = commandUiText("실행 확인", "Effect verified", "效果已确认");
     return;
   }
-  if (
-    execution.failed === true ||
-    execution.expired === true ||
-    execution.state === "failed" ||
-    execution.state === "expired"
-  ) {
+  if (model.blocked) {
     badge.className = "micro-badge micro-badge-blocked";
     badge.textContent = commandUiText("실행 실패", "Execution blocked", "执行失败");
     return;
   }
-  if (actionIssued) {
+  if (model.actionIssued) {
     badge.className = "micro-badge micro-badge-active";
     badge.textContent = commandUiText("전장에서 실행 중", "Executing in SC2", "正在 SC2 执行");
     return;
@@ -10981,9 +11225,13 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     currentUpdateId
   );
   var terminalExecutionStates = {
+    blocked: true,
+    canceled: true,
+    cancelled: true,
     completed: true,
     failed: true,
     expired: true,
+    rejected: true,
     superseded: true
   };
   var candidateUpdateIds = [];
@@ -11005,7 +11253,9 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     if (!updateId || !pending) { return; }
     if (pending.deferredReplacementUpdateId) { return; }
     var terminalForUpdate = updateId === compileUpdateId && isTerminalRefusal;
-    var executionState = updateId === executionUpdateId ? execution.state : "";
+    var executionState = updateId === executionUpdateId
+      ? String(execution.state || "").toLowerCase()
+      : "";
     var terminalExecution = Boolean(terminalExecutionStates[executionState]);
     if (!terminalForUpdate && !terminalExecution) { return; }
     if (updateId === compileUpdateId && resultAlreadyConsumed) { return; }
@@ -11049,9 +11299,18 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
       outcomeStatus = "executed";
     } else if (executionState === "completed") {
       outcomeStatus = "blocked";
-    } else if (executionState === "superseded") {
+    } else if (
+      executionState === "superseded" ||
+      executionState === "cancelled" ||
+      executionState === "canceled"
+    ) {
       outcomeStatus = "clarification";
-    } else if (executionState === "failed" || executionState === "expired") {
+    } else if (
+      executionState === "failed" ||
+      executionState === "expired" ||
+      executionState === "blocked" ||
+      executionState === "rejected"
+    ) {
       outcomeStatus = "blocked";
     }
     terminalHandled = true;
@@ -11112,6 +11371,34 @@ function microMachineChatNarration(data) {
     ));
     if (compileResult.refusal_reason) { parts.push(compileResult.refusal_reason); }
     if (compileResult.clarification_prompt) { parts.push(compileResult.clarification_prompt); }
+  } else if (model.cancelled) {
+    parts.push(
+      commandConsoleTerminalCleanupVerified(model)
+        ? (
+            commandConsoleTerminalCleanupStoppedOwnedUnits(model)
+              ? commandUiText(
+                  "작전 취소: 소유 유닛의 기존 명령을 중지하고 작전에서 해제했습니다.",
+                  "Operation cancelled: owned units were stopped and released from the operation.",
+                  "作战已取消：所属单位已停止并从作战中释放。"
+                )
+              : commandUiText(
+                  "작전 취소: 소유 유닛이 없어 중지 명령 없이 작전 해제를 확인했습니다.",
+                  "Operation cancelled: no owned units remained, so release was verified without a stop command.",
+                  "作战已取消：没有剩余所属单位，因此无需停止命令即可确认释放。"
+                )
+          )
+        : commandUiText(
+            "작전 취소 요청을 수락했고 terminal 상태를 확인했습니다. 유닛 정지·해제 증거를 기다립니다.",
+            "The cancellation request was accepted and the terminal state is confirmed. Waiting for unit stop-and-release evidence.",
+            "已接受取消请求并确认终止状态，正在等待单位停止并释放的证据。"
+          )
+    );
+  } else if (model.superseded) {
+    parts.push(commandUiText(
+      "작전 교체: 새 명령이 기존 작전을 대체했습니다.",
+      "Order superseded: a newer order replaced the operation.",
+      "作战已替换：新命令替代了原作战。"
+    ));
   } else if (model.effectObserved) {
     parts.push(commandUiText(
       "실행 확인: 실제 게임 상태에서 명령 효과를 확인했습니다.",

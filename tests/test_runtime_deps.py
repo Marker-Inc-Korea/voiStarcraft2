@@ -10,9 +10,14 @@ dependencies happen to be installed.
 
 import importlib.util
 import pathlib
+import shutil
+import subprocess
 import sys
+import tarfile
+import tempfile
 import types
 import unittest
+import zipfile
 from unittest import mock
 
 from starcraft_commander.runtime_deps import (
@@ -210,6 +215,72 @@ class RuntimeDepsFakeInjectionTest(unittest.TestCase):
                     self.assertTrue(available_func())
                 with _block_module(module_name):
                     self.assertFalse(available_func())
+
+
+class DistributionLicenseFilesTest(unittest.TestCase):
+    def test_wheel_and_sdist_include_third_party_notices(self) -> None:
+        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = pathlib.Path(temporary_directory)
+            source_root = temporary_root / "source"
+            dist_root = temporary_root / "dist"
+            source_root.mkdir()
+            dist_root.mkdir()
+
+            for filename in (
+                "pyproject.toml",
+                "README.md",
+                "LICENSE",
+                "THIRD_PARTY_NOTICES.md",
+            ):
+                shutil.copy2(repo_root / filename, source_root / filename)
+            for directory in (
+                "LICENSES",
+                "toycraft_commander",
+                "starcraft_commander",
+                "broodwar_commander",
+            ):
+                shutil.copytree(
+                    repo_root / directory,
+                    source_root / directory,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "build",
+                    "--outdir",
+                    str(dist_root),
+                    str(source_root),
+                ],
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            wheel_path = next(dist_root.glob("*.whl"))
+            with zipfile.ZipFile(wheel_path) as wheel:
+                self.assertTrue(
+                    any(
+                        name.endswith("/licenses/THIRD_PARTY_NOTICES.md")
+                        for name in wheel.namelist()
+                    ),
+                    wheel.namelist(),
+                )
+
+            sdist_path = next(dist_root.glob("*.tar.gz"))
+            with tarfile.open(sdist_path, "r:gz") as sdist:
+                self.assertTrue(
+                    any(
+                        name.endswith("/THIRD_PARTY_NOTICES.md")
+                        for name in sdist.getnames()
+                    ),
+                    sdist.getnames(),
+                )
 
 
 if __name__ == "__main__":

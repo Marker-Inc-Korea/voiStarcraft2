@@ -1272,9 +1272,14 @@ class MicroMachineFilesystemBlackboard:
     ) -> MicroMachineBlackboardUpdate:
         """Persist an update after stale/invalid validation."""
 
+        publish_frame = _non_negative_int("current_frame", current_frame)
+        update = _normalize_operation_publish_epochs(
+            update,
+            publish_frame=publish_frame,
+        )
         result = validate_micromachine_blackboard_update(
             update.to_dict(),
-            current_frame=_non_negative_int("current_frame", current_frame),
+            current_frame=publish_frame,
         )
         if not result.accepted:
             reason = result.reason or "blackboard update was rejected."
@@ -1419,9 +1424,14 @@ class MicroMachineInMemoryBlackboard:
         *,
         current_frame: int,
     ) -> MicroMachineBlackboardUpdate:
+        publish_frame = _non_negative_int("current_frame", current_frame)
+        update = _normalize_operation_publish_epochs(
+            update,
+            publish_frame=publish_frame,
+        )
         result = validate_micromachine_blackboard_update(
             update.to_dict(),
-            current_frame=_non_negative_int("current_frame", current_frame),
+            current_frame=publish_frame,
         )
         if not result.accepted:
             raise ValueError(result.reason or "blackboard update was rejected.")
@@ -1540,6 +1550,43 @@ def publish_policy_modulation_provider_output(
     return MicroMachineBackendPublishResult(
         compile_result=compile_result,
         update=update,
+    )
+
+
+def _normalize_operation_publish_epochs(
+    update: MicroMachineBlackboardUpdate,
+    *,
+    publish_frame: int,
+) -> MicroMachineBlackboardUpdate:
+    """Fill new operation epochs while preserving existing generations."""
+
+    operations = update.vector.operations
+    if not operations:
+        return update
+    future_operations = tuple(
+        operation.operation_id
+        for operation in operations
+        if operation.issued_at_frame > publish_frame
+    )
+    if future_operations:
+        raise ValueError(
+            "operation issued_at_frame cannot be later than current_frame: "
+            + ", ".join(future_operations)
+        )
+    stamped_operations = tuple(
+        replace(
+            operation,
+            issued_at_frame=(
+                operation.issued_at_frame
+                if operation.issued_at_frame > 0
+                else publish_frame
+            ),
+        )
+        for operation in operations
+    )
+    return replace(
+        update,
+        vector=replace(update.vector, operations=stamped_operations),
     )
 
 

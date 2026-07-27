@@ -278,6 +278,31 @@
       "path": "patches/0054-authoritative-parallel-operation-lifecycle.patch",
       "order": 54,
       "scope": "make task-specific operation completion defaults exclude command submission, keep finite deadlines immutable for an existing operation_id and generation, make any explicit partial-scope false fail closed, and share CombatCommander runtime terminal state with ProductionManager as the authoritative operation lifecycle"
+    },
+    {
+      "path": "patches/0055-operation-production-ownership-and-restore-proof.patch",
+      "order": 55,
+      "scope": "attach operation_id and generation ownership to operation-created production queue items and inherited prerequisites, purge only exclusively operation-owned work when its runtime or policy lifecycle becomes terminal, preserve shared macro work, consume operation-specific issued_at_frame deadlines, expose production-owner release telemetry, and require post-cancel MainAttack command and movement restoration evidence"
+    },
+    {
+      "path": "patches/0056-embedded-build-input-identity.patch",
+      "order": 56,
+      "scope": "compile the deterministic VOI build-input identity into the MicroMachine executable and expose a side-effect-free command-line query used by build finalization and live smoke provenance checks"
+    },
+    {
+      "path": "patches/0057-tech-gas-before-second-barracks.patch",
+      "order": 57,
+      "scope": "persist whether the active VOI policy actually requires tech gas to the queue-consumption boundary, treat the first Barracks building task as represented, hold follow-up Barracks only for gas-dependent bio, mech, air, Ghost, and explicit ability lanes until a Refinery is observed, leave pure Marine production unblocked when an unrelated Refinery is queued, promote an already queued required Refinery above blocking opening production, suppress duplicate bootstrap while one is queued or building, and preserve first-Barracks Marine bootstrap"
+    },
+    {
+      "path": "patches/0058-operation-production-review-closure.patch",
+      "order": 58,
+      "scope": "attribute each represented production increase to at most one sorted operation owner, exclude initial reservations when existing units transition into operation ownership, retract credits from the owner whose owned count fell, carry unattributed represented-count loss debt across frames before crediting replacement growth, reset count and debt epochs when the last owner leaves, and retain a bounded owner-keyed queue-purge history containing operation_id, generation, frame, and removed_count so same-frame evidence cannot be overwritten"
+    },
+    {
+      "path": "patches/0059-production-fifo-and-zero-owner-cleanup.patch",
+      "order": 59,
+      "scope": "preserve FIFO execution for equal-priority production queue items even though the queue executes from its back, emit positive-frame operation cleanup evidence when cancellation releases either stopped owned units or an operation with no remaining owned units, and preserve the first terminal cleanup action and frame idempotently across later release passes"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {
@@ -363,6 +388,9 @@
         "last_doctrine_requested_targets",
         "last_doctrine_blocked_reason",
         "last_doctrine_missing_prerequisites",
+        "last_doctrine_required_count",
+        "last_doctrine_represented_count",
+        "last_doctrine_prerequisites_satisfied",
         "queue_bias_starport_techlab",
         "queue_bias_banshee",
         "queue_bias_raven",
@@ -384,7 +412,15 @@
         "tactical_nuke_payload_rejected_count",
         "tactical_nuke_payload_submission_frame",
         "tactical_nuke_payload_accepted_frame",
-        "tactical_nuke_payload_next_retry_frame"
+        "tactical_nuke_payload_next_retry_frame",
+        "operation_owned_queue_item_count",
+        "operation_owned_queue_items",
+        "operation_production_owner_release_count",
+        "operation_production_queue_purge_count",
+        "last_operation_production_queue_purge_frame",
+        "last_operation_production_released_owner",
+        "last_operation_production_queue_purge_event",
+        "operation_production_queue_purge_events"
       ],
       "intended_effect": "Bias doctrine-specific queue, facility, addon, unit, expansion, and continuity choices while preserving MicroMachine build execution; tactical nuke requests close and wait for the completed Factory prerequisite before Ghost/payload work, BUILD_NUKE uses completed-idle Academy, completed Factory, resource, existing-payload, pending-submission, and retry-cooldown state gates instead of treating an omitted ability query as authoritative, and becomes an actual production command only after the Ghost Academy order is observed; while a non-nuke explicit ability caster is absent, isolate its prerequisite lane from unrelated legacy Starport/Banshee work and bound each build-queue inspection pass to the initial queue snapshot."
     },
@@ -589,7 +625,8 @@
         "scout_last_action_frame",
         "scout_last_issued_action",
         "scout_last_commanded_unit_tag",
-        "scout_last_commanded_unit_type"
+        "scout_last_commanded_unit_type",
+        "main_attack_unit_samples"
       ],
       "intended_effect": "Bias attack/hold/retreat posture, assign explicit scout scope, treat each explicit scout update_id as a one-shot command epoch that reaches the SC2 MOVE submission path even when an autonomous scout already has the same order, and preserve ordinary duplicate suppression and ranged-unit cooldown kiting afterward."
     },
