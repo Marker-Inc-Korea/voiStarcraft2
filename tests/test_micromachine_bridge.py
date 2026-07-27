@@ -28,6 +28,7 @@ from starcraft_commander.policy_modulation import (
     StrategyModulation,
     TacticalScopeModulation,
     TacticalTaskModulation,
+    TacticalOperationModulation,
     TechModulation,
     LifetimeModulation,
     WeightedBiases,
@@ -97,6 +98,7 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
                 "scouting",
                 "economy",
                 "workers",
+                "operations",
             },
             domains,
         )
@@ -151,6 +153,36 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
 
         self.assertFalse(standing.is_stale(21))
         self.assertTrue(transient.is_stale(21))
+
+    def test_single_persistent_operation_keeps_update_alive_after_ttl(self) -> None:
+        update = MicroMachineBlackboardUpdate(
+            update_id="persistent-operation",
+            issued_at_frame=10,
+            expires_at_frame=20,
+            vector=PolicyModulationVector(
+                goal="keep scouting until cancelled",
+                operations=(
+                    TacticalOperationModulation(
+                        operation_id="recon-alpha",
+                        goal="keep marine scouting",
+                        tactical_task=TacticalTaskModulation(
+                            task_type="scout_with_units",
+                            unit_classes=("TERRAN_MARINE",),
+                            min_units=1,
+                            max_units=1,
+                        ),
+                        lifetime=LifetimeModulation(
+                            mode="until_cancelled",
+                            completion_conditions=("cancelled_by_user",),
+                            completion_state="active",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        self.assertEqual("until_cancelled", update.vector.lifetime.mode)
+        self.assertFalse(update.is_stale(21))
 
     def test_manager_bias_domains_ignore_neutral_defaults(self) -> None:
         neutral = MicroMachineBlackboardUpdate(

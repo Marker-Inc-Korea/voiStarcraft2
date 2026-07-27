@@ -47,6 +47,7 @@ from starcraft_commander.llm_interpreter import (
     build_policy_modulation_system_prompt,
     build_policy_modulation_tool_definition,
     build_policy_modulation_tool_input_schema,
+    _compact_policy_commander_context,
 )
 from starcraft_commander.runtime_deps import ANTHROPIC_MODULE_NAME, OPENAI_MODULE_NAME
 from starcraft_commander.policy_modulation_provider import (
@@ -489,16 +490,13 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         payload = {
             "status": "compiled",
             "assistant_message": "마린 한 기를 적 본진 정찰 임무로 보냅니다.",
-            "modulation": {
+            "command": {
                 "goal": "one Marine scouts enemy main",
                 "command_layer": "operation",
-                "tactical_task": {
-                    "task_type": "scout_with_units",
-                    "unit_classes": ["marine"],
-                    "location_intent": "enemy_main",
-                    "min_units": 1,
-                    "max_units": 1,
-                },
+                "operation_action": "create",
+                "task_type": "scout_with_units",
+                "unit_requests": [{"unit_type": "marine", "count": 1}],
+                "location_intent": "enemy_main",
             },
         }
         fake_client = FakeResponsesClient(_responses_tool_response(payload))
@@ -529,17 +527,187 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertFalse(call["parallel_tool_calls"])
         self.assertFalse(call["store"])
         self.assertEqual("function", call["tools"][0]["type"])
+        self.assertTrue(call["tools"][0]["strict"])
         self.assertEqual(
             LLM_POLICY_MODULATION_TOOL_NAME,
             call["tools"][0]["name"],
         )
         compact_schema = call["tools"][0]["parameters"]
         self.assertIn("command", compact_schema["properties"])
+        self.assertIn("commands", compact_schema["properties"])
+        commands_schema = next(
+            branch
+            for branch in compact_schema["properties"]["commands"]["anyOf"]
+            if branch.get("type") == "array"
+        )
+        self.assertIn(
+            "operation_id",
+            commands_schema["items"]["properties"],
+        )
         self.assertNotIn("modulation", compact_schema["properties"])
         self.assertIn(
             "compact semantic command",
             call["instructions"],
         )
+
+    def test_myproxy_compact_schema_is_strict_provider_compatible(self) -> None:
+        schema = build_compact_policy_modulation_tool_input_schema()
+
+        def assert_strict_object_contract(node: object) -> None:
+            if not isinstance(node, dict):
+                return
+            if node.get("type") == "object":
+                properties = node.get("properties", {})
+                self.assertEqual(
+                    set(properties),
+                    set(node.get("required", [])),
+                )
+                self.assertIs(node.get("additionalProperties"), False)
+            for value in node.values():
+                if isinstance(value, dict):
+                    assert_strict_object_contract(value)
+                elif isinstance(value, list):
+                    for item in value:
+                        assert_strict_object_contract(item)
+
+        assert_strict_object_contract(schema)
+        encoded = json.dumps(schema, sort_keys=True)
+        for unsupported_keyword in ('"allOf"', '"if"', '"then"', '"oneOf"'):
+            with self.subTest(keyword=unsupported_keyword):
+                self.assertNotIn(unsupported_keyword, encoded)
+
+    def test_non_strict_responses_schemas_are_declared_non_strict(self) -> None:
+        fake_client = FakeResponsesClient(
+            _responses_tool_response(
+                {
+                    "steps": [
+                        {
+                            "order": 1,
+                            "command_text": "정찰해",
+                            "korean_intent": "정찰",
+                            "expected_intent": "SCOUT",
+                            "priority": "normal",
+                            "constraints": [],
+                            "on_failure": "stop",
+                        }
+                    ],
+                    "rationale": "",
+                    "failure_policy": "stop",
+                }
+            )
+        )
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        interpreter.plan_combo("정찰하고 공격해")
+
+        self.assertFalse(fake_client.calls[0]["tools"][0]["strict"])
+
+    def test_myproxy_rejects_top_level_modulation_before_compact_lowering(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰 명령을 해석했습니다.",
+            "modulation": {
+                "goal": "bypass compact contract",
+                "command_layer": "operation",
+            },
+        }
+        fake_client = FakeResponsesClient(
+            _responses_tool_response(payload),
+            _responses_tool_response(payload),
+        )
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(command_text="마린 한 기로 정찰해")
+        )
+
+        self.assertEqual("refused", output["status"])
+        self.assertEqual("contract_error", output["failure_kind"])
+        self.assertEqual(2, output["llm_attempt_count"])
+        self.assertNotIn("modulation", output)
+        self.assertIn("strict raw schema", output["refusal_reason"])
+        self.assertIn("unknown property 'modulation'", output["refusal_reason"])
+
+    def test_myproxy_rejects_malformed_compact_fields_before_lowering(self) -> None:
+        malformed_commands = (
+            (
+                "non-integer count",
+                {
+                    "goal": "마린 정찰",
+                    "command_layer": "operation",
+                    "operation_action": "create",
+                    "task_type": "scout_with_units",
+                    "unit_requests": [
+                        {"unit_type": "marine", "count": "many"},
+                    ],
+                },
+                "$.command.unit_requests[0].count must be of type integer",
+            ),
+            (
+                "unknown command field",
+                {
+                    "goal": "마린 정찰",
+                    "command_layer": "operation",
+                    "operation_action": "create",
+                    "task_type": "scout_with_units",
+                    "unit_requests": [
+                        {"unit_type": "marine", "count": 1},
+                    ],
+                    "raw_sc2_action": "attack 12 34",
+                },
+                "unknown property 'raw_sc2_action'",
+            ),
+            (
+                "missing operation lifecycle",
+                {
+                    "goal": "마린 정찰",
+                    "command_layer": "operation",
+                    "task_type": "scout_with_units",
+                    "unit_requests": [
+                        {"unit_type": "marine", "count": 1},
+                    ],
+                },
+                "missing required semantic property 'operation_action'",
+            ),
+        )
+
+        for label, command, expected_error in malformed_commands:
+            with self.subTest(case=label):
+                payload = {
+                    "status": "compiled",
+                    "assistant_message": "정찰 명령을 해석했습니다.",
+                    "command": command,
+                }
+                fake_client = FakeResponsesClient(
+                    _responses_tool_response(payload),
+                    _responses_tool_response(payload),
+                )
+                interpreter = LLMCommandInterpreter(
+                    provider="myproxy",
+                    model=DEFAULT_MYPROXY_MODEL,
+                    client_factory=lambda: fake_client,
+                )
+
+                output = interpreter.propose_policy_modulation(
+                    types.SimpleNamespace(command_text="마린 정찰해")
+                )
+
+                self.assertEqual("refused", output["status"])
+                self.assertEqual("contract_error", output["failure_kind"])
+                self.assertEqual(2, output["llm_attempt_count"])
+                self.assertNotIn("modulation", output)
+                self.assertIn("strict raw schema", output["refusal_reason"])
+                self.assertIn(expected_error, output["refusal_reason"])
 
     def test_myproxy_compact_marine_scout_lowers_to_exact_operation(self) -> None:
         payload = {
@@ -548,6 +716,7 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             "command": {
                 "goal": "마린 한 기로 적 본진 정찰",
                 "command_layer": "operation",
+                "operation_action": "create",
                 "task_type": "scout_with_units",
                 "unit_requests": [
                     {
@@ -588,12 +757,14 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         compiled = compile_policy_modulation_provider_output(output)
         self.assertTrue(compiled.ok, compiled.to_dict())
         assert compiled.vector is not None
+        self.assertEqual(1, len(compiled.vector.operations))
+        scout_operation = compiled.vector.operations[0]
         self.assertEqual(
             ("TERRAN_MARINE",),
-            compiled.vector.tactical_task.unit_classes,
+            scout_operation.tactical_task.unit_classes,
         )
-        self.assertEqual(1, compiled.vector.tactical_task.min_units)
-        self.assertEqual(1, compiled.vector.tactical_task.max_units)
+        self.assertEqual(1, scout_operation.tactical_task.min_units)
+        self.assertEqual(1, scout_operation.tactical_task.max_units)
 
     def test_myproxy_compact_standing_macro_lowers_prerequisites_and_lifetime(
         self,
@@ -704,6 +875,7 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             "command": {
                 "goal": "마린 4기로 왼쪽 길 우회 공격",
                 "command_layer": "operation",
+                "operation_action": "create",
                 "task_type": "pressure_with_main_army",
                 "unit_requests": [
                     {
@@ -738,11 +910,699 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         compiled = compile_policy_modulation_provider_output(output)
         self.assertTrue(compiled.ok, compiled.to_dict())
         assert compiled.vector is not None
-        self.assertEqual("flank_left", compiled.vector.route_intent.route_type)
-        self.assertTrue(compiled.vector.route_intent.avoid_enemy_strength)
-        self.assertEqual("production", compiled.vector.target_intent.target_type)
-        self.assertEqual(4, compiled.vector.tactical_task.min_units)
-        self.assertEqual(4, compiled.vector.tactical_task.max_units)
+        self.assertEqual(1, len(compiled.vector.operations))
+        attack_operation = compiled.vector.operations[0]
+        self.assertEqual("flank_left", attack_operation.route_intent.route_type)
+        self.assertTrue(attack_operation.route_intent.avoid_enemy_strength)
+        self.assertEqual(
+            "production",
+            attack_operation.target_intent.target_type,
+        )
+        self.assertEqual(4, attack_operation.tactical_task.min_units)
+        self.assertEqual(4, attack_operation.tactical_task.max_units)
+
+    def test_myproxy_compact_commands_lower_to_parallel_operations(self) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰대와 공격대를 독립 작전으로 편성합니다.",
+            "commands": [
+                {
+                    "operation_id": "recon-alpha",
+                    "goal": "마린 1기로 적 본진 정찰",
+                    "command_layer": "operation",
+                    "operation_action": "create",
+                    "task_type": "scout_with_units",
+                    "unit_requests": [
+                        {
+                            "unit_type": "marine",
+                            "count": 1,
+                            "role": "scout",
+                        }
+                    ],
+                    "location_intent": "enemy_main",
+                    "route_type": "safe_path",
+                    "standing_order": False,
+                    "allow_partial": False,
+                    "intensity": "high",
+                    "stance": "balanced",
+                },
+                {
+                    "operation_id": "assault-bravo",
+                    "goal": "탱크 3기로 적 앞마당 오른쪽 우회 공격",
+                    "command_layer": "operation",
+                    "operation_action": "create",
+                    "task_type": "pressure_with_main_army",
+                    "unit_requests": [
+                        {
+                            "unit_type": "tank",
+                            "count": 3,
+                            "role": "siege_support",
+                        }
+                    ],
+                    "location_intent": "enemy_natural",
+                    "route_type": "flank_right",
+                    "target_type": "production",
+                    "standing_order": False,
+                    "allow_partial": False,
+                    "intensity": "high",
+                    "stance": "aggressive",
+                },
+            ],
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "마린 한 기로 적 본진을 정찰하고 탱크 3기로 "
+                    "적 앞마당을 오른쪽 우회 공격해"
+                )
+            )
+        )
+
+        self.assertEqual("compiled", output["status"])
+        compiled = compile_policy_modulation_provider_output(output)
+        self.assertTrue(compiled.ok, compiled.to_dict())
+        assert compiled.vector is not None
+        self.assertEqual(2, len(compiled.vector.operations))
+        scout, attack = compiled.vector.operations
+        self.assertEqual("recon-alpha", scout.operation_id)
+        self.assertEqual(("TERRAN_MARINE",), scout.tactical_task.unit_classes)
+        self.assertEqual("safe_path", scout.route_intent.route_type)
+        self.assertEqual("assault-bravo", attack.operation_id)
+        self.assertEqual(("TERRAN_SIEGETANK",), attack.tactical_task.unit_classes)
+        self.assertEqual("flank_right", attack.route_intent.route_type)
+        self.assertEqual("production", attack.target_intent.target_type)
+        self.assertEqual("", compiled.vector.tactical_task.task_type)
+
+    def test_myproxy_compact_followup_reuses_stable_operation_identity(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "기존 정찰대의 병력과 경로를 갱신합니다.",
+            "command": {
+                "goal": "정찰대를 마린 3기로 강화하고 안전 경로 사용",
+                "command_layer": "operation",
+                "operation_action": "update",
+                "task_type": "scout_with_units",
+                "unit_requests": [
+                    {"unit_type": "marine", "count": 3, "role": "scout"},
+                ],
+                "route_type": "safe_path",
+                "location_intent": "enemy_main",
+            },
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="정찰대를 마린 3기로 강화하고 안전한 길로 가",
+                commander_context={
+                    "recent_commands": [
+                        {
+                            "update_id": "parallel-active",
+                            "operations": [
+                                {
+                                    "operation_id": "recon-alpha",
+                                    "goal": "마린 정찰",
+                                    "command_layer": "operation",
+                                    "tactical_task": {
+                                        "task_type": "scout_with_units",
+                                        "unit_classes": ["TERRAN_MARINE"],
+                                        "min_units": 1,
+                                        "max_units": 1,
+                                    },
+                                    "scope": {
+                                        "army_group": "scout",
+                                        "location_intent": "enemy_main",
+                                    },
+                                    "lifetime": {
+                                        "mode": "until_completed",
+                                        "completion_state": "active",
+                                    },
+                                },
+                                {
+                                    "operation_id": "assault-bravo",
+                                    "goal": "탱크 공격",
+                                    "command_layer": "operation",
+                                    "tactical_task": {
+                                        "task_type": "pressure_with_main_army",
+                                        "unit_classes": ["TERRAN_SIEGETANK"],
+                                    },
+                                    "lifetime": {
+                                        "mode": "until_completed",
+                                        "completion_state": "active",
+                                    },
+                                },
+                            ],
+                        }
+                    ]
+                },
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        operation = output["modulation"]["operations"][0]
+        self.assertEqual("recon-alpha", operation["operation_id"])
+        self.assertEqual(3, operation["tactical_task"]["min_units"])
+        self.assertEqual("safe_path", operation["route_intent"]["route_type"])
+
+    def test_myproxy_compact_cancel_and_restart_are_scoped_lifecycle_changes(
+        self,
+    ) -> None:
+        active_operation = {
+            "operation_id": "recon-alpha",
+            "goal": "마린 정찰",
+            "command_layer": "operation",
+            "tactical_task": {
+                "task_type": "scout_with_units",
+                "unit_classes": ["TERRAN_MARINE"],
+                "min_units": 1,
+                "max_units": 1,
+            },
+            "composition_requirements": [
+                {"unit_type": "TERRAN_MARINE", "count": 1, "role": "scout"},
+            ],
+            "lifetime": {
+                "mode": "until_completed",
+                "completion_state": "active",
+            },
+        }
+        cancel_payload = {
+            "status": "compiled",
+            "assistant_message": "recon-alpha 정찰 작전만 취소합니다.",
+            "command": {
+                "operation_id": "recon-alpha",
+                "operation_action": "cancel",
+                "goal": "recon-alpha 정찰만 취소",
+                "command_layer": "operation",
+                "task_type": "scout_with_units",
+            },
+        }
+        cancel_client = FakeResponsesClient(
+            _responses_tool_response(cancel_payload)
+        )
+        cancel_interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: cancel_client,
+        )
+
+        cancelled = cancel_interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="recon-alpha 정찰만 취소해",
+                commander_context={
+                    "recent_commands": [
+                        {
+                            "update_id": "parallel-active",
+                            "operations": [active_operation],
+                        }
+                    ]
+                },
+            )
+        )
+
+        self.assertEqual("compiled", cancelled["status"], cancelled)
+        cancelled_operation = cancelled["modulation"]["operations"][0]
+        self.assertEqual("recon-alpha", cancelled_operation["operation_id"])
+        self.assertEqual(
+            "cancelled",
+            cancelled_operation["lifetime"]["completion_state"],
+        )
+        self.assertEqual(
+            ["cancelled_by_user"],
+            cancelled_operation["lifetime"]["completion_conditions"],
+        )
+        self.assertEqual(
+            "directive",
+            cancelled["modulation"]["override_level"],
+        )
+
+        terminal_operation = {
+            **active_operation,
+            "lifetime": {
+                "mode": "until_cancelled",
+                "completion_state": "cancelled",
+            },
+        }
+        restart_payload = {
+            "status": "compiled",
+            "assistant_message": "recon-alpha 정찰 작전을 다시 시작합니다.",
+            "command": {
+                "operation_id": "recon-alpha",
+                "operation_action": "restart",
+                "goal": "recon-alpha 정찰 재시작",
+                "command_layer": "operation",
+                "task_type": "scout_with_units",
+            },
+        }
+        restart_client = FakeResponsesClient(
+            _responses_tool_response(restart_payload)
+        )
+        restart_interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: restart_client,
+        )
+
+        restarted = restart_interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="recon-alpha 정찰 다시 시작해",
+                commander_context={
+                    "recent_commands": [
+                        {
+                            "update_id": "parallel-cancelled",
+                            "operations": [terminal_operation],
+                        }
+                    ]
+                },
+            )
+        )
+
+        self.assertEqual("compiled", restarted["status"], restarted)
+        restarted_operation = restarted["modulation"]["operations"][0]
+        self.assertEqual("recon-alpha", restarted_operation["operation_id"])
+        self.assertEqual(
+            "active",
+            restarted_operation["lifetime"]["completion_state"],
+        )
+
+    def test_myproxy_compact_commands_reject_non_operation_tasks(self) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰과 생산을 동시에 진행합니다.",
+            "commands": [
+                {
+                    "operation_id": "recon-alpha",
+                    "goal": "마린 1기로 적 본진 정찰",
+                    "command_layer": "operation",
+                    "operation_action": "create",
+                    "task_type": "scout_with_units",
+                    "unit_requests": [
+                        {
+                            "unit_type": "marine",
+                            "count": 1,
+                            "role": "scout",
+                        }
+                    ],
+                },
+                {
+                    "operation_id": "macro-bravo",
+                    "goal": "탱크 생산을 계속 유지",
+                    "command_layer": "macro",
+                    "task_type": "sustain_production",
+                    "production_targets": ["tank"],
+                    "standing_order": True,
+                },
+            ],
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="마린 정찰과 탱크 생산을 동시에 진행해"
+            )
+        )
+
+        self.assertEqual("refused", output["status"])
+        self.assertIn("commands[1]", output["refusal_reason"])
+        self.assertIn("scout, attack, or defend", output["refusal_reason"])
+
+    def test_full_provider_accepts_each_supported_operation_task(self) -> None:
+        cases = (
+            ("recon-alpha", "scout_with_units", "enemy_main"),
+            ("assault-bravo", "pressure_with_main_army", "enemy_natural"),
+            ("defense-charlie", "defend_with_units", "home"),
+        )
+
+        for operation_id, task_type, location_intent in cases:
+            with self.subTest(task_type=task_type):
+                payload = {
+                    "status": "compiled",
+                    "assistant_message": "독립 작전을 편성합니다.",
+                    "modulation": {
+                        "goal": f"{task_type} operation",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "goal": f"{task_type} operation",
+                                "command_layer": "operation",
+                                "tactical_task": {
+                                    "task_type": task_type,
+                                    "unit_classes": ["TERRAN_MARINE"],
+                                    "location_intent": location_intent,
+                                    "min_units": 1,
+                                    "max_units": 1,
+                                },
+                                "scope": {
+                                    "unit_classes": ["TERRAN_MARINE"],
+                                    "location_intent": location_intent,
+                                    "min_units": 1,
+                                    "max_units": 1,
+                                },
+                            }
+                        ],
+                    },
+                }
+                interpreter, fake_client = _make_llm_interpreter(
+                    _tool_response(payload)
+                )
+
+                output = interpreter.propose_policy_modulation(
+                    types.SimpleNamespace(command_text=f"run {task_type}")
+                )
+
+                self.assertEqual("compiled", output["status"], output)
+                self.assertEqual(1, output["llm_attempt_count"])
+                self.assertEqual(1, len(fake_client.calls))
+                compiled = compile_policy_modulation_provider_output(output)
+                self.assertTrue(compiled.ok, compiled.to_dict())
+                assert compiled.vector is not None
+                self.assertEqual(1, len(compiled.vector.operations))
+                self.assertEqual(
+                    task_type,
+                    compiled.vector.operations[0].tactical_task.task_type,
+                )
+
+    def test_full_provider_accepts_mixed_supported_operations(self) -> None:
+        operations = [
+            {
+                "operation_id": "recon-alpha",
+                "goal": "마린 정찰",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "location_intent": "enemy_main",
+                },
+            },
+            {
+                "operation_id": "assault-bravo",
+                "goal": "탱크 공격",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_SIEGETANK"],
+                    "location_intent": "enemy_natural",
+                },
+            },
+            {
+                "operation_id": "defense-charlie",
+                "goal": "바이킹 수비",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "defend_with_units",
+                    "unit_classes": ["TERRAN_VIKINGFIGHTER"],
+                    "location_intent": "home",
+                },
+            },
+        ]
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰, 공격, 수비 작전을 동시에 편성합니다.",
+            "modulation": {
+                "goal": "parallel recon assault and defense",
+                "operations": operations,
+            },
+        }
+        interpreter, fake_client = _make_llm_interpreter(_tool_response(payload))
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="정찰대, 공격대, 수비대를 독립적으로 운용해"
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        self.assertEqual(1, output["llm_attempt_count"])
+        self.assertEqual(1, len(fake_client.calls))
+        compiled = compile_policy_modulation_provider_output(output)
+        self.assertTrue(compiled.ok, compiled.to_dict())
+        assert compiled.vector is not None
+        self.assertEqual(
+            [
+                "scout_with_units",
+                "pressure_with_main_army",
+                "defend_with_units",
+            ],
+            [
+                operation.tactical_task.task_type
+                for operation in compiled.vector.operations
+            ],
+        )
+
+    def test_full_provider_rejects_non_operation_tasks_fail_closed(self) -> None:
+        cases = (
+            (
+                "execute ability",
+                {
+                    "task_type": "execute_ability",
+                    "ability": "siege_mode",
+                    "unit_classes": ["TERRAN_SIEGETANK"],
+                },
+            ),
+            (
+                "macro",
+                {
+                    "task_type": "sustain_production",
+                    "production_targets": ["TERRAN_MARINE"],
+                },
+            ),
+            ("empty task type", {"task_type": ""}),
+            ("missing tactical task", None),
+        )
+
+        for case_name, tactical_task in cases:
+            with self.subTest(case_name=case_name):
+                operation = {
+                    "operation_id": "invalid-alpha",
+                    "goal": "invalid independent operation",
+                    "command_layer": "operation",
+                }
+                if tactical_task is not None:
+                    operation["tactical_task"] = tactical_task
+                payload = {
+                    "status": "compiled",
+                    "assistant_message": "독립 작전을 편성합니다.",
+                    "modulation": {
+                        "goal": "invalid parallel operation",
+                        "operations": [operation],
+                    },
+                }
+                interpreter, fake_client = _make_llm_interpreter(
+                    _tool_response(payload),
+                    _tool_response(payload),
+                )
+
+                with mock.patch(
+                    "starcraft_commander.llm_interpreter."
+                    "compile_policy_modulation_provider_output",
+                    side_effect=AssertionError(
+                        "invalid operations must fail before provider compile"
+                    ),
+                ) as compiler:
+                    output = interpreter.propose_policy_modulation(
+                        types.SimpleNamespace(
+                            command_text="run invalid independent operation"
+                        )
+                    )
+
+                self.assertEqual("refused", output["status"], output)
+                self.assertEqual("contract_error", output["failure_kind"])
+                self.assertEqual(2, output["llm_attempt_count"])
+                self.assertEqual(2, len(fake_client.calls))
+                compiler.assert_not_called()
+                self.assertNotIn("modulation", output)
+                self.assertIn(
+                    "operations[0] tactical_task.task_type",
+                    output["refusal_reason"],
+                )
+                self.assertIn(
+                    "scout, attack, or defend",
+                    output["refusal_reason"],
+                )
+                self.assertIn(
+                    "top-level modulation envelope",
+                    output["refusal_reason"],
+                )
+
+    def test_compact_generated_operation_id_tracks_material_command_details(
+        self,
+    ) -> None:
+        operation_ids = []
+        for count, route_type in ((1, "direct"), (3, "safe_path")):
+            payload = {
+                "status": "compiled",
+                "assistant_message": "정찰 작전을 편성합니다.",
+                "commands": [
+                    {
+                        "goal": f"바이킹 {count}기로 적 본진 정찰",
+                        "command_layer": "operation",
+                        "operation_action": "create",
+                        "task_type": "scout_with_units",
+                        "unit_requests": [
+                            {
+                                "unit_type": "viking",
+                                "count": count,
+                                "role": "scout",
+                            }
+                        ],
+                        "location_intent": "enemy_main",
+                        "route_type": route_type,
+                        "standing_order": False,
+                        "allow_partial": False,
+                    }
+                ],
+            }
+            fake_client = FakeResponsesClient(_responses_tool_response(payload))
+            interpreter = LLMCommandInterpreter(
+                provider="myproxy",
+                model=DEFAULT_MYPROXY_MODEL,
+                client_factory=lambda: fake_client,
+            )
+            output = interpreter.propose_policy_modulation(
+                types.SimpleNamespace(
+                    command_text=(
+                        f"바이킹 {count}기로 적 본진을 {route_type} 경로로 정찰해"
+                    )
+                )
+            )
+            operation_ids.append(
+                output["modulation"]["operations"][0]["operation_id"]
+            )
+
+        self.assertNotEqual(operation_ids[0], operation_ids[1])
+        for operation_id in operation_ids:
+            self.assertRegex(operation_id, r"^op-[0-9a-f]{16}$")
+
+    def test_compact_parallel_operations_get_envelope_unique_generated_ids(
+        self,
+    ) -> None:
+        commands = [
+            {
+                "goal": "바이킹 1기로 적 본진을 직접 정찰",
+                "command_layer": "operation",
+                "operation_action": "create",
+                "task_type": "scout_with_units",
+                "unit_requests": [
+                    {
+                        "unit_type": "viking",
+                        "count": 1,
+                        "role": "scout",
+                    }
+                ],
+                "location_intent": "enemy_main",
+                "route_type": "direct",
+                "standing_order": False,
+                "allow_partial": False,
+            },
+            {
+                "goal": "바이킹 3기로 적 본진을 안전 경로로 정찰",
+                "command_layer": "operation",
+                "operation_action": "create",
+                "task_type": "scout_with_units",
+                "unit_requests": [
+                    {
+                        "unit_type": "viking",
+                        "count": 3,
+                        "role": "scout",
+                    }
+                ],
+                "location_intent": "enemy_main",
+                "route_type": "safe_path",
+                "standing_order": False,
+                "allow_partial": False,
+            },
+        ]
+        payload = {
+            "status": "compiled",
+            "assistant_message": "두 정찰 작전을 병렬 편성합니다.",
+            "commands": commands,
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="바이킹 정찰대를 둘로 나눠 병렬 정찰해"
+            )
+        )
+
+        self.assertEqual("compiled", output["status"])
+        operation_ids = [
+            operation["operation_id"]
+            for operation in output["modulation"]["operations"]
+        ]
+        self.assertEqual(2, len(operation_ids))
+        self.assertEqual(2, len(set(operation_ids)))
+        for operation_id in operation_ids:
+            self.assertRegex(operation_id, r"^op-[0-9a-f]{16}$")
+
+    def test_compact_duplicate_parallel_commands_get_position_suffix(
+        self,
+    ) -> None:
+        command = {
+            "goal": "마린 1기로 적 본진 정찰",
+            "command_layer": "operation",
+            "operation_action": "create",
+            "task_type": "scout_with_units",
+            "unit_requests": [
+                {
+                    "unit_type": "marine",
+                    "count": 1,
+                    "role": "scout",
+                }
+            ],
+            "location_intent": "enemy_main",
+            "route_type": "direct",
+            "standing_order": False,
+            "allow_partial": False,
+        }
+        payload = {
+            "status": "compiled",
+            "assistant_message": "동일 구성 정찰대를 둘로 나눕니다.",
+            "commands": [dict(command), dict(command)],
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="마린 한 명씩 두 정찰대를 보내"
+            )
+        )
+
+        self.assertEqual("compiled", output["status"])
+        operation_ids = [
+            operation["operation_id"]
+            for operation in output["modulation"]["operations"]
+        ]
+        self.assertRegex(operation_ids[0], r"^op-[0-9a-f]{16}$")
+        self.assertEqual(f"{operation_ids[0]}-2", operation_ids[1])
 
     def test_compact_policy_contract_is_materially_smaller_than_full_dsl(self) -> None:
         compact_size = len(
@@ -764,7 +1624,7 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             )
         )
 
-        self.assertLess(compact_size, 12000)
+        self.assertLess(compact_size, 15000)
         self.assertLess(compact_size, full_size // 2)
 
     def test_myproxy_compacts_recent_context_to_latest_command_per_layer(self) -> None:
@@ -818,6 +1678,407 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             all("modulation" not in item for item in compact_recent)
         )
 
+    def test_myproxy_recent_context_preserves_distinct_operation_ids(self) -> None:
+        terminal_payload = {
+            "status": "clarification_required",
+            "assistant_message": "어느 작전을 조정할지 알려주세요.",
+            "clarification_prompt": "정찰과 공격 중 어느 작전인가요?",
+        }
+        fake_client = FakeResponsesClient(
+            _responses_tool_response(terminal_payload)
+        )
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="그 작전 계속해",
+                commander_context={
+                    "response_language": "Korean",
+                    "recent_commands": [
+                        {
+                            "update_id": "parallel-1",
+                            "command_text": "정찰과 공격 동시 수행",
+                            "command_layer": "operation",
+                            "operations": [
+                                {
+                                    "operation_id": "recon-alpha",
+                                    "goal": "마린 정찰",
+                                    "command_layer": "operation",
+                                    "tactical_task": {
+                                        "task_type": "scout_with_units",
+                                        "unit_classes": ["TERRAN_MARINE"],
+                                    },
+                                },
+                                {
+                                    "operation_id": "assault-bravo",
+                                    "goal": "탱크 공격",
+                                    "command_layer": "operation",
+                                    "tactical_task": {
+                                        "task_type": "pressure_with_main_army",
+                                        "unit_classes": ["TERRAN_SIEGETANK"],
+                                    },
+                                },
+                            ],
+                        },
+                        {
+                            "operation_id": "recon-alpha",
+                            "update_id": "parallel-2",
+                            "command_text": "정찰 경로를 안전하게 변경",
+                            "command_layer": "operation",
+                            "goal": "마린 안전 경로 정찰",
+                            "tactical_task": {
+                                "task_type": "scout_with_units",
+                                "unit_classes": ["TERRAN_MARINE"],
+                            },
+                        },
+                    ],
+                },
+            )
+        )
+
+        self.assertEqual("clarification_required", output["status"])
+        request_document = json.loads(fake_client.calls[0]["input"].splitlines()[-1])
+        compact_recent = request_document["commander_context"]["recent_commands"]
+        self.assertEqual(
+            ["assault-bravo", "recon-alpha"],
+            [item["operation_id"] for item in compact_recent],
+        )
+        self.assertEqual("parallel-2", compact_recent[1]["update_id"])
+
+    def test_myproxy_active_operation_survives_eight_entry_history_limit(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "op-0 정찰 작전 취소를 요청합니다.",
+            "command": {
+                "goal": "op-0 정찰 작전 취소",
+                "command_layer": "operation",
+                "operation_action": "cancel",
+                "operation_id": "op-0",
+                "task_type": "scout_with_units",
+            },
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+        recent_commands = [
+            {
+                "operation_id": f"op-{index}",
+                "update_id": f"operation-{index}",
+                "command_text": f"마린 정찰 작전 {index}",
+                "command_layer": "operation",
+                "goal": f"마린 정찰 작전 {index}",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 1,
+                    "max_units": 1,
+                },
+                "lifetime": {"completion_state": "active"},
+            }
+            for index in range(8)
+        ]
+        recent_commands.append(
+            {
+                "update_id": "macro-after-operations",
+                "command_text": "마린 생산을 계속해",
+                "command_layer": "macro",
+                "goal": "마린 생산 유지",
+                "tactical_task": {
+                    "task_type": "sustain_production",
+                    "unit_classes": ["TERRAN_MARINE"],
+                },
+            }
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="op-0 정찰만 취소해",
+                commander_context={
+                    "response_language": "Korean",
+                    "recent_commands": recent_commands,
+                },
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        cancelled = output["modulation"]["operations"][0]
+        self.assertEqual("op-0", cancelled["operation_id"])
+        self.assertEqual("cancelled", cancelled["lifetime"]["completion_state"])
+        request_document = json.loads(fake_client.calls[0]["input"].splitlines()[-1])
+        compact_context = request_document["commander_context"]
+        self.assertEqual(8, len(compact_context["recent_commands"]))
+        self.assertEqual(
+            [f"op-{index}" for index in range(8)],
+            [
+                operation["operation_id"]
+                for operation in compact_context["active_operations"]
+            ],
+        )
+
+    def test_active_operations_only_preserves_cancel_context(self) -> None:
+        compact = _compact_policy_commander_context(
+            {
+                "active_operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "command_layer": "operation",
+                        "goal": "마린 한 기 정찰",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_MARINE"],
+                        },
+                        "unit_requests": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 1,
+                                "role": "scout",
+                            }
+                        ],
+                        "army_group": "recon",
+                        "location_intent": "enemy_main",
+                        "completion_state": "active",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual([], compact["recent_commands"])
+        [operation] = compact["active_operations"]
+        self.assertEqual("recon-alpha", operation["operation_id"])
+        self.assertEqual("recon", operation["army_group"])
+        self.assertEqual("enemy_main", operation["location_intent"])
+        self.assertEqual(
+            [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": 1,
+                    "role": "scout",
+                }
+            ],
+            operation["unit_requests"],
+        )
+
+    def test_terminal_active_operations_only_preserves_restart_context(
+        self,
+    ) -> None:
+        compact = _compact_policy_commander_context(
+            {
+                "active_operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "command_layer": "operation",
+                        "goal": "마린 한 기 정찰",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_MARINE"],
+                        },
+                        "completion_state": "cancelled",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual([], compact["active_operations"])
+        [terminal] = compact["recent_commands"]
+        self.assertEqual("recon-alpha", terminal["operation_id"])
+        self.assertEqual("cancelled", terminal["completion_state"])
+
+    def test_terminal_operation_survives_full_history_and_restarts(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "recon-alpha 정찰 작전을 다시 시작합니다.",
+            "command": {
+                "operation_id": "recon-alpha",
+                "operation_action": "restart",
+                "goal": "recon-alpha 정찰 재시작",
+                "command_layer": "operation",
+                "task_type": "scout_with_units",
+            },
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+        terminal_operation = {
+            "operation_id": "recon-alpha",
+            "update_id": "runtime-cancelled",
+            "command_layer": "operation",
+            "goal": "바이킹 두 기 정찰",
+            "tactical_task": {
+                "task_type": "scout_with_units",
+                "unit_classes": ["TERRAN_VIKINGFIGHTER"],
+                "min_units": 2,
+                "max_units": 2,
+            },
+            "unit_requests": [
+                {
+                    "unit_type": "TERRAN_VIKINGFIGHTER",
+                    "count": 2,
+                    "role": "scout",
+                }
+            ],
+            "completion_state": "cancelled",
+        }
+        unrelated_recent = [
+            {
+                "operation_id": f"recent-{index}",
+                "update_id": f"recent-update-{index}",
+                "command_layer": "operation",
+                "goal": f"무관한 작전 {index}",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_MARINE"],
+                },
+                "completion_state": "active",
+            }
+            for index in range(8)
+        ]
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="recon-alpha 정찰 다시 시작해",
+                commander_context={
+                    "active_operations": [terminal_operation],
+                    "recent_commands": unrelated_recent,
+                },
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        [restarted] = output["modulation"]["operations"]
+        self.assertEqual("recon-alpha", restarted["operation_id"])
+        self.assertEqual(
+            "active",
+            restarted["lifetime"]["completion_state"],
+        )
+        self.assertEqual(
+            ["TERRAN_VIKINGFIGHTER"],
+            restarted["tactical_task"]["unit_classes"],
+        )
+        self.assertEqual(2, restarted["tactical_task"]["min_units"])
+        request_document = json.loads(
+            fake_client.calls[0]["input"].splitlines()[-1]
+        )
+        compact_recent = request_document["commander_context"][
+            "recent_commands"
+        ]
+        self.assertEqual(8, len(compact_recent))
+        self.assertIn(
+            "recon-alpha",
+            [command["operation_id"] for command in compact_recent],
+        )
+        self.assertNotIn(
+            "recent-0",
+            [command["operation_id"] for command in compact_recent],
+        )
+
+    def test_unrelated_recent_history_keeps_authoritative_active_operation(
+        self,
+    ) -> None:
+        compact = _compact_policy_commander_context(
+            {
+                "active_operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "goal": "바이킹 정찰",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_VIKINGFIGHTER"],
+                        },
+                        "completion_state": "active",
+                    }
+                ],
+                "recent_commands": [
+                    {
+                        "update_id": "macro-1",
+                        "command_text": "탱크 생산 유지",
+                        "command_layer": "macro",
+                        "goal": "탱크 생산 유지",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            ["recon-alpha"],
+            [
+                operation["operation_id"]
+                for operation in compact["active_operations"]
+            ],
+        )
+        self.assertEqual(
+            ["macro-1"],
+            [command["update_id"] for command in compact["recent_commands"]],
+        )
+
+    def test_authoritative_active_state_overrides_same_id_stale_terminal(
+        self,
+    ) -> None:
+        compact = _compact_policy_commander_context(
+            {
+                "active_operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "update_id": "runtime-active",
+                        "goal": "갱신된 정찰 작전",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_BANSHEE"],
+                        },
+                        "unit_requests": [
+                            {
+                                "unit_type": "TERRAN_BANSHEE",
+                                "count": 2,
+                                "role": "scout",
+                            }
+                        ],
+                        "completion_state": "active",
+                    }
+                ],
+                "recent_commands": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "update_id": "stale-cancel",
+                        "goal": "과거 취소 상태",
+                        "command_layer": "operation",
+                        "completion_state": "cancelled",
+                    }
+                ],
+            }
+        )
+
+        [active] = compact["active_operations"]
+        [recent] = compact["recent_commands"]
+        for operation in (active, recent):
+            self.assertEqual("runtime-active", operation["update_id"])
+            self.assertEqual("active", operation["completion_state"])
+            self.assertEqual("갱신된 정찰 작전", operation["goal"])
+            self.assertEqual(
+                [
+                    {
+                        "unit_type": "TERRAN_BANSHEE",
+                        "count": 2,
+                        "role": "scout",
+                    }
+                ],
+                operation["unit_requests"],
+            )
+
     def test_standing_production_with_defense_compiles_without_llm_repair(
         self,
     ) -> None:
@@ -827,27 +2088,20 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                 "SCV와 보급을 유지하면서 마린과 공성전차를 반복 생산하고 "
                 "본진 방어 성향을 유지합니다."
             ),
-            "modulation": {
+            "command": {
                 "goal": (
                     "SCV와 보급고를 유지하고 마린 8기와 공성전차 2기를 "
                     "반복 생산하면서 본진 수비 유지"
                 ),
                 "command_layer": "macro",
-                "ttl_seconds": 900,
-                "production": {
-                    "queue_biases": {
-                        "TERRAN_SCV": 0.9,
-                        "TERRAN_SUPPLYDEPOT": 0.9,
-                        "TERRAN_MARINE": 0.9,
-                        "TERRAN_SIEGETANK": 0.9,
-                    },
-                    "production_continuity_bias": 0.9,
-                },
-                "combat": {
-                    "defend_bias": 0.8,
-                    "preserve_army_bias": 0.7,
-                },
-                "composition_requirements": [
+                "task_type": "sustain_production",
+                "production_targets": [
+                    "TERRAN_SCV",
+                    "TERRAN_SUPPLYDEPOT",
+                    "TERRAN_MARINE",
+                    "TERRAN_SIEGETANK",
+                ],
+                "unit_requests": [
                     {
                         "unit_type": "TERRAN_MARINE",
                         "count": 8,
@@ -859,21 +2113,11 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                         "role": "siege_support",
                     },
                 ],
-                "scope": {"location_intent": "home"},
-                "lifetime": {
-                    "mode": "standing_order",
-                    "completion_state": "active",
-                },
-                "tactical_task": {
-                    "task_type": "sustain_production",
-                    "production_targets": [
-                        "TERRAN_SCV",
-                        "TERRAN_SUPPLYDEPOT",
-                        "TERRAN_MARINE",
-                        "TERRAN_SIEGETANK",
-                    ],
-                    "priority": 0.95,
-                },
+                "location_intent": "home",
+                "standing_order": True,
+                "allow_partial": True,
+                "intensity": "maximum",
+                "stance": "defensive",
             },
         }
         fake_client = FakeResponsesClient(_responses_tool_response(payload))
@@ -2022,6 +3266,30 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         ):
             with self.subTest(rich_field=field_name):
                 self.assertIn(field_name, rich_properties)
+        self.assertIn("operations", rich_properties)
+        operation_properties = rich_properties["operations"]["items"]["properties"]
+        self.assertIn("operation_id", operation_properties)
+        self.assertIn("tactical_task", operation_properties)
+        self.assertIn(
+            "tactical_task",
+            rich_properties["operations"]["items"]["required"],
+        )
+        operation_task_schema = operation_properties["tactical_task"]
+        self.assertIn("task_type", operation_task_schema["required"])
+        self.assertEqual(
+            {
+                "scout_with_units",
+                "pressure_with_main_army",
+                "defend_with_units",
+            },
+            set(operation_task_schema["properties"]["task_type"]["enum"]),
+        )
+        self.assertIn("scope", operation_properties)
+        self.assertIn("lifetime", operation_properties)
+        self.assertIn("composition_requirements", operation_properties)
+        self.assertIn("unit_roles", operation_properties)
+        self.assertIn("route_intent", operation_properties)
+        self.assertIn("target_intent", operation_properties)
         self.assertIn(
             "TERRAN_BATTLECRUISER",
             rich_properties["composition_requirements"]["items"]["properties"][

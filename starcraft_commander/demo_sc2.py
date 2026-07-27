@@ -128,6 +128,19 @@ _DRY_RUN_BANNER_LINES: Final[tuple[str, ...]] = (
 )
 
 
+def _normalize_sc2_install_environment() -> str:
+    """Expose the configured SC2 root through burnysc2's ``SC2PATH``."""
+
+    configured = os.environ.get("SC2_ROOT", "").strip()
+    if not configured:
+        configured = os.environ.get("SC2PATH", "").strip()
+    if not configured:
+        return ""
+    normalized = os.path.abspath(os.path.expanduser(configured))
+    os.environ["SC2PATH"] = normalized
+    return normalized
+
+
 class DemoPoint:
     """Minimal Point2-like coordinate for the scripted fake bot."""
 
@@ -860,6 +873,7 @@ def run_live(args: argparse.Namespace) -> None:
             key is unavailable (fail fast, before the game starts).
     """
 
+    _normalize_sc2_install_environment()
     require_python_sc2()
     # Provider SDK and key must both exist before the match starts. The GUI can
     # rotate the process-local key later, but cannot bypass startup preflight.

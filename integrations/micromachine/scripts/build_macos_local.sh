@@ -62,6 +62,14 @@ ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH_FILE="${REPO_ROOT}/integrations/micr
 EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0049-explicit-ability-caster-ownership.patch"
 EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0050-explicit-ability-staging-single-flight.patch"
 ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0051-all-terran-combat-scouts.patch"
+PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0052-parallel-operations-ingame-hud.patch"
+PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0053-parallel-operation-lifecycle-review-closure.patch"
+AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0054-authoritative-parallel-operation-lifecycle.patch"
+OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0055-operation-production-ownership-and-restore-proof.patch"
+EMBEDDED_BUILD_INPUT_IDENTITY_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0056-embedded-build-input-identity.patch"
+TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0057-tech-gas-before-second-barracks.patch"
+OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0058-operation-production-review-closure.patch"
+PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0059-production-fifo-and-zero-owner-cleanup.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 
@@ -272,6 +280,22 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${EMBEDDED_BUILD_INPUT_IDENTITY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EMBEDDED_BUILD_INPUT_IDENTITY_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 rm -f \
@@ -286,6 +310,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-build-dir "${MICROMACHINE_BUILD_DIR}" \
   --micromachine-commit "${MICROMACHINE_COMMIT}" \
   --s2client-commit "${S2CLIENT_COMMIT}" \
+  --write-embedded-identity-header \
   --initialize-source-attestation
 
 cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
@@ -359,6 +384,14 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-explicit-ability-caster-ownership-patch "${EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE}" \
   --micromachine-explicit-ability-staging-single-flight-patch "${EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE}" \
   --micromachine-all-terran-combat-scouts-patch "${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}" \
+  --micromachine-parallel-operations-ingame-hud-patch "${PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE}" \
+  --micromachine-parallel-operation-lifecycle-review-closure-patch "${PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE}" \
+  --micromachine-authoritative-parallel-operation-lifecycle-patch "${AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE}" \
+  --micromachine-operation-production-ownership-restore-proof-patch "${OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE}" \
+  --micromachine-embedded-build-input-identity-patch "${EMBEDDED_BUILD_INPUT_IDENTITY_PATCH_FILE}" \
+  --micromachine-tech-gas-before-second-barracks-patch "${TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH_FILE}" \
+  --micromachine-operation-production-review-closure-patch "${OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH_FILE}" \
+  --micromachine-production-fifo-zero-owner-cleanup-patch "${PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --finalize-build-attestation \
   --output "${MICROMACHINE_BUILD_IDENTITY_REPORT}"

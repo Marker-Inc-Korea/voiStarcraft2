@@ -1003,7 +1003,29 @@ _VECTOR_KEYS = {
     "composition_requirements",
     "unit_roles",
     "building_tasks",
+    "operations",
     *_DOMAIN_KEYS,
+}
+
+_OPERATION_DOMAIN_KEYS = {
+    "scope",
+    "lifetime",
+    "tactical_task",
+    "route_intent",
+    "target_intent",
+}
+
+_OPERATION_SEQUENCE_KEYS = {
+    "composition_requirements",
+    "unit_roles",
+}
+
+_OPERATION_KEYS = {
+    "operation_id",
+    "goal",
+    "command_layer",
+    *_OPERATION_DOMAIN_KEYS,
+    *_OPERATION_SEQUENCE_KEYS,
 }
 
 _REPRESENTATION_KEYS = {
@@ -1429,6 +1451,18 @@ def _normalize_provider_mapping(
         if canonical_key in _REPRESENTATION_KEYS:
             _apply_representation_axes(result, value)
             continue
+        if canonical_key == "operations":
+            result["operations"], operation_warnings = (
+                _normalize_provider_operations(
+                    value,
+                    default_goal=_provider_operation_default_goal(
+                        mapping,
+                        default_goal=default_goal,
+                    ),
+                )
+            )
+            warnings.extend(operation_warnings)
+            continue
         if canonical_key in _DOMAIN_ALIASES:
             domain, field_name = _DOMAIN_ALIASES[canonical_key]
             if (domain, field_name) == ("emergency", "pull_workers_for_defense"):
@@ -1467,6 +1501,101 @@ def _normalize_provider_mapping(
         result["goal"] = default_goal
     _canonicalize_micromachine_payload(result)
     return result, tuple(warnings)
+
+
+def _provider_operation_default_goal(
+    mapping: Mapping[str, object],
+    *,
+    default_goal: str | None,
+) -> str:
+    for key in ("goal", "intent", "goal_text", "user_intent"):
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return str(default_goal or "").strip()
+
+
+def _normalize_provider_operations(
+    value: object,
+    *,
+    default_goal: str,
+) -> tuple[list[dict[str, object]], tuple[str, ...]]:
+    if not _is_non_text_sequence(value):
+        raise ValueError("operations must be a sequence.")
+    normalized: list[dict[str, object]] = []
+    warnings: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"operations[{index}] must be a mapping.")
+        operation, operation_warnings = _normalize_provider_operation_mapping(
+            item,
+            default_goal=default_goal,
+            path=f"operations[{index}]",
+        )
+        normalized.append(operation)
+        warnings.extend(operation_warnings)
+    return normalized, tuple(warnings)
+
+
+def _normalize_provider_operation_mapping(
+    mapping: Mapping[str, object],
+    *,
+    default_goal: str,
+    path: str,
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    reject_raw_policy_control_keys(mapping, path=path)
+    result: dict[str, object] = {}
+    warnings: list[str] = []
+    for key, value in mapping.items():
+        canonical_key = _TOP_LEVEL_ALIASES.get(key, key)
+        if canonical_key in {"operation_id", "goal", "command_layer"}:
+            result[canonical_key] = value
+            continue
+        if canonical_key in _DOMAIN_ALIASES:
+            domain, field_name = _DOMAIN_ALIASES[canonical_key]
+            if domain not in _OPERATION_DOMAIN_KEYS:
+                warnings.append(f"ignored provider field: {path}.{key}")
+                continue
+            _ensure_domain(result, domain)[field_name] = value
+            continue
+        if canonical_key in _OPERATION_DOMAIN_KEYS:
+            if not isinstance(value, Mapping):
+                result[canonical_key] = value
+                continue
+            for field_name, field_value in value.items():
+                if type(field_name) is not str or not field_name.strip():
+                    raise ValueError(
+                        f"{path}.{canonical_key} field names must be strings."
+                    )
+                target_domain, target_field, target_value = _normalize_domain_field(
+                    canonical_key,
+                    field_name,
+                    field_value,
+                )
+                if target_domain not in _OPERATION_DOMAIN_KEYS:
+                    warnings.append(
+                        "ignored provider field: "
+                        f"{path}.{canonical_key}.{field_name}"
+                    )
+                    continue
+                _ensure_domain(result, target_domain)[target_field] = target_value
+            continue
+        if canonical_key in _OPERATION_SEQUENCE_KEYS:
+            result[canonical_key] = value
+            continue
+        warnings.append(f"ignored provider field: {path}.{key}")
+
+    if "goal" not in result and default_goal:
+        result["goal"] = default_goal
+    _canonicalize_micromachine_payload(result)
+    return (
+        {
+            key: value
+            for key, value in result.items()
+            if key in _OPERATION_KEYS
+        },
+        tuple(warnings),
+    )
 
 
 def _normalize_domain_field(

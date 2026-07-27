@@ -54,7 +54,7 @@ index ec9261a..da1e752 100644
 +        "PlayVsItSelf": false,
 +        "EnemyDifficulty": 1,
 +        "EnemyRace": "Zerg",
-+        "MapFile": "/Users/jinminseong/Desktop/StarCraft2/StarCraft II/Maps/AcropolisLE.SC2Map",
++        "MapFile": "AcropolisLE.SC2Map",
 +        "StepSize": 1,
 +        "BatchReplayMode": false,
 +        "NbBatchReplay": 50,

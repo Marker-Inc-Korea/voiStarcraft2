@@ -1995,6 +1995,599 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             payload["latest_request"]["command_queue"],
         )
 
+    def test_micromachine_status_exposes_isolated_parallel_operations(self):
+        update_id = "parallel-operation-update"
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "manager_bias_domains": ["combat", "scouting", "squad"],
+                    "vector": {
+                        "goal": "parallel recon and assault",
+                        "operations": [
+                            {
+                                "operation_id": "recon-alpha",
+                                "goal": "마린 1기로 적 본진 정찰",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "unit_classes": ["TERRAN_MARINE"],
+                                },
+                            },
+                            {
+                                "operation_id": "assault-bravo",
+                                "goal": "마린 4기로 적 앞마당 공격",
+                                "tactical_task": {
+                                    "task_type": "pressure_with_main_army",
+                                    "unit_classes": ["TERRAN_MARINE"],
+                                },
+                            },
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 240},
+        }
+        telemetry_document = {
+            "frame": 240,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "update_id": update_id,
+                            "received_frame": 205,
+                            "assignment": {
+                                "status": "assigned",
+                                "assigned_unit_count": 1,
+                                "commanded_unit_type": "marine",
+                            },
+                            "submission": {
+                                "status": "submitted",
+                                "last_actual_command": "move",
+                                "target_x": 120,
+                                "target_y": 44,
+                            },
+                            "movement": {
+                                "movement_observed": True,
+                                "max_home_distance": 18.5,
+                            },
+                        },
+                        {
+                            "operation_id": "assault-bravo",
+                            "update_id": update_id,
+                            "received_frame": 206,
+                            "assignment": {
+                                "status": "assigned",
+                                "assigned_unit_count": 4,
+                                "commanded_unit_type": "marine",
+                            },
+                            "submission": {"status": "pending"},
+                            "movement": {"movement_observed": False},
+                        },
+                    ]
+                },
+                "CombatCommander": {
+                    "policy_active": True,
+                    "active_modulation_ids": [update_id],
+                    "main_attack_actual_command_issued_count": 99,
+                    "main_attack_last_issued_action": "must-not-be-copied",
+                },
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=240,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            blackboard_dir="/tmp/parallel-operation-status",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "정찰과 공격을 동시에 수행해",
+            },
+        )
+
+        self.assertEqual(2, len(payload["operations"]))
+        operations = {
+            operation["operation_id"]: operation
+            for operation in payload["operations"]
+        }
+        self.assertEqual(
+            {"recon-alpha", "assault-bravo"},
+            set(operations),
+        )
+        self.assertEqual("scouting", operations["recon-alpha"]["mission"])
+        self.assertEqual("attack", operations["assault-bravo"]["mission"])
+        self.assertEqual(1, payload["operation_summary"]["scouting"])
+        self.assertEqual(1, payload["operation_summary"]["attacking"])
+        self.assertEqual(
+            ["OperationDirector"],
+            list(
+                operations["recon-alpha"]["intervention"][
+                    "manager_snapshot"
+                ]
+            ),
+        )
+        self.assertEqual(
+            ["OperationDirector"],
+            list(
+                operations["assault-bravo"]["intervention"][
+                    "manager_snapshot"
+                ]
+            ),
+        )
+        recon_execution = operations["recon-alpha"]["intervention"][
+            "command_execution"
+        ]
+        assault_execution = operations["assault-bravo"]["intervention"][
+            "command_execution"
+        ]
+        self.assertEqual("recon-alpha", recon_execution["operation_id"])
+        self.assertEqual("effect_observed", recon_execution["state"])
+        self.assertIn(
+            "action_issued",
+            [stage["name"] for stage in recon_execution["stages"]],
+        )
+        self.assertIn(
+            "effect_observed",
+            [stage["name"] for stage in recon_execution["stages"]],
+        )
+        self.assertEqual("assault-bravo", assault_execution["operation_id"])
+        self.assertEqual("queued_or_assigned", assault_execution["state"])
+        self.assertNotIn(
+            "action_issued",
+            [stage["name"] for stage in assault_execution["stages"]],
+        )
+        self.assertNotIn(
+            "effect_observed",
+            [stage["name"] for stage in assault_execution["stages"]],
+        )
+        self.assertNotIn(
+            "must-not-be-copied",
+            json.dumps(payload["operations"], ensure_ascii=False),
+        )
+
+    def test_micromachine_operation_flat_zero_frames_are_not_success(self):
+        execution = web_gui._micromachine_operation_command_execution(
+            update_id="parallel-zero-frames",
+            operation_id="recon-zero",
+            operation_generation=1,
+            operation_telemetry={
+                "operation_id": "recon-zero",
+                "generation": 1,
+                "task_type": "scout",
+                "status": "",
+                "assigned_unit_tags": [],
+                "assigned_count": 0,
+                "target_x": 120.0,
+                "target_y": 44.0,
+                "route_type": "direct",
+                "target_evidence": "",
+                "received_frame": 0,
+                "assigned_frame": 0,
+                "submitted_frame": 0,
+                "last_action_frame": 0,
+                "movement_frame": 0,
+                "engagement_frame": 0,
+                "max_home_distance": 0.0,
+                "engaged": False,
+                "completed": False,
+                "blocked_reason": "",
+                "last_action": "",
+            },
+            fallback={},
+        )
+
+        self.assertEqual("published", execution["state"])
+        self.assertFalse(execution["completed"])
+        self.assertFalse(execution["failed"])
+        self.assertEqual(
+            set(),
+            {
+                stage["name"]
+                for stage in execution["stages"]
+                if stage["name"]
+                in {
+                    "consumed_by_manager",
+                    "queued_or_assigned",
+                    "order_issued",
+                    "action_issued",
+                    "effect_observed",
+                }
+            },
+        )
+
+    def test_micromachine_operation_root_update_id_is_fail_closed(self):
+        update_id = "parallel-current-update"
+
+        def telemetry_document(root_update_id=...):
+            director = {
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "generation": 1,
+                        "task_type": "scout",
+                        "status": "ASSIGNED",
+                        "assigned_unit_tags": [11],
+                        "assigned_count": 1,
+                        "received_frame": 205,
+                        "assigned_frame": 206,
+                        "submitted_frame": 0,
+                        "last_action_frame": 0,
+                        "max_home_distance": 0.0,
+                        "engaged": False,
+                        "completed": False,
+                        "blocked_reason": "",
+                        "last_action": "",
+                    }
+                ]
+            }
+            if root_update_id is not ...:
+                director["policy_update_id"] = root_update_id
+            return {
+                "frame": 240,
+                "active_modulation_ids": [update_id],
+                "managers": {"OperationDirector": director},
+            }
+
+        with self.subTest("matching root id is propagated"):
+            document, entry = web_gui._micromachine_operation_telemetry_document(
+                telemetry_document(update_id),
+                update_id=update_id,
+                operation_id="recon-alpha",
+                operation_generation=1,
+            )
+            self.assertIsNotNone(entry)
+            self.assertEqual(update_id, entry["policy_update_id"])
+            self.assertEqual(
+                update_id,
+                document["managers"]["OperationDirector"]["policy_update_id"],
+            )
+
+        with self.subTest("mismatched root id is rejected"):
+            document, entry = web_gui._micromachine_operation_telemetry_document(
+                telemetry_document("parallel-stale-update"),
+                update_id=update_id,
+                operation_id="recon-alpha",
+                operation_generation=1,
+            )
+            self.assertEqual({}, document)
+            self.assertIsNone(entry)
+
+        with self.subTest("conflicting entry id is rejected"):
+            document_with_conflict = telemetry_document(update_id)
+            director = document_with_conflict["managers"]["OperationDirector"]
+            director["operations"][0]["update_id"] = "parallel-stale-entry"
+            document, entry = web_gui._micromachine_operation_telemetry_document(
+                document_with_conflict,
+                update_id=update_id,
+                operation_id="recon-alpha",
+                operation_generation=1,
+            )
+            self.assertEqual({}, document)
+            self.assertIsNone(entry)
+
+        with self.subTest("missing root id is rejected"):
+            document, entry = web_gui._micromachine_operation_telemetry_document(
+                telemetry_document(),
+                update_id=update_id,
+                operation_id="recon-alpha",
+                operation_generation=1,
+            )
+            self.assertEqual({}, document)
+            self.assertIsNone(entry)
+
+    def test_micromachine_operation_flat_terminal_fields_drive_execution(self):
+        flat_telemetry = {
+            "operation_id": "assault-bravo",
+            "generation": 1,
+            "task_type": "attack",
+            "status": "SUBMITTED",
+            "assigned_unit_tags": [21, 22, 23, 24],
+            "assigned_count": 4,
+            "target_x": 130.0,
+            "target_y": 48.0,
+            "route_type": "flank",
+            "target_evidence": "observed_enemy_structure",
+            "received_frame": 205,
+            "assigned_frame": 206,
+            "submitted_frame": 207,
+            "last_action_frame": 207,
+            "max_home_distance": 14.0,
+            "engaged": False,
+            "completed": False,
+            "cancelled": False,
+            "blocked_reason": "",
+            "last_action": "AttackMove|operation=assault-bravo",
+        }
+        cases = (
+            (
+                "status completed",
+                {"status": "COMPLETED"},
+                {
+                    "state": "completed",
+                    "completed": True,
+                    "failed": False,
+                    "superseded": False,
+                    "blocker_reason": "",
+                    "disposition": "completed",
+                },
+            ),
+            (
+                "completed flag",
+                {"completed": True},
+                {
+                    "state": "completed",
+                    "completed": True,
+                    "failed": False,
+                    "superseded": False,
+                    "blocker_reason": "",
+                    "disposition": "completed",
+                },
+            ),
+            (
+                "blocked status and reason",
+                {
+                    "status": "BLOCKED",
+                    "blocked_reason": "insufficient_eligible_units",
+                },
+                {
+                    "state": "blocked",
+                    "completed": False,
+                    "failed": True,
+                    "superseded": False,
+                    "blocker_reason": "insufficient_eligible_units",
+                    "disposition": "blocked",
+                },
+            ),
+            (
+                "cancelled flag",
+                {
+                    "cancelled": True,
+                    "blocked_reason": "cancelled_by_policy",
+                },
+                {
+                    "state": "cancelled",
+                    "completed": False,
+                    "failed": False,
+                    "superseded": True,
+                    "blocker_reason": "cancelled_by_policy",
+                    "disposition": "superseded",
+                },
+            ),
+        )
+
+        for case_name, overrides, expected in cases:
+            with self.subTest(case_name):
+                operation_telemetry = dict(flat_telemetry)
+                operation_telemetry.update(overrides)
+                execution = web_gui._micromachine_operation_command_execution(
+                    update_id="parallel-terminal-update",
+                    operation_id="assault-bravo",
+                    operation_generation=1,
+                    operation_telemetry=operation_telemetry,
+                    fallback={},
+                )
+                disposition = web_gui._micromachine_operation_disposition(
+                    execution,
+                    active=True,
+                    transport_status="published",
+                )
+
+                for key in (
+                    "state",
+                    "completed",
+                    "failed",
+                    "superseded",
+                    "blocker_reason",
+                ):
+                    self.assertEqual(expected[key], execution[key])
+                self.assertEqual(expected["disposition"], disposition)
+
+    def test_micromachine_operation_cleanup_stop_is_not_mission_effect(self):
+        fallback = {
+            "command_id": "cancel-cleanup-operation",
+            "operation_id": "assault-bravo",
+            "operation_generation": 1,
+            "state": "published",
+            "stages": [],
+        }
+        execution = web_gui._micromachine_operation_command_execution(
+            update_id="cancel-cleanup-operation",
+            operation_id="assault-bravo",
+            operation_generation=1,
+            operation_telemetry={
+                "operation_id": "assault-bravo",
+                "generation": 1,
+                "status": "CANCELLED",
+                "received_frame": 110,
+                "assigned_frame": 120,
+                "submitted_frame": 0,
+                "last_action_frame": 210,
+                "assigned_unit_tags": [21, 22, 23, 24],
+                "assigned_count": 4,
+                "moving": True,
+                "engaged": True,
+                "blocked_reason": "cancelled_by_policy",
+                "last_action": "release_stop|cancelled_by_policy",
+            },
+            fallback=fallback,
+        )
+
+        stages = {
+            stage["name"]: stage
+            for stage in execution["stages"]
+        }
+        self.assertEqual("cancelled", execution["state"])
+        self.assertFalse(execution["completed"])
+        self.assertFalse(execution["failed"])
+        self.assertTrue(execution["superseded"])
+        self.assertNotIn("order_issued", stages)
+        self.assertNotIn("action_issued", stages)
+        self.assertNotIn("effect_observed", stages)
+        self.assertEqual(
+            {
+                "action": "release_stop|cancelled_by_policy",
+                "frame": 210,
+                "operation_id": "assault-bravo",
+                "generation": 1,
+            },
+            execution["terminal_cleanup"],
+        )
+
+    def test_micromachine_operation_cleanup_without_owned_units_is_terminal(
+        self,
+    ):
+        fallback = {
+            "command_id": "cancel-empty-operation",
+            "operation_id": "recon-alpha",
+            "operation_generation": 3,
+            "state": "published",
+            "stages": [],
+        }
+        cases = (
+            ("cancelled-before-assignment", 0),
+            ("cancelled-after-owned-units-died", 4),
+        )
+
+        for label, previous_assigned_count in cases:
+            with self.subTest(case=label):
+                execution = web_gui._micromachine_operation_command_execution(
+                    update_id="cancel-empty-operation",
+                    operation_id="recon-alpha",
+                    operation_generation=3,
+                    operation_telemetry={
+                        "operation_id": "recon-alpha",
+                        "generation": 3,
+                        "status": "CANCELLED",
+                        "received_frame": 310,
+                        "assigned_frame": (
+                            0 if previous_assigned_count == 0 else 320
+                        ),
+                        "assigned_unit_tags": [],
+                        "assigned_count": previous_assigned_count,
+                        "blocked_reason": "cancelled_by_policy",
+                        "last_action": (
+                            "release_no_owned_units|cancelled_by_policy"
+                        ),
+                        "last_action_frame": 410,
+                    },
+                    fallback=fallback,
+                )
+
+                self.assertEqual("cancelled", execution["state"])
+                self.assertTrue(execution["superseded"])
+                self.assertEqual(
+                    {
+                        "action": (
+                            "release_no_owned_units|cancelled_by_policy"
+                        ),
+                        "frame": 410,
+                        "operation_id": "recon-alpha",
+                        "generation": 3,
+                    },
+                    execution["terminal_cleanup"],
+                )
+
+    def test_micromachine_status_keeps_terminal_result_as_separate_operation(self):
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": "active-recon-update",
+                    "issued_at_frame": 100,
+                    "manager_bias_domains": ["scouting"],
+                    "vector": {
+                        "operations": [
+                            {
+                                "operation_id": "recon-live",
+                                "goal": "바이킹 정찰",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                },
+                            }
+                        ]
+                    },
+                }
+            ],
+            "telemetry": {"frame": 120},
+        }
+        telemetry = SimpleNamespace(
+            frame=120,
+            active_modulation_ids=("active-recon-update",),
+            to_dict=lambda: {
+                "frame": 120,
+                "active_modulation_ids": ["active-recon-update"],
+                "managers": {
+                    "OperationDirector": {
+                        "operations": {
+                            "recon-live": {
+                                "operation_id": "recon-live",
+                                "update_id": "active-recon-update",
+                                "assignment": {
+                                    "status": "assigned",
+                                    "assigned_unit_count": 1,
+                                },
+                            }
+                        }
+                    }
+                },
+            },
+        )
+        result_stream = [
+            {
+                "status": "publish_failed",
+                "command_text": "별도 공격 작전",
+                "compile_result": {
+                    "status": "refused",
+                    "update_id": "failed-assault-update",
+                    "refusal_reason": "no eligible assault units",
+                    "vector": {
+                        "operations": [
+                            {
+                                "operation_id": "assault-failed",
+                                "goal": "탱크 공격",
+                                "tactical_task": {
+                                    "task_type": "pressure_with_main_army",
+                                },
+                            }
+                        ]
+                    },
+                },
+            }
+        ]
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            result_stream=result_stream,
+        )
+
+        operations = {
+            operation["operation_id"]: operation
+            for operation in payload["operations"]
+        }
+        self.assertEqual(
+            {"recon-live", "assault-failed"},
+            set(operations),
+        )
+        self.assertEqual("active", operations["recon-live"]["disposition"])
+        self.assertEqual("blocked", operations["assault-failed"]["disposition"])
+        self.assertEqual(
+            "no eligible assault units",
+            operations["assault-failed"]["compile_result"]["refusal_reason"],
+        )
+        self.assertEqual(
+            {},
+            operations["assault-failed"]["intervention"]["manager_snapshot"],
+        )
+
     def test_micromachine_provider_output_cannot_spoof_llm_or_smoke_source(self):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)
@@ -4688,6 +5281,9 @@ var nodes = {
   "micromachine-refusal": element("micromachine-refusal"),
   "micromachine-log-snippets": element("micromachine-log-snippets", "ul"),
   "micromachine-raw-evidence": element("micromachine-raw-evidence", "pre"),
+  "operation-console": element("operation-console", "section"),
+  "operation-list": element("operation-list", "div"),
+  "operation-summary": element("operation-summary", "span"),
   "active-command-console": element("active-command-console", "section"),
   "command-console-title": element("command-console-title", "h2"),
   "command-console-state": element("command-console-state", "span"),
@@ -6259,6 +6855,74 @@ const assert = require("assert");
   assert(!nodes["active-command-console"].className.includes("command-console-verified"));
   assert(!nodes["command-console-verification"].textContent.includes("late effect must not revive"));
 
+  [
+    {
+      state: "cancelled",
+      suffix: "cancelled",
+      blockerReason: "cancelled_by_policy",
+      expectedNarration: "작전 취소"
+    },
+    {
+      state: "canceled",
+      suffix: "canceled",
+      blockerReason: "cancelled_by_policy",
+      expectedNarration: "작전 취소"
+    },
+    {
+      state: "blocked",
+      suffix: "blocked",
+      blockerReason: "no eligible combat units",
+      expectedNarration: "실행 실패"
+    },
+    {
+      state: "rejected",
+      suffix: "rejected",
+      blockerReason: "invalid operation target",
+      expectedNarration: "실행 실패"
+    }
+  ].forEach(function(contract) {
+    var updateId = "async-terminal-" + contract.suffix;
+    var commandText = "async terminal " + contract.suffix;
+    rememberServerPending(commandText, updateId);
+    assert(hasPending(SERVER_SCOPE_A, updateId));
+    renderMicroMachineStatus(serverResult({
+      ok: true,
+      status: "published",
+      compile_result: {
+        status: "compiled",
+        update_id: updateId
+      },
+      update: { update_id: updateId },
+      intervention: {
+        latest_update_id: updateId,
+        telemetry_frame: 750,
+        command_execution: {
+          command_id: updateId,
+          state: contract.state,
+          completed: false,
+          failed: (
+            contract.state === "blocked" ||
+            contract.state === "rejected"
+          ),
+          expired: false,
+          blocker_manager: "OperationDirector",
+          blocker_reason: contract.blockerReason,
+          stages: []
+        }
+      }
+    }));
+    assert(!hasPending(SERVER_SCOPE_A, updateId));
+    var terminalEntries = logBox.querySelectorAll(".log-entry").filter(
+      function(entry) {
+        return entry.textContent.includes(commandText);
+      }
+    );
+    assert.strictEqual(terminalEntries.length, 1);
+    assert(
+      terminalEntries[0].textContent.includes(contract.expectedNarration)
+    );
+  });
+
   var supersededModel = commandConsoleStageModel({
     status: "superseded",
     intervention: {
@@ -6275,6 +6939,163 @@ const assert = require("assert");
   assert.strictEqual(supersededModel.superseded, true);
   assert.strictEqual(supersededModel.blocked, false);
   assert(commandConsoleClassName(supersededModel).includes("command-console-superseded"));
+
+  var cancelledData = {
+    status: "published",
+    intervention: {
+      command_execution: {
+        command_id: "cancelled-ui-contract",
+        state: "cancelled",
+        completed: false,
+        failed: false,
+        expired: false,
+        blocker_reason: "cancelled_by_policy",
+        terminal_cleanup: {
+          action: "release_stop|cancelled_by_policy",
+          frame: 810,
+          operation_id: "assault-bravo",
+          generation: 1
+        },
+        operation_id: "assault-bravo",
+        operation_generation: 1,
+        stages: observedExecutionStages({
+          confirmation_effect: "cleanup stop must not become mission effect"
+        })
+      }
+    }
+  };
+  var cancelledModel = commandConsoleStageModel(cancelledData);
+  assert.strictEqual(cancelledModel.cancelled, true);
+  assert.strictEqual(cancelledModel.effectObserved, false);
+  assert.strictEqual(cancelledModel.blocked, false);
+  assert.strictEqual(commandConsoleStateLabel(cancelledModel), "작전 취소");
+  assert(commandConsoleClassName(cancelledModel).includes("command-console-superseded"));
+  assert(commandConsoleVerification(cancelledData, cancelledModel).includes("작전 취소"));
+  assert(!commandConsoleVerification(cancelledData, cancelledModel).includes("cleanup stop must not become mission effect"));
+  updateMicroMachineBadge(cancelledData.intervention, cancelledData.status);
+  assert.strictEqual(nodes["micromachine-applied-badge"].textContent, "작전 취소");
+  assert(nodes["micromachine-applied-badge"].className.includes("micro-badge-cancelled"));
+  assert(!nodes["micromachine-applied-badge"].className.includes("micro-badge-applied"));
+  var cancelledNarration = microMachineChatNarration(cancelledData);
+  assert(cancelledNarration.includes("작전 취소"));
+  assert(!cancelledNarration.includes("실행 확인"));
+
+  var noOwnedUnitsCancellationData = {
+    status: "published",
+    intervention: {
+      command_execution: {
+        command_id: "cancelled-no-owned-units-ui-contract",
+        state: "cancelled",
+        completed: false,
+        failed: false,
+        expired: false,
+        blocker_reason: "cancelled_by_policy",
+        terminal_cleanup: {
+          action: "release_no_owned_units|cancelled_by_policy",
+          frame: 815,
+          operation_id: "recon-alpha",
+          generation: 3
+        },
+        operation_id: "recon-alpha",
+        operation_generation: 3,
+        stages: []
+      }
+    }
+  };
+  var noOwnedUnitsCancellationModel = commandConsoleStageModel(
+    noOwnedUnitsCancellationData
+  );
+  assert.strictEqual(
+    commandConsoleTerminalCleanupVerified(noOwnedUnitsCancellationModel),
+    true
+  );
+  assert.strictEqual(
+    commandConsoleTerminalCleanupStoppedOwnedUnits(
+      noOwnedUnitsCancellationModel
+    ),
+    false
+  );
+  assert.strictEqual(
+    commandConsoleStateLabel(noOwnedUnitsCancellationModel),
+    "작전 취소"
+  );
+  assert(
+    commandConsoleVerification(
+      noOwnedUnitsCancellationData,
+      noOwnedUnitsCancellationModel
+    ).includes("중지 명령 없이")
+  );
+  assert(
+    microMachineChatNarration(noOwnedUnitsCancellationData).includes(
+      "중지 명령 없이"
+    )
+  );
+
+  var cancellationPendingCleanupData = {
+    status: "published",
+    intervention: {
+      command_execution: {
+        command_id: "cancelled-pending-cleanup-ui-contract",
+        operation_id: "assault-bravo",
+        operation_generation: 1,
+        state: "cancelled",
+        completed: false,
+        failed: false,
+        expired: false,
+        blocker_reason: "cancelled_by_policy",
+        terminal_cleanup: {},
+        stages: []
+      }
+    }
+  };
+  var cancellationPendingCleanupModel = commandConsoleStageModel(
+    cancellationPendingCleanupData
+  );
+  var cancellationPendingCleanupVerification = commandConsoleVerification(
+    cancellationPendingCleanupData,
+    cancellationPendingCleanupModel
+  );
+  assert(cancellationPendingCleanupVerification.includes("취소 요청 수락"));
+  assert(cancellationPendingCleanupVerification.includes("증거를 기다립니다"));
+  assert(!cancellationPendingCleanupVerification.includes("기존 명령을 중지"));
+  assert.strictEqual(
+    commandConsoleStateLabel(cancellationPendingCleanupModel),
+    "취소 정리 확인 중"
+  );
+  assert(
+    commandConsoleClassName(cancellationPendingCleanupModel).includes(
+      "command-console-executing"
+    )
+  );
+  assert(
+    !commandConsoleClassName(cancellationPendingCleanupModel).includes(
+      "command-console-superseded"
+    )
+  );
+  updateMicroMachineBadge(
+    cancellationPendingCleanupData.intervention,
+    cancellationPendingCleanupData.status
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "취소 정리 확인 중"
+  );
+  assert(
+    nodes["micromachine-applied-badge"].className.includes(
+      "micro-badge-pending"
+    )
+  );
+  assert(
+    !nodes["micromachine-applied-badge"].className.includes(
+      "micro-badge-cancelled"
+    )
+  );
+  var cancellationPendingCleanupNarration = microMachineChatNarration(
+    cancellationPendingCleanupData
+  );
+  assert(cancellationPendingCleanupNarration.includes("취소 요청을 수락"));
+  assert(cancellationPendingCleanupNarration.includes("증거를 기다립니다"));
+  assert(!cancellationPendingCleanupNarration.includes("기존 명령을 중지"));
 
   assert.strictEqual(
     looksLikeMicroMachineEmergencyCommand("공격을 취소하지 말고 계속 압박해"),
@@ -6944,6 +7765,305 @@ const assert = require("assert");
   assert.strictEqual(nodes["command-console-title"].textContent, "고급 직접 publish 실패");
   assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
   assert(nodes["command-console-verification"].textContent.includes("direct publish backend down"));
+
+  // Parallel operation cards reconcile independently, even when responses arrive B then A.
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-operation-cards";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-operation-cards");
+  var OPERATION_SCOPE = "parallel-operation-scope";
+  function operationResult(
+    operationId,
+    updateId,
+    commandText,
+    mission,
+    frame,
+    state,
+    stages,
+    generation
+  ) {
+    generation = generation || 1;
+    return {
+      operation_id: operationId,
+      operation_generation: generation,
+      update_id: updateId,
+      command_text: commandText,
+      mission: mission,
+      transport_status: "published",
+      consumption_status: "consumed",
+      telemetry_frame: frame,
+      disposition: "active",
+      update: {
+        update_id: updateId,
+        vector: { goal: commandText, operation_id: operationId }
+      },
+      intervention: {
+        telemetry_frame: frame,
+        command_execution: {
+          command_id: updateId,
+          operation_id: operationId,
+          operation_generation: generation,
+          state: state,
+          completed: state === "completed",
+          failed: false,
+          expired: false,
+          stages: stages
+        }
+      }
+    };
+  }
+  function actionStages(action, effect) {
+    var stages = observedExecutionStages(
+      effect ? { confirmation_effect: effect } : undefined
+    );
+    stages[4].evidence.last_issued_action = action;
+    stages[5].evidence.last_actual_command = action;
+    return stages;
+  }
+
+  var pendingA = beginOperationRecord("마린 1기 정찰", "parallel-pending-a");
+  var pendingB = beginOperationRecord("마린 4기 공격", "parallel-pending-b");
+  bindOperationRecordUpdate(
+    pendingA.text,
+    pendingA.pendingId,
+    OPERATION_SCOPE,
+    "parallel-update-a"
+  );
+  bindOperationRecordUpdate(
+    pendingB.text,
+    pendingB.pendingId,
+    OPERATION_SCOPE,
+    "parallel-update-b"
+  );
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [
+      operationResult(
+        "assault-bravo",
+        "parallel-update-b",
+        "마린 4기 공격",
+        "attack",
+        210,
+        "queued_or_assigned",
+        observedExecutionStages().slice(0, 4)
+      )
+    ]
+  }, OPERATION_SCOPE));
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [
+      operationResult(
+        "recon-alpha",
+        "parallel-update-a",
+        "마린 1기 정찰",
+        "scouting",
+        300,
+        "action_issued",
+        actionStages("move").slice(0, 6)
+      )
+    ]
+  }, OPERATION_SCOPE));
+
+  var reconKey = operationRecordKey(OPERATION_SCOPE, "recon-alpha");
+  var assaultKey = operationRecordKey(OPERATION_SCOPE, "assault-bravo");
+  var reconRecord = operationRecords[reconKey];
+  var assaultRecord = operationRecords[assaultKey];
+  assert(reconRecord);
+  assert(assaultRecord);
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(nodes["operation-list"].querySelectorAll(".operation-card").length, 2);
+  assert(reconRecord.node.textContent.includes("move"));
+  assert(!assaultRecord.node.textContent.includes("move"));
+  assert(reconRecord.node.className.includes("command-console-executing"));
+  assert(
+    !assaultRecord.node.className.includes("command-console-executing"),
+    "published or assigned must not be labeled as executing"
+  );
+  assert.strictEqual(
+    assaultRecord.node.querySelector(".operation-card-state").textContent,
+    "유닛 편성 완료"
+  );
+
+  [reconRecord, assaultRecord].forEach(function(record) {
+    var statusNode = record.node.querySelector(".operation-card-state");
+    var controls = record.node.querySelectorAll("button");
+    assert.strictEqual(statusNode.getAttribute("role"), "status");
+    assert.strictEqual(record.node.getAttribute("role"), "listitem");
+    assert(record.node.getAttribute("aria-labelledby"));
+    assert.strictEqual(controls.length, 3);
+    controls.forEach(function(control) {
+      assert(control.getAttribute("aria-label").includes(record.text));
+    });
+  });
+  assert.notStrictEqual(
+    reconRecord.node.getAttribute("aria-labelledby"),
+    assaultRecord.node.getAttribute("aria-labelledby")
+  );
+
+  // A stale response may not regress one card or contaminate the other card.
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [
+      operationResult(
+        "recon-alpha",
+        "parallel-update-a",
+        "마린 1기 정찰",
+        "scouting",
+        250,
+        "queued_or_assigned",
+        observedExecutionStages().slice(0, 4)
+      ),
+      operationResult(
+        "assault-bravo",
+        "parallel-update-b",
+        "마린 4기 공격",
+        "attack",
+        320,
+        "action_issued",
+        actionStages("attack").slice(0, 6)
+      )
+    ]
+  }, OPERATION_SCOPE));
+  reconRecord = operationRecords[reconKey];
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(reconRecord.telemetryFrame, 300);
+  assert.strictEqual(reconRecord.stageRank, 3);
+  assert(reconRecord.node.textContent.includes("move"));
+  assert.strictEqual(assaultRecord.telemetryFrame, 320);
+  assert(assaultRecord.node.textContent.includes("attack"));
+  assert(!assaultRecord.node.textContent.includes("move"));
+
+  // Cancellation remains active until matching release_stop cleanup arrives.
+  var cancellationPending = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "마린 4기 공격",
+    "attack",
+    330,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  cancellationPending.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  cancellationPending.intervention.command_execution.terminal_cleanup = {};
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [cancellationPending]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.operationGeneration, 1);
+  assert.strictEqual(assaultRecord.disposition, "active");
+  assert.strictEqual(
+    assaultRecord.node.querySelector(".operation-card-state").textContent,
+    "취소 정리 확인 중"
+  );
+  assert(nodes["operation-summary"].textContent.includes("활성 2"));
+
+  var wrongGenerationCleanup = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "마린 4기 공격",
+    "attack",
+    335,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    2
+  );
+  wrongGenerationCleanup.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  wrongGenerationCleanup.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 335,
+    operation_id: "assault-bravo",
+    generation: 2
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [wrongGenerationCleanup]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.telemetryFrame, 330);
+
+  var verifiedCancellation = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "마린 4기 공격",
+    "attack",
+    340,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  verifiedCancellation.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  verifiedCancellation.intervention.command_execution.terminal_cleanup = {
+    action: "release_no_owned_units|cancelled_by_policy",
+    frame: 340,
+    operation_id: "assault-bravo",
+    generation: 1
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [verifiedCancellation]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, true);
+  assert.strictEqual(assaultRecord.telemetryFrame, 340);
+  assert.strictEqual(assaultRecord.disposition, "superseded");
+  assert.strictEqual(
+    assaultRecord.node.querySelector(".operation-card-state").textContent,
+    "작전 취소"
+  );
+  assert(assaultRecord.node.textContent.includes("중지 명령 없이"));
+
+  // Terminal evidence is sticky even if a newer non-terminal payload arrives.
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [
+      operationResult(
+        "recon-alpha",
+        "parallel-update-a",
+        "마린 1기 정찰",
+        "scouting",
+        400,
+        "completed",
+        actionStages("move", "recon waypoint reached")
+      )
+    ]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(operationRecords[reconKey].terminal, true);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 400);
+  assert.strictEqual(
+    operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
+    "실행 확인"
+  );
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [
+      operationResult(
+        "recon-alpha",
+        "parallel-update-a",
+        "마린 1기 정찰",
+        "scouting",
+        500,
+        "action_issued",
+        actionStages("move").slice(0, 6)
+      )
+    ]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(operationRecords[reconKey].terminal, true);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 400);
+  assert.strictEqual(
+    operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
+    "실행 확인"
+  );
+
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-operation-cards-next";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-operation-cards-next");
+  assert.strictEqual(Object.keys(operationRecords).length, 0);
+  assert.strictEqual(nodes["operation-list"].querySelectorAll(".operation-card").length, 0);
+  assert(nodes["operation-summary"].textContent.includes("0"));
 
   var requestCountBeforeEmergency = requests.length;
   nodes["command-retreat-button"].dispatchEvent({ type: "click" });
@@ -8235,6 +9355,81 @@ class WebGuiServerConstructionTest(unittest.TestCase):
         self.assertIn("[redacted]", document)
         self.assertNotIn(submitted_key, document)
         self.assertEqual(snapshot["status"], "ready")
+
+    def test_live_launch_passes_sc2_root_as_normalized_sc2path(self):
+        configured_root = "~/custom-sc2-root"
+
+        class FakeProcess:
+            pid = 4321
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return None
+
+        with mock.patch.dict(
+            web_gui.os.environ,
+            {
+                "SC2_ROOT": configured_root,
+                "SC2PATH": "/ignored-sc2path",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(
+                web_gui.subprocess,
+                "Popen",
+                return_value=FakeProcess(),
+            ) as popen:
+                launcher = web_gui._LiveLaunchManager()
+                launcher.start("openai", "unit-test-key", "gpt-test")
+
+        child_environment = popen.call_args.kwargs["env"]
+        self.assertEqual(
+            os.path.abspath(os.path.expanduser(configured_root)),
+            child_environment["SC2PATH"],
+        )
+
+    def test_default_sc2_install_path_prefers_environment_over_discovery(self):
+        with mock.patch.dict(
+            web_gui.os.environ,
+            {
+                "SC2_ROOT": "~/custom-sc2-root",
+                "SC2PATH": "/ignored-sc2path",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                web_gui._default_sc2_install_path(),  # noqa: SLF001
+                os.path.abspath(os.path.expanduser("~/custom-sc2-root")),
+            )
+        with mock.patch.dict(
+            web_gui.os.environ,
+            {"SC2_ROOT": "", "SC2PATH": "~/custom-sc2path"},
+            clear=False,
+        ):
+            self.assertEqual(
+                web_gui._default_sc2_install_path(),  # noqa: SLF001
+                os.path.abspath(os.path.expanduser("~/custom-sc2path")),
+            )
+
+    def test_default_sc2_install_path_discovers_common_macos_location(self):
+        desktop_candidate = os.path.expanduser(
+            "~/Desktop/StarCraft2/StarCraft II"
+        )
+        with mock.patch.dict(
+            web_gui.os.environ,
+            {"SC2_ROOT": "", "SC2PATH": ""},
+            clear=False,
+        ):
+            with mock.patch.object(
+                web_gui.os.path,
+                "isdir",
+                side_effect=lambda path: path == desktop_candidate,
+            ):
+                self.assertEqual(
+                    web_gui._default_sc2_install_path(),  # noqa: SLF001
+                    os.path.abspath(desktop_candidate),
+                )
 
 
 class WebGuiMainTest(unittest.TestCase):

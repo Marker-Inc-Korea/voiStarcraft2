@@ -42,11 +42,85 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
-      - name: Verify local MicroMachine inputs
+      - name: Verify local MicroMachine and SC2 inputs
         if: inputs.enable_soak == '1'
+        env:
+          INPUT_QUALIFICATION_TIER: ${{ inputs.qualification_tier }}
         run: |
-          test -x "${MICROMACHINE_BUILD_DIR:-/private/tmp/MicroMachine/build-latest-api}/bin/MicroMachine"
-          test -x "${SC2_EXECUTABLE:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II/Versions/Base96883/SC2.app/Contents/MacOS/SC2}"
+          test -x "${MICROMACHINE_BUILD_DIR:-/private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api}/bin/MicroMachine"
+          sc2_root="${SC2_ROOT:-${SC2PATH:-}}"
+          if [[ -z "${sc2_root}" ]]; then
+            for candidate in \
+              "${HOME}/Desktop/StarCraft2/StarCraft II" \
+              "/Applications/StarCraft II" \
+              "${HOME}/Applications/StarCraft II"; do
+              if [[ -d "${candidate}" ]]; then
+                sc2_root="${candidate}"
+                break
+              fi
+            done
+          fi
+          sc2_root="${sc2_root:-/Applications/StarCraft II}"
+          sc2_root="${sc2_root/#\~/${HOME}}"
+          launch_mode="${SC2_LAUNCH_MODE:-auto}"
+          battlenet_executable="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
+          sc2_executable="${SC2_EXECUTABLE:-}"
+          if [[ "${launch_mode}" == "battlenet" ]]; then
+            if [[ "${INPUT_QUALIFICATION_TIER}" == "production" || "${INPUT_QUALIFICATION_TIER}" == "extended" ]]; then
+              echo "${INPUT_QUALIFICATION_TIER} soak rejected: Battle.net launch is diagnostic-only; a direct SC2 Base executable is required." >&2
+              exit 2
+            fi
+            sc2_executable="${sc2_executable:-${battlenet_executable}}"
+          elif [[ "${launch_mode}" == "auto" || "${launch_mode}" == "direct" ]]; then
+            if [[ -z "${sc2_executable}" ]]; then
+              sc2_executable="$(
+                find "${sc2_root}/Versions" -path '*/SC2.app/Contents/MacOS/SC2' -type f 2>/dev/null |
+                  awk -F/ '
+                    {
+                      for (part = 1; part <= NF - 4; ++part) {
+                        if ($part ~ /^Base[0-9]+$/ &&
+                            $(part + 1) == "SC2.app" &&
+                            $(part + 2) == "Contents" &&
+                            $(part + 3) == "MacOS" &&
+                            $(part + 4) == "SC2") {
+                          version = substr($part, 5) + 0
+                          if (!found || version > maximum) {
+                            found = 1
+                            maximum = version
+                            selected = $0
+                          }
+                        }
+                      }
+                    }
+                    END {
+                      if (found) {
+                        print selected
+                      }
+                    }
+                  '
+              )"
+            fi
+          else
+            echo "Invalid SC2_LAUNCH_MODE: ${launch_mode}; expected auto, direct, or battlenet." >&2
+            exit 2
+          fi
+          if [[ -z "${sc2_executable}" || ! -x "${sc2_executable}" ]]; then
+            echo "SC2 launcher rejected: no runnable executable selected for mode=${launch_mode} tier=${INPUT_QUALIFICATION_TIER}." >&2
+            exit 2
+          fi
+          resolved_sc2_executable="$(
+            python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' \
+              "${sc2_executable}"
+          )"
+          if [[ "${INPUT_QUALIFICATION_TIER}" == "production" || "${INPUT_QUALIFICATION_TIER}" == "extended" ]]; then
+            if [[ ! "${resolved_sc2_executable}" =~ /Versions/Base[0-9]+/SC2\.app/Contents/MacOS/SC2$ ]]; then
+              echo "${INPUT_QUALIFICATION_TIER} soak rejected: resolved SC2 executable must be a direct Versions/BaseNNNNN/SC2.app/Contents/MacOS/SC2 binary; Battle.net and wrapper executables are diagnostic-only: ${resolved_sc2_executable}" >&2
+              exit 2
+            fi
+          fi
+          sc2_executable="${resolved_sc2_executable}"
+          echo "SC2_ROOT=${sc2_root}" >> "${GITHUB_ENV}"
+          echo "SC2_EXECUTABLE=${sc2_executable}" >> "${GITHUB_ENV}"
       - name: Run or disable real SC2 MicroMachine soak matrix
         env:
           INPUT_ENABLE_SOAK: ${{ inputs.enable_soak }}

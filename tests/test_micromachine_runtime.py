@@ -45,6 +45,7 @@ from starcraft_commander.policy_modulation import (
     ScoutingModulation,
     SquadModulation,
     StrategyModulation,
+    TacticalOperationModulation,
     TacticalScopeModulation,
     TacticalTaskModulation,
     TargetIntentModulation,
@@ -347,6 +348,40 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             self.assertIn("emergency.prioritize_repair=true", kv)
             self.assertEqual(1, len(archive.read_text().splitlines()))
 
+    def test_publish_vector_stamps_nested_operation_epoch_in_serialized_outputs(
+        self,
+    ) -> None:
+        operation = TacticalOperationModulation(
+            operation_id="recon-alpha",
+            goal="scout the enemy main",
+        )
+        vector = PolicyModulationVector(
+            goal="publish one scouting operation",
+            operations=(operation,),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard = MicroMachineFilesystemBlackboard(directory)
+
+            update = blackboard.publish_vector(
+                vector,
+                current_frame=10_000,
+                update_id="operation-epoch",
+            )
+
+            document = json.loads(
+                (Path(directory) / LATEST_UPDATE_JSON_NAME).read_text()
+            )
+            kv = (Path(directory) / LATEST_UPDATE_KV_NAME).read_text()
+            self.assertEqual(10_000, update.vector.operations[0].issued_at_frame)
+            self.assertEqual(
+                10_000,
+                document["vector"]["operations"][0]["issued_at_frame"],
+            )
+            self.assertIn("operations.0.issued_at_frame=10000\n", kv)
+            self.assertEqual(0, operation.issued_at_frame)
+            self.assertIs(operation, vector.operations[0])
+
     def test_publish_rejects_unsafe_kv_key_without_partial_latest_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             blackboard = MicroMachineFilesystemBlackboard(directory)
@@ -491,6 +526,91 @@ class MicroMachineBackendAbstractionTest(unittest.TestCase):
                     self.assertEqual(1, snapshot["active_modulation_count"])
                     self.assertIsInstance(backend, MicroMachineModulationBackend)
 
+    def test_direct_publish_update_preserves_past_and_fills_missing_epochs(
+        self,
+    ) -> None:
+        vector = PolicyModulationVector(
+            goal="publish operations with existing and missing epochs",
+            operations=(
+                TacticalOperationModulation(
+                    operation_id="existing-operation",
+                    goal="existing scouting order",
+                    issued_at_frame=1,
+                ),
+                TacticalOperationModulation(
+                    operation_id="new-operation",
+                    goal="new attack order",
+                ),
+            ),
+        )
+        source_update = MicroMachineBlackboardUpdate(
+            update_id="authoritative-operation-epoch",
+            vector=vector,
+            issued_at_frame=10_000,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            backends: list[MicroMachineModulationBackend] = [
+                MicroMachineFilesystemBlackboard(directory),
+                MicroMachineInMemoryBlackboard(),
+            ]
+
+            for backend in backends:
+                with self.subTest(backend=type(backend).__name__):
+                    published = backend.publish_update(
+                        source_update,
+                        current_frame=10_000,
+                    )
+
+                    self.assertEqual(
+                        (1, 10_000),
+                        tuple(
+                            operation.issued_at_frame
+                            for operation in published.vector.operations
+                        ),
+                    )
+
+        self.assertEqual(
+            (1, 0),
+            tuple(
+                operation.issued_at_frame
+                for operation in source_update.vector.operations
+            ),
+        )
+
+    def test_direct_publish_update_rejects_future_operation_epoch(self) -> None:
+        source_update = MicroMachineBlackboardUpdate(
+            update_id="future-operation-epoch",
+            vector=PolicyModulationVector(
+                goal="reject a future operation epoch",
+                operations=(
+                    TacticalOperationModulation(
+                        operation_id="future-operation",
+                        goal="future attack order",
+                        issued_at_frame=10_001,
+                    ),
+                ),
+            ),
+            issued_at_frame=10_000,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            backends: list[MicroMachineModulationBackend] = [
+                MicroMachineFilesystemBlackboard(directory),
+                MicroMachineInMemoryBlackboard(),
+            ]
+
+            for backend in backends:
+                with self.subTest(backend=type(backend).__name__):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "cannot be later than current_frame",
+                    ):
+                        backend.publish_update(
+                            source_update,
+                            current_frame=10_000,
+                        )
+
     def test_memory_backend_rejects_raw_payloads_at_telemetry_boundary(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
 
@@ -625,6 +745,7 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
         text = flatten_blackboard_update(update)
 
         self.assertIn("protocol_version=voi-mm-bridge/v1\n", text)
+        self.assertIn("bridge_capabilities=parallel_operations_v2\n", text)
         self.assertIn("source=human\n", text)
         self.assertIn("override_level=constraint\n", text)
         self.assertIn("strategy.posture=defensive\n", text)
@@ -687,6 +808,72 @@ class FlatBlackboardUpdateTest(unittest.TestCase):
             text,
         )
         self.assertIn("unit_roles.8.unit_type=TERRAN_BATTLECRUISER\n", text)
+
+    def test_flatten_parallel_operation_nested_sequences_for_cpp(self) -> None:
+        update = MicroMachineBlackboardUpdate(
+            update_id="parallel-nested",
+            vector=PolicyModulationVector(
+                goal="mixed operation",
+                operations=(
+                    TacticalOperationModulation(
+                        operation_id="assault-bravo",
+                        goal="탱크와 마린 우회 공격",
+                        generation=4,
+                        tactical_task=TacticalTaskModulation(
+                            task_type="pressure_with_main_army",
+                            min_units=5,
+                            max_units=5,
+                            allow_partial=False,
+                        ),
+                        lifetime=LifetimeModulation(
+                            mode="until_cancelled",
+                            completion_conditions=("cancelled_by_user",),
+                            completion_state="cancelled",
+                        ),
+                        composition_requirements=(
+                            CompositionRequirement(
+                                "tank",
+                                count=2,
+                                role="siege_support",
+                            ),
+                            CompositionRequirement(
+                                "marine",
+                                count=3,
+                                role="frontline",
+                            ),
+                        ),
+                        unit_roles=(
+                            UnitRoleAssignment(
+                                "tank",
+                                role="siege_support",
+                                ability_policy="if_available",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            issued_at_frame=22,
+        )
+
+        text = flatten_blackboard_update(update)
+
+        self.assertIn("operations.count=1\n", text)
+        self.assertIn("operations.0.generation=4\n", text)
+        self.assertIn(
+            "operations.0.lifetime.completion_state=cancelled\n",
+            text,
+        )
+        self.assertIn("operations.0.composition_requirements.count=2\n", text)
+        self.assertIn(
+            "operations.0.composition_requirements.0.unit_type=TERRAN_SIEGETANK\n",
+            text,
+        )
+        self.assertIn("operations.0.composition_requirements.0.count=2\n", text)
+        self.assertIn("operations.0.unit_roles.count=1\n", text)
+        self.assertIn(
+            "operations.0.unit_roles.0.ability_policy=if_available\n",
+            text,
+        )
 
     def test_flatten_update_rejects_injected_kv_keys(self) -> None:
         update = MicroMachineBlackboardUpdate(

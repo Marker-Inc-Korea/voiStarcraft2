@@ -23,6 +23,10 @@ from starcraft_commander.policy_modulation import (
 MICROMACHINE_BRIDGE_PROTOCOL_VERSION: Final[str] = "voi-mm-bridge/v1"
 MICROMACHINE_GAME_LOOPS_PER_SECOND: Final[int] = 22
 """Conservative integer game-loop conversion for blackboard TTL expiry."""
+MICROMACHINE_PARALLEL_OPERATIONS_CAPABILITY: Final[str] = (
+    "parallel_operations_v2"
+)
+"""KV capability marker for the backward-compatible parallel operation overlay."""
 
 MICROMACHINE_UPDATE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
@@ -282,11 +286,18 @@ class MicroMachineBlackboardUpdate:
                 "building_tasks",
                 "route_intent",
                 "target_intent",
+                "operations",
             )
-            if _domain_has_signal(getattr(self.vector, domain))
+            if _domain_has_signal(getattr(self.vector, domain, ()))
             or (
-                domain in {"composition_requirements", "unit_roles", "building_tasks"}
-                and _value_has_signal(getattr(self.vector, domain))
+                domain
+                in {
+                    "composition_requirements",
+                    "unit_roles",
+                    "building_tasks",
+                    "operations",
+                }
+                and _value_has_signal(getattr(self.vector, domain, ()))
             )
         )
 
@@ -659,6 +670,16 @@ MICROMACHINE_MANAGER_HOOKS: Final[tuple[MicroMachineManagerHook, ...]] = (
             "Accepts/refuses manager-bounded tasks such as scout_with_units, "
             "pressure_with_main_army, sustain_production, tech_transition, and "
             "expand_or_land_command_center."
+        ),
+    ),
+    MicroMachineManagerHook(
+        domain="operations",
+        manager="VoiOperationDirector / CombatCommander / Squad",
+        hook="parallel operation registry and unit ownership",
+        responsibility=(
+            "Creates independently addressable operation squads, gives each "
+            "unit one authoritative owner, and reports assignment, submission, "
+            "movement, engagement, and terminal state per operation id."
         ),
     ),
     MicroMachineManagerHook(

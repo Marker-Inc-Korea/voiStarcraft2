@@ -1,0 +1,135 @@
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -723,6 +723,12 @@ public:
+ 	void updateVoiTacticalNukeSquad();
+ 	void updateVoiTacticalNukeAction();
+ 	void updateVoiExplicitAbilityAction();
++	bool hasVoiOperationState(
++		const std::string & operationId,
++		uint64_t generation) const;
++	bool isVoiOperationActive(
++		const std::string & operationId,
++		uint64_t generation) const;
+ 	std::string getVoiOperationDirectorTelemetryJson() const;
+ 	SquadData & getSquadData() { return m_squadData; }
+ 	const std::vector<CCTilePosition> & getMainBaseSiegePositions() const { return m_mainBaseSiegePositions; }
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -3226,27 +3226,16 @@ void CombatCommander::updateVoiOperations()
+ 					m_bot.Commander().getVoiPolicyInt(
+ 						prefix + ".max_units",
+ 						0))));
+-		const bool hasScopeAllowPartial =
+-			m_bot.Commander().hasVoiPolicyKey(
+-				prefix + ".scope.allow_partial_scope");
+-		const bool hasTaskAllowPartial =
+-			m_bot.Commander().hasVoiPolicyKey(
+-				prefix
+-					+ ".tactical_task.allow_partial");
+ 		requested.allowPartial =
+-			hasScopeAllowPartial
+-				? m_bot.Commander().getVoiPolicyBool(
+-					prefix
+-						+ ".scope.allow_partial_scope",
+-					true)
+-				: (hasTaskAllowPartial
+-					? m_bot.Commander().getVoiPolicyBool(
+-						prefix
+-							+ ".tactical_task.allow_partial",
+-						true)
+-					: m_bot.Commander().getVoiPolicyBool(
+-						prefix + ".allow_partial",
+-						true));
++			m_bot.Commander().getVoiPolicyBool(
++				prefix + ".scope.allow_partial_scope",
++				true)
++			&& m_bot.Commander().getVoiPolicyBool(
++				prefix + ".tactical_task.allow_partial",
++				true)
++			&& m_bot.Commander().getVoiPolicyBool(
++				prefix + ".allow_partial",
++				true);
+ 		requested.lifetimeMode =
+ 			m_bot.Commander().getVoiPolicyString(
+ 				prefix + ".lifetime.mode",
+@@ -3604,7 +3590,6 @@ void CombatCommander::updateVoiOperations()
+ 		existing->completionConditions =
+ 			requested.completionConditions;
+ 		existing->durationSeconds = requested.durationSeconds;
+-		existing->deadlineFrame = requested.deadlineFrame;
+ 		existing->standing = requested.standing;
+ 		existing->minUnits = requested.minUnits;
+ 		existing->maxUnits = requested.maxUnits;
+@@ -3669,6 +3654,35 @@ void CombatCommander::updateVoiOperations()
+ 	}
+ }
+ 
++bool CombatCommander::hasVoiOperationState(
++	const std::string & operationId,
++	uint64_t generation) const
++{
++	return findVoiOperation(operationId, generation) != nullptr;
++}
++
++bool CombatCommander::isVoiOperationActive(
++	const std::string & operationId,
++	uint64_t generation) const
++{
++	const VoiOperationState * operation =
++		findVoiOperation(operationId, generation);
++	if (operation == nullptr
++		|| operation->completed
++		|| operation->status == "COMPLETED"
++		|| operation->status == "CANCELLED"
++		|| operation->status == "EXPIRED"
++		|| operation->status == "FAILED"
++		|| operation->status == "SUPERSEDED")
++	{
++		return false;
++	}
++	return operation->standing
++		|| operation->deadlineFrame == 0
++		|| static_cast<uint64_t>(m_bot.GetCurrentFrame())
++			<= operation->deadlineFrame;
++}
++
+ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ {
+ 	std::ostringstream payload;
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -101,11 +101,29 @@ bool voiParallelOperationIsActive(CCBot & bot, int operationIndex)
+ 		bot.Commander().getVoiPolicyString(
+ 			prefix + ".tactical_task.task_type",
+ 			"");
++	const uint64_t generation =
++		static_cast<uint64_t>(
++			std::max(
++				1,
++				bot.Commander().getVoiPolicyInt(
++					prefix + ".generation",
++					1)));
+ 	if (operationId.empty()
+ 		|| (taskType != "scout_with_units"
+ 			&& taskType != "pressure_with_main_army"
+-			&& taskType != "defend_with_units")
+-		|| bot.Commander().getVoiPolicyBool(
++			&& taskType != "defend_with_units"))
++	{
++		return false;
++	}
++	if (bot.Commander().Combat().hasVoiOperationState(
++			operationId,
++			generation))
++	{
++		return bot.Commander().Combat().isVoiOperationActive(
++			operationId,
++			generation);
++	}
++	if (bot.Commander().getVoiPolicyBool(
+ 			prefix + ".completed",
+ 			false)
+ 		|| bot.Commander().getVoiPolicyBool(

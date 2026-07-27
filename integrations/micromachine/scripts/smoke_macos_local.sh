@@ -68,7 +68,27 @@ S2CLIENT_DIR="${S2CLIENT_DIR:-${ROOT_DIR}/s2client-api}"
 MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
 MICROMACHINE_BUILD_IDENTITY_REPORT="${MICROMACHINE_BUILD_IDENTITY_REPORT:-${MICROMACHINE_BUILD_DIR}/voi_build_identity.json}"
 SMOKE_REQUIRE_BUILD_IDENTITY="${SMOKE_REQUIRE_BUILD_IDENTITY:-1}"
-SC2_ROOT="${SC2_ROOT:-/Users/jinminseong/Desktop/StarCraft2/StarCraft II}"
+
+discover_sc2_root() {
+  local configured="${SC2_ROOT:-${SC2PATH:-}}"
+  if [[ -n "${configured}" ]]; then
+    printf '%s\n' "${configured/#\~/${HOME}}"
+    return
+  fi
+  local candidate
+  for candidate in \
+    "${HOME}/Desktop/StarCraft2/StarCraft II" \
+    "/Applications/StarCraft II" \
+    "${HOME}/Applications/StarCraft II"; do
+    if [[ -d "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return
+    fi
+  done
+  printf '%s\n' "/Applications/StarCraft II"
+}
+
+SC2_ROOT="$(discover_sc2_root)"
 SC2_LAUNCH_MODE="${SC2_LAUNCH_MODE:-auto}"
 SC2_BATTLENET_EXECUTABLE="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
 SC2_BATTLENET_GAME="${SC2_BATTLENET_GAME:-s2_kokr}"
@@ -96,7 +116,32 @@ resolve_latest_direct_sc2_executable() {
   local versions_dir="${SC2_ROOT}/Versions"
   if [[ -d "${versions_dir}" ]]; then
     local latest
-    latest="$(find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f | sort -r | head -n 1)"
+    latest="$(
+      find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f 2>/dev/null |
+        awk -F/ '
+          {
+            for (part = 1; part <= NF - 4; ++part) {
+              if ($part ~ /^Base[0-9]+$/ &&
+                  $(part + 1) == "SC2.app" &&
+                  $(part + 2) == "Contents" &&
+                  $(part + 3) == "MacOS" &&
+                  $(part + 4) == "SC2") {
+                version = substr($part, 5) + 0
+                if (!found || version > maximum) {
+                  found = 1
+                  maximum = version
+                  selected = $0
+                }
+              }
+            }
+          }
+          END {
+            if (found) {
+              print selected
+            }
+          }
+        '
+    )"
     if [[ -n "${latest}" && -x "${latest}" ]]; then
       printf '%s\n' "${latest}"
       return
@@ -176,12 +221,14 @@ verify_build_identity() {
   fi
   PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${MICROMACHINE_BUILD_IDENTITY_REPORT}" "${MICROMACHINE_DIR}" "${S2CLIENT_DIR}" "${MICROMACHINE_BUILD_DIR}"
 import json
+import os
 import sys
 from pathlib import Path
 
 from starcraft_commander.micromachine_build_identity import (
     MicroMachineBuildIdentityConfig,
     build_micromachine_build_identity,
+    micromachine_build_identity_admission_error,
 )
 
 report_path = Path(sys.argv[1])
@@ -201,21 +248,219 @@ current = build_micromachine_build_identity(
         micromachine_build_dir=Path(sys.argv[4]),
     )
 )
-if recorded.get("ok") is not True:
+admission_error = micromachine_build_identity_admission_error(
+    recorded,
+    current,
+)
+if admission_error:
     raise SystemExit(
-        "MicroMachine smoke rejected: recorded build identity is not ok: "
-        f"{recorded.get('failures')}"
-    )
-if current.get("ok") is not True:
-    raise SystemExit(
-        "MicroMachine smoke rejected: current build identity is not ok: "
-        f"{current.get('failures')}"
-    )
-if recorded.get("identity") != current.get("identity"):
-    raise SystemExit(
-        "MicroMachine smoke rejected: stale build identity. "
-        f"recorded={recorded.get('identity')} current={current.get('identity')}. "
+        "MicroMachine smoke rejected: stale build identity or unsupported "
+        f"schema: {admission_error}. "
         "Re-run integrations/micromachine/scripts/build_macos_local.sh."
+    )
+PY
+}
+
+snapshot_runtime_identity() {
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' \
+    "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
+    "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine" \
+    "${RUNTIME_IDENTITY_SNAPSHOT}" \
+    "${SMOKE_RUN_ID}" \
+    "${SMOKE_REPO_HEAD_SHA}" \
+    "${BASH_SOURCE[0]}" \
+    "${REPO_ROOT}"
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_build_identity import (
+    build_runtime_workspace_identity,
+)
+
+report_path = Path(sys.argv[1])
+binary_path = Path(sys.argv[2])
+snapshot_path = Path(sys.argv[3])
+run_id = sys.argv[4]
+repo_head_sha = sys.argv[5]
+smoke_script_path = Path(sys.argv[6]).resolve()
+repo_root = Path(sys.argv[7]).resolve()
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def git_head(path):
+    completed = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    head = completed.stdout.strip()
+    if completed.returncode != 0 or not head:
+        raise SystemExit(
+            "MicroMachine smoke rejected: cannot resolve repository HEAD "
+            f"for runtime provenance: {completed.stderr.strip()}"
+        )
+    return head
+
+try:
+    report = json.loads(report_path.read_text())
+except (json.JSONDecodeError, OSError) as exc:
+    raise SystemExit(
+        f"MicroMachine smoke rejected: cannot snapshot build report: {exc}"
+    )
+if report.get("ok") is not True:
+    raise SystemExit(
+        "MicroMachine smoke rejected: cannot snapshot non-passing build identity."
+    )
+binary_sha256 = sha256(binary_path)
+reported_binary_sha256 = report.get("checksums", {}).get("binary_sha256")
+if binary_sha256 != reported_binary_sha256:
+    raise SystemExit(
+        "MicroMachine smoke rejected: executable changed before launch: "
+        f"reported={reported_binary_sha256} observed={binary_sha256}"
+    )
+observed = report.get("observed", {})
+runtime_workspace = build_runtime_workspace_identity(repo_root)
+actual_repo_head_sha = git_head(repo_root)
+if repo_head_sha != actual_repo_head_sha:
+    raise SystemExit(
+        "MicroMachine smoke rejected: configured repository HEAD does not "
+        f"match the live checkout: configured={repo_head_sha} "
+        f"actual={actual_repo_head_sha}"
+    )
+payload = {
+    "schema_version": 1,
+    "run_id": run_id,
+    "repo_head_sha": actual_repo_head_sha,
+    "smoke_script": str(smoke_script_path),
+    "smoke_script_sha256": sha256(smoke_script_path),
+    "python_runtime_source_identity": runtime_workspace["identity"],
+    "python_runtime_source_files": runtime_workspace["files"],
+    "build_identity_report": str(report_path),
+    "build_identity_report_sha256": sha256(report_path),
+    "build_identity": report.get("identity"),
+    "build_schema_version": report.get("schema_version"),
+    "micromachine_source_state_sha256": (
+        observed.get("micromachine_source_state_sha256")
+        if isinstance(observed, dict)
+        else None
+    ),
+    "binary": str(binary_path),
+    "binary_sha256": binary_sha256,
+}
+snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+temporary = snapshot_path.with_name(snapshot_path.name + ".tmp")
+temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+os.replace(temporary, snapshot_path)
+PY
+}
+
+verify_runtime_identity_snapshot() {
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' \
+    "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
+    "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine" \
+    "${RUNTIME_IDENTITY_SNAPSHOT}" \
+    "${SMOKE_RUN_ID}" \
+    "${SMOKE_REPO_HEAD_SHA}" \
+    "${BASH_SOURCE[0]}" \
+    "${REPO_ROOT}"
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_build_identity import (
+    build_runtime_workspace_identity,
+)
+
+report_path = Path(sys.argv[1])
+binary_path = Path(sys.argv[2])
+snapshot_path = Path(sys.argv[3])
+run_id = sys.argv[4]
+repo_head_sha = sys.argv[5]
+smoke_script_path = Path(sys.argv[6]).resolve()
+repo_root = Path(sys.argv[7]).resolve()
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def git_head(path):
+    completed = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    head = completed.stdout.strip()
+    if completed.returncode != 0 or not head:
+        raise SystemExit(
+            "MicroMachine smoke rejected: cannot resolve repository HEAD "
+            f"for runtime provenance: {completed.stderr.strip()}"
+        )
+    return head
+
+try:
+    snapshot = json.loads(snapshot_path.read_text())
+except (json.JSONDecodeError, OSError) as exc:
+    raise SystemExit(
+        f"MicroMachine smoke rejected: invalid runtime identity snapshot: {exc}"
+    )
+if sha256(report_path) != snapshot.get("build_identity_report_sha256"):
+    raise SystemExit(
+        "MicroMachine smoke rejected: build identity report changed during live run."
+    )
+if sha256(binary_path) != snapshot.get("binary_sha256"):
+    raise SystemExit(
+        "MicroMachine smoke rejected: executable changed during live run."
+    )
+if snapshot.get("run_id") != run_id:
+    raise SystemExit(
+        "MicroMachine smoke rejected: runtime run ID changed during live run."
+    )
+actual_repo_head_sha = git_head(repo_root)
+if snapshot.get("repo_head_sha") != actual_repo_head_sha:
+    raise SystemExit(
+        "MicroMachine smoke rejected: repository HEAD changed during live run: "
+        f"started={snapshot.get('repo_head_sha')} actual={actual_repo_head_sha}"
+    )
+if repo_head_sha != actual_repo_head_sha:
+    raise SystemExit(
+        "MicroMachine smoke rejected: configured repository HEAD changed "
+        f"during live run: configured={repo_head_sha} "
+        f"actual={actual_repo_head_sha}"
+    )
+if snapshot.get("smoke_script") != str(smoke_script_path):
+    raise SystemExit(
+        "MicroMachine smoke rejected: smoke script path changed during live run."
+    )
+if snapshot.get("smoke_script_sha256") != sha256(smoke_script_path):
+    raise SystemExit(
+        "MicroMachine smoke rejected: smoke script changed during live run."
+    )
+runtime_workspace = build_runtime_workspace_identity(repo_root)
+if (
+    snapshot.get("python_runtime_source_identity")
+    != runtime_workspace.get("identity")
+    or snapshot.get("python_runtime_source_files")
+    != runtime_workspace.get("files")
+):
+    raise SystemExit(
+        "MicroMachine smoke rejected: Python runtime workspace changed during "
+        "live run."
     )
 PY
 }
@@ -229,8 +474,13 @@ SMOKE_TIMEOUT_SECONDS="${SMOKE_TIMEOUT_SECONDS:-600}"
 SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-3}"
 SMOKE_RETRY_SETTLE_SECONDS="${SMOKE_RETRY_SETTLE_SECONDS:-15}"
 SMOKE_ATTEMPT_INDEX="${SMOKE_ATTEMPT_INDEX:-}"
+SMOKE_RUN_ID="${SMOKE_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}}"
+SMOKE_REPO_HEAD_SHA="${SMOKE_REPO_HEAD_SHA:-$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || printf 'unknown')}"
+export SMOKE_RUN_ID SMOKE_REPO_HEAD_SHA
 BOT_LOG="${BLACKBOARD_DIR}/micromachine.log"
 CLASSIFIER_BOT_LOG="${BLACKBOARD_DIR}/micromachine_combined.log"
+TELEMETRY_CLEANUP_SNAPSHOT="${BLACKBOARD_DIR}/latest_telemetry.pre_cleanup.json"
+RUNTIME_IDENTITY_SNAPSHOT="${BLACKBOARD_DIR}/runtime_identity.snapshot.json"
 MICROMACHINE_DATA_DIR="${MICROMACHINE_DATA_DIR:-${MICROMACHINE_DIR}/bin/data}"
 RUNTIME_LOG_MARKER="${BLACKBOARD_DIR}/runtime_log_start.marker"
 RUNTIME_LOG_BASELINE="${BLACKBOARD_DIR}/runtime_log_baseline.tsv"
@@ -241,10 +491,34 @@ PREEXISTING_SC2_PORT_PIDS=""
 DEFENSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID:-smoke-defensive-hold}"
 AGGRESSIVE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID:-smoke-aggressive-pressure}"
 SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}"
+SMOKE_STRATEGY_EVIDENCE_UPDATE_ID="${AGGRESSIVE_UPDATE_ID}"
 AGGRESSIVE_PROFILE_PUBLISHED=0
 SMOKE_AUTO_AGGRESSIVE_PROFILE="${SMOKE_AUTO_AGGRESSIVE_PROFILE:-1}"
 SMOKE_MANUAL_LIVE_MODE="${SMOKE_MANUAL_LIVE_MODE:-0}"
 SMOKE_FRESH_LIVE_SESSION="${SMOKE_FRESH_LIVE_SESSION:-0}"
+SMOKE_MODULATION_ARCHIVE_START_OFFSET=0
+if [[ -z "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE:-}" ]]; then
+  if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]]; then
+    SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE=0
+  else
+    SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE=1
+  fi
+fi
+SMOKE_OPERATION_UPDATE_ID="${SMOKE_OPERATION_UPDATE_ID:-smoke-parallel-operations}"
+SMOKE_SCOUT_OPERATION_ID="${SMOKE_SCOUT_OPERATION_ID:-smoke-scout-alpha}"
+SMOKE_ATTACK_OPERATION_ID="${SMOKE_ATTACK_OPERATION_ID:-smoke-attack-bravo}"
+SMOKE_RESTORE_UPDATE_ID="${SMOKE_RESTORE_UPDATE_ID:-}"
+OPERATION_LIFECYCLE_PHASE="pending"
+OPERATION_CANCEL_ISSUED_FRAME=0
+OPERATION_RESTORE_ISSUED_FRAME=0
+OPERATION_CANCEL_TELEMETRY_FRAME=0
+OPERATION_CANCEL_MAIN_ATTACK_COMMAND_BASELINE=0
+OPERATION_CANCEL_MAIN_ATTACK_ACTION_FRAME_BASELINE=0
+OPERATION_CANCEL_MAIN_ATTACK_HOME_DISTANCE_BASELINE=0
+OPERATION_CANCEL_MAIN_ATTACK_UNIT_SAMPLES='[]'
+OPERATION_CANCEL_OWNER_RELEASE_COUNT_BASELINE=0
+OPERATION_CANCEL_QUEUE_PURGE_COUNT_BASELINE=0
+OPERATION_CANCEL_QUEUE_PURGE_FRAME_BASELINE=0
 NO_START_UNITS_FRAME="${NO_START_UNITS_FRAME:-1200}"
 SMOKE_STRATEGY_PROFILE_NAME="${SMOKE_STRATEGY_PROFILE_NAME:-bio_pressure}"
 if [[ -z "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE:-}" ]]; then
@@ -262,7 +536,7 @@ expected_strategy_contract() {
       printf '%s\t%s\t%s\n' "marine_rush" "marine_pressure bio_facility" "Marine Barracks"
       ;;
     bio_pressure|aggressive_pressure)
-      printf '%s\t%s\t%s\n' "bio_pressure" "bio_marauder_techlab bio_marauder_support starport_transition medivac_drop_support" "BarracksTechLab Marauder Starport Medivac"
+      printf '%s\t%s\t%s\n' "bio_pressure" "bio_facility bio_marauder_techlab bio_ghost_techlab bio_marauder_support starport_transition medivac_drop_support" "Barracks BarracksTechLab Marauder Starport Medivac"
       ;;
     tank_defensive_hold|siege_contain|contain_enemy_natural)
       printf '%s\t%s\t%s\n' "${profile}" "factory_transition factory_techlab siege_tank_composition" "Factory FactoryTechLab SiegeTank"
@@ -321,12 +595,205 @@ if [[ -z "${SMOKE_REQUIRE_SQUAD_MODULATION_EVIDENCE:-}" ]]; then
   esac
 fi
 
+reset_promoted_smoke_artifacts() {
+  local artifact
+  for artifact in \
+    latest_telemetry.json \
+    latest_telemetry.pre_cleanup.json \
+    telemetry.jsonl \
+    micromachine_combined.log \
+    micromachine.log \
+    latest_modulation.json \
+    latest_modulation.kv \
+    modulation_updates.jsonl \
+    runtime_log_start.marker \
+    runtime_log_baseline.tsv \
+    runtime_identity.snapshot.json \
+    smoke_attempts.json
+  do
+    rm -f "${BLACKBOARD_DIR}/${artifact}"
+  done
+}
+
+reset_current_smoke_artifacts() {
+  mkdir -p "${BLACKBOARD_DIR}"
+  rm -f \
+    "${BLACKBOARD_DIR}/latest_telemetry.json" \
+    "${TELEMETRY_CLEANUP_SNAPSHOT}" \
+    "${BLACKBOARD_DIR}/telemetry.jsonl" \
+    "${BOT_LOG}" \
+    "${CLASSIFIER_BOT_LOG}" \
+    "${RUNTIME_LOG_BASELINE}" \
+    "${RUNTIME_IDENTITY_SNAPSHOT}" \
+    "${BLACKBOARD_DIR}/smoke_attempts.json"
+  if [[ "${SMOKE_MANUAL_LIVE_MODE:-0}" != "1" ]]; then
+    rm -f \
+      "${BLACKBOARD_DIR}/latest_modulation.json" \
+      "${BLACKBOARD_DIR}/latest_modulation.kv" \
+      "${BLACKBOARD_DIR}/latest_modulation_compile_result.json" \
+      "${BLACKBOARD_DIR}/modulation_updates.jsonl"
+  fi
+}
+
+write_smoke_attempt_status() {
+  local attempt_dir="$1"
+  local attempt="$2"
+  local status="$3"
+  python3 - <<'PY' "${attempt_dir}" "${attempt}" "${status}"
+import json
+import sys
+from pathlib import Path
+
+attempt_dir = Path(sys.argv[1])
+attempt_dir.mkdir(parents=True, exist_ok=True)
+(attempt_dir / "attempt_status.json").write_text(
+    json.dumps(
+        {
+            "attempt": int(sys.argv[2]),
+            "status": sys.argv[3],
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n"
+)
+PY
+}
+
+write_smoke_attempt_summary() {
+  local status="$1"
+  local selected_attempt="${2:-0}"
+  local stopped_at="${3:-0}"
+  local stop_reason="${4:-}"
+  python3 - <<'PY' \
+    "${BLACKBOARD_DIR}" \
+    "${SMOKE_RUN_ROOT}" \
+    "${SMOKE_RUN_ID}" \
+    "${SMOKE_REPO_HEAD_SHA}" \
+    "${SMOKE_MAX_ATTEMPTS}" \
+    "${status}" \
+    "${selected_attempt}" \
+    "${stopped_at}" \
+    "${stop_reason}"
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+run_root = Path(sys.argv[2])
+run_id = sys.argv[3]
+repo_head_sha = sys.argv[4]
+max_attempts = int(sys.argv[5])
+status = sys.argv[6]
+selected_attempt = int(sys.argv[7])
+stopped_at = int(sys.argv[8])
+stop_reason = sys.argv[9]
+
+snapshot_attempt = selected_attempt or stopped_at
+identity_snapshot_path = (
+    run_root / f"attempt-{snapshot_attempt}" / "runtime_identity.snapshot.json"
+    if snapshot_attempt
+    else None
+)
+build_identity = {}
+if identity_snapshot_path is not None and identity_snapshot_path.exists():
+    try:
+        build_identity = json.loads(identity_snapshot_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        build_identity = {}
+runtime_source_files = build_identity.get("python_runtime_source_files")
+runtime_source_file_count = (
+    len(runtime_source_files)
+    if isinstance(runtime_source_files, list)
+    else 0
+)
+
+attempts = []
+for index in range(1, max_attempts + 1):
+    attempt_dir = run_root / f"attempt-{index}"
+    attempt_status_path = attempt_dir / "attempt_status.json"
+    attempt_status = "not_run"
+    if attempt_status_path.exists():
+        try:
+            attempt_status = str(
+                json.loads(attempt_status_path.read_text()).get(
+                    "status",
+                    "failed",
+                )
+            )
+        except (json.JSONDecodeError, OSError):
+            attempt_status = "failed"
+    telemetry_path = attempt_dir / "latest_telemetry.json"
+    latest_frame = 0
+    if telemetry_path.exists():
+        try:
+            latest_frame = int(
+                json.loads(telemetry_path.read_text()).get("frame") or 0
+            )
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            latest_frame = 0
+    attempts.append(
+        {
+            "attempt": index,
+            "status": attempt_status,
+            "latest_frame": latest_frame,
+            "dir": str(attempt_dir),
+        }
+    )
+
+payload = {
+    "status": status,
+    "ok": status == "passed",
+    "run_id": run_id,
+    "run_root": str(run_root),
+    "repo_head_sha": repo_head_sha,
+    "runtime_identity_snapshot": (
+        str(identity_snapshot_path) if identity_snapshot_path else None
+    ),
+    "build_identity_report": build_identity.get("build_identity_report"),
+    "build_identity_report_sha256": build_identity.get(
+        "build_identity_report_sha256"
+    ),
+    "build_identity": build_identity.get("build_identity"),
+    "build_schema_version": build_identity.get("build_schema_version"),
+    "micromachine_source_state_sha256": build_identity.get(
+        "micromachine_source_state_sha256"
+    ),
+    "binary": build_identity.get("binary"),
+    "binary_sha256": build_identity.get("binary_sha256"),
+    "smoke_script": build_identity.get("smoke_script"),
+    "smoke_script_sha256": build_identity.get("smoke_script_sha256"),
+    "python_runtime_source_identity": build_identity.get(
+        "python_runtime_source_identity"
+    ),
+    "python_runtime_source_file_count": runtime_source_file_count,
+    "max_attempts": max_attempts,
+    "selected_attempt": selected_attempt or None,
+    "selected_attempt_dir": (
+        str(run_root / f"attempt-{selected_attempt}")
+        if selected_attempt
+        else None
+    ),
+    "stopped_at_attempt": stopped_at or None,
+    "stop_reason": stop_reason or None,
+    "attempts": attempts,
+}
+(root / "smoke_attempts.json").write_text(
+    json.dumps(payload, indent=2, sort_keys=True) + "\n"
+)
+PY
+}
+
 if [[ -z "${SMOKE_ATTEMPT_INDEX}" && "${SMOKE_MAX_ATTEMPTS}" -gt 1 ]]; then
   mkdir -p "${BLACKBOARD_DIR}"
+  reset_promoted_smoke_artifacts
+  SMOKE_RUN_ROOT="${BLACKBOARD_DIR}/runs/${SMOKE_RUN_ID}"
+  mkdir -p "${SMOKE_RUN_ROOT}"
   for (( attempt = 1; attempt <= SMOKE_MAX_ATTEMPTS; attempt++ )); do
-    attempt_dir="${BLACKBOARD_DIR}/attempt-${attempt}"
+    attempt_dir="${SMOKE_RUN_ROOT}/attempt-${attempt}"
     echo "Starting MicroMachine smoke attempt ${attempt}/${SMOKE_MAX_ATTEMPTS}: ${attempt_dir}"
-    if SMOKE_ATTEMPT_INDEX="${attempt}" SMOKE_MAX_ATTEMPTS=1 BLACKBOARD_DIR="${attempt_dir}" "${BASH_SOURCE[0]}"; then
+    if SMOKE_ATTEMPT_INDEX="${attempt}" SMOKE_MAX_ATTEMPTS=1 SMOKE_RUN_ID="${SMOKE_RUN_ID}" SMOKE_REPO_HEAD_SHA="${SMOKE_REPO_HEAD_SHA}" BLACKBOARD_DIR="${attempt_dir}" "${BASH_SOURCE[0]}"; then
+      write_smoke_attempt_status "${attempt_dir}" "${attempt}" "passed"
       if [[ -f "${attempt_dir}/latest_telemetry.json" ]]; then
         cp -p "${attempt_dir}/latest_telemetry.json" "${BLACKBOARD_DIR}/latest_telemetry.json"
       fi
@@ -336,47 +803,7 @@ if [[ -z "${SMOKE_ATTEMPT_INDEX}" && "${SMOKE_MAX_ATTEMPTS}" -gt 1 ]]; then
       if [[ -f "${attempt_dir}/micromachine_combined.log" ]]; then
         cp -p "${attempt_dir}/micromachine_combined.log" "${BLACKBOARD_DIR}/micromachine_combined.log"
       fi
-      python3 - <<'PY' "${BLACKBOARD_DIR}" "${attempt}" "${SMOKE_MAX_ATTEMPTS}"
-import json
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-selected_attempt = int(sys.argv[2])
-max_attempts = int(sys.argv[3])
-attempts = []
-for index in range(1, selected_attempt + 1):
-    attempt_dir = root / f"attempt-{index}"
-    telemetry_path = attempt_dir / "latest_telemetry.json"
-    latest_frame = 0
-    if telemetry_path.exists():
-        try:
-            latest_frame = int(json.loads(telemetry_path.read_text()).get("frame") or 0)
-        except Exception:
-            latest_frame = 0
-    attempts.append(
-        {
-            "attempt": index,
-            "status": "passed" if index == selected_attempt else "retryable_startup_failure",
-            "latest_frame": latest_frame,
-            "dir": str(attempt_dir),
-        }
-    )
-(root / "smoke_attempts.json").write_text(
-    json.dumps(
-        {
-            "status": "passed",
-            "ok": True,
-            "selected_attempt": selected_attempt,
-            "max_attempts": max_attempts,
-            "attempts": attempts,
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    + "\n"
-)
-PY
+      write_smoke_attempt_summary "passed" "${attempt}" "${attempt}" ""
       echo "MicroMachine smoke passed on attempt ${attempt}/${SMOKE_MAX_ATTEMPTS}; blackboard: ${BLACKBOARD_DIR}"
       exit 0
     fi
@@ -423,80 +850,20 @@ if latest_frame >= startup_frame_threshold or any(term in log_text for term in m
 raise SystemExit(1)
 PY
     then
-      python3 - <<'PY' "${BLACKBOARD_DIR}" "${SMOKE_MAX_ATTEMPTS}" "${attempt}" "non_retryable_failure"
-import json
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-max_attempts = int(sys.argv[2])
-stopped_at = int(sys.argv[3])
-reason = sys.argv[4]
-attempts = []
-for index in range(1, max_attempts + 1):
-    attempt_dir = root / f"attempt-{index}"
-    telemetry_path = attempt_dir / "latest_telemetry.json"
-    latest_frame = 0
-    if telemetry_path.exists():
-        try:
-            latest_frame = int(json.loads(telemetry_path.read_text()).get("frame") or 0)
-        except Exception:
-            latest_frame = 0
-    status = "not_run" if index > stopped_at else "failed"
-    attempts.append({"attempt": index, "status": status, "latest_frame": latest_frame, "dir": str(attempt_dir)})
-(root / "smoke_attempts.json").write_text(
-    json.dumps(
-        {
-            "status": "failed",
-            "ok": False,
-            "max_attempts": max_attempts,
-            "stopped_at_attempt": stopped_at,
-            "stop_reason": reason,
-            "attempts": attempts,
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    + "\n"
-)
-PY
+      write_smoke_attempt_status "${attempt_dir}" "${attempt}" "non_retryable_failure"
+      write_smoke_attempt_summary "failed" "0" "${attempt}" "non_retryable_failure"
       echo "MicroMachine smoke stopped after non-retryable attempt ${attempt}; summary: ${BLACKBOARD_DIR}/smoke_attempts.json" >&2
       exit 1
     fi
 
+    write_smoke_attempt_status "${attempt_dir}" "${attempt}" "retryable_startup_failure"
     if (( attempt < SMOKE_MAX_ATTEMPTS )); then
       echo "MicroMachine smoke retrying after retryable frame-0 startup failure; settling ${SMOKE_RETRY_SETTLE_SECONDS}s before attempt $((attempt + 1))/${SMOKE_MAX_ATTEMPTS}." >&2
       sleep "${SMOKE_RETRY_SETTLE_SECONDS}"
     fi
   done
 
-  python3 - <<'PY' "${BLACKBOARD_DIR}" "${SMOKE_MAX_ATTEMPTS}"
-import json
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-max_attempts = int(sys.argv[2])
-attempts = []
-for index in range(1, max_attempts + 1):
-    attempt_dir = root / f"attempt-{index}"
-    telemetry_path = attempt_dir / "latest_telemetry.json"
-    latest_frame = 0
-    if telemetry_path.exists():
-        try:
-            latest_frame = int(json.loads(telemetry_path.read_text()).get("frame") or 0)
-        except Exception:
-            latest_frame = 0
-    attempts.append({"attempt": index, "status": "failed", "latest_frame": latest_frame, "dir": str(attempt_dir)})
-(root / "smoke_attempts.json").write_text(
-    json.dumps(
-        {"status": "failed", "ok": False, "max_attempts": max_attempts, "attempts": attempts},
-        indent=2,
-        sort_keys=True,
-    )
-    + "\n"
-)
-PY
+  write_smoke_attempt_summary "failed" "0" "${SMOKE_MAX_ATTEMPTS}" "retryable_startup_failure_exhausted"
   echo "MicroMachine smoke failed after ${SMOKE_MAX_ATTEMPTS} attempts; summary: ${BLACKBOARD_DIR}/smoke_attempts.json" >&2
   exit 1
 fi
@@ -556,7 +923,74 @@ capture_preexisting_sc2_port_pids() {
   PREEXISTING_SC2_PORT_PIDS="${pids[*]:-}"
 }
 
+snapshot_latest_telemetry_for_cleanup() {
+  python3 - <<'PY' \
+    "${BLACKBOARD_DIR}/latest_telemetry.json" \
+    "${BLACKBOARD_DIR}/telemetry.jsonl" \
+    "${TELEMETRY_CLEANUP_SNAPSHOT}"
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+latest = Path(sys.argv[1])
+archive = Path(sys.argv[2])
+snapshot = Path(sys.argv[3])
+payload = None
+for _ in range(20):
+    try:
+        candidate = json.loads(latest.read_text())
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        time.sleep(0.02)
+        continue
+    if isinstance(candidate, dict):
+        payload = candidate
+        break
+
+if payload is None and archive.exists():
+    try:
+        with archive.open() as handle:
+            for line in handle:
+                try:
+                    candidate = json.loads(line)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+                if isinstance(candidate, dict):
+                    payload = candidate
+    except OSError:
+        pass
+
+if payload is None:
+    raise SystemExit(0)
+
+snapshot.parent.mkdir(parents=True, exist_ok=True)
+temporary = snapshot.with_name(snapshot.name + ".tmp")
+temporary.write_text(
+    json.dumps(payload, separators=(",", ":")) + "\n"
+)
+os.replace(temporary, snapshot)
+PY
+}
+
+restore_latest_telemetry_after_cleanup() {
+  python3 - <<'PY' \
+    "${TELEMETRY_CLEANUP_SNAPSHOT}" \
+    "${BLACKBOARD_DIR}/latest_telemetry.json"
+import os
+import sys
+from pathlib import Path
+
+snapshot = Path(sys.argv[1])
+latest = Path(sys.argv[2])
+if snapshot.exists() and snapshot.stat().st_size > 0:
+    os.replace(snapshot, latest)
+PY
+}
+
 cleanup_runtime() {
+  snapshot_latest_telemetry_for_cleanup
+
   if [[ -n "${BOT_PID}" ]] && kill -0 "${BOT_PID}" 2>/dev/null; then
     kill "${BOT_PID}" 2>/dev/null || true
     wait "${BOT_PID}" 2>/dev/null || true
@@ -572,6 +1006,8 @@ cleanup_runtime() {
       kill "${pid}" 2>/dev/null || true
     done < <(sc2_port_pids "${port}")
   done
+
+  restore_latest_telemetry_after_cleanup
 }
 
 trap cleanup_runtime EXIT
@@ -676,6 +1112,66 @@ has_required_macro_evidence() {
   return 0
 }
 
+has_expected_strategy_profile_evidence() {
+  local strategy_evidence_update_id="${1:-${SMOKE_STRATEGY_EVIDENCE_UPDATE_ID}}"
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - \
+    "${BLACKBOARD_DIR}/latest_telemetry.json" \
+    "${strategy_evidence_update_id}" \
+    "${SMOKE_EXPECTED_STRATEGY_DOCTRINE}" \
+    "${SMOKE_EXPECTED_PRODUCTION_ACTIONS}" \
+    "${SMOKE_EXPECTED_PRODUCTION_ITEMS}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_production_evidence import (
+    expected_production_pairs,
+    find_causal_production_evidence,
+)
+
+telemetry = Path(sys.argv[1])
+update_id = sys.argv[2]
+doctrine = sys.argv[3]
+expected_actions = {value for value in sys.argv[4].split() if value}
+expected_items = {value for value in sys.argv[5].split() if value}
+if not expected_actions and not expected_items:
+    raise SystemExit(0)
+
+entries = []
+try:
+    payload = json.loads(telemetry.read_text())
+except (json.JSONDecodeError, OSError):
+    raise SystemExit(1)
+if isinstance(payload, dict):
+    entries.append(payload)
+archive = telemetry.with_name("telemetry.jsonl")
+if archive.exists():
+    for line in archive.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+
+expected_pairs = expected_production_pairs(
+    doctrine,
+    expected_actions=expected_actions,
+    expected_items=expected_items,
+)
+causal_evidence = find_causal_production_evidence(
+    entries,
+    expected_doctrine=doctrine,
+    expected_update_id=update_id,
+    expected_pairs=expected_pairs,
+)
+raise SystemExit(0 if causal_evidence.matched else 1)
+PY
+}
+
 has_post_barracks_unit_evidence() {
   local term
   for term in "${POST_BARRACKS_UNIT_EVIDENCE[@]}"; do
@@ -766,6 +1262,687 @@ elif profile_name == "aggressive_pressure":
 else:
     vector = build_micromachine_strategy_profile(profile_name)
 backend.publish_vector(vector, current_frame=int(frame_text), update_id=update_id)
+PY
+}
+
+publish_parallel_operations() {
+  local frame="$1"
+  local terminal_state="$2"
+  PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' \
+    "${BLACKBOARD_DIR}" \
+    "${SMOKE_OPERATION_UPDATE_ID}" \
+    "${SMOKE_SCOUT_OPERATION_ID}" \
+    "${SMOKE_ATTACK_OPERATION_ID}" \
+    "${frame}" \
+    "${terminal_state}"
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_runtime import (
+    MicroMachineFilesystemBlackboard,
+)
+from starcraft_commander.policy_modulation import PolicyModulationVector
+
+directory = Path(sys.argv[1])
+update_id, scout_id, attack_id = sys.argv[2:5]
+frame = int(sys.argv[5])
+terminal_state = sys.argv[6]
+cancelled = terminal_state == "cancelled"
+
+def operation(operation_id, task_type, location, route_type, target_type):
+    operation_cancelled = cancelled and operation_id == attack_id
+    attack_operation = task_type == "pressure_with_main_army"
+    persistent_until_cancelled = task_type in {
+        "scout_with_units",
+        "pressure_with_main_army",
+    }
+    lifetime = {
+        "mode": (
+            "until_cancelled"
+            if operation_cancelled or persistent_until_cancelled
+            else "until_completed"
+        ),
+        "completion_conditions": (
+            ["cancelled_by_user"]
+            if operation_cancelled or persistent_until_cancelled
+            else ["target_reached"]
+        ),
+        "completion_state": (
+            "cancelled" if operation_cancelled else "active"
+        ),
+        "reason": (
+            "difficulty_smoke_selective_attack_cancel"
+            if operation_cancelled
+            else ""
+        ),
+    }
+    return {
+        "operation_id": operation_id,
+        "goal": f"difficulty smoke {task_type}",
+        "generation": 1,
+        "issued_at_frame": frame,
+        "command_layer": "operation",
+        "tactical_task": {
+            "task_type": task_type,
+            "location_intent": location,
+            "production_targets": (
+                ["TERRAN_MARINE", "TERRAN_SIEGETANK"]
+                if task_type == "pressure_with_main_army"
+                else ["TERRAN_MARINE"]
+            ),
+            "priority": 0.95,
+            "min_units": 1,
+            "max_units": 1,
+            "duration_seconds": 300,
+            "allow_partial": attack_operation,
+        },
+        "scope": {
+            "army_group": "scout" if task_type == "scout_with_units" else "harass",
+            "location_intent": location,
+            "min_units": 1,
+            "max_units": 1,
+            "allow_partial_scope": attack_operation,
+        },
+        "composition_requirements": (
+            [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": 4,
+                    "role": "frontline",
+                },
+                {
+                    "unit_type": "TERRAN_SIEGETANK",
+                    "count": 4,
+                    "role": "siege_support",
+                }
+            ]
+            if attack_operation
+            else [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": 3,
+                    "role": "scout",
+                }
+            ]
+        ),
+        "lifetime": lifetime,
+        "route_intent": {
+            "route_type": route_type,
+            "avoid_enemy_strength": task_type == "scout_with_units",
+        },
+        "target_intent": {"target_type": target_type, "priority": 0.9},
+    }
+
+vector = PolicyModulationVector.from_mapping(
+    {
+        "goal": "difficulty smoke parallel scout and attack lifecycle",
+        "source": "smoke_keyword",
+        "override_level": "directive",
+        "command_layer": "operation",
+        "confidence": 1.0,
+        "ttl_seconds": 300,
+        "operations": [
+            operation(
+                scout_id,
+                "scout_with_units",
+                "enemy_main",
+                "safe_path",
+                "enemy_main",
+            ),
+            operation(
+                attack_id,
+                "pressure_with_main_army",
+                "enemy_natural",
+                "direct",
+                "army",
+            ),
+        ],
+        "tags": ["difficulty_smoke", "parallel_operations", terminal_state],
+    }
+)
+backend = MicroMachineFilesystemBlackboard(directory)
+backend.publish_vector(vector, current_frame=frame, update_id=update_id)
+PY
+}
+
+operation_restore_ready() {
+  local restore_update_id="$1"
+  local restore_frame="$2"
+  local command_baseline="$3"
+  local action_frame_baseline="$4"
+  local home_distance_baseline="$5"
+  local unit_samples_baseline="$6"
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' \
+    "${BLACKBOARD_DIR}/latest_telemetry.json" \
+    "${restore_update_id}" \
+    "${restore_frame}" \
+    "${command_baseline}" \
+    "${action_frame_baseline}" \
+    "${home_distance_baseline}" \
+    "${unit_samples_baseline}" \
+    "${SMOKE_MIN_MAIN_ATTACK_HOME_DISTANCE:-12.0}"
+import json
+import os
+import sys
+from pathlib import Path
+
+telemetry = Path(sys.argv[1])
+restore_update_id = sys.argv[2]
+restore_frame = int(sys.argv[3])
+command_baseline = int(sys.argv[4])
+action_frame_baseline = int(sys.argv[5])
+home_distance_baseline = float(sys.argv[6])
+try:
+    baseline_samples = json.loads(sys.argv[7])
+except (json.JSONDecodeError, TypeError, ValueError):
+    raise SystemExit(1)
+minimum_home_distance = float(sys.argv[8])
+minimum_displacement = float(
+    os.environ.get(
+        "SMOKE_MIN_POST_CANCEL_MAIN_ATTACK_DISPLACEMENT",
+        "4.0",
+    )
+)
+
+def unit_positions(samples):
+    if not isinstance(samples, list):
+        return {}
+    positions = {}
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        try:
+            tag = int(sample.get("tag", 0) or 0)
+            x = float(sample.get("x", 0.0) or 0.0)
+            y = float(sample.get("y", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if tag > 0:
+            positions[tag] = (x, y)
+    return positions
+
+baseline_positions = unit_positions(baseline_samples)
+restore_initial_positions = {}
+
+entries = []
+archive = telemetry.with_name("telemetry.jsonl")
+if archive.exists():
+    for line in archive.read_text().splitlines():
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+try:
+    latest = json.loads(telemetry.read_text())
+except (json.JSONDecodeError, ValueError):
+    latest = None
+if isinstance(latest, dict):
+    entries.append(latest)
+if not entries:
+    raise SystemExit(1)
+
+restore_consumed_frames = []
+for entry in entries:
+    frame = int(entry.get("frame", 0) or 0)
+    if frame < restore_frame:
+        continue
+    commander = entry.get("managers", {}).get("GameCommander", {})
+    if (
+        isinstance(commander, dict)
+        and commander.get("policy_active") is True
+        and str(commander.get("update_id", "") or "") == restore_update_id
+    ):
+        restore_consumed_frames.append(frame)
+if not restore_consumed_frames:
+    raise SystemExit(1)
+first_restore_consumed_frame = min(restore_consumed_frames)
+
+for entry in entries:
+    frame = int(entry.get("frame", 0) or 0)
+    if frame < first_restore_consumed_frame:
+        continue
+    managers = entry.get("managers", {})
+    if not isinstance(managers, dict):
+        continue
+    commander = managers.get("GameCommander", {})
+    combat = managers.get("CombatCommander", {})
+    if not isinstance(commander, dict) or not isinstance(combat, dict):
+        continue
+    if str(commander.get("update_id", "") or "") != restore_update_id:
+        continue
+    if commander.get("policy_active") is not True:
+        continue
+    command_count = int(
+        combat.get("main_attack_actual_command_issued_count", 0) or 0
+    )
+    command_frame = int(combat.get("main_attack_last_action_frame", 0) or 0)
+    command = str(combat.get("main_attack_last_issued_action", "") or "")
+    current_home_distance = float(
+        combat.get("main_attack_home_distance", 0.0) or 0.0
+    )
+    post_cancel_displacement = abs(
+        current_home_distance - home_distance_baseline
+    )
+    current_positions = unit_positions(
+        combat.get("main_attack_unit_samples", [])
+    )
+    for tag, position in current_positions.items():
+        restore_initial_positions.setdefault(tag, position)
+    reference_positions = dict(restore_initial_positions)
+    reference_positions.update(baseline_positions)
+    same_tag_displacements = {
+        tag: (
+            (
+                current_positions[tag][0] - baseline_position[0]
+            )
+            ** 2
+            + (
+                current_positions[tag][1] - baseline_position[1]
+            )
+            ** 2
+        )
+        ** 0.5
+        for tag, baseline_position in reference_positions.items()
+        if tag in current_positions
+    }
+    maximum_same_tag_displacement = max(
+        same_tag_displacements.values(),
+        default=0.0,
+    )
+    unit_count = int(combat.get("main_attack_unit_count", 0) or 0)
+    minimum_units = int(
+        combat.get("main_attack_scope_min_units", 1) or 1
+    )
+    if (
+        command_count > command_baseline
+        and command_frame > action_frame_baseline
+        and command_frame >= first_restore_consumed_frame
+        and frame >= command_frame
+        and str(combat.get("main_attack_order_status", "") or "") == "Attack"
+        and "squad=MainAttack" in command
+        and unit_count >= minimum_units
+        and current_home_distance >= minimum_home_distance
+        and maximum_same_tag_displacement >= minimum_displacement
+    ):
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+operation_production_baseline() {
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' \
+    "${BLACKBOARD_DIR}/latest_telemetry.json" \
+    "${SMOKE_ATTACK_OPERATION_ID}"
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text())
+except (json.JSONDecodeError, OSError, TypeError, ValueError):
+    raise SystemExit(1)
+production = payload.get("managers", {}).get("ProductionManager", {})
+if not isinstance(production, dict):
+    raise SystemExit(1)
+owned_items = production.get("operation_owned_queue_items", [])
+if not isinstance(owned_items, list):
+    raise SystemExit(1)
+attack_owner = (sys.argv[2], 1)
+purgeable_attack_claim = any(
+    isinstance(item, dict)
+    and item.get("exclusive_operation_owned") is True
+    and item.get("preserve_without_operation_owners") is False
+    and any(
+        isinstance(owner, dict)
+        and (
+            str(owner.get("operation_id", "") or ""),
+            int(owner.get("generation", 0) or 0),
+        )
+        == attack_owner
+        for owner in item.get("owners", [])
+        if isinstance(item.get("owners"), list)
+    )
+    for item in owned_items
+)
+if not purgeable_attack_claim:
+    raise SystemExit(1)
+values = (
+    production.get("operation_production_owner_release_count"),
+    production.get("operation_production_queue_purge_count"),
+    production.get("last_operation_production_queue_purge_frame"),
+)
+if any(type(value) is not int or value < 0 for value in values):
+    raise SystemExit(1)
+print(*values, sep="\t")
+PY
+}
+
+operation_lifecycle_ready() {
+  local expected_phase="$1"
+  local cancel_frame="$2"
+  local owner_release_count_baseline="${3:-0}"
+  local queue_purge_count_baseline="${4:-0}"
+  local queue_purge_frame_baseline="${5:-0}"
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' \
+    "${BLACKBOARD_DIR}/latest_telemetry.json" \
+    "${SMOKE_OPERATION_UPDATE_ID}" \
+    "${SMOKE_SCOUT_OPERATION_ID}" \
+    "${SMOKE_ATTACK_OPERATION_ID}" \
+    "${expected_phase}" \
+    "${cancel_frame}" \
+    "${owner_release_count_baseline}" \
+    "${queue_purge_count_baseline}" \
+    "${queue_purge_frame_baseline}"
+import json
+import sys
+from pathlib import Path
+
+telemetry = Path(sys.argv[1])
+update_id, scout_id, attack_id, phase = sys.argv[2:6]
+cancel_frame = int(sys.argv[6])
+owner_release_count_baseline = int(sys.argv[7])
+queue_purge_count_baseline = int(sys.argv[8])
+queue_purge_frame_baseline = int(sys.argv[9])
+emit_cancel_baseline = phase == "cancelled_baseline"
+if emit_cancel_baseline:
+    phase = "cancelled"
+expected_ids = (scout_id, attack_id)
+thresholds = {scout_id: 8.0, attack_id: 12.0}
+expected_generation = 1
+
+def operation_owner_present(
+    queue_items,
+    operation_id,
+    generation,
+    expected_item=None,
+    require_purgeable=False,
+):
+    if not isinstance(queue_items, list):
+        return False
+    for queue_item in queue_items:
+        if not isinstance(queue_item, dict):
+            continue
+        item_name = str(queue_item.get("item", "") or "")
+        if expected_item is not None and item_name != expected_item:
+            continue
+        if require_purgeable and (
+            queue_item.get("exclusive_operation_owned") is not True
+            or queue_item.get("preserve_without_operation_owners") is not False
+        ):
+            continue
+        owners = queue_item.get("owners", [])
+        if not isinstance(owners, list):
+            continue
+        if any(
+            isinstance(owner, dict)
+            and str(owner.get("operation_id", "") or "") == operation_id
+            and int(owner.get("generation", 0) or 0) == generation
+            for owner in owners
+        ):
+            return True
+    return False
+
+entries = []
+archive = telemetry.with_name("telemetry.jsonl")
+if archive.exists():
+    for line in archive.read_text().splitlines():
+        try:
+            item = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(item, dict):
+            entries.append(item)
+try:
+    latest = json.loads(telemetry.read_text())
+except (json.JSONDecodeError, ValueError):
+    latest = None
+if isinstance(latest, dict):
+    entries.append(latest)
+if not entries:
+    raise SystemExit(1)
+
+if phase == "active":
+    evidence = {
+        operation_id: {"assigned": False, "submitted": False, "movement": False}
+        for operation_id in expected_ids
+    }
+    exclusive_assignment_observed = False
+    live_production_owner_observed = False
+    for entry in entries:
+        managers = entry.get("managers", {})
+        if not isinstance(managers, dict):
+            continue
+        director = managers.get("OperationDirector", {})
+        if not isinstance(director, dict):
+            continue
+        if str(director.get("policy_update_id", "") or "") != update_id:
+            continue
+        production = managers.get("ProductionManager", {})
+        live_production_owner = (
+            isinstance(production, dict)
+            and str(production.get("policy_update_id", "") or "") == update_id
+            and operation_owner_present(
+                production.get("operation_owned_queue_items", []),
+                attack_id,
+                expected_generation,
+                require_purgeable=True,
+            )
+        )
+        if live_production_owner:
+            live_production_owner_observed = True
+        operations = director.get("operations", [])
+        if not isinstance(operations, list):
+            continue
+        current_assignments = {}
+        for operation in operations:
+            if not isinstance(operation, dict):
+                continue
+            operation_id = str(operation.get("operation_id", "") or "")
+            if operation_id not in evidence:
+                continue
+            if int(operation.get("generation", 0) or 0) != expected_generation:
+                continue
+            tags = operation.get("assigned_unit_tags", [])
+            assigned_count = int(operation.get("assigned_count", 0) or 0)
+            assigned_frame = int(operation.get("assigned_frame", 0) or 0)
+            assignment_valid = (
+                isinstance(tags, list)
+                and assigned_count > 0
+                and assigned_frame > 0
+                and assigned_count == len(tags)
+                and len(set(tags)) == len(tags)
+            )
+            if assignment_valid:
+                evidence[operation_id]["assigned"] = True
+                current_assignments[operation_id] = set(tags)
+            submitted = (
+                operation.get("submission_observed") is True
+                and int(operation.get("submitted_frame", 0) or 0) > 0
+            )
+            if submitted:
+                evidence[operation_id]["submitted"] = True
+            distance = float(operation.get("max_home_distance", 0.0) or 0.0)
+            engagement_observed = (
+                operation.get("engaged") is True
+                and int(operation.get("last_action_frame", 0) or 0) > 0
+            )
+            if (
+                distance >= thresholds[operation_id]
+                or engagement_observed
+            ):
+                evidence[operation_id]["movement"] = True
+        if all(operation_id in current_assignments for operation_id in expected_ids):
+            assigned_tags = [
+                current_assignments[operation_id]
+                for operation_id in expected_ids
+            ]
+            all_tags = set().union(*assigned_tags)
+            if (
+                assigned_tags[0].isdisjoint(assigned_tags[1])
+                and int(director.get("owned_unit_count", -1)) == len(all_tags)
+            ):
+                exclusive_assignment_observed = True
+    raise SystemExit(
+        0
+        if (
+            exclusive_assignment_observed
+            and live_production_owner_observed
+            and all(all(signals.values()) for signals in evidence.values())
+        )
+        else 1
+    )
+
+if phase != "cancelled":
+    raise SystemExit(1)
+
+reconciled_cancelled = None
+for entry in entries:
+    frame = int(entry.get("frame", 0) or 0)
+    if frame <= cancel_frame:
+        continue
+    managers = entry.get("managers", {})
+    if not isinstance(managers, dict):
+        continue
+    director = managers.get("OperationDirector", {})
+    if not isinstance(director, dict):
+        continue
+    if str(director.get("policy_update_id", "") or "") != update_id:
+        continue
+    operations = director.get("operations", [])
+    if not isinstance(operations, list):
+        continue
+    by_id = {
+        str(operation.get("operation_id", "") or ""): operation
+        for operation in operations
+        if (
+            isinstance(operation, dict)
+            and int(operation.get("generation", 0) or 0)
+                == expected_generation
+        )
+    }
+    if not all(operation_id in by_id for operation_id in expected_ids):
+        continue
+    attack_operation = by_id[attack_id]
+    attack_tags = attack_operation.get("assigned_unit_tags")
+    if (
+        str(attack_operation.get("status", "") or "").upper()
+            != "CANCELLED"
+        or attack_operation.get("completed") is not True
+        or int(attack_operation.get("assigned_count", -1)) != 0
+        or not isinstance(attack_tags, list)
+        or attack_tags
+    ):
+        continue
+    scout_operation = by_id[scout_id]
+    scout_tags = scout_operation.get("assigned_unit_tags")
+    scout_status = str(scout_operation.get("status", "") or "").upper()
+    if (
+        scout_operation.get("completed") is True
+        or scout_status
+            in {
+                "CANCELLED",
+                "COMPLETED",
+                "EXPIRED",
+                "FAILED",
+                "SUPERSEDED",
+            }
+        or not isinstance(scout_tags, list)
+        or int(scout_operation.get("assigned_count", -1))
+            != len(scout_tags)
+        or not scout_tags
+        or int(director.get("owned_unit_count", -1))
+            != len(set(scout_tags))
+    ):
+        continue
+
+    production = managers.get("ProductionManager", {})
+    if not isinstance(production, dict):
+        continue
+    operation_owned_queue_item_count = production.get(
+        "operation_owned_queue_item_count"
+    )
+    owner_release_count = production.get(
+        "operation_production_owner_release_count"
+    )
+    queue_purge_count = production.get(
+        "operation_production_queue_purge_count"
+    )
+    purge_events = production.get(
+        "operation_production_queue_purge_events",
+        [],
+    )
+    if not isinstance(purge_events, list):
+        continue
+    matching_purge_event = None
+    for purge_event in purge_events:
+        if not isinstance(purge_event, dict):
+            continue
+        purge_event_generation = purge_event.get("generation")
+        purge_event_frame = purge_event.get("frame")
+        purge_event_removed_count = purge_event.get("removed_count")
+        if (
+            str(purge_event.get("operation_id", "") or "") == attack_id
+            and type(purge_event_generation) is int
+            and purge_event_generation == expected_generation
+            and type(purge_event_frame) is int
+            and purge_event_frame >= cancel_frame
+            and purge_event_frame > queue_purge_frame_baseline
+            and type(purge_event_removed_count) is int
+            and purge_event_removed_count > 0
+        ):
+            matching_purge_event = purge_event
+            break
+    operation_owned_queue_items = production.get(
+        "operation_owned_queue_items",
+        [],
+    )
+    if (
+        type(operation_owned_queue_item_count) is not int
+        or operation_owned_queue_item_count < 0
+        or operation_owner_present(
+            operation_owned_queue_items,
+            attack_id,
+            expected_generation,
+        )
+        or type(owner_release_count) is not int
+        or owner_release_count <= owner_release_count_baseline
+        or type(queue_purge_count) is not int
+        or queue_purge_count <= queue_purge_count_baseline
+        or matching_purge_event is None
+    ):
+        continue
+    candidate = (frame, director, by_id, production, entry)
+    if reconciled_cancelled is None or frame < reconciled_cancelled[0]:
+        reconciled_cancelled = candidate
+
+if reconciled_cancelled is None:
+    raise SystemExit(1)
+cancelled_frame, director, by_id, cancelled_production, cancelled_entry = (
+    reconciled_cancelled
+)
+if emit_cancel_baseline:
+    combat = cancelled_entry.get("managers", {}).get("CombatCommander", {})
+    if not isinstance(combat, dict):
+        combat = None
+    if combat is None:
+        raise SystemExit(1)
+    unit_samples = combat.get("main_attack_unit_samples", [])
+    if not isinstance(unit_samples, list):
+        unit_samples = []
+    print(
+        cancelled_frame,
+        int(combat.get("main_attack_actual_command_issued_count", 0) or 0),
+        int(combat.get("main_attack_last_action_frame", 0) or 0),
+        float(combat.get("main_attack_home_distance", 0.0) or 0.0),
+        json.dumps(unit_samples, separators=(",", ":")),
+        sep="\t",
+    )
+raise SystemExit(0)
 PY
 }
 
@@ -865,12 +2042,54 @@ telemetry_frame() {
   python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json"
 import json
 import sys
+import time
 from pathlib import Path
 
+path = Path(sys.argv[1])
+for _ in range(8):
+    try:
+        frame = int(json.loads(path.read_text()).get("frame", 0))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        time.sleep(0.05)
+        continue
+    print(frame)
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+operation_publish_ready() {
+  local strategy_update_id="$1"
+  local minimum_frame="$2"
+  [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]] || return 1
+  python3 - <<'PY' \
+    "${BLACKBOARD_DIR}/latest_telemetry.json" \
+    "${strategy_update_id}" \
+    "${minimum_frame}"
+import json
+import sys
+from pathlib import Path
+
+telemetry_path = Path(sys.argv[1])
+strategy_update_id = sys.argv[2]
+minimum_frame = int(sys.argv[3])
 try:
-    print(int(json.loads(Path(sys.argv[1]).read_text()).get("frame", 0)))
-except Exception:
+    payload = json.loads(telemetry_path.read_text())
+    frame = int(payload.get("frame", 0) or 0)
+    managers = payload.get("managers", {})
+    commander = managers.get("GameCommander", {})
+    combat = managers.get("CombatCommander", {})
+    combat_unit_count = int(combat.get("combat_unit_count", 0) or 0)
+except (AttributeError, json.JSONDecodeError, OSError, TypeError, ValueError):
     raise SystemExit(1)
+if (
+    frame >= minimum_frame
+    and commander.get("policy_active") is True
+    and commander.get("update_id") == strategy_update_id
+    and combat_unit_count >= 2
+):
+    raise SystemExit(0)
+raise SystemExit(1)
 PY
 }
 
@@ -965,6 +2184,7 @@ print_no_start_units_bootstrap_blocker() {
   cat "${BLACKBOARD_DIR}/latest_telemetry.json" >&2 || true
 }
 
+reset_current_smoke_artifacts
 prepare_launch_contract
 verify_build_identity
 SC2_RUNTIME_ROOT="$(prepare_sc2_runtime_root)"
@@ -974,14 +2194,19 @@ elif [[ -z "${VOI_SC2_EXTRA_ARGS:-}" && "${SC2_USE_RUNTIME_DIR_ARGS}" == "1" ]];
   VOI_SC2_EXTRA_ARGS="-dataDir ${SC2_RUNTIME_ROOT} -tempDir ${SC2_TEMP_DIR}"
 fi
 
-mkdir -p "${BLACKBOARD_DIR}"
-rm -f "${BLACKBOARD_DIR}/latest_telemetry.json" "${BLACKBOARD_DIR}/telemetry.jsonl" "${BOT_LOG}" "${CLASSIFIER_BOT_LOG}" "${RUNTIME_LOG_BASELINE}"
+snapshot_runtime_identity
 if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" && "${SMOKE_FRESH_LIVE_SESSION}" == "1" ]]; then
   rm -f \
     "${BLACKBOARD_DIR}/latest_modulation.json" \
     "${BLACKBOARD_DIR}/latest_modulation.kv" \
     "${BLACKBOARD_DIR}/latest_modulation_compile_result.json"
   echo "MicroMachine fresh live session cleared detached tactical command state."
+fi
+if [[ -f "${BLACKBOARD_DIR}/modulation_updates.jsonl" ]]; then
+  SMOKE_MODULATION_ARCHIVE_START_OFFSET="$(
+    wc -c <"${BLACKBOARD_DIR}/modulation_updates.jsonl" |
+      tr -d '[:space:]'
+  )"
 fi
 touch "${RUNTIME_LOG_MARKER}"
 record_runtime_log_baseline
@@ -990,18 +2215,21 @@ if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" ]]; then
     DEFENSIVE_UPDATE_ID="${preserved_update_id}"
     AGGRESSIVE_UPDATE_ID="${preserved_update_id}"
     SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${preserved_update_id}"
+    SMOKE_STRATEGY_EVIDENCE_UPDATE_ID="${preserved_update_id}"
     AGGRESSIVE_PROFILE_PUBLISHED=1
     echo "MicroMachine manual live mode preserved existing tactical blackboard command: ${preserved_update_id}"
   else
     DEFENSIVE_UPDATE_ID="smoke-manual-live-autonomy"
     AGGRESSIVE_UPDATE_ID="${DEFENSIVE_UPDATE_ID}"
     SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${DEFENSIVE_UPDATE_ID}"
+    SMOKE_STRATEGY_EVIDENCE_UPDATE_ID="${DEFENSIVE_UPDATE_ID}"
     publish_profile "manual_live_autonomy" "${DEFENSIVE_UPDATE_ID}" "0"
   fi
 else
   SMOKE_ACTIVE_STRATEGY_UPDATE_ID="$(smoke_strategy_update_id "${SMOKE_STRATEGY_PROFILE_NAME}" "0")"
   AGGRESSIVE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
   DEFENSIVE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
+  SMOKE_STRATEGY_EVIDENCE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
   publish_profile "${SMOKE_STRATEGY_PROFILE_NAME}" "${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}" "0"
   AGGRESSIVE_PROFILE_PUBLISHED=1
 fi
@@ -1079,6 +2307,10 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
 
   if [[ -f "${BLACKBOARD_DIR}/latest_telemetry.json" ]]; then
     current_telemetry_frame="$(telemetry_frame || true)"
+    if [[ -z "${current_telemetry_frame}" ]]; then
+      sleep 1
+      continue
+    fi
     if has_no_start_units_bootstrap_blocker; then
       cleanup_runtime
       print_no_start_units_bootstrap_blocker
@@ -1103,7 +2335,69 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
         AGGRESSIVE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
       fi
       publish_profile "${SMOKE_STRATEGY_PROFILE_NAME}" "${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}" "${current_telemetry_frame}"
+      SMOKE_STRATEGY_EVIDENCE_UPDATE_ID="${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}"
       AGGRESSIVE_PROFILE_PUBLISHED=1
+    fi
+
+    if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" && "${OPERATION_LIFECYCLE_PHASE}" == "pending" && "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 1 ]] && has_required_macro_evidence && operation_publish_ready "${SMOKE_STRATEGY_EVIDENCE_UPDATE_ID}" "${AGGRESSIVE_PROFILE_FRAME}"; then
+      publish_parallel_operations "${current_telemetry_frame}" "active"
+      OPERATION_LIFECYCLE_PHASE="active"
+      echo "MicroMachine difficulty smoke published parallel scout+attack operations as soon as the aggressive profile was consumed with two combat units at frame ${current_telemetry_frame}."
+    fi
+
+    if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" && "${OPERATION_LIFECYCLE_PHASE}" == "active" ]] && operation_lifecycle_ready "active" "0"; then
+      if ! operation_production_counts="$(operation_production_baseline)"; then
+        echo "MicroMachine difficulty smoke could not capture operation production cancellation baselines." >&2
+        continue
+      fi
+      IFS=$'\t' read -r \
+        OPERATION_CANCEL_OWNER_RELEASE_COUNT_BASELINE \
+        OPERATION_CANCEL_QUEUE_PURGE_COUNT_BASELINE \
+        OPERATION_CANCEL_QUEUE_PURGE_FRAME_BASELINE \
+        <<<"${operation_production_counts}"
+      latest_cancel_frame="$(telemetry_frame || true)"
+      if [[ "${latest_cancel_frame}" =~ ^[0-9]+$ ]] && (( latest_cancel_frame > current_telemetry_frame )); then
+        current_telemetry_frame="${latest_cancel_frame}"
+      fi
+      OPERATION_CANCEL_ISSUED_FRAME="${current_telemetry_frame}"
+      publish_parallel_operations "${OPERATION_CANCEL_ISSUED_FRAME}" "cancelled"
+      OPERATION_LIFECYCLE_PHASE="cancel_pending"
+      echo "MicroMachine difficulty smoke observed parallel operation assignment/submission/movement; cancellation upsert published at frame ${OPERATION_CANCEL_ISSUED_FRAME} with release/purge baselines ${OPERATION_CANCEL_OWNER_RELEASE_COUNT_BASELINE}/${OPERATION_CANCEL_QUEUE_PURGE_COUNT_BASELINE}."
+    fi
+
+    if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" && "${OPERATION_LIFECYCLE_PHASE}" == "cancel_pending" ]] && cancel_baseline="$(
+      operation_lifecycle_ready \
+        "cancelled_baseline" \
+        "${OPERATION_CANCEL_ISSUED_FRAME}" \
+        "${OPERATION_CANCEL_OWNER_RELEASE_COUNT_BASELINE}" \
+        "${OPERATION_CANCEL_QUEUE_PURGE_COUNT_BASELINE}" \
+        "${OPERATION_CANCEL_QUEUE_PURGE_FRAME_BASELINE}"
+    )"; then
+      IFS=$'\t' read -r \
+        OPERATION_CANCEL_TELEMETRY_FRAME \
+        OPERATION_CANCEL_MAIN_ATTACK_COMMAND_BASELINE \
+        OPERATION_CANCEL_MAIN_ATTACK_ACTION_FRAME_BASELINE \
+        OPERATION_CANCEL_MAIN_ATTACK_HOME_DISTANCE_BASELINE \
+        OPERATION_CANCEL_MAIN_ATTACK_UNIT_SAMPLES \
+        <<<"${cancel_baseline}"
+      OPERATION_RESTORE_ISSUED_FRAME="${OPERATION_CANCEL_TELEMETRY_FRAME}"
+      latest_restore_frame="$(telemetry_frame || true)"
+      if [[ "${latest_restore_frame}" =~ ^[0-9]+$ ]] && (( latest_restore_frame > OPERATION_RESTORE_ISSUED_FRAME )); then
+        OPERATION_RESTORE_ISSUED_FRAME="${latest_restore_frame}"
+      fi
+      if [[ -z "${SMOKE_RESTORE_UPDATE_ID}" ]]; then
+        SMOKE_RESTORE_UPDATE_ID="smoke-${SMOKE_STRATEGY_PROFILE_NAME}-restore-${SMOKE_ATTEMPT_INDEX:-0}-${OPERATION_RESTORE_ISSUED_FRAME}-$$"
+      fi
+      publish_profile "${SMOKE_STRATEGY_PROFILE_NAME}" "${SMOKE_RESTORE_UPDATE_ID}" "${OPERATION_RESTORE_ISSUED_FRAME}"
+      AGGRESSIVE_UPDATE_ID="${SMOKE_RESTORE_UPDATE_ID}"
+      SMOKE_ACTIVE_STRATEGY_UPDATE_ID="${SMOKE_RESTORE_UPDATE_ID}"
+      OPERATION_LIFECYCLE_PHASE="restore_pending"
+      echo "MicroMachine difficulty smoke observed selective attack cancellation, retained scout ownership, and exact attack production-owner release at telemetry frame ${OPERATION_CANCEL_TELEMETRY_FRAME}; post-cancel restore profile published at frame ${OPERATION_RESTORE_ISSUED_FRAME} with MainAttack command baseline ${OPERATION_CANCEL_MAIN_ATTACK_COMMAND_BASELINE}."
+    fi
+
+    if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" && "${OPERATION_LIFECYCLE_PHASE}" == "restore_pending" ]] && operation_restore_ready "${SMOKE_RESTORE_UPDATE_ID}" "${OPERATION_RESTORE_ISSUED_FRAME}" "${OPERATION_CANCEL_MAIN_ATTACK_COMMAND_BASELINE}" "${OPERATION_CANCEL_MAIN_ATTACK_ACTION_FRAME_BASELINE}" "${OPERATION_CANCEL_MAIN_ATTACK_HOME_DISTANCE_BASELINE}" "${OPERATION_CANCEL_MAIN_ATTACK_UNIT_SAMPLES}"; then
+      OPERATION_LIFECYCLE_PHASE="restored"
+      echo "MicroMachine difficulty smoke observed a new post-cancel MainAttack command and live movement under restore update ${SMOKE_RESTORE_UPDATE_ID}."
     fi
 
     if python3 - "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${AGGRESSIVE_UPDATE_ID}" <<'PY'
@@ -1128,10 +2422,12 @@ raise SystemExit(1)
 PY
     then
       if has_required_macro_evidence; then
-        if [[ "${SMOKE_KEEP_RUNNING_AFTER_PASS:-0}" != "1" ]]; then
-          cleanup_runtime
+        if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" != "1" || "${OPERATION_LIFECYCLE_PHASE}" == "restored" ]] && has_expected_strategy_profile_evidence "${SMOKE_STRATEGY_EVIDENCE_UPDATE_ID}"; then
+          if [[ "${SMOKE_KEEP_RUNNING_AFTER_PASS:-0}" != "1" ]]; then
+            cleanup_runtime
+          fi
+          break
         fi
-        break
       fi
     fi
   fi
@@ -1171,28 +2467,75 @@ if ! has_required_macro_evidence; then
   exit 1
 fi
 
+if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" ]]; then
+  if [[ "${OPERATION_LIFECYCLE_PHASE}" != "restored" ]]; then
+    echo "MicroMachine difficulty smoke ended before OperationDirector lifecycle completed: phase=${OPERATION_LIFECYCLE_PHASE}" >&2
+    print_bot_logs
+    exit 1
+  fi
+  if ! operation_lifecycle_ready "active" "0"; then
+    echo "MicroMachine difficulty smoke missing archived parallel operation assignment/submission/movement evidence." >&2
+    print_bot_logs
+    exit 1
+  fi
+  if ! operation_lifecycle_ready "cancelled" "${OPERATION_CANCEL_ISSUED_FRAME}"; then
+    echo "MicroMachine difficulty smoke missing CANCELLED terminal ownership-release evidence." >&2
+    print_bot_logs
+    exit 1
+  fi
+  if ! operation_restore_ready "${SMOKE_RESTORE_UPDATE_ID}" "${OPERATION_RESTORE_ISSUED_FRAME}" "${OPERATION_CANCEL_MAIN_ATTACK_COMMAND_BASELINE}" "${OPERATION_CANCEL_MAIN_ATTACK_ACTION_FRAME_BASELINE}" "${OPERATION_CANCEL_MAIN_ATTACK_HOME_DISTANCE_BASELINE}" "${OPERATION_CANCEL_MAIN_ATTACK_UNIT_SAMPLES}"; then
+    echo "MicroMachine difficulty smoke missing post-cancel MainAttack command and movement evidence." >&2
+    print_bot_logs
+    exit 1
+  fi
+fi
+
+verify_runtime_identity_snapshot
 print_bot_logs >/dev/null 2>&1
 
-python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${BOT_LOG}" "${DEFENSIVE_UPDATE_ID}" "${AGGRESSIVE_UPDATE_ID}" "${SMOKE_EXPECTED_STRATEGY_DOCTRINE}" "${SMOKE_EXPECTED_PRODUCTION_ACTIONS}" "${SMOKE_EXPECTED_PRODUCTION_ITEMS}" "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE}" "${SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE}" "${SMOKE_REQUIRE_SCOUT_MODULATION_EVIDENCE}" "${SMOKE_REQUIRE_SQUAD_MODULATION_EVIDENCE}"
+PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${BLACKBOARD_DIR}/latest_telemetry.json" "${MIN_TELEMETRY_FRAME}" "${BOT_LOG}" "${DEFENSIVE_UPDATE_ID}" "${AGGRESSIVE_UPDATE_ID}" "${SMOKE_STRATEGY_EVIDENCE_UPDATE_ID}" "${SMOKE_EXPECTED_STRATEGY_DOCTRINE}" "${SMOKE_EXPECTED_PRODUCTION_ACTIONS}" "${SMOKE_EXPECTED_PRODUCTION_ITEMS}" "${SMOKE_REQUIRE_AGGRESSIVE_COMBAT_EVIDENCE}" "${SMOKE_REQUIRE_SCOUT_MOVEMENT_EVIDENCE}" "${SMOKE_REQUIRE_SCOUT_MODULATION_EVIDENCE}" "${SMOKE_REQUIRE_SQUAD_MODULATION_EVIDENCE}" "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" "${OPERATION_CANCEL_MAIN_ATTACK_COMMAND_BASELINE}" "${OPERATION_CANCEL_MAIN_ATTACK_ACTION_FRAME_BASELINE}" "${OPERATION_CANCEL_MAIN_ATTACK_HOME_DISTANCE_BASELINE}" "${OPERATION_RESTORE_ISSUED_FRAME}" "${OPERATION_CANCEL_MAIN_ATTACK_UNIT_SAMPLES}" "${SMOKE_MODULATION_ARCHIVE_START_OFFSET}"
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
+
+from starcraft_commander.micromachine_production_evidence import (
+    expected_production_pairs,
+    find_causal_production_evidence,
+)
 
 telemetry = Path(sys.argv[1])
 min_frame = int(sys.argv[2])
 bot_log = Path(sys.argv[3])
 defensive_update_id = sys.argv[4]
 aggressive_update_id = sys.argv[5]
-expected_strategy_doctrine = sys.argv[6]
-expected_production_actions = {item for item in sys.argv[7].split() if item}
-expected_production_items = {item for item in sys.argv[8].split() if item}
-require_aggressive_combat = sys.argv[9] == "1"
-require_scout_movement = sys.argv[10] == "1"
-require_scout_modulation = sys.argv[11] == "1"
-require_squad_modulation = sys.argv[12] == "1"
+production_evidence_update_id = sys.argv[6]
+expected_strategy_doctrine = sys.argv[7]
+expected_production_actions = {item for item in sys.argv[8].split() if item}
+expected_production_items = {item for item in sys.argv[9].split() if item}
+require_aggressive_combat = sys.argv[10] == "1"
+require_scout_movement = sys.argv[11] == "1"
+require_scout_modulation = sys.argv[12] == "1"
+require_squad_modulation = sys.argv[13] == "1"
+require_operation_lifecycle = sys.argv[14] == "1"
+post_cancel_command_baseline = int(sys.argv[15])
+post_cancel_action_frame_baseline = int(sys.argv[16])
+post_cancel_home_distance_baseline = float(sys.argv[17])
+restore_issued_at_frame = int(sys.argv[18])
+try:
+    post_cancel_unit_samples_baseline = json.loads(sys.argv[19])
+except (json.JSONDecodeError, TypeError, ValueError):
+    raise SystemExit("invalid post-cancel MainAttack unit sample baseline")
+modulation_archive_start_offset = int(sys.argv[20])
 min_main_attack_home_distance = float(os.environ.get("SMOKE_MIN_MAIN_ATTACK_HOME_DISTANCE", "12.0"))
+min_post_cancel_main_attack_displacement = float(
+    os.environ.get(
+        "SMOKE_MIN_POST_CANCEL_MAIN_ATTACK_DISPLACEMENT",
+        "4.0",
+    )
+)
 min_combat_scout_home_distance = float(os.environ.get("SMOKE_MIN_COMBAT_SCOUT_HOME_DISTANCE", "8.0"))
 pressure_override_contract = {
     "marine_rush": {"force_when_threshold_met"},
@@ -1206,6 +2549,27 @@ pressure_requires_target_keys = {
     "aggressive_pressure": ("target_worker_line_bias", "target_townhall_bias", "target_army_bias"),
     "marine_rush": ("target_worker_line_bias", "target_army_bias"),
 }
+
+def unit_positions(samples):
+    if not isinstance(samples, list):
+        return {}
+    positions = {}
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        try:
+            tag = int(sample.get("tag", 0) or 0)
+            x = float(sample.get("x", 0.0) or 0.0)
+            y = float(sample.get("y", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if tag > 0:
+            positions[tag] = (x, y)
+    return positions
+
+post_cancel_unit_positions = unit_positions(
+    post_cancel_unit_samples_baseline
+)
 
 def load_json_retry(path):
     last_error = None
@@ -1233,42 +2597,169 @@ def iter_telemetry_entries():
             if isinstance(entry, dict):
                 yield entry
 
-def modulation_issued_at_frame(update_id):
+def verify_tech_gas_before_second_barracks():
+    tech_gas_doctrines = {
+        "bio_pressure",
+        "tank_defensive_hold",
+        "siege_contain",
+        "contain_enemy_natural",
+        "mech_transition",
+        "drop_harassment",
+        "worker_line_harassment",
+        "anti_air_response",
+    }
+    if expected_strategy_doctrine not in tech_gas_doctrines:
+        return
+
+    completed_refinery_frames = []
+    for entry in iter_telemetry_entries():
+        managers_entry = entry.get("managers", {})
+        worker_entry = (
+            managers_entry.get("WorkerManager", {})
+            if isinstance(managers_entry, dict)
+            else {}
+        )
+        if (
+            isinstance(worker_entry, dict)
+            and int(worker_entry.get("completed_refinery_count", 0) or 0) > 0
+        ):
+            completed_refinery_frames.append(
+                int(entry.get("frame", 0) or 0)
+            )
+    if not completed_refinery_frames:
+        raise SystemExit(
+            "missing completed Refinery telemetry for gas-dependent doctrine: "
+            f"{expected_strategy_doctrine}"
+        )
+    first_completed_refinery_frame = min(completed_refinery_frames)
+
+    barracks_command_frames = []
+    refinery_command_frames = []
+    frame_prefix = re.compile(r"^(\d+):")
+    try:
+        log_lines = bot_log.read_text(errors="replace").splitlines()
+    except OSError as exc:
+        raise SystemExit(
+            f"could not read MicroMachine log for tech-gas ordering: {exc}"
+        )
+    for line in log_lines:
+        match = frame_prefix.match(line)
+        if match is None:
+            continue
+        frame = int(match.group(1))
+        if (
+            "recordVoiActualProductionCommand | "
+            "voi actual production command kind=build_command item=Barracks "
+            in line
+        ):
+            barracks_command_frames.append(frame)
+        if (
+            "constructAssignedBuildings | "
+            "build command type=TERRAN_REFINERY"
+            in line
+        ):
+            refinery_command_frames.append(frame)
+
+    refinery_bootstrap_commands = sorted(
+        frame
+        for frame in refinery_command_frames
+        if frame <= first_completed_refinery_frame
+    )
+    if len(refinery_bootstrap_commands) != 1:
+        raise SystemExit(
+            "expected exactly one Refinery build command before first "
+            "completion; "
+            f"commands={refinery_bootstrap_commands}, "
+            f"completion_frame={first_completed_refinery_frame}"
+        )
+
+    unique_barracks_commands = sorted(set(barracks_command_frames))
+    if (
+        len(unique_barracks_commands) >= 2
+        and refinery_bootstrap_commands[0] >= unique_barracks_commands[1]
+    ):
+        raise SystemExit(
+            "second Barracks build command preceded tech-gas bootstrap; "
+            f"barracks_commands={unique_barracks_commands}, "
+            f"refinery_command={refinery_bootstrap_commands[0]}"
+        )
+
+verify_tech_gas_before_second_barracks()
+
+def first_modulation_issued_at_frame(update_id):
     candidates = []
-    latest_modulation = telemetry.with_name("latest_modulation.json")
-    if latest_modulation.exists():
-        try:
-            entry = json.loads(latest_modulation.read_text())
-        except json.JSONDecodeError:
-            entry = {}
-        if isinstance(entry, dict) and entry.get("update_id") == update_id:
-            candidates.append(entry)
     modulation_archive = telemetry.with_name("modulation_updates.jsonl")
     if modulation_archive.exists():
-        for line in modulation_archive.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(entry, dict) and entry.get("update_id") == update_id:
-                candidates.append(entry)
+        archive_size = modulation_archive.stat().st_size
+        if modulation_archive_start_offset > archive_size:
+            raise SystemExit(
+                "modulation archive was truncated during smoke validation: "
+                f"offset={modulation_archive_start_offset}, "
+                f"size={archive_size}"
+            )
+        with modulation_archive.open("rb") as handle:
+            handle.seek(modulation_archive_start_offset)
+            for raw_line in handle:
+                if not raw_line.strip():
+                    continue
+                try:
+                    entry = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("update_id") == update_id
+                ):
+                    candidates.append(entry)
     if not candidates:
         return None
-    return max(int(entry.get("issued_at_frame", 0) or 0) for entry in candidates)
+    return min(int(entry.get("issued_at_frame", 0) or 0) for entry in candidates)
 
-aggressive_issued_at_frame = modulation_issued_at_frame(aggressive_update_id)
-if require_aggressive_combat and aggressive_issued_at_frame is None:
+aggressive_first_issued_at_frame = first_modulation_issued_at_frame(
+    aggressive_update_id
+)
+if require_aggressive_combat and aggressive_first_issued_at_frame is None:
     raise SystemExit(
-        "missing aggressive modulation issued_at_frame evidence: "
+        "missing first aggressive modulation issued_at_frame evidence: "
         f"update_id={aggressive_update_id}, telemetry={telemetry}"
     )
-aggressive_issued_at_frame = int(aggressive_issued_at_frame or 0)
+aggressive_first_issued_at_frame = int(aggressive_first_issued_at_frame or 0)
+
+def first_policy_consumed_frame(update_id):
+    frames = []
+    for entry in iter_telemetry_entries():
+        managers_entry = entry.get("managers", {})
+        if not isinstance(managers_entry, dict):
+            continue
+        commander_entry = managers_entry.get("GameCommander", {})
+        if (
+            isinstance(commander_entry, dict)
+            and commander_entry.get("policy_active") is True
+            and commander_entry.get("update_id") == update_id
+        ):
+            frames.append(int(entry.get("frame", 0) or 0))
+    return min(frames) if frames else None
+
+aggressive_first_consumed_frame = first_policy_consumed_frame(
+    aggressive_update_id
+)
+if require_aggressive_combat and aggressive_first_consumed_frame is None:
+    raise SystemExit(
+        "missing first aggressive policy-consumption telemetry: "
+        f"update_id={aggressive_update_id}, telemetry={telemetry}"
+    )
+aggressive_first_consumed_frame = int(
+    aggressive_first_consumed_frame or aggressive_first_issued_at_frame
+)
 
 def profile_main_attack_command_seen():
     best = {}
-    for entry in iter_telemetry_entries():
+    restore_initial_positions = {}
+    entries = sorted(
+        iter_telemetry_entries(),
+        key=lambda entry: int(entry.get("frame", 0) or 0),
+    )
+    for entry in entries:
         managers_entry = entry.get("managers", {})
         if not isinstance(managers_entry, dict):
             continue
@@ -1284,18 +2775,60 @@ def profile_main_attack_command_seen():
         command_frame = int(combat_entry.get("main_attack_last_action_frame", 0) or 0)
         command_count = int(combat_entry.get("main_attack_actual_command_issued_count", 0) or 0)
         status = str(combat_entry.get("main_attack_order_status", "") or "")
+        unit_count = int(combat_entry.get("main_attack_unit_count", 0) or 0)
+        min_units = int(combat_entry.get("main_attack_scope_min_units", 1) or 1)
         max_home_distance = float(combat_entry.get("main_attack_max_home_distance", 0.0) or 0.0)
+        current_home_distance = float(combat_entry.get("main_attack_home_distance", 0.0) or 0.0)
+        current_unit_positions = unit_positions(
+            combat_entry.get("main_attack_unit_samples", [])
+        )
+        if frame >= aggressive_first_consumed_frame:
+            for tag, position in current_unit_positions.items():
+                restore_initial_positions.setdefault(tag, position)
+        reference_positions = dict(restore_initial_positions)
+        reference_positions.update(post_cancel_unit_positions)
+        same_tag_displacements = {
+            tag: (
+                (
+                    current_unit_positions[tag][0]
+                    - baseline_position[0]
+                )
+                ** 2
+                + (
+                    current_unit_positions[tag][1]
+                    - baseline_position[1]
+                )
+                ** 2
+            )
+            ** 0.5
+            for tag, baseline_position
+            in reference_positions.items()
+            if tag in current_unit_positions
+        }
+        post_cancel_displacement = max(
+            same_tag_displacements.values(),
+            default=0.0,
+        )
         best = {
             "frame": frame,
             "main_attack_actual_command_issued_count": command_count,
             "main_attack_last_action_frame": command_frame,
             "main_attack_last_issued_action": command,
             "main_attack_order_status": status,
+            "main_attack_unit_count": unit_count,
+            "main_attack_scope_min_units": min_units,
             "main_attack_scope_threshold_met": combat_entry.get("main_attack_scope_threshold_met"),
             "main_attack_simulation_won": combat_entry.get("main_attack_simulation_won"),
             "main_attack_max_home_distance": max_home_distance,
+            "main_attack_home_distance": current_home_distance,
+            "post_cancel_main_attack_displacement": post_cancel_displacement,
+            "post_cancel_matching_unit_tags": sorted(
+                same_tag_displacements
+            ),
+            "required_post_cancel_main_attack_displacement": min_post_cancel_main_attack_displacement,
             "required_main_attack_home_distance": min_main_attack_home_distance,
-            "aggressive_issued_at_frame": aggressive_issued_at_frame,
+            "aggressive_first_issued_at_frame": aggressive_first_issued_at_frame,
+            "aggressive_first_consumed_frame": aggressive_first_consumed_frame,
         }
         issued_main_attack = "squad=MainAttack" in command
         if (
@@ -1304,9 +2837,22 @@ def profile_main_attack_command_seen():
             and status == "Attack"
             and combat_entry.get("main_attack_scope_threshold_met") is True
             and combat_entry.get("main_attack_simulation_won") is True
+            and unit_count >= min_units
             and command_frame > 0
-            and command_frame >= aggressive_issued_at_frame
+            and command_frame >= aggressive_first_consumed_frame
+            and frame >= command_frame
             and max_home_distance >= min_main_attack_home_distance
+            and (
+                not require_operation_lifecycle
+                or (
+                    command_count > post_cancel_command_baseline
+                    and command_frame > post_cancel_action_frame_baseline
+                    and command_frame >= aggressive_first_consumed_frame
+                    and aggressive_first_consumed_frame >= restore_issued_at_frame
+                    and current_home_distance >= min_main_attack_home_distance
+                    and post_cancel_displacement >= min_post_cancel_main_attack_displacement
+                )
+            )
         ):
             return True, best
     return False, best
@@ -1335,6 +2881,8 @@ if not combat or combat.get("active") is not True:
     raise SystemExit(f"missing CombatCommander activity evidence: {managers!r}")
 if combat.get("bounded_intervention") is not True:
     raise SystemExit(f"missing aggressive CombatCommander modulation evidence: {combat!r}")
+main_attack_seen = False
+main_attack_evidence = {}
 combat_consumed_axes = {
     axis.strip()
     for axis in str(combat.get("consumed_axes", "")).split(",")
@@ -1361,10 +2909,11 @@ if require_aggressive_combat:
         raise SystemExit(f"missing MainAttack CombatCommander action evidence: {combat!r}")
     if main_attack_command_frame <= 0:
         raise SystemExit(f"missing issued-only CombatCommander command frame evidence: {combat!r}")
-    if main_attack_command_frame < aggressive_issued_at_frame:
+    if main_attack_command_frame < aggressive_first_issued_at_frame:
         raise SystemExit(
             "MainAttack command evidence predates the aggressive modulation update: "
-            f"issued_at_frame={aggressive_issued_at_frame}, combat={combat!r}"
+            f"first_issued_at_frame={aggressive_first_issued_at_frame}, "
+            f"combat={combat!r}"
         )
     for axis in (
         "combat.retreat_patience_bias",
@@ -1386,24 +2935,12 @@ if require_aggressive_combat:
             "missing profile-specific attack condition override evidence: "
             f"expected one of {sorted(allowed_overrides)}, combat={combat!r}"
         )
-    if combat.get("main_attack_order_status") != "Attack":
-        raise SystemExit(f"missing aggressive attack order evidence: {combat!r}")
-    if combat.get("main_attack_scope_threshold_met") is not True:
-        raise SystemExit(f"missing attack scope threshold evidence: {combat!r}")
-    if combat.get("main_attack_simulation_won") is not True:
-        raise SystemExit(f"missing attack simulation safety evidence: {combat!r}")
     main_attack_seen, main_attack_evidence = profile_main_attack_command_seen()
     if not main_attack_seen:
         raise SystemExit(
+            "MainAttack command did not produce live movement away from home; "
             "missing archived MainAttack command evidence for aggressive profile: "
             f"best={main_attack_evidence!r}, latest={combat!r}"
-        )
-    if int(combat.get("main_attack_unit_count", 0)) < int(combat.get("main_attack_scope_min_units", 1)):
-        raise SystemExit(f"attack order did not satisfy scope units: {combat!r}")
-    if float(combat.get("main_attack_max_home_distance", 0.0) or 0.0) < min_main_attack_home_distance:
-        raise SystemExit(
-            "MainAttack command did not produce live movement away from home: "
-            f"required_distance={min_main_attack_home_distance}, combat={combat!r}"
         )
     if (
         combat.get("scout_scope_status") == "Consumed"
@@ -1492,105 +3029,44 @@ if production_contract_required:
         raise SystemExit(f"ProductionManager did not queue a doctrine action: {production!r}")
     if str(production.get("last_doctrine_queue_item", "") or "") in ("", "none"):
         raise SystemExit(f"ProductionManager doctrine action did not queue an item: {production!r}")
-allowed_doctrine_evidence = {"queued", "queued_existing", "command_issued"}
-if production_contract_required and str(production.get("last_doctrine_evidence", "") or "") not in allowed_doctrine_evidence:
+allowed_doctrine_evidence = {
+    "queued",
+    "queued_existing",
+    "command_issued",
+    "represented_satisfied",
+}
+if (
+    production_contract_required
+    and str(production.get("last_doctrine_evidence", "") or "")
+        not in allowed_doctrine_evidence
+):
     raise SystemExit(
         "ProductionManager doctrine action lacks live queue evidence: "
         f"{production!r}"
     )
-expected_action_item_pairs = {
-    "marine_rush": {("marine_pressure", "Marine"), ("bio_facility", "Barracks")},
-    "bio_pressure": {
-        ("bio_marauder_techlab", "BarracksTechLab"),
-        ("bio_marauder_support", "Marauder"),
-        ("starport_transition", "Starport"),
-        ("medivac_drop_support", "Medivac"),
-    },
-    "tank_defensive_hold": {
-        ("factory_transition", "Factory"),
-        ("factory_techlab", "FactoryTechLab"),
-        ("siege_tank_composition", "SiegeTank"),
-    },
-    "siege_contain": {
-        ("factory_transition", "Factory"),
-        ("factory_techlab", "FactoryTechLab"),
-        ("siege_tank_composition", "SiegeTank"),
-    },
-    "contain_enemy_natural": {
-        ("factory_transition", "Factory"),
-        ("factory_techlab", "FactoryTechLab"),
-        ("siege_tank_composition", "SiegeTank"),
-    },
-    "mech_transition": {
-        ("factory_transition", "Factory"),
-        ("factory_techlab", "FactoryTechLab"),
-        ("hellion_harassment", "Hellion"),
-        ("cyclone_mech", "Cyclone"),
-        ("siege_tank_composition", "SiegeTank"),
-        ("thor_mech", "Thor"),
-    },
-    "drop_harassment": {
-        ("starport_transition", "Starport"),
-        ("drop_reactor", "StarportReactor"),
-        ("medivac_drop_support", "Medivac"),
-        ("factory_transition", "Factory"),
-        ("hellion_harassment", "Hellion"),
-        ("reaper_harassment", "Reaper"),
-    },
-    "worker_line_harassment": {
-        ("starport_transition", "Starport"),
-        ("drop_reactor", "StarportReactor"),
-        ("medivac_drop_support", "Medivac"),
-        ("factory_transition", "Factory"),
-        ("hellion_harassment", "Hellion"),
-        ("reaper_harassment", "Reaper"),
-    },
-    "expand_macro": {("expand_macro", "CommandCenter")},
-    "anti_air_response": {
-        ("starport_transition", "Starport"),
-        ("anti_air_detection_support", "EngineeringBay"),
-        ("anti_air_viking", "Viking"),
-    },
-}
-expected_pairs = expected_action_item_pairs.get(expected_strategy_doctrine, set())
+expected_pairs = expected_production_pairs(
+    expected_strategy_doctrine,
+    expected_actions=expected_production_actions,
+    expected_items=expected_production_items,
+)
 
-def production_matches_expected(production_entry):
-    if not isinstance(production_entry, dict):
-        return False
-    doctrine_ok = production_entry.get("strategy_doctrine") == expected_strategy_doctrine and production_entry.get("last_doctrine") == expected_strategy_doctrine
-    update_ok = production_entry.get("policy_update_id") == aggressive_update_id and production_entry.get("last_doctrine_update_id") == aggressive_update_id
-    fresh_ok = production_entry.get("last_doctrine_fresh") is True
-    action = str(production_entry.get("last_doctrine_action", "") or "")
-    item = str(production_entry.get("last_doctrine_queue_item", "") or "")
-    evidence = str(production_entry.get("last_doctrine_evidence", "") or "")
-    frame = int(production_entry.get("last_doctrine_frame", 0) or 0)
-    issued_at_frame = int(production_entry.get("policy_issued_at_frame", 0) or 0)
-    action_ok = not expected_production_actions or action in expected_production_actions
-    item_ok = not expected_production_items or item in expected_production_items
-    pair_ok = not expected_pairs or (action, item) in expected_pairs
-    evidence_ok = evidence in allowed_doctrine_evidence
-    frame_ok = frame > 0 and (issued_at_frame <= 0 or frame >= issued_at_frame)
-    return doctrine_ok and update_ok and fresh_ok and action_ok and item_ok and pair_ok and evidence_ok and frame_ok and action not in ("", "none") and item not in ("", "none")
-
-def find_expected_production_entry():
-    observed_actions = set()
-    observed_items = set()
-    for entry in iter_telemetry_entries():
-        candidate = entry.get("managers", {}).get("ProductionManager", {})
-        if not isinstance(candidate, dict):
-            continue
-        action = str(candidate.get("last_doctrine_action", "") or "")
-        item = str(candidate.get("last_doctrine_queue_item", "") or "")
-        if action and action != "none":
-            observed_actions.add(action)
-        if item and item != "none":
-            observed_items.add(item)
-        if production_matches_expected(candidate):
-            return candidate, observed_actions, observed_items
-    return None, observed_actions, observed_items
-
-matching_production, observed_production_actions, observed_production_items = find_expected_production_entry()
-if production_contract_required and matching_production is None:
+telemetry_entries = tuple(iter_telemetry_entries())
+causal_production_evidence = find_causal_production_evidence(
+    telemetry_entries,
+    expected_doctrine=expected_strategy_doctrine,
+    expected_update_id=production_evidence_update_id,
+    expected_pairs=expected_pairs,
+    allowed_doctrine_evidence=allowed_doctrine_evidence,
+)
+matching_production = causal_production_evidence.doctrine_entry
+observed_production_actions = causal_production_evidence.observed_actions
+observed_production_items = (
+    causal_production_evidence.observed_doctrine_items
+)
+if (
+    production_contract_required
+    and matching_production is None
+):
     raise SystemExit(
         "ProductionManager did not emit expected strategy action/item evidence; "
         f"expected_actions={sorted(expected_production_actions)}, "
@@ -1598,81 +3074,28 @@ if production_contract_required and matching_production is None:
         f"observed_actions={sorted(observed_production_actions)}, "
         f"observed_items={sorted(observed_production_items)}, latest={production!r}"
     )
-if production_contract_required and int(matching_production.get("last_doctrine_frame", 0)) <= 0:
+if (
+    production_contract_required
+    and matching_production is not None
+    and int(matching_production.get("last_doctrine_frame", 0)) <= 0
+):
     raise SystemExit(f"ProductionManager doctrine action frame is missing: {matching_production!r}")
-expected_actual_items_by_doctrine = {
-    "marine_rush": {"Marine", "Barracks"},
-    "bio_pressure": {"Marauder", "BarracksTechLab", "Starport", "Medivac"},
-    "tank_defensive_hold": {"FactoryTechLab", "SiegeTank"},
-    "siege_contain": {"FactoryTechLab", "SiegeTank"},
-    "contain_enemy_natural": {"FactoryTechLab", "SiegeTank"},
-    "mech_transition": {"Hellion", "Cyclone", "SiegeTank", "Thor"},
-    "drop_harassment": {"Starport", "StarportReactor", "Medivac", "Hellion", "Reaper"},
-    "worker_line_harassment": {"Starport", "StarportReactor", "Medivac", "Hellion", "Reaper"},
-    "expand_macro": {"CommandCenter"},
-    "anti_air_response": {"Starport", "EngineeringBay", "Viking"},
-}
-actual_item_aliases = {
-    "TERRAN_SUPPLYDEPOT": "SupplyDepot",
-    "TERRAN_BARRACKS": "Barracks",
-    "TERRAN_BARRACKSTECHLAB": "BarracksTechLab",
-    "TERRAN_FACTORY": "Factory",
-    "TERRAN_FACTORYTECHLAB": "FactoryTechLab",
-    "TERRAN_STARPORT": "Starport",
-    "TERRAN_STARPORTREACTOR": "StarportReactor",
-    "TERRAN_COMMANDCENTER": "CommandCenter",
-    "TERRAN_ENGINEERINGBAY": "EngineeringBay",
-    "TERRAN_MARINE": "Marine",
-    "TERRAN_MARAUDER": "Marauder",
-    "TERRAN_REAPER": "Reaper",
-    "TERRAN_HELLION": "Hellion",
-    "TERRAN_CYCLONE": "Cyclone",
-    "TERRAN_THOR": "Thor",
-    "TERRAN_SIEGETANK": "SiegeTank",
-    "TERRAN_MEDIVAC": "Medivac",
-    "TERRAN_VIKINGFIGHTER": "Viking",
-}
-
-def find_expected_actual_production_command():
-    expected_actual_items = expected_actual_items_by_doctrine.get(
-        expected_strategy_doctrine,
-        expected_production_items,
-    )
-    observed_actual_items = set()
-    observed_actual_commands = set()
-    for entry in iter_telemetry_entries():
-        candidate = entry.get("managers", {}).get("ProductionManager", {})
-        if not isinstance(candidate, dict):
-            continue
-        item = actual_item_aliases.get(
-            str(candidate.get("last_actual_production_command_item", "") or ""),
-            str(candidate.get("last_actual_production_command_item", "") or ""),
-        )
-        kind = str(candidate.get("last_actual_production_command_kind", "") or "")
-        update_id = str(candidate.get("last_actual_production_command_update_id", "") or "")
-        frame = int(candidate.get("last_actual_production_command_frame", 0) or 0)
-        count = int(candidate.get("actual_production_command_issued_count", 0) or 0)
-        policy_issued_at = int(candidate.get("policy_issued_at_frame", 0) or 0)
-        if item and item != "none":
-            observed_actual_items.add(item)
-        if kind and kind != "none" and item and item != "none":
-            observed_actual_commands.add(f"{kind}|{item}")
-        if (
-            count > 0
-            and update_id == aggressive_update_id
-            and item in expected_actual_items
-            and frame > 0
-            and (policy_issued_at <= 0 or frame >= policy_issued_at)
-        ):
-            return candidate, observed_actual_items, observed_actual_commands
-    return None, observed_actual_items, observed_actual_commands
-
-matching_actual_production, observed_actual_items, observed_actual_commands = find_expected_actual_production_command()
-if production_contract_required and matching_actual_production is None:
+matching_actual_production = (
+    causal_production_evidence.actual_command_entry
+)
+observed_actual_items = causal_production_evidence.observed_actual_items
+observed_actual_commands = (
+    causal_production_evidence.observed_actual_commands
+)
+if (
+    production_contract_required
+    and matching_actual_production is None
+):
     raise SystemExit(
-        "ProductionManager queued the expected strategy but did not issue a matching "
-        "actual production/build command; "
-        f"expected_actual_items={sorted(expected_actual_items_by_doctrine.get(expected_strategy_doctrine, expected_production_items))}, "
+        "ProductionManager queued the expected strategy action/item but did not "
+        "issue its exact same-update command at or after the doctrine frame; "
+        f"expected_pairs={sorted(causal_production_evidence.expected_pairs)}, "
+        f"expected_actual_items={sorted(causal_production_evidence.expected_actual_items)}, "
         f"observed_actual_items={sorted(observed_actual_items)}, "
         f"observed_actual_commands={sorted(observed_actual_commands)}, latest={production!r}"
     )

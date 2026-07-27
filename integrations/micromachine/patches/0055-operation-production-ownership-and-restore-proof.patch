@@ -1,0 +1,4091 @@
+diff --git a/src/BuildOrderQueue.cpp b/src/BuildOrderQueue.cpp
+index 7f6f939..4f7687f 100644
+--- a/src/BuildOrderQueue.cpp
++++ b/src/BuildOrderQueue.cpp
+@@ -1,17 +1,229 @@
+ #include "BuildOrderQueue.h"
+ #include "CCBot.h"
+ #include <list>
++#include <sstream>
++#include <tuple>
++
++namespace
++{
++std::string voiBuildQueueJsonEscape(const std::string & value)
++{
++	std::ostringstream escaped;
++	for (const char character : value)
++	{
++		switch (character)
++		{
++			case '\\': escaped << "\\\\"; break;
++			case '"': escaped << "\\\""; break;
++			case '\n': escaped << "\\n"; break;
++			case '\r': escaped << "\\r"; break;
++			case '\t': escaped << "\\t"; break;
++			default: escaped << character; break;
++		}
++	}
++	return escaped.str();
++}
++
++bool sameBuildOrderType(
++	const MM::BuildOrderItem & item,
++	const MetaType & type)
++{
++	const auto itemApiType =
++		item.type.getUnitType().getAPIUnitType();
++	const auto requestedApiType =
++		type.getUnitType().getAPIUnitType();
++	return itemApiType == 0
++		? item.type == type
++		: itemApiType == requestedApiType;
++}
++
++std::map<
++	MM::VoiBuildOrderOwner,
++	MM::VoiBuildOrderOwnerMetadata>
++normalizedOwnerMetadata(
++	const MM::VoiBuildOrderClaim & claim,
++	int fallbackPriority)
++{
++	auto metadata = claim.operationOwnerMetadata;
++	for (const auto & owner : claim.operationOwners)
++	{
++		auto existing = metadata.find(owner);
++		if (existing == metadata.end())
++		{
++			metadata[owner] = {
++				claim.source == "shared_prerequisite"
++					? "operation"
++					: claim.source,
++				claim.blocking,
++				claim.taskPriority,
++				fallbackPriority };
++			continue;
++		}
++		if (existing->second.priority == 0)
++		{
++			existing->second.priority = fallbackPriority;
++		}
++	}
++	for (auto existing = metadata.begin();
++		existing != metadata.end();)
++	{
++		if (claim.operationOwners.find(existing->first)
++			== claim.operationOwners.end())
++		{
++			existing = metadata.erase(existing);
++			continue;
++		}
++		++existing;
++	}
++	return metadata;
++}
++
++std::string normalizedPreservedSource(
++	const MM::VoiBuildOrderClaim & claim)
++{
++	if (!claim.preserveWithoutOperationOwners)
++	{
++		return "";
++	}
++	if (!claim.preservedSource.empty())
++	{
++		return claim.preservedSource;
++	}
++	return claim.operationOwners.empty()
++		? claim.source
++		: "top_level";
++}
++
++void ensureVoiOwnerMetadata(MM::BuildOrderItem & item)
++{
++	for (const auto & owner : item.voiOperationOwners)
++	{
++		if (item.voiOperationOwnerMetadata.find(owner)
++			== item.voiOperationOwnerMetadata.end())
++		{
++			item.voiOperationOwnerMetadata[owner] = {
++				item.voiClaimSource == "shared_prerequisite"
++					? "operation"
++					: item.voiClaimSource,
++				item.blocking,
++				item.voiTaskPriority,
++				item.priority };
++		}
++	}
++	for (auto existing =
++			item.voiOperationOwnerMetadata.begin();
++		existing != item.voiOperationOwnerMetadata.end();)
++	{
++		if (item.voiOperationOwners.find(existing->first)
++			== item.voiOperationOwners.end())
++		{
++			existing =
++				item.voiOperationOwnerMetadata.erase(existing);
++			continue;
++		}
++		++existing;
++	}
++
++	if (item.preserveWithoutVoiOperationOwners
++		&& item.voiPreservedClaimSource.empty())
++	{
++		item.voiPreservedClaimSource =
++			item.voiOperationOwners.empty()
++				? item.voiClaimSource
++				: "top_level";
++		item.voiPreservedBlocking = item.blocking;
++		item.voiPreservedTaskPriority =
++			item.voiTaskPriority;
++		item.voiPreservedPriority = item.priority;
++	}
++}
++
++void refreshVoiAggregateMetadata(MM::BuildOrderItem & item)
++{
++	ensureVoiOwnerMetadata(item);
++	bool blocking = false;
++	float taskPriority = 0.0f;
++	int priority = item.priority;
++	bool hasPriority = false;
++
++	if (item.preserveWithoutVoiOperationOwners)
++	{
++		blocking = item.voiPreservedBlocking;
++		taskPriority = item.voiPreservedTaskPriority;
++		priority = item.voiPreservedPriority;
++		hasPriority = true;
++	}
++	for (const auto & owner : item.voiOperationOwnerMetadata)
++	{
++		blocking = blocking || owner.second.blocking;
++		taskPriority = std::max(
++			taskPriority,
++			owner.second.taskPriority);
++		if (!hasPriority
++			|| owner.second.priority > priority)
++		{
++			priority = owner.second.priority;
++			hasPriority = true;
++		}
++	}
++
++	item.blocking = blocking;
++	item.voiTaskPriority = taskPriority;
++	if (hasPriority)
++	{
++		item.priority = priority;
++	}
++	if (item.preserveWithoutVoiOperationOwners
++		&& !item.voiOperationOwners.empty())
++	{
++		item.voiClaimSource = "shared_prerequisite";
++	}
++	else if (item.preserveWithoutVoiOperationOwners)
++	{
++		item.voiClaimSource =
++			item.voiPreservedClaimSource.empty()
++				? "legacy"
++				: item.voiPreservedClaimSource;
++	}
++	else if (!item.voiOperationOwnerMetadata.empty())
++	{
++		item.voiClaimSource =
++			item.voiOperationOwnerMetadata.begin()
++				->second.source;
++	}
++}
++}
+ 
+ BuildOrderQueue::BuildOrderQueue(CCBot & bot)
+     : m_bot(bot)
+-    , m_highestPriority(0)
+     , m_lowestPriority(0)
++    , m_highestPriority(0)
+     , m_defaultPrioritySpacing(10)
+     , m_numSkippedItems(0)
++	, m_nextInsertionSequence(1)
+ {
+ 
+ }
+ 
++void BuildOrderQueue::refreshPriorityBounds()
++{
++	if (m_queue.empty())
++	{
++		m_highestPriority = 0;
++		m_lowestPriority = 0;
++		return;
++	}
++	m_highestPriority = m_queue.front().priority;
++	m_lowestPriority = m_queue.front().priority;
++	for (const auto & item : m_queue)
++	{
++		m_highestPriority =
++			std::max(m_highestPriority, item.priority);
++		m_lowestPriority =
++			std::min(m_lowestPriority, item.priority);
++	}
++}
++
+ void BuildOrderQueue::clearAll()
+ {
+     // clear the queue
+@@ -20,6 +232,7 @@ void BuildOrderQueue::clearAll()
+     // reset the priorities
+     m_highestPriority = 0;
+     m_lowestPriority = 0;
++	m_numSkippedItems = 0;
+ }
+ 
+ MM::BuildOrderItem BuildOrderQueue::getHighestPriorityItem()
+@@ -44,7 +257,7 @@ int BuildOrderQueue::getCountOfType(const MetaType & type) const
+ 	int count = 0;
+ 	for (auto item : m_queue)
+ 	{
+-		if (item.type.getUnitType() == type.getUnitType())
++		if (sameBuildOrderType(item, type))
+ 		{
+ 			count++;
+ 		}
+@@ -80,57 +293,81 @@ bool BuildOrderQueue::canSkipItem()
+ 
+ MM::BuildOrderItem BuildOrderQueue::queueItem(const MM::BuildOrderItem & b)
+ {
++	MM::BuildOrderItem item = b;
++	if (item.insertionSequence == 0)
++	{
++		item.insertionSequence = m_nextInsertionSequence++;
++	}
++	else
++	{
++		m_nextInsertionSequence = std::max(
++			m_nextInsertionSequence,
++			item.insertionSequence + 1);
++	}
++
+     // if the queue is empty, set the highest and lowest priorities
+     if (m_queue.empty())
+     {
+-        m_highestPriority = b.priority;
+-        m_lowestPriority = b.priority;
+-    }
+-
+-    // push the item into the queue
+-    if (b.priority <= m_lowestPriority)
+-    {
+-        m_queue.push_front(b);
+-    }
+-    else
+-    {
+-        m_queue.push_back(b);
++        m_highestPriority = item.priority;
++        m_lowestPriority = item.priority;
+     }
+ 
+-    // if the item is somewhere in the middle, we have to sort again
+-    if ((m_queue.size() > 1) && (b.priority < m_highestPriority) && (b.priority > m_lowestPriority))
+-    {
+-        // sort the list in ascending order, putting highest priority at the top
+-        std::sort(m_queue.begin(), m_queue.end());
+-    }
+-
+-    // update the highest or lowest if it is beaten
+-    m_highestPriority = (b.priority > m_highestPriority) ? b.priority : m_highestPriority;
+-    m_lowestPriority  = (b.priority < m_lowestPriority)  ? b.priority : m_lowestPriority;
++	m_queue.push_back(item);
++	if (m_queue.size() > 1)
++	{
++		std::sort(m_queue.begin(), m_queue.end());
++	}
++	refreshPriorityBounds();
+ 
+-	return b;
++	return item;
+ }
+ 
+-MM::BuildOrderItem BuildOrderQueue::queueAsHighestPriority(const MetaType & type, bool blocking)
++MM::BuildOrderItem BuildOrderQueue::queueAsHighestPriority(
++	const MetaType & type,
++	bool blocking,
++	const std::set<std::pair<std::string, uint64_t>> & operationOwners,
++	bool preserveWithoutOperationOwners,
++	const std::string & claimSource,
++	float taskPriority)
+ {
+     // the new priority will be higher
+     int newPriority = m_highestPriority + m_defaultPrioritySpacing;
+ 
+-	MM::BuildOrderItem item(type, newPriority, blocking);
++	MM::BuildOrderItem item(
++		type,
++		newPriority,
++		blocking,
++		operationOwners,
++		preserveWithoutOperationOwners,
++		claimSource,
++		taskPriority);
+     // queue the item
+-    queueItem(item);
++    item = queueItem(item);
+ 
+ 	return item;
+ }
+ 
+-MM::BuildOrderItem BuildOrderQueue::queueAsLowestPriority(const MetaType & type, bool blocking)
++MM::BuildOrderItem BuildOrderQueue::queueAsLowestPriority(
++	const MetaType & type,
++	bool blocking,
++	const std::set<std::pair<std::string, uint64_t>> & operationOwners,
++	bool preserveWithoutOperationOwners,
++	const std::string & claimSource,
++	float taskPriority)
+ {
+     // the new priority will be higher
+     int newPriority = m_lowestPriority - m_defaultPrioritySpacing;
+ 
+-	MM::BuildOrderItem item(type, newPriority, blocking);
++	MM::BuildOrderItem item(
++		type,
++		newPriority,
++		blocking,
++		operationOwners,
++		preserveWithoutOperationOwners,
++		claimSource,
++		taskPriority);
+ 	// queue the item
+-	queueItem(item);
++	item = queueItem(item);
+ 
+ 	return item;
+ }
+@@ -141,8 +378,7 @@ void BuildOrderQueue::removeHighestPriorityItem()
+     m_queue.pop_back();
+ 
+     // if the list is not empty, set the highest accordingly
+-    m_highestPriority = m_queue.empty() ? 0 : m_queue.back().priority;
+-    m_lowestPriority  = m_queue.empty() ? 0 : m_lowestPriority;
++	refreshPriorityBounds();
+ }
+ 
+ void BuildOrderQueue::removeCurrentHighestPriorityItem()
+@@ -153,8 +389,7 @@ void BuildOrderQueue::removeCurrentHighestPriorityItem()
+     //assert((int)(queue.size()) < size);
+ 
+     // if the list is not empty, set the highest accordingly
+-    m_highestPriority = m_queue.empty() ? 0 : m_queue.back().priority;
+-    m_lowestPriority  = m_queue.empty() ? 0 : m_lowestPriority;
++	refreshPriorityBounds();
+ }
+ 
+ void BuildOrderQueue::removeAllOfType(const MetaType & type)
+@@ -162,7 +397,7 @@ void BuildOrderQueue::removeAllOfType(const MetaType & type)
+ 	std::list<int> stack;
+ 	for (int i = 0; i < m_queue.size(); i++)
+ 	{
+-		if (m_queue[i].type == type)
++		if (sameBuildOrderType(m_queue[i], type))
+ 		{
+ 			stack.push_front(i);
+ 		}
+@@ -171,6 +406,490 @@ void BuildOrderQueue::removeAllOfType(const MetaType & type)
+ 	{
+ 		m_queue.erase(m_queue.begin() + index);
+ 	}
++	refreshPriorityBounds();
++}
++
++void BuildOrderQueue::addVoiOperationOwnersToType(
++	const MetaType & type,
++	const MM::BuildOrderItem & dependentItem)
++{
++	MM::BuildOrderItem dependent = dependentItem;
++	ensureVoiOwnerMetadata(dependent);
++	if (dependent.voiOperationOwners.empty()
++		&& !dependent.preserveWithoutVoiOperationOwners)
++	{
++		return;
++	}
++
++	// A prerequisite may be shared, but only one queued item is needed to
++	// carry that shared claim. Never smear an operation owner or macro
++	// preservation flag across every duplicate of the same type.
++	for (auto item = m_queue.rbegin(); item != m_queue.rend(); ++item)
++	{
++		if (!sameBuildOrderType(*item, type))
++		{
++			continue;
++		}
++		ensureVoiOwnerMetadata(*item);
++		if (dependent.preserveWithoutVoiOperationOwners)
++		{
++			const std::string dependentSource =
++				dependent.voiPreservedClaimSource.empty()
++					? "top_level"
++					: dependent.voiPreservedClaimSource;
++			const int dependentPriority = std::max(
++				dependent.priority,
++				dependent.voiPreservedPriority);
++			if (!item->preserveWithoutVoiOperationOwners)
++			{
++				item->voiPreservedClaimSource =
++					dependentSource;
++				item->voiPreservedBlocking =
++					dependent.voiPreservedBlocking;
++				item->voiPreservedTaskPriority =
++					dependent.voiPreservedTaskPriority;
++				item->voiPreservedPriority =
++					dependentPriority + 1;
++			}
++			else
++			{
++				item->voiPreservedBlocking =
++					item->voiPreservedBlocking
++					|| dependent.voiPreservedBlocking;
++				item->voiPreservedTaskPriority =
++					std::max(
++						item->voiPreservedTaskPriority,
++						dependent.voiPreservedTaskPriority);
++				item->voiPreservedPriority =
++					std::max(
++						item->voiPreservedPriority,
++						dependentPriority + 1);
++			}
++		}
++		item->voiOperationOwners.insert(
++			dependent.voiOperationOwners.begin(),
++			dependent.voiOperationOwners.end());
++		for (const auto & owner :
++			dependent.voiOperationOwners)
++		{
++			const auto dependentMetadata =
++				dependent.voiOperationOwnerMetadata.find(owner);
++			const MM::VoiBuildOrderOwnerMetadata metadataToInherit =
++				dependentMetadata
++						== dependent.voiOperationOwnerMetadata.end()
++					? MM::VoiBuildOrderOwnerMetadata {
++						"operation",
++						dependent.blocking,
++						dependent.voiTaskPriority,
++						dependent.priority }
++					: dependentMetadata->second;
++			auto & metadata =
++				item->voiOperationOwnerMetadata[owner];
++			metadata.source = "operation";
++			metadata.blocking =
++				metadata.blocking
++				|| metadataToInherit.blocking;
++			metadata.taskPriority = std::max(
++				metadata.taskPriority,
++				metadataToInherit.taskPriority);
++			metadata.priority = std::max(
++				metadata.priority,
++				std::max(
++					dependent.priority,
++					metadataToInherit.priority) + 1);
++		}
++		item->preserveWithoutVoiOperationOwners =
++			item->preserveWithoutVoiOperationOwners
++			|| dependent.preserveWithoutVoiOperationOwners;
++		refreshVoiAggregateMetadata(*item);
++		std::sort(m_queue.begin(), m_queue.end());
++		refreshPriorityBounds();
++		return;
++	}
++}
++
++void BuildOrderQueue::reconcileTypeVoiClaims(
++	const MetaType & type,
++	const std::vector<MM::VoiBuildOrderClaim> & claims)
++{
++	std::vector<MM::BuildOrderItem> existing;
++	for (auto item = m_queue.begin(); item != m_queue.end();)
++	{
++		if (!sameBuildOrderType(*item, type))
++		{
++			++item;
++			continue;
++		}
++		existing.push_back(*item);
++		item = m_queue.erase(item);
++	}
++	refreshPriorityBounds();
++
++	std::vector<bool> used(existing.size(), false);
++	std::vector<MM::BuildOrderItem> reconciled;
++	reconciled.reserve(claims.size());
++	int nextNewPriority =
++		m_highestPriority + m_defaultPrioritySpacing;
++	for (const auto & claim : claims)
++	{
++		int matchedIndex = -1;
++		for (int index = 0;
++			index < static_cast<int>(existing.size());
++			++index)
++		{
++			if (used[index])
++			{
++				continue;
++			}
++			const bool sameIdentity =
++				claim.insertionSequence > 0
++				&& existing[index].insertionSequence
++					== claim.insertionSequence;
++			ensureVoiOwnerMetadata(existing[index]);
++			const auto claimOwnerMetadata =
++				normalizedOwnerMetadata(
++					claim,
++					existing[index].priority);
++			const bool sameClaim =
++				existing[index].voiOperationOwners
++						== claim.operationOwners
++					&& existing[index].preserveWithoutVoiOperationOwners
++						== claim.preserveWithoutOperationOwners
++					&& existing[index].voiClaimSource
++						== claim.source
++					&& existing[index].voiOperationOwnerMetadata
++						== claimOwnerMetadata
++					&& existing[index].voiPreservedClaimSource
++						== normalizedPreservedSource(claim)
++					&& existing[index].voiPreservedBlocking
++						== (claim.preservedSource.empty()
++							? claim.blocking
++							: claim.preservedBlocking)
++					&& existing[index].voiPreservedTaskPriority
++						== (claim.preservedSource.empty()
++							? claim.taskPriority
++							: claim.preservedTaskPriority);
++			if (sameIdentity || sameClaim)
++			{
++				matchedIndex = index;
++				break;
++			}
++		}
++
++		if (matchedIndex >= 0)
++		{
++			used[matchedIndex] = true;
++			auto item = existing[matchedIndex];
++			item.voiOperationOwners = claim.operationOwners;
++			item.preserveWithoutVoiOperationOwners =
++				claim.preserveWithoutOperationOwners;
++			item.voiClaimSource = claim.source;
++			item.voiOperationOwnerMetadata =
++				normalizedOwnerMetadata(
++					claim,
++					item.priority);
++			item.voiPreservedClaimSource =
++				normalizedPreservedSource(claim);
++			item.voiPreservedBlocking =
++				claim.preservedSource.empty()
++					? claim.blocking
++					: claim.preservedBlocking;
++			item.voiPreservedTaskPriority =
++				claim.preservedSource.empty()
++					? claim.taskPriority
++					: claim.preservedTaskPriority;
++			item.voiPreservedPriority =
++				claim.preservedPriority == 0
++					? item.priority
++					: claim.preservedPriority;
++			refreshVoiAggregateMetadata(item);
++			reconciled.push_back(item);
++			continue;
++		}
++
++		const int claimPriority =
++			claim.insertionSequence > 0
++				? claim.priority
++				: nextNewPriority;
++		reconciled.emplace_back(
++			type,
++			claimPriority,
++			claim.blocking,
++			claim.operationOwners,
++			claim.preserveWithoutOperationOwners,
++			claim.source,
++			claim.taskPriority,
++			claim.insertionSequence,
++			normalizedOwnerMetadata(
++				claim,
++				claimPriority),
++			normalizedPreservedSource(claim),
++			claim.preservedSource.empty()
++				? claim.blocking
++				: claim.preservedBlocking,
++			claim.preservedSource.empty()
++				? claim.taskPriority
++				: claim.preservedTaskPriority,
++			claim.preservedPriority == 0
++				? claimPriority
++				: claim.preservedPriority);
++		if (claim.insertionSequence == 0)
++		{
++			nextNewPriority += m_defaultPrioritySpacing;
++		}
++	}
++
++	for (const auto & item : reconciled)
++	{
++		queueItem(item);
++	}
++}
++
++void BuildOrderQueue::promoteTypeToHighestPriority(
++	const MetaType & type,
++	bool blocking)
++{
++	auto promoted = m_queue.end();
++	for (auto item = m_queue.begin(); item != m_queue.end(); ++item)
++	{
++		if (!sameBuildOrderType(*item, type))
++		{
++			continue;
++		}
++		if (promoted == m_queue.end()
++			|| item->voiTaskPriority > promoted->voiTaskPriority
++			|| (item->voiTaskPriority == promoted->voiTaskPriority
++				&& item->priority > promoted->priority)
++			|| (item->voiTaskPriority == promoted->voiTaskPriority
++				&& item->priority == promoted->priority
++				&& item->insertionSequence
++					> promoted->insertionSequence))
++		{
++			promoted = item;
++		}
++	}
++	if (promoted == m_queue.end())
++	{
++		return;
++	}
++
++	const int promotedPriority =
++		m_highestPriority + m_defaultPrioritySpacing;
++	ensureVoiOwnerMetadata(*promoted);
++	auto promotedOwner =
++		promoted->voiOperationOwnerMetadata.end();
++	for (auto owner =
++			promoted->voiOperationOwnerMetadata.begin();
++		owner != promoted->voiOperationOwnerMetadata.end();
++		++owner)
++	{
++		if (promotedOwner
++				== promoted->voiOperationOwnerMetadata.end()
++			|| owner->second.taskPriority
++				> promotedOwner->second.taskPriority
++			|| (owner->second.taskPriority
++					== promotedOwner->second.taskPriority
++				&& owner->second.priority
++					> promotedOwner->second.priority))
++		{
++			promotedOwner = owner;
++		}
++	}
++	const bool promotePreserved =
++		promoted->preserveWithoutVoiOperationOwners
++		&& (promotedOwner
++				== promoted->voiOperationOwnerMetadata.end()
++			|| promoted->voiPreservedTaskPriority
++				>= promotedOwner->second.taskPriority);
++	if (promotePreserved)
++	{
++		promoted->voiPreservedPriority = promotedPriority;
++		promoted->voiPreservedBlocking =
++			promoted->voiPreservedBlocking || blocking;
++	}
++	else if (promotedOwner
++		!= promoted->voiOperationOwnerMetadata.end())
++	{
++		promotedOwner->second.priority = promotedPriority;
++		promotedOwner->second.blocking =
++			promotedOwner->second.blocking || blocking;
++	}
++	refreshVoiAggregateMetadata(*promoted);
++	std::sort(m_queue.begin(), m_queue.end());
++	refreshPriorityBounds();
++}
++
++void BuildOrderQueue::resizeTypePreservingVoiClaims(
++	const MetaType & type,
++	int count,
++	bool blocking)
++{
++	std::vector<MM::VoiBuildOrderClaim> claims =
++		getVoiClaimsForType(type);
++	const int targetCount = std::max(0, count);
++	if (static_cast<int>(claims.size()) > targetCount)
++	{
++		claims.erase(
++			claims.begin(),
++			claims.end() - targetCount);
++	}
++	while (static_cast<int>(claims.size())
++		< targetCount)
++	{
++		claims.push_back({
++			{},
++			true,
++			"legacy",
++			blocking,
++			0.0f,
++			0,
++			0,
++			{},
++			"legacy",
++			blocking,
++			0.0f,
++			0 });
++	}
++	reconcileTypeVoiClaims(type, claims);
++}
++
++int BuildOrderQueue::removeVoiOperationOwner(
++	const std::string & operationId,
++	uint64_t generation)
++{
++	int removedItems = 0;
++	for (auto item = m_queue.begin(); item != m_queue.end();)
++	{
++		ensureVoiOwnerMetadata(*item);
++		const auto owner = item->voiOperationOwners.find(
++			{ operationId, generation });
++		if (owner != item->voiOperationOwners.end())
++		{
++			item->voiOperationOwners.erase(owner);
++			item->voiOperationOwnerMetadata.erase(
++				{ operationId, generation });
++		}
++		if (item->voiOperationOwners.empty()
++			&& !item->preserveWithoutVoiOperationOwners)
++		{
++			item = m_queue.erase(item);
++			removedItems++;
++			continue;
++		}
++			refreshVoiAggregateMetadata(*item);
++			++item;
++		}
++	std::sort(m_queue.begin(), m_queue.end());
++	refreshPriorityBounds();
++	return removedItems;
++}
++
++int BuildOrderQueue::getVoiOperationOwnedItemCount() const
++{
++	return static_cast<int>(
++		std::count_if(
++			m_queue.begin(),
++			m_queue.end(),
++			[](const MM::BuildOrderItem & item)
++			{
++				return !item.voiOperationOwners.empty();
++			}));
++}
++
++std::string
++BuildOrderQueue::getVoiOperationOwnedItemsTelemetryJson() const
++{
++	std::ostringstream payload;
++	payload << "[";
++	bool firstItem = true;
++	for (const auto & item : m_queue)
++	{
++		if (item.voiOperationOwners.empty())
++		{
++			continue;
++		}
++		if (!firstItem)
++		{
++			payload << ",";
++		}
++		firstItem = false;
++		payload
++			<< "{\"item\":\""
++			<< voiBuildQueueJsonEscape(item.type.getName())
++			<< "\",\"claim_source\":\""
++			<< voiBuildQueueJsonEscape(item.voiClaimSource)
++			<< "\",\"insertion_sequence\":"
++			<< item.insertionSequence
++			<< ",\"exclusive_operation_owned\":"
++			<< (!item.preserveWithoutVoiOperationOwners
++					&& item.voiOperationOwners.size() == 1
++				? "true"
++				: "false")
++			<< ",\"preserve_without_operation_owners\":"
++			<< (item.preserveWithoutVoiOperationOwners
++				? "true"
++				: "false")
++			<< ",\"owners\":[";
++		bool firstOwner = true;
++		for (const auto & owner : item.voiOperationOwners)
++		{
++			if (!firstOwner)
++			{
++				payload << ",";
++			}
++			firstOwner = false;
++			payload
++				<< "{\"operation_id\":\""
++				<< voiBuildQueueJsonEscape(owner.first)
++				<< "\",\"generation\":"
++				<< owner.second << "}";
++		}
++		payload << "]}";
++	}
++	payload << "]";
++	return payload.str();
++}
++
++int BuildOrderQueue::getVoiPreservedItemCount(
++	const MetaType & type) const
++{
++	return static_cast<int>(
++		std::count_if(
++			m_queue.begin(),
++			m_queue.end(),
++			[&](const MM::BuildOrderItem & item)
++			{
++				return sameBuildOrderType(item, type)
++					&& item.preserveWithoutVoiOperationOwners;
++				}));
++}
++
++std::vector<MM::VoiBuildOrderClaim>
++BuildOrderQueue::getVoiClaimsForType(
++	const MetaType & type) const
++{
++	std::vector<MM::VoiBuildOrderClaim> claims;
++	for (const auto & item : m_queue)
++	{
++		if (!sameBuildOrderType(item, type))
++		{
++			continue;
++		}
++		claims.push_back({
++			item.voiOperationOwners,
++			item.preserveWithoutVoiOperationOwners,
++			item.voiClaimSource,
++			item.blocking,
++			item.voiTaskPriority,
++			item.priority,
++			item.insertionSequence,
++			item.voiOperationOwnerMetadata,
++			item.voiPreservedClaimSource,
++			item.voiPreservedBlocking,
++			item.voiPreservedTaskPriority,
++			item.voiPreservedPriority });
++	}
++	return claims;
+ }
+ 
+ size_t BuildOrderQueue::size()
+@@ -232,16 +951,79 @@ bool BuildOrderQueue::contains(const MetaType & type) const
+ }
+ 
+ 
+-MM::BuildOrderItem::BuildOrderItem(const MetaType & metatype, int priority, bool blocking)
+-    : type(metatype)
+-    , priority(priority)
+-    , blocking(blocking)
++MM::BuildOrderItem::BuildOrderItem(
++	const MetaType & metatype,
++	int priority,
++	bool blocking,
++	const std::set<std::pair<std::string, uint64_t>> & operationOwners,
++	bool preserveWithoutOperationOwners,
++	const std::string & claimSource,
++	float taskPriority,
++	uint64_t sequence,
++	const std::map<
++		VoiBuildOrderOwner,
++		VoiBuildOrderOwnerMetadata> & operationOwnerMetadata,
++	const std::string & preservedSource,
++	bool preservedBlocking,
++	float preservedTaskPriority,
++	int preservedPriority)
++	: type(metatype)
++	, priority(priority)
++	, blocking(blocking)
++	, voiOperationOwners(operationOwners)
++	, preserveWithoutVoiOperationOwners(
++		preserveWithoutOperationOwners)
++	, voiClaimSource(
++		claimSource.empty()
++			? (operationOwners.empty()
++				? "legacy"
++				: "operation")
++			: claimSource)
++	, voiTaskPriority(taskPriority)
++	, insertionSequence(sequence)
++	, voiOperationOwnerMetadata(operationOwnerMetadata)
++	, voiPreservedClaimSource(preservedSource)
++	, voiPreservedBlocking(preservedBlocking)
++	, voiPreservedTaskPriority(preservedTaskPriority)
++	, voiPreservedPriority(preservedPriority)
+ {
++	if (voiOperationOwnerMetadata.empty())
++	{
++		for (const auto & owner : voiOperationOwners)
++		{
++			voiOperationOwnerMetadata[owner] = {
++				voiClaimSource == "shared_prerequisite"
++					? "operation"
++					: voiClaimSource,
++				blocking,
++				taskPriority,
++				priority };
++		}
++	}
++	if (preserveWithoutVoiOperationOwners
++		&& voiPreservedClaimSource.empty())
++	{
++		voiPreservedClaimSource =
++			voiOperationOwners.empty()
++				? voiClaimSource
++				: "top_level";
++		voiPreservedBlocking = blocking;
++		voiPreservedTaskPriority = taskPriority;
++		voiPreservedPriority = priority;
++	}
++	refreshVoiAggregateMetadata(*this);
+ }
+ 
+ bool MM::BuildOrderItem::operator < (const MM::BuildOrderItem & x) const
+ {
+-	return priority < x.priority;
++	return std::tie(
++			voiTaskPriority,
++			priority,
++			insertionSequence)
++		< std::tie(
++			x.voiTaskPriority,
++			x.priority,
++			x.insertionSequence);
+ }
+ 
+ bool MM::BuildOrderItem::operator == (const MM::BuildOrderItem & x) const
+diff --git a/src/BuildOrderQueue.h b/src/BuildOrderQueue.h
+index f543513..30f4678 100644
+--- a/src/BuildOrderQueue.h
++++ b/src/BuildOrderQueue.h
+@@ -7,13 +7,79 @@ class CCBot;
+ 
+ // This namespace is to prevent build error when compiling because the libvoxelbot library also contains a BuildOrderItem
+ namespace MM {
++	using VoiBuildOrderOwner =
++		std::pair<std::string, uint64_t>;
++
++	struct VoiBuildOrderOwnerMetadata
++	{
++		std::string source = "operation";
++		bool blocking = false;
++		float taskPriority = 0.0f;
++		int priority = 0;
++
++		bool operator==(
++			const VoiBuildOrderOwnerMetadata & other) const
++		{
++			return source == other.source
++				&& blocking == other.blocking
++				&& taskPriority == other.taskPriority
++				&& priority == other.priority;
++		}
++	};
++
++	struct VoiBuildOrderClaim
++	{
++		std::set<VoiBuildOrderOwner> operationOwners;
++		bool preserveWithoutOperationOwners = false;
++		std::string source = "legacy";
++		bool blocking = false;
++		float taskPriority = 0.0f;
++		int priority = 0;
++		uint64_t insertionSequence = 0;
++		std::map<
++			VoiBuildOrderOwner,
++			VoiBuildOrderOwnerMetadata> operationOwnerMetadata;
++		std::string preservedSource = "";
++		bool preservedBlocking = false;
++		float preservedTaskPriority = 0.0f;
++		int preservedPriority = 0;
++	};
++
+ 	struct BuildOrderItem
+ 	{
+ 		MetaType       type;		// the thing we want to 'build'
+ 		int             priority;	// the priority at which to place it in the queue
+ 		bool            blocking;	// whether or not we block further items
++		std::set<std::pair<std::string, uint64_t>> voiOperationOwners;
++		bool preserveWithoutVoiOperationOwners;
++		std::string voiClaimSource;
++		float voiTaskPriority;
++		uint64_t insertionSequence;
++		std::map<
++			VoiBuildOrderOwner,
++			VoiBuildOrderOwnerMetadata> voiOperationOwnerMetadata;
++		std::string voiPreservedClaimSource;
++		bool voiPreservedBlocking;
++		float voiPreservedTaskPriority;
++		int voiPreservedPriority;
+ 
+-		BuildOrderItem(const MetaType & t, int p, bool b);
++		BuildOrderItem(
++			const MetaType & t,
++			int p,
++			bool b,
++			const std::set<VoiBuildOrderOwner> & operationOwners = {},
++			bool preserveWithoutOperationOwners = true,
++			const std::string & claimSource = "",
++			float taskPriority = 0.0f,
++			uint64_t insertionSequence = 0,
++			const std::map<
++				VoiBuildOrderOwner,
++				VoiBuildOrderOwnerMetadata> &
++					operationOwnerMetadata = {},
++			const std::string & preservedSource = "",
++			bool preservedBlocking = false,
++			float preservedTaskPriority = 0.0f,
++			int preservedPriority = 0);
+ 		bool operator<(const BuildOrderItem & x) const;
+ 		bool operator==(const BuildOrderItem & x) const;
+ 	};
+@@ -28,6 +94,9 @@ class BuildOrderQueue
+     int m_highestPriority;
+     int m_defaultPrioritySpacing;
+     int m_numSkippedItems;
++	uint64_t m_nextInsertionSequence;
++
++	void refreshPriorityBounds();
+ 
+ public:
+ 
+@@ -35,12 +104,43 @@ public:
+ 
+     void clearAll();											// clears the entire build order queue
+     void skipItem();											// increments skippedItems
+-    MM::BuildOrderItem queueAsHighestPriority(const MetaType & type, bool blocking);		// queues something at the highest priority
+-    MM::BuildOrderItem queueAsLowestPriority(const MetaType & type, bool blocking);		// queues something at the lowest priority
++    MM::BuildOrderItem queueAsHighestPriority(
++		const MetaType & type,
++		bool blocking,
++		const std::set<MM::VoiBuildOrderOwner> & operationOwners = {},
++		bool preserveWithoutOperationOwners = true,
++		const std::string & claimSource = "",
++		float taskPriority = 0.0f);		// queues something at the highest priority
++    MM::BuildOrderItem queueAsLowestPriority(
++		const MetaType & type,
++		bool blocking,
++		const std::set<MM::VoiBuildOrderOwner> & operationOwners = {},
++		bool preserveWithoutOperationOwners = true,
++		const std::string & claimSource = "",
++		float taskPriority = 0.0f);		// queues something at the lowest priority
+     MM::BuildOrderItem queueItem(const MM::BuildOrderItem & b);			// queues something with a given priority
+     void removeHighestPriorityItem();								// removes the highest priority item
+     void removeCurrentHighestPriorityItem();
+ 	void removeAllOfType(const MetaType & type);
++	void addVoiOperationOwnersToType(
++		const MetaType & type,
++		const MM::BuildOrderItem & dependentItem);
++	void reconcileTypeVoiClaims(
++		const MetaType & type,
++		const std::vector<MM::VoiBuildOrderClaim> & claims);
++	void promoteTypeToHighestPriority(const MetaType & type, bool blocking);
++	void resizeTypePreservingVoiClaims(
++		const MetaType & type,
++		int count,
++		bool blocking);
++	int removeVoiOperationOwner(
++		const std::string & operationId,
++		uint64_t generation);
++	int getVoiOperationOwnedItemCount() const;
++	std::string getVoiOperationOwnedItemsTelemetryJson() const;
++	int getVoiPreservedItemCount(const MetaType & type) const;
++	std::vector<MM::VoiBuildOrderClaim> getVoiClaimsForType(
++		const MetaType & type) const;
+ 
+     size_t size();													// returns the size of the queue
+ 
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 5fb31b3..96819df 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2399,6 +2399,29 @@ void CombatCommander::releaseVoiOperation(
+ 	{
+ 		unitsToRestore =
+ 			m_squadData.getSquad(operation.squadName).getUnits();
++		bool issuedReleaseStop = false;
++		m_bot.GetCommandMutex().lock();
++		for (const auto & unit : unitsToRestore)
++		{
++			if (!unit.isValid()
++				|| !unit.isAlive()
++				|| unit.getUnitPtr() == nullptr)
++			{
++				continue;
++			}
++			// Revoke the operation's in-flight SC2 order before ownership is
++			// released. SmartStop submits an immediate, non-queued STOP.
++			Micro::SmartStop(unit.getUnitPtr(), m_bot);
++			issuedReleaseStop = true;
++		}
++		m_bot.GetCommandMutex().unlock();
++		if (issuedReleaseStop)
++		{
++			operation.lastAction =
++				"release_stop|" + reason;
++			operation.lastActionFrame =
++				m_bot.GetGameLoop();
++		}
+ 		m_squadData.removeSquad(operation.squadName);
+ 	}
+ 	for (const auto & unit : unitsToRestore)
+@@ -2713,6 +2736,8 @@ void CombatCommander::reconcileVoiOperation(
+ 	const bool staticBlock =
+ 		operation.blockedReason == "missing_operation_id"
+ 		|| operation.blockedReason == "invalid_operation_id"
++		|| operation.blockedReason
++			== "missing_operation_issued_at_frame"
+ 		|| operation.blockedReason == "unsupported_task_type"
+ 		|| operation.blockedReason == "invalid_target"
+ 		|| operation.blockedReason == "cancelled_by_policy";
+@@ -2848,11 +2873,106 @@ void CombatCommander::reconcileVoiOperation(
+ 		}
+ 	}
+ 
++	auto operationOwnerForUnit =
++		[&](sc2::Tag tag) -> VoiOperationState *
++		{
++			const auto owner =
++				m_voiOperationUnitOwners.find(tag);
++			if (owner == m_voiOperationUnitOwners.end())
++			{
++				return nullptr;
++			}
++			return findVoiOperation(
++				owner->second.first,
++				owner->second.second);
++		};
++	auto ownedUnitCount =
++		[&](
++			const VoiOperationState & ownerOperation,
++			const std::string & requiredType)
++		{
++			if (!m_squadData.squadExists(
++				ownerOperation.squadName))
++			{
++				return 0;
++			}
++			int count = 0;
++			for (const auto & ownedUnit :
++				m_squadData.getSquad(
++					ownerOperation.squadName).getUnits())
++			{
++				const auto owner =
++					m_voiOperationUnitOwners.find(
++						ownedUnit.getTag());
++				if (!ownedUnit.isValid()
++					|| !ownedUnit.isAlive()
++					|| owner
++						== m_voiOperationUnitOwners.end()
++					|| owner->second.first
++						!= ownerOperation.operationId
++					|| owner->second.second
++						!= ownerOperation.generation
++					|| (!requiredType.empty()
++						&& !voiUnitMatchesCompositionToken(
++							ownedUnit,
++							requiredType)))
++				{
++					continue;
++				}
++				++count;
++			}
++			return count;
++		};
++	auto mayPreemptOwnedUnit =
++		[&](const Unit & unit)
++		{
++			const auto owner =
++				m_voiOperationUnitOwners.find(unit.getTag());
++			if (owner == m_voiOperationUnitOwners.end())
++			{
++				return true;
++			}
++			if (owner->second.first == operation.operationId
++				&& owner->second.second
++					== operation.generation)
++			{
++				return false;
++			}
++			VoiOperationState * ownerOperation =
++				operationOwnerForUnit(unit.getTag());
++			if (ownerOperation == nullptr
++				|| ownerOperation->completed)
++			{
++				return true;
++			}
++			if (operation.priority <= ownerOperation->priority
++				|| ownedUnitCount(*ownerOperation, "")
++						- 1
++					< ownerOperation->minUnits)
++			{
++				return false;
++			}
++			for (const auto & requirement :
++				ownerOperation->compositionRequirements)
++			{
++				if (voiUnitMatchesCompositionToken(
++						unit,
++						requirement.unitType)
++					&& ownedUnitCount(
++							*ownerOperation,
++							requirement.unitType)
++							- 1
++						< requirement.count)
++				{
++					return false;
++				}
++			}
++			return true;
++		};
+ 	auto eligibleCandidate =
+ 		[&](const Unit & unit, const std::string & requiredType)
+ 		{
+ 			if (!voiIsSupportedOperationUnit(unit)
+-				|| isVoiOperationOwnedUnit(unit.getTag())
+ 				|| (!requiredType.empty()
+ 					&& !voiUnitMatchesCompositionToken(
+ 						unit,
+@@ -2877,6 +2997,10 @@ void CombatCommander::reconcileVoiOperation(
+ 			{
+ 				return false;
+ 			}
++			if (isVoiOperationOwnedUnit(unit.getTag()))
++			{
++				return mayPreemptOwnedUnit(unit);
++			}
+ 			const Squad * current =
+ 				m_squadData.getUnitSquad(unit);
+ 			return current == nullptr
+@@ -2889,8 +3013,67 @@ void CombatCommander::reconcileVoiOperation(
+ 	{
+ 		Squad * previous =
+ 			m_squadData.getUnitSquad(unit);
+-		operation.previousSquadByTag[unit.getTag()] =
++		std::string restoreSquad =
+ 			previous ? previous->getName() : "Backup";
++		const auto previousOwner =
++			m_voiOperationUnitOwners.find(unit.getTag());
++		if (previousOwner != m_voiOperationUnitOwners.end())
++		{
++			VoiOperationState * previousOperation =
++				findVoiOperation(
++					previousOwner->second.first,
++					previousOwner->second.second);
++			if (previousOperation != nullptr)
++			{
++				const auto previousRestore =
++					previousOperation->previousSquadByTag.find(
++						unit.getTag());
++				if (previousRestore
++					!= previousOperation
++						->previousSquadByTag.end())
++				{
++					restoreSquad =
++						previousRestore->second;
++				}
++				if (m_squadData.squadExists(
++					previousOperation->squadName))
++				{
++					m_squadData.getSquad(
++						previousOperation->squadName)
++							.removeUnit(unit);
++				}
++				previousOperation->previousSquadByTag.erase(
++					unit.getTag());
++				previousOperation->submittedPositions.erase(
++					unit.getTag());
++				previousOperation->assignedUnitTags.erase(
++					std::remove(
++						previousOperation
++							->assignedUnitTags.begin(),
++						previousOperation
++							->assignedUnitTags.end(),
++						unit.getTag()),
++					previousOperation
++						->assignedUnitTags.end());
++				previousOperation->assignedCount =
++					static_cast<int>(
++						previousOperation
++							->assignedUnitTags.size());
++			}
++			const auto action =
++				unitActions.find(unit.getUnitPtr());
++			if (action != unitActions.end()
++				&& action->second.operationId
++					== previousOwner->second.first
++				&& action->second.operationGeneration
++					== previousOwner->second.second)
++			{
++				unitActions.erase(action);
++			}
++			m_voiOperationUnitOwners.erase(previousOwner);
++		}
++		operation.previousSquadByTag[unit.getTag()] =
++			restoreSquad;
+ 		m_squadData.assignUnitToSquad(unit, squad);
+ 		m_voiOperationUnitOwners[unit.getTag()] =
+ 			std::make_pair(
+@@ -2908,21 +3091,48 @@ void CombatCommander::reconcileVoiOperation(
+ 					candidates.push_back(unit);
+ 				}
+ 			}
+-			const CCPosition home = voiHomePosition(m_bot);
+-			std::sort(
+-				candidates.begin(),
+-				candidates.end(),
+-				[&](const Unit & left, const Unit & right)
+-				{
+-					return Util::DistSq(
+-						left.getPosition(),
+-						home)
+-						< Util::DistSq(
++				const CCPosition home = voiHomePosition(m_bot);
++				std::sort(
++					candidates.begin(),
++					candidates.end(),
++					[&](const Unit & left, const Unit & right)
++					{
++						const VoiOperationState * leftOwner =
++							operationOwnerForUnit(
++								left.getTag());
++						const VoiOperationState * rightOwner =
++							operationOwnerForUnit(
++								right.getTag());
++						if ((leftOwner == nullptr)
++							!= (rightOwner == nullptr))
++						{
++							return leftOwner == nullptr;
++						}
++						if (leftOwner != nullptr
++							&& rightOwner != nullptr
++							&& leftOwner->priority
++								!= rightOwner->priority)
++						{
++							return leftOwner->priority
++								< rightOwner->priority;
++						}
++						const float leftDistance =
++							Util::DistSq(
++							left.getPosition(),
++							home);
++						const float rightDistance =
++							Util::DistSq(
+ 							right.getPosition(),
+ 							home);
+-				});
+-			return candidates;
+-		};
++						if (leftDistance != rightDistance)
++						{
++							return leftDistance
++								< rightDistance;
++						}
++						return left.getTag() < right.getTag();
++					});
++				return candidates;
++			};
+ 
+ 	for (const auto & requirement :
+ 		operation.compositionRequirements)
+@@ -3050,7 +3260,7 @@ void CombatCommander::reconcileVoiOperation(
+ 		&& operation.assignedCount > 0;
+ 	if (!enoughUnits && !mayLaunchPartial)
+ 	{
+-		operation.status = "BLOCKED";
++		operation.status = "WAITING_FOR_UNITS";
+ 		operation.blockedReason =
+ 			!exactCompositionSatisfied
+ 				? "composition_prerequisites_pending"
+@@ -3072,7 +3282,8 @@ void CombatCommander::reconcileVoiOperation(
+ 	operation.blockedReason.clear();
+ 	if (operation.status == "RECEIVED"
+ 		|| operation.status == "ASSIGNED"
+-		|| operation.status == "BLOCKED")
++		|| operation.status == "BLOCKED"
++		|| operation.status == "WAITING_FOR_UNITS")
+ 	{
+ 		operation.status = "ASSIGNED";
+ 	}
+@@ -3138,8 +3349,14 @@ void CombatCommander::updateVoiOperations()
+ 		return;
+ 	}
+ 
++	const uint64_t currentOperationFrame =
++		static_cast<uint64_t>(m_bot.GetCurrentFrame());
+ 	std::vector<VoiOperationState> requestedOperations;
+ 	std::map<std::string, size_t> requestedById;
++	std::set<std::pair<std::string, uint64_t>>
++		seenOperationKeys;
++	std::set<std::pair<std::string, uint64_t>>
++		duplicateOperationKeys;
+ 	for (int index = 0; index < operationCount; ++index)
+ 	{
+ 		const std::string prefix =
+@@ -3159,6 +3376,40 @@ void CombatCommander::updateVoiOperations()
+ 					m_bot.Commander().getVoiPolicyInt(
+ 						prefix + ".generation",
+ 						1)));
++		const auto operationKey = std::make_pair(
++			requested.operationId,
++			requested.generation);
++		if (!rawOperationId.empty()
++			&& !seenOperationKeys.insert(
++				operationKey).second)
++		{
++			duplicateOperationKeys.insert(
++				operationKey);
++		}
++		const int rawOperationIssuedAtFrame =
++			m_bot.Commander().getVoiPolicyInt(
++				prefix + ".issued_at_frame",
++				-1);
++		const int policyIssuedAtFrame =
++			m_bot.Commander().getVoiPolicyInt(
++				"issued_at_frame",
++				-1);
++		// Some publishers historically stamped only the policy update. Promote
++		// that authoritative publish frame when the nested value is absent or
++		// still its legacy zero default.
++		const int issuedAtFrame =
++			rawOperationIssuedAtFrame > 0
++				? rawOperationIssuedAtFrame
++				: (policyIssuedAtFrame >= 0
++					? policyIssuedAtFrame
++					: rawOperationIssuedAtFrame);
++		const bool missingIssuedAtFrame =
++			issuedAtFrame < 0;
++		if (!missingIssuedAtFrame)
++		{
++			requested.issuedAtFrame =
++				static_cast<uint64_t>(issuedAtFrame);
++		}
+ 		requested.policyUpdateId = policyUpdateId;
+ 		requested.receivedFrame = m_bot.GetGameLoop();
+ 		requested.taskType =
+@@ -3233,6 +3484,10 @@ void CombatCommander::updateVoiOperations()
+ 			&& m_bot.Commander().getVoiPolicyBool(
+ 				prefix + ".allow_partial",
+ 				true);
++		requested.priority =
++			m_bot.Commander().getVoiPolicyFloat(
++				prefix + ".tactical_task.priority",
++				0.0f);
+ 		requested.lifetimeMode =
+ 			m_bot.Commander().getVoiPolicyString(
+ 				prefix + ".lifetime.mode",
+@@ -3256,18 +3511,25 @@ void CombatCommander::updateVoiOperations()
+ 		if (!requested.standing
+ 			&& requested.durationSeconds > 0)
+ 		{
+-			const uint64_t issuedAtFrame =
+-				static_cast<uint64_t>(
+-					std::max(
+-						0,
+-						m_bot.Commander().getVoiPolicyInt(
+-							"issued_at_frame",
+-							0)));
+-			requested.deadlineFrame =
+-				issuedAtFrame
+-				+ static_cast<uint64_t>(
+-					requested.durationSeconds) * 22u;
++			if (!missingIssuedAtFrame)
++			{
++				requested.deadlineFrame =
++					requested.issuedAtFrame
++					+ static_cast<uint64_t>(
++						requested.durationSeconds) * 22u;
++			}
+ 		}
++		const bool futureIssuedAtFrame =
++			!missingIssuedAtFrame
++			&& requested.issuedAtFrame
++				> currentOperationFrame;
++		const bool expiredAtAdmission =
++			!missingIssuedAtFrame
++			&& !requested.standing
++			&& requested.durationSeconds > 0
++			&& requested.deadlineFrame > 0
++			&& currentOperationFrame
++				> requested.deadlineFrame;
+ 
+ 		const std::string requirementCountValue =
+ 			m_bot.Commander().getVoiPolicyString(
+@@ -3480,6 +3742,25 @@ void CombatCommander::updateVoiOperations()
+ 			requested.blockedReason =
+ 				"invalid_operation_id";
+ 		}
++		else if (missingIssuedAtFrame)
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				"missing_operation_issued_at_frame";
++		}
++		else if (futureIssuedAtFrame)
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				"future_operation_issued_at_frame";
++		}
++		else if (expiredAtAdmission)
++		{
++			requested.status = "EXPIRED";
++			requested.completed = true;
++			requested.blockedReason =
++				"operation_deadline_expired_at_admission";
++		}
+ 		else if (requested.taskType != "scout"
+ 			&& requested.taskType != "attack"
+ 			&& requested.taskType != "defend")
+@@ -3529,6 +3810,23 @@ void CombatCommander::updateVoiOperations()
+ 			requested.completed = true;
+ 		}
+ 
++		if (missingIssuedAtFrame
++			|| futureIssuedAtFrame
++			|| expiredAtAdmission)
++		{
++			Util::Log(
++				__FUNCTION__,
++				"VOI rejected operation before admission id="
++					+ requested.operationId
++					+ " generation="
++					+ std::to_string(
++						requested.generation)
++					+ " reason="
++					+ requested.blockedReason,
++				m_bot);
++			continue;
++		}
++
+ 		const auto duplicate =
+ 			requestedById.find(requested.operationId);
+ 		if (duplicate == requestedById.end())
+@@ -3545,6 +3843,50 @@ void CombatCommander::updateVoiOperations()
+ 				requested;
+ 		}
+ 	}
++	if (!duplicateOperationKeys.empty())
++	{
++		requestedOperations.erase(
++			std::remove_if(
++				requestedOperations.begin(),
++				requestedOperations.end(),
++				[&](const VoiOperationState & operation)
++				{
++					return duplicateOperationKeys.find({
++						operation.operationId,
++						operation.generation })
++						!= duplicateOperationKeys.end();
++				}),
++			requestedOperations.end());
++		for (const auto & duplicate :
++			duplicateOperationKeys)
++		{
++			Util::Log(
++				__FUNCTION__,
++				"VOI rejected duplicate operation key id="
++					+ duplicate.first
++					+ " generation="
++					+ std::to_string(
++						duplicate.second),
++				m_bot);
++		}
++	}
++	std::sort(
++		requestedOperations.begin(),
++		requestedOperations.end(),
++		[](
++			const VoiOperationState & left,
++			const VoiOperationState & right)
++		{
++			if (left.priority != right.priority)
++			{
++				return left.priority > right.priority;
++			}
++			if (left.operationId != right.operationId)
++			{
++				return left.operationId < right.operationId;
++			}
++			return left.generation < right.generation;
++		});
+ 
+ 	for (size_t index = 0;
+ 		index < m_voiOperations.size();)
+@@ -3600,10 +3942,15 @@ void CombatCommander::updateVoiOperations()
+ 		existing->completionConditions =
+ 			requested.completionConditions;
+ 		existing->durationSeconds = requested.durationSeconds;
+ 		existing->standing = requested.standing;
+ 		existing->minUnits = requested.minUnits;
+ 		existing->maxUnits = requested.maxUnits;
+ 		existing->allowPartial = requested.allowPartial;
++		existing->priority = requested.priority;
+ 		existing->compositionRequirements =
+ 			requested.compositionRequirements;
+ 		existing->unitRoles = requested.unitRoles;
+@@ -3649,6 +3996,23 @@ void CombatCommander::updateVoiOperations()
+ 			existing->blockedReason.clear();
+ 		}
+ 	}
++	std::sort(
++		m_voiOperations.begin(),
++		m_voiOperations.end(),
++		[](
++			const VoiOperationState & left,
++			const VoiOperationState & right)
++		{
++			if (left.priority != right.priority)
++			{
++				return left.priority > right.priority;
++			}
++			if (left.operationId != right.operationId)
++			{
++				return left.operationId < right.operationId;
++			}
++			return left.generation < right.generation;
++		});
+ 
+ 	for (auto & operation : m_voiOperations)
+ 	{
+@@ -3656,6 +4020,213 @@ void CombatCommander::updateVoiOperations()
+ 	}
+ }
+ 
++void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
++{
++	if (m_voiOperations.empty())
++	{
++		return;
++	}
++
++	const int operationCount =
++		m_bot.Commander().isVoiPolicyActive()
++			? std::min(
++				32,
++				std::max(
++					0,
++					m_bot.Commander().getVoiPolicyInt(
++						"operations.count",
++						0)))
++			: 0;
++	const uint64_t currentFrame =
++		static_cast<uint64_t>(m_bot.GetCurrentFrame());
++	for (auto & operation : m_voiOperations)
++	{
++		bool retained = false;
++		bool terminal = false;
++		std::string reason =
++			"removed_from_policy_before_production";
++		int matchingEntryCount = 0;
++		int matchingIndex = -1;
++		for (int index = 0;
++			index < operationCount;
++			++index)
++		{
++			const std::string prefix =
++				"operations." + std::to_string(index);
++			if (m_bot.Commander().getVoiPolicyString(
++					prefix + ".operation_id",
++					"") != operation.operationId
++				|| static_cast<uint64_t>(
++					std::max(
++						1,
++						m_bot.Commander().getVoiPolicyInt(
++							prefix + ".generation",
++							1))) != operation.generation)
++			{
++				continue;
++			}
++			++matchingEntryCount;
++			matchingIndex = index;
++		}
++
++		if (matchingEntryCount > 1)
++		{
++			reason =
++				"duplicate_operation_key_before_production";
++		}
++		else if (matchingEntryCount == 1)
++		{
++			retained = true;
++			const std::string prefix =
++				"operations."
++					+ std::to_string(matchingIndex);
++			const std::string status =
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".status",
++					"");
++			const std::string completionState =
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".lifetime.completion_state",
++					"active");
++			const bool cancelled =
++				m_bot.Commander().getVoiPolicyBool(
++					prefix + ".cancelled",
++					false)
++				|| status == "CANCELLED"
++				|| status == "cancelled"
++				|| completionState == "cancelled";
++			const bool completed =
++				m_bot.Commander().getVoiPolicyBool(
++					prefix + ".completed",
++					false)
++				|| status == "COMPLETED"
++				|| status == "completed"
++				|| completionState == "completed";
++			const bool expired =
++				status == "EXPIRED"
++				|| status == "expired"
++				|| completionState == "expired";
++			const bool failed =
++				status == "FAILED"
++				|| status == "failed"
++				|| completionState == "failed";
++			const bool superseded =
++				status == "SUPERSEDED"
++				|| status == "superseded"
++				|| completionState == "superseded";
++			const int rawOperationIssuedAtFrame =
++				m_bot.Commander().getVoiPolicyInt(
++					prefix + ".issued_at_frame",
++					-1);
++			const int policyIssuedAtFrame =
++				m_bot.Commander().getVoiPolicyInt(
++					"issued_at_frame",
++					-1);
++			const int issuedAtFrame =
++				rawOperationIssuedAtFrame > 0
++					? rawOperationIssuedAtFrame
++					: (policyIssuedAtFrame >= 0
++						? policyIssuedAtFrame
++						: rawOperationIssuedAtFrame);
++			const std::string lifetimeMode =
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".lifetime.mode",
++					"until_completed");
++			const bool standing =
++				lifetimeMode == "standing_order"
++				|| lifetimeMode == "until_cancelled";
++			const int durationSeconds = std::max(
++				0,
++				m_bot.Commander().getVoiPolicyInt(
++					prefix
++						+ ".tactical_task.duration_seconds",
++					m_bot.Commander().getVoiPolicyInt(
++						prefix
++							+ ".scope.duration_seconds",
++						0)));
++			const uint64_t deadlineFrame =
++				issuedAtFrame >= 0
++					&& !standing
++					&& durationSeconds > 0
++				? static_cast<uint64_t>(
++						issuedAtFrame)
++					+ static_cast<uint64_t>(
++						durationSeconds) * 22u
++				: 0;
++
++			if (issuedAtFrame < 0)
++			{
++				retained = false;
++				reason =
++					"missing_operation_issued_at_frame";
++			}
++			else if (static_cast<uint64_t>(
++					issuedAtFrame) > currentFrame)
++			{
++				retained = false;
++				reason =
++					"future_operation_issued_at_frame";
++			}
++			else if (deadlineFrame > 0
++				&& currentFrame > deadlineFrame)
++			{
++				terminal = true;
++				reason =
++					"operation_deadline_expired";
++			}
++			else if (cancelled)
++			{
++				terminal = true;
++				reason = "cancelled_by_policy";
++			}
++			else if (expired)
++			{
++				terminal = true;
++				reason = "expired_by_policy";
++			}
++			else if (failed)
++			{
++				terminal = true;
++				reason = "failed_by_policy";
++			}
++			else if (superseded)
++			{
++				terminal = true;
++				reason = "superseded_by_policy";
++			}
++			else if (completed)
++			{
++				terminal = true;
++				reason = "completed_by_policy";
++			}
++		}
++
++		if (!retained || terminal)
++		{
++			releaseVoiOperation(
++				operation,
++				reason,
++				terminal);
++			if (terminal)
++			{
++				operation.status =
++					reason == "cancelled_by_policy"
++						? "CANCELLED"
++						: (reason == "expired_by_policy"
++								|| reason
++									== "operation_deadline_expired"
++							? "EXPIRED"
++							: (reason == "failed_by_policy"
++								? "FAILED"
++								: (reason
++										== "superseded_by_policy"
++									? "SUPERSEDED"
++									: "COMPLETED")));
++			}
++		}
++	}
++}
++
+ bool CombatCommander::hasVoiOperationState(
+ 	const std::string & operationId,
+ 	uint64_t generation) const
+@@ -3671,6 +4242,7 @@ bool CombatCommander::isVoiOperationActive(
+ 		findVoiOperation(operationId, generation);
+ 	if (operation == nullptr
+ 		|| operation->completed
++		|| operation->status == "BLOCKED"
+ 		|| operation->status == "COMPLETED"
+ 		|| operation->status == "CANCELLED"
+ 		|| operation->status == "EXPIRED"
+@@ -3679,12 +4251,100 @@ bool CombatCommander::isVoiOperationActive(
+ 	{
+ 		return false;
+ 	}
+-	return operation->standing
+-		|| operation->deadlineFrame == 0
+-		|| static_cast<uint64_t>(m_bot.GetCurrentFrame())
++	if (operation->standing
++		|| operation->durationSeconds == 0)
++	{
++		return true;
++	}
++	return operation->deadlineFrame > 0
++		&& static_cast<uint64_t>(m_bot.GetCurrentFrame())
+ 			<= operation->deadlineFrame;
+ }
+ 
++int CombatCommander::getVoiOperationOwnedUnitCount(
++	const std::string & operationId,
++	uint64_t generation,
++	const std::string & compositionToken) const
++{
++	int count = 0;
++	for (const auto & owner : m_voiOperationUnitOwners)
++	{
++		if (owner.second.first != operationId
++			|| owner.second.second != generation)
++		{
++			continue;
++		}
++		const Unit unit = m_bot.GetUnit(owner.first);
++		if (unit.isValid()
++			&& unit.isAlive()
++			&& voiUnitMatchesCompositionToken(
++				unit,
++				compositionToken))
++		{
++			++count;
++		}
++	}
++	return count;
++}
++
++int CombatCommander::getVoiOperationOwnedUnitCount(
++	const std::string & compositionToken) const
++{
++	int count = 0;
++	for (const auto & owner : m_voiOperationUnitOwners)
++	{
++		const Unit unit = m_bot.GetUnit(owner.first);
++		if (unit.isValid()
++			&& unit.isAlive()
++			&& voiUnitMatchesCompositionToken(
++				unit,
++				compositionToken))
++		{
++			++count;
++		}
++	}
++	return count;
++}
++
++int CombatCommander::getVoiAssignableUnownedUnitCount(
++	const std::string & compositionToken) const
++{
++	int count = 0;
++	for (const auto & unit : m_combatUnits)
++	{
++		if (!unit.isValid()
++			|| !unit.isAlive()
++			|| !voiIsSupportedOperationUnit(unit)
++			|| isVoiOperationOwnedUnit(unit.getTag())
++			|| !voiUnitMatchesCompositionToken(
++				unit,
++				compositionToken))
++		{
++			continue;
++		}
++		if (voiTacticalNukeTaskRequested(m_bot)
++			&& unit.getAPIUnitType()
++				== sc2::UNIT_TYPEID::TERRAN_GHOST)
++		{
++			continue;
++		}
++		if (unit.getTag() == m_voiExplicitAbilityStagingActorTag
++			|| unit.getTag() == m_lastVoiExplicitAbilityActorTag)
++		{
++			continue;
++		}
++		const Squad * current = m_squadData.getUnitSquad(unit);
++		if (current == nullptr
++			|| (!voiIsOperationSquadName(current->getName())
++				&& current->getPriority()
++					< TacticalAbilityPriority))
++		{
++			++count;
++		}
++	}
++	return count;
++}
++
+ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ {
+ 	std::ostringstream payload;
+@@ -3751,6 +4411,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ 				<< "\","
+ 				<< "\"duration_seconds\":"
+ 				<< operation.durationSeconds << ","
++				<< "\"issued_at_frame\":"
++				<< operation.issuedAtFrame << ","
+ 				<< "\"deadline_frame\":"
+ 				<< operation.deadlineFrame << ","
+ 				<< "\"standing\":"
+@@ -8230,6 +8892,7 @@ void CombatCommander::updateAttackSquads()
+ 		m_lastVoiMainAttackSimulationWon = false;
+ 		m_lastVoiMainAttackOrderPosition = mainAttackSquad.getSquadOrder().getPosition();
+ 		m_lastVoiMainAttackHomeDistance = 0.0f;
++		m_lastVoiMainAttackUnitSamplesJson = "[]";
+ 		return;
+ 	}
+ 
+@@ -8881,6 +9544,30 @@ void CombatCommander::updateAttackSquads()
+ 	m_lastVoiMainAttackOrderPosition = orderPosition;
+ 	m_lastVoiMainAttackHomeDistance = voiSquadMaxHomeDistance(mainAttackSquad.getUnits(), m_bot);
+ 	m_maxVoiMainAttackHomeDistance = std::max(m_maxVoiMainAttackHomeDistance, m_lastVoiMainAttackHomeDistance);
++	std::stringstream mainAttackUnitSamples;
++	mainAttackUnitSamples << "[";
++	bool firstMainAttackUnitSample = true;
++	for (const auto & unit : mainAttackSquad.getUnits())
++	{
++		if (!unit.isValid() || !unit.isAlive())
++		{
++			continue;
++		}
++		if (!firstMainAttackUnitSample)
++		{
++			mainAttackUnitSamples << ",";
++		}
++		firstMainAttackUnitSample = false;
++		const CCPosition position = unit.getPosition();
++		mainAttackUnitSamples
++			<< "{\"tag\":" << unit.getTag()
++			<< ",\"x\":" << position.x
++			<< ",\"y\":" << position.y
++			<< "}";
++	}
++	mainAttackUnitSamples << "]";
++	m_lastVoiMainAttackUnitSamplesJson =
++		mainAttackUnitSamples.str();
+ 	const float voiAttackRadius = std::max(18.0f, MainAttackOrderRadius - voiContainBias * 12.0f);
+ 	const int mainAttackOrderType =
+ 		orderStatus == "Retreat"
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 2baba43..3a08bc3 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -188,11 +188,13 @@ struct VoiOperationState
+ 	std::string lifetimeMode;
+ 	std::string completionConditions;
+ 	int durationSeconds = 0;
++	uint64_t issuedAtFrame = 0;
+ 	uint64_t deadlineFrame = 0;
+ 	bool standing = false;
+ 	int minUnits = 1;
+ 	int maxUnits = 1;
+ 	bool allowPartial = true;
++	float priority = 0.0f;
+ 	bool routeStageComplete = true;
+ 	uint32_t lastEnemyFrame = 0;
+ 	CCPosition targetPosition = CCPosition();
+@@ -274,6 +276,7 @@ class CombatCommander
+ 	int m_lastVoiMainAttackActionIssuedCount = 0;
+ 	uint32_t m_lastVoiMainAttackActionFrame = 0;
+ 	std::string m_lastVoiMainAttackIssuedAction = "";
++	std::string m_lastVoiMainAttackUnitSamplesJson = "[]";
+ 	std::string m_lastVoiScoutScopeStatus = "Uninitialized";
+ 	std::string m_lastVoiScoutScopeReason = "No scout scope evaluated yet";
+ 	int m_lastVoiScoutRequestedMinUnits = 0;
+@@ -537,6 +540,7 @@ public:
+ 
+     void onStart();
+     void onFrame(const std::vector<Unit> & combatUnits);
++	void synchronizeVoiOperationLifecycleForProduction();
+ 	void lowPriorityCheck();
+ 	CCPosition GetIdlePosition() const { return m_idlePosition; }
+ 	const std::vector<Unit> & GetCombatUnits() const { return m_combatUnits; }
+@@ -591,6 +595,7 @@ public:
+ 	int getVoiMainAttackActionIssuedCount() const { return m_lastVoiMainAttackActionIssuedCount; }
+ 	uint32_t getVoiMainAttackActionFrame() const { return m_lastVoiMainAttackActionFrame; }
+ 	const std::string & getVoiMainAttackIssuedAction() const { return m_lastVoiMainAttackIssuedAction; }
++	const std::string & getVoiMainAttackUnitSamplesJson() const { return m_lastVoiMainAttackUnitSamplesJson; }
+ 	const std::string & getVoiScoutScopeStatus() const { return m_lastVoiScoutScopeStatus; }
+ 	const std::string & getVoiScoutScopeReason() const { return m_lastVoiScoutScopeReason; }
+ 	int getVoiScoutRequestedMinUnits() const { return m_lastVoiScoutRequestedMinUnits; }
+@@ -729,6 +734,14 @@ public:
+ 	bool isVoiOperationActive(
+ 		const std::string & operationId,
+ 		uint64_t generation) const;
++	int getVoiOperationOwnedUnitCount(
++		const std::string & operationId,
++		uint64_t generation,
++		const std::string & compositionToken) const;
++	int getVoiOperationOwnedUnitCount(
++		const std::string & compositionToken) const;
++	int getVoiAssignableUnownedUnitCount(
++		const std::string & compositionToken) const;
+ 	std::string getVoiOperationDirectorTelemetryJson() const;
+ 	SquadData & getSquadData() { return m_squadData; }
+ 	const std::vector<CCTilePosition> & getMainBaseSiegePositions() const { return m_mainBaseSiegePositions; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index b30f930..8caba43 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -157,6 +157,8 @@ void GameCommander::onFrame(bool executeMacro)
+ 	m_bot.StopProfiling("0.10.1   handleUnitAssignments");
+ 
+     updateVoiPolicyBlackboard();
++	m_combatCommander
++		.synchronizeVoiOperationLifecycleForProduction();
+ 
+ 	m_bot.StartProfiling("0.10.2   m_productionManager.onFrame");
+ 	m_productionManager.onFrame(executeMacro);
+@@ -862,6 +864,7 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"main_attack_actual_command_issued_count\":" << m_combatCommander.getVoiMainAttackActionIssuedCount() << ","
+         << "\"main_attack_last_action_frame\":" << m_combatCommander.getVoiMainAttackActionFrame() << ","
+         << "\"main_attack_last_issued_action\":\"" << voiJsonEscape(m_combatCommander.getVoiMainAttackIssuedAction()) << "\","
++        << "\"main_attack_unit_samples\":" << m_combatCommander.getVoiMainAttackUnitSamplesJson() << ","
+         << "\"scout_scope_status\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutScopeStatus()) << "\","
+         << "\"scout_scope_reason\":\"" << voiJsonEscape(m_combatCommander.getVoiScoutScopeReason()) << "\","
+         << "\"scout_scope_frame\":" << m_combatCommander.getVoiScoutScopeFrame() << ","
+@@ -967,6 +970,9 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"last_doctrine_blocked_reason\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineEvidence().rfind("blocked_", 0) == 0 ? m_productionManager.getLastVoiDoctrineEvidence() : "") << "\","
+         << "\"last_doctrine_missing_prerequisites\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineEvidence() == "blocked_missing_prerequisite_or_producer" ? m_productionManager.getLastVoiDoctrineQueueItem() : "") << "\","
+         << "\"last_doctrine_update_id\":\"" << voiJsonEscape(m_productionManager.getLastVoiDoctrineUpdateId()) << "\","
++        << "\"last_doctrine_required_count\":" << m_productionManager.getLastVoiDoctrineRequiredCount() << ","
++        << "\"last_doctrine_represented_count\":" << m_productionManager.getLastVoiDoctrineRepresentedCount() << ","
++        << "\"last_doctrine_prerequisites_satisfied\":" << (m_productionManager.getLastVoiDoctrinePrerequisitesSatisfied() ? "true" : "false") << ","
+         << "\"last_doctrine_frame\":" << m_productionManager.getLastVoiDoctrineFrame() << ","
+         << "\"actual_production_command_issued_count\":" << m_productionManager.getVoiProductionCommandIssuedCount() << ","
+         << "\"last_actual_production_command\":\"" << voiJsonEscape(m_productionManager.getLastVoiProductionCommandKind() + "|" + m_productionManager.getLastVoiProductionCommandItem()) << "\","
+@@ -997,6 +1003,12 @@ void GameCommander::writeVoiTelemetry() const
+         << "\"last_supply_provider_command_frame\":" << m_productionManager.getLastVoiSupplyProviderCommandFrame() << ","
+         << "\"last_supply_provider_command_kind\":\"" << voiJsonEscape(m_productionManager.getLastVoiSupplyProviderCommandKind()) << "\","
+         << "\"last_supply_provider_command_update_id\":\"" << voiJsonEscape(m_productionManager.getLastVoiSupplyProviderCommandUpdateId()) << "\","
++        << "\"operation_owned_queue_item_count\":" << m_productionManager.getVoiOperationOwnedQueueItemCount() << ","
++        << "\"operation_owned_queue_items\":" << m_productionManager.getVoiOperationOwnedQueueItemsTelemetryJson() << ","
++        << "\"operation_production_owner_release_count\":" << m_productionManager.getVoiOperationProductionOwnerReleaseCount() << ","
++        << "\"operation_production_queue_purge_count\":" << m_productionManager.getVoiOperationProductionQueuePurgeCount() << ","
++        << "\"last_operation_production_queue_purge_frame\":" << m_productionManager.getLastVoiOperationProductionQueuePurgeFrame() << ","
++        << "\"last_operation_production_released_owner\":\"" << voiJsonEscape(m_productionManager.getLastVoiOperationProductionReleasedOwner()) << "\","
+         << "\"free_minerals\":" << m_bot.GetFreeMinerals() << ","
+         << "\"free_gas\":" << m_bot.GetFreeGas() << ","
+         << "\"current_supply\":" << m_bot.GetCurrentSupply() << ","
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index d52f153..903fa21 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -82,6 +82,39 @@ bool voiParallelOperationTerminalState(const std::string & value)
+ 		|| value == "superseded";
+ }
+ 
++bool voiParallelOperationKeyIsUnique(
++	CCBot & bot,
++	const std::string & operationId,
++	uint64_t generation)
++{
++	int matchingEntries = 0;
++	for (int operationIndex = 0;
++		operationIndex < voiParallelOperationCount(bot);
++		++operationIndex)
++	{
++		const std::string prefix =
++			"operations." + std::to_string(operationIndex);
++		if (bot.Commander().getVoiPolicyString(
++				prefix + ".operation_id",
++				"") != operationId
++			|| static_cast<uint64_t>(
++				std::max(
++					1,
++					bot.Commander().getVoiPolicyInt(
++						prefix + ".generation",
++						1))) != generation)
++		{
++			continue;
++		}
++		++matchingEntries;
++		if (matchingEntries > 1)
++		{
++			return false;
++		}
++	}
++	return matchingEntries == 1;
++}
++
+ bool voiParallelOperationIsActive(CCBot & bot, int operationIndex)
+ {
+ 	if (!bot.Commander().isVoiPolicyActive()
+@@ -115,13 +148,12 @@ bool voiParallelOperationIsActive(CCBot & bot, int operationIndex)
+ 	{
+ 		return false;
+ 	}
+-	if (bot.Commander().Combat().hasVoiOperationState(
++	if (!voiParallelOperationKeyIsUnique(
++			bot,
+ 			operationId,
+ 			generation))
+ 	{
+-		return bot.Commander().Combat().isVoiOperationActive(
+-			operationId,
+-			generation);
++		return false;
+ 	}
+ 	if (bot.Commander().getVoiPolicyBool(
+ 			prefix + ".completed",
+@@ -140,47 +172,15 @@ bool voiParallelOperationIsActive(CCBot & bot, int operationIndex)
+ 	{
+ 		return false;
+ 	}
+-
+-	const std::string lifetimeMode =
+-		bot.Commander().getVoiPolicyString(
+-			prefix + ".lifetime.mode",
+-			"");
+-	if (lifetimeMode == "standing_order"
+-		|| lifetimeMode == "until_cancelled")
+-	{
+-		return true;
+-	}
+-
+-	const int tacticalDurationSeconds = std::max(
+-		0,
+-		bot.Commander().getVoiPolicyInt(
+-			prefix + ".tactical_task.duration_seconds",
+-			0));
+-	const int durationSeconds =
+-		tacticalDurationSeconds > 0
+-			? tacticalDurationSeconds
+-			: std::max(
+-				0,
+-				bot.Commander().getVoiPolicyInt(
+-					prefix + ".scope.duration_seconds",
+-					0));
+-	if (durationSeconds == 0)
++	if (bot.Commander().Combat().hasVoiOperationState(
++			operationId,
++			generation))
+ 	{
+-		return true;
++		return bot.Commander().Combat().isVoiOperationActive(
++			operationId,
++			generation);
+ 	}
+-
+-	const uint64_t issuedAtFrame =
+-		static_cast<uint64_t>(
+-			std::max(
+-				0,
+-				bot.Commander().getVoiPolicyInt(
+-					"issued_at_frame",
+-					0)));
+-	const uint64_t deadlineFrame =
+-		issuedAtFrame
+-		+ static_cast<uint64_t>(durationSeconds) * 22u;
+-	return static_cast<uint64_t>(bot.GetCurrentFrame())
+-		<= deadlineFrame;
++	return false;
+ }
+ 
+ int voiActiveParallelOperationCount(CCBot & bot)
+@@ -198,6 +198,401 @@ int voiActiveParallelOperationCount(CCBot & bot)
+ 	return activeCount;
+ }
+ 
++bool voiParallelOperationContainsToken(
++	CCBot & bot,
++	int operationIndex,
++	const std::string & token)
++{
++	if (!voiParallelOperationIsActive(bot, operationIndex)
++		|| token.empty())
++	{
++		return false;
++	}
++	const std::string prefix =
++		"operations." + std::to_string(operationIndex);
++	for (const std::string & field : {
++			".tactical_task.production_targets",
++			".tactical_task.unit_classes",
++			".scope.unit_classes" })
++	{
++		if (voiCommaListContains(
++				bot.Commander().getVoiPolicyString(
++					prefix + field,
++					""),
++				token))
++		{
++			return true;
++		}
++	}
++	const std::string compositionPrefix =
++		prefix + ".composition_requirements";
++	const int requirementCount = std::min(
++		32,
++		std::max(
++			0,
++			bot.Commander().getVoiPolicyInt(
++				compositionPrefix + ".count",
++				0)));
++	for (int requirementIndex = 0;
++		requirementIndex < requirementCount;
++		++requirementIndex)
++	{
++		if (bot.Commander().getVoiPolicyString(
++				compositionPrefix + "."
++					+ std::to_string(requirementIndex)
++					+ ".unit_type",
++				"") == token)
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++bool voiParallelOperationRequiresType(
++	CCBot & bot,
++	int operationIndex,
++	const MetaType & type)
++{
++	if (!type.isUnit())
++	{
++		return false;
++	}
++	const auto containsAny =
++		[&](std::initializer_list<const char *> tokens)
++		{
++			for (const char * token : tokens)
++			{
++				if (voiParallelOperationContainsToken(
++						bot,
++						operationIndex,
++						token))
++				{
++					return true;
++				}
++			}
++			return false;
++		};
++	const auto apiType =
++		(sc2::UNIT_TYPEID)type.getUnitType().getAPIUnitType();
++	switch (apiType)
++	{
++		case sc2::UNIT_TYPEID::TERRAN_SCV:
++			return containsAny({ "TERRAN_SCV", "SCV" });
++		case sc2::UNIT_TYPEID::TERRAN_SUPPLYDEPOT:
++			return containsAny({ "TERRAN_SUPPLYDEPOT" });
++		case sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER:
++			return containsAny({ "TERRAN_COMMANDCENTER" });
++		case sc2::UNIT_TYPEID::TERRAN_REFINERY:
++			return containsAny({
++				"TERRAN_REFINERY",
++				"TERRAN_MARAUDER",
++				"TERRAN_REAPER",
++				"TERRAN_GHOST",
++				"TERRAN_GHOSTACADEMY",
++				"TERRAN_FACTORY",
++				"FACTORY_TECHLAB",
++				"TERRAN_FACTORYTECHLAB",
++				"FACTORY_REACTOR",
++				"TERRAN_FACTORYREACTOR",
++				"TERRAN_ARMORY",
++				"TERRAN_STARPORT",
++				"STARPORT_TECHLAB",
++				"TERRAN_STARPORTTECHLAB",
++				"STARPORT_REACTOR",
++				"TERRAN_STARPORTREACTOR",
++				"TERRAN_FUSIONCORE",
++				"TERRAN_HELLION",
++				"TERRAN_WIDOWMINE",
++				"TERRAN_CYCLONE",
++				"TERRAN_THOR",
++				"TERRAN_SIEGETANK",
++				"TERRAN_MEDIVAC",
++				"TERRAN_VIKINGFIGHTER",
++				"TERRAN_LIBERATOR",
++				"TERRAN_BANSHEE",
++				"TERRAN_RAVEN",
++				"TERRAN_BATTLECRUISER" });
++		case sc2::UNIT_TYPEID::TERRAN_BARRACKS:
++			return containsAny({
++				"TERRAN_BARRACKS",
++				"BARRACKS_TECHLAB",
++				"TERRAN_BARRACKSTECHLAB",
++				"TERRAN_GHOSTACADEMY",
++				"TERRAN_FACTORY",
++				"FACTORY_TECHLAB",
++				"TERRAN_FACTORYTECHLAB",
++				"FACTORY_REACTOR",
++				"TERRAN_FACTORYREACTOR",
++				"TERRAN_ARMORY",
++				"TERRAN_STARPORT",
++				"STARPORT_TECHLAB",
++				"TERRAN_STARPORTTECHLAB",
++				"STARPORT_REACTOR",
++				"TERRAN_STARPORTREACTOR",
++				"TERRAN_FUSIONCORE",
++				"TERRAN_MARINE",
++				"TERRAN_MARAUDER",
++				"TERRAN_REAPER",
++				"TERRAN_GHOST",
++				"TERRAN_HELLION",
++				"TERRAN_WIDOWMINE",
++				"TERRAN_CYCLONE",
++				"TERRAN_THOR",
++				"TERRAN_SIEGETANK",
++				"TERRAN_MEDIVAC",
++				"TERRAN_VIKINGFIGHTER",
++				"TERRAN_LIBERATOR",
++				"TERRAN_BANSHEE",
++				"TERRAN_RAVEN",
++				"TERRAN_BATTLECRUISER" });
++		case sc2::UNIT_TYPEID::TERRAN_BARRACKSTECHLAB:
++			return containsAny({
++				"BARRACKS_TECHLAB",
++				"TERRAN_BARRACKSTECHLAB",
++				"TERRAN_GHOSTACADEMY",
++				"TERRAN_MARAUDER",
++				"TERRAN_GHOST" });
++		case sc2::UNIT_TYPEID::TERRAN_GHOSTACADEMY:
++			return containsAny({
++				"TERRAN_GHOSTACADEMY",
++				"TERRAN_GHOST" });
++		case sc2::UNIT_TYPEID::TERRAN_FACTORY:
++			return containsAny({
++				"TERRAN_FACTORY",
++				"FACTORY_TECHLAB",
++				"TERRAN_FACTORYTECHLAB",
++				"FACTORY_REACTOR",
++				"TERRAN_FACTORYREACTOR",
++				"TERRAN_ARMORY",
++				"TERRAN_STARPORT",
++				"STARPORT_TECHLAB",
++				"TERRAN_STARPORTTECHLAB",
++				"STARPORT_REACTOR",
++				"TERRAN_STARPORTREACTOR",
++				"TERRAN_FUSIONCORE",
++				"TERRAN_HELLION",
++				"TERRAN_WIDOWMINE",
++				"TERRAN_CYCLONE",
++				"TERRAN_THOR",
++				"TERRAN_SIEGETANK",
++				"TERRAN_MEDIVAC",
++				"TERRAN_VIKINGFIGHTER",
++				"TERRAN_LIBERATOR",
++				"TERRAN_BANSHEE",
++				"TERRAN_RAVEN",
++				"TERRAN_BATTLECRUISER" });
++		case sc2::UNIT_TYPEID::TERRAN_FACTORYTECHLAB:
++			return containsAny({
++				"FACTORY_TECHLAB",
++				"TERRAN_FACTORYTECHLAB",
++				"TERRAN_CYCLONE",
++				"TERRAN_THOR",
++				"TERRAN_SIEGETANK" });
++		case sc2::UNIT_TYPEID::TERRAN_FACTORYREACTOR:
++			return containsAny({
++				"FACTORY_REACTOR",
++				"TERRAN_FACTORYREACTOR" });
++		case sc2::UNIT_TYPEID::TERRAN_ARMORY:
++			return containsAny({
++				"TERRAN_ARMORY",
++				"TERRAN_THOR" });
++		case sc2::UNIT_TYPEID::TERRAN_STARPORT:
++			return containsAny({
++				"TERRAN_STARPORT",
++				"STARPORT_TECHLAB",
++				"TERRAN_STARPORTTECHLAB",
++				"STARPORT_REACTOR",
++				"TERRAN_STARPORTREACTOR",
++				"TERRAN_FUSIONCORE",
++				"TERRAN_MEDIVAC",
++				"TERRAN_VIKINGFIGHTER",
++				"TERRAN_LIBERATOR",
++				"TERRAN_BANSHEE",
++				"TERRAN_RAVEN",
++				"TERRAN_BATTLECRUISER" });
++		case sc2::UNIT_TYPEID::TERRAN_STARPORTTECHLAB:
++			return containsAny({
++				"STARPORT_TECHLAB",
++				"TERRAN_STARPORTTECHLAB",
++				"TERRAN_BANSHEE",
++				"TERRAN_RAVEN",
++				"TERRAN_BATTLECRUISER" });
++		case sc2::UNIT_TYPEID::TERRAN_STARPORTREACTOR:
++			return containsAny({
++				"STARPORT_REACTOR",
++				"TERRAN_STARPORTREACTOR" });
++		case sc2::UNIT_TYPEID::TERRAN_FUSIONCORE:
++			return containsAny({
++				"TERRAN_FUSIONCORE",
++				"TERRAN_BATTLECRUISER" });
++		case sc2::UNIT_TYPEID::TERRAN_MARINE:
++			return containsAny({ "TERRAN_MARINE" });
++		case sc2::UNIT_TYPEID::TERRAN_MARAUDER:
++			return containsAny({ "TERRAN_MARAUDER" });
++		case sc2::UNIT_TYPEID::TERRAN_REAPER:
++			return containsAny({ "TERRAN_REAPER" });
++		case sc2::UNIT_TYPEID::TERRAN_GHOST:
++			return containsAny({ "TERRAN_GHOST" });
++		case sc2::UNIT_TYPEID::TERRAN_HELLION:
++			return containsAny({ "TERRAN_HELLION" });
++		case sc2::UNIT_TYPEID::TERRAN_WIDOWMINE:
++			return containsAny({ "TERRAN_WIDOWMINE" });
++		case sc2::UNIT_TYPEID::TERRAN_CYCLONE:
++			return containsAny({ "TERRAN_CYCLONE" });
++		case sc2::UNIT_TYPEID::TERRAN_THOR:
++			return containsAny({ "TERRAN_THOR" });
++		case sc2::UNIT_TYPEID::TERRAN_SIEGETANK:
++			return containsAny({ "TERRAN_SIEGETANK" });
++		case sc2::UNIT_TYPEID::TERRAN_MEDIVAC:
++			return containsAny({ "TERRAN_MEDIVAC" });
++		case sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER:
++			return containsAny({ "TERRAN_VIKINGFIGHTER" });
++		case sc2::UNIT_TYPEID::TERRAN_LIBERATOR:
++			return containsAny({ "TERRAN_LIBERATOR" });
++		case sc2::UNIT_TYPEID::TERRAN_BANSHEE:
++			return containsAny({ "TERRAN_BANSHEE" });
++		case sc2::UNIT_TYPEID::TERRAN_RAVEN:
++			return containsAny({ "TERRAN_RAVEN" });
++		case sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER:
++			return containsAny({ "TERRAN_BATTLECRUISER" });
++		default:
++			return false;
++	}
++}
++
++std::set<std::pair<std::string, uint64_t>>
++voiParallelOperationOwnersForType(
++	CCBot & bot,
++	const MetaType & type)
++{
++	std::set<std::pair<std::string, uint64_t>> owners;
++	for (int operationIndex = 0;
++		operationIndex < voiParallelOperationCount(bot);
++		++operationIndex)
++	{
++		if (!voiParallelOperationRequiresType(
++				bot,
++				operationIndex,
++				type))
++		{
++			continue;
++		}
++		const std::string prefix =
++			"operations." + std::to_string(operationIndex);
++		const std::string operationId =
++			bot.Commander().getVoiPolicyString(
++				prefix + ".operation_id",
++				"");
++		if (operationId.empty())
++		{
++			continue;
++		}
++		owners.insert({
++			operationId,
++			static_cast<uint64_t>(
++				std::max(
++					1,
++					bot.Commander().getVoiPolicyInt(
++						prefix + ".generation",
++						1)))
++		});
++	}
++	return owners;
++}
++
++std::map<
++	MM::VoiBuildOrderOwner,
++	MM::VoiBuildOrderOwnerMetadata>
++voiParallelOperationOwnerMetadataForType(
++	CCBot & bot,
++	const MetaType & type,
++	bool blocking)
++{
++	std::map<
++		MM::VoiBuildOrderOwner,
++		MM::VoiBuildOrderOwnerMetadata> metadata;
++	for (int operationIndex = 0;
++		operationIndex < voiParallelOperationCount(bot);
++		++operationIndex)
++	{
++		if (!voiParallelOperationRequiresType(
++				bot,
++				operationIndex,
++				type))
++		{
++			continue;
++		}
++		const std::string prefix =
++			"operations." + std::to_string(operationIndex);
++		const std::string operationId =
++			bot.Commander().getVoiPolicyString(
++				prefix + ".operation_id",
++				"");
++		if (operationId.empty())
++		{
++			continue;
++		}
++		const MM::VoiBuildOrderOwner owner = {
++			operationId,
++			static_cast<uint64_t>(
++				std::max(
++					1,
++					bot.Commander().getVoiPolicyInt(
++						prefix + ".generation",
++						1)))
++		};
++		const bool allowPartial =
++			bot.Commander().getVoiPolicyBool(
++				prefix + ".scope.allow_partial_scope",
++				true)
++			&& bot.Commander().getVoiPolicyBool(
++				prefix + ".tactical_task.allow_partial",
++				true)
++			&& bot.Commander().getVoiPolicyBool(
++				prefix + ".allow_partial",
++				true);
++		metadata[owner] = {
++			"operation",
++			!allowPartial,
++			bot.Commander().getVoiPolicyFloat(
++				prefix + ".tactical_task.priority",
++				0.0f),
++			0
++		};
++	}
++	return metadata;
++}
++
++bool voiParallelOperationOwnerIsActive(
++	CCBot & bot,
++	const std::string & operationId,
++	uint64_t generation)
++{
++	for (int operationIndex = 0;
++		operationIndex < voiParallelOperationCount(bot);
++		++operationIndex)
++	{
++		const std::string prefix =
++			"operations." + std::to_string(operationIndex);
++		if (bot.Commander().getVoiPolicyString(
++				prefix + ".operation_id",
++				"") == operationId
++			&& static_cast<uint64_t>(
++				std::max(
++					1,
++					bot.Commander().getVoiPolicyInt(
++						prefix + ".generation",
++						1))) == generation)
++		{
++			return voiParallelOperationIsActive(
++				bot,
++				operationIndex);
++		}
++	}
++	return false;
++}
++
+ bool voiParallelOperationTaskListContains(
+ 	CCBot & bot,
+ 	const std::string & field,
+@@ -248,7 +643,38 @@ float voiParallelOperationTaskPriority(CCBot & bot)
+ 	return priority;
+ }
+ 
+-int voiRequestedCompositionCount(CCBot & bot, const std::string & policyUnitType)
++int voiTopLevelRequestedCompositionCount(
++	CCBot & bot,
++	const std::string & policyUnitType)
++{
++	int requestedCount = 0;
++	for (int i = 0; i < 32; ++i)
++	{
++		const std::string prefix =
++			"composition_requirements." + std::to_string(i);
++		const std::string requestedUnitType =
++			bot.Commander().getVoiPolicyString(
++				prefix + ".unit_type",
++				"");
++		if (requestedUnitType.empty())
++		{
++			break;
++		}
++		if (requestedUnitType == policyUnitType)
++		{
++			requestedCount += std::max(
++				0,
++				bot.Commander().getVoiPolicyInt(
++					prefix + ".count",
++					0));
++		}
++	}
++	return requestedCount;
++}
++
++int voiParallelOperationRequestedCompositionCount(
++	CCBot & bot,
++	const std::string & policyUnitType)
+ {
+ 	int requestedCount = 0;
+ 	const int operationCount = voiParallelOperationCount(bot);
+@@ -295,26 +721,20 @@ int voiRequestedCompositionCount(CCBot & bot, const std::string & policyUnitType
+ 				}
+ 			}
+ 		}
+-		return requestedCount;
+-	}
+-	for (int i = 0; i < 32; ++i)
+-	{
+-		const std::string prefix = "composition_requirements." + std::to_string(i);
+-		const std::string requestedUnitType = bot.Commander().getVoiPolicyString(prefix + ".unit_type", "");
+-		if (requestedUnitType.empty())
+-		{
+-			break;
+-		}
+-		if (requestedUnitType == policyUnitType)
+-		{
+-			requestedCount += std::max(
+-				0,
+-				bot.Commander().getVoiPolicyInt(prefix + ".count", 0));
+-		}
+ 	}
+ 	return requestedCount;
+ }
+ 
++int voiRequestedCompositionCount(CCBot & bot, const std::string & policyUnitType)
++{
++	return voiTopLevelRequestedCompositionCount(
++			bot,
++			policyUnitType)
++		+ voiParallelOperationRequestedCompositionCount(
++			bot,
++			policyUnitType);
++}
++
+ std::string voiCompositionRequirementLabel(CCBot & bot, int index)
+ {
+ 	const std::string prefix = "composition_requirements." + std::to_string(index);
+@@ -460,7 +880,8 @@ bool voiTacticalTaskWithinDuration(CCBot & bot)
+ 
+ bool voiExplicitTacticalPrerequisiteRequested(
+ 	CCBot & bot,
+-	const MetaType & type)
++	const MetaType & type,
++	bool includeParallelOperations = true)
+ {
+ 	if (!bot.Commander().isVoiPolicyActive()
+ 		|| !voiTacticalTaskWithinDuration(bot))
+@@ -476,10 +897,11 @@ bool voiExplicitTacticalPrerequisiteRequested(
+ 						"tactical_task." + field,
+ 						""),
+ 					token)
+-				|| voiParallelOperationTaskListContains(
++				|| (includeParallelOperations
++					&& voiParallelOperationTaskListContains(
+ 					bot,
+ 					field,
+-					token);
++					token));
+ 		};
+ 	const auto taskListContainsAny =
+ 		[&](
+@@ -984,7 +1406,10 @@ int voiCompositionProductionWaveMultiplier(
+ 	bool foundRequestedType = false;
+ 	for (const auto & entry : voiExactCompositionTypes())
+ 	{
+-		const int requested = voiRequestedCompositionCount(bot, entry.first);
++		const int requested =
++			voiTopLevelRequestedCompositionCount(
++				bot,
++				entry.first);
+ 		if (requested <= 0)
+ 		{
+ 			continue;
+@@ -993,8 +1418,16 @@ int voiCompositionProductionWaveMultiplier(
+ 		const int adaptiveCount = adaptiveTarget == adaptiveSupportTargets.end()
+ 			? 0
+ 			: std::max(0, adaptiveTarget->second);
++		const int operationOwnedCount =
++			bot.Commander().Combat()
++				.getVoiOperationOwnedUnitCount(
++					entry.first);
+ 		const int completedExactCount =
+-			std::max(0, voiCompletedUnitCount(bot, entry.second) - adaptiveCount);
++			std::max(
++				0,
++				voiCompletedUnitCount(bot, entry.second)
++					- adaptiveCount
++					- operationOwnedCount);
+ 		const int completedForType = completedExactCount / requested;
+ 		completedWaves = foundRequestedType
+ 			? std::min(completedWaves, completedForType)
+@@ -1009,12 +1442,21 @@ int voiCompositionProductionWaveMultiplier(
+ 
+ int voiCompositionProductionTargetCount(CCBot & bot, const std::string & policyUnitType, int waveMultiplier)
+ {
+-	const int requested = voiRequestedCompositionCount(bot, policyUnitType);
+-	if (requested <= 0 || !voiContinuousCompositionProductionActive(bot))
+-	{
+-		return requested;
+-	}
+-	return requested * std::max(1, waveMultiplier);
++	const int macroRequested =
++		voiTopLevelRequestedCompositionCount(
++			bot,
++			policyUnitType);
++	const int operationRequested =
++		voiParallelOperationRequestedCompositionCount(
++			bot,
++			policyUnitType);
++	if (macroRequested <= 0
++		|| !voiContinuousCompositionProductionActive(bot))
++	{
++		return macroRequested + operationRequested;
++	}
++	return macroRequested * std::max(1, waveMultiplier)
++		+ operationRequested;
+ }
+ 
+ std::string voiExactCompositionTokenForType(const MetaType & type)
+@@ -1036,14 +1478,23 @@ std::string voiExactCompositionTokenForType(const MetaType & type)
+ 
+ bool voiExactCompositionAllowsTraining(
+ 	CCBot & bot,
+-	const MetaType & type,
++	const MM::BuildOrderItem & item,
+ 	int waveMultiplier,
+ 	int adaptiveSupportTargetCount)
+ {
++	const bool independentLegacyDemand =
++		item.voiClaimSource == "legacy"
++		|| (item.preserveWithoutVoiOperationOwners
++			&& item.voiPreservedClaimSource == "legacy");
++	if (independentLegacyDemand)
++	{
++		return true;
++	}
+ 	if (!voiExactCompositionActive(bot))
+ 	{
+ 		return true;
+ 	}
++	const MetaType & type = item.type;
+ 	const std::string token = voiExactCompositionTokenForType(type);
+ 	if (token.empty())
+ 	{
+@@ -1245,6 +1696,286 @@ bool voiDoctrineExpectsActualItem(const std::string & doctrine, const std::strin
+ 	return false;
+ }
+ 
++bool voiTopLevelPolicyRequiresType(
++	CCBot & bot,
++	const MetaType & type,
++	const std::string & action)
++{
++	if (!bot.Commander().isVoiPolicyActive())
++	{
++		return false;
++	}
++
++	const auto topLevelListContains =
++		[&](const std::string & path, const char * token)
++		{
++			return voiCommaListContains(
++				bot.Commander().getVoiPolicyString(path, ""),
++				token);
++		};
++	const auto topLevelTaskContains =
++		[&](const char * token)
++		{
++			return topLevelListContains(
++					"tactical_task.production_targets",
++					token)
++				|| topLevelListContains(
++					"tactical_task.unit_classes",
++					token)
++				|| topLevelListContains(
++					"scope.unit_classes",
++					token);
++		};
++	const auto topLevelTaskContainsAny =
++		[&](std::initializer_list<const char *> tokens)
++		{
++			for (const char * token : tokens)
++			{
++				if (topLevelTaskContains(token))
++				{
++					return true;
++				}
++			}
++			return false;
++		};
++
++	if (type == MetaTypeEnum::SCV
++		|| type == MetaTypeEnum::SupplyDepot
++		|| type == MetaTypeEnum::Refinery
++		|| action.rfind("army_macro_", 0) == 0
++		|| action == "supply_buffer"
++		|| action == "supply_recovery"
++		|| action == "worker_continuity")
++	{
++		return true;
++	}
++
++	const std::string doctrine =
++		bot.Commander().getVoiPolicyString(
++			"strategy.doctrine",
++			"");
++	const std::string canonicalItemName =
++		voiCanonicalProductionItemName(type.getName());
++	if (voiDoctrineExpectsActualItem(
++			doctrine,
++			canonicalItemName))
++	{
++		return true;
++	}
++
++	if (voiExplicitTacticalPrerequisiteRequested(
++			bot,
++			type,
++			false))
++	{
++		return true;
++	}
++
++	const auto exactCompositionRequested =
++		[&](const char * token)
++		{
++			return voiTopLevelRequestedCompositionCount(
++					bot,
++					token) > 0;
++		};
++	const auto directlyRequested =
++		[&](const char * token)
++		{
++			return topLevelTaskContains(token)
++				|| exactCompositionRequested(token);
++		};
++
++	if ((type == MetaTypeEnum::CommandCenter
++			&& topLevelTaskContains("TERRAN_COMMANDCENTER"))
++		|| (type == MetaTypeEnum::Barracks
++			&& topLevelTaskContains("TERRAN_BARRACKS"))
++		|| (type == MetaTypeEnum::BarracksTechLab
++			&& topLevelTaskContainsAny({
++				"BARRACKS_TECHLAB",
++				"TERRAN_BARRACKSTECHLAB" }))
++		|| (type == MetaTypeEnum::GhostAcademy
++			&& topLevelTaskContains("TERRAN_GHOSTACADEMY"))
++		|| (type == MetaTypeEnum::Factory
++			&& topLevelTaskContains("TERRAN_FACTORY"))
++		|| (type == MetaTypeEnum::FactoryTechLab
++			&& topLevelTaskContainsAny({
++				"FACTORY_TECHLAB",
++				"TERRAN_FACTORYTECHLAB" }))
++		|| (type == MetaTypeEnum::FactoryReactor
++			&& topLevelTaskContainsAny({
++				"FACTORY_REACTOR",
++				"TERRAN_FACTORYREACTOR" }))
++		|| (type == MetaTypeEnum::Armory
++			&& topLevelTaskContains("TERRAN_ARMORY"))
++		|| (type == MetaTypeEnum::Starport
++			&& topLevelTaskContains("TERRAN_STARPORT"))
++		|| (type == MetaTypeEnum::StarportTechLab
++			&& topLevelTaskContainsAny({
++				"STARPORT_TECHLAB",
++				"TERRAN_STARPORTTECHLAB" }))
++		|| (type == MetaTypeEnum::StarportReactor
++			&& topLevelTaskContainsAny({
++				"STARPORT_REACTOR",
++				"TERRAN_STARPORTREACTOR" }))
++		|| (type == MetaTypeEnum::FusionCore
++			&& topLevelTaskContains("TERRAN_FUSIONCORE"))
++		|| (type == MetaTypeEnum::Marine
++			&& directlyRequested("TERRAN_MARINE"))
++		|| (type == MetaTypeEnum::Marauder
++			&& directlyRequested("TERRAN_MARAUDER"))
++		|| (type == MetaTypeEnum::Reaper
++			&& directlyRequested("TERRAN_REAPER"))
++		|| (type == MetaTypeEnum::Ghost
++			&& directlyRequested("TERRAN_GHOST"))
++		|| (type == MetaTypeEnum::Hellion
++			&& directlyRequested("TERRAN_HELLION"))
++		|| (type == MetaTypeEnum::WidowMine
++			&& directlyRequested("TERRAN_WIDOWMINE"))
++		|| (type == MetaTypeEnum::Cyclone
++			&& directlyRequested("TERRAN_CYCLONE"))
++		|| (type == MetaTypeEnum::Thor
++			&& directlyRequested("TERRAN_THOR"))
++		|| (type == MetaTypeEnum::SiegeTank
++			&& directlyRequested("TERRAN_SIEGETANK"))
++		|| (type == MetaTypeEnum::Medivac
++			&& directlyRequested("TERRAN_MEDIVAC"))
++		|| (type == MetaTypeEnum::Viking
++			&& directlyRequested("TERRAN_VIKINGFIGHTER"))
++		|| (type == MetaTypeEnum::Liberator
++			&& directlyRequested("TERRAN_LIBERATOR"))
++		|| (type == MetaTypeEnum::Banshee
++			&& directlyRequested("TERRAN_BANSHEE"))
++		|| (type == MetaTypeEnum::Raven
++			&& directlyRequested("TERRAN_RAVEN"))
++		|| (type == MetaTypeEnum::Battlecruiser
++			&& directlyRequested("TERRAN_BATTLECRUISER")))
++	{
++		return true;
++	}
++
++	if (type == MetaTypeEnum::CommandCenter)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.TERRAN_COMMANDCENTER",
++			"economy.expand_bias") > 0.25f;
++	}
++	if (type == MetaTypeEnum::Barracks)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.TERRAN_BARRACKS",
++			"production.production_facility_biases.TERRAN_BARRACKS") > 0.25f;
++	}
++	if (type == MetaTypeEnum::BarracksTechLab)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.BARRACKS_TECHLAB",
++			"production.addon_biases.BARRACKS_TECHLAB") > 0.25f;
++	}
++	if (type == MetaTypeEnum::GhostAcademy)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.TERRAN_GHOSTACADEMY",
++			"production.production_facility_biases.TERRAN_GHOSTACADEMY",
++			"tech.structure_biases.TERRAN_GHOSTACADEMY") > 0.25f;
++	}
++	if (type == MetaTypeEnum::Factory)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.TERRAN_FACTORY",
++			"production.production_facility_biases.TERRAN_FACTORY",
++			"tech.structure_biases.TERRAN_FACTORY") > 0.25f;
++	}
++	if (type == MetaTypeEnum::FactoryTechLab)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.FACTORY_TECHLAB",
++			"production.addon_biases.FACTORY_TECHLAB") > 0.25f;
++	}
++	if (type == MetaTypeEnum::Armory)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.TERRAN_ARMORY",
++			"production.production_facility_biases.TERRAN_ARMORY",
++			"tech.structure_biases.TERRAN_ARMORY") > 0.25f;
++	}
++	if (type == MetaTypeEnum::Starport)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.TERRAN_STARPORT",
++			"production.production_facility_biases.TERRAN_STARPORT",
++			"tech.structure_biases.TERRAN_STARPORT") > 0.25f;
++	}
++	if (type == MetaTypeEnum::StarportTechLab)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.STARPORT_TECHLAB",
++			"production.addon_biases.STARPORT_TECHLAB") > 0.25f;
++	}
++	if (type == MetaTypeEnum::StarportReactor)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.STARPORT_REACTOR",
++			"production.addon_biases.STARPORT_REACTOR") > 0.25f;
++	}
++	if (type == MetaTypeEnum::FusionCore)
++	{
++		return voiMaxBias(
++			bot,
++			"production.queue_biases.TERRAN_FUSIONCORE",
++			"production.production_facility_biases.TERRAN_FUSIONCORE",
++			"tech.structure_biases.TERRAN_FUSIONCORE") > 0.25f;
++	}
++
++	const auto unitBias =
++		[&](const std::string & token)
++		{
++			return voiMaxBias(
++				bot,
++				"production.queue_biases." + token,
++				"tech.unit_biases." + token) > 0.25f;
++		};
++	return (type == MetaTypeEnum::Marine
++			&& unitBias("TERRAN_MARINE"))
++		|| (type == MetaTypeEnum::Marauder
++			&& unitBias("TERRAN_MARAUDER"))
++		|| (type == MetaTypeEnum::Reaper
++			&& unitBias("TERRAN_REAPER"))
++		|| (type == MetaTypeEnum::Ghost
++			&& unitBias("TERRAN_GHOST"))
++		|| (type == MetaTypeEnum::Hellion
++			&& unitBias("TERRAN_HELLION"))
++		|| (type == MetaTypeEnum::WidowMine
++			&& unitBias("TERRAN_WIDOWMINE"))
++		|| (type == MetaTypeEnum::Cyclone
++			&& unitBias("TERRAN_CYCLONE"))
++		|| (type == MetaTypeEnum::Thor
++			&& unitBias("TERRAN_THOR"))
++		|| (type == MetaTypeEnum::SiegeTank
++			&& unitBias("TERRAN_SIEGETANK"))
++		|| (type == MetaTypeEnum::Medivac
++			&& unitBias("TERRAN_MEDIVAC"))
++		|| (type == MetaTypeEnum::Viking
++			&& unitBias("TERRAN_VIKINGFIGHTER"))
++		|| (type == MetaTypeEnum::Liberator
++			&& unitBias("TERRAN_LIBERATOR"))
++		|| (type == MetaTypeEnum::Banshee
++			&& unitBias("TERRAN_BANSHEE"))
++		|| (type == MetaTypeEnum::Raven
++			&& unitBias("TERRAN_RAVEN"))
++		|| (type == MetaTypeEnum::Battlecruiser
++			&& unitBias("TERRAN_BATTLECRUISER"));
++}
++
+ bool voiDoctrineRequestsTechTransition(CCBot & bot, const MetaType & type)
+ {
+ 	if (!bot.Commander().isVoiPolicyActive())
+@@ -1738,6 +2469,7 @@ int ProductionManager::getVoiAdaptiveSupportTargetCount(
+ 
+ void ProductionManager::onFrame(bool executeMacro)
+ {
++	reconcileVoiParallelOperationProductionQueue();
+ 	if (executeMacro)
+ 	{
+ 		refreshVoiCompositionProductionWaveMultiplier();
+@@ -1763,6 +2495,49 @@ void ProductionManager::onFrame(bool executeMacro)
+     drawProductionInformation();
+ }
+ 
++void ProductionManager::reconcileVoiParallelOperationProductionQueue()
++{
++	std::vector<std::pair<std::string, uint64_t>> releasedOwners;
++	for (const auto & owner : m_voiTrackedOperationProductionOwners)
++	{
++		if (!voiParallelOperationOwnerIsActive(
++				m_bot,
++				owner.first,
++				owner.second))
++		{
++			releasedOwners.push_back(owner);
++		}
++	}
++	for (const auto & owner : releasedOwners)
++	{
++		const int removedItems = m_queue.removeVoiOperationOwner(
++			owner.first,
++			owner.second);
++		m_voiTrackedOperationProductionOwners.erase(owner);
++		m_voiOperationProductionBaselines.erase(owner);
++		m_voiOperationProductionOwnerReleaseCount++;
++		if (removedItems > 0)
++		{
++			m_voiOperationProductionQueuePurgeCount +=
++				static_cast<uint32_t>(removedItems);
++			m_lastVoiOperationProductionQueuePurgeFrame =
++				m_bot.GetCurrentFrame();
++		}
++		m_lastVoiOperationProductionReleasedOwner =
++			owner.first + "#" + std::to_string(owner.second);
++		Util::Log(
++			__FUNCTION__,
++			"released operation production owner="
++				+ m_lastVoiOperationProductionReleasedOwner
++				+ " removed_queue_items="
++				+ std::to_string(removedItems)
++				+ " remaining_operation_owned_items="
++				+ std::to_string(
++					m_queue.getVoiOperationOwnedItemCount()),
++			m_bot);
++	}
++}
++
+ // on unit destroy
+ void ProductionManager::onUnitDestroy(const Unit & unit)
+ {
+@@ -2068,18 +2843,20 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 			continue;
+ 		}
+ 
+-		m_queue.removeAllOfType(type);
+-		for (int i = 0; i < allowedQueuedCount; ++i)
+-		{
+-			m_queue.queueAsHighestPriority(type, false);
+-		}
++		reconcileVoiProductionClaimsForType(
++			type,
++			"exact_composition_reconcile",
++			false,
++			false);
++		const int retainedQueuedCount =
++			m_queue.getCountOfType(type);
+ 		const auto apiType = type.getUnitType().getAPIUnitType();
+ 		const std::string reconciliationState =
+ 			std::to_string(requestedCount)
+ 			+ "|" + std::to_string(adaptiveTargetCount)
+ 			+ "|" + std::to_string(representedCount)
+ 			+ "|" + std::to_string(queuedCount)
+-			+ "|" + std::to_string(allowedQueuedCount);
++			+ "|" + std::to_string(retainedQueuedCount);
+ 		const uint32_t currentFrame = m_bot.GetCurrentFrame();
+ 		if (m_lastVoiExactCompositionReconciliationState[apiType] != reconciliationState
+ 			|| currentFrame - m_lastVoiExactCompositionReconciliationLogFrame[apiType] >= 224)
+@@ -2093,7 +2870,7 @@ void ProductionManager::reconcileVoiExactCompositionQueue()
+ 					+ " adaptive=" + std::to_string(adaptiveTargetCount)
+ 					+ " represented=" + std::to_string(representedCount)
+ 					+ " queued=" + std::to_string(queuedCount)
+-					+ " retained=" + std::to_string(allowedQueuedCount),
++					+ " retained=" + std::to_string(retainedQueuedCount),
+ 				m_bot);
+ 		}
+ 	}
+@@ -3622,57 +4399,578 @@ void ProductionManager::prioritizeVoiExpandCommandCenter()
+ 	}
+ }
+ 
+-bool ProductionManager::queueVoiDoctrineItem(const MetaType & type, const std::string & action, bool highestPriority, bool blocking)
++bool ProductionManager::reconcileVoiProductionClaimsForType(
++	const MetaType & type,
++	const std::string & action,
++	bool blocking,
++	bool allowGrowth)
+ {
+-	if (type == MetaTypeEnum::CommandCenter
+-		&& isVoiPassiveExpandCommandCenterQuarantined())
+-	{
+-		m_queue.removeAllOfType(type);
+-		recordVoiDoctrineConsumption(type, action, "blocked_passive_expand_quarantine");
+-		return false;
++	const int currentQueuedCount =
++		m_queue.getCountOfType(type);
++	const auto existingClaims =
++		m_queue.getVoiClaimsForType(type);
++	std::vector<MM::VoiBuildOrderClaim> claims;
++	const std::string exactToken =
++		voiExactCompositionTokenForType(type);
++
++	if (!exactToken.empty())
++	{
++		// Autonomous MicroMachine queue entries are independent demand. Preserve
++		// them as-is instead of relabeling or deleting them while reconciling
++		// top-level and operation-owned exact-composition claims.
++		for (const auto & existing : existingClaims)
++		{
++			if (existing.source == "legacy")
++			{
++				claims.push_back(existing);
++			}
++		}
++
++		const int waveMultiplier =
++			voiContinuousCompositionProductionActive(m_bot)
++				? std::max(
++					1,
++					m_voiCompositionProductionWaveMultiplier)
++				: 1;
++		int macroRequestedCount =
++			voiTopLevelRequestedCompositionCount(
++				m_bot,
++				exactToken)
++			* waveMultiplier;
++		if (macroRequestedCount <= 0
++			&& voiTopLevelPolicyRequiresType(
++				m_bot,
++				type,
++				action))
++			{
++				macroRequestedCount = 1;
++			}
++		if (voiAdaptiveSupportProductionActive(
++				m_bot,
++				exactToken))
++		{
++			macroRequestedCount +=
++				getVoiAdaptiveSupportTargetCount(exactToken);
++		}
++
++		struct RequestedOperationProduction
++		{
++			std::pair<std::string, uint64_t> owner;
++			int count = 0;
++			int maxAssignableCount = 0;
++			bool blocking = false;
++			float taskPriority = 0.0f;
++		};
++		std::vector<RequestedOperationProduction>
++			requestedByOwner;
++		std::map<
++			std::pair<std::string, uint64_t>,
++			size_t> requestedOwnerIndex;
++		for (int operationIndex = 0;
++			operationIndex < voiParallelOperationCount(m_bot);
++			++operationIndex)
++		{
++			if (!voiParallelOperationIsActive(
++					m_bot,
++					operationIndex))
++			{
++				continue;
++			}
++			const std::string operationPrefix =
++				"operations."
++				+ std::to_string(operationIndex);
++			const std::string operationId =
++				m_bot.Commander().getVoiPolicyString(
++					operationPrefix + ".operation_id",
++					"");
++			if (operationId.empty())
++			{
++				continue;
++			}
++
++			int requestedCount = 0;
++			const std::string compositionPrefix =
++				operationPrefix
++				+ ".composition_requirements";
++			const int requirementCount = std::min(
++				32,
++				std::max(
++					0,
++					m_bot.Commander().getVoiPolicyInt(
++						compositionPrefix + ".count",
++						0)));
++			for (int requirementIndex = 0;
++				requirementIndex < requirementCount;
++				++requirementIndex)
++			{
++				const std::string prefix =
++					compositionPrefix + "."
++						+ std::to_string(
++							requirementIndex);
++				if (m_bot.Commander().getVoiPolicyString(
++						prefix + ".unit_type",
++						"") == exactToken)
++				{
++					requestedCount += std::max(
++						0,
++						m_bot.Commander().getVoiPolicyInt(
++							prefix + ".count",
++							0));
++				}
++			}
++			if (requestedCount <= 0
++				&& voiParallelOperationContainsToken(
++					m_bot,
++					operationIndex,
++					exactToken))
++			{
++				requestedCount = std::max({
++					1,
++					m_bot.Commander().getVoiPolicyInt(
++						operationPrefix
++							+ ".tactical_task.min_units",
++						0),
++					m_bot.Commander().getVoiPolicyInt(
++						operationPrefix
++							+ ".scope.min_units",
++						0) });
++				const int maximumCount = std::max(
++					m_bot.Commander().getVoiPolicyInt(
++						operationPrefix
++							+ ".tactical_task.max_units",
++						0),
++					m_bot.Commander().getVoiPolicyInt(
++						operationPrefix
++							+ ".scope.max_units",
++						0));
++				if (maximumCount > 0)
++				{
++					requestedCount = std::min(
++						requestedCount,
++						maximumCount);
++				}
++			}
++			if (requestedCount <= 0)
++			{
++				continue;
++			}
++
++			const auto owner = std::make_pair(
++				operationId,
++				static_cast<uint64_t>(
++					std::max(
++						1,
++						m_bot.Commander().getVoiPolicyInt(
++							operationPrefix + ".generation",
++							1))));
++			const bool allowPartial =
++				m_bot.Commander().getVoiPolicyBool(
++					operationPrefix
++						+ ".scope.allow_partial_scope",
++					true)
++				&& m_bot.Commander().getVoiPolicyBool(
++					operationPrefix
++						+ ".tactical_task.allow_partial",
++					true);
++			const int maximumAssignableCount =
++				std::max({
++					m_bot.Commander().getVoiPolicyInt(
++						operationPrefix
++							+ ".tactical_task.max_units",
++						0),
++					m_bot.Commander().getVoiPolicyInt(
++						operationPrefix
++							+ ".scope.max_units",
++						0),
++					m_bot.Commander().getVoiPolicyInt(
++						operationPrefix + ".max_units",
++						0) });
++			const float taskPriority =
++				m_bot.Commander().getVoiPolicyFloat(
++					operationPrefix
++						+ ".tactical_task.priority",
++					0.0f);
++			const auto existingOwner =
++				requestedOwnerIndex.find(owner);
++			if (existingOwner == requestedOwnerIndex.end())
++			{
++				requestedOwnerIndex[owner] =
++					requestedByOwner.size();
++				requestedByOwner.push_back({
++					owner,
++					requestedCount,
++					maximumAssignableCount > 0
++						? maximumAssignableCount
++						: requestedCount,
++					!allowPartial,
++					taskPriority });
++			}
++			else
++			{
++				// Exact duplicate owners are fail-closed by
++				// voiParallelOperationIsActive(). Keep this guard so a future
++				// caller cannot accidentally aggregate duplicate demand.
++				requestedByOwner[
++					existingOwner->second].count = 0;
++			}
++		}
++		requestedByOwner.erase(
++			std::remove_if(
++				requestedByOwner.begin(),
++				requestedByOwner.end(),
++				[](const RequestedOperationProduction & requested)
++				{
++					return requested.count <= 0;
++				}),
++			requestedByOwner.end());
++		std::sort(
++			requestedByOwner.begin(),
++			requestedByOwner.end(),
++			[](
++				const RequestedOperationProduction & left,
++				const RequestedOperationProduction & right)
++			{
++				if (left.taskPriority
++					!= right.taskPriority)
++				{
++					return left.taskPriority
++						> right.taskPriority;
++				}
++				return left.owner < right.owner;
++			});
++
++		const int representedCount =
++			voiRepresentedUnitCount(m_bot, type);
++		const int completedCount =
++			voiCompletedUnitCount(m_bot, type);
++		const int operationOwnedCount =
++			m_bot.Commander().Combat()
++				.getVoiOperationOwnedUnitCount(
++					exactToken);
++		const int unownedCompletedCount =
++			std::max(
++				0,
++				completedCount - operationOwnedCount);
++		const int assignableUnownedCount =
++			std::min(
++				unownedCompletedCount,
++				m_bot.Commander().Combat()
++					.getVoiAssignableUnownedUnitCount(
++						exactToken));
++		const int inProgressCount =
++			std::max(
++				0,
++				representedCount - completedCount);
++		const int nonAssignableUnownedCount =
++			std::max(
++				0,
++				unownedCompletedCount
++					- assignableUnownedCount);
++		const int macroOutstanding = std::max(
++			0,
++			macroRequestedCount
++				- unownedCompletedCount
++				- inProgressCount);
++		const int macroDemandUsingAssignableCapacity =
++			std::max(
++				0,
++				macroRequestedCount
++					- nonAssignableUnownedCount);
++		int assignableCapacity =
++			std::max(
++				0,
++				assignableUnownedCount
++					+ inProgressCount
++					- macroDemandUsingAssignableCapacity);
++		for (int index = 0;
++			index < macroOutstanding;
++			++index)
++		{
++			claims.push_back({
++				{},
++				true,
++				"top_level",
++				blocking,
++				m_bot.Commander().getVoiPolicyFloat(
++					"tactical_task.priority",
++					0.0f) });
++		}
++
++		const uint32_t productionTypeKey =
++			static_cast<uint32_t>(
++				type.getUnitType().getAPIUnitType());
++		std::set<MM::VoiBuildOrderOwner>
++			activeProductionOwners;
++		for (const auto & requested : requestedByOwner)
++		{
++			activeProductionOwners.insert(
++				requested.owner);
++		}
++		for (auto baselineOwner =
++				m_voiOperationProductionBaselines.begin();
++			baselineOwner
++				!= m_voiOperationProductionBaselines.end();)
++		{
++			if (activeProductionOwners.find(
++					baselineOwner->first)
++				== activeProductionOwners.end())
++			{
++				baselineOwner->second.erase(
++					productionTypeKey);
++			}
++			if (baselineOwner->second.empty())
++			{
++				baselineOwner =
++					m_voiOperationProductionBaselines.erase(
++						baselineOwner);
++			}
++			else
++			{
++				++baselineOwner;
++			}
++		}
++
++		for (const auto & requested : requestedByOwner)
++		{
++			const int ownedForOwner =
++				m_bot.Commander().Combat()
++					.getVoiOperationOwnedUnitCount(
++						requested.owner.first,
++						requested.owner.second,
++						exactToken);
++			const int deployableTarget = std::min(
++				requested.count,
++				std::max(
++					0,
++					requested.maxAssignableCount));
++			const int guaranteedProductionTarget =
++				std::max(
++					0,
++					requested.count
++						- deployableTarget);
++			auto & baselines =
++				m_voiOperationProductionBaselines[
++					requested.owner];
++			auto baseline =
++				baselines.find(productionTypeKey);
++			if (baseline == baselines.end())
++			{
++				baseline = baselines.emplace(
++					productionTypeKey,
++					VoiOperationProductionBaseline {
++						representedCount,
++						ownedForOwner,
++						assignableCapacity }).first;
++			}
++
++			const int representedForOwner =
++				std::min(
++					deployableTarget,
++					ownedForOwner);
++			const int deployableRemaining = std::max(
++				0,
++				deployableTarget
++					- representedForOwner);
++			const int reservedAssignable =
++				std::min(
++					assignableCapacity,
++					deployableRemaining);
++			assignableCapacity -= reservedAssignable;
++			const int newCapacityUsedForDeployable =
++				std::max(
++					0,
++					reservedAssignable
++						- baseline->second.assignableCount);
++			const int representedGrowth =
++				std::max(
++					0,
++					representedCount
++						- baseline->second.representedCount);
++			const int ownedGrowth =
++				std::max(
++					0,
++					ownedForOwner
++						- baseline->second.ownedCount);
++			const int productionGrowthUsedForDeployable =
++				std::min(
++					representedGrowth,
++					ownedGrowth
++						+ newCapacityUsedForDeployable);
++			const int guaranteedProductionCompleted =
++				std::max(
++					0,
++					representedGrowth
++						- productionGrowthUsedForDeployable);
++			const int guaranteedProductionOutstanding =
++				std::max(
++					0,
++					guaranteedProductionTarget
++						- guaranteedProductionCompleted);
++			const int outstandingCount =
++				(deployableRemaining
++					- reservedAssignable)
++				+ guaranteedProductionOutstanding;
++			for (int index = 0;
++				index < outstandingCount;
++				++index)
++			{
++				claims.push_back({
++					{ requested.owner },
++					false,
++					"operation",
++					requested.blocking,
++					requested.taskPriority });
++			}
++		}
+ 	}
+-	if (m_queue.contains(type))
++	else
+ 	{
+-		const std::string doctrine = m_bot.Commander().getVoiPolicyString("strategy.doctrine", "");
+-		const std::string canonicalItemName = voiCanonicalProductionItemName(type.getName());
+-		const bool blocksDoctrineProgress =
+-			highestPriority
+-			|| voiDoctrineRequestsTechTransition(m_bot, type)
+-			|| (!canonicalItemName.empty() && voiDoctrineExpectsActualItem(doctrine, canonicalItemName));
+-		if (blocksDoctrineProgress)
++		const auto operationOwners =
++			voiParallelOperationOwnersForType(m_bot, type);
++		const auto operationOwnerMetadata =
++			voiParallelOperationOwnerMetadataForType(
++				m_bot,
++				type,
++				blocking);
++		const bool preserveForTopLevel =
++			voiTopLevelPolicyRequiresType(
++				m_bot,
++				type,
++				action);
++		const bool represented =
++			voiRepresentedUnitCount(m_bot, type) > 0;
++		for (const auto & existing : existingClaims)
+ 		{
+-			if (highestPriority || blocking)
++			if (existing.source == "legacy")
+ 			{
+-				m_queue.removeAllOfType(type);
+-				m_queue.queueAsHighestPriority(type, blocking);
+-				recordVoiDoctrineConsumption(type, action, "queued_existing");
+-				return true;
++				claims.push_back(existing);
+ 			}
+-			recordVoiDoctrineConsumption(type, action, "queued_existing");
+-			return true;
+ 		}
++		if (!represented
++			&& (preserveForTopLevel
++				|| !operationOwners.empty()))
++		{
++			const float topLevelPriority =
++				m_bot.Commander().getVoiPolicyFloat(
++					"tactical_task.priority",
++					0.0f);
++			bool effectiveBlocking =
++				preserveForTopLevel && blocking;
++			float effectiveTaskPriority =
++				preserveForTopLevel
++					? topLevelPriority
++					: 0.0f;
++			for (const auto & owner :
++				operationOwnerMetadata)
++			{
++				effectiveBlocking =
++					effectiveBlocking
++					|| owner.second.blocking;
++				effectiveTaskPriority = std::max(
++					effectiveTaskPriority,
++					owner.second.taskPriority);
++			}
++			claims.push_back({
++				operationOwners,
++				preserveForTopLevel,
++				preserveForTopLevel
++						&& !operationOwners.empty()
++					? "shared_prerequisite"
++					: (preserveForTopLevel
++						? "top_level"
++						: "operation"),
++				effectiveBlocking,
++				effectiveTaskPriority,
++				0,
++				0,
++				operationOwnerMetadata,
++				preserveForTopLevel
++					? "top_level"
++					: "",
++				preserveForTopLevel && blocking,
++				preserveForTopLevel
++					? topLevelPriority
++					: 0.0f,
++				0 });
++		}
++	}
++
++	if (!allowGrowth
++		&& static_cast<int>(claims.size())
++			> currentQueuedCount)
++	{
++		// Shrink-only reconciliation must never relabel an existing owner merely
++		// because desired demand grew concurrently. Leave the queue untouched;
++		// the normal allow-growth pass will add exact claims safely.
++		for (const auto & existing : existingClaims)
++		{
++			m_voiTrackedOperationProductionOwners.insert(
++				existing.operationOwners.begin(),
++				existing.operationOwners.end());
++		}
++		return currentQueuedCount > 0;
++	}
++	m_queue.reconcileTypeVoiClaims(
++		type,
++		claims);
++	for (const auto & claim : claims)
++	{
++		m_voiTrackedOperationProductionOwners.insert(
++			claim.operationOwners.begin(),
++			claim.operationOwners.end());
++	}
++	return !claims.empty();
++}
++
++bool ProductionManager::queueVoiDoctrineItem(const MetaType & type, const std::string & action, bool highestPriority, bool blocking)
++{
++	if (type == MetaTypeEnum::CommandCenter
++		&& isVoiPassiveExpandCommandCenterQuarantined())
++	{
++		m_queue.removeAllOfType(type);
++		recordVoiDoctrineConsumption(type, action, "blocked_passive_expand_quarantine");
+ 		return false;
+ 	}
++	const int previousCount =
++		m_queue.getCountOfType(type);
+ 	if (type.isBuilding() && isPlacementRetryCoolingDown(type))
+ 	{
+ 		recordVoiDoctrineConsumption(type, action, "blocked_placement_retry_cooldown");
+ 		return false;
+ 	}
+-	if (!hasRequired(type, true) || !hasProducer(type, true))
++	if (previousCount == 0
++		&& (!hasRequired(type, true)
++			|| !hasProducer(type, true)))
+ 	{
+ 		recordVoiDoctrineConsumption(type, action, "blocked_missing_prerequisite_or_producer");
+ 		return false;
+ 	}
+ 
+-	if (highestPriority)
++	if (!reconcileVoiProductionClaimsForType(
++			type,
++			action,
++			blocking,
++			true))
+ 	{
+-		m_queue.queueAsHighestPriority(type, blocking);
++		return false;
+ 	}
+-	else
++	if (highestPriority || blocking)
+ 	{
+-		m_queue.queueItem(MM::BuildOrderItem(type, 2, blocking));
++		m_queue.promoteTypeToHighestPriority(
++			type,
++			blocking);
+ 	}
+-	recordVoiDoctrineConsumption(type, action, "queued");
++	m_lastVoiDoctrineRequiredCount = 0;
++	m_lastVoiDoctrineRepresentedCount = 0;
++	m_lastVoiDoctrinePrerequisitesSatisfied = false;
++	const int currentCount =
++		m_queue.getCountOfType(type);
++	recordVoiDoctrineConsumption(
++		type,
++		action,
++		currentCount > previousCount
++			? "queued"
++			: "queued_existing");
+ 	Util::Log(__FUNCTION__, "voi doctrine action=" + action + " queued item=" + type.getName() + " doctrine=" + m_lastVoiDoctrine, m_bot);
+ 	return true;
+ }
+@@ -4095,12 +5393,40 @@ int ProductionManager::getVoiDoctrineUnitBaselineCount(const UnitType & unitType
+ 
+ bool ProductionManager::recordVoiDoctrineConsumptionIfRepresented(const MetaType & type, const std::string & action)
+ {
+-	(void)type;
+-	(void)action;
+-	// Do not infer VOI strategy consumption from normal queue/state deltas.
+-	// Only queueVoiDoctrineItem() records consumption, because that is the
+-	// point where the policy directly changes MicroMachine's production queue.
+-	return false;
++	if (!type.isUnit())
++	{
++		return false;
++	}
++
++	const std::string token =
++		voiExactCompositionTokenForType(type);
++	const int requestedCount = token.empty()
++		? 1
++		: std::max(
++			1,
++			voiCompositionProductionTargetCount(
++				m_bot,
++				token,
++				m_voiCompositionProductionWaveMultiplier));
++	const int representedCount =
++		voiRepresentedUnitCount(m_bot, type);
++	const bool prerequisitesSatisfied =
++		hasRequired(type, false)
++		&& hasProducer(type, false);
++	if (representedCount < requestedCount
++		|| !prerequisitesSatisfied)
++	{
++		return false;
++	}
++
++	m_lastVoiDoctrineRequiredCount = requestedCount;
++	m_lastVoiDoctrineRepresentedCount = representedCount;
++	m_lastVoiDoctrinePrerequisitesSatisfied = true;
++	recordVoiDoctrineConsumption(
++		type,
++		action,
++		"represented_satisfied");
++	return true;
+ }
+ 
+ void ProductionManager::applyVoiDoctrineProductionBias()
+@@ -4129,9 +5455,11 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 			0.0f),
+ 		voiParallelOperationTaskPriority(m_bot) });
+ 	const bool tacticalTaskActive = voiTacticalTaskWithinDuration(m_bot);
++	// Each active operation may request production through targets, unit
++	// classes, or composition. The downstream taskTargets/taskCastsWith gates
++	// keep operations without production intent inert.
+ 	const bool parallelOperationProduction =
+-		voiActiveParallelOperationCount(m_bot) > 0
+-		&& voiExactCompositionActive(m_bot);
++		voiActiveParallelOperationCount(m_bot) > 0;
+ 	const bool taskSustainProduction = tacticalTaskActive && tacticalTaskType == "sustain_production";
+ 	const bool taskTechTransition = tacticalTaskActive && tacticalTaskType == "tech_transition";
+ 	const bool taskExpandCommandCenter = tacticalTaskActive && tacticalTaskType == "expand_or_land_command_center";
+@@ -5798,17 +7126,58 @@ void ProductionManager::fixBuildOrderDeadlock(MM::BuildOrderItem & item)
+ 	if (item.type.isAddon())
+ 		return;
+ 
++	const auto queuePrerequisite =
++		[&](const MetaType & prerequisiteType)
++		{
++			auto ownerMetadata =
++				item.voiOperationOwnerMetadata;
++			for (auto & owner : ownerMetadata)
++			{
++				owner.second.source = "operation";
++				owner.second.priority =
++					std::max(
++						item.priority,
++						owner.second.priority) + 1;
++			}
++			return m_queue.queueItem(
++				MM::BuildOrderItem(
++					prerequisiteType,
++					item.priority + 1,
++					item.blocking,
++					item.voiOperationOwners,
++					item.preserveWithoutVoiOperationOwners,
++					"shared_prerequisite",
++					item.voiTaskPriority,
++					0,
++					ownerMetadata,
++					item.voiPreservedClaimSource,
++					item.voiPreservedBlocking,
++					item.voiPreservedTaskPriority,
++					std::max(
++						item.priority,
++						item.voiPreservedPriority) + 1));
++		};
++
+ 	// check to see if we have the prerequisites for the item
+-    if (!hasRequired(item.type, true))
++	if (!hasRequired(item.type, true))
+     {
+ 		for (auto & required : typeData.requiredUnits)
+ 		{
+-			if (!hasRequiredUnit(required, true) && !m_queue.contains(MetaType(required, m_bot)))
++			if (!hasRequiredUnit(required, true))
+ 			{
++				const MetaType requiredType(required, m_bot);
++				if (m_queue.contains(requiredType))
++				{
++					m_queue.addVoiOperationOwnersToType(
++						requiredType,
++						item);
++					break;
++				}
+ 				std::stringstream ss;
+ 				ss << item.type.getName() << " needs a requirement: " << required.getName();
+ 				Util::Log(__FUNCTION__, ss.str(), m_bot);
+-				MM::BuildOrderItem requiredItem = m_queue.queueItem(MM::BuildOrderItem(MetaType(required, m_bot), 0, item.blocking));
++				MM::BuildOrderItem requiredItem =
++					queuePrerequisite(requiredType);
+ 				fixBuildOrderDeadlock(requiredItem);
+ 				break;
+ 			}
+@@ -5816,31 +7185,45 @@ void ProductionManager::fixBuildOrderDeadlock(MM::BuildOrderItem & item)
+         return;
+     }
+ 
+-    // build the producer of the unit if we don't have one
++	// build the producer of the unit if we don't have one
+ 	MetaType builder = MetaType(typeData.whatBuilds[0], m_bot);
+-    if (!hasProducer(item.type, true) && !m_queue.contains(builder))
++    if (!hasProducer(item.type, true))
+     {
+-		std::cout << item.type.getName() << " needs a producer: " << builder.getName() << "\n";
+-		MM::BuildOrderItem producerItem = m_queue.queueItem(MM::BuildOrderItem(builder, 0, item.blocking));
+-        fixBuildOrderDeadlock(producerItem);
++		if (m_queue.contains(builder))
++		{
++			m_queue.addVoiOperationOwnersToType(
++				builder,
++				item);
++		}
++		else
++		{
++			std::cout << item.type.getName() << " needs a producer: " << builder.getName() << "\n";
++			MM::BuildOrderItem producerItem =
++				queuePrerequisite(builder);
++			fixBuildOrderDeadlock(producerItem);
++		}
+     }
+ 
+     // build a refinery if we don't have one and the thing costs gas
+ 	if (typeData.gasCost > 0 && m_bot.Observation()->GetScore().score_details.collection_rate_vespene <= 0)
+     {
+ 		auto refinery = Util::GetRefineryType();
+-		if (!m_queue.contains(MetaType(refinery, m_bot)))
++		const MetaType refineryType(refinery, m_bot);
++		if (!m_queue.contains(refineryType))
+ 		{
+ 			auto richRefinery = Util::GetRichRefineryType();
+ 			auto refineryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, refinery, false, true);
+ 			auto richRefineryCount = m_bot.UnitInfo().getUnitTypeCount(Players::Self, richRefinery, false, true);
+ 			if (refineryCount + richRefineryCount == 0)
+ 			{
+-				m_queue.queueAsHighestPriority(MetaType(refinery, m_bot), item.blocking);
++				queuePrerequisite(refineryType);
+ 			}
+ 		}
+ 		else
+ 		{
++			m_queue.addVoiOperationOwnersToType(
++				refineryType,
++				item);
+ 			auto pos = m_bot.Buildings().getBuildingPlacer().getRefineryPosition();
+ 			if (pos == CCPosition())//No valid location to build a geyser
+ 			{
+@@ -6781,7 +8164,7 @@ bool ProductionManager::create(const Unit & producer, MM::BuildOrderItem & item,
+ 		&& !item.type.getUnitType().isBuilding()
+ 		&& !voiExactCompositionAllowsTraining(
+ 			m_bot,
+-			item.type,
++			item,
+ 			m_voiCompositionProductionWaveMultiplier,
+ 			getVoiAdaptiveSupportTargetCount(
+ 				voiExactCompositionTokenForType(item.type))))
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+index ce3219a..f66ddec 100644
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -40,6 +40,9 @@ class ProductionManager
+ 	std::string m_lastVoiDoctrineQueueItem = "none";
+ 	std::string m_lastVoiDoctrineEvidence = "none";
+ 	std::string m_lastVoiDoctrineUpdateId = "";
++	int m_lastVoiDoctrineRequiredCount = 0;
++	int m_lastVoiDoctrineRepresentedCount = 0;
++	bool m_lastVoiDoctrinePrerequisitesSatisfied = false;
+ 	uint32_t m_lastVoiProductionCommandFrame = 0;
+ 	uint32_t m_voiProductionCommandIssuedCount = 0;
+ 	std::string m_lastVoiProductionCommandItem = "none";
+@@ -83,6 +86,21 @@ class ProductionManager
+ 	std::map<std::string, uint32_t> m_voiAdaptiveLastObservedFrame;
+ 	std::map<sc2::UNIT_TYPEID, std::string> m_lastVoiExactCompositionReconciliationState;
+ 	std::map<sc2::UNIT_TYPEID, uint32_t> m_lastVoiExactCompositionReconciliationLogFrame;
++	std::set<std::pair<std::string, uint64_t>> m_voiTrackedOperationProductionOwners;
++	struct VoiOperationProductionBaseline
++	{
++		int representedCount = 0;
++		int ownedCount = 0;
++		int assignableCount = 0;
++	};
++	std::map<
++		MM::VoiBuildOrderOwner,
++		std::map<uint32_t, VoiOperationProductionBaseline>>
++			m_voiOperationProductionBaselines;
++	uint32_t m_voiOperationProductionOwnerReleaseCount = 0;
++	uint32_t m_voiOperationProductionQueuePurgeCount = 0;
++	uint32_t m_lastVoiOperationProductionQueuePurgeFrame = 0;
++	std::string m_lastVoiOperationProductionReleasedOwner = "none";
+ 	std::vector<sc2::UNIT_TYPEID> factoryUnitTypes = { sc2::UNIT_TYPEID::TERRAN_HELLION, sc2::UNIT_TYPEID::TERRAN_HELLIONTANK, sc2::UNIT_TYPEID::TERRAN_WIDOWMINE, sc2::UNIT_TYPEID::TERRAN_SIEGETANK, sc2::UNIT_TYPEID::TERRAN_CYCLONE, sc2::UNIT_TYPEID::TERRAN_THOR };
+ 
+ 	void	validateUpgradesProgress();
+@@ -99,6 +117,7 @@ class ProductionManager
+ 	void	deferPlacementRetry(const MetaType & type, const std::string & reason);
+ 	void	putImportantBuildOrderItemsInQueue();
+ 	void	applyVoiDoctrineProductionBias();
++	void	reconcileVoiParallelOperationProductionQueue();
+ 	void	refreshVoiCompositionProductionWaveMultiplier();
+ 	int	getVoiAdaptiveSupportTargetCount(const std::string & policyUnitType) const;
+ 	void	reconcileVoiExactCompositionQueue();
+@@ -117,6 +136,11 @@ class ProductionManager
+ 	int	getVoiDoctrineUnitBaselineCount(const UnitType & unitType) const;
+ 	bool	recordVoiDoctrineConsumptionIfRepresented(const MetaType & type, const std::string & action);
+ 	bool	queueVoiDoctrineItem(const MetaType & type, const std::string & action, bool highestPriority, bool blocking = false);
++	bool	reconcileVoiProductionClaimsForType(
++				const MetaType & type,
++				const std::string & action,
++				bool blocking,
++				bool allowGrowth);
+ 	void	enforceBarracksProductionContinuity();
+ 	bool	shouldHoldBarracksContinuityForVoiTechTransition() const;
+ 	bool	isImportantProductionBuildingIdle(bool underConstructionConsideredIdle, bool constructingAddonConsideredIdle);
+@@ -178,6 +202,9 @@ public:
+ 	const std::string & getLastVoiDoctrineQueueItem() const { return m_lastVoiDoctrineQueueItem; }
+ 	const std::string & getLastVoiDoctrineEvidence() const { return m_lastVoiDoctrineEvidence; }
+ 	const std::string & getLastVoiDoctrineUpdateId() const { return m_lastVoiDoctrineUpdateId; }
++	int getLastVoiDoctrineRequiredCount() const { return m_lastVoiDoctrineRequiredCount; }
++	int getLastVoiDoctrineRepresentedCount() const { return m_lastVoiDoctrineRepresentedCount; }
++	bool getLastVoiDoctrinePrerequisitesSatisfied() const { return m_lastVoiDoctrinePrerequisitesSatisfied; }
+ 	uint32_t getLastVoiDoctrineFrame() const { return m_lastVoiDoctrineFrame; }
+ 	uint32_t getVoiProductionCommandIssuedCount() const { return m_voiProductionCommandIssuedCount; }
+ 	uint32_t getLastVoiProductionCommandFrame() const { return m_lastVoiProductionCommandFrame; }
+@@ -202,6 +229,12 @@ public:
+ 	const std::string & getLastVoiSupplyRecoveryReason() const { return m_lastVoiSupplyRecoveryReason; }
+ 	const std::string & getLastVoiSupplyProviderCommandKind() const { return m_lastVoiSupplyProviderCommandKind; }
+ 	const std::string & getLastVoiSupplyProviderCommandUpdateId() const { return m_lastVoiSupplyProviderCommandUpdateId; }
++	int getVoiOperationOwnedQueueItemCount() const { return m_queue.getVoiOperationOwnedItemCount(); }
++	std::string getVoiOperationOwnedQueueItemsTelemetryJson() const { return m_queue.getVoiOperationOwnedItemsTelemetryJson(); }
++	uint32_t getVoiOperationProductionOwnerReleaseCount() const { return m_voiOperationProductionOwnerReleaseCount; }
++	uint32_t getVoiOperationProductionQueuePurgeCount() const { return m_voiOperationProductionQueuePurgeCount; }
++	uint32_t getLastVoiOperationProductionQueuePurgeFrame() const { return m_lastVoiOperationProductionQueuePurgeFrame; }
++	const std::string & getLastVoiOperationProductionReleasedOwner() const { return m_lastVoiOperationProductionReleasedOwner; }
+ 	int getVoiCommandCenterPlacementRetryCount() const;
+ 	uint32_t getVoiCommandCenterNextPlacementRetryFrame() const;
+ 	bool isVoiCommandCenterPlacementQuarantined() const;

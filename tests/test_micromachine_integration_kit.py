@@ -1,8 +1,12 @@
 """Tests for the MicroMachine C++ integration kit artifacts."""
 
+import hashlib
+import itertools
 import json
 import os
+import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -187,6 +191,46 @@ ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE = (
     / "patches"
     / "0051-all-terran-combat-scouts.patch"
 )
+PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0052-parallel-operations-ingame-hud.patch"
+)
+PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0053-parallel-operation-lifecycle-review-closure.patch"
+)
+AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0054-authoritative-parallel-operation-lifecycle.patch"
+)
+OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0055-operation-production-ownership-and-restore-proof.patch"
+)
+EMBEDDED_BUILD_INPUT_IDENTITY_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0056-embedded-build-input-identity.patch"
+)
+TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0057-tech-gas-before-second-barracks.patch"
+)
+OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0058-operation-production-review-closure.patch"
+)
+PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0059-production-fifo-and-zero-owner-cleanup.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -204,6 +248,985 @@ def _read_patch_text(path: Path) -> str:
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
+    def test_parallel_operations_close_operation_scoped_production_prerequisites(
+        self,
+    ) -> None:
+        patch = _read_patch_text(PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE)
+
+        for term in (
+            "int voiParallelOperationCount(CCBot & bot)",
+            "bool voiParallelOperationTaskListContains(",
+            "float voiParallelOperationTaskPriority(CCBot & bot)",
+            'prefix + ".lifetime.completion_state"',
+            '".tactical_task."',
+            '"production_targets"',
+            '"unit_classes"',
+            '".tactical_task.priority"',
+            "parallelOperationProduction",
+            'taskTargets("TERRAN_FACTORY")',
+            'taskTargets("FACTORY_TECHLAB")',
+            'taskTargets("TERRAN_SIEGETANK")',
+            'taskTargets("TERRAN_STARPORT")',
+            'taskTargets("STARPORT_TECHLAB")',
+            'taskTargets("TERRAN_FUSIONCORE")',
+            'taskTargets("TERRAN_BATTLECRUISER")',
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+    def test_parallel_operations_override_strategy_vetoes_and_force_a_command_epoch(
+        self,
+    ) -> None:
+        patch = _read_patch_text(PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE)
+
+        for term in (
+            "bool voiExplicitTacticalPrerequisiteRequested(",
+            '\"operations.\"',
+            '\"production_targets\"',
+            '\"unit_classes\"',
+            "type == MetaTypeEnum::Barracks",
+            "type == MetaTypeEnum::BarracksTechLab",
+            "type == MetaTypeEnum::GhostAcademy",
+            "type == MetaTypeEnum::Factory",
+            "type == MetaTypeEnum::FactoryTechLab",
+            "type == MetaTypeEnum::FactoryReactor",
+            "type == MetaTypeEnum::Armory",
+            "type == MetaTypeEnum::Starport",
+            "type == MetaTypeEnum::StarportTechLab",
+            "type == MetaTypeEnum::StarportReactor",
+            "type == MetaTypeEnum::FusionCore",
+            "VOI explicit tech transition bypassed opening strategy veto",
+            "const VoiOperationState * commandEpochOperation",
+            "const bool forceOperationCommandEpoch",
+            "commandEpochOperation->submittedPositions.find(",
+            "rangedUnit->tag",
+            "== commandEpochOperation->submittedPositions.end()",
+            "if (!forceOperationCommandEpoch",
+            "recordVoiOperationSubmission(",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+    def test_parallel_operations_use_authoritative_home_and_truthful_remote_targets(
+        self,
+    ) -> None:
+        patch = _read_patch_text(PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE)
+
+        for term in (
+            "const CCPosition observedStart = bot.GetStartLocation();",
+            "return observedStart;",
+            "bot.Bases().getStartingBaseLocations()",
+            "bot.Bases().getBaseLocations()",
+            "const CCPosition playableCenter",
+            "return CCPosition();",
+            "voiResolveOperationTargetEvidence(",
+            '"search_candidate"',
+            'routeType == "safe_path"',
+            "std::string targetEvidence;",
+            '\\"target_evidence\\"',
+            "operation.locationIntent",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+    def test_parallel_operation_lifecycle_review_closure_is_fail_closed(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE
+        )
+
+        for term in (
+            "bool voiParallelOperationIsActive(CCBot & bot, int operationIndex)",
+            "bool voiParallelOperationTerminalState(",
+            'taskType != "scout_with_units"',
+            'taskType != "pressure_with_main_army"',
+            'taskType != "defend_with_units"',
+            'prefix + ".lifetime.completion_state"',
+            "voiActiveParallelOperationCount(m_bot) > 0",
+            'prefix + ".scope.allow_partial_scope"',
+            'prefix + ".lifetime.mode"',
+            '".lifetime.completion_conditions"',
+            "requested.deadlineFrame",
+            'operation.status = "EXPIRED";',
+            'requested.status = "SUPERSEDED";',
+            '"superseded_by_policy"',
+            "submissionObserved",
+            '\\"submission_observed\\"',
+            '\\"owned_unit_count\\"',
+            'm_voiPolicyBlackboard.getString("update_id", "")',
+            "updateId.empty()",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertIn(
+            '-\t\t\t\t\tprefix + ".scope.allow_partial",',
+            patch,
+        )
+
+    def test_authoritative_parallel_operation_lifecycle_closes_review_blockers(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE
+        )
+
+        for term in (
+            "bool CombatCommander::hasVoiOperationState(",
+            "bool CombatCommander::isVoiOperationActive(",
+            "bot.Commander().Combat().hasVoiOperationState(",
+            "bot.Commander().Combat().isVoiOperationActive(",
+            'prefix + ".generation"',
+            'prefix + ".scope.allow_partial_scope"',
+            'prefix + ".tactical_task.allow_partial"',
+            'prefix + ".allow_partial"',
+            "operation->deadlineFrame",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertNotIn(
+            "+\t\texisting->deadlineFrame = requested.deadlineFrame;",
+            patch,
+        )
+        self.assertIn(
+            "-\t\texisting->deadlineFrame = requested.deadlineFrame;",
+            patch,
+        )
+
+    def test_patch_bundle_is_contiguous_present_and_matches_build_apply_order(
+        self,
+    ) -> None:
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        bundle = manifest["patch_bundle"]
+        manifest_paths = [patch["path"] for patch in bundle]
+
+        self.assertEqual(
+            [patch["order"] for patch in bundle],
+            list(range(1, 60)),
+        )
+        self.assertEqual(len(set(manifest_paths)), 59)
+        self.assertTrue(
+            all((KIT_DIR / path).is_file() for path in manifest_paths)
+        )
+
+        build_script = (
+            KIT_DIR / "scripts" / "build_macos_local.sh"
+        ).read_text()
+        variable_paths = dict(
+            re.findall(
+                (
+                    r'^([A-Z0-9_]*PATCH_FILE)="'
+                    r'\$\{REPO_ROOT\}/integrations/micromachine/'
+                    r'(patches/[^"]+)"$'
+                ),
+                build_script,
+                flags=re.MULTILINE,
+            )
+        )
+        extracted_build_apply_paths: list[str] = []
+        for line in build_script.splitlines():
+            if (
+                not line.startswith(
+                    'git -C "${MICROMACHINE_DIR}" apply '
+                )
+                or "--check" in line
+            ):
+                continue
+            match = re.search(
+                r'"\$\{([A-Z0-9_]*PATCH_FILE)\}"$',
+                line,
+            )
+            self.assertIsNotNone(match, line)
+            assert match is not None
+            variable = match.group(1)
+            self.assertIn(variable, variable_paths)
+            extracted_build_apply_paths.append(variable_paths[variable])
+
+        self.assertEqual(manifest_paths, extracted_build_apply_paths)
+
+    def test_operation_production_ownership_restore_proof_closes_runtime_gap(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE
+        )
+
+        for term in (
+            "VoiBuildOrderClaim",
+            "VoiBuildOrderOwnerMetadata",
+            "voiOperationOwners",
+            "voiOperationOwnerMetadata",
+            "preserveWithoutVoiOperationOwners",
+            "voiClaimSource",
+            "voiPreservedClaimSource",
+            "voiTaskPriority",
+            "insertionSequence",
+            "normalizedOwnerMetadata(",
+            "refreshVoiAggregateMetadata(",
+            "void BuildOrderQueue::addVoiOperationOwnersToType(",
+            "void BuildOrderQueue::reconcileTypeVoiClaims(",
+            "void BuildOrderQueue::promoteTypeToHighestPriority(",
+            "void BuildOrderQueue::resizeTypePreservingVoiClaims(",
+            "int BuildOrderQueue::removeVoiOperationOwner(",
+            "for (auto item = m_queue.rbegin();",
+            "sameIdentity || sameClaim",
+            "claims.end() - targetCount",
+            "void ProductionManager::reconcileVoiParallelOperationProductionQueue()",
+            "bool ProductionManager::reconcileVoiProductionClaimsForType(",
+            "voiParallelOperationOwnersForType(",
+            "voiParallelOperationOwnerMetadataForType(",
+            "voiParallelOperationOwnerIsActive(",
+            "voiActiveParallelOperationCount(m_bot) > 0;",
+            "voiTopLevelRequestedCompositionCount(",
+            "voiParallelOperationRequestedCompositionCount(",
+            "voiTopLevelPolicyRequiresType(",
+            "requestedByOwner",
+            "macroOutstanding",
+            "getVoiOperationOwnedUnitCount(",
+            "getVoiAssignableUnownedUnitCount(",
+            "representedForOwner",
+            "assignableCapacity",
+            "requested.owner.first",
+            "requestedByOwner.begin()",
+            "return left.taskPriority",
+            "> right.taskPriority;",
+            "requestedOperations.begin()",
+            "left.priority > right.priority",
+            '"shared_prerequisite"',
+            'existing.source == "legacy"',
+            "Shrink-only reconciliation must never relabel an existing owner",
+            '"represented_satisfied"',
+            "m_voiTrackedOperationProductionOwners",
+            "if (removedItems > 0)",
+            "item.voiOperationOwners",
+            "item.voiOperationOwnerMetadata",
+            "item.preserveWithoutVoiOperationOwners",
+            'prefix + ".issued_at_frame"',
+            '"missing_operation_issued_at_frame"',
+            "synchronizeVoiOperationLifecycleForProduction()",
+            "removed_from_policy_before_production",
+            "metadataToInherit.blocking",
+            "dependentPriority + 1",
+            "promoted->voiPreservedBlocking || blocking",
+            "promotedOwner->second.blocking || blocking",
+            "independentLegacyDemand",
+            'item.voiClaimSource == "legacy"',
+            'item.voiPreservedClaimSource == "legacy"',
+            "#include <tuple>",
+            "std::tie(",
+            "getVoiOperationOwnedItemsTelemetryJson",
+            "operation_owned_queue_items",
+            '"WAITING_FOR_UNITS"',
+            "mayPreemptOwnedUnit",
+            "ownerOperation->minUnits",
+            "previousOperation->assignedUnitTags.erase(",
+            '\\"operation_owned_queue_item_count\\"',
+            '\\"operation_production_owner_release_count\\"',
+            '\\"operation_production_queue_purge_count\\"',
+            '\\"last_operation_production_queue_purge_frame\\"',
+            '\\"last_operation_production_released_owner\\"',
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertIn(
+            "+\treconcileVoiParallelOperationProductionQueue();",
+            patch,
+        )
+        self.assertIn(
+            "+\tif (!reconcileVoiProductionClaimsForType(",
+            patch,
+        )
+        self.assertIn(
+            '+\t\t\t== "missing_operation_issued_at_frame"',
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\titem,",
+            patch,
+        )
+        comparator_start = patch.index(
+            "bool MM::BuildOrderItem::operator <"
+        )
+        comparator_end = patch.index(
+            "bool MM::BuildOrderItem::operator ==",
+            comparator_start,
+        )
+        comparator = patch[comparator_start:comparator_end]
+        self.assertNotIn("operationOwnedSameType", comparator)
+        self.assertLess(
+            comparator.index("+\t\t\tvoiTaskPriority"),
+            comparator.index("+\t\t\tpriority"),
+        )
+        self.assertLess(
+            comparator.index("+\t\t\tpriority"),
+            comparator.index("+\t\t\tinsertionSequence"),
+        )
+        self.assertIn(
+            "+\t\t|| operation->status == \"BLOCKED\"",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t|| operation->durationSeconds == 0)",
+            patch,
+        )
+        self.assertIn(
+            '+\t\t\t== "missing_operation_issued_at_frame"',
+            patch,
+        )
+        self.assertNotIn(
+            "+\t\texisting->issuedAtFrame =",
+            patch,
+        )
+        self.assertNotIn(
+            "+\t\texisting->deadlineFrame =",
+            patch,
+        )
+        self.assertIn(
+            "+\treturn false;\n }\n \n int voiActiveParallelOperationCount",
+            patch,
+        )
+
+        self.assertIn(
+            "-\tif (bot.Commander().Combat().hasVoiOperationState(",
+            patch,
+        )
+        self.assertIn(
+            "+\tif (bot.Commander().Combat().hasVoiOperationState(",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\t\t|| metadataToInherit.blocking;",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\t\t\t|| dependent.voiPreservedBlocking;",
+            patch,
+        )
+        self.assertIn(
+            "+\t\tstd::sort(m_queue.begin(), m_queue.end());",
+            patch,
+        )
+        self.assertIn(
+            "+\tstd::sort(m_queue.begin(), m_queue.end());",
+            patch,
+        )
+        self.assertIn(
+            "+\treturn macroRequested * std::max(1, waveMultiplier)",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\t\t\t- operationOwnedCount);",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\t\t\t< ownerOperation->minUnits)",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\t\t\t\t< requirement.count)",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\t\t\trequestedCount,",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\t\t\t!allowPartial,",
+            patch,
+        )
+        self.assertNotIn(
+            "+\t\titem.blocking = item.blocking || blocking;",
+            patch,
+        )
+        self.assertNotIn(
+            "+\t\t\t\t\trequestedCount * waveMultiplier,",
+            patch,
+        )
+        self.assertNotIn(
+            "+\t\t\t\t\tblocking && !allowPartial,",
+            patch,
+        )
+        self.assertNotIn(
+            "representedRemaining -= representedForOwner;",
+            patch,
+        )
+        self.assertNotIn(
+            "+\t\t&& voiExactCompositionActive(m_bot);",
+            patch,
+        )
+
+    def test_operation_production_review_closure_allocates_growth_once(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH_FILE
+        )
+
+        for term in (
+            "attributedRepresentedGrowth",
+            "productionTarget",
+            "m_voiOperationProductionLastRepresentedCount",
+            "representedGrowthAvailable",
+            "representedLoss",
+            "lastOwnedCount",
+            "ownerSpecificLoss",
+            "initialReservedAssignable",
+            "m_voiOperationProductionUnattributedLossDebt",
+            "growthConsumedByLossDebt",
+            "productionStates.rbegin()",
+            "representedGrowthAvailable -=",
+            "releasedProductionTypeKeys",
+            "hasRemainingOwner",
+            '\\"last_operation_production_queue_purge_event\\"',
+            '\\"operation_production_queue_purge_events\\"',
+            "VoiOperationProductionQueuePurgeEvent",
+            "maxPurgeEventHistory = 32",
+            "getLastVoiOperationProductionQueuePurgeOperationId()",
+            "getLastVoiOperationProductionQueuePurgeGeneration()",
+            "getLastVoiOperationProductionQueuePurgeRemovedCount()",
+            "getVoiOperationProductionQueuePurgeEventsTelemetryJson()",
+            "ownedProductionGrowth",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        targets = [2, 2]
+        credits = [0, 0]
+
+        def attribute_growth(growth: int) -> int:
+            for index, target in enumerate(targets):
+                attributable = min(growth, max(0, target - credits[index]))
+                credits[index] += attributable
+                growth -= attributable
+            return growth
+
+        self.assertEqual(0, attribute_growth(1))
+        self.assertEqual([1, 0], credits)
+        self.assertEqual(0, attribute_growth(1))
+        self.assertEqual([2, 0], credits)
+        self.assertEqual(0, attribute_growth(1))
+        self.assertEqual([2, 1], credits)
+        self.assertEqual(3, sum(credits))
+
+        last_owned = [2, 1]
+
+        def reconcile_loss(
+            *,
+            represented_loss: int,
+            current_owned: list[int],
+        ) -> int:
+            nonlocal last_owned
+            for index in range(len(credits)):
+                owner_specific_loss = max(
+                    0,
+                    last_owned[index] - current_owned[index],
+                )
+                retracted = min(owner_specific_loss, credits[index])
+                credits[index] -= retracted
+                represented_loss = max(
+                    0,
+                    represented_loss - owner_specific_loss,
+                )
+            last_owned = current_owned
+            for index in range(len(credits) - 1, -1, -1):
+                retracted = min(represented_loss, credits[index])
+                credits[index] -= retracted
+                represented_loss -= retracted
+            return represented_loss
+
+        self.assertEqual(
+            0,
+            reconcile_loss(
+                represented_loss=1,
+                current_owned=[1, 1],
+            ),
+        )
+        self.assertEqual([1, 1], credits)
+        self.assertEqual(0, attribute_growth(1))
+        self.assertEqual([2, 1], credits)
+
+        del credits[0]
+        del targets[0]
+        del last_owned[0]
+        self.assertEqual([1], credits)
+        self.assertEqual([2], targets)
+
+        represented_by_type: dict[str, int] = {}
+        owner_types: dict[str, set[str]] = {}
+        owner_credits: dict[str, int] = {}
+
+        def observe(owner: str, unit_type: str, represented: int) -> int:
+            owner_types.setdefault(owner, set()).add(unit_type)
+            previous = represented_by_type.get(unit_type)
+            represented_by_type[unit_type] = represented
+            growth = 0 if previous is None else max(0, represented - previous)
+            owner_credits[owner] = owner_credits.get(owner, 0) + growth
+            return growth
+
+        def release(owner: str) -> None:
+            released_types = owner_types.pop(owner)
+            remaining_types = (
+                set().union(*owner_types.values()) if owner_types else set()
+            )
+            for unit_type in released_types - remaining_types:
+                represented_by_type.pop(unit_type, None)
+
+        self.assertEqual(0, observe("owner-a", "Marine", 2))
+        self.assertEqual(1, observe("owner-a", "Marine", 3))
+        release("owner-a")
+        self.assertNotIn("Marine", represented_by_type)
+        self.assertEqual(0, observe("owner-b", "Marine", 4))
+        self.assertEqual(0, owner_credits["owner-b"])
+        self.assertEqual(1, observe("owner-b", "Marine", 5))
+
+        loss_debt = 0
+        previous_represented = 10
+        zero_credit = 0
+
+        def reconcile_unowned_count(represented: int) -> None:
+            nonlocal loss_debt, previous_represented, zero_credit
+            growth = max(0, represented - previous_represented)
+            loss = max(0, previous_represented - represented)
+            previous_represented = represented
+            loss_debt += loss
+            consumed = min(growth, loss_debt)
+            loss_debt -= consumed
+            zero_credit += growth - consumed
+
+        reconcile_unowned_count(9)
+        self.assertEqual(1, loss_debt)
+        reconcile_unowned_count(10)
+        self.assertEqual(0, loss_debt)
+        self.assertEqual(0, zero_credit)
+        reconcile_unowned_count(11)
+        self.assertEqual(1, zero_credit)
+
+        initial_reserved_assignable = 1
+        initial_owned_count = 0
+        guaranteed_target = 2
+
+        def queue_claims(
+            *,
+            attributed_growth: int,
+            deployable_remaining: int,
+            reserved_assignable: int,
+            owned_for_owner: int,
+        ) -> int:
+            newly_reserved_assignable = max(
+                0,
+                reserved_assignable - initial_reserved_assignable,
+            )
+            owned_production_growth = max(
+                0,
+                owned_for_owner
+                - initial_owned_count
+                - initial_reserved_assignable,
+            )
+            growth_used_for_deployable = min(
+                attributed_growth,
+                owned_production_growth + newly_reserved_assignable,
+            )
+            guaranteed_completed = max(
+                0,
+                attributed_growth - growth_used_for_deployable,
+            )
+            return (
+                deployable_remaining - reserved_assignable
+            ) + max(0, guaranteed_target - guaranteed_completed)
+
+        self.assertEqual(
+            3,
+            queue_claims(
+                attributed_growth=0,
+                deployable_remaining=2,
+                reserved_assignable=1,
+                owned_for_owner=0,
+            ),
+        )
+        self.assertEqual(
+            3,
+            queue_claims(
+                attributed_growth=0,
+                deployable_remaining=1,
+                reserved_assignable=0,
+                owned_for_owner=1,
+            ),
+        )
+        self.assertEqual(
+            2,
+            queue_claims(
+                attributed_growth=1,
+                deployable_remaining=0,
+                reserved_assignable=0,
+                owned_for_owner=2,
+            ),
+        )
+        self.assertEqual(
+            1,
+            queue_claims(
+                attributed_growth=2,
+                deployable_remaining=0,
+                reserved_assignable=0,
+                owned_for_owner=2,
+            ),
+        )
+        self.assertEqual(
+            0,
+            queue_claims(
+                attributed_growth=3,
+                deployable_remaining=0,
+                reserved_assignable=0,
+                owned_for_owner=2,
+            ),
+        )
+
+    def test_tech_gas_patch_prioritizes_refinery_before_second_barracks(
+        self,
+    ) -> None:
+        patch = _read_patch_text(TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH_FILE)
+
+        for term in (
+            "m_voiRequiresTechGasBeforeSecondBarracks",
+            "effectiveMarauderBias > 0.25f",
+            "effectiveTankBias > 0.25f",
+            "effectiveLiberatorBias > 0.25f",
+            "|| refineryCount > 0",
+            "firstBarracksRepresented",
+            "&& !barracksTaskActive",
+            "currentItem.type == MetaTypeEnum::Barracks",
+            "|| refineryTaskActive",
+            (
+                '"VOI held a follow-up Barracks until the tech-gas '
+                'Refinery was observed."'
+            ),
+            "techGasQueuedOrBuilding",
+            "m_queue.contains(MetaTypeEnum::Refinery)",
+            "|| barracksTaskActive",
+            "m_queue.promoteTypeToHighestPriority(",
+            '"queued_existing_promoted"',
+            '"building_existing"',
+            "if (!techGasQueuedOrBuilding",
+            "needsTechBootstrapRefinery",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+        self.assertLess(
+            patch.index("m_voiRequiresTechGasBeforeSecondBarracks"),
+            patch.index("needsTechBootstrapRefinery"),
+        )
+        self.assertLess(
+            patch.index("m_queue.promoteTypeToHighestPriority("),
+            patch.index("if (!techGasQueuedOrBuilding"),
+        )
+
+    def test_tech_gas_queue_hold_does_not_block_pure_marine_policy(
+        self,
+    ) -> None:
+        patch = _read_patch_text(TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH_FILE)
+        queue_hold_start = patch.index(
+            "+\tif (currentItem.type == MetaTypeEnum::Barracks"
+        )
+        queue_hold_end = patch.index(
+            "\n \tconst int starportCount",
+            queue_hold_start,
+        )
+        queue_hold = patch[queue_hold_start:queue_hold_end]
+        requirement_start = patch.index(
+            "+\tm_voiRequiresTechGasBeforeSecondBarracks ="
+        )
+        requirement_end = patch.index(
+            "+\tconst bool techGasQueuedOrBuilding",
+            requirement_start,
+        )
+        requirement = patch[requirement_start:requirement_end]
+
+        self.assertIn(
+            "&& m_voiRequiresTechGasBeforeSecondBarracks",
+            queue_hold,
+        )
+        self.assertIn("effectiveMarauderBias > 0.25f", requirement)
+        self.assertIn("effectiveTankBias > 0.25f", requirement)
+        self.assertNotIn("effectiveMarineBias", requirement)
+
+    def test_build_order_queue_priority_key_is_strict_weak_order(self) -> None:
+        ownership_patch = _read_patch_text(
+            OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE
+        )
+        closure_patch = _read_patch_text(
+            PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE
+        )
+        comparator_start = ownership_patch.index(
+            "bool MM::BuildOrderItem::operator <"
+        )
+        comparator_end = ownership_patch.index(
+            "bool MM::BuildOrderItem::operator ==",
+            comparator_start,
+        )
+        comparator = ownership_patch[comparator_start:comparator_end]
+        self.assertIn(
+            "std::tie(\n+\t\t\tvoiTaskPriority,\n"
+            "+\t\t\tpriority,\n+\t\t\tinsertionSequence)",
+            comparator,
+        )
+        self.assertIn(
+            "-\t\t\tinsertionSequence)\n"
+            "+\t\t\tx.insertionSequence)",
+            closure_patch,
+        )
+        self.assertIn(
+            "-\t\t\tx.insertionSequence);\n"
+            "+\t\t\tinsertionSequence);",
+            closure_patch,
+        )
+        records = [
+            ("Marine-operation", 100.0, 10, 4),
+            ("Tank-operation", 0.0, 20, 2),
+            ("Marine-legacy", 0.0, 15, 1),
+            ("Tank-legacy", 0.0, 15, 3),
+        ]
+
+        def less(left: tuple, right: tuple) -> bool:
+            left_key = (left[1], left[2], -left[3])
+            right_key = (right[1], right[2], -right[3])
+            return left_key < right_key
+
+        for record in records:
+            self.assertFalse(less(record, record))
+        for left, right in itertools.permutations(records, 2):
+            self.assertFalse(less(left, right) and less(right, left))
+        for left, middle, right in itertools.permutations(records, 3):
+            if less(left, middle) and less(middle, right):
+                self.assertTrue(less(left, right))
+
+        expected = [
+            "Tank-legacy",
+            "Marine-legacy",
+            "Tank-operation",
+            "Marine-operation",
+        ]
+        for permutation in itertools.permutations(records):
+            ordered = sorted(
+                permutation,
+                key=lambda item: (item[1], item[2], -item[3]),
+            )
+            self.assertEqual(expected, [item[0] for item in ordered])
+
+        equal_priority = [
+            ("Marine", 0.0, 10, 1),
+            ("Medivac", 0.0, 10, 2),
+        ]
+        queue = sorted(
+            equal_priority,
+            key=lambda item: (item[1], item[2], -item[3]),
+        )
+        execution_order = [queue.pop()[0], queue.pop()[0]]
+        self.assertEqual(["Marine", "Medivac"], execution_order)
+
+    def test_operation_release_reports_cleanup_without_owned_units(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE
+        )
+        release_start = patch.index(
+            "void CombatCommander::releaseVoiOperation"
+        )
+        release = patch[release_start:]
+
+        self.assertIn(
+            "+\tconst bool cleanupAlreadyRecorded =",
+            release,
+        )
+        self.assertIn(
+            '+\t\t&& (operation.lastAction.rfind(\n'
+            '+\t\t\t\t"release_stop|",',
+            release,
+        )
+        self.assertIn(
+            '+\t\t\t|| operation.lastAction.rfind(\n'
+            '+\t\t\t\t"release_no_owned_units|",',
+            release,
+        )
+        self.assertNotIn("+\t\treturn;", release)
+        self.assertLess(
+            release.index("+\tconst bool cleanupAlreadyRecorded ="),
+            release.index(" \tstd::vector<Unit> unitsToRestore;"),
+        )
+        self.assertIn(
+            "+\tbool issuedReleaseStop = false;",
+            release,
+        )
+        self.assertIn(
+            '? "release_stop|"',
+            release,
+        )
+        self.assertIn(
+            ': "release_no_owned_units|"',
+            release,
+        )
+        self.assertIn(
+            "+\tif (!cleanupAlreadyRecorded)\n"
+            "+\t{\n"
+            "+\t\toperation.lastAction =",
+            release,
+        )
+        self.assertLess(
+            release.index("+\tif (!cleanupAlreadyRecorded)"),
+            release.index(" \tfor (const auto & unit : unitsToRestore)"),
+        )
+        self.assertIn(
+            ' \t\t\texisting->status = "RECEIVED";\n'
+            " \t\t\texisting->blockedReason.clear();\n"
+            "+\t\t\texisting->lastAction.clear();\n"
+            "+\t\t\texisting->lastActionFrame = 0;",
+            release,
+        )
+
+        def release_once(
+            last_action: str,
+            last_action_frame: int,
+            *,
+            has_live_owned_units: bool,
+            frame: int,
+            recovered: bool = False,
+        ) -> tuple[str, int, int, bool, int]:
+            if recovered:
+                last_action = ""
+                last_action_frame = 0
+            cleanup_recorded = last_action_frame > 0 and last_action.startswith(
+                ("release_stop|", "release_no_owned_units|")
+            )
+            if not cleanup_recorded:
+                prefix = (
+                    "release_stop|"
+                    if has_live_owned_units
+                    else "release_no_owned_units|"
+                )
+                last_action = f"{prefix}cancelled_by_policy"
+                last_action_frame = frame
+            return last_action, last_action_frame, 0, False, 0
+
+        first_release = release_once(
+            "",
+            0,
+            has_live_owned_units=True,
+            frame=410,
+        )
+        repeated_release = release_once(
+            first_release[0],
+            first_release[1],
+            has_live_owned_units=False,
+            frame=411,
+        )
+        self.assertEqual(
+            (
+                "release_stop|cancelled_by_policy",
+                410,
+                0,
+                False,
+                0,
+            ),
+            first_release,
+        )
+        self.assertEqual(first_release, repeated_release)
+
+        recovered_then_cancelled = release_once(
+            "release_no_owned_units|invalid_target",
+            300,
+            has_live_owned_units=True,
+            frame=420,
+            recovered=True,
+        )
+        self.assertEqual(
+            (
+                "release_stop|cancelled_by_policy",
+                420,
+                0,
+                False,
+                0,
+            ),
+            recovered_then_cancelled,
+        )
+
+    def test_operation_production_requires_authoritative_runtime_state(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE
+        )
+        production_start = patch.index(
+            "bool voiParallelOperationIsActive"
+        )
+        production_end = patch.index(
+            "int voiActiveParallelOperationCount",
+            production_start,
+        )
+        production_active = patch[production_start:production_end]
+        self.assertIn(
+            "+\tif (bot.Commander().Combat().hasVoiOperationState(",
+            production_active,
+        )
+        self.assertIn(
+            "+\treturn false;",
+            production_active,
+        )
+        self.assertNotIn(
+            "+\tconst std::string lifetimeMode",
+            production_active,
+        )
+        self.assertNotIn(
+            "+\tconst uint64_t deadlineFrame",
+            production_active,
+        )
+
+        combat_active_start = patch.index(
+            "bool CombatCommander::isVoiOperationActive"
+        )
+        combat_active_end = patch.index(
+            "int CombatCommander::getVoiOperationOwnedUnitCount",
+            combat_active_start,
+        )
+        combat_active = patch[combat_active_start:combat_active_end]
+        self.assertIn(
+            '+\t\t|| operation->status == "BLOCKED"',
+            combat_active,
+        )
+        self.assertIn(
+            "+\t\t|| operation->durationSeconds == 0)",
+            combat_active,
+        )
+        self.assertIn(
+            "+\treturn operation->deadlineFrame > 0",
+            combat_active,
+        )
+
+        self.assertIn(
+            '+\t\toperation.status = "WAITING_FOR_UNITS";',
+            patch,
+        )
+        self.assertIn(
+            '+\t\t|| operation.status == "WAITING_FOR_UNITS")',
+            patch,
+        )
+        self.assertIn(
+            "+\t\tif (missingIssuedAtFrame\n"
+            "+\t\t\t|| futureIssuedAtFrame\n"
+            "+\t\t\t|| expiredAtAdmission)",
+            patch,
+        )
+        self.assertIn(
+            "+\t\t\tcontinue;",
+            patch,
+        )
+        self.assertNotIn(
+            'existing->blockedReason\n'
+            '+\t\t\t\t== "missing_operation_issued_at_frame"',
+            patch,
+        )
+
     def test_live_tactical_patch_locks_runtime_operation_invariants(self) -> None:
         patch = _read_patch_text(TACTICAL_PATCH_FILE)
 
@@ -2566,6 +3589,112 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             {
                 "path": (
                     "patches/"
+                    "0055-operation-production-ownership-and-restore-proof.patch"
+                ),
+                "order": 55,
+                "scope": (
+                    "attach operation_id and generation ownership to "
+                    "operation-created production queue items and inherited "
+                    "prerequisites, purge only exclusively operation-owned "
+                    "work when its runtime or policy lifecycle becomes "
+                    "terminal, preserve shared macro work, consume "
+                    "operation-specific issued_at_frame deadlines, expose "
+                    "production-owner release telemetry, and require "
+                    "post-cancel MainAttack command and movement restoration "
+                    "evidence"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0056-embedded-build-input-identity.patch",
+                "order": 56,
+                "scope": (
+                    "compile the deterministic VOI build-input identity into "
+                    "the MicroMachine executable and expose a side-effect-free "
+                    "command-line query used by build finalization and live "
+                    "smoke provenance checks"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0057-tech-gas-before-second-barracks.patch",
+                "order": 57,
+                "scope": (
+                    "persist whether the active VOI policy actually requires "
+                    "tech gas to the queue-consumption boundary, treat the first "
+                    "Barracks building task as represented, hold follow-up "
+                    "Barracks only for gas-dependent bio, mech, air, Ghost, and "
+                    "explicit ability lanes until a Refinery is observed, leave "
+                    "pure Marine production unblocked when an unrelated Refinery "
+                    "is queued, promote an already queued required Refinery above "
+                    "blocking opening production, suppress duplicate bootstrap "
+                    "while one is queued or building, and preserve first-Barracks "
+                    "Marine bootstrap"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0058-operation-production-review-closure.patch",
+                "order": 58,
+                "scope": (
+                    "attribute each represented production increase to at "
+                    "most one sorted operation owner, exclude initial "
+                    "reservations when existing units transition into operation "
+                    "ownership, retract credits from the owner whose owned count "
+                    "fell, carry unattributed represented-count loss debt across "
+                    "frames before crediting replacement growth, reset count and "
+                    "debt epochs when the last owner leaves, and retain a bounded "
+                    "owner-keyed queue-purge history containing operation_id, "
+                    "generation, frame, and removed_count so same-frame evidence "
+                    "cannot be overwritten"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0059-production-fifo-and-zero-owner-cleanup.patch",
+                "order": 59,
+                "scope": (
+                    "preserve FIFO execution for equal-priority production "
+                    "queue items even though the queue executes from its back, "
+                    "emit positive-frame operation cleanup evidence when "
+                    "cancellation releases either stopped owned units or an "
+                    "operation with no remaining owned units, and preserve the "
+                    "first terminal cleanup action and frame idempotently across "
+                    "later release passes"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0054-authoritative-parallel-operation-lifecycle.patch"
+                ),
+                "order": 54,
+                "scope": (
+                    "make task-specific operation completion defaults exclude "
+                    "command submission, keep finite deadlines immutable for an "
+                    "existing operation_id and generation, make any explicit "
+                    "partial-scope false fail closed, and share CombatCommander "
+                    "runtime terminal state with ProductionManager as the "
+                    "authoritative operation lifecycle"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
                     "0049-explicit-ability-caster-ownership.patch"
                 ),
                 "order": 49,
@@ -2610,6 +3739,45 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     "cross-squad threat or healing control so every standard "
                     "Terran combat-unit family can follow its bounded scouting "
                     "target"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": "patches/0052-parallel-operations-ingame-hud.patch",
+                "order": 52,
+                "scope": (
+                    "consume indexed parallel operations, aggregate every "
+                    "operation-scoped tactical production target, unit class, "
+                    "priority, and exact composition into prerequisite closure "
+                    "for Terran bio, Factory, Starport, Ghost, Armory, and "
+                    "Fusion Core lanes, maintain operation_id and generation "
+                    "scoped dynamic squads with exclusive unit-tag ownership, "
+                    "protect operation units from autonomous reassignment, "
+                    "execute scout, attack, and defend tasks through existing "
+                    "Squad micro, emit operation-scoped observed telemetry, "
+                    "and draw truthful in-game HUD lifecycle, route, and target "
+                    "state"
+                ),
+            },
+            manifest["patch_bundle"],
+        )
+        self.assertIn(
+            {
+                "path": (
+                    "patches/"
+                    "0053-parallel-operation-lifecycle-review-closure.patch"
+                ),
+                "order": 53,
+                "scope": (
+                    "fail closed on empty policy update identity, exclude "
+                    "terminal, expired, and unsupported parallel operations "
+                    "from production, consume operation-scoped lifetime, "
+                    "deadline, completion, and strict partial-scope semantics, "
+                    "distinguish frame-zero command submission from missing "
+                    "evidence, release terminal ownership, and expose lifecycle "
+                    "and owned-unit telemetry for live verification"
                 ),
             },
             manifest["patch_bundle"],
@@ -2871,6 +4039,28 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(telemetry_field=telemetry_field):
                 self.assertIn(telemetry_field, production_hook["telemetry_fields"])
+        required_production_fields = {
+            "last_doctrine_required_count",
+            "last_doctrine_represented_count",
+            "last_doctrine_prerequisites_satisfied",
+            "operation_owned_queue_item_count",
+            "operation_owned_queue_items",
+            "operation_production_owner_release_count",
+            "operation_production_queue_purge_count",
+            "last_operation_production_queue_purge_frame",
+            "last_operation_production_released_owner",
+            "last_operation_production_queue_purge_event",
+            "operation_production_queue_purge_events",
+        }
+        self.assertTrue(
+            required_production_fields
+            <= set(production_hook["telemetry_fields"])
+        )
+        combat_hook = hooks_by_domain["combat"]
+        self.assertIn(
+            "main_attack_unit_samples",
+            combat_hook["telemetry_fields"],
+        )
         self.assertIn(
             "becomes an actual production command only after",
             production_hook["intended_effect"],
@@ -3029,6 +4219,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "getBool",
             "isExpired",
             "isProtocolCompatible",
+            'lifetimeMode == "until_cancelled"',
+            'lifetimeMode == "standing_order"',
             "static_cast<std::uint32_t>(expiresAt)",
             "std::unordered_map",
         )
@@ -3076,7 +4268,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0051`",
+            "through `0059`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -3423,6 +4615,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, s2client_patch)
 
+    def test_embedded_build_identity_patch_exposes_side_effect_free_query(
+        self,
+    ) -> None:
+        patch = _read_patch_text(EMBEDDED_BUILD_INPUT_IDENTITY_PATCH_FILE)
+
+        self.assertIn('#include "voi_build_identity.hpp"', patch)
+        self.assertIn("--voi-build-input-identity", patch)
+        self.assertIn("VOI_BUILD_INPUT_IDENTITY", patch)
+        self.assertIn("return 0;", patch)
+
     def test_patch_records_requeued_doctrine_items_as_existing_queue_evidence(self) -> None:
         patch = _read_patch_text(PATCH_FILE)
 
@@ -3540,11 +4742,62 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         soak_script = SOAK_SCRIPT.read_text()
         soak_matrix_script = SOAK_MATRIX_SCRIPT.read_text()
         strategy_matrix_script = STRATEGY_MATRIX_SCRIPT.read_text()
+        local_soak_workflow = (
+            REPO_ROOT
+            / ".github"
+            / "workflows"
+            / "micromachine-local-soak.yml"
+        ).read_text()
+        smoke_guide = (
+            REPO_ROOT / "docs" / "sc2-smoke-test.md"
+        ).read_text()
+        production_evidence_module = (
+            REPO_ROOT
+            / "starcraft_commander"
+            / "micromachine_production_evidence.py"
+        ).read_text()
+        soak_classifier_module = (
+            REPO_ROOT / "starcraft_commander" / "micromachine_soak.py"
+        ).read_text()
 
         self.assertIn(
             'ROOT_DIR="${ROOT_DIR:-/private/tmp/voi-micromachine-runtime}"',
             build_script,
         )
+        for script_name, script in (
+            ("probe", probe_script),
+            ("smoke", smoke_script),
+            ("soak", soak_script),
+        ):
+            with self.subTest(script=script_name, contract="portable SC2 discovery"):
+                self.assertIn("discover_sc2_root()", script)
+                self.assertIn(
+                    'local configured="${SC2_ROOT:-${SC2PATH:-}}"',
+                    script,
+                )
+                self.assertIn(
+                    '"${HOME}/Desktop/StarCraft2/StarCraft II"',
+                    script,
+                )
+                self.assertIn('"/Applications/StarCraft II"', script)
+                self.assertIn(
+                    '"${HOME}/Applications/StarCraft II"',
+                    script,
+                )
+                self.assertNotIn("/Users/", script)
+        self.assertIn(
+            'sc2_root="${SC2_ROOT:-${SC2PATH:-}}"',
+            local_soak_workflow,
+        )
+        self.assertIn(
+            "/private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api",
+            local_soak_workflow,
+        )
+        self.assertNotIn("/Users/", local_soak_workflow)
+        self.assertNotIn("Base96883", local_soak_workflow)
+        self.assertIn("SC2_ROOT", smoke_guide)
+        self.assertIn("SC2PATH", smoke_guide)
+        self.assertNotIn("/Users/", smoke_guide)
         for script_name, script in (
             ("smoke", smoke_script),
             ("soak", soak_script),
@@ -3575,6 +4828,92 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "fresh live session cleared detached tactical command state",
         ):
             with self.subTest(smoke_fresh_session_term=term):
+                self.assertIn(term, smoke_script)
+        for term in (
+            "def first_modulation_issued_at_frame(update_id):",
+            "return min(int(entry.get(\"issued_at_frame\", 0) or 0) for entry in candidates)",
+            "aggressive_first_issued_at_frame",
+        ):
+            with self.subTest(smoke_republished_profile_epoch_term=term):
+                self.assertIn(term, smoke_script)
+        self.assertNotIn(
+            "return max(int(entry.get(\"issued_at_frame\", 0) or 0) for entry in candidates)",
+            smoke_script,
+        )
+        for term in (
+            "def operation(operation_id, task_type, location, route_type, target_type):",
+            '"issued_at_frame": frame',
+            "has_expected_strategy_profile_evidence()",
+            "find_causal_production_evidence",
+            "expected_production_pairs",
+            "operation_restore_ready()",
+            "operation_production_baseline()",
+            'phase == "cancelled_baseline"',
+            "if combat is None:",
+            "SMOKE_RESTORE_UPDATE_ID",
+            "SMOKE_STRATEGY_EVIDENCE_UPDATE_ID",
+            "OPERATION_RESTORE_ISSUED_FRAME",
+            "OPERATION_CANCEL_MAIN_ATTACK_COMMAND_BASELINE",
+            "OPERATION_CANCEL_MAIN_ATTACK_ACTION_FRAME_BASELINE",
+            "OPERATION_CANCEL_OWNER_RELEASE_COUNT_BASELINE",
+            "OPERATION_CANCEL_QUEUE_PURGE_COUNT_BASELINE",
+            "OPERATION_CANCEL_QUEUE_PURGE_FRAME_BASELINE",
+            'OPERATION_RESTORE_ISSUED_FRAME="${OPERATION_CANCEL_TELEMETRY_FRAME}"',
+            "latest_restore_frame > OPERATION_RESTORE_ISSUED_FRAME",
+            "first_restore_consumed_frame",
+            "command_count > command_baseline",
+            "command_frame > action_frame_baseline",
+            "command_frame >= first_restore_consumed_frame",
+            "current_home_distance >= minimum_home_distance",
+            "restore_initial_positions",
+            "reference_positions",
+            '"production_targets": (',
+            '["TERRAN_MARINE", "TERRAN_SIEGETANK"]',
+            '"unit_type": "TERRAN_MARINE"',
+            "operation_owned_queue_item_count",
+            "operation_production_owner_release_count",
+            "owner_release_count <= owner_release_count_baseline",
+            "queue_purge_count <= queue_purge_count_baseline",
+            "operation_production_queue_purge_events",
+            "matching_purge_event is None",
+            "purge_event_generation == expected_generation",
+            "purge_event_frame > queue_purge_frame_baseline",
+            "purge_event_removed_count > 0",
+            "type(operation_owned_queue_item_count) is not int",
+            "post_cancel_displacement",
+            '"represented_satisfied"',
+            "production_evidence_update_id",
+            "latest_cancel_frame",
+            "post-cancel MainAttack command and movement evidence",
+        ):
+            with self.subTest(operation_restore_proof_term=term):
+                self.assertIn(term, smoke_script)
+        self.assertNotIn(
+            "restore_operational_without_production",
+            smoke_script,
+        )
+        self.assertNotIn(
+            "production_already_satisfied",
+            smoke_script,
+        )
+        self.assertNotIn(
+            "already_fulfilled_doctrine_seen",
+            smoke_script,
+        )
+        self.assertNotIn(
+            'SMOKE_STRATEGY_EVIDENCE_UPDATE_ID="${SMOKE_RESTORE_UPDATE_ID}"',
+            smoke_script,
+        )
+        self.assertNotIn(
+            'cancelled_production.get("operation_owned_queue_item_count", -1) or -1',
+            smoke_script,
+        )
+        for term in (
+            "for _ in range(8):",
+            "except (json.JSONDecodeError, OSError, TypeError, ValueError):",
+            'if [[ -z "${current_telemetry_frame}" ]]; then',
+        ):
+            with self.subTest(smoke_stable_telemetry_frame_term=term):
                 self.assertIn(term, smoke_script)
         for term in (
             "type(last_trace_frame_value) is not int",
@@ -3643,6 +4982,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0049-explicit-ability-caster-ownership.patch",
             "0050-explicit-ability-staging-single-flight.patch",
             "0051-all-terran-combat-scouts.patch",
+            "0052-parallel-operations-ingame-hud.patch",
+            "0053-parallel-operation-lifecycle-review-closure.patch",
+            "0054-authoritative-parallel-operation-lifecycle.patch",
+            "0055-operation-production-ownership-and-restore-proof.patch",
+            "0056-embedded-build-input-identity.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -3692,6 +5036,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH_FILE",
             "EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH_FILE",
             "ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE",
+            "PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE",
+            "PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH_FILE",
+            "AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH_FILE",
+            "OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE",
+            "EMBEDDED_BUILD_INPUT_IDENTITY_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -3700,6 +5049,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-allied-cloak-observation-confirmation-patch",
             "--micromachine-explicit-ability-caster-ownership-patch",
             "--micromachine-explicit-ability-staging-single-flight-patch",
+            "--micromachine-parallel-operations-ingame-hud-patch",
+            "--micromachine-parallel-operation-lifecycle-review-closure-patch",
+            "--micromachine-authoritative-parallel-operation-lifecycle-patch",
+            "--micromachine-operation-production-ownership-restore-proof-patch",
+            "--micromachine-embedded-build-input-identity-patch",
+            "--write-embedded-identity-header",
             "DSC2Api_SC2API_LIB",
             "reset --hard",
             "clean -fdx",
@@ -3931,6 +5286,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '--ignore-space-change --whitespace=nowarn '
             '"${ALL_TERRAN_COMBAT_SCOUTS_PATCH_FILE}"'
         )
+        parallel_operations_ingame_hud_check = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount --check '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE}"'
+        )
+        parallel_operations_ingame_hud_apply = (
+            'git -C "${MICROMACHINE_DIR}" apply --recount '
+            '--ignore-space-change --whitespace=nowarn '
+            '"${PARALLEL_OPERATIONS_INGAME_HUD_PATCH_FILE}"'
+        )
         blackboard_copy = (
             'cp "${BLACKBOARD_HEADER_FILE}" '
             '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
@@ -4065,6 +5430,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertLess(
             build_script.index(all_terran_combat_scouts_apply),
+            build_script.index(parallel_operations_ingame_hud_check),
+        )
+        self.assertLess(
+            build_script.index(parallel_operations_ingame_hud_check),
+            build_script.index(parallel_operations_ingame_hud_apply),
+        )
+        self.assertLess(
+            build_script.index(parallel_operations_ingame_hud_apply),
             build_script.index(blackboard_copy),
         )
         self.assertLess(
@@ -4148,13 +5521,47 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SMOKE_MAX_ATTEMPTS",
             "SMOKE_RETRY_SETTLE_SECONDS",
             "SMOKE_ATTEMPT_INDEX",
+            "SMOKE_RUN_ID",
+            "SMOKE_RUN_ROOT",
+            "SMOKE_REPO_HEAD_SHA",
+            "reset_promoted_smoke_artifacts",
+            "write_smoke_attempt_status",
+            "write_smoke_attempt_summary",
+            "repo_head_sha",
+            "build_identity",
+            "micromachine_source_state_sha256",
+            "selected_attempt_dir",
             "SMOKE_KEEP_RUNNING_AFTER_PASS",
             "SMOKE_MANUAL_LIVE_MODE",
             "SMOKE_AUTO_AGGRESSIVE_PROFILE",
             "SMOKE_REQUIRE_BUILD_IDENTITY",
             "MICROMACHINE_BUILD_IDENTITY_REPORT",
             "verify_build_identity",
+            "snapshot_runtime_identity",
+            "verify_runtime_identity_snapshot",
+            "runtime_identity.snapshot.json",
+            "build_identity_report_sha256",
+            "binary_sha256",
             "stale build identity",
+            "SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE",
+            "SMOKE_OPERATION_UPDATE_ID",
+            "publish_parallel_operations",
+            "operation_lifecycle_ready",
+            "snapshot_latest_telemetry_for_cleanup",
+            "restore_latest_telemetry_after_cleanup",
+            "latest_telemetry.pre_cleanup.json",
+            "exclusive_assignment_observed",
+            "live_production_owner_observed",
+            "operation_owned_queue_items",
+            "operation_owner_present",
+            "difficulty_smoke_selective_attack_cancel",
+            "selective attack cancellation",
+            '"owned_unit_count"',
+            '"submission_observed"',
+            '"assigned_unit_tags"',
+            '"CANCELLED"',
+            "parallel operation assignment/submission/movement",
+            "CANCELLED terminal ownership-release evidence",
             'SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-1}"',
             'SMOKE_ENEMY_DIFFICULTY="${SMOKE_ENEMY_DIFFICULTY:-7}"',
             'SMOKE_ENEMY_DIFFICULTY="${SMOKE_ENEMY_DIFFICULTY:-1}"',
@@ -4203,8 +5610,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "combat.commitment_level",
             "combat.attack_condition_override",
             "main_attack_order_status",
+            "main_attack_unit_count",
+            "main_attack_scope_min_units",
             "main_attack_scope_threshold_met",
             "main_attack_simulation_won",
+            "and unit_count >= min_units",
             "SMOKE_MIN_MAIN_ATTACK_HOME_DISTANCE",
             "SMOKE_MIN_COMBAT_SCOUT_HOME_DISTANCE",
             "MainAttack command did not produce live movement away from home",
@@ -4255,12 +5665,38 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "worker root-cause archive violation",
             "archived_scout_duplicate_worker_move",
             "except json.JSONDecodeError",
-            "expected_actual_items_by_doctrine",
-            "last_actual_production_command_item",
-            "actual_production_command_issued_count",
         ):
             with self.subTest(term=term):
                 self.assertIn(term, smoke_script)
+        for term in (
+            "EXPECTED_ACTUAL_PRODUCTION_ITEM_BY_PAIR",
+            '("bio_facility", "Barracks")',
+            "actual_frame < doctrine_frame",
+            "last_doctrine_required_count",
+            "last_doctrine_represented_count",
+            "last_doctrine_prerequisites_satisfied",
+            "last_actual_production_command_item",
+            "actual_production_command_issued_count",
+        ):
+            with self.subTest(production_evidence_contract=term):
+                self.assertIn(term, production_evidence_module)
+        self.assertIn(
+            "exact same-update SC2 command",
+            soak_classifier_module,
+        )
+        self.assertNotIn(
+            'int(combat.get("main_attack_unit_count", 0)) < '
+            'int(combat.get("main_attack_scope_min_units", 1))',
+            smoke_script,
+        )
+        self.assertNotIn(
+            'if combat.get("main_attack_order_status") != "Attack":',
+            smoke_script,
+        )
+        self.assertNotIn(
+            "ready_with_live_production_owner",
+            smoke_script,
+        )
         self.assertNotIn(") || true", smoke_script)
         self.assertIn('payload.get("frame", 0) < min_frame', smoke_script)
         for term in (
@@ -4268,7 +5704,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             'MATRIX_RUN_ROOT="${BLACKBOARD_ROOT}/runs/${MATRIX_RUN_ID}"',
             'summary="${MATRIX_RUN_ROOT}/strategy_matrix_summary.jsonl"',
             'run_dir="${MATRIX_RUN_ROOT}/${profile}"',
-            "expected_contracts",
+            "find_causal_production_evidence",
+            "expected_production_pairs",
             "load_latest_or_archive",
             "summary_evidence_source",
             "latest_doctrine_action",
@@ -4349,7 +5786,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "worker_repeat_order_suppression",
             "scouting_map_control",
             "expected_actual_production_items",
-            "bio_marauder_techlab bio_marauder_support starport_transition medivac_drop_support",
+            "bio_facility bio_marauder_techlab bio_ghost_techlab bio_marauder_support starport_transition medivac_drop_support",
+            "Barracks BarracksTechLab Marauder Starport Medivac",
             'SOAK_AGGRESSIVE_MIN_FRAME="${SOAK_AGGRESSIVE_MIN_FRAME:-6000}"',
             "SOAK_MAX_ATTEMPTS",
             "SOAK_RETRY_SETTLE_SECONDS",
@@ -4429,6 +5867,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "starcraft_commander.micromachine_triage",
             "triage_report.json",
             "triage_report.md",
+            'SOAK_QUALIFICATION_TIER="${SOAK_MATRIX_QUALIFICATION_TIER}"',
             "SOAK_MATRIX_BUILD_IDENTITY_REPORT",
             "SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY",
             "starcraft_commander.micromachine_build_identity",
@@ -4458,6 +5897,2146 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, (REPO_ROOT / "starcraft_commander" / "micromachine_soak.py").read_text())
+
+    def test_sc2_direct_resolvers_choose_highest_numeric_base(self) -> None:
+        for script_path in (PROBE_SCRIPT, SMOKE_SCRIPT, SOAK_SCRIPT):
+            script = script_path.read_text()
+            function_start = script.index(
+                "resolve_latest_direct_sc2_executable() {"
+            )
+            function_end = script.index(
+                "\n}\n\nresolve_sc2_executable()",
+                function_start,
+            ) + 2
+            resolver = script[function_start:function_end]
+            with self.subTest(script=script_path.name):
+                self.assertNotIn("sort -r", resolver)
+                self.assertIn("substr($part, 5) + 0", resolver)
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "StarCraft II"
+                    expected = (
+                        root
+                        / "Versions"
+                        / "Base100000"
+                        / "SC2.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "SC2"
+                    )
+                    older = (
+                        root
+                        / "Versions"
+                        / "Base99999"
+                        / "SC2.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "SC2"
+                    )
+                    for executable in (older, expected):
+                        executable.parent.mkdir(parents=True)
+                        executable.write_text("#!/usr/bin/env bash\nexit 0\n")
+                        executable.chmod(0o755)
+                    completed = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            (
+                                "set -euo pipefail\n"
+                                f"{resolver}\n"
+                                'SC2_ROOT="$1"\n'
+                                "resolve_latest_direct_sc2_executable\n"
+                            ),
+                            "resolver",
+                            str(root),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        0,
+                        completed.returncode,
+                        completed.stdout + completed.stderr,
+                    )
+                    self.assertEqual(
+                        str(expected),
+                        completed.stdout.strip(),
+                    )
+
+    def test_production_soak_launcher_fails_without_direct_sc2(self) -> None:
+        workflow = LOCAL_SOAK_WORKFLOW.read_text()
+        step_start = workflow.index(
+            "      - name: Verify local MicroMachine and SC2 inputs"
+        )
+        run_start = workflow.index("        run: |\n", step_start)
+        step_end = workflow.index(
+            "      - name: Run or disable real SC2 MicroMachine soak matrix",
+            run_start,
+        )
+        shell = "\n".join(
+            line[10:] if line.startswith("          ") else line
+            for line in workflow[run_start + len("        run: |\n") : step_end]
+            .rstrip()
+            .splitlines()
+        )
+
+        self.assertNotIn("sort -r", shell)
+        self.assertIn("Battle.net launch is diagnostic-only", shell)
+        self.assertIn("resolved SC2 executable must be a direct", shell)
+        self.assertIn("no runnable executable selected", shell)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            micromachine = root / "build" / "bin" / "MicroMachine"
+            micromachine.parent.mkdir(parents=True)
+            micromachine.write_text("#!/usr/bin/env bash\nexit 0\n")
+            micromachine.chmod(0o755)
+            github_env = root / "github.env"
+            base_env = {
+                **os.environ,
+                "MICROMACHINE_BUILD_DIR": str(root / "build"),
+                "SC2_ROOT": str(root / "missing-sc2"),
+                "GITHUB_ENV": str(github_env),
+            }
+
+            missing_direct = subprocess.run(
+                ["bash", "-c", shell],
+                env={
+                    **base_env,
+                    "INPUT_QUALIFICATION_TIER": "production",
+                    "SC2_LAUNCH_MODE": "auto",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, missing_direct.returncode)
+            self.assertIn(
+                "no runnable executable selected",
+                missing_direct.stderr,
+            )
+
+            battlenet = root / "Battle.net"
+            battlenet.write_text("#!/usr/bin/env bash\nexit 0\n")
+            battlenet.chmod(0o755)
+            production_battlenet = subprocess.run(
+                ["bash", "-c", shell],
+                env={
+                    **base_env,
+                    "INPUT_QUALIFICATION_TIER": "production",
+                    "SC2_LAUNCH_MODE": "battlenet",
+                    "SC2_BATTLENET_EXECUTABLE": str(battlenet),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, production_battlenet.returncode)
+            self.assertIn(
+                "Battle.net launch is diagnostic-only",
+                production_battlenet.stderr,
+            )
+
+            production_auto_explicit_battlenet = subprocess.run(
+                ["bash", "-c", shell],
+                env={
+                    **base_env,
+                    "INPUT_QUALIFICATION_TIER": "production",
+                    "SC2_LAUNCH_MODE": "auto",
+                    "SC2_EXECUTABLE": str(battlenet),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(
+                0,
+                production_auto_explicit_battlenet.returncode,
+            )
+            self.assertIn(
+                "resolved SC2 executable must be a direct",
+                production_auto_explicit_battlenet.stderr,
+            )
+
+            diagnostic_battlenet = subprocess.run(
+                ["bash", "-c", shell],
+                env={
+                    **base_env,
+                    "INPUT_QUALIFICATION_TIER": "diagnostic",
+                    "SC2_LAUNCH_MODE": "battlenet",
+                    "SC2_BATTLENET_EXECUTABLE": str(battlenet),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                diagnostic_battlenet.returncode,
+                diagnostic_battlenet.stdout + diagnostic_battlenet.stderr,
+            )
+
+    def test_soak_runtime_rejects_explicit_wrapper_for_production(self) -> None:
+        script = SOAK_SCRIPT.read_text()
+        function_start = script.index("resolve_map_file() {")
+        function_end = script.index(
+            "\n}\n\nverify_build_identity()",
+            function_start,
+        ) + 3
+        launch_contract = script[function_start:function_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            map_file = root / "AcropolisLE.SC2Map"
+            map_file.write_text("map")
+            wrapper = root / "Battle.net"
+            wrapper.write_text("#!/usr/bin/env bash\nexit 0\n")
+            wrapper.chmod(0o755)
+            direct = (
+                root
+                / "StarCraft II"
+                / "Versions"
+                / "Base100000"
+                / "SC2.app"
+                / "Contents"
+                / "MacOS"
+                / "SC2"
+            )
+            direct.parent.mkdir(parents=True)
+            direct.write_text("#!/usr/bin/env bash\nexit 0\n")
+            direct.chmod(0o755)
+            base_env = {
+                **os.environ,
+                "MAP_FILE": str(map_file),
+                "PYTHONPATH": str(REPO_ROOT),
+                "REPO_ROOT": str(REPO_ROOT),
+                "SC2_BATTLENET_EXECUTABLE": str(wrapper),
+                "SC2_LAUNCH_MODE": "auto",
+                "SC2_ROOT": str(root / "StarCraft II"),
+                "SC2_TEMP_DIR": str(root / "temp"),
+                "SC2_USE_RUNTIME_DIR_ARGS": "0",
+                "SOAK_MAP_POOL_MANIFEST": str(
+                    KIT_DIR / "MICROMACHINE_MAP_POOL.json"
+                ),
+                "SOAK_QUALIFICATION_TIER": "production",
+            }
+            command = (
+                "set -euo pipefail\n"
+                f"{launch_contract}\n"
+                "prepare_launch_contract\n"
+            )
+            rejected = subprocess.run(
+                ["bash", "-c", command],
+                env={**base_env, "SC2_EXECUTABLE": str(wrapper)},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(2, rejected.returncode)
+            self.assertIn(
+                "resolved SC2 executable must be a direct",
+                rejected.stderr,
+            )
+
+            accepted = subprocess.run(
+                ["bash", "-c", command],
+                env={**base_env, "SC2_EXECUTABLE": str(direct)},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                accepted.returncode,
+                accepted.stdout + accepted.stderr,
+            )
+
+            typo_tier = subprocess.run(
+                ["bash", "-c", command],
+                env={
+                    **base_env,
+                    "SC2_EXECUTABLE": str(wrapper),
+                    "SOAK_QUALIFICATION_TIER": "prodution",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(2, typo_tier.returncode)
+            self.assertIn(
+                "unknown SOAK_QUALIFICATION_TIER=prodution",
+                typo_tier.stderr,
+            )
+
+            smoke_wrapper = subprocess.run(
+                ["bash", "-c", command],
+                env={
+                    **base_env,
+                    "SC2_EXECUTABLE": str(wrapper),
+                    "SOAK_QUALIFICATION_TIER": "smoke",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(2, smoke_wrapper.returncode)
+            self.assertIn(
+                "resolved SC2 executable must be a direct",
+                smoke_wrapper.stderr,
+            )
+
+            diagnostic_wrapper = subprocess.run(
+                ["bash", "-c", command],
+                env={
+                    **base_env,
+                    "SC2_EXECUTABLE": str(wrapper),
+                    "SOAK_QUALIFICATION_TIER": "diagnostic",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                diagnostic_wrapper.returncode,
+                diagnostic_wrapper.stdout + diagnostic_wrapper.stderr,
+            )
+
+    def test_soak_matrix_forwards_production_tier_to_direct_soak_call(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fake_soak = root / "fake-soak.sh"
+            fake_soak.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'if [[ "${SOAK_QUALIFICATION_TIER:-}" != "production" ]]; then\n'
+                '  echo "missing production qualification tier" >&2\n'
+                "  exit 42\n"
+                "fi\n"
+                'mkdir -p "${SOAK_RUN_DIR}"\n'
+                "printf '%s\\n' "
+                '\'{"status":"passed","ok":true,"latest_frame":1,'
+                '"target_reached":true,"macro_evidence_ok":true,'
+                '"manager_intervention_ok":true}\' '
+                '> "${SOAK_RUN_DIR}/soak_report.json"\n'
+            )
+            fake_soak.chmod(0o755)
+            run_dir = root / "matrix"
+            completed = subprocess.run(
+                [str(SOAK_MATRIX_SCRIPT)],
+                env={
+                    **os.environ,
+                    "SOAK_SCRIPT": str(fake_soak),
+                    "SOAK_MATRIX_ARTIFACT_ROOT": str(root),
+                    "SOAK_MATRIX_RUN_DIR": str(run_dir),
+                    "SOAK_MATRIX_REPORT": str(run_dir / "matrix_report.json"),
+                    "SOAK_MATRIX_HISTORY_JSON": str(run_dir / "history.json"),
+                    "SOAK_MATRIX_HISTORY_MD": str(run_dir / "history.md"),
+                    "SOAK_MATRIX_TRIAGE_JSON": str(run_dir / "triage.json"),
+                    "SOAK_MATRIX_TRIAGE_MD": str(run_dir / "triage.md"),
+                    "SOAK_MATRIX_QUALIFICATION_TIER": "production",
+                    "SOAK_MATRIX_MAP_FILES": "AcropolisLE.SC2Map",
+                    "SOAK_MATRIX_ENEMY_RACES": "Zerg",
+                    "SOAK_MATRIX_ENEMY_DIFFICULTIES": "1",
+                    "SOAK_MATRIX_TARGET_FRAME": "1",
+                    "SOAK_MATRIX_TIMEOUT_SECONDS": "1",
+                    "SOAK_MATRIX_STRATEGY_PROFILES": (
+                        "default_defensive_to_aggressive"
+                    ),
+                    "SOAK_MATRIX_BUILD_IDENTITY": "sha256:test",
+                    "SOAK_MATRIX_BUILD_IDENTITY_OK": "1",
+                    "SOAK_MATRIX_BUILD_IDENTITY_FAILURE_CODES": "none",
+                    "SOAK_MATRIX_SIGNOFF_REQUIRED_BUILD_IDENTITY": (
+                        "sha256:test"
+                    ),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                completed.returncode,
+                completed.stdout + completed.stderr,
+            )
+            report = json.loads((run_dir / "matrix_report.json").read_text())
+            self.assertTrue(report["ok"])
+            self.assertEqual("production", report["qualification_tier"])
+
+    def test_smoke_wrapper_removes_stale_promoted_artifacts(self) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index(
+            "reset_promoted_smoke_artifacts() {"
+        )
+        function_end = script.index(
+            "\n}\n\nreset_current_smoke_artifacts()",
+            function_start,
+        ) + 3
+        reset_function = script[function_start:function_end]
+        promoted_artifacts = (
+            "latest_telemetry.json",
+            "telemetry.jsonl",
+            "micromachine_combined.log",
+            "micromachine.log",
+            "smoke_attempts.json",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for artifact in promoted_artifacts:
+                (root / artifact).write_text("stale-success\n")
+            preserved = root / "runs" / "historical-run" / "attempt-1"
+            preserved.mkdir(parents=True)
+            (preserved / "latest_telemetry.json").write_text("history\n")
+            unrelated = root / "operator-note.txt"
+            unrelated.write_text("keep\n")
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        f"{reset_function}\n"
+                        'BLACKBOARD_DIR="$1"\n'
+                        "reset_promoted_smoke_artifacts\n"
+                    ),
+                    "smoke-reset-test",
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                result.stdout + result.stderr,
+            )
+            for artifact in promoted_artifacts:
+                self.assertFalse((root / artifact).exists(), artifact)
+            self.assertTrue(
+                (preserved / "latest_telemetry.json").exists()
+            )
+            self.assertEqual("keep\n", unrelated.read_text())
+
+    def test_smoke_wrapper_clears_current_preflight_artifacts_only(self) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index("reset_current_smoke_artifacts() {")
+        function_end = script.index(
+            "\n}\n\nwrite_smoke_attempt_status()",
+            function_start,
+        ) + 3
+        reset_function = script[function_start:function_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            current_artifacts = {
+                "latest_telemetry.json",
+                "latest_telemetry.pre_cleanup.json",
+                "telemetry.jsonl",
+                "micromachine.log",
+                "micromachine_classifier.log",
+                "runtime_log_baseline.tsv",
+                "runtime_identity.snapshot.json",
+                "smoke_attempts.json",
+                "latest_modulation.json",
+                "latest_modulation.kv",
+                "latest_modulation_compile_result.json",
+                "modulation_updates.jsonl",
+            }
+            for artifact in current_artifacts:
+                (root / artifact).write_text("stale-current-run\n")
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        f"{reset_function}\n"
+                        'BLACKBOARD_DIR="$1"\n'
+                        'TELEMETRY_CLEANUP_SNAPSHOT="$1/'
+                        'latest_telemetry.pre_cleanup.json"\n'
+                        'BOT_LOG="$1/micromachine.log"\n'
+                        'CLASSIFIER_BOT_LOG="$1/'
+                        'micromachine_classifier.log"\n'
+                        'RUNTIME_LOG_BASELINE="$1/'
+                        'runtime_log_baseline.tsv"\n'
+                        'RUNTIME_IDENTITY_SNAPSHOT="$1/'
+                        'runtime_identity.snapshot.json"\n'
+                        "SMOKE_MANUAL_LIVE_MODE=0\n"
+                        "reset_current_smoke_artifacts\n"
+                    ),
+                    "smoke-current-reset-test",
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                result.stdout + result.stderr,
+            )
+            for artifact in current_artifacts:
+                self.assertFalse((root / artifact).exists(), artifact)
+
+        reset_call = script.index(
+            "\nreset_current_smoke_artifacts\nprepare_launch_contract\n"
+        )
+        identity_check = script.index("\nverify_build_identity\n", reset_call)
+        self.assertLess(reset_call, identity_check)
+
+    def test_smoke_wrapper_preserves_manual_live_modulation_only(self) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index("reset_current_smoke_artifacts() {")
+        function_end = script.index(
+            "\n}\n\nwrite_smoke_attempt_status()",
+            function_start,
+        ) + 3
+        reset_function = script[function_start:function_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "latest_telemetry.json").write_text("stale\n")
+            for artifact in (
+                "latest_modulation.json",
+                "latest_modulation.kv",
+                "latest_modulation_compile_result.json",
+                "modulation_updates.jsonl",
+            ):
+                (root / artifact).write_text("active-command\n")
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    (
+                        f"{reset_function}\n"
+                        'BLACKBOARD_DIR="$1"\n'
+                        'TELEMETRY_CLEANUP_SNAPSHOT="$1/'
+                        'latest_telemetry.pre_cleanup.json"\n'
+                        'BOT_LOG="$1/micromachine.log"\n'
+                        'CLASSIFIER_BOT_LOG="$1/'
+                        'micromachine_classifier.log"\n'
+                        'RUNTIME_LOG_BASELINE="$1/'
+                        'runtime_log_baseline.tsv"\n'
+                        'RUNTIME_IDENTITY_SNAPSHOT="$1/'
+                        'runtime_identity.snapshot.json"\n'
+                        "SMOKE_MANUAL_LIVE_MODE=1\n"
+                        "reset_current_smoke_artifacts\n"
+                    ),
+                    "smoke-manual-current-reset-test",
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                result.stdout + result.stderr,
+            )
+            self.assertFalse((root / "latest_telemetry.json").exists())
+            for artifact in (
+                "latest_modulation.json",
+                "latest_modulation.kv",
+                "latest_modulation_compile_result.json",
+                "modulation_updates.jsonl",
+            ):
+                self.assertEqual(
+                    "active-command\n",
+                    (root / artifact).read_text(),
+                    artifact,
+                )
+
+    def test_smoke_modulation_evidence_ignores_pre_run_matching_id(self) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index(
+            "def first_modulation_issued_at_frame(update_id):"
+        )
+        function_end = script.index(
+            "\naggressive_first_issued_at_frame =",
+            function_start,
+        )
+        function_code = script[function_start:function_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            telemetry = root / "latest_telemetry.json"
+            telemetry.write_text("{}\n")
+            archive = root / "modulation_updates.jsonl"
+            stale = {
+                "update_id": "smoke-bio_pressure-0",
+                "issued_at_frame": 0,
+            }
+            archive.write_text(json.dumps(stale) + "\n")
+            start_offset = archive.stat().st_size
+            with archive.open("a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "update_id": "fresh-different-update",
+                            "issued_at_frame": 100,
+                        }
+                    )
+                    + "\n"
+                )
+
+            check_code = (
+                "import json\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "telemetry = Path(sys.argv[1])\n"
+                "modulation_archive_start_offset = int(sys.argv[2])\n"
+                f"{function_code}\n"
+                "print(first_modulation_issued_at_frame(sys.argv[3]))\n"
+            )
+            stale_result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    check_code,
+                    str(telemetry),
+                    str(start_offset),
+                    stale["update_id"],
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                stale_result.returncode,
+                stale_result.stdout + stale_result.stderr,
+            )
+            self.assertEqual("None", stale_result.stdout.strip())
+
+            with archive.open("a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "update_id": stale["update_id"],
+                            "issued_at_frame": 200,
+                        }
+                    )
+                    + "\n"
+                )
+            fresh_result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    check_code,
+                    str(telemetry),
+                    str(start_offset),
+                    stale["update_id"],
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                fresh_result.returncode,
+                fresh_result.stdout + fresh_result.stderr,
+            )
+            self.assertEqual("200", fresh_result.stdout.strip())
+
+    def test_root_readme_separates_runtime_support_from_live_qualification(
+        self,
+    ) -> None:
+        readme = (REPO_ROOT / "README.md").read_text()
+        for term in (
+            "runtime support statement",
+            "not a claim that every family has passed",
+            "Comprehensive all-Terran live qualification",
+            "Pending family-by-family evidence",
+            "production -> exclusive assignment -> SC2 action",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, readme)
+        self.assertNotIn("| All-unit operation model |", readme)
+
+    def test_operation_lifecycle_accepts_temporally_separated_live_evidence(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index("operation_lifecycle_ready() {")
+        code_start = script.index(
+            "import json\nimport sys\nfrom pathlib import Path\n",
+            function_start,
+        )
+        code_end = script.index("\nPY\n}", code_start)
+        lifecycle_check = script[code_start:code_end]
+
+        def operation(
+            operation_id: str,
+            tag: int | None,
+            max_home_distance: float,
+        ) -> dict[str, object]:
+            tags = [] if tag is None else [tag]
+            return {
+                "operation_id": operation_id,
+                "generation": 1,
+                "assigned_unit_tags": tags,
+                "assigned_count": len(tags),
+                "assigned_frame": 100 if tags else 0,
+                "submission_observed": True,
+                "submitted_frame": 101,
+                "max_home_distance": max_home_distance,
+                "engaged": False,
+                "last_action_frame": 102,
+            }
+
+        def telemetry_entry(
+            frame: int,
+            scout_tag: int | None,
+            attack_tag: int | None,
+            scout_distance: float,
+            attack_distance: float,
+            owned_unit_count: int,
+            owned_queue_count: int,
+        ) -> dict[str, object]:
+            return {
+                "frame": frame,
+                "managers": {
+                    "OperationDirector": {
+                        "policy_update_id": "smoke-parallel-operations",
+                        "owned_unit_count": owned_unit_count,
+                        "operations": [
+                            operation(
+                                "smoke-scout-alpha",
+                                scout_tag,
+                                scout_distance,
+                            ),
+                            operation(
+                                "smoke-attack-bravo",
+                                attack_tag,
+                                attack_distance,
+                            ),
+                        ],
+                    },
+                    "ProductionManager": {
+                        "policy_update_id": "smoke-parallel-operations",
+                        "operation_owned_queue_item_count": owned_queue_count,
+                        "operation_owned_queue_items": (
+                            [
+                                {
+                                    "item": "Factory",
+                                    "claim_source": "operation",
+                                    "exclusive_operation_owned": True,
+                                    "preserve_without_operation_owners": False,
+                                    "owners": [
+                                        {
+                                            "operation_id": (
+                                                "smoke-attack-bravo"
+                                            ),
+                                            "generation": 1,
+                                        }
+                                    ],
+                                }
+                            ]
+                            if owned_queue_count
+                            else []
+                        ),
+                    },
+                },
+            }
+
+        assignment = telemetry_entry(100, 101, 202, 0.0, 0.0, 2, 0)
+        movement = telemetry_entry(110, None, None, 9.0, 13.0, 0, 0)
+        production = telemetry_entry(120, None, None, 9.0, 13.0, 0, 1)
+
+        def run_check(
+            root: Path,
+            entries: list[dict[str, object]],
+            latest: dict[str, object],
+        ) -> subprocess.CompletedProcess[str]:
+            telemetry = root / "latest_telemetry.json"
+            telemetry.write_text(json.dumps(latest))
+            telemetry.with_name("telemetry.jsonl").write_text(
+                "\n".join(json.dumps(entry) for entry in entries) + "\n"
+            )
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    lifecycle_check,
+                    str(telemetry),
+                    "smoke-parallel-operations",
+                    "smoke-scout-alpha",
+                    "smoke-attack-bravo",
+                    "active",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            separated = run_check(
+                root,
+                [assignment, movement, production],
+                production,
+            )
+            self.assertEqual(
+                0,
+                separated.returncode,
+                separated.stdout + separated.stderr,
+            )
+
+            (root / "latest_telemetry.json").write_text("")
+            archived_only = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    lifecycle_check,
+                    str(root / "latest_telemetry.json"),
+                    "smoke-parallel-operations",
+                    "smoke-scout-alpha",
+                    "smoke-attack-bravo",
+                    "active",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                archived_only.returncode,
+                archived_only.stdout + archived_only.stderr,
+            )
+
+            missing_production = run_check(
+                root,
+                [assignment],
+                movement,
+            )
+            self.assertNotEqual(0, missing_production.returncode)
+
+            overlapping_assignment = telemetry_entry(
+                100,
+                101,
+                101,
+                0.0,
+                0.0,
+                1,
+                0,
+            )
+            overlapping = run_check(
+                root,
+                [overlapping_assignment, movement],
+                production,
+            )
+            self.assertNotEqual(0, overlapping.returncode)
+
+            preserved_production = telemetry_entry(
+                120,
+                None,
+                None,
+                9.0,
+                13.0,
+                0,
+                1,
+            )
+            preserved_queue = preserved_production["managers"][
+                "ProductionManager"
+            ]["operation_owned_queue_items"][0]
+            preserved_queue["exclusive_operation_owned"] = False
+            preserved_queue["preserve_without_operation_owners"] = True
+            preserved = run_check(
+                root,
+                [assignment, movement],
+                preserved_production,
+            )
+            self.assertNotEqual(0, preserved.returncode)
+
+    def test_operation_production_baseline_accepts_purgeable_prerequisite(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index("operation_production_baseline() {")
+        code_start = script.index(
+            "import json\nimport sys\nfrom pathlib import Path\n",
+            function_start,
+        )
+        code_end = script.index("\nPY\n}", code_start)
+        baseline_check = script[code_start:code_end]
+
+        def run_check(
+            root: Path,
+            *,
+            exclusive: bool,
+            preserve: bool,
+        ) -> subprocess.CompletedProcess[str]:
+            telemetry = root / "latest_telemetry.json"
+            telemetry.write_text(
+                json.dumps(
+                    {
+                        "managers": {
+                            "ProductionManager": {
+                                "operation_owned_queue_items": [
+                                    {
+                                        "item": "Factory",
+                                        "claim_source": "operation",
+                                        "exclusive_operation_owned": exclusive,
+                                        "preserve_without_operation_owners": (
+                                            preserve
+                                        ),
+                                        "owners": [
+                                            {
+                                                "operation_id": (
+                                                    "smoke-attack-bravo"
+                                                ),
+                                                "generation": 1,
+                                            }
+                                        ],
+                                    }
+                                ],
+                                "operation_production_owner_release_count": 2,
+                                "operation_production_queue_purge_count": 3,
+                                "last_operation_production_queue_purge_frame": 4,
+                            }
+                        }
+                    }
+                )
+            )
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    baseline_check,
+                    str(telemetry),
+                    "smoke-attack-bravo",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            prerequisite = run_check(
+                root,
+                exclusive=True,
+                preserve=False,
+            )
+            self.assertEqual(
+                0,
+                prerequisite.returncode,
+                prerequisite.stdout + prerequisite.stderr,
+            )
+            self.assertEqual("2\t3\t4\n", prerequisite.stdout)
+
+            preserved = run_check(
+                root,
+                exclusive=False,
+                preserve=True,
+            )
+            self.assertNotEqual(0, preserved.returncode)
+
+    def test_operation_lifecycle_waits_for_async_cancel_reconciliation(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index("operation_lifecycle_ready() {")
+        code_start = script.index(
+            "import json\nimport sys\nfrom pathlib import Path\n",
+            function_start,
+        )
+        code_end = script.index("\nPY\n}", code_start)
+        lifecycle_check = script[code_start:code_end]
+
+        def operation_state(
+            operation_id: str,
+            *,
+            cancelled: bool,
+        ) -> dict[str, object]:
+            tags = [] if cancelled else [101]
+            return {
+                "operation_id": operation_id,
+                "generation": 1,
+                "status": "CANCELLED" if cancelled else "MOVING",
+                "completed": cancelled,
+                "assigned_unit_tags": tags,
+                "assigned_count": len(tags),
+            }
+
+        def cancelled_entry(
+            frame: int,
+            *,
+            owned_queue_count: int,
+            release_count: int,
+            purge_count: int,
+            purge_frame: int,
+            purge_operation_id: str = "smoke-attack-bravo",
+            purge_generation: int = 1,
+            purge_removed_count: int = 1,
+            purge_events: list[dict[str, object]] | None = None,
+        ) -> dict[str, object]:
+            if purge_events is None:
+                purge_events = [
+                    {
+                        "operation_id": purge_operation_id,
+                        "generation": purge_generation,
+                        "frame": purge_frame,
+                        "removed_count": purge_removed_count,
+                    }
+                ]
+            return {
+                "frame": frame,
+                "managers": {
+                    "OperationDirector": {
+                        "policy_update_id": "smoke-parallel-operations",
+                        "owned_unit_count": 1,
+                        "operations": [
+                            operation_state(
+                                "smoke-scout-alpha",
+                                cancelled=False,
+                            ),
+                            operation_state(
+                                "smoke-attack-bravo",
+                                cancelled=True,
+                            ),
+                        ],
+                    },
+                    "ProductionManager": {
+                        "operation_owned_queue_item_count": owned_queue_count,
+                        "operation_owned_queue_items": (
+                            [
+                                {
+                                    "item": "SiegeTank",
+                                    "claim_source": "operation",
+                                    "preserve_without_operation_owners": False,
+                                    "owners": [
+                                        {
+                                            "operation_id": (
+                                                "smoke-attack-bravo"
+                                            ),
+                                            "generation": 1,
+                                        }
+                                    ],
+                                }
+                            ]
+                            if owned_queue_count
+                            else []
+                        ),
+                        "operation_production_owner_release_count": release_count,
+                        "operation_production_queue_purge_count": purge_count,
+                        "last_operation_production_queue_purge_frame": purge_frame,
+                        "last_operation_production_released_owner": (
+                            "smoke-attack-bravo#1"
+                        ),
+                        "last_operation_production_queue_purge_event": {
+                            "operation_id": purge_operation_id,
+                            "generation": purge_generation,
+                            "frame": purge_frame,
+                            "removed_count": purge_removed_count,
+                        },
+                        "operation_production_queue_purge_events": (
+                            purge_events
+                        ),
+                    },
+                    "CombatCommander": {
+                        "main_attack_actual_command_issued_count": 7,
+                        "main_attack_last_action_frame": 500,
+                        "main_attack_home_distance": 18.0,
+                        "main_attack_unit_samples": [],
+                    },
+                },
+            }
+
+        def run_check(
+            root: Path,
+            entries: list[dict[str, object]],
+            latest: dict[str, object],
+        ) -> subprocess.CompletedProcess[str]:
+            telemetry = root / "latest_telemetry.json"
+            telemetry.write_text(json.dumps(latest))
+            telemetry.with_name("telemetry.jsonl").write_text(
+                "\n".join(json.dumps(entry) for entry in entries) + "\n"
+            )
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    lifecycle_check,
+                    str(telemetry),
+                    "smoke-parallel-operations",
+                    "smoke-scout-alpha",
+                    "smoke-attack-bravo",
+                    "cancelled_baseline",
+                    "400",
+                    "5",
+                    "9",
+                    "300",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        cancelled_before_production_reconcile = cancelled_entry(
+            500,
+            owned_queue_count=1,
+            release_count=5,
+            purge_count=9,
+            purge_frame=300,
+        )
+        reconciled_after_manager_tick = cancelled_entry(
+            520,
+            owned_queue_count=0,
+            release_count=6,
+            purge_count=10,
+            purge_frame=510,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            reconciled = run_check(
+                root,
+                [cancelled_before_production_reconcile],
+                reconciled_after_manager_tick,
+            )
+            self.assertEqual(
+                0,
+                reconciled.returncode,
+                reconciled.stdout + reconciled.stderr,
+            )
+            self.assertTrue(
+                reconciled.stdout.startswith("520\t"),
+                reconciled.stdout,
+            )
+            self.assertTrue(
+                reconciled.stdout.rstrip().endswith("\t[]"),
+                reconciled.stdout,
+            )
+
+            same_frame_purge_history = cancelled_entry(
+                520,
+                owned_queue_count=0,
+                release_count=7,
+                purge_count=11,
+                purge_frame=510,
+                purge_operation_id="smoke-scout-alpha",
+                purge_events=[
+                    {
+                        "operation_id": "smoke-attack-bravo",
+                        "generation": 1,
+                        "frame": 510,
+                        "removed_count": 1,
+                    },
+                    {
+                        "operation_id": "smoke-scout-alpha",
+                        "generation": 1,
+                        "frame": 510,
+                        "removed_count": 1,
+                    },
+                ],
+            )
+            same_frame_reconciled = run_check(
+                root,
+                [cancelled_before_production_reconcile],
+                same_frame_purge_history,
+            )
+            self.assertEqual(
+                0,
+                same_frame_reconciled.returncode,
+                same_frame_reconciled.stdout
+                + same_frame_reconciled.stderr,
+            )
+
+            unreconciled = run_check(
+                root,
+                [],
+                cancelled_before_production_reconcile,
+            )
+            self.assertNotEqual(0, unreconciled.returncode)
+
+            wrong_owner_purge = cancelled_entry(
+                520,
+                owned_queue_count=0,
+                release_count=6,
+                purge_count=10,
+                purge_frame=510,
+                purge_operation_id="smoke-scout-alpha",
+            )
+            cross_owner = run_check(
+                root,
+                [cancelled_before_production_reconcile],
+                wrong_owner_purge,
+            )
+            self.assertNotEqual(0, cross_owner.returncode)
+
+            zero_item_release = cancelled_entry(
+                520,
+                owned_queue_count=0,
+                release_count=6,
+                purge_count=10,
+                purge_frame=510,
+                purge_removed_count=0,
+            )
+            no_positive_purge = run_check(
+                root,
+                [cancelled_before_production_reconcile],
+                zero_item_release,
+            )
+            self.assertNotEqual(0, no_positive_purge.returncode)
+
+    def test_operation_restore_proof_tracks_post_restore_unit_displacement(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index("operation_restore_ready() {")
+        code_start = script.index(
+            "import json\nimport os\nimport sys\nfrom pathlib import Path\n",
+            function_start,
+        )
+        code_end = script.index("\nPY\n}", code_start)
+        restore_check = script[code_start:code_end]
+
+        def entry(
+            frame: int,
+            *,
+            command_count: int,
+            command_frame: int,
+            status: str,
+            command: str,
+            home_distance: float,
+            x: float,
+        ) -> dict[str, object]:
+            return {
+                "frame": frame,
+                "managers": {
+                    "GameCommander": {
+                        "policy_active": True,
+                        "update_id": "smoke-restore",
+                    },
+                    "CombatCommander": {
+                        "main_attack_actual_command_issued_count": command_count,
+                        "main_attack_last_action_frame": command_frame,
+                        "main_attack_last_issued_action": command,
+                        "main_attack_order_status": status,
+                        "main_attack_home_distance": home_distance,
+                        "main_attack_unit_count": 1,
+                        "main_attack_scope_min_units": 1,
+                        "main_attack_unit_samples": [
+                            {"tag": 303, "x": x, "y": 10.0}
+                        ],
+                    },
+                },
+            }
+
+        def run_check(
+            root: Path,
+            entries: list[dict[str, object]],
+        ) -> subprocess.CompletedProcess[str]:
+            telemetry = root / "latest_telemetry.json"
+            telemetry.write_text(json.dumps(entries[-1]))
+            telemetry.with_name("telemetry.jsonl").write_text(
+                "\n".join(json.dumps(item) for item in entries) + "\n"
+            )
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    restore_check,
+                    str(telemetry),
+                    "smoke-restore",
+                    "600",
+                    "7",
+                    "500",
+                    "0.0",
+                    "[]",
+                    "12.0",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        first_observation = entry(
+            600,
+            command_count=7,
+            command_frame=500,
+            status="Waiting",
+            command="",
+            home_distance=0.0,
+            x=10.0,
+        )
+        moved_under_restore = entry(
+            620,
+            command_count=8,
+            command_frame=610,
+            status="Attack",
+            command="AttackMove|squad=MainAttack|x=40|y=50",
+            home_distance=13.0,
+            x=15.0,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            restored = run_check(
+                root,
+                [first_observation, moved_under_restore],
+            )
+            self.assertEqual(
+                0,
+                restored.returncode,
+                restored.stdout + restored.stderr,
+            )
+
+            no_displacement = run_check(
+                root,
+                [moved_under_restore],
+            )
+            self.assertNotEqual(0, no_displacement.returncode)
+
+    def test_final_smoke_validator_derives_restore_epoch_position_baseline(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        validator_start = script.index(
+            "def profile_main_attack_command_seen():"
+        )
+        validator_end = script.index(
+            "\nif payload.get(\"protocol_version\")",
+            validator_start,
+        )
+        validator_code = script[validator_start:validator_end]
+        entries = [
+            {
+                "frame": 620,
+                "managers": {
+                    "GameCommander": {"update_id": "smoke-restore"},
+                    "CombatCommander": {
+                        "main_attack_actual_command_issued_count": 8,
+                        "main_attack_last_action_frame": 610,
+                        "main_attack_last_issued_action": (
+                            "AttackMove|squad=MainAttack|x=40|y=50"
+                        ),
+                        "main_attack_order_status": "Attack",
+                        "main_attack_unit_count": 1,
+                        "main_attack_scope_min_units": 1,
+                        "main_attack_scope_threshold_met": True,
+                        "main_attack_simulation_won": True,
+                        "main_attack_max_home_distance": 15.0,
+                        "main_attack_home_distance": 13.0,
+                        "main_attack_unit_samples": [
+                            {"tag": 303, "x": 15.0, "y": 10.0}
+                        ],
+                    },
+                },
+            },
+            {
+                "frame": 600,
+                "managers": {
+                    "GameCommander": {"update_id": "smoke-restore"},
+                    "CombatCommander": {
+                        "main_attack_actual_command_issued_count": 7,
+                        "main_attack_last_action_frame": 500,
+                        "main_attack_last_issued_action": "",
+                        "main_attack_order_status": "Waiting",
+                        "main_attack_unit_count": 1,
+                        "main_attack_scope_min_units": 1,
+                        "main_attack_scope_threshold_met": True,
+                        "main_attack_simulation_won": True,
+                        "main_attack_max_home_distance": 0.0,
+                        "main_attack_home_distance": 0.0,
+                        "main_attack_unit_samples": [
+                            {"tag": 303, "x": 10.0, "y": 10.0}
+                        ],
+                    },
+                },
+            },
+        ]
+        namespace = {
+            "aggressive_update_id": "smoke-restore",
+            "aggressive_first_consumed_frame": 600,
+            "aggressive_first_issued_at_frame": 600,
+            "iter_telemetry_entries": lambda: iter(entries),
+            "min_main_attack_home_distance": 12.0,
+            "min_post_cancel_main_attack_displacement": 4.0,
+            "post_cancel_action_frame_baseline": 500,
+            "post_cancel_command_baseline": 7,
+            "post_cancel_unit_positions": {},
+            "require_operation_lifecycle": True,
+            "restore_issued_at_frame": 600,
+            "unit_positions": lambda samples: {
+                int(sample["tag"]): (
+                    float(sample["x"]),
+                    float(sample["y"]),
+                )
+                for sample in samples
+            },
+        }
+        exec(validator_code, namespace)
+        seen, evidence = namespace[
+            "profile_main_attack_command_seen"
+        ]()
+        self.assertTrue(seen, evidence)
+        self.assertEqual([303], evidence["post_cancel_matching_unit_tags"])
+        self.assertEqual(
+            5.0,
+            evidence["post_cancel_main_attack_displacement"],
+        )
+
+    def test_final_smoke_validator_enforces_single_tech_gas_bootstrap_order(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        validator_start = script.index(
+            "def verify_tech_gas_before_second_barracks():"
+        )
+        validator_end = script.index(
+            "\nverify_tech_gas_before_second_barracks()",
+            validator_start,
+        )
+        validator_code = script[validator_start:validator_end]
+        telemetry_entries = [
+            {
+                "frame": 400,
+                "managers": {
+                    "WorkerManager": {
+                        "completed_refinery_count": 1,
+                    }
+                },
+            }
+        ]
+
+        def run_check(log_text: str) -> None:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                log_path = Path(tmpdir) / "micromachine.log"
+                log_path.write_text(log_text)
+                namespace = {
+                    "bot_log": log_path,
+                    "expected_strategy_doctrine": "bio_pressure",
+                    "iter_telemetry_entries": (
+                        lambda: iter(telemetry_entries)
+                    ),
+                    "re": re,
+                }
+                exec(validator_code, namespace)
+                namespace[
+                    "verify_tech_gas_before_second_barracks"
+                ]()
+
+        run_check(
+            "100: recordVoiActualProductionCommand | "
+            "voi actual production command kind=build_command item=Barracks "
+            "update_id=smoke\n"
+            "200: constructAssignedBuildings | "
+            "build command type=TERRAN_REFINERY\n"
+            "300: recordVoiActualProductionCommand | "
+            "voi actual production command kind=build_command item=Barracks "
+            "update_id=smoke\n"
+        )
+
+        with self.assertRaises(SystemExit):
+            run_check(
+                "100: recordVoiActualProductionCommand | "
+                "voi actual production command kind=build_command item=Barracks "
+                "update_id=smoke\n"
+                "200: constructAssignedBuildings | "
+                "build command type=TERRAN_REFINERY\n"
+                "250: constructAssignedBuildings | "
+                "build command type=TERRAN_REFINERY\n"
+            )
+
+        with self.assertRaises(SystemExit):
+            run_check(
+                "100: recordVoiActualProductionCommand | "
+                "voi actual production command kind=build_command item=Barracks "
+                "update_id=smoke\n"
+                "150: recordVoiActualProductionCommand | "
+                "voi actual production command kind=build_command item=Barracks "
+                "update_id=smoke\n"
+                "200: constructAssignedBuildings | "
+                "build command type=TERRAN_REFINERY\n"
+            )
+
+    def test_smoke_cleanup_preserves_last_valid_telemetry_atomically(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        snapshot_start = script.index(
+            "snapshot_latest_telemetry_for_cleanup() {"
+        )
+        snapshot_code_start = script.index(
+            "import json\nimport os\nimport sys\nimport time\nfrom pathlib import Path\n",
+            snapshot_start,
+        )
+        snapshot_code_end = script.index(
+            "\nPY\n}",
+            snapshot_code_start,
+        )
+        snapshot_code = script[snapshot_code_start:snapshot_code_end]
+
+        restore_start = script.index(
+            "restore_latest_telemetry_after_cleanup() {"
+        )
+        restore_code_start = script.index(
+            "import os\nimport sys\nfrom pathlib import Path\n",
+            restore_start,
+        )
+        restore_code_end = script.index(
+            "\nPY\n}",
+            restore_code_start,
+        )
+        restore_code = script[restore_code_start:restore_code_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            latest = root / "latest_telemetry.json"
+            archive = root / "telemetry.jsonl"
+            snapshot = root / "latest_telemetry.pre_cleanup.json"
+            latest.write_text("")
+            archive.write_text(
+                json.dumps({"frame": 11})
+                + "\n"
+                + "{partial\n"
+                + json.dumps({"frame": 22})
+                + "\n"
+            )
+
+            archived_fallback = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    snapshot_code,
+                    str(latest),
+                    str(archive),
+                    str(snapshot),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                archived_fallback.returncode,
+                archived_fallback.stdout + archived_fallback.stderr,
+            )
+            self.assertEqual(22, json.loads(snapshot.read_text())["frame"])
+
+            restored = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    restore_code,
+                    str(snapshot),
+                    str(latest),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                restored.returncode,
+                restored.stdout + restored.stderr,
+            )
+            self.assertEqual(22, json.loads(latest.read_text())["frame"])
+            self.assertFalse(snapshot.exists())
+
+            latest.write_text(json.dumps({"frame": 33}))
+            latest_preferred = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    snapshot_code,
+                    str(latest),
+                    str(archive),
+                    str(snapshot),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                latest_preferred.returncode,
+                latest_preferred.stdout + latest_preferred.stderr,
+            )
+            self.assertEqual(33, json.loads(snapshot.read_text())["frame"])
+
+    def test_smoke_runtime_identity_snapshot_rejects_report_or_binary_change(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        snapshot_start = script.index("snapshot_runtime_identity() {")
+        snapshot_code_start = script.index(
+            "import hashlib\nimport json\nimport os\nimport subprocess\nimport sys\nfrom pathlib import Path\n",
+            snapshot_start,
+        )
+        snapshot_code_end = script.index(
+            "\nPY\n}",
+            snapshot_code_start,
+        )
+        snapshot_code = script[snapshot_code_start:snapshot_code_end]
+
+        verify_start = script.index("verify_runtime_identity_snapshot() {")
+        verify_code_start = script.index(
+            "import hashlib\nimport json\nimport subprocess\nimport sys\nfrom pathlib import Path\n",
+            verify_start,
+        )
+        verify_code_end = script.index(
+            "\nPY\n}",
+            verify_code_start,
+        )
+        verify_code = script[verify_code_start:verify_code_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report = root / "voi_build_identity.json"
+            binary = root / "MicroMachine"
+            snapshot = root / "runtime_identity.snapshot.json"
+            smoke_script = root / "smoke_macos_local.sh"
+            smoke_script.write_text("#!/usr/bin/env bash\nexit 0\n")
+            runtime_package = root / "starcraft_commander"
+            runtime_package.mkdir()
+            runtime_source = runtime_package / "runtime.py"
+            runtime_source.write_text("VALUE = 1\n")
+            (root / "pyproject.toml").write_text(
+                "[project]\nname='runtime-fixture'\n"
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "init", "-q"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Test User"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "config",
+                    "user.email",
+                    "test@example.com",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", "."],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-q", "-m", "fixture"],
+                check=True,
+            )
+            head_sha = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            binary.write_bytes(b"compiled-binary-v1")
+            binary_sha256 = hashlib.sha256(binary.read_bytes()).hexdigest()
+            report.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 54,
+                        "identity": "sha256:fixture",
+                        "ok": True,
+                        "checksums": {
+                            "binary_sha256": binary_sha256,
+                        },
+                        "observed": {
+                            "micromachine_source_state_sha256": (
+                                "source-fixture"
+                            ),
+                        },
+                    }
+                )
+            )
+
+            captured = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    snapshot_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                captured.returncode,
+                captured.stdout + captured.stderr,
+            )
+            payload = json.loads(snapshot.read_text())
+            self.assertEqual("sha256:fixture", payload["build_identity"])
+            self.assertEqual(binary_sha256, payload["binary_sha256"])
+            self.assertEqual("run-fixture", payload["run_id"])
+            self.assertEqual(head_sha, payload["repo_head_sha"])
+            self.assertEqual(
+                str(smoke_script.resolve()),
+                payload["smoke_script"],
+            )
+            self.assertEqual(
+                hashlib.sha256(smoke_script.read_bytes()).hexdigest(),
+                payload["smoke_script_sha256"],
+            )
+            self.assertTrue(
+                str(payload["python_runtime_source_identity"]).startswith(
+                    "sha256:"
+                )
+            )
+            self.assertEqual(
+                [
+                    "pyproject.toml",
+                    "starcraft_commander/runtime.py",
+                ],
+                [
+                    entry["path"]
+                    for entry in payload["python_runtime_source_files"]
+                ],
+            )
+
+            unchanged = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    verify_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                unchanged.returncode,
+                unchanged.stdout + unchanged.stderr,
+            )
+
+            runtime_source.write_text("VALUE = 2\n")
+            changed_runtime_source = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    verify_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, changed_runtime_source.returncode)
+            runtime_source.write_text("VALUE = 1\n")
+
+            report.write_text(report.read_text() + "\n")
+            changed_report = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    verify_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, changed_report.returncode)
+
+            report.write_text(report.read_text().rstrip() + "\n")
+            recaptured = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    snapshot_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                recaptured.returncode,
+                recaptured.stdout + recaptured.stderr,
+            )
+            binary.write_bytes(b"compiled-binary-v2")
+            changed_binary = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    verify_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, changed_binary.returncode)
+
+            binary.write_bytes(b"compiled-binary-v1")
+            recaptured = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    snapshot_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                recaptured.returncode,
+                recaptured.stdout + recaptured.stderr,
+            )
+            changed_run = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    verify_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "other-run",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, changed_run.returncode)
+            changed_head = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    verify_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    "other-head",
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, changed_head.returncode)
+            smoke_script.write_text("#!/usr/bin/env bash\nexit 1\n")
+            changed_script = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    verify_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, changed_script.returncode)
+
+            smoke_script.write_text("#!/usr/bin/env bash\nexit 0\n")
+            (root / "head-marker.txt").write_text("new head\n")
+            subprocess.run(
+                ["git", "-C", str(root), "add", "head-marker.txt"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "commit",
+                    "-q",
+                    "-m",
+                    "change head",
+                ],
+                check=True,
+            )
+            changed_checkout_head = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    verify_code,
+                    str(report),
+                    str(binary),
+                    str(snapshot),
+                    "run-fixture",
+                    head_sha,
+                    str(smoke_script),
+                    str(root),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(0, changed_checkout_head.returncode)
+            self.assertIn(
+                "repository HEAD changed during live run",
+                changed_checkout_head.stdout + changed_checkout_head.stderr,
+            )
+
+    def test_smoke_parallel_operations_persist_until_selective_cancel(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index("publish_parallel_operations() {")
+        code_start = script.index(
+            "import sys\nfrom pathlib import Path\n",
+            function_start,
+        )
+        code_end = script.index("\nPY\n}", code_start)
+        publish_code = script[code_start:code_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            env = {
+                **os.environ,
+                "PYTHONPATH": (
+                    f"{REPO_ROOT}:{os.environ.get('PYTHONPATH', '')}"
+                ),
+            }
+
+            def publish(state: str, frame: int) -> dict[str, object]:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        publish_code,
+                        str(root),
+                        "smoke-parallel-operations",
+                        "smoke-scout-alpha",
+                        "smoke-attack-bravo",
+                        str(frame),
+                        state,
+                    ],
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    0,
+                    result.returncode,
+                    result.stdout + result.stderr,
+                )
+                return json.loads(
+                    (root / "latest_modulation.json").read_text()
+                )
+
+            active = publish("active", 500)
+            active_operations = {
+                operation["operation_id"]: operation
+                for operation in active["vector"]["operations"]
+            }
+            for operation_id in (
+                "smoke-scout-alpha",
+                "smoke-attack-bravo",
+            ):
+                lifetime = active_operations[operation_id]["lifetime"]
+                self.assertEqual("until_cancelled", lifetime["mode"])
+                self.assertEqual(
+                    ["cancelled_by_user"],
+                    lifetime["completion_conditions"],
+                )
+                self.assertEqual("active", lifetime["completion_state"])
+
+            cancelled = publish("cancelled", 600)
+            cancelled_operations = {
+                operation["operation_id"]: operation
+                for operation in cancelled["vector"]["operations"]
+            }
+            self.assertEqual(
+                "cancelled",
+                cancelled_operations["smoke-attack-bravo"]["lifetime"][
+                    "completion_state"
+                ],
+            )
+            self.assertEqual(
+                "active",
+                cancelled_operations["smoke-scout-alpha"]["lifetime"][
+                    "completion_state"
+                ],
+            )
+            attack = active_operations["smoke-attack-bravo"]
+            self.assertTrue(attack["tactical_task"]["allow_partial"])
+            self.assertTrue(attack["scope"]["allow_partial_scope"])
+            self.assertEqual(
+                [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 4,
+                        "role": "frontline",
+                    },
+                    {
+                        "unit_type": "TERRAN_SIEGETANK",
+                        "count": 4,
+                        "role": "siege_support",
+                    }
+                ],
+                attack["composition_requirements"],
+            )
+            scout = active_operations["smoke-scout-alpha"]
+            self.assertFalse(scout["tactical_task"]["allow_partial"])
+            self.assertFalse(scout["scope"]["allow_partial_scope"])
+            self.assertEqual(
+                [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 3,
+                        "role": "scout",
+                    }
+                ],
+                scout["composition_requirements"],
+            )
+
+    def test_smoke_publishes_operations_when_aggressive_profile_is_ready(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        function_start = script.index("operation_publish_ready() {")
+        code_start = script.index("import json\n", function_start)
+        code_end = script.index("\nPY\n}", code_start)
+        readiness_code = script[code_start:code_end]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            telemetry = Path(tmpdir) / "latest_telemetry.json"
+
+            def ready(
+                *,
+                frame: object = 2600,
+                update_id: object = "smoke-aggressive-pressure",
+                policy_active: object = True,
+                combat_unit_count: object = 2,
+                expected_update_id: str = "smoke-aggressive-pressure",
+                minimum_frame: int = 2600,
+            ) -> bool:
+                telemetry.write_text(
+                    json.dumps(
+                        {
+                            "frame": frame,
+                            "managers": {
+                                "GameCommander": {
+                                    "policy_active": policy_active,
+                                    "update_id": update_id,
+                                },
+                                "CombatCommander": {
+                                    "combat_unit_count": combat_unit_count,
+                                },
+                            },
+                        }
+                    )
+                )
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        readiness_code,
+                        str(telemetry),
+                        expected_update_id,
+                        str(minimum_frame),
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                return result.returncode == 0
+
+            self.assertTrue(ready())
+            self.assertFalse(ready(frame=2599))
+            self.assertFalse(ready(policy_active=False))
+            self.assertFalse(ready(update_id="stale-policy"))
+            self.assertFalse(ready(combat_unit_count=1))
+            self.assertFalse(ready(combat_unit_count={"invalid": True}))
+
+        publish_block = (
+            'if [[ "${SMOKE_REQUIRE_OPERATION_DIRECTOR_LIFECYCLE}" == "1" '
+            '&& "${OPERATION_LIFECYCLE_PHASE}" == "pending" '
+            '&& "${AGGRESSIVE_PROFILE_PUBLISHED}" -eq 1 ]] '
+            "&& has_required_macro_evidence "
+            '&& operation_publish_ready "${SMOKE_STRATEGY_EVIDENCE_UPDATE_ID}" '
+            '"${AGGRESSIVE_PROFILE_FRAME}"; then'
+        )
+        self.assertIn(publish_block, script)
+        self.assertLess(
+            script.index(publish_block),
+            script.index(
+                'if python3 - "${BLACKBOARD_DIR}/latest_telemetry.json" '
+                '"${MIN_TELEMETRY_FRAME}"'
+            ),
+        )
+        self.assertEqual(
+            1,
+            script.count(
+                'publish_parallel_operations "${current_telemetry_frame}" "active"'
+            ),
+        )
 
     def test_production_soak_defaults_exclude_known_blocker_maps(self) -> None:
         soak_matrix_script = SOAK_MATRIX_SCRIPT.read_text()

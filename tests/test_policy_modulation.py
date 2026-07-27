@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from dataclasses import replace
 
 from starcraft_commander.policy_modulation import (
     BuildingTask,
@@ -22,6 +23,7 @@ from starcraft_commander.policy_modulation import (
     ScoutingModulation,
     SquadModulation,
     StrategyModulation,
+    TacticalOperationModulation,
     TacticalScopeModulation,
     TacticalTaskModulation,
     TargetIntentModulation,
@@ -79,6 +81,214 @@ class LifetimeModulationTest(unittest.TestCase):
 
 
 class PolicyModulationVectorTest(unittest.TestCase):
+    def test_parallel_operations_preserve_independent_tactical_state(self) -> None:
+        vector = PolicyModulationVector(
+            goal="정찰과 공격을 동시에 수행",
+            operations=(
+                TacticalOperationModulation(
+                    operation_id="recon-alpha",
+                    goal="마린 1기로 적 본진 정찰",
+                    generation=3,
+                    tactical_task=TacticalTaskModulation(
+                        task_type="scout_with_units",
+                        unit_classes=("marine",),
+                        location_intent="enemy_main",
+                        min_units=1,
+                        max_units=1,
+                        allow_partial=False,
+                    ),
+                    scope=TacticalScopeModulation(
+                        army_group="scout",
+                        unit_classes=("marine",),
+                        location_intent="enemy_main",
+                        min_units=1,
+                        max_units=1,
+                        allow_partial_scope=False,
+                    ),
+                    composition_requirements=(
+                        CompositionRequirement("marine", count=1, role="scout"),
+                    ),
+                    route_intent=RouteIntentModulation(route_type="safe_path"),
+                ),
+                TacticalOperationModulation(
+                    operation_id="assault-bravo",
+                    goal="탱크 3기와 마린 8기로 적 앞마당 우회 공격",
+                    tactical_task=TacticalTaskModulation(
+                        task_type="pressure_with_main_army",
+                        unit_classes=("tank", "marine"),
+                        location_intent="enemy_natural",
+                        min_units=11,
+                        max_units=11,
+                        allow_partial=False,
+                    ),
+                    scope=TacticalScopeModulation(
+                        army_group="main",
+                        unit_classes=("tank", "marine"),
+                        location_intent="enemy_natural",
+                        min_units=11,
+                        max_units=11,
+                        allow_partial_scope=False,
+                    ),
+                    composition_requirements=(
+                        CompositionRequirement(
+                            "tank",
+                            count=3,
+                            role="siege_support",
+                        ),
+                        CompositionRequirement("marine", count=8, role="frontline"),
+                    ),
+                    route_intent=RouteIntentModulation(
+                        route_type="flank_right",
+                        avoid_enemy_strength=True,
+                    ),
+                    target_intent=TargetIntentModulation(
+                        target_type="production",
+                        priority=0.9,
+                    ),
+                ),
+            ),
+        )
+
+        self.assertIs(CommandLayer.OPERATION, vector.command_layer)
+        self.assertEqual(
+            ("recon-alpha", "assault-bravo"),
+            tuple(operation.operation_id for operation in vector.operations),
+        )
+        self.assertEqual((3, 1), tuple(operation.generation for operation in vector.operations))
+        self.assertEqual(
+            ("TERRAN_MARINE",),
+            vector.operations[0].tactical_task.unit_classes,
+        )
+        self.assertEqual(
+            ("TERRAN_MARINE", "TERRAN_SIEGETANK"),
+            vector.operations[1].tactical_task.unit_classes,
+        )
+        self.assertEqual("", vector.tactical_task.task_type)
+        self.assertEqual(LifetimeModulation(), vector.lifetime)
+        payload = vector.to_dict()
+        self.assertEqual("active", payload["lifetime"]["completion_state"])
+        self.assertEqual(vector, PolicyModulationVector.from_mapping(payload))
+
+    def test_operation_generation_must_be_positive_bounded_integer(self) -> None:
+        for generation in (0, -1, True, 2_147_483_648):
+            with self.subTest(generation=generation):
+                with self.assertRaisesRegex(ValueError, "generation"):
+                    TacticalOperationModulation(
+                        operation_id="recon-alpha",
+                        goal="정찰",
+                        generation=generation,
+                    )
+
+    def test_duplicate_operation_ids_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate operation_id"):
+            PolicyModulationVector.from_mapping(
+                {
+                    "goal": "두 작전",
+                    "operations": [
+                        {
+                            "operation_id": "same-id",
+                            "goal": "정찰",
+                            "tactical_task": {
+                                "task_type": "scout_with_units",
+                            },
+                        },
+                        {
+                            "operation_id": "same-id",
+                            "goal": "공격",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                            },
+                        },
+                    ],
+                }
+            )
+
+    def test_single_operation_projects_to_legacy_fields(self) -> None:
+        vector = PolicyModulationVector(
+            goal="정찰",
+            operations=(
+                TacticalOperationModulation(
+                    operation_id="recon-single",
+                    goal="바이킹 정찰",
+                    tactical_task=TacticalTaskModulation(
+                        task_type="scout_with_units",
+                        unit_classes=("viking",),
+                        location_intent="enemy_main",
+                    ),
+                    route_intent=RouteIntentModulation(route_type="safe_path"),
+                ),
+            ),
+        )
+
+        self.assertEqual("", vector.tactical_task.task_type)
+        self.assertEqual("", vector.route_intent.route_type)
+        payload = vector.to_dict()
+        self.assertEqual(
+            "scout_with_units",
+            payload["tactical_task"]["task_type"],
+        )
+        self.assertEqual("safe_path", payload["route_intent"]["route_type"])
+        self.assertEqual(vector, PolicyModulationVector.from_mapping(payload))
+
+    def test_legacy_payload_round_trips_without_synthesizing_operation(
+        self,
+    ) -> None:
+        legacy = {
+            "goal": "마린 한 기 정찰",
+            "tactical_task": {
+                "task_type": "scout_with_units",
+                "task_id": "legacy-scout-ticket",
+                "unit_classes": ["marine"],
+                "location_intent": "enemy_main",
+                "min_units": 1,
+                "max_units": 1,
+                "allow_partial": False,
+            },
+            "scope": {
+                "army_group": "scout",
+                "unit_classes": ["marine"],
+                "location_intent": "enemy_main",
+                "min_units": 1,
+                "max_units": 1,
+                "allow_partial_scope": False,
+            },
+        }
+
+        vector = PolicyModulationVector.from_mapping(legacy)
+        rebuilt = PolicyModulationVector.from_mapping(vector.to_dict())
+
+        self.assertEqual((), vector.operations)
+        self.assertEqual([], vector.to_dict()["operations"])
+        self.assertEqual("legacy-scout-ticket", vector.tactical_task.task_id)
+        self.assertIs(CommandLayer.OPERATION, vector.command_layer)
+        self.assertEqual(vector, rebuilt)
+
+    def test_replace_on_explicit_single_operation_does_not_conflict(self) -> None:
+        vector = PolicyModulationVector(
+            goal="정찰 작전",
+            operations=(
+                TacticalOperationModulation(
+                    operation_id="recon-replace",
+                    goal="마린 정찰",
+                    tactical_task=TacticalTaskModulation(
+                        task_type="scout_with_units",
+                        unit_classes=("marine",),
+                    ),
+                ),
+            ),
+        )
+
+        replaced = replace(
+            PolicyModulationVector.from_mapping(vector.to_dict()),
+            goal="정찰 작전 강화",
+            confidence=0.9,
+        )
+
+        self.assertEqual("정찰 작전 강화", replaced.goal)
+        self.assertEqual(0.9, replaced.confidence)
+        self.assertEqual("recon-replace", replaced.operations[0].operation_id)
+        self.assertEqual("", replaced.tactical_task.task_type)
+
     def test_merges_duplicate_composition_and_role_entries_by_unit_type(self) -> None:
         vector = PolicyModulationVector(
             goal="마린 요구를 하나의 작전 조합으로 병합",

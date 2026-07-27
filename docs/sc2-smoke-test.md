@@ -7,11 +7,11 @@ the `MissingSC2RuntimeError` install hint and `pyproject.toml`.
 말하면 스타가 움직인다: 이 문서는 실제 StarCraft II 게임에서 한국어 음성/텍스트
 명령 데모를 실행하는 로컬 절차를 설명합니다.
 
-**Honest status up front:** live mode has been smoke-tested on macOS against
-the local install at `/Users/jinminseong/Desktop/StarCraft2/StarCraft II` with
-`AcropolisLE`. The smoke covered game launch, `Status.in_game`, localhost GUI
-state polling, process-local OpenAI key configuration status, SCV production,
-SCV scouting, mineral gathering, and Supply Depot construction.
+**Honest status up front:** live mode has been smoke-tested on macOS with a
+non-default local install selected through `SC2_ROOT` and the `AcropolisLE`
+map. The smoke covered game launch, `Status.in_game`, localhost GUI state
+polling, process-local OpenAI key configuration status, SCV production, SCV
+scouting, mineral gathering, and Supply Depot construction.
 
 ## 1. Requirements
 
@@ -30,11 +30,11 @@ SCV scouting, mineral gathering, and Supply Depot construction.
   - macOS: `/Applications/StarCraft II`
   - Windows: `C:\Program Files (x86)\StarCraft II`
   - Linux: `~/StarCraftII`
-- If your install lives elsewhere, set the `SC2PATH` environment variable to
-  the install root before running the demo:
+- If your install lives elsewhere, set `SC2_ROOT` to the install root before
+  running the demo. `SC2PATH` remains supported as the legacy fallback:
 
   ```bash
-  export SC2PATH="/path/to/StarCraft II"
+  export SC2_ROOT="/path/to/StarCraft II"
   ```
 
 ### Required maps
@@ -124,7 +124,7 @@ python3 -m starcraft_commander.demo_sc2 --map AcropolisLE --difficulty easy
 For local browser control of the legacy python-sc2 commander:
 
 ```bash
-SC2PATH="/Users/jinminseong/Desktop/StarCraft2/StarCraft II" \
+SC2_ROOT="/path/to/StarCraft II" \
 OPENAI_API_KEY="sk-..." \
 python3 -m starcraft_commander.demo_sc2 \
   --map AcropolisLE --difficulty easy \
@@ -201,16 +201,18 @@ Note the importable package is named `sc2` but the pip distribution is
 
 ### Game fails to launch / install not found
 
-python-sc2 could not locate the StarCraft II install. Set `SC2PATH` to the
-install root (see section 1) and retry. On macOS, launch StarCraft II once
-through Battle.net first so the install is fully initialized.
+python-sc2 could not locate the StarCraft II install. Set `SC2_ROOT` to the
+install root (or `SC2PATH` for legacy python-sc2 compatibility; see section 1)
+and retry. On macOS, launch StarCraft II once through Battle.net first so the
+install is fully initialized.
 
 ### Map not found
 
 `maps.get(<name>)` raises an error naming the missing map when there is no
 matching `.SC2Map` file. Check that:
 
-- the file is inside the `Maps` folder of the install root (or `SC2PATH`),
+- the file is inside the `Maps` folder of the install root selected by
+  `SC2_ROOT` or `SC2PATH`,
 - the `--map` value matches the file name without the `.SC2Map` suffix,
   with exact spelling (e.g. `AcropolisLE`, not `Acropolis LE`).
 
@@ -236,9 +238,9 @@ executing, so the failure is safe — just re-record.
 
 Be aware of exactly how small this MVP is:
 
-- **Legacy python-sc2 live mode has only one local smoke environment so far.** The current
-  verified setup is macOS + `/Users/jinminseong/Desktop/StarCraft2/StarCraft II`
-  + `AcropolisLE`; other OSes, maps, and ladder scenarios can still expose
+- **Legacy python-sc2 live mode has only one local smoke environment so far.**
+  The current verified setup is macOS with a non-default `SC2_ROOT` and
+  `AcropolisLE`; other OSes, maps, and ladder scenarios can still expose
   python-sc2 or map-derivation edge cases.
 - **Terran only**, one fixed map per run, local built-in AI opponent
   (`--race terran` is the only accepted value).

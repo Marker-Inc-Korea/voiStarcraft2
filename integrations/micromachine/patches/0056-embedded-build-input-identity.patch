@@ -1,0 +1,25 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index ee5120a..ed8acbd 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -2,6 +2,7 @@
+ #include "CCBot.h"
+ #include "JSONTools.h"
+ #include "Util.h"
++#include "voi_build_identity.hpp"
+ #include "LadderInterface.h"
+ #include <cstdio>
+ #include <csignal>
+@@ -231,6 +232,12 @@ void handler(int sig) {
+ 
+ int main(int argc, char* argv[]) 
+ {
++	if (argc == 2 && std::string(argv[1] == nullptr ? "" : argv[1]) == "--voi-build-input-identity")
++	{
++		std::cout << VOI_BUILD_INPUT_IDENTITY << std::endl;
++		return 0;
++	}
++
+ 	signal(SIGABRT, handler);
+ #ifdef _WINDOWS
+ 	signal(SIGABRT_COMPAT, handler);

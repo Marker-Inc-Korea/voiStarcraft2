@@ -7,17 +7,78 @@ import unittest
 from pathlib import Path
 
 from starcraft_commander.micromachine_build_identity import (
+    MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
     MicroMachineBuildIdentityConfig,
     build_argument_parser,
     build_micromachine_build_identity,
+    build_runtime_workspace_identity,
+    micromachine_build_identity_admission_error,
     read_build_identity,
     write_build_identity_report,
     write_micromachine_build_attestation,
+    write_micromachine_embedded_build_identity_header,
     write_micromachine_source_attestation,
 )
 
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
+    def test_live_admission_requires_the_supported_schema(self) -> None:
+        passing = {
+            "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
+            "identity": "sha256:fixture",
+            "ok": True,
+            "failures": [],
+        }
+
+        self.assertEqual(
+            "",
+            micromachine_build_identity_admission_error(passing, passing),
+        )
+        for side in ("recorded", "current"):
+            with self.subTest(side=side):
+                recorded = dict(passing)
+                current = dict(passing)
+                target = recorded if side == "recorded" else current
+                target["schema_version"] = (
+                    MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION - 1
+                )
+                error = micromachine_build_identity_admission_error(
+                    recorded,
+                    current,
+                )
+                self.assertIn(f"unsupported {side}", error)
+                self.assertIn(
+                    str(MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION),
+                    error,
+                )
+
+    def test_runtime_workspace_identity_covers_dirty_python_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "starcraft_commander"
+            package.mkdir()
+            (root / "pyproject.toml").write_text("[project]\nname='fixture'\n")
+            runtime = package / "runtime.py"
+            runtime.write_text("VALUE = 1\n")
+
+            first = build_runtime_workspace_identity(root)
+            runtime.write_text("VALUE = 2\n")
+            second = build_runtime_workspace_identity(root)
+            untracked = package / "new_runtime.py"
+            untracked.write_text("NEW_VALUE = 1\n")
+            third = build_runtime_workspace_identity(root)
+
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(second["identity"], third["identity"])
+            self.assertEqual(
+                [
+                    "pyproject.toml",
+                    "starcraft_commander/new_runtime.py",
+                    "starcraft_commander/runtime.py",
+                ],
+                [entry["path"] for entry in third["files"]],
+            )
+
     def test_expected_build_identity_is_stable_and_json_ready(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -28,7 +89,10 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             write_build_identity_report(report, output)
 
             self.assertTrue(report["ok"], report)
-            self.assertEqual(51, report["schema_version"])
+            self.assertEqual(
+                MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
+                report["schema_version"],
+            )
             self.assertTrue(str(report["identity"]).startswith("sha256:"))
             self.assertEqual(report["identity"], read_build_identity(output))
             self.assertIn(
@@ -435,6 +499,63 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_all_terran_combat_scouts_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_parallel_operations_ingame_hud_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_parallel_operations_ingame_hud_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_parallel_operation_lifecycle_review_closure_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_parallel_operation_lifecycle_review_"
+                    "closure_patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_authoritative_parallel_operation_lifecycle_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_authoritative_parallel_operation_"
+                    "lifecycle_patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_operation_production_ownership_restore_proof_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_operation_production_ownership_restore_"
+                    "proof_patch_sha256"
+                ),
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_operation_production_review_closure_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_operation_production_review_closure_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_production_fifo_zero_owner_cleanup_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_production_fifo_zero_owner_cleanup_patch_sha256",
                 report["checksums"],
             )
             self.assertIn("source_attestation", report["paths"])
@@ -1386,8 +1507,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config.micromachine_explicit_ability_review_closure_patch.write_text(
                 "changed review closure\n"
             )
-            write_micromachine_source_attestation(config)
-            write_micromachine_build_attestation(config)
+            self.rebuild_fixture_binary(config)
             second = build_micromachine_build_identity(config)
 
             self.assertTrue(first["ok"], first)
@@ -1446,8 +1566,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config.micromachine_authoritative_addon_runtime_clearance_patch.write_text(
                 "changed authoritative addon runtime clearance\n"
             )
-            write_micromachine_source_attestation(config)
-            write_micromachine_build_attestation(config)
+            self.rebuild_fixture_binary(config)
             second = build_micromachine_build_identity(config)
 
             self.assertTrue(first["ok"], first)
@@ -1506,8 +1625,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config.micromachine_banshee_unit_specific_cloak_command_patch.write_text(
                 "changed Banshee unit-specific cloak command\n"
             )
-            write_micromachine_source_attestation(config)
-            write_micromachine_build_attestation(config)
+            self.rebuild_fixture_binary(config)
             second = build_micromachine_build_identity(config)
 
             self.assertTrue(first["ok"], first)
@@ -1600,8 +1718,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config.micromachine_explicit_ability_caster_ownership_patch.write_text(
                 "changed explicit ability caster ownership\n"
             )
-            write_micromachine_source_attestation(config)
-            write_micromachine_build_attestation(config)
+            self.rebuild_fixture_binary(config)
             second = build_micromachine_build_identity(config)
 
             self.assertTrue(first["ok"], first)
@@ -1660,8 +1777,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config.micromachine_explicit_ability_staging_single_flight_patch.write_text(
                 "changed explicit ability staging single flight\n"
             )
-            write_micromachine_source_attestation(config)
-            write_micromachine_build_attestation(config)
+            self.rebuild_fixture_binary(config)
             second = build_micromachine_build_identity(config)
 
             self.assertTrue(first["ok"], first)
@@ -1716,8 +1832,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config.micromachine_all_terran_combat_scouts_patch.write_text(
                 "changed all Terran combat scouts\n"
             )
-            write_micromachine_source_attestation(config)
-            write_micromachine_build_attestation(config)
+            self.rebuild_fixture_binary(config)
             second = build_micromachine_build_identity(config)
 
             self.assertTrue(first["ok"], first)
@@ -1755,6 +1870,274 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                     ),
                 },
                 report["failures"],
+            )
+
+    def test_parallel_operations_ingame_hud_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_parallel_operations_ingame_hud_patch_sha256"
+            )
+
+            config.micromachine_parallel_operations_ingame_hud_patch.write_text(
+                "changed parallel operations in-game HUD\n"
+            )
+            self.rebuild_fixture_binary(config)
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_parallel_operations_ingame_hud_cli_defaults_to_patch_0052(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0052-parallel-operations-ingame-hud.patch",
+            Path(args.micromachine_parallel_operations_ingame_hud_patch).name,
+        )
+
+    def test_missing_parallel_operations_ingame_hud_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_parallel_operations_ingame_hud_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_parallel_operations_ingame_hud_"
+                        "patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_parallel_operation_lifecycle_review_closure_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_parallel_operation_lifecycle_review_closure_"
+                "patch_sha256"
+            )
+
+            config.micromachine_parallel_operation_lifecycle_review_closure_patch.write_text(
+                "changed parallel operation lifecycle review closure\n"
+            )
+            self.rebuild_fixture_binary(config)
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_parallel_operation_lifecycle_review_closure_cli_defaults_to_patch_0053(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0053-parallel-operation-lifecycle-review-closure.patch",
+            Path(
+                args.micromachine_parallel_operation_lifecycle_review_closure_patch
+            ).name,
+        )
+
+    def test_missing_parallel_operation_lifecycle_review_closure_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_parallel_operation_lifecycle_review_closure_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_parallel_operation_lifecycle_review_"
+                        "closure_patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_authoritative_parallel_operation_lifecycle_cli_defaults_to_patch_0054(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0054-authoritative-parallel-operation-lifecycle.patch",
+            Path(
+                args.micromachine_authoritative_parallel_operation_lifecycle_patch
+            ).name,
+        )
+
+    def test_operation_production_ownership_restore_proof_cli_defaults_to_patch_0055(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0055-operation-production-ownership-and-restore-proof.patch",
+            Path(
+                args.micromachine_operation_production_ownership_restore_proof_patch
+            ).name,
+        )
+
+    def test_missing_operation_production_ownership_restore_proof_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_operation_production_ownership_restore_proof_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                {
+                    "code": "missing_required_build_input",
+                    "checksum": (
+                        "micromachine_operation_production_ownership_restore_"
+                        "proof_patch_sha256"
+                    ),
+                },
+                report["failures"],
+            )
+
+    def test_operation_production_ownership_restore_proof_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_operation_production_ownership_restore_"
+                "proof_patch_sha256"
+            )
+
+            config.micromachine_operation_production_ownership_restore_proof_patch.write_text(
+                "changed operation production ownership restore proof\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "embedded_identity_header_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+            self.assertIn(
+                "embedded_binary_identity_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+
+    def test_embedded_build_input_identity_cli_defaults_to_patch_0056(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0056-embedded-build-input-identity.patch",
+            Path(
+                args.micromachine_embedded_build_input_identity_patch
+            ).name,
+        )
+
+    def test_tech_gas_cli_defaults_to_patch_0057(self) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0057-tech-gas-before-second-barracks.patch",
+            Path(
+                args.micromachine_tech_gas_before_second_barracks_patch
+            ).name,
+        )
+
+    def test_operation_production_review_closure_cli_defaults_to_patch_0058(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0058-operation-production-review-closure.patch",
+            Path(
+                args.micromachine_operation_production_review_closure_patch
+            ).name,
+        )
+
+    def test_production_fifo_zero_owner_cleanup_cli_defaults_to_patch_0059(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0059-production-fifo-and-zero-owner-cleanup.patch",
+            Path(
+                args.micromachine_production_fifo_zero_owner_cleanup_patch
+            ).name,
+        )
+
+    def test_operation_production_review_closure_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_operation_production_review_closure_patch_sha256"
+            )
+
+            config.micromachine_operation_production_review_closure_patch.write_text(
+                "changed operation production review closure\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "embedded_identity_header_mismatch",
+                {failure["code"] for failure in second["failures"]},
             )
 
     def test_missing_source_attestation_marks_identity_not_ok(self) -> None:
@@ -1919,6 +2302,25 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
 
             self.assertEqual("invalid_build_identity_report", completed.stdout.strip())
+
+    def rebuild_fixture_binary(
+        self,
+        config: MicroMachineBuildIdentityConfig,
+    ) -> None:
+        embedded_identity = write_micromachine_embedded_build_identity_header(
+            config
+        )
+        config.binary_path.write_text(
+            "#!/bin/sh\n"
+            'if [ "${1:-}" = "--voi-build-input-identity" ]; then\n'
+            f"  printf '%s\\n' '{embedded_identity}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        config.binary_path.chmod(0o755)
+        write_micromachine_source_attestation(config)
+        write_micromachine_build_attestation(config)
 
     def build_config(
         self,
@@ -2086,6 +2488,28 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_all_terran_combat_scouts_patch = (
             root / "micromachine-all-terran-combat-scouts.patch"
         )
+        micromachine_parallel_operations_ingame_hud_patch = (
+            root / "micromachine-parallel-operations-ingame-hud.patch"
+        )
+        micromachine_parallel_operation_lifecycle_review_closure_patch = (
+            root / "micromachine-parallel-operation-lifecycle-review-closure.patch"
+        )
+        micromachine_authoritative_parallel_operation_lifecycle_patch = (
+            root / "micromachine-authoritative-parallel-operation-lifecycle.patch"
+        )
+        micromachine_operation_production_ownership_restore_proof_patch = (
+            root
+            / "micromachine-operation-production-ownership-restore-proof.patch"
+        )
+        micromachine_embedded_build_input_identity_patch = (
+            root / "micromachine-embedded-build-input-identity.patch"
+        )
+        micromachine_operation_production_review_closure_patch = (
+            root / "micromachine-operation-production-review-closure.patch"
+        )
+        micromachine_production_fifo_zero_owner_cleanup_patch = (
+            root / "micromachine-production-fifo-zero-owner-cleanup.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -2143,6 +2567,13 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_explicit_ability_caster_ownership_patch,
             micromachine_explicit_ability_staging_single_flight_patch,
             micromachine_all_terran_combat_scouts_patch,
+            micromachine_parallel_operations_ingame_hud_patch,
+            micromachine_parallel_operation_lifecycle_review_closure_patch,
+            micromachine_authoritative_parallel_operation_lifecycle_patch,
+            micromachine_operation_production_ownership_restore_proof_patch,
+            micromachine_embedded_build_input_identity_patch,
+            micromachine_operation_production_review_closure_patch,
+            micromachine_production_fifo_zero_owner_cleanup_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -2298,6 +2729,27 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_all_terran_combat_scouts_patch=(
                 micromachine_all_terran_combat_scouts_patch
             ),
+            micromachine_parallel_operations_ingame_hud_patch=(
+                micromachine_parallel_operations_ingame_hud_patch
+            ),
+            micromachine_parallel_operation_lifecycle_review_closure_patch=(
+                micromachine_parallel_operation_lifecycle_review_closure_patch
+            ),
+            micromachine_authoritative_parallel_operation_lifecycle_patch=(
+                micromachine_authoritative_parallel_operation_lifecycle_patch
+            ),
+            micromachine_operation_production_ownership_restore_proof_patch=(
+                micromachine_operation_production_ownership_restore_proof_patch
+            ),
+            micromachine_embedded_build_input_identity_patch=(
+                micromachine_embedded_build_input_identity_patch
+            ),
+            micromachine_operation_production_review_closure_patch=(
+                micromachine_operation_production_review_closure_patch
+            ),
+            micromachine_production_fifo_zero_owner_cleanup_patch=(
+                micromachine_production_fifo_zero_owner_cleanup_patch
+            ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,
             map_pool=map_pool,
@@ -2309,9 +2761,11 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             (config.resolved_s2client_build_dir / "libsc2api.a").write_text(
                 "fixture s2client archive\n"
             )
-            write_micromachine_source_attestation(config)
             if binary:
-                write_micromachine_build_attestation(config)
+                self.rebuild_fixture_binary(config)
+            else:
+                write_micromachine_embedded_build_identity_header(config)
+                write_micromachine_source_attestation(config)
         return config
 
     def init_git_repo(self, path: Path) -> str:
