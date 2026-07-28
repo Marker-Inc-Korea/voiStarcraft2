@@ -8616,6 +8616,20 @@ const assert = require("assert");
       "오래된 공격조 변경과 새 실행 세대"
     )
   );
+  assaultRecord.node.querySelectorAll("button")[0].dispatchEvent({
+    type: "click"
+  });
+  assert.strictEqual(
+    activeCommandConsoleRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert.strictEqual(
+    activeCommandConsoleRecord.data.intervention.command_execution
+      .operation_generation,
+    3
+  );
+  assert(nodes["command-console-units"].textContent.includes("marine"));
+  assert(nodes["command-console-units"].textContent.includes("4기"));
 
   // Older-generation cleanup may not overwrite the edited operation card.
   var staleGenerationCleanup = operationResult(
@@ -8868,6 +8882,24 @@ const assert = require("assert");
   assert(
     !operationRecords[reconKey].node.textContent.includes(
       "오래된 정찰대 변경과 새 실행 세대"
+    )
+  );
+  operationRecords[reconKey].node.querySelectorAll("button")[0].dispatchEvent({
+    type: "click"
+  });
+  assert.strictEqual(
+    activeCommandConsoleRecord.updateId,
+    "parallel-update-a-edit"
+  );
+  assert.strictEqual(
+    activeCommandConsoleRecord.data.intervention.command_execution
+      .operation_generation,
+    2
+  );
+  assert(nodes["command-console-action"].textContent.includes("move"));
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "new active generation waypoint reached"
     )
   );
 

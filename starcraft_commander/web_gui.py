@@ -9525,6 +9525,19 @@ function commandConsoleDataForUpdate(data, updateId) {
   var latestRequest = data.latest_request || {};
   var intervention = Object.assign({}, data.intervention || {});
   var execution = intervention.command_execution || {};
+  var executionOwnerUpdateId = String(
+    data.operation_console_execution_owner_update_id || ""
+  );
+  var operationGeneration = Number(data.operation_generation || 0);
+  var executionGeneration = Number(execution.operation_generation || 0);
+  var linkedOperationExecution = Boolean(
+    executionOwnerUpdateId &&
+    executionOwnerUpdateId === updateId &&
+    data.operation_id &&
+    String(execution.operation_id || "") === String(data.operation_id) &&
+    operationGeneration > 0 &&
+    executionGeneration === operationGeneration
+  );
   if (compileResult.update_id && String(compileResult.update_id) !== updateId) {
     result.compile_result = {};
   }
@@ -9534,13 +9547,18 @@ function commandConsoleDataForUpdate(data, updateId) {
   if (latestRequest.update_id && String(latestRequest.update_id) !== updateId) {
     result.latest_request = null;
   }
-  if (execution.command_id && String(execution.command_id) !== updateId) {
+  if (
+    execution.command_id &&
+    String(execution.command_id) !== updateId &&
+    !linkedOperationExecution
+  ) {
     intervention.command_execution = {};
   }
   if (
     intervention.latest_update_id &&
     String(intervention.latest_update_id) !== updateId &&
-    !(execution.command_id && String(execution.command_id) === updateId)
+    !(execution.command_id && String(execution.command_id) === updateId) &&
+    !linkedOperationExecution
   ) {
     intervention = { command_execution: intervention.command_execution || {} };
   }
@@ -10440,7 +10458,8 @@ function reconcileOperationRecord(operation, parentData) {
       update: latestData.update || {},
       command_queue: latestData.command_queue || {},
       requested_operation_generation: latestRequestedOperationGeneration,
-      operation_edit: operationEditPayload(latestData)
+      operation_edit: operationEditPayload(latestData),
+      operation_console_execution_owner_update_id: record.updateId || ""
     });
     updateId = record.updateId || updateId;
   }
