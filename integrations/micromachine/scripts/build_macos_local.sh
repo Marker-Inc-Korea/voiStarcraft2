@@ -74,6 +74,7 @@ OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE="${REPO_ROOT}/integrations/micromach
 OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0061-operation-edit-review-closure.patch"
 OPERATION_TRANSFER_ATOMIC_ADMISSION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0062-operation-transfer-atomic-admission.patch"
 OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0063-operation-transfer-runtime-preservation.patch"
+OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0064-operation-transfer-transactional-closure.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 HOOK_MANIFEST_FILE="${REPO_ROOT}/integrations/micromachine/HOOK_MANIFEST.json"
@@ -309,6 +310,8 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_TRANSFER_ATOMIC_ADMISSION_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 rm -f \
@@ -327,6 +330,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-operation-edit-review-closure-patch "${OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-operation-transfer-atomic-admission-patch "${OPERATION_TRANSFER_ATOMIC_ADMISSION_PATCH_FILE}" \
   --micromachine-operation-transfer-runtime-preservation-patch "${OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH_FILE}" \
+  --micromachine-operation-transfer-transactional-closure-patch "${OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --write-embedded-identity-header \
   --initialize-source-attestation
@@ -415,6 +419,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-operation-edit-review-closure-patch "${OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-operation-transfer-atomic-admission-patch "${OPERATION_TRANSFER_ATOMIC_ADMISSION_PATCH_FILE}" \
   --micromachine-operation-transfer-runtime-preservation-patch "${OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH_FILE}" \
+  --micromachine-operation-transfer-transactional-closure-patch "${OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --finalize-build-attestation \

@@ -3277,22 +3277,51 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
         (str, bytes, bytearray),
     ):
         composition = value.get("unit_requests")
-    unit_requests = [
-        {
-            "unit_type": str(item.get("unit_type", "") or "")[:80],
-            "count": _bounded_compact_context_int(item.get("count")),
-            "role": str(item.get("role", "") or "")[:80],
-        }
-        for item in (
-            composition
-            if isinstance(composition, Sequence)
-            and not isinstance(composition, (str, bytes, bytearray))
-            else ()
-        )
+    role_value = value.get("unit_roles")
+    unit_roles = (
+        role_value
+        if isinstance(role_value, Sequence)
+        and not isinstance(role_value, (str, bytes, bytearray))
+        else ()
+    )
+    role_metadata = {
+        (
+            str(item.get("unit_type", "") or "").strip(),
+            str(item.get("role", "") or "").strip(),
+        ): item
+        for item in unit_roles
         if isinstance(item, Mapping)
         and str(item.get("unit_type", "") or "").strip()
-        and _bounded_compact_context_int(item.get("count")) > 0
-    ]
+    }
+    unit_requests: list[dict[str, object]] = []
+    for item in (
+        composition
+        if isinstance(composition, Sequence)
+        and not isinstance(composition, (str, bytes, bytearray))
+        else ()
+    ):
+        if not isinstance(item, Mapping):
+            continue
+        unit_type = str(item.get("unit_type", "") or "").strip()
+        count = _bounded_compact_context_int(item.get("count"))
+        if not unit_type or count <= 0:
+            continue
+        role = str(item.get("role", "") or "").strip()
+        metadata = role_metadata.get((unit_type, role), item)
+        compact_request: dict[str, object] = {
+            "unit_type": unit_type[:80],
+            "count": count,
+            "role": role[:80],
+        }
+        priority = metadata.get("priority")
+        if type(priority) is not bool and isinstance(priority, (int, float)):
+            compact_request["priority"] = _bounded_compact_context_priority(
+                priority
+            )
+        ability_policy = str(metadata.get("ability_policy", "") or "").strip()
+        if ability_policy:
+            compact_request["ability_policy"] = ability_policy[:80]
+        unit_requests.append(compact_request)
     compact_task = {
         "task_type": str(
             task.get("type", task.get("task_type", "")) or ""
@@ -3307,6 +3336,9 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
         ),
         "requested_units": _bounded_compact_context_int(
             task_count.get("requested", 0)
+        ),
+        "duration_seconds": _bounded_compact_context_duration(
+            task.get("duration_seconds", scope.get("duration_seconds"))
         ),
         "allow_partial": (
             task.get("allow_partial")
@@ -3332,6 +3364,33 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
         "doctrine": str(value.get("doctrine", "") or "")[:80],
         "tactical_task": compact_task,
         "unit_requests": unit_requests[:16],
+        "scope": {
+            "army_group": str(
+                scope.get("army_group", value.get("army_group", "")) or ""
+            )[:80],
+            "location_intent": str(
+                scope.get(
+                    "location_intent",
+                    value.get(
+                        "location_intent",
+                        task.get("location_intent", ""),
+                    ),
+                )
+                or ""
+            )[:80],
+            "duration_seconds": _bounded_compact_context_duration(
+                scope.get(
+                    "duration_seconds",
+                    task.get("duration_seconds"),
+                )
+            ),
+            "allow_partial_scope": bool(
+                scope.get(
+                    "allow_partial_scope",
+                    task.get("allow_partial", False),
+                )
+            ),
+        },
         "army_group": str(
             scope.get("army_group", value.get("army_group", "")) or ""
         )[:80],
@@ -3358,6 +3417,22 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
             )
             or ""
         )[:32],
+        "lifetime": {
+            "mode": str(lifetime.get("mode", "") or "")[:32],
+            "completion_conditions": list(
+                _compact_string_tokens(
+                    lifetime.get("completion_conditions")
+                )
+            )[:8],
+            "completion_state": str(
+                lifetime.get(
+                    "completion_state",
+                    value.get("completion_state", ""),
+                )
+                or ""
+            )[:32],
+            "reason": str(lifetime.get("reason", "") or "")[:240],
+        },
         "operation_edit": {
             "action": str(operation_edit.get("action", "") or "")[:32],
             "counterpart_operation_id": str(
@@ -3378,6 +3453,18 @@ def _bounded_compact_context_int(value: object) -> int:
     if type(value) is bool or not isinstance(value, (int, float)):
         return 0
     return max(0, min(200, int(value)))
+
+
+def _bounded_compact_context_duration(value: object) -> int:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return 0
+    return max(0, min(900, int(value)))
+
+
+def _bounded_compact_context_priority(value: object) -> float:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, min(1.0, float(value)))
 
 
 def _prepare_policy_modulation_tool_input(
@@ -4011,7 +4098,6 @@ def _lower_compact_policy_modulation_tool_input(
                     ),
                     command_layer=command_layer,
                     operation_edit=source_edit,
-                    cancelled_if_empty=True,
                 )
             )
         elif operation_action == "resize":
@@ -4151,6 +4237,16 @@ def _lower_compact_policy_modulation_tool_input(
             "manager-consumable MicroMachine DSL."
         ),
     }
+    if (
+        previous_operation is not None
+        and operation_action
+        in {"update", "resize", "reinforce", "retarget", "transfer"}
+    ):
+        previous_lifetime = previous_operation.get("lifetime")
+        if isinstance(previous_lifetime, Mapping):
+            preserved_lifetime = dict(previous_lifetime)
+            preserved_lifetime["completion_state"] = "active"
+            modulation["lifetime"] = preserved_lifetime
 
     doctrine = str(command.get("doctrine", "") or "").strip()
     strategy = modulation["strategy"]
@@ -4167,6 +4263,18 @@ def _lower_compact_policy_modulation_tool_input(
     if task_type:
         tactical_task = modulation["tactical_task"]
         if isinstance(tactical_task, dict):
+            previous_task = (
+                previous_operation.get("tactical_task")
+                if previous_operation is not None
+                and isinstance(
+                    previous_operation.get("tactical_task"),
+                    Mapping,
+                )
+                else {}
+            )
+            preserved_duration = _bounded_compact_context_duration(
+                previous_task.get("duration_seconds")
+            )
             tactical_task.update(
                 {
                     "task_type": task_type,
@@ -4190,10 +4298,21 @@ def _lower_compact_policy_modulation_tool_input(
                     "safety_margin": 0.05,
                 }
             )
+            if preserved_duration:
+                tactical_task["duration_seconds"] = preserved_duration
 
     if command_layer in {"operation", "emergency"} and operation_action:
         scope = modulation["scope"]
         if isinstance(scope, dict):
+            previous_scope = (
+                previous_operation.get("scope")
+                if previous_operation is not None
+                and isinstance(previous_operation.get("scope"), Mapping)
+                else {}
+            )
+            preserved_scope_duration = _bounded_compact_context_duration(
+                previous_scope.get("duration_seconds")
+            )
             scope.update(
                 {
                     "army_group": army_group,
@@ -4214,6 +4333,8 @@ def _lower_compact_policy_modulation_tool_input(
                     "allow_partial_scope": allow_partial,
                 }
             )
+            if preserved_scope_duration:
+                scope["duration_seconds"] = preserved_scope_duration
 
     route_type = str(command.get("route_type", "") or "").strip()
     if route_type:
@@ -4765,7 +4886,6 @@ def _compact_known_operation_with_composition(
     goal: str,
     command_layer: str,
     operation_edit: Mapping[str, object],
-    cancelled_if_empty: bool = False,
 ) -> dict[str, object]:
     previous_task = (
         operation.get("tactical_task")
@@ -4799,7 +4919,15 @@ def _compact_known_operation_with_composition(
         "min_units": preserved_minimum,
         "max_units": exact_count,
         "allow_partial": allow_partial,
+        "duration_seconds": _bounded_compact_context_duration(
+            previous_task.get("duration_seconds")
+        ),
     }
+    previous_scope = (
+        operation.get("scope")
+        if isinstance(operation.get("scope"), Mapping)
+        else {}
+    )
     scope = {
         "army_group": str(operation.get("army_group", "") or ""),
         "unit_classes": list(task["unit_classes"]),
@@ -4807,18 +4935,18 @@ def _compact_known_operation_with_composition(
         "min_units": preserved_minimum,
         "max_units": exact_count,
         "allow_partial_scope": allow_partial,
+        "duration_seconds": _bounded_compact_context_duration(
+            previous_scope.get("duration_seconds")
+        ),
     }
-    lifetime: dict[str, object] = {
-        "mode": "until_completed",
-        "completion_state": "active",
-    }
-    if cancelled_if_empty and exact_count == 0:
-        lifetime = {
-            "mode": "until_cancelled",
-            "completion_conditions": ["transferred_all_units"],
-            "completion_state": "cancelled",
-            "reason": "explicit transfer moved the complete source force",
-        }
+    previous_lifetime = (
+        operation.get("lifetime")
+        if isinstance(operation.get("lifetime"), Mapping)
+        else {}
+    )
+    lifetime: dict[str, object] = dict(previous_lifetime)
+    lifetime.setdefault("mode", "until_completed")
+    lifetime["completion_state"] = "active"
     route_type = str(operation.get("route", "") or "")
     target_type = str(operation.get("target", "") or "")
     return {
@@ -5153,12 +5281,19 @@ def _lower_compact_unit_requests(
                 ability_policy = "high_value_target"
             else:
                 ability_policy = "never"
+        priority = item.get("priority")
+        normalized_priority = (
+            max(0.0, min(1.0, float(priority)))
+            if type(priority) is not bool
+            and isinstance(priority, (int, float))
+            else (0.9 if task_type == "execute_ability" else 0.8)
+        )
         result.append(
             {
                 "unit_type": unit_type,
                 "count": normalized_count,
                 "role": role,
-                "priority": 0.9 if task_type == "execute_ability" else 0.8,
+                "priority": normalized_priority,
                 "ability_policy": ability_policy,
             }
         )

@@ -323,6 +323,11 @@
       "path": "patches/0063-operation-transfer-runtime-preservation.patch",
       "order": 63,
       "scope": "preserve an omitted active transfer endpoint on one-sided rejection, keep rejected old-generation operations reconciling their existing squads, reject completed endpoints from pair admission, atomically validate and replace unit-tag ownership, and extend executable CTest coverage for preservation, terminal rejection, continued reconciliation, duplicate-tag rejection, and rollback-safe ownership changes"
+    },
+    {
+      "path": "patches/0064-operation-transfer-transactional-closure.patch",
+      "order": 64,
+      "scope": "preserve the existing status and blocker when a transfer edit is rejected, reject terminal requested or existing endpoints, defer both generation handoffs until operation assignments, Squad membership, unit-tag owners, and in-flight action owners pass one runtime-used transaction plan, commit both generations and ownership together, and terminalize an empty source only after the complete-force transfer succeeds"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

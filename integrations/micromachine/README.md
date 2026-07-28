@@ -77,6 +77,7 @@ Verified upstream:
 | `patches/0061-operation-edit-review-closure.patch` | Preserves multiple roles for the same unit type with tag-scoped ownership, applies role-specific ability policy, rejects both sides of a reciprocal transfer before any handoff when either side is blocked, preserves role ownership across generations, and prevents blocked transfer pairs from executing. |
 | `patches/0062-operation-transfer-atomic-admission.patch` | Requires both active transfer endpoints to advance generation before either handoff, rejects blocked or new counterparts before admission, and adds runtime-used no-SC2 C++/CTest contracts for atomic pair admission, tag-scoped role preservation, and role-specific ability policy selection. |
 | `patches/0063-operation-transfer-runtime-preservation.patch` | Preserves existing squads when one side of a transfer request is missing, keeps rejected operations running their prior contract, rejects terminal endpoints, and atomically validates unit-tag ownership before transfer mutation with executable rollback tests. |
+| `patches/0064-operation-transfer-transactional-closure.patch` | Defers reciprocal transfer generation handoff until operation state, Squad membership, owner state, and in-flight action ownership pass one runtime-used transaction plan; rejected edits preserve the existing execution state, while a successful complete-force transfer terminalizes the empty source only after commit. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -150,7 +151,7 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0063`, runs the runtime CTest contracts, then copies the blackboard
+through `0064`, runs the runtime CTest contracts, then copies the blackboard
 header and generates the embedded
 identity header before compilation. The
 report includes pinned MicroMachine and `s2client-api` commits, every patch

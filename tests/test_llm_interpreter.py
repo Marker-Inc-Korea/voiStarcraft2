@@ -1111,16 +1111,30 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                     "min_units": 0,
                     "max_units": 2,
                     "allow_partial": True,
+                    "duration_seconds": 600,
                 },
                 "scope": {
                     "army_group": "scout",
                     "location_intent": "enemy_main",
                     "allow_partial_scope": True,
+                    "duration_seconds": 600,
                 },
                 "composition_requirements": [
                     {"unit_type": "TERRAN_MARINE", "count": 2, "role": "scout"},
                 ],
-                "lifetime": {"completion_state": "active"},
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "role": "scout",
+                        "priority": 0.91,
+                        "ability_policy": "escape",
+                    }
+                ],
+                "lifetime": {
+                    "mode": "standing_order",
+                    "completion_conditions": ["cancelled_by_user"],
+                    "completion_state": "active",
+                },
             },
             {
                 "operation_id": "assault-bravo",
@@ -1131,10 +1145,12 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                     "unit_classes": ["TERRAN_MARINE"],
                     "min_units": 4,
                     "max_units": 4,
+                    "duration_seconds": 300,
                 },
                 "scope": {
                     "army_group": "main",
                     "location_intent": "enemy_natural",
+                    "duration_seconds": 300,
                 },
                 "composition_requirements": [
                     {
@@ -1143,7 +1159,11 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                         "role": "frontline",
                     },
                 ],
-                "lifetime": {"completion_state": "active"},
+                "lifetime": {
+                    "mode": "until_completed",
+                    "completion_conditions": ["target_reached"],
+                    "completion_state": "active",
+                },
             },
         ]
         interpreter = LLMCommandInterpreter(
@@ -1199,6 +1219,127 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual(
             "recon-alpha",
             destination["operation_edit"]["counterpart_operation_id"],
+        )
+        self.assertEqual("standing_order", source["lifetime"]["mode"])
+        self.assertEqual(
+            ["cancelled_by_user"],
+            source["lifetime"]["completion_conditions"],
+        )
+        self.assertEqual(
+            "escape",
+            source["unit_roles"][0]["ability_policy"],
+        )
+        self.assertEqual(0.91, source["unit_roles"][0]["priority"])
+        self.assertEqual(600, source["tactical_task"]["duration_seconds"])
+        self.assertEqual(600, source["scope"]["duration_seconds"])
+        self.assertEqual("until_completed", destination["lifetime"]["mode"])
+        self.assertEqual(
+            ["target_reached"],
+            destination["lifetime"]["completion_conditions"],
+        )
+        self.assertEqual(300, destination["tactical_task"]["duration_seconds"])
+        self.assertEqual(300, destination["scope"]["duration_seconds"])
+
+    def test_myproxy_compact_full_force_transfer_stays_active_until_runtime_commit(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰 병력 전부를 공격대로 이관합니다.",
+            "command": {
+                "operation_id": "assault-bravo",
+                "source_operation_id": "recon-alpha",
+                "operation_action": "transfer",
+                "explicit_override": True,
+                "confirmation_policy": "auto",
+                "goal": "정찰 병력 전부 공격대로 이관",
+                "command_layer": "operation",
+                "task_type": "pressure_with_main_army",
+                "unit_requests": [
+                    {"unit_type": "marine", "count": 1, "role": "scout"},
+                ],
+            },
+        }
+        known_operations = [
+            {
+                "operation_id": "recon-alpha",
+                "goal": "standing recon",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 0,
+                    "max_units": 1,
+                    "allow_partial": True,
+                    "duration_seconds": 0,
+                },
+                "scope": {
+                    "army_group": "scout",
+                    "allow_partial_scope": True,
+                    "duration_seconds": 0,
+                },
+                "composition_requirements": [
+                    {"unit_type": "TERRAN_MARINE", "count": 1, "role": "scout"},
+                ],
+                "lifetime": {
+                    "mode": "standing_order",
+                    "completion_conditions": ["cancelled_by_user"],
+                    "completion_state": "active",
+                },
+            },
+            {
+                "operation_id": "assault-bravo",
+                "goal": "assault",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 4,
+                    "max_units": 4,
+                },
+                "composition_requirements": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 4,
+                        "role": "frontline",
+                    },
+                ],
+                "lifetime": {
+                    "mode": "until_completed",
+                    "completion_conditions": ["target_reached"],
+                    "completion_state": "active",
+                },
+            },
+        ]
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: FakeResponsesClient(
+                _responses_tool_response(payload)
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "recon-alpha 병력 전부를 assault-bravo로 이관해"
+                ),
+                commander_context={"active_operations": known_operations},
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        operations = {
+            operation["operation_id"]: operation
+            for operation in output["modulation"]["operations"]
+        }
+        source = operations["recon-alpha"]
+        self.assertEqual([], source["composition_requirements"])
+        self.assertEqual("active", source["lifetime"]["completion_state"])
+        self.assertEqual("standing_order", source["lifetime"]["mode"])
+        self.assertNotIn(
+            "transferred_all_units",
+            source["lifetime"]["completion_conditions"],
         )
 
     def test_myproxy_compact_emergency_transfer_preserves_emergency_layer(
@@ -2292,9 +2433,22 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                                 "role": "scout",
                             }
                         ],
+                        "unit_roles": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "role": "scout",
+                                "priority": 0.88,
+                                "ability_policy": "escape",
+                            }
+                        ],
                         "army_group": "recon",
                         "location_intent": "enemy_main",
-                        "completion_state": "active",
+                        "scope": {"duration_seconds": 180},
+                        "lifetime": {
+                            "mode": "standing_order",
+                            "completion_conditions": ["cancelled_by_user"],
+                            "completion_state": "active",
+                        },
                     }
                 ]
             }
@@ -2311,9 +2465,24 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                     "unit_type": "TERRAN_MARINE",
                     "count": 1,
                     "role": "scout",
+                    "priority": 0.88,
+                    "ability_policy": "escape",
                 }
             ],
             operation["unit_requests"],
+        )
+        self.assertEqual(
+            {
+                "mode": "standing_order",
+                "completion_conditions": ["cancelled_by_user"],
+                "completion_state": "active",
+                "reason": "",
+            },
+            operation["lifetime"],
+        )
+        self.assertEqual(
+            180,
+            operation["tactical_task"]["duration_seconds"],
         )
 
     def test_terminal_active_operations_only_preserves_restart_context(
