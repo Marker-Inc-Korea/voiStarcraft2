@@ -185,7 +185,7 @@ index 5f4d575..651af68 100644
  		}
  		return false;
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 02ecb28..7a33f13 100644
+index 02ecb28..98bc077 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -2,6 +2,7 @@
@@ -406,11 +406,15 @@ index 02ecb28..7a33f13 100644
  }
  
  CCPosition voiResolveOperationRouteWaypoint(
-@@ -3420,6 +3456,61 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3420,6 +3456,91 @@ void CombatCommander::reconcileVoiOperation(
  		operation.assignedUnitTags.end());
  	operation.assignedCount =
  		static_cast<int>(operation.assignedUnitTags.size());
 +	operation.requirementSnapshots.clear();
++	std::map<std::string, VoiOperationProductionProgress>
++		productionProgressByType;
++	std::map<std::string, VoiRuntimeProductionPool>
++		productionPoolByType;
 +	for (const auto & requirement :
 +		operation.compositionRequirements)
 +	{
@@ -430,25 +434,51 @@ index 02ecb28..7a33f13 100644
 +				++snapshot.assignedCount;
 +			}
 +		}
-+		const VoiOperationProductionProgress productionProgress =
-+			m_bot.Commander().Production()
-+				.getVoiOperationProductionProgress(
-+					operation.operationId,
-+					operation.generation,
-+					requirement.unitType);
++		auto progress =
++			productionProgressByType.find(
++				requirement.unitType);
++		if (progress == productionProgressByType.end())
++		{
++			const VoiOperationProductionProgress value =
++				m_bot.Commander().Production()
++					.getVoiOperationProductionProgress(
++						operation.operationId,
++						operation.generation,
++						requirement.unitType);
++			progress = productionProgressByType.emplace(
++				requirement.unitType,
++				value).first;
++			productionPoolByType[requirement.unitType] = {
++				value.inProgressCount,
++				value.operationOwnedQueuedCount
++			};
++		}
++		const VoiOperationProductionProgress &
++			productionProgress = progress->second;
 +		if (productionProgress.supported)
 +		{
 +			snapshot.completedCount =
-+				productionProgress.completedCount;
-+			snapshot.representedCount = std::max(
-+				snapshot.assignedCount,
-+				productionProgress.representedCount);
++				snapshot.assignedCount;
++			VoiRuntimeProductionPool & pool =
++				productionPoolByType[
++					requirement.unitType];
++			const VoiRuntimeProductionAllocation allocation =
++				voiAllocateOperationProductionProgress(
++					snapshot.targetCount,
++					snapshot.assignedCount,
++					pool);
++			snapshot.representedCount =
++				allocation.representedCount;
 +			snapshot.inProgressCount =
-+				productionProgress.inProgressCount;
++				allocation.inProgressCount;
 +			snapshot.queuedCount =
-+				productionProgress.operationOwnedQueuedCount;
++				allocation.queuedCount;
 +			snapshot.productionBlocker =
-+				productionProgress.blocker;
++				allocation.inProgressCount > 0
++					? "training"
++					: (allocation.queuedCount > 0
++						? "production_queued"
++						: productionProgress.blocker);
 +			snapshot.missingPrerequisites =
 +				productionProgress.missingPrerequisiteTokens;
 +		}
@@ -468,7 +498,7 @@ index 02ecb28..7a33f13 100644
  
  	const bool emergencyRetreat =
  		m_bot.Commander().getVoiPolicyBool(
-@@ -3451,13 +3542,8 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3451,13 +3572,8 @@ void CombatCommander::reconcileVoiOperation(
  		&& operation.assignedCount > 0;
  	if (!enoughUnits && !mayLaunchPartial)
  	{
@@ -484,7 +514,7 @@ index 02ecb28..7a33f13 100644
  		squad.setSquadOrder(
  			SquadOrder(
  				SquadOrderTypes::Idle,
-@@ -3948,6 +4034,7 @@ void CombatCommander::updateVoiOperations()
+@@ -3948,6 +4064,7 @@ void CombatCommander::updateVoiOperations()
  		requested.targetEvidence =
  			voiResolveOperationTargetEvidence(
  				m_bot,
@@ -492,7 +522,7 @@ index 02ecb28..7a33f13 100644
  				requested.locationIntent,
  				explicitTarget,
  				requested.targetPosition);
-@@ -4739,21 +4826,29 @@ void CombatCommander::updateVoiOperations()
+@@ -4739,21 +4856,29 @@ void CombatCommander::updateVoiOperations()
  			VoiOperationState & existing,
  			const VoiOperationState & requested)
  		{
@@ -529,7 +559,7 @@ index 02ecb28..7a33f13 100644
  			existing.lifetimeMode = requested.lifetimeMode;
  			existing.completionConditions =
  				requested.completionConditions;
-@@ -4767,12 +4862,19 @@ void CombatCommander::updateVoiOperations()
+@@ -4767,12 +4892,19 @@ void CombatCommander::updateVoiOperations()
  			existing.compositionRequirements =
  				requested.compositionRequirements;
  			existing.unitRoles = requested.unitRoles;
@@ -555,7 +585,7 @@ index 02ecb28..7a33f13 100644
  			if (newEditEpoch)
  			{
  				existing.editAction =
-@@ -6256,6 +6358,84 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6256,6 +6388,84 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  		payload << "],"
  			<< "\"assigned_count\":"
  			<< operation.assignedCount << ","
@@ -640,7 +670,7 @@ index 02ecb28..7a33f13 100644
  			<< "\"target_x\":"
  			<< operation.targetX << ","
  			<< "\"target_y\":"
-@@ -10850,8 +11030,11 @@ void CombatCommander::updateAttackSquads()
+@@ -10850,8 +11060,11 @@ void CombatCommander::updateAttackSquads()
  		&& m_bot.Commander().getVoiPolicyBool(
  			"scouting.require_fresh_enemy_observation",
  			true);
@@ -654,7 +684,7 @@ index 02ecb28..7a33f13 100644
  	{
  		m_voiOperationObservedEnemy = true;
  		m_voiSweepTarget = CCPosition();
-@@ -10859,68 +11042,86 @@ void CombatCommander::updateAttackSquads()
+@@ -10859,68 +11072,86 @@ void CombatCommander::updateAttackSquads()
  		m_voiSweepLastProgressFrame = 0;
  	}
  	const bool voiAwaitingFreshEnemyObservation = voiRequiresFreshEnemyObservation
@@ -777,7 +807,7 @@ index 02ecb28..7a33f13 100644
  		}
  		if (selectNewSweepTarget)
  		{
-@@ -12199,12 +12400,21 @@ void CombatCommander::updateDefenseSquads()
+@@ -12199,12 +12430,21 @@ void CombatCommander::updateDefenseSquads()
  		m_bot.StartProfiling("0.10.4.2.2.5      calculateRegionsScores");
  		// We sort them (the one with the strongest enemy force is first)
  		regions.sort();
@@ -1173,10 +1203,10 @@ index f1c3141..ff0462f 100644
  	int getProductionBuildingsAddonsCount() const;
 diff --git a/src/voi_runtime_convergence.hpp b/src/voi_runtime_convergence.hpp
 new file mode 100644
-index 0000000..1155350
+index 0000000..53dcf72
 --- /dev/null
 +++ b/src/voi_runtime_convergence.hpp
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,407 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -1218,6 +1248,42 @@ index 0000000..1155350
 +	int representedCount = 0;
 +	int missingCount = 0;
 +};
++
++struct VoiRuntimeProductionPool
++{
++	int inProgressCount = 0;
++	int queuedCount = 0;
++};
++
++struct VoiRuntimeProductionAllocation
++{
++	int inProgressCount = 0;
++	int queuedCount = 0;
++	int representedCount = 0;
++};
++
++inline VoiRuntimeProductionAllocation
++voiAllocateOperationProductionProgress(
++	int targetCount,
++	int assignedCount,
++	VoiRuntimeProductionPool & pool)
++{
++	VoiRuntimeProductionAllocation allocation;
++	int remaining =
++		std::max(0, targetCount - assignedCount);
++	allocation.inProgressCount =
++		std::min(remaining, std::max(0, pool.inProgressCount));
++	pool.inProgressCount -= allocation.inProgressCount;
++	remaining -= allocation.inProgressCount;
++	allocation.queuedCount =
++		std::min(remaining, std::max(0, pool.queuedCount));
++	pool.queuedCount -= allocation.queuedCount;
++	allocation.representedCount =
++		std::max(0, assignedCount)
++		+ allocation.inProgressCount
++		+ allocation.queuedCount;
++	return allocation;
++}
 +
 +inline std::vector<std::string> voiTerranPrerequisiteChain(
 +	const std::string & unitType)
@@ -1572,10 +1638,10 @@ index 266483e..e0a09df 100644
 +)
 diff --git a/tests/runtime_convergence_test.cpp b/tests/runtime_convergence_test.cpp
 new file mode 100644
-index 0000000..f1961ff
+index 0000000..a593e8f
 --- /dev/null
 +++ b/tests/runtime_convergence_test.cpp
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,244 @@
 +#include "voi_runtime_convergence.hpp"
 +
 +#include <cassert>
@@ -1634,6 +1700,32 @@ index 0000000..f1961ff
 +	assert(waiting.assignedCount == 0);
 +	assert(waiting.representedCount == 1);
 +	assert(waiting.missingCount == 3);
++
++	VoiRuntimeProductionPool marinePool;
++	marinePool.inProgressCount = 2;
++	marinePool.queuedCount = 2;
++	const auto frontlineAllocation =
++		voiAllocateOperationProductionProgress(
++			2,
++			0,
++			marinePool);
++	const auto scoutAllocation =
++		voiAllocateOperationProductionProgress(
++			2,
++			0,
++			marinePool);
++	assert(frontlineAllocation.inProgressCount == 2);
++	assert(frontlineAllocation.queuedCount == 0);
++	assert(frontlineAllocation.representedCount == 2);
++	assert(scoutAllocation.inProgressCount == 0);
++	assert(scoutAllocation.queuedCount == 2);
++	assert(scoutAllocation.representedCount == 2);
++	assert(marinePool.inProgressCount == 0);
++	assert(marinePool.queuedCount == 0);
++	assert(
++		frontlineAllocation.representedCount
++			+ scoutAllocation.representedCount
++			== 4);
 +
 +	tank.representedCount = 2;
 +	viking.representedCount = 1;

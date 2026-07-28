@@ -7260,6 +7260,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         for term in (
             "getVoiOperationOwnedItemCount(",
             "getVoiOperationProductionProgress(",
+            "voiAllocateOperationProductionProgress(",
             '\\"completed_count\\"',
             '\\"in_progress_count\\"',
             '\\"queued_count\\"',
