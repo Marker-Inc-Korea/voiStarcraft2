@@ -1784,7 +1784,7 @@ def _normalize_micromachine_composition_and_roles(
 ) -> None:
     """Merge duplicate unit intents and make role-only tactical units concrete."""
 
-    merged_requirements: dict[str, dict[str, object]] = {}
+    merged_requirements: dict[tuple[str, str], dict[str, object]] = {}
     requirements = payload.get("composition_requirements")
     if _is_non_text_sequence(requirements):
         for item in requirements:
@@ -1802,9 +1802,10 @@ def _normalize_micromachine_composition_and_roles(
             if normalized_count <= 0:
                 continue
             role = str(item.get("role", "") or "").strip()
-            existing = merged_requirements.get(unit_type)
+            key = (unit_type, role)
+            existing = merged_requirements.get(key)
             if existing is None:
-                merged_requirements[unit_type] = {
+                merged_requirements[key] = {
                     "unit_type": unit_type,
                     "count": min(200, normalized_count),
                     "role": role,
@@ -1814,10 +1815,8 @@ def _normalize_micromachine_composition_and_roles(
                 200,
                 int(existing.get("count", 0) or 0) + normalized_count,
             )
-            if role:
-                existing["role"] = role
 
-    merged_roles: dict[str, dict[str, object]] = {}
+    merged_roles: dict[tuple[str, str], dict[str, object]] = {}
     roles = payload.get("unit_roles")
     if _is_non_text_sequence(roles):
         for item in roles:
@@ -1840,9 +1839,10 @@ def _normalize_micromachine_composition_and_roles(
                 "priority": max(0.0, min(1.0, priority)),
                 "ability_policy": str(item.get("ability_policy", "") or "").strip(),
             }
-            existing = merged_roles.get(unit_type)
+            key = (unit_type, role)
+            existing = merged_roles.get(key)
             if existing is None or float(existing.get("priority", 0.0)) <= priority:
-                merged_roles[unit_type] = normalized
+                merged_roles[key] = normalized
 
     tactical_task = payload.get("tactical_task")
     task_type = (
@@ -1851,19 +1851,15 @@ def _normalize_micromachine_composition_and_roles(
         else ""
     )
     if task_type in {"pressure_with_main_army", "scout_with_units"}:
-        for unit_type, role_assignment in merged_roles.items():
-            existing = merged_requirements.get(unit_type)
+        for key in merged_roles:
+            unit_type, role = key
+            existing = merged_requirements.get(key)
             if existing is None:
-                merged_requirements[unit_type] = {
+                merged_requirements[key] = {
                     "unit_type": unit_type,
                     "count": 1,
-                    "role": str(role_assignment.get("role", "") or ""),
+                    "role": role,
                 }
-            elif (
-                not str(existing.get("role", "") or "")
-                and role_assignment.get("role")
-            ):
-                existing["role"] = role_assignment["role"]
 
     if merged_requirements:
         payload["composition_requirements"] = list(merged_requirements.values())[:32]

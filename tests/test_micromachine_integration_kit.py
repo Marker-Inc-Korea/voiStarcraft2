@@ -703,6 +703,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "requestedTerminalDecision",
             "fullForcePlan.sourceTags.empty()",
             "|terminal=transferred_all_units",
+            "voiOperationTransferCompositionDeltaMatches",
+            "voiOperationTransferRolePoliciesMatch",
+            '"source_transfer_delta_mismatch"',
+            '"destination_transfer_delta_mismatch"',
+            '"transfer_role_policy_mismatch"',
         )
         for term in required_terms:
             with self.subTest(term=term):

@@ -864,9 +864,28 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                             "composition_requirements": [
                                 {
                                     "unit_type": "TERRAN_MARINE",
-                                    "count": 5,
+                                    "count": 4,
                                     "role": "frontline",
+                                },
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 1,
+                                    "role": "scout",
                                 }
+                            ],
+                            "unit_roles": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "role": "frontline",
+                                    "priority": 0.7,
+                                    "ability_policy": "if_available",
+                                },
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "role": "scout",
+                                    "priority": 0.8,
+                                    "ability_policy": "escape",
+                                },
                             ],
                             "operation_edit": {
                                 "action": "transfer_in",
@@ -888,8 +907,13 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                                 "after_composition": [
                                     {
                                         "unit_type": "TERRAN_MARINE",
-                                        "count": 5,
+                                        "count": 4,
                                         "role": "frontline",
+                                    },
+                                    {
+                                        "unit_type": "TERRAN_MARINE",
+                                        "count": 1,
+                                        "role": "scout",
                                     }
                                 ],
                                 "explicit_override": True,
@@ -928,8 +952,16 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             operations["recon-alpha"].composition_requirements[0].count,
         )
         self.assertEqual(
-            5,
-            operations["assault-bravo"].composition_requirements[0].count,
+            {
+                ("frontline", 4),
+                ("scout", 1),
+            },
+            {
+                (requirement.role, requirement.count)
+                for requirement in operations[
+                    "assault-bravo"
+                ].composition_requirements
+            },
         )
         self.assertEqual(
             "transfer_out",
@@ -944,8 +976,16 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             operations["recon-alpha"].operation_edit.before_composition[0].count,
         )
         self.assertEqual(
-            5,
-            operations["assault-bravo"].operation_edit.after_composition[0].count,
+            {
+                ("frontline", 4),
+                ("scout", 1),
+            },
+            {
+                (requirement.role, requirement.count)
+                for requirement in operations[
+                    "assault-bravo"
+                ].operation_edit.after_composition
+            },
         )
 
     def test_parallel_operation_lifetime_uses_longest_operation_window(

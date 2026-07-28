@@ -2,7 +2,62 @@ diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
 index 3385c33..80407c7 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
-@@ -4548,8 +4548,9 @@ void CombatCommander::updateVoiOperations()
+@@ -4270,6 +4270,14 @@ void CombatCommander::updateVoiOperations()
+ 			return std::string(
+ 				"transfer_counterpart_contract_mismatch");
+ 		}
++		if (sourceRequested
++				->editBeforeComposition.empty()
++			|| destination
++				.editBeforeComposition.empty())
++		{
++			return std::string(
++				"transfer_before_composition_required");
++		}
+ 		const bool emergencySupersession =
+ 			destination.commandLayer == "emergency";
+ 		if (!emergencySupersession
+@@ -4323,6 +4331,39 @@ void CombatCommander::updateVoiOperations()
+ 			return std::string(
+ 				"transfer_after_composition_mismatch");
+ 		}
++		if (!voiOperationTransferCompositionDeltaMatches(
++				sourceRequested
++					->editBeforeComposition,
++				sourceRequested
++					->editUnitSelection,
++				sourceRequested
++					->editAfterComposition,
++				false))
++		{
++			return std::string(
++				"source_transfer_delta_mismatch");
++		}
++		if (!voiOperationTransferCompositionDeltaMatches(
++				destination
++					.editBeforeComposition,
++				destination
++					.editUnitSelection,
++				destination
++					.editAfterComposition,
++				true))
++		{
++			return std::string(
++				"destination_transfer_delta_mismatch");
++		}
++		if (!voiOperationTransferRolePoliciesMatch(
++				sourceExisting->unitRoles,
++				destination.unitRoles,
++				destination
++					.editUnitSelection))
++		{
++			return std::string(
++				"transfer_role_policy_mismatch");
++		}
+ 		const int sourceAfterCount =
+ 			voiOperationCompositionTotal(
+ 				sourceRequested
+@@ -4548,8 +4589,9 @@ void CombatCommander::updateVoiOperations()
  			requested.generation;
  		requestedEndpoint.requestedPresent = true;
  		requestedEndpoint.terminal =
@@ -14,7 +69,7 @@ index 3385c33..80407c7 100644
  		requestedEndpoint.existingActive =
  			voiExistingTransferEndpointActive(
  				requestedExisting != nullptr,
-@@ -4565,8 +4566,10 @@ void CombatCommander::updateVoiOperations()
+@@ -4565,8 +4607,10 @@ void CombatCommander::updateVoiOperations()
  		counterpartEndpoint.requestedPresent =
  			counterpartRequested != nullptr;
  		counterpartEndpoint.terminal =
@@ -27,7 +82,7 @@ index 3385c33..80407c7 100644
  		counterpartEndpoint.existingActive =
  			voiExistingTransferEndpointActive(
  				counterpartExisting != nullptr,
-@@ -4773,11 +4776,6 @@ void CombatCommander::updateVoiOperations()
+@@ -4773,11 +4817,6 @@ void CombatCommander::updateVoiOperations()
  				requested.commandLayer == "emergency"
  					? "emergency_supersession"
  					: "priority_preemption";
@@ -39,7 +94,7 @@ index 3385c33..80407c7 100644
  			existing.lastAction =
  				"operation_edit_blocked|" + blocker;
  			existing.lastActionFrame =
-@@ -4828,13 +4826,12 @@ void CombatCommander::updateVoiOperations()
+@@ -4828,13 +4867,12 @@ void CombatCommander::updateVoiOperations()
  			existing.lastActionFrame =
  				m_bot.GetGameLoop();
  		};
@@ -57,7 +112,7 @@ index 3385c33..80407c7 100644
  			const uint64_t previousGeneration =
  				existing.generation;
  			const bool targetChanged =
-@@ -4842,15 +4839,6 @@ void CombatCommander::updateVoiOperations()
+@@ -4842,15 +4880,6 @@ void CombatCommander::updateVoiOperations()
  					!= requested.targetPosition
  				|| existing.routeType
  					!= requested.routeType;
@@ -73,7 +128,7 @@ index 3385c33..80407c7 100644
  			VoiOperationState replacement = requested;
  			replacement.assignedUnitTags =
  				existing.assignedUnitTags;
-@@ -4904,6 +4892,42 @@ void CombatCommander::updateVoiOperations()
+@@ -4904,6 +4933,42 @@ void CombatCommander::updateVoiOperations()
  				replacement.commandLayer == "emergency"
  					? "emergency_supersession"
  					: "priority_preemption";
@@ -116,7 +171,7 @@ index 3385c33..80407c7 100644
  
  			Squad & replacementSquad =
  				ensureOperationSquad(replacement);
-@@ -4955,17 +4979,6 @@ void CombatCommander::updateVoiOperations()
+@@ -4955,17 +5020,6 @@ void CombatCommander::updateVoiOperations()
  					unitActions.erase(action);
  				}
  			}
@@ -134,7 +189,7 @@ index 3385c33..80407c7 100644
  			existing = replacement;
  		};
  
-@@ -5097,6 +5110,14 @@ void CombatCommander::updateVoiOperations()
+@@ -5097,6 +5151,14 @@ void CombatCommander::updateVoiOperations()
  				++index;
  				continue;
  			}
@@ -149,7 +204,7 @@ index 3385c33..80407c7 100644
  			handoffGeneration(
  				existing,
  				*requested);
-@@ -5205,200 +5226,381 @@ void CombatCommander::updateVoiOperations()
+@@ -5205,200 +5267,381 @@ void CombatCommander::updateVoiOperations()
  			}
  			return latest;
  		};
@@ -683,8 +738,9 @@ diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transf
 index 99cd745..b14c349 100644
 --- a/src/voi_operation_transfer_admission.hpp
 +++ b/src/voi_operation_transfer_admission.hpp
-@@ -2,7 +2,9 @@
+@@ -2,7 +2,10 @@
  
++#include <algorithm>
  #include <cstdint>
  #include <map>
 +#include <set>
@@ -693,7 +749,7 @@ index 99cd745..b14c349 100644
  #include <vector>
  
  struct VoiOperationTransferEndpoint
-@@ -24,6 +26,16 @@ struct VoiOperationTransferAdmission
+@@ -24,6 +27,112 @@ struct VoiOperationTransferAdmission
  	std::string blocker;
  };
  
@@ -707,10 +763,106 @@ index 99cd745..b14c349 100644
 +	std::vector<Tag> destinationTags;
 +};
 +
++template <typename CompositionEntry>
++std::map<std::pair<std::string, std::string>, int>
++voiOperationTransferCompositionCounts(
++	const std::vector<CompositionEntry> & composition)
++{
++	std::map<std::pair<std::string, std::string>, int> counts;
++	for (const auto & requirement : composition)
++	{
++		counts[{
++			requirement.unitType,
++			requirement.role
++		}] += requirement.count;
++	}
++	return counts;
++}
++
++template <typename CompositionEntry>
++bool voiOperationTransferCompositionDeltaMatches(
++	const std::vector<CompositionEntry> & before,
++	const std::vector<CompositionEntry> & selection,
++	const std::vector<CompositionEntry> & after,
++	bool addSelection)
++{
++	auto expected =
++		voiOperationTransferCompositionCounts(before);
++	for (const auto & selected : selection)
++	{
++		const std::pair<std::string, std::string> key = {
++			selected.unitType,
++			selected.role
++		};
++		const auto existing = expected.find(key);
++		if (!addSelection
++			&& (existing == expected.end()
++				|| existing->second < selected.count))
++		{
++			return false;
++		}
++		const int nextCount =
++			(existing == expected.end() ? 0 : existing->second)
++			+ (addSelection
++				? selected.count
++				: -selected.count);
++		if (nextCount == 0)
++		{
++			expected.erase(key);
++		}
++		else
++		{
++			expected[key] = nextCount;
++		}
++	}
++	return expected
++		== voiOperationTransferCompositionCounts(after);
++}
++
++template <typename RolePolicy, typename CompositionEntry>
++bool voiOperationTransferRolePoliciesMatch(
++	const std::vector<RolePolicy> & sourceRoles,
++	const std::vector<RolePolicy> & destinationRoles,
++	const std::vector<CompositionEntry> & selection)
++{
++	for (const auto & selected : selection)
++	{
++		const auto destination = std::find_if(
++			destinationRoles.begin(),
++			destinationRoles.end(),
++			[&](const RolePolicy & role)
++			{
++				return role.unitType == selected.unitType
++					&& role.role == selected.role;
++			});
++		if (destination == destinationRoles.end())
++		{
++			return false;
++		}
++		const auto source = std::find_if(
++			sourceRoles.begin(),
++			sourceRoles.end(),
++			[&](const RolePolicy & role)
++			{
++				return role.unitType == selected.unitType
++					&& role.role == selected.role;
++			});
++		if (source != sourceRoles.end()
++			&& (source->abilityPolicy
++					!= destination->abilityPolicy
++				|| source->priority
++					!= destination->priority))
++		{
++			return false;
++		}
++	}
++	return true;
++}
++
  inline bool voiExistingTransferEndpointActive(
  	bool existingPresent,
  	bool existingTerminal)
-@@ -127,6 +139,148 @@ bool voiTransferOwnershipAtomically(
+@@ -127,6 +236,148 @@ bool voiTransferOwnershipAtomically(
  	return true;
  }
  
@@ -880,7 +1032,7 @@ index 1f88e01..b508aea 100644
  
  	using Owner = std::pair<std::string, std::uint64_t>;
  	std::map<std::uint64_t, Owner> owners = {
-@@ -154,6 +164,142 @@ int main()
+@@ -154,6 +164,212 @@ int main()
  			sourceOwner));
  	assert(owners == ownersBeforeRejectedTransfer);
  
@@ -943,6 +1095,76 @@ index 1f88e01..b508aea 100644
 +	assert(fullForcePlan.destinationTags.size() == 3);
 +	assert(transactionOwners.at(11) == currentSourceOwner);
 +	assert(transactionOwners.at(22) == currentSourceOwner);
++
++	struct CompositionEntry
++	{
++		std::string unitType;
++		int count;
++		std::string role;
++	};
++	struct RolePolicy
++	{
++		std::string unitType;
++		std::string role;
++		std::string abilityPolicy;
++		float priority;
++	};
++	const std::vector<CompositionEntry> scoutSelection = {
++		{ "TERRAN_MARINE", 1, "scout" },
++	};
++	assert(
++		voiOperationTransferCompositionDeltaMatches(
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 1, "scout" },
++			},
++			scoutSelection,
++			std::vector<CompositionEntry>(),
++			false));
++	assert(
++		voiOperationTransferCompositionDeltaMatches(
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 4, "frontline" },
++			},
++			scoutSelection,
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 4, "frontline" },
++				{ "TERRAN_MARINE", 1, "scout" },
++			},
++			true));
++	assert(
++		!voiOperationTransferCompositionDeltaMatches(
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 4, "frontline" },
++			},
++			scoutSelection,
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 5, "frontline" },
++			},
++			true));
++	const std::vector<RolePolicy> sourceRolePolicies = {
++		{ "TERRAN_MARINE", "scout", "if_available", 0.8f },
++	};
++	assert(
++		voiOperationTransferRolePoliciesMatch(
++			sourceRolePolicies,
++			std::vector<RolePolicy>{
++				{ "TERRAN_MARINE", "scout", "if_available", 0.8f },
++			},
++			scoutSelection));
++	assert(
++		!voiOperationTransferRolePoliciesMatch(
++			sourceRolePolicies,
++			std::vector<RolePolicy>{
++				{ "TERRAN_MARINE", "frontline", "if_available", 0.8f },
++			},
++			scoutSelection));
++	assert(
++		!voiOperationTransferRolePoliciesMatch(
++			sourceRolePolicies,
++			std::vector<RolePolicy>{
++				{ "TERRAN_MARINE", "scout", "always", 0.8f },
++			},
++			scoutSelection));
 +
 +	auto rejectedPlan =
 +		voiPlanOperationTransferTransaction(

@@ -4677,7 +4677,7 @@ def _compact_unit_requests_from_operation(
         if isinstance(operation.get("tactical_task"), Mapping)
         else {}
     )
-    return _lower_compact_unit_requests(
+    requests = _lower_compact_unit_requests(
         operation.get(
             "unit_requests",
             operation.get("composition_requirements", ()),
@@ -4685,6 +4685,34 @@ def _compact_unit_requests_from_operation(
         task_type=str(task.get("task_type", "") or ""),
         ability=str(task.get("ability", "") or ""),
     )
+    roles = operation.get("unit_roles")
+    if not isinstance(roles, Sequence) or isinstance(
+        roles,
+        (str, bytes, bytearray),
+    ):
+        return requests
+    role_metadata = {
+        (
+            _canonical_compact_task_token(role.get("unit_type", "")),
+            str(role.get("role", "") or "").strip(),
+        ): role
+        for role in roles
+        if isinstance(role, Mapping)
+    }
+    for request in requests:
+        metadata = role_metadata.get(
+            (
+                str(request.get("unit_type", "") or ""),
+                str(request.get("role", "") or ""),
+            )
+        )
+        if metadata is None:
+            continue
+        if "priority" in metadata:
+            request["priority"] = metadata["priority"]
+        if "ability_policy" in metadata:
+            request["ability_policy"] = metadata["ability_policy"]
+    return requests
 
 
 def _compact_merge_unit_request_counts(

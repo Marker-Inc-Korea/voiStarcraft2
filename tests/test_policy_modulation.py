@@ -94,7 +94,12 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 allow_partial=False,
             ),
             composition_requirements=(
-                CompositionRequirement("marine", count=5, role="frontline"),
+                CompositionRequirement("marine", count=4, role="frontline"),
+                CompositionRequirement("marine", count=1, role="scout"),
+            ),
+            unit_roles=(
+                UnitRoleAssignment("marine", role="frontline", priority=0.4),
+                UnitRoleAssignment("marine", role="scout", priority=0.8),
             ),
             operation_edit=OperationEditModulation(
                 action="transfer_in",
@@ -106,7 +111,8 @@ class PolicyModulationVectorTest(unittest.TestCase):
                     CompositionRequirement("marine", count=4, role="frontline"),
                 ),
                 after_composition=(
-                    CompositionRequirement("marine", count=5, role="frontline"),
+                    CompositionRequirement("marine", count=4, role="frontline"),
+                    CompositionRequirement("marine", count=1, role="scout"),
                 ),
                 explicit_override=True,
             ),
@@ -130,12 +136,24 @@ class PolicyModulationVectorTest(unittest.TestCase):
             operation_id="assault-bravo",
             goal="receive one marine",
             composition_requirements=(
-                CompositionRequirement("marine", count=5, role="frontline"),
+                CompositionRequirement("marine", count=4, role="frontline"),
+                CompositionRequirement("marine", count=1, role="scout"),
+            ),
+            unit_roles=(
+                UnitRoleAssignment("marine", role="frontline", priority=0.4),
+                UnitRoleAssignment("marine", role="scout", priority=0.8),
             ),
             operation_edit=OperationEditModulation(
                 action="transfer_in",
                 counterpart_operation_id="recon-alpha",
                 unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                before_composition=(
+                    CompositionRequirement("marine", count=4, role="frontline"),
+                ),
+                after_composition=(
+                    CompositionRequirement("marine", count=4, role="frontline"),
                     CompositionRequirement("marine", count=1, role="scout"),
                 ),
             ),
@@ -151,15 +169,16 @@ class PolicyModulationVectorTest(unittest.TestCase):
         source = TacticalOperationModulation(
             operation_id="recon-alpha",
             goal="release one marine",
-            composition_requirements=(
-                CompositionRequirement("marine", count=1, role="scout"),
-            ),
             operation_edit=OperationEditModulation(
                 action="transfer_out",
                 counterpart_operation_id="assault-bravo",
                 unit_selection=(
                     CompositionRequirement("marine", count=1, role="scout"),
                 ),
+                before_composition=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                after_composition=(),
             ),
         )
         vector = PolicyModulationVector(
@@ -200,6 +219,54 @@ class PolicyModulationVectorTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unit types, roles, and counts"):
             PolicyModulationVector(
                 goal="invalid role transfer",
+                command_layer="operation",
+                operations=(source, destination),
+            )
+
+    def test_transfer_edit_rejects_destination_role_laundering(self) -> None:
+        source = TacticalOperationModulation(
+            operation_id="recon-alpha",
+            goal="release one scout marine",
+            operation_edit=OperationEditModulation(
+                action="transfer_out",
+                counterpart_operation_id="assault-bravo",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                before_composition=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                after_composition=(),
+            ),
+        )
+        destination = TacticalOperationModulation(
+            operation_id="assault-bravo",
+            goal="launder scout into frontline role",
+            composition_requirements=(
+                CompositionRequirement("marine", count=5, role="frontline"),
+            ),
+            unit_roles=(
+                UnitRoleAssignment("marine", role="frontline", priority=0.8),
+                UnitRoleAssignment("marine", role="scout", priority=0.8),
+            ),
+            operation_edit=OperationEditModulation(
+                action="transfer_in",
+                counterpart_operation_id="recon-alpha",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                before_composition=(
+                    CompositionRequirement("marine", count=4, role="frontline"),
+                ),
+                after_composition=(
+                    CompositionRequirement("marine", count=5, role="frontline"),
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "matching unit type and role"):
+            PolicyModulationVector(
+                goal="invalid role laundering transfer",
                 command_layer="operation",
                 operations=(source, destination),
             )
@@ -457,6 +524,10 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 unit_selection=(
                     CompositionRequirement("marine", count=1, role="scout"),
                 ),
+                before_composition=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                after_composition=(),
                 explicit_override=True,
             ),
         )
@@ -464,10 +535,24 @@ class PolicyModulationVectorTest(unittest.TestCase):
             operation_id="defense-bravo",
             goal="receive one scout immediately",
             command_layer="emergency",
+            composition_requirements=(
+                CompositionRequirement("marine", count=1, role="frontline"),
+                CompositionRequirement("marine", count=1, role="scout"),
+            ),
+            unit_roles=(
+                UnitRoleAssignment("marine", role="scout", priority=1.0),
+            ),
             operation_edit=OperationEditModulation(
                 action="transfer_in",
                 counterpart_operation_id="recon-alpha",
                 unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                before_composition=(
+                    CompositionRequirement("marine", count=1, role="frontline"),
+                ),
+                after_composition=(
+                    CompositionRequirement("marine", count=1, role="frontline"),
                     CompositionRequirement("marine", count=1, role="scout"),
                 ),
                 explicit_override=True,

@@ -2453,6 +2453,55 @@ def _validate_operation_edit_contracts(
                 "transfer operation edit counterparts must select the same "
                 "unit types, roles, and counts."
             )
+        if not edit.before_composition:
+            raise ValueError(
+                "transfer operation edits require a before_composition snapshot."
+            )
+        if _composition_requirement_counts(
+            edit.after_composition
+        ) != _composition_requirement_counts(operation.composition_requirements):
+            raise ValueError(
+                "transfer operation edit after_composition must match the "
+                "operation composition_requirements for "
+                f"{operation.operation_id!r}."
+            )
+
+        before_counts = _composition_requirement_counts(edit.before_composition)
+        selection_counts = _composition_requirement_counts(edit.unit_selection)
+        expected_after = dict(before_counts)
+        for key, selected_count in selection_counts.items():
+            current_count = expected_after.get(key, 0)
+            if edit.action == "transfer_out":
+                remaining_count = current_count - selected_count
+                if remaining_count < 0:
+                    raise ValueError(
+                        "transfer_out unit_selection cannot exceed the matching "
+                        "before_composition unit type and role."
+                    )
+                if remaining_count:
+                    expected_after[key] = remaining_count
+                else:
+                    expected_after.pop(key, None)
+            else:
+                expected_after[key] = current_count + selected_count
+
+        if expected_after != _composition_requirement_counts(edit.after_composition):
+            direction = "subtract" if edit.action == "transfer_out" else "add"
+            raise ValueError(
+                f"{edit.action} after_composition must {direction} unit_selection "
+                "by matching unit type and role."
+            )
+        if edit.action == "transfer_in":
+            destination_roles = {
+                (assignment.unit_type, assignment.role)
+                for assignment in operation.unit_roles
+            }
+            missing_roles = sorted(set(selection_counts) - destination_roles)
+            if missing_roles:
+                raise ValueError(
+                    "transfer_in selected unit types and roles must exist in "
+                    f"destination unit_roles: {missing_roles!r}."
+                )
 
 
 def _operation_edit_selection_counts(
@@ -2468,6 +2517,15 @@ def _operation_edit_selection_counts(
             for requirement in edit.unit_selection
         )
     )
+
+
+def _composition_requirement_counts(
+    requirements: tuple[CompositionRequirement, ...],
+) -> dict[tuple[str, str], int]:
+    return {
+        (requirement.unit_type, requirement.role): requirement.count
+        for requirement in requirements
+    }
 
 
 def _tactical_operations_from_mapping(
