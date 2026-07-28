@@ -347,7 +347,7 @@
     {
       "path": "patches/0068-all-terran-harass-capability-evidence.patch",
       "order": 68,
-      "scope": "admit harass_with_units as genuine SquadOrderTypes::Harass operations, preserve Harass order and radius across operation lifecycle paths, include harassment in production activity, and expose squad-order plus 15-family attempted, executed, effect, and blocker evidence in telemetry and the existing Battlefield Commander card"
+      "scope": "admit harass_with_units as genuine SquadOrderTypes::Harass operations, preserve Harass order and radius across operation lifecycle paths, include harassment in production activity, and expose squad-order plus 15-family attempted, executed, effect, and blocker evidence in telemetry and the existing Battlefield Commander card, with effect attribution bound to the exact policy update, operation generation, action attempt, and later matching submission observation, serialized-family-only acknowledgement after a successful authoritative write, and failed-write retention"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {
