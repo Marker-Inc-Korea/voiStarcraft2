@@ -4794,6 +4794,7 @@ def _compact_unit_requests_from_operation(
             request["priority"] = metadata["priority"]
         if "ability_policy" in metadata:
             request["ability_policy"] = metadata["ability_policy"]
+        _apply_compact_requested_form_metadata(request)
     return requests
 
 
@@ -5417,28 +5418,36 @@ def _lower_compact_unit_requests(
             and isinstance(priority, (int, float))
             else (0.9 if task_type == "execute_ability" else 0.8)
         )
-        result.append(
-            {
-                "unit_type": unit_type,
-                "count": normalized_count,
-                "role": role,
-                "priority": normalized_priority,
-                "ability_policy": ability_policy,
-                **(
-                    {
-                        "__requested_form": "TERRAN_HELLIONTANK",
-                        "__production_targets": (
-                            "TERRAN_FACTORY",
-                            "TERRAN_ARMORY",
-                            "TERRAN_HELLION",
-                        ),
-                    }
-                    if requested_hellbat
-                    else {}
-                ),
-            }
-        )
+        request = {
+            "unit_type": unit_type,
+            "count": normalized_count,
+            "role": role,
+            "priority": normalized_priority,
+            "ability_policy": ability_policy,
+        }
+        if requested_hellbat:
+            request["ability_policy"] = "hellbat_mode"
+        _apply_compact_requested_form_metadata(request)
+        result.append(request)
     return result[:16]
+
+
+def _apply_compact_requested_form_metadata(
+    request: dict[str, object],
+) -> None:
+    if (
+        _canonical_compact_task_token(request.get("unit_type", ""))
+        != "TERRAN_HELLION"
+        or str(request.get("ability_policy", "") or "").strip()
+        != "hellbat_mode"
+    ):
+        return
+    request["__requested_form"] = "TERRAN_HELLIONTANK"
+    request["__production_targets"] = (
+        "TERRAN_FACTORY",
+        "TERRAN_ARMORY",
+        "TERRAN_HELLION",
+    )
 
 
 def _compact_unit_request_is_hellbat(value: object) -> bool:

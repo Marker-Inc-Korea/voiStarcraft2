@@ -1028,7 +1028,11 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         for source_path in (
             "--- a/src/CombatCommander.cpp",
+            "--- a/src/GameCommander.cpp",
             "--- a/src/ProductionManager.cpp",
+            "--- /dev/null",
+            "+++ b/src/voi_family_effect_lifecycle.hpp",
+            "+++ b/tests/family_effect_lifecycle_test.cpp",
         ):
             with self.subTest(source_path=source_path):
                 self.assertIn(source_path, patch)
@@ -1062,6 +1066,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '<< " action="',
             '<< " effect="',
             'card << " force="',
+            "VoiFamilyEffectTelemetryLatch",
+            "voiLatchFamilyEffectForTelemetry",
+            "voiSelectFamilyEffectForTelemetry",
+            "voiAcknowledgeFamilyEffectTelemetry",
+            "acknowledgeVoiFamilyEffects",
+            "authoritativeTelemetryWritten",
+            "telemetry.close()",
+            "observe A -> Plan B -> submit B -> telemetry still emits A",
+            "A persistent state cannot relatch",
+            "new operation generation neither exposes nor blocks",
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, patch)
