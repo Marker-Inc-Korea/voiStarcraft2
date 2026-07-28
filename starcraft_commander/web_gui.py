@@ -1659,6 +1659,32 @@ def _micromachine_operation_status_payload(
         if scope_id
         else f"{operation_id}\0{operation_generation}"
     )
+    operation_edit = _mapping_child(operation_vector, "operation_edit")
+    if operation_telemetry is not None:
+        telemetry_edit = {
+            "action": operation_telemetry.get("edit_action"),
+            "counterpart_operation_id": operation_telemetry.get(
+                "edit_counterpart_operation_id"
+            ),
+            "before_count": operation_telemetry.get("edit_before_count"),
+            "after_count": operation_telemetry.get("edit_after_count"),
+            "transferred_in_count": operation_telemetry.get(
+                "transferred_in_count"
+            ),
+            "transferred_out_count": operation_telemetry.get(
+                "transferred_out_count"
+            ),
+            "resolution": operation_telemetry.get("edit_resolution"),
+            "blocker": operation_telemetry.get("edit_blocker"),
+        }
+        operation_edit = {
+            **operation_edit,
+            **{
+                key: value
+                for key, value in telemetry_edit.items()
+                if value not in {None, ""}
+            },
+        }
     return {
         "operation_key": operation_key,
         "operation_id": operation_id,
@@ -1685,6 +1711,7 @@ def _micromachine_operation_status_payload(
         "telemetry_frame": telemetry_frame,
         "telemetry_current": telemetry_current,
         "disposition": disposition,
+        "operation_edit": operation_edit,
     }
 
 
@@ -3256,6 +3283,17 @@ def _micromachine_recent_command_entry(
         or scope.get("location_intent")
         or ""
     )
+    raw_operations = vector.get("operations")
+    operations = (
+        [
+            json.loads(json.dumps(dict(operation), ensure_ascii=False))
+            for operation in raw_operations
+            if isinstance(operation, Mapping)
+        ]
+        if isinstance(raw_operations, Sequence)
+        and not isinstance(raw_operations, (str, bytes, bytearray))
+        else []
+    )
     return {
         "command_text": _micromachine_recent_context_text(
             command_text,
@@ -3313,6 +3351,7 @@ def _micromachine_recent_command_entry(
         "execution_status": _micromachine_recent_context_text(
             execution.get("state", "")
         ),
+        "operations": operations,
     }
 
 
@@ -10136,12 +10175,11 @@ function commandOperationData(operation, parentData) {
     dashboard: parentData && parentData.dashboard || {},
     blackboard_scope_id: scopeId,
     operation_id: operationId,
-    operation_key: String(
-      operation.operation_key ||
-      operationRecordKey(scopeId, operationId)
-    ),
+    operation_key: operationRecordKey(scopeId, operationId),
+    operation_generation: Number(operation.operation_generation || 0),
     operation_disposition: disposition,
     operation_mission: String(operation.mission || "operation"),
+    operation_edit: operation.operation_edit || {},
     telemetry_current: operation.telemetry_current === true
   };
 }
@@ -10304,10 +10342,26 @@ function reconcileOperationRecord(operation, parentData) {
   if (
     record &&
     record.operationGeneration > 0 &&
-    operationGeneration > 0 &&
-    record.operationGeneration !== operationGeneration
+    operationGeneration <= 0
   ) {
     return record;
+  }
+  if (
+    record &&
+    record.operationGeneration > 0 &&
+    operationGeneration > 0 &&
+    operationGeneration < record.operationGeneration
+  ) {
+    return record;
+  }
+  if (
+    record &&
+    operationGeneration > record.operationGeneration
+  ) {
+    record.stageRank = 0;
+    record.telemetryFrame = -1;
+    record.terminal = false;
+    record.disposition = "pending";
   }
   if (record && record.terminal) {
     return record;
@@ -10376,6 +10430,79 @@ function operationAppendDetail(container, label, value, extraClass) {
   detail.appendChild(labelNode);
   detail.appendChild(valueNode);
   container.appendChild(detail);
+}
+
+function operationEditPayload(data) {
+  var edit = data && data.operation_edit;
+  return edit && typeof edit === "object" ? edit : {};
+}
+
+function operationCompositionLabel(value) {
+  if (!Array.isArray(value) || !value.length) {
+    return commandUiText("없음", "none", "无");
+  }
+  return value.map(function(requirement) {
+    var unitType = String(requirement && requirement.unit_type || "")
+      .replace(/^TERRAN_/, "");
+    var count = Number(requirement && requirement.count || 0);
+    return unitType + " ×" + count;
+  }).join(" · ");
+}
+
+function operationEditSummary(data) {
+  var edit = operationEditPayload(data);
+  var action = String(edit.action || "");
+  if (!action) { return ""; }
+  var counterpart = String(edit.counterpart_operation_id || "");
+  return counterpart ? action + " · " + counterpart : action;
+}
+
+function operationEditForceChange(data) {
+  var edit = operationEditPayload(data);
+  if (!edit.action) { return ""; }
+  return operationCompositionLabel(edit.before_composition) +
+    " → " + operationCompositionLabel(edit.after_composition);
+}
+
+function operationEditResolution(data) {
+  var edit = operationEditPayload(data);
+  if (!edit.action) { return ""; }
+  var parts = [];
+  if (edit.resolution) { parts.push(String(edit.resolution)); }
+  if (edit.blocker) { parts.push(String(edit.blocker)); }
+  if (Number(edit.transferred_in_count || 0) > 0) {
+    parts.push("+" + Number(edit.transferred_in_count) + " transferred");
+  }
+  if (Number(edit.transferred_out_count || 0) > 0) {
+    parts.push("-" + Number(edit.transferred_out_count) + " transferred");
+  }
+  return parts.join(" · ") || commandUiText(
+    "런타임 적용 대기",
+    "awaiting runtime application",
+    "等待运行时应用"
+  );
+}
+
+function prefillOperationEdit(record, action) {
+  var input = document.getElementById("command-input");
+  if (!input) { return; }
+  if (action === "reinforce") {
+    input.value = currentLang === "en"
+      ? "Reinforce operation " + record.operationId + " with "
+      : (currentLang === "zh"
+        ? "为作战 " + record.operationId + " 增援 "
+        : "작전 " + record.operationId + "에 병력을 증원해: ");
+  } else if (action === "retarget") {
+    input.value = currentLang === "en"
+      ? "Retarget operation " + record.operationId + " to "
+      : (currentLang === "zh"
+        ? "把作战 " + record.operationId + " 的目标改为 "
+        : "작전 " + record.operationId + "의 목표를 변경해: ");
+  } else {
+    input.value = record.text || "";
+  }
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
 }
 
 function operationActionButton(record, label, action, handler) {
@@ -10491,6 +10618,24 @@ function renderOperationCard(record) {
     commandUiText("배정 전력", "Assigned force", "已分配兵力"),
     commandConsoleAssignedForce(model)
   );
+  if (operationEditSummary(data)) {
+    operationAppendDetail(
+      details,
+      commandUiText("작전 변경", "Operation edit", "作战变更"),
+      operationEditSummary(data)
+    );
+    operationAppendDetail(
+      details,
+      commandUiText("병력 변화", "Force change", "兵力变化"),
+      operationEditForceChange(data)
+    );
+    operationAppendDetail(
+      details,
+      commandUiText("충돌 해결", "Conflict resolution", "冲突处理"),
+      operationEditResolution(data),
+      "operation-card-verification"
+    );
+  }
   operationAppendDetail(
     details,
     commandUiText("실제 SC2 명령", "Actual SC2 command", "实际 SC2 命令"),
@@ -10524,12 +10669,23 @@ function renderOperationCard(record) {
       record,
       commandUiText("수정", "Revise", "修改"),
       "revise",
-      function() {
-        var input = document.getElementById("command-input");
-        if (!input) { return; }
-        input.value = record.text || "";
-        input.focus();
-      }
+      function() { prefillOperationEdit(record, "revise"); }
+    )
+  );
+  actions.appendChild(
+    operationActionButton(
+      record,
+      commandUiText("증원", "Reinforce", "增援"),
+      "reinforce",
+      function() { prefillOperationEdit(record, "reinforce"); }
+    )
+  );
+  actions.appendChild(
+    operationActionButton(
+      record,
+      commandUiText("목표 변경", "Retarget", "变更目标"),
+      "retarget",
+      function() { prefillOperationEdit(record, "retarget"); }
     )
   );
   actions.appendChild(

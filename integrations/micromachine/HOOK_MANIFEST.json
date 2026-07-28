@@ -303,6 +303,11 @@
       "path": "patches/0059-production-fifo-and-zero-owner-cleanup.patch",
       "order": 59,
       "scope": "preserve FIFO execution for equal-priority production queue items even though the queue executes from its back, emit positive-frame operation cleanup evidence when cancellation releases either stopped owned units or an operation with no remaining owned units, and preserve the first terminal cleanup action and frame idempotently across later release passes"
+    },
+    {
+      "path": "patches/0060-operation-edit-ownership-handoff.patch",
+      "order": 60,
+      "scope": "parse authoritative operation_edit contracts, hand off same-operation generations without issuing SmartStop, execute reciprocal named-source transfers atomically while preserving one owner per unit tag and source composition, remove stale owners and actions, reject stale generations, and expose edit action, counterpart, before-after composition, transferred counts, resolution, and blocker telemetry"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

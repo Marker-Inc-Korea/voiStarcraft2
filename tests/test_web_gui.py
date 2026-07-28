@@ -2316,6 +2316,21 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                                     "task_type": "pressure_with_main_army",
                                     "unit_classes": ["TERRAN_MARINE"],
                                 },
+                                "operation_edit": {
+                                    "action": "reinforce",
+                                    "before_composition": [
+                                        {
+                                            "unit_type": "TERRAN_MARINE",
+                                            "count": 2,
+                                        }
+                                    ],
+                                    "after_composition": [
+                                        {
+                                            "unit_type": "TERRAN_MARINE",
+                                            "count": 4,
+                                        }
+                                    ],
+                                },
                             },
                         ],
                     },
@@ -2354,6 +2369,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "operation_id": "assault-bravo",
                             "update_id": update_id,
                             "received_frame": 206,
+                            "edit_action": "reinforce",
+                            "edit_before_count": 2,
+                            "edit_after_count": 4,
+                            "transferred_in_count": 2,
+                            "edit_resolution": "blocked",
+                            "edit_blocker": "explicit_ability_owner_protected",
                             "assignment": {
                                 "status": "assigned",
                                 "assigned_unit_count": 4,
@@ -2436,6 +2457,23 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         self.assertEqual("assault-bravo", assault_execution["operation_id"])
         self.assertEqual("queued_or_assigned", assault_execution["state"])
+        self.assertEqual(
+            {
+                "action": "reinforce",
+                "before_composition": [
+                    {"unit_type": "TERRAN_MARINE", "count": 2}
+                ],
+                "after_composition": [
+                    {"unit_type": "TERRAN_MARINE", "count": 4}
+                ],
+                "before_count": 2,
+                "after_count": 4,
+                "transferred_in_count": 2,
+                "resolution": "blocked",
+                "blocker": "explicit_ability_owner_protected",
+            },
+            operations["assault-bravo"]["operation_edit"],
+        )
         self.assertNotIn(
             "action_issued",
             [stage["name"] for stage in assault_execution["stages"]],
@@ -4450,6 +4488,59 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ],
         )
 
+    def test_micromachine_recent_command_retains_operation_edit_context(self):
+        operation = {
+            "operation_id": "assault-bravo",
+            "generation": 3,
+            "goal": "attack with six marines",
+            "tactical_task": {
+                "task_type": "pressure_with_main_army",
+                "unit_classes": ["TERRAN_MARINE"],
+                "min_units": 6,
+                "max_units": 6,
+            },
+            "composition_requirements": [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": 6,
+                    "role": "frontline",
+                }
+            ],
+            "operation_edit": {
+                "action": "reinforce",
+                "before_composition": [
+                    {"unit_type": "TERRAN_MARINE", "count": 4}
+                ],
+                "after_composition": [
+                    {"unit_type": "TERRAN_MARINE", "count": 6}
+                ],
+            },
+        }
+        entry = web_gui._micromachine_recent_command_entry(
+            "assault-bravo에 마린 두 기 증원",
+            {
+                "status": "published",
+                "compile_result": {
+                    "status": "compiled",
+                    "update_id": "operation-edit-context",
+                    "vector": {
+                        "goal": "reinforce assault",
+                        "command_layer": "operation",
+                        "operations": [operation],
+                    },
+                },
+                "update": {"update_id": "operation-edit-context"},
+            },
+        )
+
+        self.assertEqual([operation], entry["operations"])
+        operation["generation"] = 99
+        self.assertEqual(3, entry["operations"][0]["generation"])
+        self.assertEqual(
+            "reinforce",
+            entry["operations"][0]["operation_edit"]["action"],
+        )
+
     def test_micromachine_recent_commands_are_bounded_and_isolated_per_blackboard(self):
         class RecordingPolicyModulationControl(FakePolicyModulationLLMControl):
             def __init__(self):
@@ -5448,6 +5539,8 @@ class FakeElement {
   }
 
   focus() {}
+
+  setSelectionRange() {}
 
   setAttribute(name, value) {
     this.attributes[name] = String(value);
@@ -8216,7 +8309,13 @@ const assert = require("assert");
     assert.strictEqual(statusNode.getAttribute("role"), "status");
     assert.strictEqual(record.node.getAttribute("role"), "listitem");
     assert(record.node.getAttribute("aria-labelledby"));
-    assert.strictEqual(controls.length, 3);
+    assert.strictEqual(controls.length, 5);
+    assert.deepStrictEqual(
+      controls.map(function(control) {
+        return control.getAttribute("data-operation-action");
+      }),
+      ["view", "revise", "reinforce", "retarget", "cancel"]
+    );
     controls.forEach(function(control) {
       assert(control.getAttribute("aria-label").includes(record.text));
     });
@@ -8259,16 +8358,84 @@ const assert = require("assert");
   assert(assaultRecord.node.textContent.includes("attack"));
   assert(!assaultRecord.node.textContent.includes("move"));
 
-  // Cancellation remains active until matching release_stop cleanup arrives.
-  var cancellationPending = operationResult(
+  // A newer generation edits the existing card instead of creating a duplicate.
+  var editedAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit",
+    "공격조를 마린 6기로 증원",
+    "attack",
+    330,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    2
+  );
+  editedAssault.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 4 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 6 }
+    ],
+    resolution: "blocked",
+    blocker: "explicit_ability_owner_protected"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [editedAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(assaultRecord.operationGeneration, 2);
+  assert.strictEqual(assaultRecord.telemetryFrame, 330);
+  assert(assaultRecord.node.textContent.includes("reinforce"));
+  assert(assaultRecord.node.textContent.includes("MARINE ×4 → MARINE ×6"));
+  assert(assaultRecord.node.textContent.includes("explicit_ability_owner_protected"));
+  var editControls = assaultRecord.node.querySelectorAll("button");
+  editControls[2].dispatchEvent({ type: "click" });
+  assert(nodes["command-input"].value.includes("assault-bravo"));
+  assert(nodes["command-input"].value.includes("증원"));
+  editControls[3].dispatchEvent({ type: "click" });
+  assert(nodes["command-input"].value.includes("목표를 변경"));
+
+  // Older-generation cleanup may not overwrite the edited operation card.
+  var staleGenerationCleanup = operationResult(
     "assault-bravo",
     "parallel-update-b",
     "마린 4기 공격",
     "attack",
-    330,
+    335,
     "cancelled",
     actionStages("attack").slice(0, 6),
     1
+  );
+  staleGenerationCleanup.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  staleGenerationCleanup.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 335,
+    operation_id: "assault-bravo",
+    generation: 1
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleGenerationCleanup]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.operationGeneration, 2);
+  assert.strictEqual(assaultRecord.telemetryFrame, 330);
+
+  // Cancellation remains active until matching release_stop cleanup arrives.
+  var cancellationPending = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit",
+    "공격조를 마린 6기로 증원",
+    "attack",
+    340,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    2
   );
   cancellationPending.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
@@ -8279,7 +8446,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.terminal, false);
-  assert.strictEqual(assaultRecord.operationGeneration, 1);
+  assert.strictEqual(assaultRecord.operationGeneration, 2);
   assert.strictEqual(assaultRecord.disposition, "active");
   assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,
@@ -8287,49 +8454,23 @@ const assert = require("assert");
   );
   assert(nodes["operation-summary"].textContent.includes("활성 2"));
 
-  var wrongGenerationCleanup = operationResult(
+  var verifiedCancellation = operationResult(
     "assault-bravo",
-    "parallel-update-b",
-    "마린 4기 공격",
+    "parallel-update-b-edit",
+    "공격조를 마린 6기로 증원",
     "attack",
-    335,
+    350,
     "cancelled",
     actionStages("attack").slice(0, 6),
     2
-  );
-  wrongGenerationCleanup.intervention.command_execution.blocker_reason =
-    "cancelled_by_policy";
-  wrongGenerationCleanup.intervention.command_execution.terminal_cleanup = {
-    action: "release_stop|cancelled_by_policy",
-    frame: 335,
-    operation_id: "assault-bravo",
-    generation: 2
-  };
-  renderOperationConsole(serverResult({
-    status: "published",
-    operations: [wrongGenerationCleanup]
-  }, OPERATION_SCOPE));
-  assaultRecord = operationRecords[assaultKey];
-  assert.strictEqual(assaultRecord.terminal, false);
-  assert.strictEqual(assaultRecord.telemetryFrame, 330);
-
-  var verifiedCancellation = operationResult(
-    "assault-bravo",
-    "parallel-update-b",
-    "마린 4기 공격",
-    "attack",
-    340,
-    "cancelled",
-    actionStages("attack").slice(0, 6),
-    1
   );
   verifiedCancellation.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
   verifiedCancellation.intervention.command_execution.terminal_cleanup = {
     action: "release_no_owned_units|cancelled_by_policy",
-    frame: 340,
+    frame: 350,
     operation_id: "assault-bravo",
-    generation: 1
+    generation: 2
   };
   renderOperationConsole(serverResult({
     status: "published",
@@ -8337,7 +8478,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.terminal, true);
-  assert.strictEqual(assaultRecord.telemetryFrame, 340);
+  assert.strictEqual(assaultRecord.telemetryFrame, 350);
   assert.strictEqual(assaultRecord.disposition, "superseded");
   assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,

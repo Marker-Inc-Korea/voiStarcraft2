@@ -725,6 +725,229 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             reinforced_operations["assault-bravo"].issued_at_frame,
         )
 
+    def test_operation_transfer_updates_both_generations_and_preserves_siblings(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        initial = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "three independent operations",
+                    "command_layer": "operation",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "goal": "marine recon",
+                            "tactical_task": {
+                                "task_type": "scout_with_units",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "min_units": 1,
+                                "max_units": 2,
+                                "allow_partial": True,
+                            },
+                            "scope": {"allow_partial_scope": True},
+                            "composition_requirements": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 2,
+                                    "role": "scout",
+                                }
+                            ],
+                        },
+                        {
+                            "operation_id": "assault-bravo",
+                            "goal": "marine assault",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "min_units": 4,
+                                "max_units": 4,
+                            },
+                            "composition_requirements": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 4,
+                                    "role": "frontline",
+                                }
+                            ],
+                        },
+                        {
+                            "operation_id": "defense-charlie",
+                            "goal": "tank entrance defense",
+                            "tactical_task": {
+                                "task_type": "defend_with_units",
+                                "unit_classes": ["TERRAN_SIEGETANK"],
+                                "min_units": 1,
+                                "max_units": 1,
+                            },
+                            "composition_requirements": [
+                                {
+                                    "unit_type": "TERRAN_SIEGETANK",
+                                    "count": 1,
+                                    "role": "defensive_hold",
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ),
+        ).submit_text(
+            "정찰 공격 입구 방어를 동시에 시작해",
+            current_frame=100,
+            update_id="operation-transfer-initial",
+        )
+        self.assertTrue(initial.ok, initial.to_dict())
+
+        transferred = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "transfer one marine from recon to assault",
+                    "command_layer": "operation",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "goal": "continue recon with one marine",
+                            "generation": 999,
+                            "tactical_task": {
+                                "task_type": "scout_with_units",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "min_units": 1,
+                                "max_units": 1,
+                            },
+                            "composition_requirements": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 1,
+                                    "role": "scout",
+                                }
+                            ],
+                            "operation_edit": {
+                                "action": "transfer_out",
+                                "counterpart_operation_id": "assault-bravo",
+                                "unit_selection": [
+                                    {
+                                        "unit_type": "TERRAN_MARINE",
+                                        "count": 1,
+                                        "role": "scout",
+                                    }
+                                ],
+                                "before_composition": [
+                                    {
+                                        "unit_type": "TERRAN_MARINE",
+                                        "count": 2,
+                                        "role": "scout",
+                                    }
+                                ],
+                                "after_composition": [
+                                    {
+                                        "unit_type": "TERRAN_MARINE",
+                                        "count": 1,
+                                        "role": "scout",
+                                    }
+                                ],
+                                "explicit_override": True,
+                                "confirmation_policy": "auto",
+                            },
+                        },
+                        {
+                            "operation_id": "assault-bravo",
+                            "goal": "assault with five marines",
+                            "generation": 999,
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "min_units": 5,
+                                "max_units": 5,
+                            },
+                            "composition_requirements": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 5,
+                                    "role": "frontline",
+                                }
+                            ],
+                            "operation_edit": {
+                                "action": "transfer_in",
+                                "counterpart_operation_id": "recon-alpha",
+                                "unit_selection": [
+                                    {
+                                        "unit_type": "TERRAN_MARINE",
+                                        "count": 1,
+                                        "role": "frontline",
+                                    }
+                                ],
+                                "before_composition": [
+                                    {
+                                        "unit_type": "TERRAN_MARINE",
+                                        "count": 4,
+                                        "role": "frontline",
+                                    }
+                                ],
+                                "after_composition": [
+                                    {
+                                        "unit_type": "TERRAN_MARINE",
+                                        "count": 5,
+                                        "role": "frontline",
+                                    }
+                                ],
+                                "explicit_override": True,
+                                "confirmation_policy": "auto",
+                            },
+                        },
+                    ],
+                }
+            ),
+        ).submit_text(
+            "recon-alpha 마린 한 기를 assault-bravo로 이관해",
+            current_frame=140,
+            update_id="operation-transfer-edited",
+        )
+
+        self.assertTrue(transferred.ok, transferred.to_dict())
+        self.assertEqual(
+            ["recon-alpha", "assault-bravo"],
+            transferred.command_queue["updated_operation_ids"],
+        )
+        assert transferred.update is not None
+        operations = {
+            operation.operation_id: operation
+            for operation in transferred.update.vector.operations
+        }
+        self.assertEqual(
+            {"recon-alpha", "assault-bravo", "defense-charlie"},
+            set(operations),
+        )
+        self.assertEqual(2, operations["recon-alpha"].generation)
+        self.assertEqual(2, operations["assault-bravo"].generation)
+        self.assertEqual(1, operations["defense-charlie"].generation)
+        self.assertEqual(100, operations["defense-charlie"].issued_at_frame)
+        self.assertEqual(
+            1,
+            operations["recon-alpha"].composition_requirements[0].count,
+        )
+        self.assertEqual(
+            5,
+            operations["assault-bravo"].composition_requirements[0].count,
+        )
+        self.assertEqual(
+            "transfer_out",
+            operations["recon-alpha"].operation_edit.action,
+        )
+        self.assertEqual(
+            "transfer_in",
+            operations["assault-bravo"].operation_edit.action,
+        )
+        self.assertEqual(
+            2,
+            operations["recon-alpha"].operation_edit.before_composition[0].count,
+        )
+        self.assertEqual(
+            5,
+            operations["assault-bravo"].operation_edit.after_composition[0].count,
+        )
+
     def test_parallel_operation_lifetime_uses_longest_operation_window(
         self,
     ) -> None:

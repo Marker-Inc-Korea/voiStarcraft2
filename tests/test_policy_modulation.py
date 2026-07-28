@@ -15,6 +15,7 @@ from starcraft_commander.policy_modulation import (
     MICROMACHINE_TACTICAL_ABILITIES,
     MICROMACHINE_DOCTRINES,
     MICROMACHINE_TACTICAL_TASK_TYPES,
+    OperationEditModulation,
     PolicyModulationSource,
     PolicyModulationVector,
     PolicyOverrideLevel,
@@ -81,6 +82,97 @@ class LifetimeModulationTest(unittest.TestCase):
 
 
 class PolicyModulationVectorTest(unittest.TestCase):
+    def test_operation_edit_round_trips_semantic_transfer_contract(self) -> None:
+        operation = TacticalOperationModulation(
+            operation_id="assault-bravo",
+            goal="정찰대 마린 한 기를 공격대에 이관",
+            tactical_task=TacticalTaskModulation(
+                task_type="pressure_with_main_army",
+                unit_classes=("marine",),
+                min_units=5,
+                max_units=5,
+                allow_partial=False,
+            ),
+            composition_requirements=(
+                CompositionRequirement("marine", count=5, role="frontline"),
+            ),
+            operation_edit=OperationEditModulation(
+                action="transfer_in",
+                counterpart_operation_id="recon-alpha",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                before_composition=(
+                    CompositionRequirement("marine", count=4, role="frontline"),
+                ),
+                after_composition=(
+                    CompositionRequirement("marine", count=5, role="frontline"),
+                ),
+                explicit_override=True,
+            ),
+        )
+
+        rebuilt = TacticalOperationModulation(**operation.to_dict())
+
+        self.assertEqual(operation, rebuilt)
+        self.assertEqual("transfer_in", rebuilt.operation_edit.action)
+        self.assertEqual(
+            "recon-alpha",
+            rebuilt.operation_edit.counterpart_operation_id,
+        )
+
+    def test_transfer_edit_requires_counterpart_and_selection(self) -> None:
+        with self.assertRaisesRegex(ValueError, "counterpart_operation_id"):
+            OperationEditModulation(action="transfer_in")
+
+    def test_transfer_edit_requires_atomic_symmetric_operation_pair(self) -> None:
+        destination = TacticalOperationModulation(
+            operation_id="assault-bravo",
+            goal="receive one marine",
+            composition_requirements=(
+                CompositionRequirement("marine", count=5, role="frontline"),
+            ),
+            operation_edit=OperationEditModulation(
+                action="transfer_in",
+                counterpart_operation_id="recon-alpha",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="frontline"),
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "same atomic operations update"):
+            PolicyModulationVector(
+                goal="invalid half transfer",
+                command_layer="operation",
+                operations=(destination,),
+            )
+
+        source = TacticalOperationModulation(
+            operation_id="recon-alpha",
+            goal="release one marine",
+            composition_requirements=(
+                CompositionRequirement("marine", count=1, role="scout"),
+            ),
+            operation_edit=OperationEditModulation(
+                action="transfer_out",
+                counterpart_operation_id="assault-bravo",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+            ),
+        )
+        vector = PolicyModulationVector(
+            goal="atomic transfer",
+            command_layer="operation",
+            operations=(source, destination),
+        )
+
+        self.assertEqual(
+            ("recon-alpha", "assault-bravo"),
+            tuple(operation.operation_id for operation in vector.operations),
+        )
+
     def test_parallel_operations_preserve_independent_tactical_state(self) -> None:
         vector = PolicyModulationVector(
             goal="정찰과 공격을 동시에 수행",

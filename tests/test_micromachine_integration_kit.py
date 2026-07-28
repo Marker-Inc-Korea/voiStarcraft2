@@ -231,6 +231,11 @@ PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE = (
     / "patches"
     / "0059-production-fifo-and-zero-owner-cleanup.patch"
 )
+OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0060-operation-edit-ownership-handoff.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -395,6 +400,93 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             patch,
         )
 
+    def test_operation_edit_patch_preserves_atomic_ownership_handoff(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE
+        )
+
+        required_terms = (
+            'prefix + ".operation_edit"',
+            'editPrefix + ".action"',
+            'requested.editCounterpartOperationId =',
+            '+ ".counterpart_operation_id"',
+            'editPrefix + ".unit_selection"',
+            'editPrefix + ".before_composition"',
+            'editPrefix + ".after_composition"',
+            '"operation_edit_confirmation_required"',
+            '"invalid_operation_edit_confirmation_policy"',
+            '"operation_edit_requires_generation_increment"',
+            '"operation_generation_handoff|"',
+            '"transfer_counterpart_contract_mismatch"',
+            '"transfer_capacity_or_source_minimum"',
+            '"source_minimum_preservation"',
+            '"source_exact_composition_protected"',
+            '"source_composition_preservation"',
+            '"explicit_ability_owner_protected"',
+            "m_voiExplicitAbilityStagingActorTag",
+            "m_lastVoiExplicitAbilityActorTag",
+            "voiTacticalNukeTaskRequested(m_bot)",
+            "sourceSquad.removeUnit(unit);",
+            "unitActions.erase(action);",
+            "m_voiOperationUnitOwners[unit.getTag()] =",
+            "destination.operationId,",
+            "destination.generation);",
+            '"operation_edit_transfer_out|counterpart="',
+            '"operation_edit_transfer_in|counterpart="',
+            "stale_operation_generation_preserved",
+            "transferBlockerBeforeHandoff",
+            "transferBlockers.find(",
+            "isCurrentVoiOperationAction(",
+            '\\"edit_before_composition\\":',
+            '\\"edit_after_composition\\":',
+            '\\"transferred_in_count\\":',
+            '\\"transferred_out_count\\":',
+            '\\"edit_resolution\\":\\"',
+            '\\"edit_blocker\\":\\"',
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        handoff_start = patch.index("auto handoffGeneration =")
+        handoff_end = patch.index(
+            "std::set<std::string> consumedRequestedIds;",
+            handoff_start,
+        )
+        self.assertNotIn(
+            "SmartStop",
+            patch[handoff_start:handoff_end],
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.cpp "
+                "b/src/CombatCommander.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.h "
+                "b/src/CombatCommander.h"
+            ),
+        )
+
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
     def test_patch_bundle_is_contiguous_present_and_matches_build_apply_order(
         self,
     ) -> None:
@@ -404,9 +496,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 60)),
+            list(range(1, 61)),
         )
-        self.assertEqual(len(set(manifest_paths)), 59)
+        self.assertEqual(len(set(manifest_paths)), 60)
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
         )
@@ -4268,7 +4360,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0059`",
+            "through `0060`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -4763,6 +4855,24 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertIn(
             'ROOT_DIR="${ROOT_DIR:-/private/tmp/voi-micromachine-runtime}"',
             build_script,
+        )
+        self.assertIn(
+            'OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0060-operation-edit-ownership-handoff.patch"',
+            build_script,
+        )
+        self.assertIn(
+            'apply --recount --check --ignore-space-change '
+            '--whitespace=nowarn '
+            '"${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}"',
+            build_script,
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-edit-ownership-handoff-patch"
+            ),
         )
         for script_name, script in (
             ("probe", probe_script),

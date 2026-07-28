@@ -13,8 +13,10 @@ voiStarcraft2의 UX 대목표는 다음 한 문장이다.
 
 현재 구현에는 독립 작전 ID, 병렬 스쿼드, 유닛 독점 소유권, 작전 카드,
 실행 단계, 인게임 HUD와 SSE 기반 실시간 상태 갱신이 있다. 1초 폴링은 SSE
-장애 때만 fallback으로 동작한다. 전술 음성 readback, 병력 이관 미리보기,
-전장 지도 기반 작전 편집은 후속 구현 대상이다.
+장애 때만 fallback으로 동작한다. 명시적 resize/reinforce/retarget/transfer는
+같은 작전 카드의 새 generation으로 반영되고, 병력 변화와 충돌 해결 증거를
+표시한다. 전술 음성 readback과 전장 지도 기반 작전 편집은 후속 구현
+대상이다.
 
 ## 1. Capability Boundary
 
@@ -59,7 +61,7 @@ flowchart LR
 | SSE 이벤트 스트리밍 | **Implemented** | append-only journal, 전역 `event_seq`, heartbeat, `Last-Event-ID` replay, snapshot 재동기화를 지원한다. |
 | 음성 입력과 녹음 waveform | **Implemented** | 브라우저 SpeechRecognition 결과가 일반 명령 경로로 들어간다. |
 | 전술 radio TTS/readback | **Proposed** | 짧은 편성 확인, 차단, 교전 시작을 음성으로 알려주는 기능은 아직 완성되지 않았다. |
-| 명시적 병력 이관 preview/confirm UX | **Proposed** | 런타임 우선순위 preemption은 있으나 사용자가 이관 전후를 확인하는 전용 UX는 없다. |
+| 명시적 병력 이관/편집 UX | **Implemented: pre-live** | resize, reinforce, retarget, transfer, cancel을 typed operation edit로 처리하고 기존 카드에서 전후 편성·counterpart·해결 결과를 표시한다. 실제 SC2 이관 이동은 live QA가 최종 gate다. |
 | 모든 Terran 유닛 live qualification | **Live qualification pending** | 런타임 경로가 있어도 유닛군별 생산부터 HUD까지 동일 수준으로 실전 검증된 것은 아니다. |
 
 ## 3. Real-Time Command Experience
@@ -291,8 +293,7 @@ Squad를 만든다. 적 공중/지상 전력과 은폐 탐지 필요량을 계�
 recon-alpha에서 마린 1기를 빼서 assault-bravo에 합류시켜.
 ```
 
-현재 런타임은 더 높은 우선순위 작전이 기존 소유 유닛을 가져갈 때 다음을
-검사한다.
+현재 typed edit와 런타임 handoff는 다음을 검사한다.
 
 1. 새 작전 우선순위가 기존 작전보다 높은가.
 2. 유닛을 한 기 빼도 기존 작전의 `min_units`를 만족하는가.
@@ -301,19 +302,39 @@ recon-alpha에서 마린 1기를 빼서 assault-bravo에 합류시켜.
    기록할 수 있는가.
 
 하나라도 실패하면 강제로 빼앗지 않고 새 작전을 `WAITING_FOR_UNITS`로 둔다.
+`explicit_override`는 사용자가 소유권 이관을 명시했다는 뜻이지 source의
+최소/exact 계약을 무시하는 권한이 아니다. strict exact 작전은 먼저
+resize하거나 partial 허용 작전으로 명시적으로 바꾼 뒤에만 병력을 뺄 수
+있다. 검증은 generation handoff 전에 끝나므로 거부된 이관은 기존 Squad,
+owner generation, unit action을 변경하지 않는다.
 
-전용 UX는 아직 제안 단계이며 다음 preview를 제공해야 한다.
+기존 operation card는 publish 시점의 semantic preview와 runtime 적용
+결과를 같은 카드에서 다음 형태로 표시한다.
 
 ```text
 병력 이관 확인
 recon-alpha: Marine 2 -> 1  [최소 요구 1, 유지 가능]
 assault-bravo: Marine 4 -> 5
 영향: 정찰 범위 감소, 공격 편성 강화
+적용: transfer_out 1 / transfer_in 1 / ownership handoff complete
 ```
 
 정확한 개별 tag 선택 UI는 현재 capability boundary 밖이다. 사용자는
 `Marine 1`, `가장 가까운 Tank 1`, `부상당한 유닛 제외` 같은 안전한 선택
 조건으로 이관해야 한다.
+
+편집 규칙:
+
+1. `reinforce`는 기존 편성에 수량을 더하고 미소유 병력을 우선 사용한다.
+2. `resize`는 최종 목표 편성을 명시한다.
+3. `retarget`은 병력 소유권을 유지한 채 route/target만 새 generation으로
+   갱신한다.
+4. `transfer`는 source와 destination을 하나의 atomic `operations[]`
+   update로 발행한다. 한쪽만 있는 transfer는 validation에서 거부한다.
+5. source와 destination의 generation은 함께 증가하고, 관계없는 sibling
+   operation generation과 lifetime은 유지된다.
+6. 최신 generation보다 낮거나 generation이 없는 늦은 웹 응답은 기존
+   operation card를 되돌리지 못한다.
 
 ## 9. 명령 충돌 규칙
 
@@ -523,13 +544,16 @@ production/prerequisite
 - event sequence, operation generation, game frame 단조성 검증
 - parse/publish와 actual execution 문구 분리 회귀 테스트
 
-### P1: Explicit Transfer UX
+### Completed: Explicit Operation Editing
 
-- operation resize/reinforce/transfer semantic intent
-- 이관 전후 composition preview
-- 기존 작전 최소 편성 보호
-- confirm 또는 긴급 우선순위 override
-- ownership transfer와 old action cleanup의 live 증거
+- operation resize/reinforce/retarget/transfer semantic intent
+- source/destination atomic transfer pair validation
+- 이관 전후 composition, counterpart, conflict resolution 표시
+- 기존 작전 최소/exact 편성 보호와 explicit override
+- 같은 operation card의 monotonic generation 갱신
+- stale generation과 늦은 telemetry의 UI 역행 차단
+- ownership handoff, stale action cleanup, transferred count runtime telemetry
+- clean build와 자동 테스트 완료 후 실제 SC2 이동 관측은 수동 live QA gate
 
 ### P1: Voice Tactical Loop
 

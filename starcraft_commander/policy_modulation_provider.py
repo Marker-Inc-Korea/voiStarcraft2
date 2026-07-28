@@ -1013,6 +1013,7 @@ _OPERATION_DOMAIN_KEYS = {
     "tactical_task",
     "route_intent",
     "target_intent",
+    "operation_edit",
 }
 
 _OPERATION_SEQUENCE_KEYS = {
