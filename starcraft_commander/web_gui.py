@@ -1127,51 +1127,11 @@ def _micromachine_operation_entry_for_request(
             and str(candidate.get("edit_resolution", "") or "").strip()
             == "blocked"
         ):
-            rejected = dict(candidate)
-            rejected["active_generation"] = candidate.get("generation")
-            rejected["generation"] = operation_generation
-            rejected["status"] = "BLOCKED"
-            rejected["received_frame"] = candidate.get(
-                "edit_rejected_frame",
-                candidate.get("received_frame"),
-            )
-            rejected["blocked_reason"] = (
-                candidate.get("edit_blocker")
-                or candidate.get("blocked_reason")
-                or "operation_edit_rejected"
-            )
-            for key, value in (
-                ("assigned_frame", 0),
-                ("assignment_frame", 0),
-                ("submitted_frame", 0),
-                ("submission_frame", 0),
-                ("action_frame", 0),
-                ("last_action_frame", 0),
-                ("movement_frame", 0),
-                ("movement_observed_frame", 0),
-                ("engagement_frame", 0),
-                ("engagement_observed_frame", 0),
-                ("assigned_unit_tags", []),
-                ("assigned_count", 0),
-                ("assigned_unit_count", 0),
-                ("submitted_count", 0),
-                ("action_count", 0),
-                ("moved_unit_count", 0),
-                ("engaged_unit_count", 0),
-                ("attack_count", 0),
-                ("max_home_distance", 0.0),
-                ("engaged", False),
-                ("last_action", ""),
-            ):
-                rejected[key] = value
-            for section_name in (
-                "assignment",
-                "submission",
-                "movement",
-                "engagement",
-            ):
-                rejected.pop(section_name, None)
-            return rejected
+            active = dict(candidate)
+            active["active_generation"] = candidate.get("generation")
+            active["requested_generation"] = operation_generation
+            active["edit_rejected"] = True
+            return active
     return None
 
 
@@ -1626,6 +1586,16 @@ def _micromachine_operation_status_payload(
             operation_generation=operation_generation,
         )
     )
+    active_operation_generation = operation_generation
+    if (
+        operation_telemetry is not None
+        and operation_telemetry.get("edit_rejected") is True
+        and type(operation_telemetry.get("active_generation")) is int
+        and int(operation_telemetry["active_generation"]) > 0
+    ):
+        active_operation_generation = int(
+            operation_telemetry["active_generation"]
+        )
     consumption_status = _micromachine_consumption_status(
         operation_update if active else None,
         telemetry,
@@ -1679,7 +1649,7 @@ def _micromachine_operation_status_payload(
     command_execution = _micromachine_operation_command_execution(
         update_id=update_id,
         operation_id=operation_id,
-        operation_generation=operation_generation,
+        operation_generation=active_operation_generation,
         operation_telemetry=operation_telemetry or {},
         fallback=fallback_execution,
     )
@@ -1726,9 +1696,9 @@ def _micromachine_operation_status_payload(
         and consumption_status == "consumed"
     )
     operation_key = (
-        f"{scope_id}\0{operation_id}\0{operation_generation}"
+        f"{scope_id}\0{operation_id}\0{active_operation_generation}"
         if scope_id
-        else f"{operation_id}\0{operation_generation}"
+        else f"{operation_id}\0{active_operation_generation}"
     )
     operation_edit = _mapping_child(operation_vector, "operation_edit")
     if operation_telemetry is not None:
@@ -1759,7 +1729,8 @@ def _micromachine_operation_status_payload(
     return {
         "operation_key": operation_key,
         "operation_id": operation_id,
-        "operation_generation": operation_generation,
+        "operation_generation": active_operation_generation,
+        "requested_operation_generation": operation_generation,
         "update_id": update_id,
         "command_text": command_text,
         "mission": _micromachine_operation_mission(operation_update),

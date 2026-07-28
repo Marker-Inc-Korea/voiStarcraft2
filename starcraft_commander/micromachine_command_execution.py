@@ -870,28 +870,24 @@ def _aggregate_operation_payloads(
                 snapshot_frame=payload_snapshot_frame,
             )
             assigned_frame = _current_operation_evidence_frame(
-                0 if rejected_edit else payload.get("assigned_frame"),
-                issued_at_frame=issued_at_frame,
-                deadline_frame=deadline_frame,
+                payload.get("assigned_frame"),
+                issued_at_frame=0 if rejected_edit else issued_at_frame,
+                deadline_frame=0 if rejected_edit else deadline_frame,
                 snapshot_frame=payload_snapshot_frame,
             )
             submitted_frame = _current_operation_evidence_frame(
-                0 if rejected_edit else payload.get("submitted_frame"),
-                issued_at_frame=issued_at_frame,
-                deadline_frame=deadline_frame,
+                payload.get("submitted_frame"),
+                issued_at_frame=0 if rejected_edit else issued_at_frame,
+                deadline_frame=0 if rejected_edit else deadline_frame,
                 snapshot_frame=payload_snapshot_frame,
             )
             action_frame = _current_operation_evidence_frame(
-                0 if rejected_edit else payload.get("last_action_frame"),
-                issued_at_frame=issued_at_frame,
-                deadline_frame=deadline_frame,
+                payload.get("last_action_frame"),
+                issued_at_frame=0 if rejected_edit else issued_at_frame,
+                deadline_frame=0 if rejected_edit else deadline_frame,
                 snapshot_frame=payload_snapshot_frame,
             )
-            last_action = (
-                ""
-                if rejected_edit
-                else str(payload.get("last_action", "") or "")
-            )
+            last_action = str(payload.get("last_action", "") or "")
             terminal_cleanup_action = _operation_terminal_cleanup_action(
                 last_action
             )
@@ -904,23 +900,10 @@ def _aggregate_operation_payloads(
             normalized_payload["generation"] = generation
             if rejected_edit:
                 normalized_payload["active_generation"] = active_generation
-                normalized_payload["blocked_reason"] = (
-                    payload.get("edit_blocker")
-                    or payload.get("blocked_reason")
-                    or "operation_edit_rejected"
+                normalized_payload["requested_generation"] = (
+                    rejected_generation
                 )
-                normalized_payload["status"] = "BLOCKED"
-                for key, value in (
-                    ("assigned_frame", 0),
-                    ("submitted_frame", 0),
-                    ("last_action_frame", 0),
-                    ("assigned_unit_tags", []),
-                    ("assigned_count", 0),
-                    ("max_home_distance", 0.0),
-                    ("engaged", False),
-                    ("last_action", ""),
-                ):
-                    normalized_payload[key] = value
+                normalized_payload["edit_rejected"] = True
             previous = aggregate.get(operation_key, {})
             current_assigned_tags = tuple(
                 _int_value(tag)

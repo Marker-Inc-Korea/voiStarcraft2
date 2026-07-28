@@ -2572,20 +2572,20 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "destination_priority_not_higher",
             operation["operation_edit"]["blocker"],
         )
+        self.assertEqual(1, operation["operation_generation"])
+        self.assertEqual(2, operation["requested_operation_generation"])
         execution = operation["intervention"]["command_execution"]
-        self.assertEqual(2, execution["operation_generation"])
-        self.assertEqual("blocked", execution["state"])
-        self.assertEqual(
-            "destination_priority_not_higher",
-            execution["blocker_reason"],
-        )
+        self.assertEqual(1, execution["operation_generation"])
+        self.assertEqual("effect_observed", execution["state"])
+        self.assertFalse(execution["failed"])
+        self.assertEqual("", execution["blocker_reason"])
         successful_stages = {
             stage["name"] for stage in execution["stages"] if stage["ok"]
         }
-        self.assertNotIn("queued_or_assigned", successful_stages)
-        self.assertNotIn("order_issued", successful_stages)
-        self.assertNotIn("action_issued", successful_stages)
-        self.assertNotIn("effect_observed", successful_stages)
+        self.assertIn("queued_or_assigned", successful_stages)
+        self.assertIn("order_issued", successful_stages)
+        self.assertIn("action_issued", successful_stages)
+        self.assertIn("effect_observed", successful_stages)
 
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
         execution = web_gui._micromachine_operation_command_execution(

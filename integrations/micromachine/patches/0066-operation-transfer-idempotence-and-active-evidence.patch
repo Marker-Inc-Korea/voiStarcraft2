@@ -1,0 +1,170 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -4541,6 +4541,7 @@ void CombatCommander::updateVoiOperations()
+ 		};
+ 	std::map<std::string, std::string> transferBlockers;
+ 	std::set<std::string> evaluatedTransferOperations;
++	std::set<std::string> alreadyAppliedTransferOperations;
+ 	auto recordTransferBlocker =
+ 		[&](
+ 			const std::string & firstOperationId,
+@@ -4585,6 +4586,16 @@ void CombatCommander::updateVoiOperations()
+ 			requestedExisting == nullptr
+ 				? 0
+ 				: requestedExisting->generation;
++		if (requestedExisting != nullptr)
++		{
++			requestedEndpoint.existingCounterpartOperationId =
++				requestedExisting
++					->editCounterpartOperationId;
++			requestedEndpoint.existingEditAction =
++				requestedExisting->editAction;
++			requestedEndpoint.existingEditResolution =
++				requestedExisting->editResolution;
++		}
+ 		requestedEndpoint.requestedGeneration =
+ 			requested.generation;
+ 		requestedEndpoint.requestedPresent = true;
+@@ -4633,7 +4644,32 @@ void CombatCommander::updateVoiOperations()
+ 			counterpartExisting == nullptr
+ 				? 0
+ 				: counterpartExisting->generation;
++		if (counterpartExisting != nullptr)
++		{
++			counterpartEndpoint.existingCounterpartOperationId =
++				counterpartExisting
++					->editCounterpartOperationId;
++			counterpartEndpoint.existingEditAction =
++				counterpartExisting->editAction;
++			counterpartEndpoint.existingEditResolution =
++				counterpartExisting->editResolution;
++		}
+ 
++		if (voiOperationTransferAlreadyApplied(
++				requestedEndpoint,
++				counterpartEndpoint))
++		{
++			alreadyAppliedTransferOperations.insert(
++				requested.operationId);
++			alreadyAppliedTransferOperations.insert(
++				requested.editCounterpartOperationId);
++			evaluatedTransferOperations.insert(
++				requested.operationId);
++			evaluatedTransferOperations.insert(
++				requested.editCounterpartOperationId);
++			continue;
++		}
++
+ 		const VoiOperationTransferAdmission admission =
+ 			voiDecideOperationTransferAdmission(
+ 				requestedEndpoint,
+@@ -5270,6 +5306,9 @@ void CombatCommander::updateVoiOperations()
+ 	for (const auto & destinationRequested : requestedOperations)
+ 	{
+ 		if (destinationRequested.editAction != "transfer_in"
++			|| alreadyAppliedTransferOperations.find(
++				destinationRequested.operationId)
++				!= alreadyAppliedTransferOperations.end()
+ 			|| transferBlockers.find(
+ 				destinationRequested.operationId)
+ 				!= transferBlockers.end())
+diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transfer_admission.hpp
+--- a/src/voi_operation_transfer_admission.hpp
++++ b/src/voi_operation_transfer_admission.hpp
+@@ -13,6 +13,9 @@ struct VoiOperationTransferEndpoint
+ 	std::string operationId;
+ 	std::string counterpartOperationId;
+ 	std::string editAction;
++	std::string existingCounterpartOperationId;
++	std::string existingEditAction;
++	std::string existingEditResolution;
+ 	std::uint64_t existingGeneration = 0;
+ 	std::uint64_t requestedGeneration = 0;
+ 	bool requestedPresent = false;
+@@ -203,6 +206,38 @@ inline bool voiShouldReconcileExistingOperation(
+ 	return !completed && !staticBlock;
+ }
+ 
++inline bool voiOperationTransferAlreadyApplied(
++	const VoiOperationTransferEndpoint & first,
++	const VoiOperationTransferEndpoint & second)
++{
++	if (!first.requestedPresent
++		|| !second.requestedPresent
++		|| !first.blocker.empty()
++		|| !second.blocker.empty()
++		|| first.operationId.empty()
++		|| second.operationId.empty()
++		|| first.operationId == second.operationId
++		|| first.counterpartOperationId != second.operationId
++		|| second.counterpartOperationId != first.operationId
++		|| first.existingCounterpartOperationId
++			!= first.counterpartOperationId
++		|| second.existingCounterpartOperationId
++			!= second.counterpartOperationId
++		|| first.existingEditAction != first.editAction
++		|| second.existingEditAction != second.editAction
++		|| first.existingEditResolution != "applied"
++		|| second.existingEditResolution != "applied"
++		|| first.requestedGeneration != first.existingGeneration
++		|| second.requestedGeneration != second.existingGeneration)
++	{
++		return false;
++	}
++	return (first.editAction == "transfer_in"
++			&& second.editAction == "transfer_out")
++		|| (first.editAction == "transfer_out"
++			&& second.editAction == "transfer_in");
++}
++
+ inline VoiOperationTransferAdmission voiDecideOperationTransferAdmission(
+ 	const VoiOperationTransferEndpoint & first,
+ 	const VoiOperationTransferEndpoint & second)
+diff --git a/tests/operation_transfer_admission_test.cpp b/tests/operation_transfer_admission_test.cpp
+--- a/tests/operation_transfer_admission_test.cpp
++++ b/tests/operation_transfer_admission_test.cpp
+@@ -135,6 +135,43 @@ int main()
+ 	assert(voiShouldReconcileExistingOperation(false, false, true));
+ 	assert(!voiShouldReconcileExistingOperation(true, false, true));
+ 	assert(!voiShouldReconcileExistingOperation(false, true, true));
++	VoiOperationTransferEndpoint alreadyAppliedSource;
++	alreadyAppliedSource.operationId = "recon-alpha";
++	alreadyAppliedSource.counterpartOperationId = "assault-bravo";
++	alreadyAppliedSource.editAction = "transfer_out";
++	alreadyAppliedSource.existingCounterpartOperationId =
++		"assault-bravo";
++	alreadyAppliedSource.existingEditAction = "transfer_out";
++	alreadyAppliedSource.existingEditResolution = "applied";
++	alreadyAppliedSource.existingGeneration = 4;
++	alreadyAppliedSource.requestedGeneration = 4;
++	alreadyAppliedSource.requestedPresent = true;
++	VoiOperationTransferEndpoint alreadyAppliedDestination;
++	alreadyAppliedDestination.operationId = "assault-bravo";
++	alreadyAppliedDestination.counterpartOperationId = "recon-alpha";
++	alreadyAppliedDestination.editAction = "transfer_in";
++	alreadyAppliedDestination.existingCounterpartOperationId =
++		"recon-alpha";
++	alreadyAppliedDestination.existingEditAction = "transfer_in";
++	alreadyAppliedDestination.existingEditResolution = "applied";
++	alreadyAppliedDestination.existingGeneration = 8;
++	alreadyAppliedDestination.requestedGeneration = 8;
++	alreadyAppliedDestination.requestedPresent = true;
++	assert(
++		voiOperationTransferAlreadyApplied(
++			alreadyAppliedSource,
++			alreadyAppliedDestination));
++	alreadyAppliedDestination.existingEditResolution = "blocked";
++	assert(
++		!voiOperationTransferAlreadyApplied(
++			alreadyAppliedSource,
++			alreadyAppliedDestination));
++	alreadyAppliedDestination.existingEditResolution = "applied";
++	alreadyAppliedDestination.requestedGeneration = 9;
++	assert(
++		!voiOperationTransferAlreadyApplied(
++			alreadyAppliedSource,
++			alreadyAppliedDestination));
+ 
+ 	const auto terminalDestination = endpoint(
+ 		"assault-bravo",

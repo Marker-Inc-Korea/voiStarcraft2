@@ -215,7 +215,7 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
                 self.assertEqual("OperationDirector", report.blocker_manager)
                 self.assertIn("Duplicate unit ownership", report.blocker_reason)
 
-    def test_rejected_edit_maps_active_generation_to_requested_generation(self) -> None:
+    def test_rejected_edit_preserves_active_generation_execution(self) -> None:
         update = {
             "update_id": "rejected-edit",
             "issued_at_frame": 200,
@@ -271,12 +271,9 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         self.assertEqual(1, len(reports))
         report = reports[0]
         self.assertEqual(2, report.operation_generation)
-        self.assertTrue(report.failed)
-        self.assertEqual("blocked", report.state)
-        self.assertEqual(
-            "source_composition_preservation",
-            report.blocker_reason,
-        )
+        self.assertFalse(report.failed)
+        self.assertEqual("engaged", report.state)
+        self.assertEqual("", report.blocker_reason)
         consumed = next(
             stage
             for stage in report.stages
@@ -284,11 +281,15 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         )
         self.assertTrue(consumed.ok)
         self.assertEqual(1, consumed.evidence["active_generation"])
+        self.assertEqual(
+            "source_composition_preservation",
+            consumed.evidence["edit_blocker"],
+        )
         stages = {stage.name: stage for stage in report.stages}
-        self.assertFalse(stages["queued_or_assigned"].ok)
-        self.assertFalse(stages["order_issued"].ok)
-        self.assertFalse(stages["action_issued"].ok)
-        self.assertFalse(stages["effect_observed"].ok)
+        self.assertTrue(stages["queued_or_assigned"].ok)
+        self.assertTrue(stages["order_issued"].ok)
+        self.assertTrue(stages["action_issued"].ok)
+        self.assertTrue(stages["effect_observed"].ok)
 
     def test_operation_evidence_requires_exact_command_identity(self) -> None:
         update = {

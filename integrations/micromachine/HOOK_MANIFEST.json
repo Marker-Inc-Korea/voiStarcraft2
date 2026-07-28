@@ -333,6 +333,11 @@
       "path": "patches/0065-operation-transfer-final-review-closure.patch",
       "order": 65,
       "scope": "retain one-sided transfer counterparts until CombatCommander admission, require matching source and destination role ability policies, preserve selected tag roles across transfer, plan stale action cleanup with ownership and squad handoff, and expose rejected edits in the in-game HUD without replacing the active operation status"
+    },
+    {
+      "path": "patches/0066-operation-transfer-idempotence-and-active-evidence.patch",
+      "order": 66,
+      "scope": "treat an exact already-applied reciprocal transfer generation as an idempotent no-op on later game frames, prevent duplicate ownership mutation and false BLOCKED overwrite, and preserve the still-running active generation evidence when a higher-generation edit is rejected"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {
