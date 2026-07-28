@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 98bc077..7019840 100644
+index 98bc077..085f60d 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1848,6 +1848,7 @@ bool voiResolveTacticalNukeTargetAnchor(
@@ -335,7 +335,7 @@ index 98bc077..7019840 100644
  				owner = m_voiOperationUnitOwners.erase(owner);
  			}
  			else
-@@ -2756,24 +3038,103 @@ void CombatCommander::observeVoiOperations()
+@@ -2756,24 +3038,116 @@ void CombatCommander::observeVoiOperations()
  		}
  
  		bool observedMovement = false;
@@ -387,6 +387,8 @@ index 98bc077..7019840 100644
 +					operation.policyUpdateId,
 +					operation.generation,
 +					currentFrame,
++					submitted
++						!= evidence.submittedPositions.end(),
 +					unitMoved,
 +					unitEngaged);
 +			const bool abilityEffect =
@@ -435,11 +437,22 @@ index 98bc077..7019840 100644
 -				break;
 +				continue;
  			}
-+			voiLatchFamilyEffectForTelemetry(
++			const auto snapshot =
 +				voiFamilyEffectTelemetrySnapshot(
 +					operation.generation,
-+					evidence),
++					evidence);
++			voiLatchFamilyEffectForTelemetry(
++				snapshot,
 +				evidence.telemetryLatch);
++			VoiFamilyEffectTelemetryDelivery delivery;
++			delivery.operationId =
++				operation.operationId;
++			delivery.unitType = evidence.unitType;
++			delivery.role = evidence.role;
++			delivery.snapshot = snapshot;
++			voiEnqueueFamilyEffectTelemetryDelivery(
++				delivery,
++				m_voiFamilyEffectTelemetryDeliveries);
  		}
 -		const bool observedEnemy =
 -			voiHasVisibleEnemyNearSquad(
@@ -449,7 +462,7 @@ index 98bc077..7019840 100644
  		if (observedEnemy)
  		{
  			operation.lastEnemyFrame = currentFrame;
-@@ -2802,20 +3163,15 @@ void CombatCommander::observeVoiOperations()
+@@ -2802,20 +3176,15 @@ void CombatCommander::observeVoiOperations()
  			operation.routeStageComplete = true;
  			operation.activeTargetPosition =
  				operation.targetPosition;
@@ -479,7 +492,7 @@ index 98bc077..7019840 100644
  		}
  
  		const float completionRadius =
-@@ -2851,7 +3207,8 @@ void CombatCommander::observeVoiOperations()
+@@ -2851,7 +3220,8 @@ void CombatCommander::observeVoiOperations()
  			{
  				objectiveCompleted = targetReached;
  			}
@@ -489,7 +502,7 @@ index 98bc077..7019840 100644
  				&& targetReached
  				&& !observedEnemy
  				&& m_bot.Map().isExplored(
-@@ -2913,22 +3270,18 @@ void CombatCommander::reconcileVoiOperation(
+@@ -2913,22 +3283,18 @@ void CombatCommander::reconcileVoiOperation(
  	}
  	if (!m_squadData.squadExists(operation.squadName))
  	{
@@ -518,7 +531,7 @@ index 98bc077..7019840 100644
  					operation.status),
  				ExplicitOperationPriority,
  				m_bot));
-@@ -3528,6 +3881,25 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3528,6 +3894,25 @@ void CombatCommander::reconcileVoiOperation(
  			snapshot.missingPrerequisites =
  				productionProgress.missingPrerequisiteTokens;
  		}
@@ -544,7 +557,7 @@ index 98bc077..7019840 100644
  		operation.requirementSnapshots.push_back(snapshot);
  	}
  	const VoiRuntimeConvergenceDecision convergence =
-@@ -3546,7 +3918,8 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3546,7 +3931,8 @@ void CombatCommander::reconcileVoiOperation(
  		m_bot.Commander().getVoiPolicyBool(
  			"emergency.force_retreat",
  			false)
@@ -554,7 +567,7 @@ index 98bc077..7019840 100644
  			&& m_bot.Commander().getVoiPolicyBool(
  				"emergency.cancel_attacks",
  				false));
-@@ -3555,12 +3928,13 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3555,12 +3941,13 @@ void CombatCommander::reconcileVoiOperation(
  		operation.status = "BLOCKED";
  		operation.blockedReason =
  			"emergency_retreat_preempted";
@@ -574,7 +587,7 @@ index 98bc077..7019840 100644
  		return;
  	}
  	const bool enoughUnits =
-@@ -3574,12 +3948,13 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3574,12 +3961,13 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = convergence.status;
  		operation.blockedReason = convergence.blocker;
@@ -594,7 +607,7 @@ index 98bc077..7019840 100644
  		return;
  	}
  	if (operation.assignedFrame == 0)
-@@ -3594,22 +3969,15 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3594,22 +3982,15 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = "ASSIGNED";
  	}
@@ -626,7 +639,7 @@ index 98bc077..7019840 100644
  }
  
  void CombatCommander::updateVoiOperations()
-@@ -3765,26 +4133,15 @@ void CombatCommander::updateVoiOperations()
+@@ -3765,26 +4146,15 @@ void CombatCommander::updateVoiOperations()
  		}
  		requested.policyUpdateId = policyUpdateId;
  		requested.receivedFrame = m_bot.GetGameLoop();
@@ -657,7 +670,7 @@ index 98bc077..7019840 100644
  		requested.routeType =
  			m_bot.Commander().getVoiPolicyString(
  				prefix + ".route_intent.route_type",
-@@ -4155,7 +4512,8 @@ void CombatCommander::updateVoiOperations()
+@@ -4155,7 +4525,8 @@ void CombatCommander::updateVoiOperations()
  		}
  		else if (requested.taskType != "scout"
  			&& requested.taskType != "attack"
@@ -667,7 +680,7 @@ index 98bc077..7019840 100644
  		{
  			requested.status = "BLOCKED";
  			requested.blockedReason =
-@@ -4829,22 +5187,20 @@ void CombatCommander::updateVoiOperations()
+@@ -4829,22 +5200,20 @@ void CombatCommander::updateVoiOperations()
  		{
  			if (!m_squadData.squadExists(operation.squadName))
  			{
@@ -698,7 +711,7 @@ index 98bc077..7019840 100644
  							operation.status),
  						ExplicitOperationPriority,
  						m_bot));
-@@ -4877,6 +5233,8 @@ void CombatCommander::updateVoiOperations()
+@@ -4877,6 +5246,8 @@ void CombatCommander::updateVoiOperations()
  					!= requested.policyUpdateId;
  			existing.policyUpdateId = policyUpdateId;
  			existing.commandLayer = requested.commandLayer;
@@ -707,7 +720,7 @@ index 98bc077..7019840 100644
  			existing.taskType = requested.taskType;
  			existing.unitClasses = requested.unitClasses;
  			existing.lifetimeMode = requested.lifetimeMode;
-@@ -4945,6 +5303,7 @@ void CombatCommander::updateVoiOperations()
+@@ -4945,6 +5316,7 @@ void CombatCommander::updateVoiOperations()
  				existing.submissionObserved = false;
  				existing.submittedFrame = 0;
  				existing.submittedPositions.clear();
@@ -715,7 +728,7 @@ index 98bc077..7019840 100644
  			}
  		};
  	auto annotateRejectedEdit =
-@@ -6355,6 +6714,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6355,6 +6727,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  		++index)
  	{
  		const auto & operation = m_voiOperations[index];
@@ -724,7 +737,7 @@ index 98bc077..7019840 100644
  		if (index > 0)
  		{
  			payload << ",";
-@@ -6366,10 +6727,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6366,10 +6740,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  			<< "\","
  			<< "\"generation\":"
  			<< operation.generation << ","
@@ -745,7 +758,7 @@ index 98bc077..7019840 100644
  			<< "\"status\":\""
  			<< voiOperationJsonEscape(
  				operation.status)
-@@ -6465,6 +6836,155 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6465,6 +6849,155 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  			}
  			payload << "]}";
  		}
@@ -901,7 +914,73 @@ index 98bc077..7019840 100644
  		payload << "],"
  			<< "\"target_x\":"
  			<< operation.targetX << ","
-@@ -6573,6 +7093,41 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6569,10 +7102,96 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ 				operation.lastAction)
+ 			<< "\"}";
+ 	}
++	payload << "],\"pending_family_effects\":[";
++	for (size_t deliveryIndex = 0;
++		deliveryIndex
++			< m_voiFamilyEffectTelemetryDeliveries
++				.pending.size();
++		++deliveryIndex)
++	{
++		if (deliveryIndex > 0)
++		{
++			payload << ",";
++		}
++		const auto & delivery =
++			m_voiFamilyEffectTelemetryDeliveries
++				.pending[deliveryIndex];
++		const auto & snapshot = delivery.snapshot;
++		payload << "{\"update_id\":\""
++			<< voiOperationJsonEscape(
++				snapshot.policyUpdateId)
++			<< "\",\"operation_id\":\""
++			<< voiOperationJsonEscape(
++				delivery.operationId)
++			<< "\",\"generation\":"
++			<< snapshot.operationGeneration
++			<< ",\"family\":\""
++			<< voiOperationJsonEscape(
++				voiTerranOperationFamily(
++					delivery.unitType))
++			<< "\",\"unit_type\":\""
++			<< voiOperationJsonEscape(
++				delivery.unitType)
++			<< "\",\"role\":\""
++			<< voiOperationJsonEscape(delivery.role)
++			<< "\",\"action\":\""
++			<< voiOperationJsonEscape(snapshot.action)
++			<< "\",\"required_effect\":\""
++			<< voiOperationJsonEscape(
++				snapshot.requiredEffect)
++			<< "\",\"attempt_generation\":"
++			<< snapshot.attemptGeneration
++			<< ",\"attempted_count\":"
++			<< snapshot.attemptedCount
++			<< ",\"attempted_frame\":"
++			<< snapshot.attemptedFrame
++			<< ",\"submitted_count\":"
++			<< snapshot.submittedCount
++			<< ",\"submitted_frame\":"
++			<< snapshot.submittedFrame
++			<< ",\"effect_kind\":\""
++			<< voiOperationJsonEscape(
++				snapshot.effectKind)
++			<< "\",\"effect_count\":"
++			<< snapshot.effectCount
++			<< ",\"effect_frame\":"
++			<< snapshot.effectFrame
++			<< ",\"blocker_manager\":\""
++			<< voiOperationJsonEscape(
++				snapshot.blockerManager)
++			<< "\",\"blocker\":\""
++			<< voiOperationJsonEscape(
++				snapshot.blockerReason)
++			<< "\"}";
++	}
+ 	payload << "]}";
  	return payload.str();
  }
  
@@ -909,26 +988,13 @@ index 98bc077..7019840 100644
 +{
 +	for (auto & operation : m_voiOperations)
 +	{
-+		for (const auto & requirement :
-+			operation.requirementSnapshots)
++		for (auto & evidenceEntry :
++			operation.familyEvidenceByKey)
 +		{
-+			const std::string familyKey =
-+				voiOperationFamilyEvidenceKey(
-+					requirement.unitType,
-+					requirement.role);
-+			auto evidenceIt =
-+				operation.familyEvidenceByKey.find(
-+					familyKey);
-+			if (evidenceIt
-+				== operation.familyEvidenceByKey.end())
-+			{
-+				continue;
-+			}
-+			auto & evidence = evidenceIt->second;
++			auto & evidence = evidenceEntry.second;
 +			const auto * pending =
 +				voiPeekFamilyEffectForTelemetry(
-+					evidence.telemetryLatch,
-+					operation.generation);
++					evidence.telemetryLatch);
 +			if (pending == nullptr)
 +			{
 +				continue;
@@ -938,12 +1004,14 @@ index 98bc077..7019840 100644
 +				*pending);
 +		}
 +	}
++	voiAcknowledgeFamilyEffectTelemetryDeliveries(
++		m_voiFamilyEffectTelemetryDeliveries);
 +}
 +
  void CombatCommander::bindCurrentVoiExplicitAbilityAttempt(
  	UnitAction & action) const
  {
-@@ -13066,9 +13621,75 @@ void CombatCommander::drawVoiOperationHud()
+@@ -13066,9 +13685,75 @@ void CombatCommander::drawVoiOperationHud()
  			<< " " << operation.taskType
  			<< " [" << operation.status << "]"
  			<< " units=" << operation.assignedCount
@@ -1020,7 +1088,7 @@ index 98bc077..7019840 100644
  		if (operation.status == "BLOCKED"
  			&& !operation.blockedReason.empty())
  		{
-@@ -14044,6 +14665,53 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+@@ -14044,6 +14729,53 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
  		return false;
  	}
  
@@ -1075,7 +1143,7 @@ index 98bc077..7019840 100644
  	if (voiRoleBiasedAction || action.description.rfind("VoiRole", 0) == 0)
  	{
 diff --git a/src/CombatCommander.h b/src/CombatCommander.h
-index a872e09..dc69b21 100644
+index a872e09..0ad5df4 100644
 --- a/src/CombatCommander.h
 +++ b/src/CombatCommander.h
 @@ -4,6 +4,7 @@
@@ -1136,7 +1204,16 @@ index a872e09..dc69b21 100644
  	std::map<sc2::Tag, std::string> previousSquadByTag;
  };
  
-@@ -767,6 +795,7 @@ public:
+@@ -472,6 +500,8 @@ class CombatCommander
+ 	std::set<Unit> m_backstabbers;	// Workers that backstab the enemy probes when probe rushed
+ 	std::map<int, long> m_cachedBiles;	// <corrosive bile location (mapkey generated with Util::ToMapKey), last frame seen>
+ 	std::vector<VoiOperationState> m_voiOperations;
++	VoiFamilyEffectTelemetryDeliveryQueue
++		m_voiFamilyEffectTelemetryDeliveries;
+ 	std::map<sc2::Tag, std::pair<std::string, uint64_t>> m_voiOperationUnitOwners;
+ 	std::string m_voiOperationPolicyUpdateId;
+ 	bool m_workersStacked = false;
+@@ -767,6 +797,7 @@ public:
  	int getVoiAssignableUnownedUnitCount(
  		const std::string & compositionToken) const;
  	std::string getVoiOperationDirectorTelemetryJson() const;
@@ -1219,16 +1296,17 @@ index 4bbb024..3791f54 100644
  }
 diff --git a/src/voi_family_effect_lifecycle.hpp b/src/voi_family_effect_lifecycle.hpp
 new file mode 100644
-index 0000000..e3aca51
+index 0000000..0866b7e
 --- /dev/null
 +++ b/src/voi_family_effect_lifecycle.hpp
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,284 @@
 +#pragma once
 +
 +#include <cstddef>
 +#include <cstdint>
 +#include <fstream>
 +#include <string>
++#include <vector>
 +
 +struct VoiFamilyEffectTelemetrySnapshot
 +{
@@ -1260,6 +1338,92 @@ index 0000000..e3aca51
 +	std::string acknowledgedEffectKind;
 +};
 +
++struct VoiFamilyEffectTelemetryDelivery
++{
++	std::string operationId;
++	std::string unitType;
++	std::string role;
++	VoiFamilyEffectTelemetrySnapshot snapshot;
++};
++
++struct VoiFamilyEffectTelemetryDeliveryQueue
++{
++	std::vector<VoiFamilyEffectTelemetryDelivery> pending;
++	std::vector<VoiFamilyEffectTelemetryDelivery> acknowledged;
++};
++
++inline bool voiSameFamilyEffectTelemetryDelivery(
++	const VoiFamilyEffectTelemetryDelivery & left,
++	const VoiFamilyEffectTelemetryDelivery & right)
++{
++	return left.operationId == right.operationId
++		&& left.unitType == right.unitType
++		&& left.role == right.role
++		&& left.snapshot.policyUpdateId
++			== right.snapshot.policyUpdateId
++		&& left.snapshot.operationGeneration
++			== right.snapshot.operationGeneration
++		&& left.snapshot.action == right.snapshot.action
++		&& left.snapshot.attemptGeneration
++			== right.snapshot.attemptGeneration
++		&& left.snapshot.effectKind
++			== right.snapshot.effectKind
++		&& left.snapshot.effectFrame
++			== right.snapshot.effectFrame;
++}
++
++inline bool voiEnqueueFamilyEffectTelemetryDelivery(
++	const VoiFamilyEffectTelemetryDelivery & delivery,
++	VoiFamilyEffectTelemetryDeliveryQueue & queue)
++{
++	if (delivery.operationId.empty()
++		|| delivery.snapshot.effectKind.empty()
++		|| delivery.snapshot.effectCount == 0
++		|| delivery.snapshot.effectFrame == 0)
++	{
++		return false;
++	}
++	for (const auto & pending : queue.pending)
++	{
++		if (voiSameFamilyEffectTelemetryDelivery(
++			pending,
++			delivery))
++		{
++			return false;
++		}
++	}
++	for (const auto & acknowledged : queue.acknowledged)
++	{
++		if (voiSameFamilyEffectTelemetryDelivery(
++			acknowledged,
++			delivery))
++		{
++			return false;
++		}
++	}
++	queue.pending.push_back(delivery);
++	return true;
++}
++
++inline void voiAcknowledgeFamilyEffectTelemetryDeliveries(
++	VoiFamilyEffectTelemetryDeliveryQueue & queue)
++{
++	for (const auto & delivery : queue.pending)
++	{
++		queue.acknowledged.push_back(delivery);
++	}
++	queue.pending.clear();
++	const std::size_t maximumAcknowledged = 128;
++	if (queue.acknowledged.size() > maximumAcknowledged)
++	{
++		queue.acknowledged.erase(
++			queue.acknowledged.begin(),
++			queue.acknowledged.begin()
++				+ (queue.acknowledged.size()
++					- maximumAcknowledged));
++	}
++}
++
 +inline bool voiLatchFamilyEffectForTelemetry(
 +	const VoiFamilyEffectTelemetrySnapshot & snapshot,
 +	VoiFamilyEffectTelemetryLatch & latch)
@@ -1269,12 +1433,6 @@ index 0000000..e3aca51
 +		|| snapshot.effectFrame == 0)
 +	{
 +		return false;
-+	}
-+	if (latch.pending
-+		&& latch.pendingSnapshot.operationGeneration
-+			!= snapshot.operationGeneration)
-+	{
-+		latch.pending = false;
 +	}
 +	if (latch.pending)
 +	{
@@ -1295,6 +1453,15 @@ index 0000000..e3aca51
 +	latch.pendingSnapshot = snapshot;
 +	latch.pending = true;
 +	return true;
++}
++
++inline const VoiFamilyEffectTelemetrySnapshot *
++voiPeekFamilyEffectForTelemetry(
++	const VoiFamilyEffectTelemetryLatch & latch)
++{
++	return latch.pending
++		? &latch.pendingSnapshot
++		: nullptr;
 +}
 +
 +inline const VoiFamilyEffectTelemetrySnapshot *
@@ -1346,10 +1513,12 @@ index 0000000..e3aca51
 +	const std::string & policyUpdateId,
 +	std::uint64_t operationGeneration,
 +	std::uint32_t observationFrame,
++	bool unitSubmissionMatched,
 +	bool movementObserved,
 +	bool engagementObserved)
 +{
-+	return (movementObserved || engagementObserved)
++	return unitSubmissionMatched
++		&& (movementObserved || engagementObserved)
 +		&& voiFamilyEffectHasMatchingSubmission(
 +			snapshot,
 +			policyUpdateId,
@@ -1439,10 +1608,10 @@ index e0a09df..526cc7d 100644
 +)
 diff --git a/tests/family_effect_lifecycle_test.cpp b/tests/family_effect_lifecycle_test.cpp
 new file mode 100644
-index 0000000..481a2c8
+index 0000000..c08b535
 --- /dev/null
 +++ b/tests/family_effect_lifecycle_test.cpp
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,344 @@
 +#include "voi_family_effect_lifecycle.hpp"
 +
 +#include <cassert>
@@ -1471,6 +1640,20 @@ index 0000000..481a2c8
 +	snapshot.effectCount = effectCount;
 +	snapshot.effectFrame = effectFrame;
 +	return snapshot;
++}
++
++VoiFamilyEffectTelemetryDelivery delivery(
++	const char * operationId,
++	const char * unitType,
++	const char * role,
++	const VoiFamilyEffectTelemetrySnapshot & snapshot)
++{
++	VoiFamilyEffectTelemetryDelivery value;
++	value.operationId = operationId;
++	value.unitType = unitType;
++	value.role = role;
++	value.snapshot = snapshot;
++	return value;
 +}
 +
 +int main()
@@ -1566,7 +1749,7 @@ index 0000000..481a2c8
 +		observedSiege));
 +	assert(liveEvidence.effectKind == "movement");
 +
-+	// A new operation generation neither exposes nor blocks an old latch.
++	// A local latch keeps the oldest unacknowledged snapshot.
 +	VoiFamilyEffectTelemetryLatch generationLatch;
 +	assert(voiLatchFamilyEffectForTelemetry(
 +		observedSiege,
@@ -1583,12 +1766,43 @@ index 0000000..481a2c8
 +			"ability_state",
 +			1,
 +			300);
-+	assert(voiLatchFamilyEffectForTelemetry(
++	assert(!voiLatchFamilyEffectForTelemetry(
 +		nextGeneration,
 +		generationLatch));
 +	assert(voiPeekFamilyEffectForTelemetry(
-+		generationLatch,
-+		5)->operationGeneration == 5);
++		generationLatch)->operationGeneration == 4);
++
++	// The immutable delivery queue preserves effects across retarget/reset.
++	VoiFamilyEffectTelemetryDeliveryQueue deliveryQueue;
++	const auto siegeDelivery =
++		delivery(
++			"operation-alpha",
++			"TERRAN_SIEGETANK",
++			"siege",
++			observedSiege);
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		siegeDelivery,
++		deliveryQueue));
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		siegeDelivery,
++		deliveryQueue));
++	generationLatch = VoiFamilyEffectTelemetryLatch();
++	assert(!generationLatch.pending);
++	assert(deliveryQueue.pending.size() == 1);
++	assert(deliveryQueue.pending.front()
++		.snapshot.operationGeneration == 4);
++	const auto nextGenerationDelivery =
++		delivery(
++			"operation-alpha",
++			"TERRAN_SIEGETANK",
++			"siege",
++			nextGeneration);
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		nextGenerationDelivery,
++		deliveryQueue));
++	assert(deliveryQueue.pending.size() == 2);
++	assert(deliveryQueue.pending.back()
++		.snapshot.operationGeneration == 5);
 +
 +	// A newer policy cannot inherit or acknowledge an older update's effect.
 +	VoiFamilyEffectTelemetryLatch policyLatch;
@@ -1657,12 +1871,23 @@ index 0000000..481a2c8
 +		6,
 +		421,
 +		false,
++		false,
 +		true));
 +	assert(!voiFamilyEffectHasMatchingObservation(
 +		submitted,
 +		"update-d",
 +		6,
 +		420,
++		true,
++		false,
++		true));
++	// Same-family unit B cannot claim unit A's submitted engagement.
++	assert(!voiFamilyEffectHasMatchingObservation(
++		submitted,
++		"update-d",
++		6,
++		421,
++		false,
 +		false,
 +		true));
 +	assert(voiFamilyEffectHasMatchingObservation(
@@ -1670,14 +1895,19 @@ index 0000000..481a2c8
 +		"update-d",
 +		6,
 +		421,
++		true,
 +		false,
 +		true));
 +
-+	// Failed writes perform no acknowledgement; the exact delivery remains.
++	// Failed writes retain both local and immutable delivery evidence.
 +	VoiFamilyEffectTelemetryLatch writeFailureLatch;
 +	assert(voiLatchFamilyEffectForTelemetry(
 +		observedSiege,
 +		writeFailureLatch));
++	VoiFamilyEffectTelemetryDeliveryQueue writeFailureQueue;
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		siegeDelivery,
++		writeFailureQueue));
 +	bool failedWriteAcknowledged = false;
 +	assert(!voiWriteAuthoritativeTelemetryFile(
 +		".",
@@ -1687,13 +1917,22 @@ index 0000000..481a2c8
 +			voiAcknowledgeFamilyEffectTelemetry(
 +				writeFailureLatch,
 +				observedSiege);
++			voiAcknowledgeFamilyEffectTelemetryDeliveries(
++				writeFailureQueue);
 +		}));
 +	assert(!failedWriteAcknowledged);
 +	assert(voiPeekFamilyEffectForTelemetry(
 +		writeFailureLatch,
 +		4) != nullptr);
++	assert(writeFailureQueue.pending.size() == 1);
++	assert(writeFailureQueue.acknowledged.empty());
 +
-+	// A successful authoritative write acknowledges the serialized delivery.
++	// Retarget can discard family state without losing queued evidence.
++	writeFailureLatch = VoiFamilyEffectTelemetryLatch();
++	assert(!writeFailureLatch.pending);
++	assert(writeFailureQueue.pending.size() == 1);
++
++	// A successful authoritative write acknowledges serialized deliveries.
 +	const char * successfulTelemetryPath =
 +		"voi_family_effect_lifecycle_test_telemetry.json";
 +	bool successfulWriteAcknowledged = false;
@@ -1702,14 +1941,17 @@ index 0000000..481a2c8
 +		"{\"effect\":\"ability_state\"}\n",
 +		[&]() {
 +			successfulWriteAcknowledged = true;
-+			assert(voiAcknowledgeFamilyEffectTelemetry(
-+				writeFailureLatch,
-+				observedSiege));
++			voiAcknowledgeFamilyEffectTelemetryDeliveries(
++				writeFailureQueue);
 +		}));
 +	assert(successfulWriteAcknowledged);
-+	assert(voiPeekFamilyEffectForTelemetry(
-+		writeFailureLatch,
-+		4) == nullptr);
++	assert(writeFailureQueue.pending.empty());
++	assert(writeFailureQueue.acknowledged.size() == 1);
++	assert(writeFailureQueue.acknowledged.front()
++		.snapshot.policyUpdateId == "update-a");
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		siegeDelivery,
++		writeFailureQueue));
 +	assert(std::remove(successfulTelemetryPath) == 0);
 +
 +	return 0;
