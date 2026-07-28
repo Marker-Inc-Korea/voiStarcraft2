@@ -22,6 +22,7 @@ import unittest
 from http import HTTPStatus
 from types import SimpleNamespace
 from unittest import mock
+from urllib.parse import quote
 
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
@@ -650,6 +651,91 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             events[0]["data"]["event_seq"],
             journal.latest_seq,
         )
+
+    def test_sse_future_cursor_falls_back_to_authoritative_snapshot(self):
+        event = self.server._http.publish_event(
+            "state",
+            {"available": True, "marker": "before-restart"},
+        )
+
+        stream = self.get_sse("/api/events?after=99999&once=1")
+        events = self.parse_sse_events(stream)
+
+        self.assertEqual(events[0]["event"], "snapshot")
+        self.assertEqual(
+            events[0]["data"]["event_seq"],
+            event["event_seq"],
+        )
+
+    def test_sse_replay_filters_other_blackboard_events_server_side(self):
+        with tempfile.TemporaryDirectory() as directory:
+            board_a = os.path.join(directory, "board-a")
+            board_b = os.path.join(directory, "board-b")
+            baseline = self.server._http.publish_event(
+                "state",
+                {"available": True},
+            )
+            event_a = self.server._http.publish_event(
+                "command_received",
+                {
+                    "command_text": "board A secret order",
+                    "blackboard_dir": board_a,
+                },
+                blackboard_dir=board_a,
+            )
+            self.server._http.publish_event(
+                "command_received",
+                {
+                    "command_text": "board B private order",
+                    "blackboard_dir": board_b,
+                },
+                blackboard_dir=board_b,
+            )
+
+            stream = self.get_sse(
+                "/api/events"
+                f"?after={baseline['event_seq']}"
+                f"&blackboard_dir={quote(board_a)}"
+                "&once=1"
+            )
+            events = self.parse_sse_events(stream)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event"], "command_received")
+        self.assertEqual(
+            events[0]["data"]["event_seq"],
+            event_a["event_seq"],
+        )
+        self.assertEqual(
+            events[0]["data"]["blackboard_scope_id"],
+            web_gui._micromachine_blackboard_scope_id(board_a),
+        )
+        self.assertIn("board A secret order", stream)
+        self.assertNotIn("board B private order", stream)
+
+    def test_server_stop_terminates_an_active_sse_handler(self):
+        connection = http.client.HTTPConnection(
+            "127.0.0.1",
+            self.server.port,
+            timeout=5,
+        )
+        connection.request("GET", "/api/events")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        for _ in range(5):
+            response.readline()
+
+        http_server = self.server._http
+        started = time.monotonic()
+        self.server.stop(timeout=2)
+        response.read()
+        elapsed = time.monotonic() - started
+        connection.close()
+
+        self.assertTrue(http_server.shutdown_event.is_set())
+        self.assertFalse(self.server.is_running)
+        self.assertTrue(response.isclosed())
+        self.assertLess(elapsed, 2.0)
 
     def test_sse_endpoint_uses_existing_token_authentication(self):
         server = WebGuiServer(
@@ -3540,6 +3626,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertEqual(journal.oldest_seq, 2)
         self.assertFalse(journal.replay_available(0))
         self.assertTrue(journal.replay_available(1))
+        self.assertFalse(journal.replay_available(4))
         self.assertEqual(
             [event["event_seq"] for event in journal.events_after(1)],
             [2, 3],
@@ -8600,6 +8687,272 @@ assert(logBox.querySelectorAll(".message-full").some(function (node) {
         for forbidden in ("https://cdn.", "http://cdn.", "unpkg.com", "jsdelivr"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, page)
+
+    def test_eventsource_callbacks_recover_scope_cursor_and_fallback(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_web_gui_page()
+        script_start = page.index("function currentEventBlackboardDirectory()")
+        script_end = page.index("function setText(", script_start)
+        event_script = page[script_start:script_end]
+        harness = r"""
+const assert = require("assert");
+const blackboardInput = { value: "/tmp/board-a" };
+const statusNode = { textContent: "" };
+const nodes = {
+  "micromachine-blackboard-dir": blackboardInput,
+  "micromachine-status": statusNode
+};
+var document = {
+  getElementById: function(id) { return nodes[id] || null; }
+};
+var intervalSeq = 0;
+var timeoutSeq = 0;
+class FakeEventSource {
+  constructor(url) {
+    this.url = url;
+    this.listeners = {};
+    this.closed = false;
+    FakeEventSource.instances.push(this);
+  }
+  addEventListener(name, handler) {
+    if (!this.listeners[name]) { this.listeners[name] = []; }
+    this.listeners[name].push(handler);
+  }
+  emit(name, envelope) {
+    (this.listeners[name] || []).forEach(function(handler) {
+      handler({
+        type: name,
+        lastEventId: String(envelope.event_seq || 0),
+        data: JSON.stringify(envelope)
+      });
+    });
+  }
+  close() { this.closed = true; }
+}
+FakeEventSource.instances = [];
+var window = {
+  EventSource: FakeEventSource,
+  setInterval: function() { intervalSeq += 1; return intervalSeq; },
+  clearInterval: function() {},
+  setTimeout: function() { timeoutSeq += 1; return timeoutSeq; },
+  clearTimeout: function() {}
+};
+var token = "";
+var authJoin = "";
+var lastSeq = 0;
+var lastEventSeq = 0;
+var commandEventBlackboardDir = "";
+var commandEventSource = null;
+var commandEventReconnectTimer = null;
+var commandEventHealthy = false;
+var fallbackPollingIntervals = [];
+var microMachinePollQueued = false;
+var microMachinePollAbortController = null;
+var operationRecords = {};
+var activeCommandConsoleRecord = {
+  state: "idle",
+  pendingId: "",
+  updateId: ""
+};
+var renderedStatuses = [];
+var appendedHistory = [];
+var pollCounts = { history: 0, state: 0, micromachine: 0 };
+var POLL_INTERVAL_MS = 1000;
+function isMicroMachineCommandMode() { return true; }
+function pollHistory() { pollCounts.history += 1; }
+function pollState() { pollCounts.state += 1; }
+function pollMicroMachineStatus() { pollCounts.micromachine += 1; }
+function appendLog(payload) { appendedHistory.push(payload); }
+function renderState() {}
+function safeRenderMicroMachineStatus(payload) { renderedStatuses.push(payload); }
+function commandUiText(ko) { return ko; }
+function beginOperationRecord(text, pendingId) {
+  operationRecords[pendingId] = {
+    pendingId: pendingId,
+    operationId: pendingId,
+    updateId: "",
+    operationGeneration: 0,
+    telemetryFrame: -1,
+    text: text
+  };
+}
+function beginActiveCommandConsole(text, pendingId) {
+  activeCommandConsoleRecord = {
+    state: "received",
+    pendingId: pendingId,
+    updateId: "",
+    text: text
+  };
+  beginOperationRecord(text, pendingId);
+}
+function bindOperationRecordUpdate(text, pendingId, scopeId, updateId) {
+  var record = operationRecords[pendingId];
+  if (!record) { return false; }
+  record.text = text;
+  record.scopeId = scopeId;
+  record.updateId = updateId;
+  return true;
+}
+function bindActiveCommandConsoleUpdate(text, pendingId, scopeId, updateId) {
+  if (activeCommandConsoleRecord.pendingId !== pendingId) { return false; }
+  activeCommandConsoleRecord.text = text;
+  activeCommandConsoleRecord.scopeId = scopeId;
+  activeCommandConsoleRecord.updateId = updateId;
+  return true;
+}
+function renderActiveCommandConsole(payload) {
+  activeCommandConsoleRecord.data = payload;
+  activeCommandConsoleRecord.state = payload.status || activeCommandConsoleRecord.state;
+}
+"""
+        scenario = r"""
+connectEventChannel();
+const sourceA = FakeEventSource.instances[0];
+assert(sourceA.url.includes("blackboard_dir=%2Ftmp%2Fboard-a"));
+assert(!sourceA.url.includes("after="));
+assert.strictEqual(fallbackPollingIntervals.length, 3);
+sourceA.onopen();
+assert.strictEqual(fallbackPollingIntervals.length, 0);
+
+sourceA.emit("snapshot", {
+  event_seq: 5,
+  event_type: "snapshot",
+  blackboard_scope_id: "scope-a",
+  payload: {
+    history: { events: [], latest: 0 },
+    micromachine_status: {
+      blackboard_dir: "/tmp/board-a",
+      blackboard_scope_id: "scope-a",
+      status: "idle"
+    }
+  }
+});
+assert.strictEqual(lastEventSeq, 5);
+assert.strictEqual(renderedStatuses.length, 1);
+
+lastEventSeq = 999;
+sourceA.emit("snapshot", {
+  event_seq: 2,
+  event_type: "snapshot",
+  blackboard_scope_id: "scope-a",
+  payload: {
+    history: { events: [], latest: 0 },
+    micromachine_status: {
+      blackboard_dir: "/tmp/board-a",
+      blackboard_scope_id: "scope-a",
+      status: "idle"
+    }
+  }
+});
+assert.strictEqual(lastEventSeq, 2, "authoritative snapshot lowers a future cursor");
+
+beginActiveCommandConsole("local order", "operation-local");
+const localCardCount = Object.keys(operationRecords).length;
+sourceA.emit("command_received", {
+  event_seq: 3,
+  event_type: "command_received",
+  update_id: "update-local",
+  operation_id: "operation-local",
+  blackboard_scope_id: "scope-a",
+  payload: {
+    command_text: "local order",
+    status: "received",
+    blackboard_dir: "/tmp/board-a",
+    blackboard_scope_id: "scope-a"
+  }
+});
+assert.strictEqual(Object.keys(operationRecords).length, localCardCount);
+sourceA.emit("command_received", {
+  event_seq: 3,
+  event_type: "command_received",
+  update_id: "update-local",
+  operation_id: "operation-local",
+  blackboard_scope_id: "scope-a",
+  payload: {
+    command_text: "local order",
+    status: "received",
+    blackboard_dir: "/tmp/board-a",
+    blackboard_scope_id: "scope-a"
+  }
+});
+assert.strictEqual(Object.keys(operationRecords).length, localCardCount);
+
+sourceA.emit("source_error", {
+  event_seq: 4,
+  event_type: "source_error",
+  blackboard_scope_id: "scope-a",
+  payload: {
+    source: "micromachine_status",
+    error: "temporarily unavailable",
+    blackboard_dir: "/tmp/board-a",
+    blackboard_scope_id: "scope-a"
+  }
+});
+assert.strictEqual(fallbackPollingIntervals.length, 3);
+assert(statusNode.textContent.includes("temporarily unavailable"));
+sourceA.emit("micromachine_status", {
+  event_seq: 5,
+  event_type: "micromachine_status",
+  blackboard_scope_id: "scope-a",
+  payload: {
+    blackboard_dir: "/tmp/board-a",
+    blackboard_scope_id: "scope-a",
+    status: "connected"
+  }
+});
+assert.strictEqual(fallbackPollingIntervals.length, 0);
+
+blackboardInput.value = "/tmp/board-b";
+reconnectEventChannel();
+const sourceB = FakeEventSource.instances[1];
+assert(sourceA.closed);
+assert(sourceB.url.includes("blackboard_dir=%2Ftmp%2Fboard-b"));
+assert(!sourceB.url.includes("after="));
+assert.strictEqual(lastEventSeq, 0);
+sourceA.emit("snapshot", {
+  event_seq: 100,
+  event_type: "snapshot",
+  blackboard_scope_id: "scope-a",
+  payload: {
+    history: { events: [], latest: 0 },
+    micromachine_status: {
+      blackboard_dir: "/tmp/board-a",
+      blackboard_scope_id: "scope-a"
+    }
+  }
+});
+assert.strictEqual(lastEventSeq, 0, "closed scope cannot update the new board");
+sourceB.onopen();
+sourceB.emit("command_received", {
+  event_seq: 1,
+  event_type: "command_received",
+  update_id: "update-b",
+  operation_id: "operation-b",
+  blackboard_scope_id: "scope-b",
+  payload: {
+    command_text: "board B order",
+    status: "received",
+    blackboard_dir: "/tmp/board-b",
+    blackboard_scope_id: "scope-b"
+  }
+});
+assert(operationRecords["operation-b"]);
+assert.strictEqual(lastEventSeq, 1);
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(event_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_llm_setup_panel_starts_collapsed_with_toggle_inside_box(self):
         page = render_web_gui_page()

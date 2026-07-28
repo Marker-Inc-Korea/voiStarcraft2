@@ -2798,6 +2798,40 @@ def _web_event_identity(
     return update_id, operation_id, max(0, generation), game_frame
 
 
+def _web_event_blackboard_scope_id(
+    payload: Mapping[str, object],
+    *,
+    blackboard_dir: str = "",
+    blackboard_scope_id: str = "",
+) -> str:
+    """Return the opaque blackboard boundary attached to one web event."""
+
+    if blackboard_scope_id.strip():
+        return blackboard_scope_id.strip()
+    candidates = (
+        payload,
+        _mapping_child(payload, "compile_result"),
+        _mapping_child(payload, "latest_request"),
+        _mapping_child(payload, "update"),
+        _mapping_child(payload, "intervention"),
+    )
+    for candidate in candidates:
+        scope_id = str(candidate.get("blackboard_scope_id", "") or "").strip()
+        if scope_id:
+            return scope_id
+    resolved_dir = blackboard_dir.strip()
+    if not resolved_dir:
+        for candidate in candidates:
+            resolved_dir = str(candidate.get("blackboard_dir", "") or "").strip()
+            if resolved_dir:
+                break
+    return (
+        _micromachine_blackboard_scope_id(resolved_dir)
+        if resolved_dir
+        else ""
+    )
+
+
 def _number(value: object) -> float:
     if type(value) is bool or not isinstance(value, (int, float)):
         return 0.0
@@ -3668,6 +3702,7 @@ class _WebEventJournal:
         operation_id: str = "",
         generation: int = 0,
         game_frame: int = -1,
+        blackboard_scope_id: str = "",
     ) -> dict[str, object]:
         safe_payload = _redact_json_ready(payload)
         if not isinstance(safe_payload, Mapping):
@@ -3682,6 +3717,7 @@ class _WebEventJournal:
                 "operation_id": str(operation_id or ""),
                 "generation": max(0, int(generation)),
                 "game_frame": int(game_frame),
+                "blackboard_scope_id": str(blackboard_scope_id or ""),
                 "payload": dict(safe_payload),
             }
             self._events.append(event)
@@ -3691,6 +3727,8 @@ class _WebEventJournal:
     def replay_available(self, after: int) -> bool:
         threshold = max(0, int(after))
         with self._condition:
+            if threshold > self._seq:
+                return False
             if not self._events:
                 return threshold >= self._seq
             return threshold >= int(self._events[0]["event_seq"]) - 1
@@ -3703,6 +3741,12 @@ class _WebEventJournal:
                 for event in self._events
                 if int(event["event_seq"]) > threshold
             )
+
+    def wake_waiters(self) -> None:
+        """Wake blocked SSE handlers so server shutdown does not leak threads."""
+
+        with self._condition:
+            self._condition.notify_all()
 
     def wait_for_events(
         self,
@@ -6496,6 +6540,7 @@ var authQuery = token ? "?token=" + encodeURIComponent(token) : "";
 var authJoin = token ? "&token=" + encodeURIComponent(token) : "";
 var lastSeq = 0;
 var lastEventSeq = 0;
+var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
@@ -7721,10 +7766,23 @@ function pollHistory() {
     .catch(function () { /* 서버가 잠시 응답하지 않아도 폴링은 계속됩니다. */ });
 }
 
+function currentEventBlackboardDirectory() {
+  var input = document.getElementById("micromachine-blackboard-dir");
+  return input ? String(input.value || "").trim() : "";
+}
+
+function resetEventCursorForBlackboard(directory) {
+  var normalized = String(directory || "").trim();
+  if (commandEventBlackboardDir === normalized) { return false; }
+  commandEventBlackboardDir = normalized;
+  lastEventSeq = 0;
+  return true;
+}
+
 function eventSourceUrl() {
   var params = [];
-  var input = document.getElementById("micromachine-blackboard-dir");
-  var directory = input ? String(input.value || "").trim() : "";
+  var directory = currentEventBlackboardDirectory();
+  resetEventCursorForBlackboard(directory);
   if (token) { params.push("token=" + encodeURIComponent(token)); }
   if (lastEventSeq > 0) {
     params.push("after=" + encodeURIComponent(String(lastEventSeq)));
@@ -7826,12 +7884,86 @@ function applyEventSnapshot(payload) {
   }
 }
 
-function serverEventMatchesCurrentBlackboard(payload) {
+function serverEventMatchesCurrentBlackboard(envelope, payload) {
   if (!payload || typeof payload !== "object") { return true; }
-  var input = document.getElementById("micromachine-blackboard-dir");
-  var currentDirectory = input ? String(input.value || "").trim() : "";
+  var currentDirectory = currentEventBlackboardDirectory();
   var eventDirectory = String(payload.blackboard_dir || "").trim();
+  var expectedScope = String(envelope && envelope.blackboard_scope_id || "");
+  var payloadScope = String(payload.blackboard_scope_id || "");
+  if (expectedScope && payloadScope && expectedScope !== payloadScope) {
+    return false;
+  }
   return !currentDirectory || !eventDirectory || currentDirectory === eventDirectory;
+}
+
+function operationRecordMatchesServerEvent(operationId, updateId) {
+  return Object.keys(operationRecords).some(function(key) {
+    var record = operationRecords[key];
+    return Boolean(
+      record &&
+      (
+        record.pendingId === operationId ||
+        record.operationId === operationId ||
+        record.updateId === updateId
+      )
+    );
+  });
+}
+
+function applyCommandReceivedEvent(envelope, payload) {
+  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return; }
+  var text = String(payload.command_text || "");
+  var operationId = String(
+    envelope.operation_id || envelope.update_id || ""
+  );
+  var updateId = String(envelope.update_id || "");
+  if (!text || !operationId) { return; }
+  if (!operationRecordMatchesServerEvent(operationId, updateId)) {
+    if (activeCommandConsoleRecord.state === "idle") {
+      beginActiveCommandConsole(text, operationId);
+    } else {
+      beginOperationRecord(text, operationId);
+    }
+  }
+  bindOperationRecordUpdate(
+    text,
+    operationId,
+    String(envelope.blackboard_scope_id || ""),
+    updateId
+  );
+  if (
+    activeCommandConsoleRecord.pendingId === operationId ||
+    activeCommandConsoleRecord.updateId === updateId
+  ) {
+    bindActiveCommandConsoleUpdate(
+      text,
+      operationId,
+      String(envelope.blackboard_scope_id || ""),
+      updateId
+    );
+    renderActiveCommandConsole({
+      status: "received",
+      command_text: text,
+      update_id: updateId,
+      blackboard_scope_id: String(envelope.blackboard_scope_id || ""),
+      consumption_status: "received"
+    }, true);
+  }
+}
+
+function applyEventSourceError(envelope, payload) {
+  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return; }
+  var source = String(payload.source || "event source");
+  var error = String(payload.error || "source unavailable");
+  var node = document.getElementById("micromachine-status");
+  if (node) {
+    node.textContent = commandUiText(
+      "실시간 상태 소스 오류: " + source + " · " + error,
+      "Real-time state source error: " + source + " · " + error,
+      "实时状态源错误：" + source + " · " + error
+    );
+  }
+  startPollingFallback();
 }
 
 function applyServerEvent(event) {
@@ -7843,8 +7975,17 @@ function applyServerEvent(event) {
   }
   var eventType = String(envelope.event_type || event.type || "message");
   var eventSeq = Number(envelope.event_seq || event.lastEventId || 0);
+  var payload = envelope.payload || {};
+  if (eventType === "snapshot") {
+    lastEventSeq = Number.isFinite(eventSeq) && eventSeq >= 0 ? eventSeq : 0;
+    applyEventSnapshot(payload);
+    if (commandEventSource) {
+      commandEventHealthy = true;
+      stopPollingFallback();
+    }
+    return;
+  }
   if (
-    eventType !== "snapshot" &&
     eventSeq > 0 &&
     eventSeq <= lastEventSeq
   ) {
@@ -7852,10 +7993,17 @@ function applyServerEvent(event) {
   }
   if (serverEventRegressesOperation(envelope)) { return; }
   if (eventSeq > lastEventSeq) { lastEventSeq = eventSeq; }
-  var payload = envelope.payload || {};
-  if (eventType === "snapshot") {
-    applyEventSnapshot(payload);
+  if (eventType === "source_error") {
+    applyEventSourceError(envelope, payload);
     return;
+  }
+  if (eventType === "command_received") {
+    applyCommandReceivedEvent(envelope, payload);
+    return;
+  }
+  if (commandEventSource) {
+    commandEventHealthy = true;
+    stopPollingFallback();
   }
   if (eventType === "history") {
     applyHistoryEventPayload(payload);
@@ -7869,7 +8017,7 @@ function applyServerEvent(event) {
     eventType === "micromachine_status" ||
     eventType === "micromachine_submission"
   ) {
-    if (serverEventMatchesCurrentBlackboard(payload)) {
+    if (serverEventMatchesCurrentBlackboard(envelope, payload)) {
       safeRenderMicroMachineStatus(payload);
     }
   }
@@ -7909,7 +8057,10 @@ function connectEventChannel() {
     "command_received",
     "source_error"
   ].forEach(function(eventType) {
-    source.addEventListener(eventType, applyServerEvent);
+    source.addEventListener(eventType, function(event) {
+      if (commandEventSource !== source) { return; }
+      applyServerEvent(event);
+    });
   });
   source.onerror = function() {
     if (commandEventSource !== source) { return; }
@@ -11037,6 +11188,7 @@ function synchronizeMicroMachineBlackboardDirectory(directory) {
     return false;
   }
   microMachinePollBlackboardDir = normalized;
+  resetEventCursorForBlackboard(normalized);
   microMachineBlackboardContextGeneration += 1;
   microMachinePollQueued = false;
   if (
@@ -12472,6 +12624,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._event_source_lock = threading.Lock()
         self._observed_history_seq = 0
         self._observed_payload_hashes: dict[str, str] = {}
+        self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
 
     def publish_event(
@@ -12483,7 +12636,14 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         operation_id: str = "",
         generation: int = 0,
         game_frame: int = -1,
+        blackboard_dir: str = "",
+        blackboard_scope_id: str = "",
     ) -> dict[str, object]:
+        scope_id = _web_event_blackboard_scope_id(
+            payload,
+            blackboard_dir=blackboard_dir,
+            blackboard_scope_id=blackboard_scope_id,
+        )
         return self.event_journal.publish(
             event_type,
             payload,
@@ -12491,6 +12651,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             operation_id=operation_id,
             generation=generation,
             game_frame=game_frame,
+            blackboard_scope_id=scope_id,
         )
 
     def publish_changed_snapshot(
@@ -12498,6 +12659,9 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         cache_key: str,
         event_type: str,
         payload: Mapping[str, object],
+        *,
+        blackboard_dir: str = "",
+        blackboard_scope_id: str = "",
     ) -> None:
         safe_payload = _redact_json_ready(payload)
         serialized = json.dumps(
@@ -12520,7 +12684,15 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             operation_id=operation_id,
             generation=generation,
             game_frame=game_frame,
+            blackboard_dir=blackboard_dir,
+            blackboard_scope_id=blackboard_scope_id,
         )
+
+    def begin_shutdown(self) -> None:
+        """Signal active streams and wake their journal waits."""
+
+        self.shutdown_event.set()
+        self.event_journal.wake_waiters()
 
 
 class _WebGuiRequestHandler(BaseHTTPRequestHandler):
@@ -12661,7 +12833,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"error": "Last-Event-ID 또는 after 파라미터는 정수여야 합니다."},
             )
             return
-        blackboard_dir = params.get("blackboard_dir", [""])[0] or ""
+        blackboard_dir = self._resolved_micromachine_blackboard_dir(
+            params.get("blackboard_dir", [""])[0] or ""
+        )
+        blackboard_scope_id = _micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
         once = (params.get("once", [""])[0] or "").lower() in {
             "1",
             "true",
@@ -12681,23 +12858,30 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 cursor = self._write_authoritative_sse_snapshot(
                     journal,
                     blackboard_dir,
+                    blackboard_scope_id,
                 )
-                for event in journal.events_after(cursor):
-                    self._write_sse_event(event)
-                    cursor = max(cursor, int(event["event_seq"]))
+                cursor = self._write_visible_sse_events(
+                    journal.events_after(cursor),
+                    cursor=cursor,
+                    blackboard_scope_id=blackboard_scope_id,
+                )
             else:
-                for event in journal.events_after(after):
-                    self._write_sse_event(event)
-                    cursor = max(cursor, int(event["event_seq"]))
+                cursor = self._write_visible_sse_events(
+                    journal.events_after(after),
+                    cursor=cursor,
+                    blackboard_scope_id=blackboard_scope_id,
+                )
             self._write_sse_heartbeat()
             if once:
                 return
-            while True:
+            server = self.server  # type: ignore[assignment]
+            while not server.shutdown_event.is_set():  # type: ignore[attr-defined]
                 self._refresh_event_sources(blackboard_dir)
                 if not journal.replay_available(cursor):
                     cursor = self._write_authoritative_sse_snapshot(
                         journal,
                         blackboard_dir,
+                        blackboard_scope_id,
                     )
                     continue
                 events = journal.wait_for_events(
@@ -12705,9 +12889,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     WEB_GUI_SSE_REFRESH_SECONDS,
                 )
                 if events:
-                    for event in events:
-                        self._write_sse_event(event)
-                        cursor = max(cursor, int(event["event_seq"]))
+                    cursor = self._write_visible_sse_events(
+                        events,
+                        cursor=cursor,
+                        blackboard_scope_id=blackboard_scope_id,
+                    )
                     continue
                 if (
                     time.monotonic()
@@ -12722,6 +12908,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         self,
         journal: _WebEventJournal,
         blackboard_dir: str,
+        blackboard_scope_id: str,
     ) -> int:
         snapshot_cursor = journal.latest_seq
         snapshot_event = {
@@ -12732,10 +12919,45 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             "operation_id": "",
             "generation": 0,
             "game_frame": -1,
+            "blackboard_scope_id": blackboard_scope_id,
             "payload": self._authoritative_event_snapshot(blackboard_dir),
         }
         self._write_sse_event(snapshot_event)
         return snapshot_cursor
+
+    def _write_visible_sse_events(
+        self,
+        events: Sequence[Mapping[str, object]],
+        *,
+        cursor: int,
+        blackboard_scope_id: str,
+    ) -> int:
+        """Advance over all journal events but emit only this subscriber's scope."""
+
+        next_cursor = cursor
+        for event in events:
+            next_cursor = max(next_cursor, int(event.get("event_seq", 0)))
+            event_scope_id = str(
+                event.get("blackboard_scope_id", "") or ""
+            )
+            if event_scope_id and event_scope_id != blackboard_scope_id:
+                continue
+            self._write_sse_event(event)
+        return next_cursor
+
+    def _resolved_micromachine_blackboard_dir(
+        self,
+        blackboard_dir: str,
+    ) -> str:
+        default_dir = _default_micromachine_blackboard_dir()
+        default_fn = getattr(
+            self._bridge,
+            "micromachine_blackboard_dir",
+            None,
+        )
+        if callable(default_fn):
+            default_dir = str(default_fn())
+        return _clean_blackboard_dir(blackboard_dir, default_dir)
 
     def _authoritative_event_snapshot(
         self,
@@ -12845,6 +13067,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     f"micromachine:{scope}",
                     "micromachine_status",
                     status,
+                    blackboard_dir=blackboard_dir,
                 )
             except Exception as error:  # noqa: BLE001 - stream remains available.
                 server.publish_changed_snapshot(  # type: ignore[attr-defined]
@@ -12852,11 +13075,16 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     "source_error",
                     {
                         "source": "micromachine_status",
+                        "blackboard_dir": blackboard_dir,
+                        "blackboard_scope_id": (
+                            _micromachine_blackboard_scope_id(blackboard_dir)
+                        ),
                         "error": _redact_sensitive_text(
                             error,
                             normalize_whitespace=True,
                         ),
                     },
+                    blackboard_dir=blackboard_dir,
                 )
 
     def _state_payload(self) -> dict[str, object]:
@@ -13232,6 +13460,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         cleaned_text = text.strip()
+        request_blackboard_dir = self._resolved_micromachine_blackboard_dir(
+            str(document.get("blackboard_dir", "") or "")
+        )
         commander_context = _extract_micromachine_language_context(
             document,
             cleaned_text,
@@ -13286,9 +13517,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     "command_text": cleaned_text,
                     "status": "received",
                     "mode": COMMAND_MODE_MICROMACHINE,
-                    "blackboard_dir": str(
-                        document.get("blackboard_dir", "") or ""
-                    ),
+                    "blackboard_dir": request_blackboard_dir,
                 },
                 update_id=update_id,
                 operation_id=operation_id,
@@ -13296,6 +13525,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 game_frame=(
                     current_frame if isinstance(current_frame, int) else -1
                 ),
+                blackboard_dir=request_blackboard_dir,
             )
             if async_publish:
                 async_submit_fn = getattr(
@@ -13315,7 +13545,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 payload = dict(
                     async_submit_fn(
                         cleaned_text,
-                        blackboard_dir=str(document.get("blackboard_dir", "") or ""),
+                        blackboard_dir=request_blackboard_dir,
                         provider_output=provider_output,
                         allow_smoke_keyword_provider=allow_smoke_keyword_provider,
                         semantic_scope=semantic_scope,
@@ -13334,13 +13564,14 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     game_frame=(
                         current_frame if isinstance(current_frame, int) else -1
                     ),
+                    blackboard_dir=request_blackboard_dir,
                 )
                 self._send_json(HTTPStatus.ACCEPTED, payload)
                 return
             payload = dict(
                 submit_fn(
                     cleaned_text,
-                    blackboard_dir=str(document.get("blackboard_dir", "") or ""),
+                    blackboard_dir=request_blackboard_dir,
                     provider_output=provider_output,
                     allow_smoke_keyword_provider=allow_smoke_keyword_provider,
                     semantic_scope=semantic_scope,
@@ -13404,6 +13635,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if event_frame >= 0
                 else (current_frame if isinstance(current_frame, int) else -1)
             ),
+            blackboard_dir=request_blackboard_dir,
         )
         self._send_json(status, payload)
 
@@ -13613,6 +13845,7 @@ class WebGuiServer:
             self._http = None
             self._thread = None
         if http is not None:
+            http.begin_shutdown()
             http.shutdown()
             http.server_close()
         if thread is not None:
