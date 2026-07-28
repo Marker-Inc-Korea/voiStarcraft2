@@ -370,9 +370,11 @@ def _require_micromachine_enemy_difficulty(
 
 
 def _default_micromachine_blackboard_dir() -> str:
-    return os.environ.get("VOI_MICROMACHINE_BLACKBOARD_DIR", "").strip() or (
-        "/private/tmp/voi-mm-live"
-    )
+    configured = os.environ.get("VOI_MICROMACHINE_BLACKBOARD_DIR", "").strip()
+    if configured:
+        return configured
+    temp_root = "/private/tmp" if os.path.isdir("/private/tmp") else tempfile.gettempdir()
+    return os.path.join(temp_root, "voi-mm-live")
 
 
 def _micromachine_compile_result_path(blackboard_dir: str) -> str:
@@ -12739,20 +12741,54 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         self,
         blackboard_dir: str,
     ) -> dict[str, object]:
-        snapshot = self._state_payload()
-        latest = int(self._bridge.latest_seq())
-        history = [dict(event) for event in self._bridge.history_since(0)]
-        for event in history:
-            seq_value = event.get("seq")
-            if isinstance(seq_value, int):
-                latest = max(latest, seq_value)
+        try:
+            snapshot = self._state_payload()
+        except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+            snapshot = {
+                "available": False,
+                "error": _redact_sensitive_text(
+                    error,
+                    normalize_whitespace=True,
+                ),
+            }
+        try:
+            latest = int(self._bridge.latest_seq())
+            history = [dict(event) for event in self._bridge.history_since(0)]
+            for event in history:
+                seq_value = event.get("seq")
+                if isinstance(seq_value, int):
+                    latest = max(latest, seq_value)
+            history_payload: dict[str, object] = {
+                "events": history,
+                "latest": latest,
+            }
+        except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+            history_payload = {
+                "events": [],
+                "latest": 0,
+                "error": _redact_sensitive_text(
+                    error,
+                    normalize_whitespace=True,
+                ),
+            }
+        try:
+            micromachine_status = self._micromachine_status_payload(
+                blackboard_dir
+            )
+        except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+            micromachine_status = {
+                "enabled": False,
+                "status": "source_error",
+                "error": _redact_sensitive_text(
+                    error,
+                    normalize_whitespace=True,
+                ),
+            }
         return {
             "snapshot_reason": "initial_or_replay_unavailable",
             "state": snapshot,
-            "history": {"events": history, "latest": latest},
-            "micromachine_status": self._micromachine_status_payload(
-                blackboard_dir
-            ),
+            "history": history_payload,
+            "micromachine_status": micromachine_status,
         }
 
     def _refresh_event_sources(self, blackboard_dir: str) -> None:

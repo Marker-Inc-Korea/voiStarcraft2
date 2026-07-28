@@ -570,6 +570,36 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("micromachine_status", payload)
         self.assertTrue(payload["state"]["available"])
 
+    def test_sse_snapshot_survives_micromachine_source_failure(self):
+        original = self.bridge.micromachine_status
+
+        def unavailable_status(*, blackboard_dir=""):
+            del blackboard_dir
+            raise OSError("blackboard source unavailable")
+
+        self.bridge.micromachine_status = unavailable_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status",
+            original,
+        )
+
+        stream = self.get_sse()
+        events = self.parse_sse_events(stream)
+
+        self.assertIn(": heartbeat", stream)
+        snapshot = events[0]["data"]["payload"]
+        self.assertTrue(snapshot["state"]["available"])
+        self.assertEqual(
+            snapshot["micromachine_status"]["status"],
+            "source_error",
+        )
+        self.assertIn(
+            "blackboard source unavailable",
+            snapshot["micromachine_status"]["error"],
+        )
+
     def test_sse_last_event_id_replays_only_newer_events(self):
         first = self.server._http.publish_event(
             "command_received",
