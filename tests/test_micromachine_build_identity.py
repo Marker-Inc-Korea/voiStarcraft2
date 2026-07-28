@@ -574,6 +574,17 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 "micromachine_operation_edit_review_closure_patch_sha256",
                 report["checksums"],
             )
+            self.assertIn(
+                "micromachine_operation_transfer_atomic_admission_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                (
+                    "micromachine_operation_transfer_atomic_"
+                    "admission_patch_sha256"
+                ),
+                report["checksums"],
+            )
             self.assertIn("source_attestation", report["paths"])
             self.assertIn("s2client_build_dir", report["paths"])
             self.assertIn("source_attestation_sha256", report["checksums"])
@@ -2152,6 +2163,18 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ).name,
         )
 
+    def test_operation_transfer_atomic_admission_cli_defaults_to_patch_0062(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0062-operation-transfer-atomic-admission.patch",
+            Path(
+                args.micromachine_operation_transfer_atomic_admission_patch
+            ).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -2252,6 +2275,62 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             self.assertFalse(report["ok"], report)
             self.assertIn(
                 "micromachine_operation_edit_review_closure_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_operation_transfer_atomic_admission_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_operation_transfer_atomic_"
+                "admission_patch_sha256"
+            )
+
+            config.micromachine_operation_transfer_atomic_admission_patch.write_text(
+                "changed operation transfer atomic admission\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "embedded_identity_header_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+            self.assertIn(
+                "embedded_binary_identity_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+
+    def test_missing_operation_transfer_atomic_admission_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_operation_transfer_atomic_admission_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                (
+                    "micromachine_operation_transfer_atomic_"
+                    "admission_patch_sha256"
+                ),
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -2663,6 +2742,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_operation_edit_review_closure_patch = (
             root / "micromachine-operation-edit-review-closure.patch"
         )
+        micromachine_operation_transfer_atomic_admission_patch = (
+            root / "micromachine-operation-transfer-atomic-admission.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -2729,6 +2811,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_production_fifo_zero_owner_cleanup_patch,
             micromachine_operation_edit_ownership_handoff_patch,
             micromachine_operation_edit_review_closure_patch,
+            micromachine_operation_transfer_atomic_admission_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -2910,6 +2993,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_operation_edit_review_closure_patch=(
                 micromachine_operation_edit_review_closure_patch
+            ),
+            micromachine_operation_transfer_atomic_admission_patch=(
+                micromachine_operation_transfer_atomic_admission_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

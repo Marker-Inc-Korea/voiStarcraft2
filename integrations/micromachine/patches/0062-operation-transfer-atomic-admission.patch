@@ -1,0 +1,583 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ff08c6d876d8bc8c18fefdb6d23bfa5c6c98945d..bf029f80c5965b9ccd35e1c1664cb83376d4e9f0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.1)
+ 
+ project(CommandCenter)
+ 
++include(CTest)
++
+ # Specify output directories.
+ set(EXECUTABLE_OUTPUT_PATH "${PROJECT_BINARY_DIR}/bin")
+ 
+@@ -11,7 +13,9 @@ set (CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+ find_package(SC2Api REQUIRED)
+ 
+ # Build with c++14 support, required by sc2api.
+-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++14")
++if (MSVC)
++    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++14")
++endif ()
+ set(CMAKE_CXX_STANDARD 14)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ set(CMAKE_CXX_EXTENSIONS OFF)
+@@ -20,3 +24,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
+ SET(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "-rdynamic")
+ 
+ add_subdirectory("src")
++
++if (BUILD_TESTING)
++    add_subdirectory("tests")
++endif ()
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 0c32cd7633a24696f8886e8dfabe3a80abef1138..9ea49c6ea2fabbc4b68a8569189e266bdb3ee1c5 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -1,6 +1,7 @@
+ #include "CombatCommander.h"
+ #include "Util.h"
+ #include "CCBot.h"
++#include "voi_operation_transfer_admission.hpp"
+ #include <algorithm>
+ #include <cctype>
+ #include <cmath>
+@@ -1267,22 +1268,16 @@ std::string voiOperationAbilityPolicyForUnit(
+ {
+ 	if (operation != nullptr && unit != nullptr)
+ 	{
+-		const VoiOperationState::UnitRole * selectedRole = nullptr;
+-		for (const auto & operationRole : operation->unitRoles)
+-		{
+-			if (!operationRole.abilityPolicy.empty()
+-				&& voiSc2UnitMatchesRoleToken(
+-					unit,
+-					operationRole.unitType)
+-				&& (role.empty()
+-					|| operationRole.role == role)
+-				&& (selectedRole == nullptr
+-					|| operationRole.priority
+-						>= selectedRole->priority))
+-			{
+-				selectedRole = &operationRole;
+-			}
+-		}
++		const VoiOperationState::UnitRole * selectedRole =
++			voiSelectRoleAbilityPolicy(
++				operation->unitRoles,
++				role,
++				[&](const VoiOperationState::UnitRole & operationRole)
++				{
++					return voiSc2UnitMatchesRoleToken(
++						unit,
++						operationRole.unitType);
++				});
+ 		if (selectedRole != nullptr)
+ 		{
+ 			return selectedRole->abilityPolicy;
+@@ -4502,21 +4497,128 @@ void CombatCommander::updateVoiOperations()
+ 				selectionPlan;
+ 			return std::string();
+ 		};
+-	std::map<std::string, std::string>
+-		transferBlockers;
++	std::map<std::string, std::string> transferBlockers;
++	std::set<std::string> evaluatedTransferOperations;
++	auto recordTransferBlocker =
++		[&](
++			const std::string & firstOperationId,
++			const std::string & secondOperationId,
++			const std::string & blocker)
++		{
++			if (!firstOperationId.empty())
++			{
++				transferBlockers[firstOperationId] = blocker;
++			}
++			if (!secondOperationId.empty())
++			{
++				transferBlockers[secondOperationId] = blocker;
++			}
++		};
+ 	for (const auto & requested : requestedOperations)
+ 	{
+-		const std::string blocker =
+-			transferBlockerBeforeHandoff(requested);
+-		if (blocker.empty())
++		if ((requested.editAction != "transfer_in"
++				&& requested.editAction != "transfer_out")
++			|| evaluatedTransferOperations.find(
++				requested.operationId)
++				!= evaluatedTransferOperations.end())
+ 		{
+ 			continue;
+ 		}
+-		transferBlockers[requested.operationId] =
+-			blocker;
+-		transferBlockers[
+-			requested.editCounterpartOperationId] =
+-				blocker;
++		const VoiOperationState * counterpartRequested =
++			requestedByOperationId(
++				requested.editCounterpartOperationId);
++		VoiOperationState * requestedExisting =
++			existingOperationById(requested.operationId);
++		VoiOperationState * counterpartExisting =
++			existingOperationById(
++				requested.editCounterpartOperationId);
++		VoiOperationTransferEndpoint requestedEndpoint;
++		requestedEndpoint.operationId =
++			requested.operationId;
++		requestedEndpoint.counterpartOperationId =
++			requested.editCounterpartOperationId;
++		requestedEndpoint.editAction =
++			requested.editAction;
++		requestedEndpoint.existingGeneration =
++			requestedExisting == nullptr
++				? 0
++				: requestedExisting->generation;
++		requestedEndpoint.requestedGeneration =
++			requested.generation;
++		requestedEndpoint.requestedPresent = true;
++		requestedEndpoint.existingActive =
++			requestedExisting != nullptr;
++		requestedEndpoint.terminal =
++			requested.completed;
++		requestedEndpoint.blocker =
++			requested.blockedReason;
++
++		VoiOperationTransferEndpoint counterpartEndpoint;
++		counterpartEndpoint.operationId =
++			requested.editCounterpartOperationId;
++		counterpartEndpoint.counterpartOperationId =
++			requested.operationId;
++		counterpartEndpoint.requestedPresent =
++			counterpartRequested != nullptr;
++		counterpartEndpoint.existingActive =
++			counterpartExisting != nullptr;
++		if (counterpartRequested != nullptr)
++		{
++			counterpartEndpoint.operationId =
++				counterpartRequested->operationId;
++			counterpartEndpoint.counterpartOperationId =
++				counterpartRequested
++					->editCounterpartOperationId;
++			counterpartEndpoint.editAction =
++				counterpartRequested->editAction;
++			counterpartEndpoint.requestedGeneration =
++				counterpartRequested->generation;
++			counterpartEndpoint.terminal =
++				counterpartRequested->completed;
++			counterpartEndpoint.blocker =
++				counterpartRequested->blockedReason;
++		}
++		counterpartEndpoint.existingGeneration =
++			counterpartExisting == nullptr
++				? 0
++				: counterpartExisting->generation;
++
++		const VoiOperationTransferAdmission admission =
++			voiDecideOperationTransferAdmission(
++				requestedEndpoint,
++				counterpartEndpoint);
++		if (!admission.admitted)
++		{
++			recordTransferBlocker(
++				requested.operationId,
++				requested.editCounterpartOperationId,
++				admission.blocker);
++		}
++		else
++		{
++			const VoiOperationState & destination =
++				requested.editAction == "transfer_in"
++					? requested
++					: *counterpartRequested;
++			const std::string blocker =
++				transferBlockerBeforeHandoff(
++					destination);
++			if (!blocker.empty())
++			{
++				recordTransferBlocker(
++					requested.operationId,
++					requested
++						.editCounterpartOperationId,
++					blocker);
++			}
++		}
++		evaluatedTransferOperations.insert(
++			requested.operationId);
++		if (!requested.editCounterpartOperationId.empty())
++		{
++			evaluatedTransferOperations.insert(
++				requested.editCounterpartOperationId);
++		}
+ 	}
+ 	auto ensureOperationSquad =
+ 		[&](VoiOperationState & operation) -> Squad &
+@@ -4722,7 +4824,13 @@ void CombatCommander::updateVoiOperations()
+ 			replacement.previousSquadByTag =
+ 				existing.previousSquadByTag;
+ 			replacement.assignedRoleByTag =
+-				existing.assignedRoleByTag;
++				voiPreserveAssignedRolesForUnits(
++					existing.assignedRoleByTag,
++					retainedUnits,
++					[](const Unit & unit)
++					{
++						return unit.getTag();
++					});
+ 			replacement.submittedPositions =
+ 				targetChanged
+ 					? std::map<sc2::Tag, CCPosition>()
+@@ -4830,6 +4938,18 @@ void CombatCommander::updateVoiOperations()
+ 		}
+ 		consumedRequestedIds.insert(
+ 			requested->operationId);
++		const auto transferBlocker =
++			transferBlockers.find(
++				existing.operationId);
++		if (transferBlocker != transferBlockers.end())
++		{
++			annotateRejectedEdit(
++				existing,
++				*requested,
++				transferBlocker->second);
++			++index;
++			continue;
++		}
+ 		if (requested->generation < existing.generation)
+ 		{
+ 			existing.editResolution =
+@@ -4846,19 +4966,6 @@ void CombatCommander::updateVoiOperations()
+ 		}
+ 		if (requested->generation > existing.generation)
+ 		{
+-			const auto transferBlocker =
+-				transferBlockers.find(
+-					existing.operationId);
+-			if (transferBlocker
+-				!= transferBlockers.end())
+-			{
+-				annotateRejectedEdit(
+-					existing,
+-					*requested,
+-					transferBlocker->second);
+-				++index;
+-				continue;
+-			}
+ 			if ((requested->editAction == "transfer_in"
+ 					|| requested->editAction == "transfer_out")
+ 				&& transferSelections.find(
+@@ -4961,6 +5068,21 @@ void CombatCommander::updateVoiOperations()
+ 				requested.operationId)
+ 			== consumedRequestedIds.end())
+ 		{
++			const auto transferBlocker =
++				transferBlockers.find(
++					requested.operationId);
++			if (transferBlocker
++				!= transferBlockers.end())
++			{
++				Util::Log(
++					__FUNCTION__,
++					"VOI rejected new transfer operation id="
++						+ requested.operationId
++						+ " reason="
++						+ transferBlocker->second,
++					m_bot);
++				continue;
++			}
+ 			m_voiOperations.push_back(requested);
+ 		}
+ 	}
+diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transfer_admission.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..c101468bf8ebe3698e8c41058c1240a74aa7211e
+--- /dev/null
++++ b/src/voi_operation_transfer_admission.hpp
+@@ -0,0 +1,118 @@
++#pragma once
++
++#include <cstdint>
++#include <map>
++#include <string>
++#include <vector>
++
++struct VoiOperationTransferEndpoint
++{
++	std::string operationId;
++	std::string counterpartOperationId;
++	std::string editAction;
++	std::uint64_t existingGeneration = 0;
++	std::uint64_t requestedGeneration = 0;
++	bool requestedPresent = false;
++	bool existingActive = false;
++	bool terminal = false;
++	std::string blocker;
++};
++
++struct VoiOperationTransferAdmission
++{
++	bool admitted = false;
++	std::string blocker;
++};
++
++inline VoiOperationTransferAdmission voiDecideOperationTransferAdmission(
++	const VoiOperationTransferEndpoint & first,
++	const VoiOperationTransferEndpoint & second)
++{
++	if (!first.requestedPresent || !second.requestedPresent)
++	{
++		return { false, "transfer_counterpart_missing" };
++	}
++	if (first.operationId.empty()
++		|| second.operationId.empty()
++		|| first.operationId == second.operationId
++		|| first.counterpartOperationId != second.operationId
++		|| second.counterpartOperationId != first.operationId
++		|| !((first.editAction == "transfer_in"
++				&& second.editAction == "transfer_out")
++			|| (first.editAction == "transfer_out"
++				&& second.editAction == "transfer_in")))
++	{
++		return { false, "transfer_counterpart_contract_mismatch" };
++	}
++	if (!first.blocker.empty())
++	{
++		return { false, first.blocker };
++	}
++	if (!second.blocker.empty())
++	{
++		return { false, second.blocker };
++	}
++	if (!first.existingActive || !second.existingActive)
++	{
++		return { false, "transfer_pair_not_active" };
++	}
++	if (first.terminal || second.terminal)
++	{
++		return { false, "transfer_endpoint_terminal" };
++	}
++	if (first.requestedGeneration < first.existingGeneration
++		|| second.requestedGeneration < second.existingGeneration)
++	{
++		return { false, "stale_operation_generation" };
++	}
++	if (first.requestedGeneration == first.existingGeneration
++		|| second.requestedGeneration == second.existingGeneration)
++	{
++		return {
++			false,
++			"transfer_pair_requires_generation_increment"
++		};
++	}
++	return { true, "" };
++}
++
++template <typename Tag, typename Unit, typename TagGetter>
++std::map<Tag, std::string> voiPreserveAssignedRolesForUnits(
++	const std::map<Tag, std::string> & assignedRoles,
++	const std::vector<Unit> & retainedUnits,
++	TagGetter tagGetter)
++{
++	std::map<Tag, std::string> retainedRoles;
++	for (const auto & unit : retainedUnits)
++	{
++		const Tag tag = tagGetter(unit);
++		const auto role = assignedRoles.find(tag);
++		if (role != assignedRoles.end())
++		{
++			retainedRoles[tag] = role->second;
++		}
++	}
++	return retainedRoles;
++}
++
++template <typename Role, typename MatchesUnit>
++const Role * voiSelectRoleAbilityPolicy(
++	const std::vector<Role> & roles,
++	const std::string & assignedRole,
++	MatchesUnit matchesUnit)
++{
++	const Role * selected = nullptr;
++	for (const auto & role : roles)
++	{
++		if (!role.abilityPolicy.empty()
++			&& matchesUnit(role)
++			&& (assignedRole.empty()
++				|| role.role == assignedRole)
++			&& (selected == nullptr
++				|| role.priority >= selected->priority))
++		{
++			selected = &role;
++		}
++	}
++	return selected;
++}
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..266483e9d4e1359aa581bad23064f99373a8b91f
+--- /dev/null
++++ b/tests/CMakeLists.txt
+@@ -0,0 +1,13 @@
++add_executable(
++    voi_operation_transfer_admission_test
++    operation_transfer_admission_test.cpp
++)
++target_include_directories(
++    voi_operation_transfer_admission_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++add_test(
++    NAME voi_operation_transfer_admission
++    COMMAND voi_operation_transfer_admission_test
++)
+diff --git a/tests/operation_transfer_admission_test.cpp b/tests/operation_transfer_admission_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..636558183e596cbe725377d4116fd4fe42e0c57f
+--- /dev/null
++++ b/tests/operation_transfer_admission_test.cpp
+@@ -0,0 +1,142 @@
++#include "voi_operation_transfer_admission.hpp"
++
++#include <cassert>
++#include <cstdint>
++#include <string>
++#include <vector>
++
++namespace
++{
++VoiOperationTransferEndpoint endpoint(
++	const std::string & operationId,
++	const std::string & counterpartOperationId,
++	const std::string & editAction,
++	std::uint64_t existingGeneration,
++	std::uint64_t requestedGeneration,
++	bool existingActive = true)
++{
++	VoiOperationTransferEndpoint value;
++	value.operationId = operationId;
++	value.counterpartOperationId = counterpartOperationId;
++	value.editAction = editAction;
++	value.existingGeneration = existingGeneration;
++	value.requestedGeneration = requestedGeneration;
++	value.requestedPresent = true;
++	value.existingActive = existingActive;
++	return value;
++}
++
++struct TestUnit
++{
++	std::uint64_t tag = 0;
++};
++
++struct TestRole
++{
++	std::string unitType;
++	std::string role;
++	std::string abilityPolicy;
++	int priority = 0;
++};
++}
++
++int main()
++{
++	const auto sourceAdvanced = endpoint(
++		"recon-alpha",
++		"assault-bravo",
++		"transfer_out",
++		3,
++		4);
++	const auto destinationNotAdvanced = endpoint(
++		"assault-bravo",
++		"recon-alpha",
++		"transfer_in",
++		7,
++		7);
++	const auto partialGeneration =
++		voiDecideOperationTransferAdmission(
++			sourceAdvanced,
++			destinationNotAdvanced);
++	assert(!partialGeneration.admitted);
++	assert(
++		partialGeneration.blocker
++		== "transfer_pair_requires_generation_increment");
++
++	const auto newCounterpart = endpoint(
++		"assault-bravo",
++		"recon-alpha",
++		"transfer_in",
++		0,
++		1,
++		false);
++	const auto newCounterpartDecision =
++		voiDecideOperationTransferAdmission(
++			sourceAdvanced,
++			newCounterpart);
++	assert(!newCounterpartDecision.admitted);
++	assert(
++		newCounterpartDecision.blocker
++		== "transfer_pair_not_active");
++
++	const auto destinationAdvanced = endpoint(
++		"assault-bravo",
++		"recon-alpha",
++		"transfer_in",
++		7,
++		8);
++	const auto atomicPair =
++		voiDecideOperationTransferAdmission(
++			sourceAdvanced,
++			destinationAdvanced);
++	assert(atomicPair.admitted);
++	assert(atomicPair.blocker.empty());
++
++	const std::map<std::uint64_t, std::string> assignedRoles = {
++		{ 11, "scout" },
++		{ 22, "frontline" },
++		{ 33, "reserve" },
++	};
++	const std::vector<TestUnit> retainedUnits = {
++		{ 11 },
++		{ 22 },
++	};
++	const auto retainedRoles =
++		voiPreserveAssignedRolesForUnits(
++			assignedRoles,
++			retainedUnits,
++			[](const TestUnit & unit)
++			{
++				return unit.tag;
++			});
++	assert(retainedRoles.size() == 2);
++	assert(retainedRoles.at(11) == "scout");
++	assert(retainedRoles.at(22) == "frontline");
++	assert(retainedRoles.find(33) == retainedRoles.end());
++
++	const std::vector<TestRole> marineRoles = {
++		{ "TERRAN_MARINE", "scout", "avoid_combat", 10 },
++		{ "TERRAN_MARINE", "frontline", "stim_focus_fire", 20 },
++	};
++	const auto * scoutPolicy =
++		voiSelectRoleAbilityPolicy(
++			marineRoles,
++			"scout",
++			[](const TestRole & role)
++			{
++				return role.unitType == "TERRAN_MARINE";
++			});
++	const auto * frontlinePolicy =
++		voiSelectRoleAbilityPolicy(
++			marineRoles,
++			"frontline",
++			[](const TestRole & role)
++			{
++				return role.unitType == "TERRAN_MARINE";
++			});
++	assert(scoutPolicy != nullptr);
++	assert(scoutPolicy->abilityPolicy == "avoid_combat");
++	assert(frontlinePolicy != nullptr);
++	assert(frontlinePolicy->abilityPolicy == "stim_focus_fire");
++	return 0;
++}

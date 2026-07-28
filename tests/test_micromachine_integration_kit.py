@@ -569,6 +569,75 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertEqual(0, parse_result.returncode, parse_result.stderr)
 
+    def test_operation_transfer_atomic_admission_has_executable_cpp_contract(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            KIT_DIR
+            / "patches"
+            / "0062-operation-transfer-atomic-admission.patch"
+        )
+
+        required_terms = (
+            "voiDecideOperationTransferAdmission",
+            '"transfer_pair_requires_generation_increment"',
+            '"transfer_pair_not_active"',
+            "voiPreserveAssignedRolesForUnits",
+            "voiSelectRoleAbilityPolicy",
+            "evaluatedTransferOperations",
+            "transferBlockers.find(",
+            '"VOI rejected new transfer operation id="',
+            "include(CTest)",
+            "add_test(",
+            "voi_operation_transfer_admission_test",
+            "if (MSVC)",
+            "partialGeneration",
+            "newCounterpartDecision",
+            "atomicPair",
+            '"scout"',
+            '"frontline"',
+            '"avoid_combat"',
+            '"stim_focus_fire"',
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        blocker_index = patch.index(
+            "const auto transferBlocker ="
+        )
+        generation_index = patch.index(
+            "if (requested->generation < existing.generation)",
+            blocker_index,
+        )
+        self.assertLess(blocker_index, generation_index)
+        append_index = patch.index(
+            "m_voiOperations.push_back(requested);"
+        )
+        self.assertLess(
+            patch.index(
+                '"VOI rejected new transfer operation id="'
+            ),
+            append_index,
+        )
+
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(
+                    KIT_DIR
+                    / "patches"
+                    / "0062-operation-transfer-atomic-admission.patch"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
     def test_patch_bundle_is_contiguous_present_and_matches_build_apply_order(
         self,
     ) -> None:
@@ -578,9 +647,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 62)),
+            list(range(1, 63)),
         )
-        self.assertEqual(len(set(manifest_paths)), 61)
+        self.assertEqual(len(set(manifest_paths)), 62)
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
         )
@@ -4442,7 +4511,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0061`",
+            "through `0062`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -4951,6 +5020,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'OPERATION_TRANSFER_ATOMIC_ADMISSION_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0062-operation-transfer-atomic-admission.patch"',
+            build_script,
+        )
+        self.assertIn(
             'apply --recount --check --ignore-space-change '
             '--whitespace=nowarn '
             '"${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}"',
@@ -4967,6 +5042,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             build_script.count(
                 "--micromachine-operation-edit-review-closure-patch"
             ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-transfer-atomic-admission-patch"
+            ),
+        )
+        self.assertIn(
+            'ctest --test-dir "${MICROMACHINE_BUILD_DIR}" --output-on-failure',
+            build_script,
         )
         for script_name, script in (
             ("probe", probe_script),

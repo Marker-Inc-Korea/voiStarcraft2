@@ -313,6 +313,11 @@
       "path": "patches/0061-operation-edit-review-closure.patch",
       "order": 61,
       "scope": "preserve same-type role-specific composition and ability policy by unit tag, keep assigned roles across generation handoff, reject reciprocal transfers atomically on either-side blockers, use active source roles for transfer preservation, and skip all execution for blocked transfer pairs"
+    },
+    {
+      "path": "patches/0062-operation-transfer-atomic-admission.patch",
+      "order": 62,
+      "scope": "make reciprocal transfer admission pair-atomic before any generation comparison or handoff, require both active endpoints to advance generation, reject blocked new counterparts before append, route role-specific ability selection and tag-role handoff through executable pure C++ helpers, and register no-SC2 CTest coverage for partial generation, new counterpart rejection, successful atomic admission, role preservation, and role-specific policy selection"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {
