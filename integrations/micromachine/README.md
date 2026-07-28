@@ -80,6 +80,7 @@ Verified upstream:
 | `patches/0064-operation-transfer-transactional-closure.patch` | Defers reciprocal transfer generation handoff until operation state, Squad membership, owner state, and in-flight action ownership pass one runtime-used transaction plan; rejected edits preserve the existing execution state, while a successful complete-force transfer terminalizes the empty source only after commit. |
 | `patches/0065-operation-transfer-final-review-closure.patch` | Retains one-sided transfer counterparts until admission, requires matching role ability policies, preserves selected tag roles, commits owner/Squad/action cleanup together, and exposes rejected edit metadata without replacing active operation status. |
 | `patches/0066-operation-transfer-idempotence-and-active-evidence.patch` | Treats exact already-applied reciprocal transfer generations as replay-safe no-ops, keeps rejected requested-generation evidence distinct from the active generation without overwriting its last SC2 action, and preserves both states on the existing Battlefield Commander card. |
+| `patches/0067-runtime-convergence-defense-placement-information.patch` | Canonical runtime convergence patch applied after `0066`; it reports operation-owned queued, training, completed, resource, producer, addon, and tech progress, isolates explicit operations from autonomous defense, resolves self-ramp defense anchors, validates connected semantic placement, prevents unjustified production-building lift, classifies enemy evidence, and latches targets by generation. The patch is a required build input bound into build identity and source attestation. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -153,7 +154,7 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0066`, runs the runtime CTest contracts, then copies the blackboard
+through `0067`, runs the runtime CTest contracts, then copies the blackboard
 header and generates the embedded
 identity header before compilation. The
 report includes pinned MicroMachine and `s2client-api` commits, every patch

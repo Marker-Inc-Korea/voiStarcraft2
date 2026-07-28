@@ -1,0 +1,1888 @@
+diff --git a/src/BuildOrderQueue.cpp b/src/BuildOrderQueue.cpp
+index dd48d8f..689cc17 100644
+--- a/src/BuildOrderQueue.cpp
++++ b/src/BuildOrderQueue.cpp
+@@ -796,6 +796,26 @@ int BuildOrderQueue::getVoiOperationOwnedItemCount() const
+ 			}));
+ }
+ 
++int BuildOrderQueue::getVoiOperationOwnedItemCount(
++	const MetaType & type,
++	const std::string & operationId,
++	uint64_t generation) const
++{
++	const MM::VoiBuildOrderOwner owner {
++		operationId,
++		generation };
++	return static_cast<int>(
++		std::count_if(
++			m_queue.begin(),
++			m_queue.end(),
++			[&](const MM::BuildOrderItem & item)
++			{
++				return sameBuildOrderType(item, type)
++					&& item.voiOperationOwners.find(owner)
++						!= item.voiOperationOwners.end();
++			}));
++}
++
+ std::string
+ BuildOrderQueue::getVoiOperationOwnedItemsTelemetryJson() const
+ {
+diff --git a/src/BuildOrderQueue.h b/src/BuildOrderQueue.h
+index 30f4678..bc9f9c0 100644
+--- a/src/BuildOrderQueue.h
++++ b/src/BuildOrderQueue.h
+@@ -137,6 +137,10 @@ public:
+ 		const std::string & operationId,
+ 		uint64_t generation);
+ 	int getVoiOperationOwnedItemCount() const;
++	int getVoiOperationOwnedItemCount(
++		const MetaType & type,
++		const std::string & operationId,
++		uint64_t generation) const;
+ 	std::string getVoiOperationOwnedItemsTelemetryJson() const;
+ 	int getVoiPreservedItemCount(const MetaType & type) const;
+ 	std::vector<MM::VoiBuildOrderClaim> getVoiClaimsForType(
+diff --git a/src/BuildingManager.cpp b/src/BuildingManager.cpp
+index 5f4d575..651af68 100644
+--- a/src/BuildingManager.cpp
++++ b/src/BuildingManager.cpp
+@@ -5,6 +5,7 @@
+ #include "BuildingManager.h"
+ #include "CCBot.h"
+ #include "Util.h"
++#include "voi_runtime_convergence.hpp"
+ 
+ namespace
+ {
+@@ -574,15 +575,89 @@ bool resolveVoiBuildingTaskPlacement(CCBot & bot, const Building & building, CCT
+ 		recordVoiBuildingTaskPlacement(bot, "refused", "invalid semantic placement anchor", anchor);
+ 		return false;
+ 	}
+-	if (!allowNearestFallback && !isVoiSc2MacroPlacementSafe(bot, building.type, anchor, false, !building.type.isAddon(), false, true))
++	std::vector<CCTilePosition> candidatePositions = { anchor };
++	if (allowNearestFallback)
+ 	{
+-		Util::Log(source, "VOI building_task placement rejected exact coordinate without fallback intent=" + intent + " anchor_x=" + std::to_string(anchor.x) + " anchor_y=" + std::to_string(anchor.y) + " type=" + building.type.getName(), bot);
+-		recordVoiBuildingTaskPlacement(bot, "refused", "exact placement invalid and nearest fallback disabled", anchor);
++		const auto & closestTiles =
++			bot.Map().getClosestTilesTo(anchor);
++		for (size_t index = 0;
++			index < closestTiles.size()
++				&& candidatePositions.size() < 96;
++			++index)
++		{
++			if (closestTiles[index] != anchor)
++			{
++				candidatePositions.push_back(
++					closestTiles[index]);
++			}
++		}
++	}
++	std::vector<VoiPlacementCandidate> candidates;
++	candidates.reserve(candidatePositions.size());
++	const CCPosition home = bot.GetStartLocation();
++	for (size_t index = 0;
++		index < candidatePositions.size();
++		++index)
++	{
++		const CCTilePosition candidate =
++			candidatePositions[index];
++		const bool valid = bot.Map().isValidTile(candidate);
++		const bool connected = valid
++			&& bot.Map().isConnected(
++				home,
++				Util::GetPosition(candidate));
++		const bool buildable = valid
++			&& isVoiSc2MacroPlacementSafe(
++				bot,
++				building.type,
++				candidate,
++				false,
++				!building.type.isAddon(),
++				false,
++				true);
++		candidates.push_back({
++			candidate.x,
++			candidate.y,
++			static_cast<int>(index),
++			valid,
++			buildable,
++			connected
++		});
++	}
++	const int selectedRank =
++		voiSelectSemanticPlacementCandidate(
++			candidates,
++			allowNearestFallback);
++	if (selectedRank < 0
++		|| selectedRank
++			>= static_cast<int>(candidatePositions.size()))
++	{
++		allowNearestFallback = false;
++		Util::Log(
++			source,
++			"VOI building_task placement rejected because no valid, buildable, connected semantic candidate exists intent="
++				+ intent
++				+ " anchor_x=" + std::to_string(anchor.x)
++				+ " anchor_y=" + std::to_string(anchor.y)
++				+ " type=" + building.type.getName(),
++			bot);
++		recordVoiBuildingTaskPlacement(
++			bot,
++			"refused",
++			"no valid buildable connected semantic placement",
++			anchor);
+ 		return false;
+ 	}
+-	selected = anchor;
+-	Util::Log(source, "VOI building_task placement anchor selected type=" + building.type.getName() + " intent=" + intent + " anchor=" + anchorIntent + " direction=" + offsetDirection + " nearest_fallback=" + (allowNearestFallback ? "true" : "false") + " anchor_x=" + std::to_string(anchor.x) + " anchor_y=" + std::to_string(anchor.y), bot);
+-	recordVoiBuildingTaskPlacement(bot, "accepted", "semantic placement anchor resolved", anchor);
++	selected = candidatePositions[
++		static_cast<size_t>(selectedRank)];
++	Util::Log(source, "VOI building_task placement anchor selected type=" + building.type.getName() + " intent=" + intent + " anchor=" + anchorIntent + " direction=" + offsetDirection + " nearest_fallback=" + (allowNearestFallback ? "true" : "false") + " selected_rank=" + std::to_string(selectedRank) + " anchor_x=" + std::to_string(selected.x) + " anchor_y=" + std::to_string(selected.y), bot);
++	recordVoiBuildingTaskPlacement(
++		bot,
++		"accepted",
++		selectedRank == 0
++			? "semantic placement anchor validated"
++			: "nearest valid buildable connected fallback selected",
++		selected);
+ 	return true;
+ }
+ 
+@@ -2619,6 +2694,10 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 	const bool voiPolicyActive = m_bot.Commander().isVoiPolicyActive();
+ 	const bool explicitRelocationAllowed = voiPolicyActive
+ 		&& m_bot.Commander().getVoiPolicyBool("production.allow_building_relocation", false);
++	const bool recoveryOwnerAuthorized =
++		owner == "addon_relocation"
++		|| owner == "proxy_cyclones"
++		|| owner == "damaged_building";
+ 	const sc2::UNIT_TYPEID unitType =
+ 		(sc2::UNIT_TYPEID)unit.getAPIUnitType();
+ 	const bool groundedProductionFacility =
+@@ -2627,8 +2706,9 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 		|| unitType == sc2::UNIT_TYPEID::TERRAN_STARPORT;
+ 	const sc2::Tag tag = unit.getTag();
+ 	if (ability == sc2::ABILITY_ID::LIFT
+-		&& voiPolicyActive
+-		&& !explicitRelocationAllowed
++		&& !voiProductionBuildingLiftAllowed(
++			explicitRelocationAllowed,
++			recoveryOwnerAuthorized)
+ 		&& groundedProductionFacility)
+ 	{
+ 		const uint32_t currentFrame = m_bot.GetCurrentFrame();
+@@ -2639,7 +2719,7 @@ bool BuildingManager::tryIssueVoiBuildingMobilityCommand(
+ 			Util::Log(
+ 				__FUNCTION__,
+ 				"VOI refused production-building LIFT owner=" + owner
+-					+ "; Barracks, Factory, and Starport remain grounded unless production.allow_building_relocation=true.",
++					+ "; Barracks, Factory, and Starport remain grounded without an explicit relocation or bounded recovery owner.",
+ 				m_bot);
+ 		}
+ 		return false;
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 02ecb28..98bc077 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2,6 +2,7 @@
+ #include "Util.h"
+ #include "CCBot.h"
+ #include "voi_operation_transfer_admission.hpp"
++#include "voi_runtime_convergence.hpp"
+ #include <algorithm>
+ #include <cctype>
+ #include <cmath>
+@@ -1747,9 +1748,17 @@ CCPosition voiEnemyMainCombatTarget(CCBot & bot)
+ 	return CCPosition();
+ }
+ 
+-CCPosition voiObservedEnemyCombatTarget(CCBot & bot)
++struct VoiEnemyTargetObservation
+ {
+-	CCPosition observedTarget;
++	CCPosition position = CCPosition();
++	std::string evidence;
++	bool fresh = false;
++};
++
++VoiEnemyTargetObservation voiBestEnemyTargetObservation(
++	CCBot & bot)
++{
++	VoiEnemyTargetObservation observation;
+ 	int bestPriority = -1;
+ 	const uint32_t currentFrame = bot.GetCurrentFrame();
+ 	const uint32_t recentObservationWindowFrames = 22u * 20u;
+@@ -1774,7 +1783,9 @@ CCPosition voiObservedEnemyCombatTarget(CCBot & bot)
+ 		{
+ 			continue;
+ 		}
+-		int priority = enemy.isVisible() ? 3 : (persistentBuildingEvidence ? 2 : 1);
++		int priority = enemy.isVisible()
++			? 3
++			: (persistentBuildingEvidence ? 2 : 1);
+ 		if (enemy.getType().isBuilding())
+ 		{
+ 			priority += 2;
+@@ -1786,15 +1797,28 @@ CCPosition voiObservedEnemyCombatTarget(CCBot & bot)
+ 		if (priority > bestPriority)
+ 		{
+ 			bestPriority = priority;
+-			observedTarget = enemy.getPosition();
++			observation.position = enemy.getPosition();
++			observation.evidence = enemy.isVisible()
++				? "visible_enemy"
++				: (persistentBuildingEvidence
++					? "remembered_building"
++					: "recent_mobile");
++			observation.fresh =
++				enemy.isVisible() || recentMobileEvidence;
+ 		}
+ 	}
+-	return observedTarget;
++	return observation;
++}
++
++CCPosition voiObservedEnemyCombatTarget(CCBot & bot)
++{
++	return voiBestEnemyTargetObservation(bot).position;
+ }
+ 
+ bool voiHasObservedEnemyLocationEvidence(CCBot & bot)
+ {
+-	return voiObservedEnemyCombatTarget(bot) != CCPosition();
++	return voiBestEnemyTargetObservation(bot).position
++		!= CCPosition();
+ }
+ 
+ CCPosition voiEnemyNaturalCombatTarget(CCBot & bot)
+@@ -1951,31 +1975,39 @@ CCPosition voiResolveOperationTarget(
+ 	const std::string & locationIntent,
+ 	const CCPosition & explicitTarget)
+ {
+-	if (explicitTarget != CCPosition()
+-		&& bot.Map().isValidPosition(explicitTarget))
+-	{
+-		return explicitTarget;
+-	}
+-	if (locationIntent == "home"
+-		|| locationIntent == "self_main"
+-		|| locationIntent == "main_base")
++	if (voiIsSelfMainLocationIntent(locationIntent))
+ 	{
+ 		return voiHomePosition(bot);
+ 	}
+-	if (locationIntent == "natural"
+-		|| locationIntent == "self_natural")
++	if (voiIsSelfNaturalLocationIntent(locationIntent))
+ 	{
+ 		const BaseLocation * natural =
+ 			bot.Bases().getPlayerNat(Players::Self);
+ 		return natural ? natural->getPosition() : voiHomePosition(bot);
+ 	}
++	if (voiIsSelfRampLocationIntent(locationIntent))
++	{
++		const CCPosition ramp =
++			Util::GetPosition(
++				bot.Buildings().getWallPosition());
++		return bot.Map().isValidPosition(ramp)
++			? ramp
++			: voiHomePosition(bot);
++	}
++	if (explicitTarget != CCPosition()
++		&& bot.Map().isValidPosition(explicitTarget))
++	{
++		return explicitTarget;
++	}
+ 	if (locationIntent == "last_seen_enemy_army"
+ 		|| locationIntent == "observed_enemy")
+ 	{
+ 		return voiObservedEnemyCombatTarget(bot);
+ 	}
+-	if (taskType == "defend" && locationIntent.empty())
++	if (taskType == "defend")
+ 	{
++		// Unknown defensive semantics fail closed at home. They must never
++		// inherit the offensive enemy-location fallback.
+ 		return voiHomePosition(bot);
+ 	}
+ 	const CCPosition observedTarget = voiObservedEnemyCombatTarget(bot);
+@@ -1990,6 +2022,7 @@ CCPosition voiResolveOperationTarget(
+ 
+ std::string voiResolveOperationTargetEvidence(
+ 	CCBot & bot,
++	const std::string & taskType,
+ 	const std::string & locationIntent,
+ 	const CCPosition & explicitTarget,
+ 	const CCPosition & resolvedTarget)
+@@ -1998,54 +2031,57 @@ std::string voiResolveOperationTargetEvidence(
+ 	{
+ 		return "unresolved";
+ 	}
+-	if (explicitTarget != CCPosition())
+-	{
+-		return "explicit";
+-	}
+-	if (locationIntent == "home"
+-		|| locationIntent == "self_main"
+-		|| locationIntent == "main_base")
+-	{
+-		return "self_observed";
+-	}
+-	if (locationIntent == "natural"
+-		|| locationIntent == "self_natural")
++	const bool selfMainTarget =
++		voiIsSelfMainLocationIntent(locationIntent);
++	const bool selfRampTarget =
++		voiIsSelfRampLocationIntent(locationIntent);
++	const bool selfTarget =
++		selfMainTarget
++		|| selfRampTarget
++		|| (taskType == "defend"
++			&& explicitTarget == CCPosition());
++	if (voiIsSelfNaturalLocationIntent(locationIntent))
+ 	{
+ 		return "self_natural";
+ 	}
+-	const CCPosition observedEnemy =
+-		voiObservedEnemyCombatTarget(bot);
+-	if (observedEnemy != CCPosition()
+-		&& Util::DistSq(
+-			observedEnemy,
+-			resolvedTarget) <= 4.0f)
++	if (selfRampTarget)
+ 	{
+-		return "observed_enemy";
++		return "self_ramp";
+ 	}
++	const VoiEnemyTargetObservation observedEnemy =
++		voiBestEnemyTargetObservation(bot);
++	const bool observedEnemyMatch =
++		observedEnemy.position != CCPosition()
++		&& Util::DistSq(
++			observedEnemy.position,
++			resolvedTarget) <= 4.0f;
+ 	const BaseLocation * enemyBase =
+ 		bot.Bases().getPlayerStartingBaseLocation(
+ 			Players::Enemy);
+-	if (enemyBase != nullptr
++	const bool knownEnemyBaseMatch =
++		enemyBase != nullptr
+ 		&& voiIsRemoteCombatTarget(
+ 			bot,
+ 			enemyBase->getDepotPosition())
+ 		&& Util::DistSq(
+ 			enemyBase->getDepotPosition(),
+-			resolvedTarget) <= 4.0f)
+-	{
+-		return "known_enemy_base";
+-	}
+-	if (locationIntent == "enemy_main"
++			resolvedTarget) <= 4.0f;
++	const bool searchIntent =
++		locationIntent == "enemy_main"
+ 		|| locationIntent == "enemy_base"
+ 		|| locationIntent == "enemy_start"
+ 		|| locationIntent == "enemy_start_location"
+ 		|| locationIntent == "enemy_natural"
+ 		|| locationIntent == "contain_enemy_natural"
+-		|| locationIntent == "enemy_front")
+-	{
+-		return "search_candidate";
+-	}
+-	return "resolved";
++		|| locationIntent == "enemy_front";
++	return voiClassifyEnemyTargetEvidence(
++		explicitTarget != CCPosition(),
++		selfTarget,
++		observedEnemyMatch
++			? observedEnemy.evidence
++			: "",
++		knownEnemyBaseMatch,
++		searchIntent);
+ }
+ 
+ CCPosition voiResolveOperationRouteWaypoint(
+@@ -3420,6 +3456,91 @@ void CombatCommander::reconcileVoiOperation(
+ 		operation.assignedUnitTags.end());
+ 	operation.assignedCount =
+ 		static_cast<int>(operation.assignedUnitTags.size());
++	operation.requirementSnapshots.clear();
++	std::map<std::string, VoiOperationProductionProgress>
++		productionProgressByType;
++	std::map<std::string, VoiRuntimeProductionPool>
++		productionPoolByType;
++	for (const auto & requirement :
++		operation.compositionRequirements)
++	{
++		VoiRuntimeRequirementSnapshot snapshot;
++		snapshot.unitType = requirement.unitType;
++		snapshot.role = requirement.role;
++		snapshot.targetCount = requirement.count;
++		snapshot.prerequisites =
++			voiTerranPrerequisiteChain(requirement.unitType);
++		for (const auto & unit : squad.getUnits())
++		{
++			if (voiOperationUnitMatchesRequirement(
++				operation,
++				unit,
++				requirement))
++			{
++				++snapshot.assignedCount;
++			}
++		}
++		auto progress =
++			productionProgressByType.find(
++				requirement.unitType);
++		if (progress == productionProgressByType.end())
++		{
++			const VoiOperationProductionProgress value =
++				m_bot.Commander().Production()
++					.getVoiOperationProductionProgress(
++						operation.operationId,
++						operation.generation,
++						requirement.unitType);
++			progress = productionProgressByType.emplace(
++				requirement.unitType,
++				value).first;
++			productionPoolByType[requirement.unitType] = {
++				value.inProgressCount,
++				value.operationOwnedQueuedCount
++			};
++		}
++		const VoiOperationProductionProgress &
++			productionProgress = progress->second;
++		if (productionProgress.supported)
++		{
++			snapshot.completedCount =
++				snapshot.assignedCount;
++			VoiRuntimeProductionPool & pool =
++				productionPoolByType[
++					requirement.unitType];
++			const VoiRuntimeProductionAllocation allocation =
++				voiAllocateOperationProductionProgress(
++					snapshot.targetCount,
++					snapshot.assignedCount,
++					pool);
++			snapshot.representedCount =
++				allocation.representedCount;
++			snapshot.inProgressCount =
++				allocation.inProgressCount;
++			snapshot.queuedCount =
++				allocation.queuedCount;
++			snapshot.productionBlocker =
++				allocation.inProgressCount > 0
++					? "training"
++					: (allocation.queuedCount > 0
++						? "production_queued"
++						: productionProgress.blocker);
++			snapshot.missingPrerequisites =
++				productionProgress.missingPrerequisiteTokens;
++		}
++		operation.requirementSnapshots.push_back(snapshot);
++	}
++	const VoiRuntimeConvergenceDecision convergence =
++		voiEvaluateOperationConvergence(
++			operation.requirementSnapshots,
++			operation.minUnits,
++			operation.allowPartial);
++	operation.requirementTargetCount =
++		convergence.targetCount;
++	operation.requirementRepresentedCount =
++		convergence.representedCount;
++	operation.requirementMissingCount =
++		convergence.missingCount;
+ 
+ 	const bool emergencyRetreat =
+ 		m_bot.Commander().getVoiPolicyBool(
+@@ -3451,13 +3572,8 @@ void CombatCommander::reconcileVoiOperation(
+ 		&& operation.assignedCount > 0;
+ 	if (!enoughUnits && !mayLaunchPartial)
+ 	{
+-		operation.status = "WAITING_FOR_UNITS";
+-		operation.blockedReason =
+-			!exactCompositionSatisfied
+-				? "composition_prerequisites_pending"
+-				: (operation.assignedCount == 0
+-				? "no_available_units"
+-				: "insufficient_units");
++		operation.status = convergence.status;
++		operation.blockedReason = convergence.blocker;
+ 		squad.setSquadOrder(
+ 			SquadOrder(
+ 				SquadOrderTypes::Idle,
+@@ -3948,6 +4064,7 @@ void CombatCommander::updateVoiOperations()
+ 		requested.targetEvidence =
+ 			voiResolveOperationTargetEvidence(
+ 				m_bot,
++				requested.taskType,
+ 				requested.locationIntent,
+ 				explicitTarget,
+ 				requested.targetPosition);
+@@ -4739,21 +4856,29 @@ void CombatCommander::updateVoiOperations()
+ 			VoiOperationState & existing,
+ 			const VoiOperationState & requested)
+ 		{
++			VoiOperationTargetUpdateInput targetUpdate;
++			targetUpdate.activeGeneration =
++				existing.generation;
++			targetUpdate.requestedGeneration =
++				requested.generation;
++			targetUpdate.explicitRetarget =
++				requested.editAction == "retarget";
++			const bool replaceTarget =
++				voiShouldReplaceOperationTarget(
++					targetUpdate);
+ 			const bool targetChanged =
+-				existing.targetPosition
+-					!= requested.targetPosition
+-				|| existing.routeType
+-					!= requested.routeType;
++				replaceTarget
++				&& (existing.targetPosition
++						!= requested.targetPosition
++					|| existing.routeType
++						!= requested.routeType);
+ 			const bool newEditEpoch =
+ 				existing.policyUpdateId
+ 					!= requested.policyUpdateId;
+ 			existing.policyUpdateId = policyUpdateId;
+ 			existing.commandLayer = requested.commandLayer;
+ 			existing.taskType = requested.taskType;
+-			existing.routeType = requested.routeType;
+ 			existing.unitClasses = requested.unitClasses;
+-			existing.locationIntent =
+-				requested.locationIntent;
+ 			existing.lifetimeMode = requested.lifetimeMode;
+ 			existing.completionConditions =
+ 				requested.completionConditions;
+@@ -4767,12 +4892,19 @@ void CombatCommander::updateVoiOperations()
+ 			existing.compositionRequirements =
+ 				requested.compositionRequirements;
+ 			existing.unitRoles = requested.unitRoles;
+-			existing.targetPosition =
+-				requested.targetPosition;
+-			existing.targetEvidence =
+-				requested.targetEvidence;
+-			existing.targetX = requested.targetX;
+-			existing.targetY = requested.targetY;
++			if (replaceTarget)
++			{
++				existing.routeType =
++					requested.routeType;
++				existing.locationIntent =
++					requested.locationIntent;
++				existing.targetPosition =
++					requested.targetPosition;
++				existing.targetEvidence =
++					requested.targetEvidence;
++				existing.targetX = requested.targetX;
++				existing.targetY = requested.targetY;
++			}
+ 			if (newEditEpoch)
+ 			{
+ 				existing.editAction =
+@@ -6256,6 +6388,84 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ 		payload << "],"
+ 			<< "\"assigned_count\":"
+ 			<< operation.assignedCount << ","
++			<< "\"requirement_target_count\":"
++			<< operation.requirementTargetCount << ","
++			<< "\"requirement_represented_count\":"
++			<< operation.requirementRepresentedCount << ","
++			<< "\"requirement_missing_count\":"
++			<< operation.requirementMissingCount << ","
++			<< "\"requirement_progress\":[";
++		for (size_t requirementIndex = 0;
++			requirementIndex
++				< operation.requirementSnapshots.size();
++			++requirementIndex)
++		{
++			const auto & requirement =
++				operation.requirementSnapshots[
++					requirementIndex];
++			if (requirementIndex > 0)
++			{
++				payload << ",";
++			}
++			payload << "{\"unit_type\":\""
++				<< voiOperationJsonEscape(
++					requirement.unitType)
++				<< "\",\"role\":\""
++				<< voiOperationJsonEscape(
++					requirement.role)
++				<< "\",\"target_count\":"
++				<< requirement.targetCount
++				<< ",\"assigned_count\":"
++				<< requirement.assignedCount
++				<< ",\"represented_count\":"
++				<< requirement.representedCount
++				<< ",\"completed_count\":"
++				<< requirement.completedCount
++				<< ",\"in_progress_count\":"
++				<< requirement.inProgressCount
++				<< ",\"queued_count\":"
++				<< requirement.queuedCount
++				<< ",\"missing_count\":"
++				<< requirement.missingCount()
++				<< ",\"production_blocker\":\""
++				<< voiOperationJsonEscape(
++					requirement.productionBlocker)
++				<< "\""
++				<< ",\"prerequisites\":[";
++			for (size_t prerequisiteIndex = 0;
++				prerequisiteIndex
++					< requirement.prerequisites.size();
++				++prerequisiteIndex)
++			{
++				if (prerequisiteIndex > 0)
++				{
++					payload << ",";
++				}
++				payload << "\""
++					<< voiOperationJsonEscape(
++						requirement.prerequisites[
++							prerequisiteIndex])
++					<< "\"";
++			}
++			payload << "],\"missing_prerequisites\":[";
++			for (size_t prerequisiteIndex = 0;
++				prerequisiteIndex
++					< requirement.missingPrerequisites.size();
++				++prerequisiteIndex)
++			{
++				if (prerequisiteIndex > 0)
++				{
++					payload << ",";
++				}
++				payload << "\""
++					<< voiOperationJsonEscape(
++						requirement.missingPrerequisites[
++							prerequisiteIndex])
++					<< "\"";
++			}
++			payload << "]}";
++		}
++		payload << "],"
+ 			<< "\"target_x\":"
+ 			<< operation.targetX << ","
+ 			<< "\"target_y\":"
+@@ -10850,8 +11060,11 @@ void CombatCommander::updateAttackSquads()
+ 		&& m_bot.Commander().getVoiPolicyBool(
+ 			"scouting.require_fresh_enemy_observation",
+ 			true);
+-	const bool voiHasFreshEnemyObservation = voiHasObservedEnemyLocationEvidence(m_bot);
+-	if (voiHasFreshEnemyObservation)
++	const VoiEnemyTargetObservation enemyObservation =
++		voiBestEnemyTargetObservation(m_bot);
++	const bool voiHasEnemyLocationEvidence =
++		enemyObservation.position != CCPosition();
++	if (voiHasEnemyLocationEvidence)
+ 	{
+ 		m_voiOperationObservedEnemy = true;
+ 		m_voiSweepTarget = CCPosition();
+@@ -10859,68 +11072,86 @@ void CombatCommander::updateAttackSquads()
+ 		m_voiSweepLastProgressFrame = 0;
+ 	}
+ 	const bool voiAwaitingFreshEnemyObservation = voiRequiresFreshEnemyObservation
+-		&& !voiHasFreshEnemyObservation
++		&& !voiHasEnemyLocationEvidence
+ 		&& !m_voiOperationObservedEnemy;
+-	m_lastVoiTargetEvidence = voiHasFreshEnemyObservation
+-		? "observed_enemy"
++	m_lastVoiTargetEvidence = voiHasEnemyLocationEvidence
++		? enemyObservation.evidence
+ 		: (voiAwaitingFreshEnemyObservation
+ 			? "enemy_start_candidate_scouting"
+ 			: (explicitBlindAttack ? "explicit_blind_candidate" : "map_search"));
+ 	const bool voiSweepingAfterLostContact = tacticalPressureTask
+ 		&& voiRequiresFreshEnemyObservation
+-		&& !voiHasFreshEnemyObservation
++		&& !voiHasEnemyLocationEvidence
+ 		&& m_voiOperationObservedEnemy;
+ 	if (voiSweepingAfterLostContact)
+ 	{
+ 		const uint32_t sweepFrame = m_bot.GetCurrentFrame();
+ 		const std::string sweepOperationKey =
+ 			voiPressureOperationLatchKey + "|lost_contact_sweep";
+-		if (m_voiSweepOperationKey != sweepOperationKey)
+-		{
+-			m_voiSweepOperationKey = sweepOperationKey;
+-			m_voiSweepTarget = CCPosition();
+-			m_voiSweepBestTargetDistance = 0.0f;
+-			m_voiSweepLastProgressFrame = 0;
+-		}
+-
+-		bool selectNewSweepTarget = m_voiSweepTarget == CCPosition()
+-			|| !voiIsRemoteCombatTarget(m_bot, m_voiSweepTarget, 32.0f);
+-		if (!selectNewSweepTarget)
+-		{
+-			const float targetDistance = Util::Dist(
++		const bool targetValid =
++			m_voiSweepTarget != CCPosition()
++			&& voiIsRemoteCombatTarget(
++				m_bot,
++				m_voiSweepTarget,
++				32.0f);
++		float targetDistance = 0.0f;
++		bool sweepTargetReached = false;
++		bool sweepRouteStalled = false;
++		if (targetValid)
++		{
++			targetDistance = Util::Dist(
+ 				mainAttackSquad.calcCenter(),
+ 				m_voiSweepTarget);
+-			if (m_voiSweepBestTargetDistance <= 0.0f
+-				|| targetDistance + 1.0f < m_voiSweepBestTargetDistance)
+-			{
+-				m_voiSweepBestTargetDistance = targetDistance;
+-				m_voiSweepLastProgressFrame = sweepFrame;
+-			}
+ 			const int sweepRequiredUnits = std::max(
+ 				1,
+ 				static_cast<int>(std::ceil(
+ 					static_cast<float>(mainAttackSquad.getUnits().size())
+ 						* 0.60f)));
+-			const bool sweepTargetReached =
++			sweepTargetReached =
+ 				voiCountUnitsNearPosition(
+ 					mainAttackSquad.getUnits(),
+ 					m_voiSweepTarget,
+ 					8.0f) >= sweepRequiredUnits;
+-			const bool sweepRouteStalled =
++			sweepRouteStalled =
+ 				m_voiSweepLastProgressFrame > 0
+ 				&& sweepFrame >= m_voiSweepLastProgressFrame
+ 				&& sweepFrame - m_voiSweepLastProgressFrame >= 22u * 15u;
+-			if (sweepTargetReached || sweepRouteStalled)
+-			{
+-				++m_currentBaseExplorationIndex;
+-				selectNewSweepTarget = true;
+-				Util::Log(
+-					__FUNCTION__,
+-					sweepTargetReached
+-						? "VOI offensive sweep objective reached by the squad majority; rotating to the next remote objective."
+-						: "VOI offensive sweep route made no progress for 15 seconds; rotating away from the stalled objective.",
+-					m_bot);
+-			}
++		}
++		VoiTargetLatchInput latchInput;
++		latchInput.activeKey = m_voiSweepOperationKey;
++		latchInput.requestedKey = sweepOperationKey;
++		latchInput.targetValid = targetValid;
++		latchInput.targetReached = sweepTargetReached;
++		latchInput.routeStalled = sweepRouteStalled;
++		latchInput.targetDistance = targetDistance;
++		latchInput.bestDistance = m_voiSweepBestTargetDistance;
++		latchInput.currentFrame = sweepFrame;
++		latchInput.lastProgressFrame =
++			m_voiSweepLastProgressFrame;
++		const VoiTargetLatchDecision latchDecision =
++			voiReduceTargetLatch(latchInput);
++		if (latchDecision.reset)
++		{
++			m_voiSweepOperationKey = sweepOperationKey;
++			m_voiSweepTarget = CCPosition();
++		}
++		m_voiSweepBestTargetDistance =
++			latchDecision.bestDistance;
++		m_voiSweepLastProgressFrame =
++			latchDecision.lastProgressFrame;
++		bool selectNewSweepTarget =
++			latchDecision.reset || latchDecision.rotate;
++		if (latchDecision.rotate
++			&& targetValid
++			&& !latchDecision.reset)
++		{
++			++m_currentBaseExplorationIndex;
++			Util::Log(
++				__FUNCTION__,
++				sweepTargetReached
++					? "VOI offensive sweep objective reached by the squad majority; rotating to the next remote objective."
++					: "VOI offensive sweep route made no progress for 15 seconds; rotating away from the stalled objective.",
++				m_bot);
+ 		}
+ 		if (selectNewSweepTarget)
+ 		{
+@@ -12199,12 +12430,21 @@ void CombatCommander::updateDefenseSquads()
+ 		m_bot.StartProfiling("0.10.4.2.2.5      calculateRegionsScores");
+ 		// We sort them (the one with the strongest enemy force is first)
+ 		regions.sort();
++		std::set<sc2::Tag> explicitOperationOwnedTags;
++		for (const auto & owner : m_voiOperationUnitOwners)
++		{
++			explicitOperationOwnedTags.insert(owner.first);
++		}
+ 
+ 		// We check each of our units to determine how useful they would be for defending each of our attacked regions
+ 		for (auto & unitPair : m_bot.GetAllyUnits())
+ 		{
+ 			auto & unit = unitPair.second;
+-			if (unit.getType().isWorker() || unit.getType().isBuilding())
++			if (unit.getType().isWorker()
++				|| unit.getType().isBuilding()
++				|| !voiAutonomousDefenseMayClaim(
++					unit.getTag(),
++					explicitOperationOwnedTags))
+ 				continue;	// We don't want to consider our workers and defensive buildings (they will automatically defend their region)
+ 
+ 			const auto unitSquad = m_squadData.getUnitSquad(unit);
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index d17a5d0..a872e09 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -4,6 +4,7 @@
+ #include "Squad.h"
+ #include "SquadData.h"
+ #include "BaseLocation.h"
++#include "voi_runtime_convergence.hpp"
+ #include <list>  
+ 
+ class CCBot;
+@@ -201,6 +202,10 @@ struct VoiOperationState
+ 	CCPosition targetPosition = CCPosition();
+ 	CCPosition activeTargetPosition = CCPosition();
+ 	std::vector<CompositionRequirement> compositionRequirements;
++	std::vector<VoiRuntimeRequirementSnapshot> requirementSnapshots;
++	int requirementTargetCount = 0;
++	int requirementRepresentedCount = 0;
++	int requirementMissingCount = 0;
+ 	std::vector<UnitRole> unitRoles;
+ 	std::map<sc2::Tag, std::string> assignedRoleByTag;
+ 	std::string editAction;
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index ff8fd3c..4bbb024 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -3,6 +3,7 @@
+ #include "ProductionManager.h"
+ #include "Util.h"
+ #include "CCBot.h"
++#include "voi_runtime_convergence.hpp"
+ 
+ const int MIN_VIKING_COUNT = 2;
+ 
+@@ -1495,6 +1496,77 @@ std::string voiExactCompositionTokenForType(const MetaType & type)
+ 	return "";
+ }
+ 
++const MetaType * voiExactCompositionTypeForToken(
++	const std::string & unitToken)
++{
++	for (const auto & entry : voiExactCompositionTypes())
++	{
++		if (entry.first == unitToken)
++		{
++			return &entry.second;
++		}
++	}
++	return nullptr;
++}
++
++const MetaType * voiTerranPrerequisiteTypeForToken(
++	const std::string & prerequisiteToken)
++{
++	if (prerequisiteToken == "TERRAN_BARRACKS")
++	{
++		return &MetaTypeEnum::Barracks;
++	}
++	if (prerequisiteToken == "TERRAN_BARRACKSTECHLAB")
++	{
++		return &MetaTypeEnum::BarracksTechLab;
++	}
++	if (prerequisiteToken == "TERRAN_GHOSTACADEMY")
++	{
++		return &MetaTypeEnum::GhostAcademy;
++	}
++	if (prerequisiteToken == "TERRAN_FACTORY")
++	{
++		return &MetaTypeEnum::Factory;
++	}
++	if (prerequisiteToken == "TERRAN_FACTORYTECHLAB")
++	{
++		return &MetaTypeEnum::FactoryTechLab;
++	}
++	if (prerequisiteToken == "TERRAN_ARMORY")
++	{
++		return &MetaTypeEnum::Armory;
++	}
++	if (prerequisiteToken == "TERRAN_STARPORT")
++	{
++		return &MetaTypeEnum::Starport;
++	}
++	if (prerequisiteToken == "TERRAN_STARPORTTECHLAB")
++	{
++		return &MetaTypeEnum::StarportTechLab;
++	}
++	if (prerequisiteToken == "TERRAN_FUSIONCORE")
++	{
++		return &MetaTypeEnum::FusionCore;
++	}
++	return nullptr;
++}
++
++bool voiProductionPrerequisiteIsProducer(
++	const TypeData & typeData,
++	const MetaType & prerequisiteType)
++{
++	const auto prerequisiteApiType =
++		prerequisiteType.getUnitType().getAPIUnitType();
++	return std::any_of(
++		typeData.whatBuilds.begin(),
++		typeData.whatBuilds.end(),
++		[&](const UnitType & producerType)
++		{
++			return producerType.getAPIUnitType()
++				== prerequisiteApiType;
++		});
++}
++
+ bool voiExactCompositionAllowsTraining(
+ 	CCBot & bot,
+ 	const MM::BuildOrderItem & item,
+@@ -7929,7 +8001,7 @@ bool ProductionManager::hasRequiredUnit(const UnitType& unitType, bool checkInQu
+ 	return false;
+ }
+ 
+-bool ProductionManager::hasProducer(const MetaType& metaType, bool checkInQueue)
++bool ProductionManager::hasProducer(const MetaType& metaType, bool checkInQueue) const
+ {
+ 	const TypeData& typeData = m_bot.Data(metaType);
+ 
+@@ -7969,6 +8041,185 @@ bool ProductionManager::hasProducer(const MetaType& metaType, bool checkInQueue)
+ 	return false;
+ }
+ 
++VoiOperationProductionProgress
++ProductionManager::getVoiOperationProductionProgress(
++	const std::string & operationId,
++	uint64_t generation,
++	const std::string & unitToken) const
++{
++	VoiOperationProductionProgress progress;
++	progress.operationId = operationId;
++	progress.generation = generation;
++	progress.unitToken = unitToken;
++
++	const MetaType * type =
++		voiExactCompositionTypeForToken(unitToken);
++	if (operationId.empty()
++		|| generation == 0
++		|| type == nullptr)
++	{
++		return progress;
++	}
++
++	progress.supported = true;
++	progress.completedCount =
++		m_bot.Commander().Combat()
++			.getVoiOperationOwnedUnitCount(
++				operationId,
++				generation,
++				unitToken);
++	progress.operationOwnedQueuedCount =
++		m_queue.getVoiOperationOwnedItemCount(
++			*type,
++			operationId,
++			generation);
++	const MM::VoiBuildOrderOwner owner {
++		operationId,
++		generation };
++	const auto ownerBaselines =
++		m_voiOperationProductionBaselines.find(owner);
++	if (ownerBaselines != m_voiOperationProductionBaselines.end())
++	{
++		const uint32_t productionTypeKey =
++			static_cast<uint32_t>(
++				type->getUnitType().getAPIUnitType());
++		const auto baseline =
++			ownerBaselines->second.find(productionTypeKey);
++		if (baseline != ownerBaselines->second.end())
++		{
++			const int completedGrowth = std::max(
++				0,
++				progress.completedCount
++					- baseline->second.ownedCount);
++			progress.trainingCount = std::max(
++				0,
++				baseline->second.attributedRepresentedGrowth
++					- completedGrowth);
++		}
++	}
++	progress.inProgressCount = progress.trainingCount;
++	progress.representedCount =
++		progress.completedCount
++		+ progress.inProgressCount
++		+ progress.operationOwnedQueuedCount;
++
++	const TypeData & typeData = m_bot.Data(*type);
++	progress.availableMinerals =
++		std::max(0, m_bot.GetFreeMinerals());
++	progress.requiredMinerals =
++		std::max(0, typeData.mineralCost);
++	progress.availableGas =
++		std::max(0, m_bot.GetFreeGas());
++	progress.requiredGas =
++		std::max(0, typeData.gasCost);
++	progress.availableSupply = std::max(
++		0,
++		m_bot.GetMaxSupply()
++			- m_bot.GetCurrentSupply());
++	progress.requiredSupply =
++		std::max(0, typeData.supplyCost);
++	progress.mineralsAvailable =
++		progress.availableMinerals
++			>= progress.requiredMinerals;
++	progress.gasAvailable =
++		progress.availableGas
++			>= progress.requiredGas;
++	progress.resourcesAvailable =
++		progress.mineralsAvailable
++			&& progress.gasAvailable;
++	progress.supplyAvailable =
++		progress.availableSupply
++			>= progress.requiredSupply;
++	progress.prerequisitesSatisfied =
++		hasRequired(*type, false);
++	progress.producerPresent =
++		hasProducer(*type, false);
++	progress.producerAvailable =
++		progress.producerPresent
++		&& getProducer(*type).isValid();
++
++	const std::vector<std::string> prerequisiteChain =
++		voiTerranPrerequisiteChain(unitToken);
++	for (const auto & prerequisiteToken :
++		prerequisiteChain)
++	{
++		const MetaType * prerequisiteType =
++			voiTerranPrerequisiteTypeForToken(
++				prerequisiteToken);
++		if (prerequisiteType == nullptr
++			|| !hasRequiredUnit(
++				prerequisiteType->getUnitType(),
++				false))
++		{
++			progress.missingPrerequisiteTokens.push_back(
++				prerequisiteToken);
++		}
++	}
++
++	if (progress.trainingCount > 0)
++	{
++		progress.blocker = "training";
++		return progress;
++	}
++	if (!progress.missingPrerequisiteTokens.empty())
++	{
++		const MetaType * missingType =
++			voiTerranPrerequisiteTypeForToken(
++				progress.missingPrerequisiteTokens.front());
++		if (missingType != nullptr
++			&& voiProductionPrerequisiteIsProducer(
++				typeData,
++				*missingType))
++		{
++			progress.blocker = "missing_producer";
++		}
++		else if (missingType != nullptr
++			&& missingType->isAddon())
++		{
++			progress.blocker = "missing_addon";
++		}
++		else
++		{
++			progress.blocker = "missing_tech";
++		}
++		return progress;
++	}
++	if (!progress.prerequisitesSatisfied)
++	{
++		progress.blocker = "missing_tech";
++		return progress;
++	}
++	if (!progress.producerAvailable)
++	{
++		progress.blocker = progress.producerPresent
++			? "producer_busy"
++			: "missing_producer";
++		return progress;
++	}
++	if (!progress.supplyAvailable)
++	{
++		progress.blocker = "supply_blocked";
++		return progress;
++	}
++	if (!progress.gasAvailable)
++	{
++		progress.blocker = "gas_pending";
++		return progress;
++	}
++	if (!progress.mineralsAvailable)
++	{
++		progress.blocker = "minerals_pending";
++		return progress;
++	}
++	if (progress.operationOwnedQueuedCount > 0)
++	{
++		progress.blocker = "production_queued";
++		return progress;
++	}
++	progress.blocker = "ready";
++	return progress;
++}
++
+ Unit ProductionManager::getProducer(const MetaType & type, bool allowTraining, CCPosition closestTo, bool allowMovingWorker, bool useProxyWorker) const
+ {
+ 	// get all the types of units that cna build this type
+diff --git a/src/ProductionManager.h b/src/ProductionManager.h
+index f1c3141..ff0462f 100644
+--- a/src/ProductionManager.h
++++ b/src/ProductionManager.h
+@@ -9,6 +9,38 @@
+ 
+ class CCBot;
+ 
++struct VoiOperationProductionProgress
++{
++	std::string operationId;
++	uint64_t generation = 0;
++	std::string unitToken;
++	bool supported = false;
++
++	int completedCount = 0;
++	int representedCount = 0;
++	int trainingCount = 0;
++	int inProgressCount = 0;
++	int operationOwnedQueuedCount = 0;
++
++	int availableMinerals = 0;
++	int requiredMinerals = 0;
++	int availableGas = 0;
++	int requiredGas = 0;
++	int availableSupply = 0;
++	int requiredSupply = 0;
++
++	bool mineralsAvailable = false;
++	bool gasAvailable = false;
++	bool resourcesAvailable = false;
++	bool supplyAvailable = false;
++	bool prerequisitesSatisfied = false;
++	bool producerPresent = false;
++	bool producerAvailable = false;
++
++	std::vector<std::string> missingPrerequisiteTokens;
++	std::string blocker = "unsupported";
++};
++
+ class ProductionManager
+ {
+     CCBot &       m_bot;
+@@ -172,7 +204,7 @@ class ProductionManager
+ 	void	lowPriorityChecks();
+ 	bool	currentlyHasRequirement(MetaType currentItem) const;
+ 	bool	hasRequiredUnit(const UnitType& unitType, bool checkInQueue) const;
+-	bool	hasProducer(const MetaType& metaType, bool checkInQueue);
++	bool	hasProducer(const MetaType& metaType, bool checkInQueue) const;
+ 
+ 	bool	ValidateBuildingTiming(Building & b) const;
+ 
+@@ -188,6 +220,10 @@ public:
+ 
+ 	bool	hasRequired(const MetaType& metaType, bool checkInQueue) const;
+ 	Unit getProducer(const MetaType & type, bool allowTraining = false, CCPosition closestTo = CCPosition(0, 0), bool allowMovingWorker = false, bool useProxyWorker = false) const;
++	VoiOperationProductionProgress getVoiOperationProductionProgress(
++		const std::string & operationId,
++		uint64_t generation,
++		const std::string & unitToken) const;
+ 	std::vector<sc2::UNIT_TYPEID> getProductionBuildingTypes(bool ignoreState = true) const;
+ 	int getProductionBuildingsCount() const;
+ 	int getProductionBuildingsAddonsCount() const;
+diff --git a/src/voi_runtime_convergence.hpp b/src/voi_runtime_convergence.hpp
+new file mode 100644
+index 0000000..53dcf72
+--- /dev/null
++++ b/src/voi_runtime_convergence.hpp
+@@ -0,0 +1,407 @@
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++#include <set>
++#include <string>
++#include <utility>
++#include <vector>
++
++struct VoiRuntimeRequirementSnapshot
++{
++	std::string unitType;
++	std::string role;
++	int targetCount = 0;
++	int assignedCount = 0;
++	int representedCount = 0;
++	int completedCount = 0;
++	int inProgressCount = 0;
++	int queuedCount = 0;
++	std::string productionBlocker;
++	std::vector<std::string> prerequisites;
++	std::vector<std::string> missingPrerequisites;
++
++	int missingCount() const
++	{
++		return std::max(
++			0,
++			targetCount - std::max(assignedCount, representedCount));
++	}
++};
++
++struct VoiRuntimeConvergenceDecision
++{
++	bool ready = false;
++	std::string status;
++	std::string blocker;
++	int targetCount = 0;
++	int assignedCount = 0;
++	int representedCount = 0;
++	int missingCount = 0;
++};
++
++struct VoiRuntimeProductionPool
++{
++	int inProgressCount = 0;
++	int queuedCount = 0;
++};
++
++struct VoiRuntimeProductionAllocation
++{
++	int inProgressCount = 0;
++	int queuedCount = 0;
++	int representedCount = 0;
++};
++
++inline VoiRuntimeProductionAllocation
++voiAllocateOperationProductionProgress(
++	int targetCount,
++	int assignedCount,
++	VoiRuntimeProductionPool & pool)
++{
++	VoiRuntimeProductionAllocation allocation;
++	int remaining =
++		std::max(0, targetCount - assignedCount);
++	allocation.inProgressCount =
++		std::min(remaining, std::max(0, pool.inProgressCount));
++	pool.inProgressCount -= allocation.inProgressCount;
++	remaining -= allocation.inProgressCount;
++	allocation.queuedCount =
++		std::min(remaining, std::max(0, pool.queuedCount));
++	pool.queuedCount -= allocation.queuedCount;
++	allocation.representedCount =
++		std::max(0, assignedCount)
++		+ allocation.inProgressCount
++		+ allocation.queuedCount;
++	return allocation;
++}
++
++inline std::vector<std::string> voiTerranPrerequisiteChain(
++	const std::string & unitType)
++{
++	if (unitType == "TERRAN_MARINE"
++		|| unitType == "TERRAN_REAPER")
++	{
++		return { "TERRAN_BARRACKS" };
++	}
++	if (unitType == "TERRAN_MARAUDER")
++	{
++		return {
++			"TERRAN_BARRACKS",
++			"TERRAN_BARRACKSTECHLAB"
++		};
++	}
++	if (unitType == "TERRAN_GHOST")
++	{
++		return {
++			"TERRAN_BARRACKS",
++			"TERRAN_BARRACKSTECHLAB",
++			"TERRAN_GHOSTACADEMY"
++		};
++	}
++	if (unitType == "TERRAN_HELLION"
++		|| unitType == "TERRAN_WIDOWMINE")
++	{
++		return { "TERRAN_FACTORY" };
++	}
++	if (unitType == "TERRAN_CYCLONE"
++		|| unitType == "TERRAN_SIEGETANK")
++	{
++		return {
++			"TERRAN_FACTORY",
++			"TERRAN_FACTORYTECHLAB"
++		};
++	}
++	if (unitType == "TERRAN_THOR")
++	{
++		return {
++			"TERRAN_FACTORY",
++			"TERRAN_FACTORYTECHLAB",
++			"TERRAN_ARMORY"
++		};
++	}
++	if (unitType == "TERRAN_MEDIVAC"
++		|| unitType == "TERRAN_VIKINGFIGHTER"
++		|| unitType == "TERRAN_LIBERATOR")
++	{
++		return {
++			"TERRAN_FACTORY",
++			"TERRAN_STARPORT"
++		};
++	}
++	if (unitType == "TERRAN_BANSHEE"
++		|| unitType == "TERRAN_RAVEN")
++	{
++		return {
++			"TERRAN_FACTORY",
++			"TERRAN_STARPORT",
++			"TERRAN_STARPORTTECHLAB"
++		};
++	}
++	if (unitType == "TERRAN_BATTLECRUISER")
++	{
++		return {
++			"TERRAN_FACTORY",
++			"TERRAN_STARPORT",
++			"TERRAN_STARPORTTECHLAB",
++			"TERRAN_FUSIONCORE"
++		};
++	}
++	return {};
++}
++
++inline VoiRuntimeConvergenceDecision voiEvaluateOperationConvergence(
++	const std::vector<VoiRuntimeRequirementSnapshot> & requirements,
++	int minimumUnits,
++	bool allowPartial)
++{
++	VoiRuntimeConvergenceDecision decision;
++	bool compositionAssigned = true;
++	bool compositionRepresented = true;
++	for (const auto & requirement : requirements)
++	{
++		decision.targetCount += std::max(0, requirement.targetCount);
++		decision.assignedCount += std::max(0, requirement.assignedCount);
++		decision.representedCount += std::max(
++			0,
++			requirement.representedCount);
++		decision.missingCount += requirement.missingCount();
++		compositionAssigned =
++			compositionAssigned
++			&& requirement.assignedCount >= requirement.targetCount;
++		compositionRepresented =
++			compositionRepresented && requirement.missingCount() == 0;
++	}
++	const bool minimumReady =
++		decision.assignedCount >= std::max(0, minimumUnits);
++	decision.ready =
++		(minimumReady && (allowPartial || compositionAssigned))
++		|| (allowPartial && decision.assignedCount > 0);
++	if (decision.ready)
++	{
++		decision.status = "ASSIGNED";
++		return decision;
++	}
++	decision.status = "WAITING_FOR_UNITS";
++	if (!compositionAssigned)
++	{
++		decision.blocker = compositionRepresented
++			? "composition_assignment_pending"
++			: "composition_prerequisites_pending";
++	}
++	else if (decision.assignedCount == 0)
++	{
++		decision.blocker = "no_available_units";
++	}
++	else
++	{
++		decision.blocker = "insufficient_units";
++	}
++	return decision;
++}
++
++template <typename Tag>
++bool voiAutonomousDefenseMayClaim(
++	Tag tag,
++	const std::set<Tag> & operationOwnedTags)
++{
++	return operationOwnedTags.find(tag) == operationOwnedTags.end();
++}
++
++template <typename Tag>
++bool voiOwnershipSetsAreDisjoint(
++	const std::vector<std::set<Tag>> & ownershipSets)
++{
++	std::set<Tag> seen;
++	for (const auto & owners : ownershipSets)
++	{
++		for (const auto & tag : owners)
++		{
++			if (!seen.insert(tag).second)
++			{
++				return false;
++			}
++		}
++	}
++	return true;
++}
++
++struct VoiPlacementCandidate
++{
++	int x = 0;
++	int y = 0;
++	int distanceRank = 0;
++	bool valid = false;
++	bool buildable = false;
++	bool connected = false;
++};
++
++inline int voiSelectSemanticPlacementCandidate(
++	std::vector<VoiPlacementCandidate> candidates,
++	bool allowFallback)
++{
++	if (candidates.empty())
++	{
++		return -1;
++	}
++	std::stable_sort(
++		candidates.begin(),
++		candidates.end(),
++		[](const VoiPlacementCandidate & left,
++			const VoiPlacementCandidate & right)
++		{
++			if (left.distanceRank != right.distanceRank)
++			{
++				return left.distanceRank < right.distanceRank;
++			}
++			if (left.x != right.x)
++			{
++				return left.x < right.x;
++			}
++			return left.y < right.y;
++		});
++	for (const auto & candidate : candidates)
++	{
++		if (candidate.distanceRank > 0 && !allowFallback)
++		{
++			break;
++		}
++		if (candidate.valid
++			&& candidate.buildable
++			&& candidate.connected)
++		{
++			return candidate.distanceRank;
++		}
++	}
++	return -1;
++}
++
++inline bool voiProductionBuildingLiftAllowed(
++	bool explicitRelocationAllowed,
++	bool recoveryOwnerAuthorized)
++{
++	return explicitRelocationAllowed || recoveryOwnerAuthorized;
++}
++
++inline bool voiIsSelfMainLocationIntent(
++	const std::string & locationIntent)
++{
++	return locationIntent == "home"
++		|| locationIntent == "self_main"
++		|| locationIntent == "main_base";
++}
++
++inline bool voiIsSelfNaturalLocationIntent(
++	const std::string & locationIntent)
++{
++	return locationIntent == "natural"
++		|| locationIntent == "self_natural";
++}
++
++inline bool voiIsSelfRampLocationIntent(
++	const std::string & locationIntent)
++{
++	return locationIntent == "self_ramp"
++		|| locationIntent == "self_main_ramp"
++		|| locationIntent == "front_door"
++		|| locationIntent == "main_entrance"
++		|| locationIntent == "self_choke"
++		|| locationIntent == "main_choke"
++		|| locationIntent == "self_natural_choke";
++}
++
++inline std::string voiClassifyEnemyTargetEvidence(
++	bool explicitTarget,
++	bool selfTarget,
++	const std::string & observedEnemyEvidence,
++	bool knownEnemyBaseMatch,
++	bool searchIntent)
++{
++	if (selfTarget)
++	{
++		return "self_observed";
++	}
++	if (explicitTarget)
++	{
++		return "explicit";
++	}
++	if (!observedEnemyEvidence.empty())
++	{
++		return observedEnemyEvidence;
++	}
++	if (knownEnemyBaseMatch)
++	{
++		return "known_enemy_base";
++	}
++	return searchIntent ? "search_candidate" : "resolved";
++}
++
++struct VoiOperationTargetUpdateInput
++{
++	std::uint64_t activeGeneration = 0;
++	std::uint64_t requestedGeneration = 0;
++	bool explicitRetarget = false;
++	bool targetReached = false;
++	bool routeStalled = false;
++};
++
++inline bool voiShouldReplaceOperationTarget(
++	const VoiOperationTargetUpdateInput & input)
++{
++	if (input.requestedGeneration != input.activeGeneration)
++	{
++		return input.requestedGeneration > input.activeGeneration;
++	}
++	return input.explicitRetarget
++		|| input.targetReached
++		|| input.routeStalled;
++}
++
++struct VoiTargetLatchInput
++{
++	std::string activeKey;
++	std::string requestedKey;
++	bool targetValid = false;
++	bool targetReached = false;
++	bool routeStalled = false;
++	float targetDistance = 0.0f;
++	float bestDistance = 0.0f;
++	std::uint32_t currentFrame = 0;
++	std::uint32_t lastProgressFrame = 0;
++};
++
++struct VoiTargetLatchDecision
++{
++	bool reset = false;
++	bool rotate = false;
++	bool retain = false;
++	float bestDistance = 0.0f;
++	std::uint32_t lastProgressFrame = 0;
++};
++
++inline VoiTargetLatchDecision voiReduceTargetLatch(
++	const VoiTargetLatchInput & input)
++{
++	VoiTargetLatchDecision decision;
++	decision.reset = input.activeKey != input.requestedKey;
++	decision.rotate = !input.targetValid
++		|| input.targetReached
++		|| input.routeStalled;
++	decision.retain = !decision.reset && !decision.rotate;
++	decision.bestDistance = input.bestDistance;
++	decision.lastProgressFrame = input.lastProgressFrame;
++	if (decision.reset)
++	{
++		decision.bestDistance = 0.0f;
++		decision.lastProgressFrame = 0;
++		return decision;
++	}
++	if (input.targetValid
++		&& (input.bestDistance <= 0.0f
++			|| input.targetDistance + 1.0f < input.bestDistance))
++	{
++		decision.bestDistance = input.targetDistance;
++		decision.lastProgressFrame = input.currentFrame;
++	}
++	return decision;
++}
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 266483e..e0a09df 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -11,3 +11,17 @@ add_test(
+     NAME voi_operation_transfer_admission
+     COMMAND voi_operation_transfer_admission_test
+ )
++
++add_executable(
++    voi_runtime_convergence_test
++    runtime_convergence_test.cpp
++)
++target_include_directories(
++    voi_runtime_convergence_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++add_test(
++    NAME voi_runtime_convergence
++    COMMAND voi_runtime_convergence_test
++)
+diff --git a/tests/runtime_convergence_test.cpp b/tests/runtime_convergence_test.cpp
+new file mode 100644
+index 0000000..a593e8f
+--- /dev/null
++++ b/tests/runtime_convergence_test.cpp
+@@ -0,0 +1,244 @@
++#include "voi_runtime_convergence.hpp"
++
++#include <cassert>
++#include <set>
++#include <string>
++#include <vector>
++
++int main()
++{
++	VoiRuntimeRequirementSnapshot tank;
++	tank.unitType = "TERRAN_SIEGETANK";
++	tank.role = "siege";
++	tank.targetCount = 2;
++	tank.assignedCount = 0;
++	tank.representedCount = 1;
++	tank.completedCount = 1;
++	tank.inProgressCount = 0;
++	tank.queuedCount = 1;
++	tank.productionBlocker = "production_queued";
++	tank.prerequisites = voiTerranPrerequisiteChain(tank.unitType);
++	tank.missingPrerequisites = { "TERRAN_FACTORYTECHLAB" };
++	assert(tank.missingCount() == 1);
++	assert(tank.completedCount == 1);
++	assert(tank.queuedCount == 1);
++	assert(tank.productionBlocker == "production_queued");
++	assert(tank.missingPrerequisites.size() == 1);
++	assert(tank.prerequisites.size() == 2);
++	assert(tank.prerequisites[1] == "TERRAN_FACTORYTECHLAB");
++
++	VoiRuntimeRequirementSnapshot viking;
++	viking.unitType = "TERRAN_VIKINGFIGHTER";
++	viking.targetCount = 1;
++	viking.assignedCount = 0;
++	viking.representedCount = 0;
++	viking.prerequisites = voiTerranPrerequisiteChain(viking.unitType);
++	assert(viking.prerequisites.size() == 2);
++	assert(viking.prerequisites[1] == "TERRAN_STARPORT");
++
++	VoiRuntimeRequirementSnapshot ghost;
++	ghost.unitType = "TERRAN_GHOST";
++	ghost.targetCount = 1;
++	ghost.assignedCount = 0;
++	ghost.representedCount = 0;
++	ghost.prerequisites = voiTerranPrerequisiteChain(ghost.unitType);
++	assert(ghost.prerequisites.size() == 3);
++	assert(ghost.prerequisites[2] == "TERRAN_GHOSTACADEMY");
++
++	const auto waiting = voiEvaluateOperationConvergence(
++		{ tank, viking, ghost },
++		4,
++		false);
++	assert(!waiting.ready);
++	assert(waiting.status == "WAITING_FOR_UNITS");
++	assert(waiting.blocker == "composition_prerequisites_pending");
++	assert(waiting.targetCount == 4);
++	assert(waiting.assignedCount == 0);
++	assert(waiting.representedCount == 1);
++	assert(waiting.missingCount == 3);
++
++	VoiRuntimeProductionPool marinePool;
++	marinePool.inProgressCount = 2;
++	marinePool.queuedCount = 2;
++	const auto frontlineAllocation =
++		voiAllocateOperationProductionProgress(
++			2,
++			0,
++			marinePool);
++	const auto scoutAllocation =
++		voiAllocateOperationProductionProgress(
++			2,
++			0,
++			marinePool);
++	assert(frontlineAllocation.inProgressCount == 2);
++	assert(frontlineAllocation.queuedCount == 0);
++	assert(frontlineAllocation.representedCount == 2);
++	assert(scoutAllocation.inProgressCount == 0);
++	assert(scoutAllocation.queuedCount == 2);
++	assert(scoutAllocation.representedCount == 2);
++	assert(marinePool.inProgressCount == 0);
++	assert(marinePool.queuedCount == 0);
++	assert(
++		frontlineAllocation.representedCount
++			+ scoutAllocation.representedCount
++			== 4);
++
++	tank.representedCount = 2;
++	viking.representedCount = 1;
++	ghost.representedCount = 1;
++	const auto representedButUnassigned =
++		voiEvaluateOperationConvergence(
++			{ tank, viking, ghost },
++			4,
++			false);
++	assert(!representedButUnassigned.ready);
++	assert(
++		representedButUnassigned.status
++			== "WAITING_FOR_UNITS");
++	assert(
++		representedButUnassigned.blocker
++			== "composition_assignment_pending");
++	assert(representedButUnassigned.missingCount == 0);
++
++	tank.assignedCount = 2;
++	tank.representedCount = 2;
++	viking.assignedCount = 1;
++	viking.representedCount = 1;
++	ghost.assignedCount = 1;
++	ghost.representedCount = 1;
++	const auto launched = voiEvaluateOperationConvergence(
++		{ tank, viking, ghost },
++		4,
++		false);
++	assert(launched.ready);
++	assert(launched.status == "ASSIGNED");
++	assert(launched.blocker.empty());
++	assert(launched.missingCount == 0);
++
++	const std::set<unsigned long long> attackOwners = { 11, 12 };
++	const std::set<unsigned long long> scoutOwners = { 21 };
++	const std::set<unsigned long long> defenseOwners = { 31, 32 };
++	assert(voiAutonomousDefenseMayClaim(41ULL, attackOwners));
++	assert(!voiAutonomousDefenseMayClaim(11ULL, attackOwners));
++	assert(voiOwnershipSetsAreDisjoint<unsigned long long>(
++		{ attackOwners, scoutOwners, defenseOwners }));
++	assert(!voiOwnershipSetsAreDisjoint<unsigned long long>(
++		{ attackOwners, { 12, 41 } }));
++
++	const std::vector<VoiPlacementCandidate> placementCandidates = {
++		{ 20, 20, 0, true, false, true },
++		{ 19, 20, 1, true, true, false },
++		{ 21, 20, 2, true, true, true },
++		{ 18, 20, 3, true, true, true },
++	};
++	assert(
++		voiSelectSemanticPlacementCandidate(
++			placementCandidates,
++			false) == -1);
++	assert(
++		voiSelectSemanticPlacementCandidate(
++			placementCandidates,
++			true) == 2);
++	assert(!voiProductionBuildingLiftAllowed(false, false));
++	assert(voiProductionBuildingLiftAllowed(true, false));
++	assert(voiProductionBuildingLiftAllowed(false, true));
++
++	assert(
++		voiClassifyEnemyTargetEvidence(
++			false,
++			false,
++			"",
++			false,
++			true) == "search_candidate");
++	assert(
++		voiClassifyEnemyTargetEvidence(
++			false,
++			false,
++			"visible_enemy",
++			true,
++			true) == "visible_enemy");
++	assert(
++		voiClassifyEnemyTargetEvidence(
++			false,
++			false,
++			"remembered_building",
++			true,
++			true) == "remembered_building");
++	assert(
++		voiClassifyEnemyTargetEvidence(
++			false,
++			false,
++			"recent_mobile",
++			false,
++			true) == "recent_mobile");
++	assert(
++		voiClassifyEnemyTargetEvidence(
++			false,
++			false,
++			"",
++			true,
++			true) == "known_enemy_base");
++	assert(
++		voiClassifyEnemyTargetEvidence(
++			true,
++			true,
++			"",
++			false,
++			false) == "self_observed");
++
++	assert(voiIsSelfMainLocationIntent("home"));
++	assert(voiIsSelfNaturalLocationIntent("self_natural"));
++	assert(voiIsSelfRampLocationIntent("self_ramp"));
++	assert(voiIsSelfRampLocationIntent("front_door"));
++	assert(voiIsSelfRampLocationIntent("self_natural_choke"));
++	assert(!voiIsSelfRampLocationIntent("enemy_front"));
++
++	VoiOperationTargetUpdateInput targetUpdate;
++	targetUpdate.activeGeneration = 4;
++	targetUpdate.requestedGeneration = 4;
++	assert(!voiShouldReplaceOperationTarget(targetUpdate));
++	targetUpdate.explicitRetarget = true;
++	assert(voiShouldReplaceOperationTarget(targetUpdate));
++	targetUpdate.explicitRetarget = false;
++	targetUpdate.targetReached = true;
++	assert(voiShouldReplaceOperationTarget(targetUpdate));
++	targetUpdate.targetReached = false;
++	targetUpdate.routeStalled = true;
++	assert(voiShouldReplaceOperationTarget(targetUpdate));
++	targetUpdate.routeStalled = false;
++	targetUpdate.requestedGeneration = 5;
++	assert(voiShouldReplaceOperationTarget(targetUpdate));
++	targetUpdate.requestedGeneration = 3;
++	assert(!voiShouldReplaceOperationTarget(targetUpdate));
++
++	VoiTargetLatchInput latch;
++	latch.activeKey = "attack:1|lost_contact_sweep";
++	latch.requestedKey = latch.activeKey;
++	latch.targetValid = true;
++	latch.targetDistance = 20.0f;
++	latch.bestDistance = 24.0f;
++	latch.currentFrame = 300;
++	latch.lastProgressFrame = 200;
++	const auto progress = voiReduceTargetLatch(latch);
++	assert(progress.retain);
++	assert(!progress.rotate);
++	assert(progress.bestDistance == 20.0f);
++	assert(progress.lastProgressFrame == 300);
++
++	latch.targetReached = true;
++	const auto reached = voiReduceTargetLatch(latch);
++	assert(reached.rotate);
++	assert(!reached.retain);
++	latch.targetReached = false;
++	latch.routeStalled = true;
++	const auto stalled = voiReduceTargetLatch(latch);
++	assert(stalled.rotate);
++	latch.routeStalled = false;
++	latch.requestedKey = "attack:2|lost_contact_sweep";
++	const auto generationReset = voiReduceTargetLatch(latch);
++	assert(generationReset.reset);
++	assert(generationReset.bestDistance == 0.0f);
++	assert(generationReset.lastProgressFrame == 0);
++
++	return 0;
++}
