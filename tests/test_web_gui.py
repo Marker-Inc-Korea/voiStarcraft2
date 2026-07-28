@@ -540,6 +540,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "stopPollingFallback",
             "lastEventSeq",
             'status: "received"',
+            "생산 건물 사용 중",
+            "편성 배정 대기",
             "setInterval(pollHistory",
             "setInterval(pollState",
         ):
@@ -2369,6 +2371,27 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "operation_id": "assault-bravo",
                             "update_id": update_id,
                             "received_frame": 206,
+                            "status": "WAITING_FOR_UNITS",
+                            "blocked_reason": "composition_prerequisites_pending",
+                            "requirement_target_count": 4,
+                            "requirement_represented_count": 2,
+                            "requirement_missing_count": 2,
+                            "requirement_progress": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "role": "main_army",
+                                    "target_count": 4,
+                                    "assigned_count": 2,
+                                    "represented_count": 2,
+                                    "completed_count": 2,
+                                    "in_progress_count": 1,
+                                    "queued_count": 1,
+                                    "missing_count": 2,
+                                    "production_blocker": "production_queued",
+                                    "prerequisites": ["TERRAN_BARRACKS"],
+                                    "missing_prerequisites": [],
+                                }
+                            ],
                             "edit_action": "reinforce",
                             "edit_before_count": 2,
                             "edit_after_count": 4,
@@ -2457,6 +2480,32 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         self.assertEqual("assault-bravo", assault_execution["operation_id"])
         self.assertEqual("queued_or_assigned", assault_execution["state"])
+        self.assertEqual(
+            {
+                "status": "WAITING_FOR_UNITS",
+                "blocker": "composition_prerequisites_pending",
+                "target_count": 4,
+                "represented_count": 2,
+                "missing_count": 2,
+                "requirements": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "role": "main_army",
+                        "target_count": 4,
+                        "assigned_count": 2,
+                        "represented_count": 2,
+                        "completed_count": 2,
+                        "in_progress_count": 1,
+                        "queued_count": 1,
+                        "missing_count": 2,
+                        "production_blocker": "production_queued",
+                        "prerequisites": ["TERRAN_BARRACKS"],
+                        "missing_prerequisites": [],
+                    }
+                ],
+            },
+            operations["assault-bravo"]["operation_convergence"],
+        )
         self.assertEqual(
             {
                 "action": "reinforce",

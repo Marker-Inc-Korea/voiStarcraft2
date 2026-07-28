@@ -1726,6 +1726,103 @@ def _micromachine_operation_status_payload(
                 if value not in {None, ""}
             },
         }
+    requirement_progress = (
+        operation_telemetry.get("requirement_progress")
+        if isinstance(operation_telemetry, Mapping)
+        else None
+    )
+    normalized_requirement_progress = [
+        {
+            "unit_type": str(requirement.get("unit_type", "") or ""),
+            "role": str(requirement.get("role", "") or ""),
+            "target_count": max(
+                0,
+                _int_or_none(requirement.get("target_count")) or 0,
+            ),
+            "assigned_count": max(
+                0,
+                _int_or_none(requirement.get("assigned_count")) or 0,
+            ),
+            "represented_count": max(
+                0,
+                _int_or_none(requirement.get("represented_count")) or 0,
+            ),
+            "completed_count": max(
+                0,
+                _int_or_none(requirement.get("completed_count")) or 0,
+            ),
+            "in_progress_count": max(
+                0,
+                _int_or_none(requirement.get("in_progress_count")) or 0,
+            ),
+            "queued_count": max(
+                0,
+                _int_or_none(requirement.get("queued_count")) or 0,
+            ),
+            "missing_count": max(
+                0,
+                _int_or_none(requirement.get("missing_count")) or 0,
+            ),
+            "production_blocker": str(
+                requirement.get("production_blocker", "") or ""
+            ),
+            "prerequisites": _string_list(
+                requirement.get("prerequisites", ())
+            ),
+            "missing_prerequisites": _string_list(
+                requirement.get("missing_prerequisites", ())
+            ),
+        }
+        for requirement in (
+            requirement_progress
+            if isinstance(requirement_progress, Sequence)
+            and not isinstance(requirement_progress, (str, bytes))
+            else ()
+        )
+        if isinstance(requirement, Mapping)
+    ]
+    operation_convergence = {
+        "status": str(
+            operation_telemetry.get("status", "")
+            if isinstance(operation_telemetry, Mapping)
+            else ""
+        ),
+        "blocker": str(
+            operation_telemetry.get("blocked_reason", "")
+            if isinstance(operation_telemetry, Mapping)
+            else ""
+        ),
+        "target_count": max(
+            0,
+            _int_or_none(
+                operation_telemetry.get("requirement_target_count")
+                if isinstance(operation_telemetry, Mapping)
+                else None
+            )
+            or 0,
+        ),
+        "represented_count": max(
+            0,
+            _int_or_none(
+                operation_telemetry.get(
+                    "requirement_represented_count",
+                )
+                if isinstance(operation_telemetry, Mapping)
+                else None
+            )
+            or 0,
+        ),
+        "missing_count": max(
+            0,
+            _int_or_none(
+                operation_telemetry.get("requirement_missing_count")
+                if isinstance(operation_telemetry, Mapping)
+                else None
+            )
+            or 0,
+        ),
+        "requirements": normalized_requirement_progress,
+    }
     return {
         "operation_key": operation_key,
         "operation_id": operation_id,
@@ -1754,6 +1851,7 @@ def _micromachine_operation_status_payload(
         "telemetry_current": telemetry_current,
         "disposition": disposition,
         "operation_edit": operation_edit,
+        "operation_convergence": operation_convergence,
     }
 
 
@@ -10245,6 +10343,7 @@ function commandOperationData(operation, parentData) {
     operation_disposition: disposition,
     operation_mission: String(operation.mission || "operation"),
     operation_edit: operation.operation_edit || {},
+    operation_convergence: operation.operation_convergence || {},
     telemetry_current: operation.telemetry_current === true
   };
 }
@@ -10621,6 +10720,125 @@ function operationEditResolution(data) {
   );
 }
 
+function operationConvergenceSummary(data) {
+  var convergence = data && data.operation_convergence;
+  if (!convergence || typeof convergence !== "object") { return ""; }
+  var requirements = Array.isArray(convergence.requirements)
+    ? convergence.requirements
+    : [];
+  var requirementParts = requirements.map(function(requirement) {
+    var unitType = String(requirement && requirement.unit_type || "")
+      .replace(/^TERRAN_/, "");
+    var represented = Number(
+      requirement && requirement.represented_count || 0
+    );
+    var target = Number(requirement && requirement.target_count || 0);
+    var missing = Number(requirement && requirement.missing_count || 0);
+    var completed = Number(
+      requirement && requirement.completed_count || 0
+    );
+    var inProgress = Number(
+      requirement && requirement.in_progress_count || 0
+    );
+    var queued = Number(requirement && requirement.queued_count || 0);
+    var blocker = String(
+      requirement && requirement.production_blocker || ""
+    );
+    var missingPrerequisites = Array.isArray(
+      requirement && requirement.missing_prerequisites
+    )
+      ? requirement.missing_prerequisites.map(function(item) {
+        return String(item || "").replace(/^TERRAN_/, "");
+      }).filter(Boolean)
+      : [];
+    var text = unitType + " " + represented + "/" + target;
+    var pipelineParts = [];
+    if (completed > 0) {
+      pipelineParts.push(
+        commandUiText("완료 ", "ready ", "已完成 ") + completed
+      );
+    }
+    if (inProgress > 0) {
+      pipelineParts.push(
+        commandUiText("생산 중 ", "training ", "生产中 ") + inProgress
+      );
+    }
+    if (queued > 0) {
+      pipelineParts.push(
+        commandUiText("큐 ", "queued ", "队列 ") + queued
+      );
+    }
+    if (pipelineParts.length) {
+      text += " · " + pipelineParts.join(" / ");
+    }
+    if (missing > 0) {
+      text += commandUiText(" · 부족 ", " · missing ", " · 缺少 ") + missing;
+    }
+    if (missing > 0 && missingPrerequisites.length) {
+      text += commandUiText(" · 필요 ", " · needs ", " · 需要 ") +
+        missingPrerequisites.join(" → ");
+    }
+    var blockerLabels = {
+      supply_blocked: commandUiText(
+        "보급 막힘",
+        "supply blocked",
+        "补给受阻"
+      ),
+      gas_pending: commandUiText("가스 부족", "gas pending", "气体不足"),
+      minerals_pending: commandUiText(
+        "광물 부족",
+        "minerals pending",
+        "矿物不足"
+      ),
+      missing_producer: commandUiText(
+        "생산 건물 대기",
+        "producer missing",
+        "缺少生产建筑"
+      ),
+      producer_busy: commandUiText(
+        "생산 건물 사용 중",
+        "producer busy",
+        "生产建筑忙碌"
+      ),
+      missing_addon: commandUiText(
+        "애드온 대기",
+        "addon missing",
+        "缺少附属建筑"
+      ),
+      missing_tech: commandUiText(
+        "기술 건물 대기",
+        "tech missing",
+        "缺少科技建筑"
+      ),
+      production_queued: commandUiText(
+        "생산 예약됨",
+        "production queued",
+        "已排入生产"
+      ),
+      training: commandUiText("생산 중", "training", "生产中"),
+      composition_assignment_pending: commandUiText(
+        "편성 배정 대기",
+        "awaiting squad assignment",
+        "等待编队分配"
+      )
+    };
+    if (blocker && blocker !== "ready") {
+      text += commandUiText(" · 상태 ", " · status ", " · 状态 ") +
+        (blockerLabels[blocker] || blocker);
+    }
+    return text;
+  }).filter(Boolean);
+  if (requirementParts.length) {
+    return requirementParts.join(" | ");
+  }
+  var targetCount = Number(convergence.target_count || 0);
+  var representedCount = Number(convergence.represented_count || 0);
+  if (targetCount > 0) {
+    return representedCount + "/" + targetCount;
+  }
+  return "";
+}
+
 function prefillOperationEdit(record, action) {
   var input = document.getElementById("command-input");
   if (!input) { return; }
@@ -10756,6 +10974,14 @@ function renderOperationCard(record) {
     commandUiText("배정 전력", "Assigned force", "已分配兵力"),
     commandConsoleAssignedForce(model)
   );
+  if (operationConvergenceSummary(data)) {
+    operationAppendDetail(
+      details,
+      commandUiText("병력 수렴", "Force convergence", "兵力收敛"),
+      operationConvergenceSummary(data),
+      "operation-card-verification"
+    );
+  }
   if (operationEditSummary(data)) {
     operationAppendDetail(
       details,

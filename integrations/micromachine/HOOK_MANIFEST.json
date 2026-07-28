@@ -338,6 +338,11 @@
       "path": "patches/0066-operation-transfer-idempotence-and-active-evidence.patch",
       "order": 66,
       "scope": "treat an exact already-applied reciprocal transfer generation as an idempotent no-op on later game frames, prevent duplicate ownership mutation and false BLOCKED overwrite, and preserve the still-running active generation evidence when a higher-generation edit is rejected"
+    },
+    {
+      "path": "patches/0067-runtime-convergence-defense-placement-information.patch",
+      "order": 67,
+      "scope": "runtime force convergence with operation-owned queue and ProductionManager prerequisite/resource/producer introspection, explicit-operation defense isolation, self-ramp defense anchors, semantic placement validation, production-building mobility guards, visible/recent/remembered enemy evidence classification, and generation-stable target latching"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

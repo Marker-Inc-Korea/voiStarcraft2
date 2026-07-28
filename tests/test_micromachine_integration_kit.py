@@ -965,9 +965,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 67)),
+            list(range(1, 68)),
         )
-        self.assertEqual(len(set(manifest_paths)), 66)
+        self.assertEqual(len(set(manifest_paths)), 67)
+        self.assertEqual(
+            manifest_paths[-1],
+            (
+                "patches/"
+                "0067-runtime-convergence-defense-placement-information.patch"
+            ),
+        )
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
         )
@@ -4829,7 +4836,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0066`",
+            "patches/0067-runtime-convergence-defense-placement-information.patch",
+            "through `0067`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -5368,6 +5376,27 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'RUNTIME_CONVERGENCE_DEFENSE_PLACEMENT_INFORMATION_PATCH_FILE='
+            '"${REPO_ROOT}/integrations/micromachine/patches/'
+            '0067-runtime-convergence-defense-placement-information.patch"',
+            build_script,
+        )
+        transfer_patch_apply = build_script.index(
+            'apply --recount --ignore-space-change --whitespace=nowarn '
+            '"${OPERATION_TRANSFER_IDEMPOTENCE_ACTIVE_EVIDENCE_PATCH_FILE}"'
+        )
+        convergence_patch_check = build_script.index(
+            'apply --recount --check --ignore-space-change '
+            '--whitespace=nowarn '
+            '"${RUNTIME_CONVERGENCE_DEFENSE_PLACEMENT_INFORMATION_PATCH_FILE}"'
+        )
+        convergence_patch_apply = build_script.index(
+            'apply --recount --ignore-space-change --whitespace=nowarn '
+            '"${RUNTIME_CONVERGENCE_DEFENSE_PLACEMENT_INFORMATION_PATCH_FILE}"'
+        )
+        self.assertLess(transfer_patch_apply, convergence_patch_check)
+        self.assertLess(convergence_patch_check, convergence_patch_apply)
+        self.assertIn(
             'apply --recount --check --ignore-space-change '
             '--whitespace=nowarn '
             '"${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}"',
@@ -5413,6 +5442,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             2,
             build_script.count(
                 "--micromachine-operation-transfer-idempotence-active-evidence-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-runtime-convergence-defense-placement-information-patch"
             ),
         )
         self.assertIn(
@@ -7213,6 +7248,35 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, readme)
         self.assertNotIn("| All-unit operation model |", readme)
+
+    def test_runtime_convergence_patch_exposes_actionable_force_progress(
+        self,
+    ) -> None:
+        patch = (
+            KIT_DIR
+            / "patches"
+            / "0067-runtime-convergence-defense-placement-information.patch"
+        ).read_text()
+        for term in (
+            "getVoiOperationOwnedItemCount(",
+            "getVoiOperationProductionProgress(",
+            '\\"completed_count\\"',
+            '\\"in_progress_count\\"',
+            '\\"queued_count\\"',
+            '\\"production_blocker\\"',
+            '\\"missing_prerequisites\\"',
+            "producer_busy",
+            "voiIsSelfRampLocationIntent",
+            "voiShouldReplaceOperationTarget",
+            "voiAutonomousDefenseMayClaim",
+            "voiSelectSemanticPlacementCandidate",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+        self.assertEqual(
+            1,
+            patch.count("COMMAND voi_runtime_convergence_test"),
+        )
 
     def test_operation_lifecycle_accepts_temporally_separated_live_evidence(
         self,
