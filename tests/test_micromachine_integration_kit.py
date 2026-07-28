@@ -1071,7 +1071,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "voiLatchFamilyEffectForTelemetry",
             "voiSelectFamilyEffectForTelemetry",
             "voiFamilyEffectHasMatchingSubmission",
+            "voiFamilyEffectHasMatchingObservation",
             "voiAcknowledgeFamilyEffectTelemetry",
+            "voiWriteAuthoritativeTelemetryFile",
             "acknowledgeVoiFamilyEffects",
             "familyEvidence.policyUpdateId",
             "familyEvidence.submittedPositions[unit->tag]",
@@ -1085,6 +1087,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "newer policy cannot inherit or acknowledge",
             "Submission identity must precede effect observation",
             "Failed writes perform no acknowledgement",
+            "A successful authoritative write acknowledges",
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, patch)
