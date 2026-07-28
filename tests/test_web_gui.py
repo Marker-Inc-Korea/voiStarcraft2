@@ -2528,6 +2528,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "generation": 1,
                             "status": "MOVING",
                             "received_frame": 100,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "last_action_frame": 140,
+                            "movement_frame": 150,
+                            "engagement_frame": 160,
+                            "assigned_unit_tags": [11],
+                            "assigned_count": 1,
+                            "max_home_distance": 20.0,
+                            "engaged": True,
+                            "last_action": "AttackUnitOrder",
                             "edit_action": "transfer_out",
                             "edit_requested_generation": 2,
                             "edit_rejected_update_id": update_id,
@@ -2569,6 +2579,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "destination_priority_not_higher",
             execution["blocker_reason"],
         )
+        successful_stages = {
+            stage["name"] for stage in execution["stages"] if stage["ok"]
+        }
+        self.assertNotIn("queued_or_assigned", successful_stages)
+        self.assertNotIn("order_issued", successful_stages)
+        self.assertNotIn("action_issued", successful_stages)
+        self.assertNotIn("effect_observed", successful_stages)
 
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
         execution = web_gui._micromachine_operation_command_execution(

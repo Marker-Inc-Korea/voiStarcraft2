@@ -1140,6 +1140,37 @@ def _micromachine_operation_entry_for_request(
                 or candidate.get("blocked_reason")
                 or "operation_edit_rejected"
             )
+            for key, value in (
+                ("assigned_frame", 0),
+                ("assignment_frame", 0),
+                ("submitted_frame", 0),
+                ("submission_frame", 0),
+                ("action_frame", 0),
+                ("last_action_frame", 0),
+                ("movement_frame", 0),
+                ("movement_observed_frame", 0),
+                ("engagement_frame", 0),
+                ("engagement_observed_frame", 0),
+                ("assigned_unit_tags", []),
+                ("assigned_count", 0),
+                ("assigned_unit_count", 0),
+                ("submitted_count", 0),
+                ("action_count", 0),
+                ("moved_unit_count", 0),
+                ("engaged_unit_count", 0),
+                ("attack_count", 0),
+                ("max_home_distance", 0.0),
+                ("engaged", False),
+                ("last_action", ""),
+            ):
+                rejected[key] = value
+            for section_name in (
+                "assignment",
+                "submission",
+                "movement",
+                "engagement",
+            ):
+                rejected.pop(section_name, None)
             return rejected
     return None
 

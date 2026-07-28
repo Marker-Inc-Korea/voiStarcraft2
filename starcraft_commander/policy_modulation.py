@@ -1803,9 +1803,9 @@ class TacticalOperationModulation:
         object.__setattr__(
             self,
             "command_layer",
-            _coerce_command_layer(
+            _coerce_tactical_operation_layer(
                 self.command_layer,
-                inferred=_infer_tactical_operation_layer(self),
+                operation=self,
             ),
         )
 
@@ -2208,6 +2208,27 @@ def _coerce_command_layer(
     return normalized_layer
 
 
+def _coerce_tactical_operation_layer(
+    value: object,
+    *,
+    operation: TacticalOperationModulation,
+) -> CommandLayer:
+    inferred = _infer_tactical_operation_layer(operation)
+    normalized = (
+        value.value
+        if isinstance(value, CommandLayer)
+        else str(value or "").strip().lower()
+    )
+    if normalized == CommandLayer.EMERGENCY.value:
+        edit = operation.operation_edit
+        if (
+            edit.action in {"transfer_in", "transfer_out"}
+            and edit.explicit_override
+        ):
+            return CommandLayer.EMERGENCY
+    return _coerce_command_layer(value, inferred=inferred)
+
+
 def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
     emergency = vector.emergency.to_dict()
     if (
@@ -2369,12 +2390,13 @@ def _validate_unit_role_assignments(
         values,
         UnitRoleAssignment,
     )
-    merged: dict[str, UnitRoleAssignment] = {}
+    merged: dict[tuple[str, str], UnitRoleAssignment] = {}
     for assignment in assignments:
         assert isinstance(assignment, UnitRoleAssignment)
-        previous = merged.get(assignment.unit_type)
+        key = (assignment.unit_type, assignment.role)
+        previous = merged.get(key)
         if previous is None or assignment.priority >= previous.priority:
-            merged[assignment.unit_type] = assignment
+            merged[key] = assignment
     return tuple(merged.values())
 
 

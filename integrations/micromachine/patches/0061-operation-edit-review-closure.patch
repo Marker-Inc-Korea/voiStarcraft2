@@ -1,0 +1,490 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 7b0ad23..0c32cd7 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -1225,6 +1225,12 @@ std::string voiOperationRoleForUnit(
+ 	{
+ 		return "";
+ 	}
++	const auto assignedRole =
++		operation->assignedRoleByTag.find(unit->tag);
++	if (assignedRole != operation->assignedRoleByTag.end())
++	{
++		return assignedRole->second;
++	}
+ 	const VoiOperationState::UnitRole * selectedRole = nullptr;
+ 	for (const auto & role : operation->unitRoles)
+ 	{
+@@ -1268,6 +1274,8 @@ std::string voiOperationAbilityPolicyForUnit(
+ 				&& voiSc2UnitMatchesRoleToken(
+ 					unit,
+ 					operationRole.unitType)
++				&& (role.empty()
++					|| operationRole.role == role)
+ 				&& (selectedRole == nullptr
+ 					|| operationRole.priority
+ 						>= selectedRole->priority))
+@@ -2589,6 +2597,7 @@ void CombatCommander::releaseVoiOperation(
+ 	}
+ 	operation.assignedUnitTags.clear();
+ 	operation.assignedCount = 0;
++	operation.assignedRoleByTag.clear();
+ 	operation.previousSquadByTag.clear();
+ 	operation.submittedPositions.clear();
+ 	operation.blockedReason = reason;
+@@ -2941,6 +2950,7 @@ void CombatCommander::reconcileVoiOperation(
+ 		}
+ 		operation.previousSquadByTag.erase(unit.getTag());
+ 		operation.submittedPositions.erase(unit.getTag());
++		operation.assignedRoleByTag.erase(unit.getTag());
+ 	};
+ 
+ 	std::vector<Unit> invalidUnits;
+@@ -2965,38 +2975,72 @@ void CombatCommander::reconcileVoiOperation(
+ 	{
+ 		restoreUnit(unit);
+ 	}
+-	if (!operation.allowPartial
+-		&& !operation.compositionRequirements.empty())
++	if (!operation.compositionRequirements.empty())
+ 	{
+-		std::map<std::string, int> retainedByType;
+-		std::vector<Unit> nonCompositionUnits;
+-		for (const auto & unit : squad.getUnits())
++		std::vector<Unit> orderedUnits = squad.getUnits();
++		std::sort(
++			orderedUnits.begin(),
++			orderedUnits.end(),
++			[](const Unit & left, const Unit & right)
++			{
++				return left.getTag() < right.getTag();
++			});
++		std::set<sc2::Tag> allocatedTags;
++		for (const auto & requirement :
++			operation.compositionRequirements)
++		{
++			int allocatedForRequirement = 0;
++			for (int pass = 0;
++				pass < 2
++					&& allocatedForRequirement < requirement.count;
++				++pass)
++			{
++				for (const auto & unit : orderedUnits)
++				{
++					if (allocatedForRequirement
++							>= requirement.count
++						|| allocatedTags.find(unit.getTag())
++							!= allocatedTags.end()
++						|| !voiUnitMatchesCompositionToken(
++							unit,
++							requirement.unitType))
++					{
++						continue;
++					}
++					const auto existingRole =
++						operation.assignedRoleByTag.find(
++							unit.getTag());
++					const bool preservesRole =
++						existingRole
++							!= operation.assignedRoleByTag.end()
++						&& existingRole->second
++							== requirement.role;
++					if ((pass == 0) != preservesRole)
++					{
++						continue;
++					}
++					operation.assignedRoleByTag[unit.getTag()] =
++						requirement.role;
++					allocatedTags.insert(unit.getTag());
++					++allocatedForRequirement;
++				}
++			}
++		}
++		if (!operation.allowPartial)
+ 		{
+-			const VoiOperationState::CompositionRequirement * matched =
+-				nullptr;
+-			for (const auto & requirement :
+-				operation.compositionRequirements)
++			std::vector<Unit> nonCompositionUnits;
++			for (const auto & unit : orderedUnits)
+ 			{
+-				if (voiUnitMatchesCompositionToken(
+-					unit,
+-					requirement.unitType))
++				if (allocatedTags.find(unit.getTag())
++					== allocatedTags.end())
+ 				{
+-					matched = &requirement;
+-					break;
++					nonCompositionUnits.push_back(unit);
+ 				}
+ 			}
+-			if (matched == nullptr
+-				|| retainedByType[matched->unitType]
+-					>= matched->count)
++			for (const auto & unit : nonCompositionUnits)
+ 			{
+-				nonCompositionUnits.push_back(unit);
+-				continue;
++				restoreUnit(unit);
+ 			}
+-			retainedByType[matched->unitType]++;
+-		}
+-		for (const auto & unit : nonCompositionUnits)
+-		{
+-			restoreUnit(unit);
+ 		}
+ 	}
+ 
+@@ -3016,7 +3060,8 @@ void CombatCommander::reconcileVoiOperation(
+ 	auto ownedUnitCount =
+ 		[&](
+ 			const VoiOperationState & ownerOperation,
+-			const std::string & requiredType)
++			const std::string & requiredType,
++			const std::string & requiredRole)
+ 		{
+ 			if (!m_squadData.squadExists(
+ 				ownerOperation.squadName))
+@@ -3042,7 +3087,12 @@ void CombatCommander::reconcileVoiOperation(
+ 					|| (!requiredType.empty()
+ 						&& !voiUnitMatchesCompositionToken(
+ 							ownedUnit,
+-							requiredType)))
++							requiredType))
++					|| (!requiredRole.empty()
++						&& voiOperationRoleForUnit(
++							&ownerOperation,
++							ownedUnit.getUnitPtr())
++							!= requiredRole))
+ 				{
+ 					continue;
+ 				}
+@@ -3073,7 +3123,7 @@ void CombatCommander::reconcileVoiOperation(
+ 				return true;
+ 			}
+ 			if (operation.priority <= ownerOperation->priority
+-				|| ownedUnitCount(*ownerOperation, "")
++				|| ownedUnitCount(*ownerOperation, "", "")
+ 						- 1
+ 					< ownerOperation->minUnits)
+ 			{
+@@ -3086,9 +3136,10 @@ void CombatCommander::reconcileVoiOperation(
+ 						unit,
+ 						requirement.unitType)
+ 					&& ownedUnitCount(
+-							*ownerOperation,
+-							requirement.unitType)
+-							- 1
++						*ownerOperation,
++						requirement.unitType,
++						requirement.role)
++						- 1
+ 						< requirement.count)
+ 				{
+ 					return false;
+@@ -3136,77 +3187,81 @@ void CombatCommander::reconcileVoiOperation(
+ 					&& current->getPriority()
+ 						< TacticalAbilityPriority);
+ 		};
+-	auto assignUnit = [&](const Unit & unit)
+-	{
+-		Squad * previous =
+-			m_squadData.getUnitSquad(unit);
+-		std::string restoreSquad =
+-			previous ? previous->getName() : "Backup";
+-		const auto previousOwner =
+-			m_voiOperationUnitOwners.find(unit.getTag());
+-		if (previousOwner != m_voiOperationUnitOwners.end())
++	auto assignUnit =
++		[&](const Unit & unit, const std::string & role)
+ 		{
+-			VoiOperationState * previousOperation =
+-				findVoiOperation(
+-					previousOwner->second.first,
+-					previousOwner->second.second);
+-			if (previousOperation != nullptr)
++			Squad * previous =
++				m_squadData.getUnitSquad(unit);
++			std::string restoreSquad =
++				previous ? previous->getName() : "Backup";
++			const auto previousOwner =
++				m_voiOperationUnitOwners.find(unit.getTag());
++			if (previousOwner != m_voiOperationUnitOwners.end())
+ 			{
+-				const auto previousRestore =
+-					previousOperation->previousSquadByTag.find(
+-						unit.getTag());
+-				if (previousRestore
+-					!= previousOperation
+-						->previousSquadByTag.end())
++				VoiOperationState * previousOperation =
++					findVoiOperation(
++						previousOwner->second.first,
++						previousOwner->second.second);
++				if (previousOperation != nullptr)
+ 				{
+-					restoreSquad =
+-						previousRestore->second;
++					const auto previousRestore =
++						previousOperation->previousSquadByTag.find(
++							unit.getTag());
++					if (previousRestore
++						!= previousOperation
++							->previousSquadByTag.end())
++					{
++						restoreSquad =
++							previousRestore->second;
++					}
++					if (m_squadData.squadExists(
++						previousOperation->squadName))
++					{
++						m_squadData.getSquad(
++							previousOperation->squadName)
++								.removeUnit(unit);
++					}
++					previousOperation->previousSquadByTag.erase(
++						unit.getTag());
++					previousOperation->submittedPositions.erase(
++						unit.getTag());
++					previousOperation->assignedRoleByTag.erase(
++						unit.getTag());
++					previousOperation->assignedUnitTags.erase(
++						std::remove(
++							previousOperation
++								->assignedUnitTags.begin(),
++							previousOperation
++								->assignedUnitTags.end(),
++							unit.getTag()),
++						previousOperation
++							->assignedUnitTags.end());
++					previousOperation->assignedCount =
++						static_cast<int>(
++							previousOperation
++								->assignedUnitTags.size());
+ 				}
+-				if (m_squadData.squadExists(
+-					previousOperation->squadName))
++				const auto action =
++					unitActions.find(unit.getUnitPtr());
++				if (action != unitActions.end()
++					&& action->second.operationId
++						== previousOwner->second.first
++					&& action->second.operationGeneration
++						== previousOwner->second.second)
+ 				{
+-					m_squadData.getSquad(
+-						previousOperation->squadName)
+-							.removeUnit(unit);
++					unitActions.erase(action);
+ 				}
+-				previousOperation->previousSquadByTag.erase(
+-					unit.getTag());
+-				previousOperation->submittedPositions.erase(
+-					unit.getTag());
+-				previousOperation->assignedUnitTags.erase(
+-					std::remove(
+-						previousOperation
+-							->assignedUnitTags.begin(),
+-						previousOperation
+-							->assignedUnitTags.end(),
+-						unit.getTag()),
+-					previousOperation
+-						->assignedUnitTags.end());
+-				previousOperation->assignedCount =
+-					static_cast<int>(
+-						previousOperation
+-							->assignedUnitTags.size());
+-			}
+-			const auto action =
+-				unitActions.find(unit.getUnitPtr());
+-			if (action != unitActions.end()
+-				&& action->second.operationId
+-					== previousOwner->second.first
+-				&& action->second.operationGeneration
+-					== previousOwner->second.second)
+-			{
+-				unitActions.erase(action);
++				m_voiOperationUnitOwners.erase(previousOwner);
+ 			}
+-			m_voiOperationUnitOwners.erase(previousOwner);
+-		}
+-		operation.previousSquadByTag[unit.getTag()] =
+-			restoreSquad;
+-		m_squadData.assignUnitToSquad(unit, squad);
+-		m_voiOperationUnitOwners[unit.getTag()] =
+-			std::make_pair(
+-				operation.operationId,
+-				operation.generation);
+-	};
++			operation.previousSquadByTag[unit.getTag()] =
++				restoreSquad;
++			operation.assignedRoleByTag[unit.getTag()] = role;
++			m_squadData.assignUnitToSquad(unit, squad);
++			m_voiOperationUnitOwners[unit.getTag()] =
++				std::make_pair(
++					operation.operationId,
++					operation.generation);
++		};
+ 	auto sortedCandidates =
+ 		[&](const std::string & requiredType)
+ 		{
+@@ -3264,18 +3319,24 @@ void CombatCommander::reconcileVoiOperation(
+ 	for (const auto & requirement :
+ 		operation.compositionRequirements)
+ 	{
+-		int assignedForType = 0;
++		int assignedForRequirement = 0;
+ 		for (const auto & unit : squad.getUnits())
+ 		{
+ 			if (voiUnitMatchesCompositionToken(
+-				unit,
+-				requirement.unitType))
++					unit,
++					requirement.unitType)
++				&& voiOperationRoleForUnit(
++					&operation,
++					unit.getUnitPtr()) == requirement.role)
+ 			{
+-				++assignedForType;
++				++assignedForRequirement;
+ 			}
+ 		}
+ 		const int needed =
+-			std::max(0, requirement.count - assignedForType);
++			std::max(
++				0,
++				requirement.count
++					- assignedForRequirement);
+ 		auto candidates = sortedCandidates(requirement.unitType);
+ 		for (int index = 0;
+ 			index < needed
+@@ -3283,7 +3344,7 @@ void CombatCommander::reconcileVoiOperation(
+ 					< static_cast<int>(candidates.size());
+ 			++index)
+ 		{
+-			assignUnit(candidates[index]);
++			assignUnit(candidates[index], requirement.role);
+ 		}
+ 	}
+ 
+@@ -3291,17 +3352,20 @@ void CombatCommander::reconcileVoiOperation(
+ 	for (const auto & requirement :
+ 		operation.compositionRequirements)
+ 	{
+-		int assignedForType = 0;
++		int assignedForRequirement = 0;
+ 		for (const auto & unit : squad.getUnits())
+ 		{
+ 			if (voiUnitMatchesCompositionToken(
+-				unit,
+-				requirement.unitType))
++					unit,
++					requirement.unitType)
++				&& voiOperationRoleForUnit(
++					&operation,
++					unit.getUnitPtr()) == requirement.role)
+ 			{
+-				++assignedForType;
++				++assignedForRequirement;
+ 			}
+ 		}
+-		if (assignedForType < requirement.count)
++		if (assignedForRequirement < requirement.count)
+ 		{
+ 			exactCompositionSatisfied = false;
+ 			break;
+@@ -3318,7 +3382,11 @@ void CombatCommander::reconcileVoiOperation(
+ 			{
+ 				break;
+ 			}
+-			assignUnit(unit);
++			assignUnit(
++				unit,
++				voiOperationRoleForUnit(
++					&operation,
++					unit.getUnitPtr()));
+ 		}
+ 	}
+ 
+@@ -4191,6 +4259,13 @@ void CombatCommander::updateVoiOperations()
+ 				return std::string(
+ 					"transfer_source_not_active");
+ 			}
++			if (!destination.blockedReason.empty()
++				|| !sourceRequested->blockedReason.empty())
++			{
++				return !destination.blockedReason.empty()
++					? destination.blockedReason
++					: sourceRequested->blockedReason;
++			}
+ 			if (sourceRequested->editAction
+ 					!= "transfer_out"
+ 				|| sourceRequested
+@@ -4404,7 +4479,7 @@ void CombatCommander::updateVoiOperations()
+ 					if (selectedTags.find(unit.getTag())
+ 							== selectedTags.end()
+ 						&& voiOperationUnitMatchesRequirement(
+-							*sourceRequested,
++							*sourceExisting,
+ 							unit,
+ 							requirement))
+ 					{
+@@ -4646,6 +4721,8 @@ void CombatCommander::updateVoiOperations()
+ 				existing.lastEnemyFrame;
+ 			replacement.previousSquadByTag =
+ 				existing.previousSquadByTag;
++			replacement.assignedRoleByTag =
++				existing.assignedRoleByTag;
+ 			replacement.submittedPositions =
+ 				targetChanged
+ 					? std::map<sc2::Tag, CCPosition>()
+@@ -4926,7 +5003,8 @@ void CombatCommander::updateVoiOperations()
+ 	{
+ 		if (destination.completed
+ 			|| destination.editAction != "transfer_in"
+-			|| destination.editResolution == "applied")
++			|| destination.editResolution == "applied"
++			|| destination.editResolution == "blocked")
+ 		{
+ 			continue;
+ 		}
+@@ -4939,6 +5017,7 @@ void CombatCommander::updateVoiOperations()
+ 				destination.operationId);
+ 		if (source == nullptr
+ 			|| source == &destination
++			|| source->editResolution == "blocked"
+ 			|| plannedSelection == transferSelections.end())
+ 		{
+ 			Util::Log(
+@@ -5003,6 +5082,8 @@ void CombatCommander::updateVoiOperations()
+ 				unit.getTag());
+ 			source->submittedPositions.erase(
+ 				unit.getTag());
++			source->assignedRoleByTag.erase(
++				unit.getTag());
+ 			source->assignedUnitTags.erase(
+ 				std::remove(
+ 					source->assignedUnitTags.begin(),
+@@ -5021,6 +5102,8 @@ void CombatCommander::updateVoiOperations()
+ 			}
+ 			destination.previousSquadByTag[
+ 				unit.getTag()] = restoreSquad;
++			destination.assignedRoleByTag.erase(
++				unit.getTag());
+ 			m_squadData.assignUnitToSquad(
+ 				unit,
+ 				destinationSquad);
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 6ec745b..d17a5d0 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -202,6 +202,7 @@ struct VoiOperationState
+ 	CCPosition activeTargetPosition = CCPosition();
+ 	std::vector<CompositionRequirement> compositionRequirements;
+ 	std::vector<UnitRole> unitRoles;
++	std::map<sc2::Tag, std::string> assignedRoleByTag;
+ 	std::string editAction;
+ 	std::string editCounterpartOperationId;
+ 	std::vector<CompositionRequirement> editUnitSelection;

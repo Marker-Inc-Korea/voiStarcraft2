@@ -243,6 +243,14 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
                             "generation": 1,
                             "status": "MOVING",
                             "received_frame": 100,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "last_action_frame": 140,
+                            "assigned_unit_tags": [11],
+                            "assigned_count": 1,
+                            "max_home_distance": 20.0,
+                            "engaged": True,
+                            "last_action": "AttackUnitOrder",
                             "edit_requested_generation": 2,
                             "edit_rejected_update_id": "rejected-edit",
                             "edit_rejected_frame": 225,
@@ -276,6 +284,11 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         )
         self.assertTrue(consumed.ok)
         self.assertEqual(1, consumed.evidence["active_generation"])
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertFalse(stages["queued_or_assigned"].ok)
+        self.assertFalse(stages["order_issued"].ok)
+        self.assertFalse(stages["action_issued"].ok)
+        self.assertFalse(stages["effect_observed"].ok)
 
     def test_operation_evidence_requires_exact_command_identity(self) -> None:
         update = {

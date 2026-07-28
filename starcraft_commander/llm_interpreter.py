@@ -3526,10 +3526,18 @@ def _compact_policy_modulation_semantic_error(
                     f"{command_path} is missing required semantic property "
                     "'operation_action'."
                 )
-            if command_layer != "operation" and operation_action:
+            if (
+                operation_action
+                and command_layer not in {"operation", "emergency"}
+            ):
                 return (
                     f"{command_path}.operation_action is only valid for the "
-                    "operation command layer."
+                    "operation or emergency command layer."
+                )
+            if command_layer == "emergency" and operation_action != "transfer":
+                return (
+                    f"{command_path}.command_layer=emergency supports "
+                    "operation_action=transfer only."
                 )
         return ""
 
@@ -3870,7 +3878,7 @@ def _lower_compact_policy_modulation_tool_input(
     ).strip()
     if confirmation_policy not in {"auto", "required"}:
         confirmation_policy = "auto"
-    if command_layer == "operation" and operation_action:
+    if command_layer in {"operation", "emergency"} and operation_action:
         if confirmation_policy == "required":
             return {
                 "status": "clarification_required",
@@ -4001,6 +4009,7 @@ def _lower_compact_policy_modulation_tool_input(
                         f"{source_operation_id} 병력을 "
                         f"{destination_operation_id}로 이관"
                     ),
+                    command_layer=command_layer,
                     operation_edit=source_edit,
                     cancelled_if_empty=True,
                 )
@@ -4182,7 +4191,7 @@ def _lower_compact_policy_modulation_tool_input(
                 }
             )
 
-    if command_layer == "operation":
+    if command_layer in {"operation", "emergency"} and operation_action:
         scope = modulation["scope"]
         if isinstance(scope, dict):
             scope.update(
@@ -4226,7 +4235,7 @@ def _lower_compact_policy_modulation_tool_input(
             scouting["require_fresh_enemy_observation"] = fresh_observation
 
     explicit_operation_id = str(command.get("operation_id", "") or "").strip()
-    if command_layer == "operation" and explicit_operation_id:
+    if command_layer in {"operation", "emergency"} and explicit_operation_id:
         if operation_action == "cancel":
             modulation["lifetime"] = {
                 "mode": "until_cancelled",
@@ -4303,12 +4312,17 @@ def _resolve_compact_operation_command(
     operation_action = str(
         resolved.get("operation_action", "") or ""
     ).strip().lower()
-    if command_layer != "operation":
+    if command_layer not in {"operation", "emergency"}:
         if operation_action:
             return resolved, (
-                "operation_action is valid only when command_layer is operation."
+                "operation_action is valid only when command_layer is operation "
+                "or emergency."
             )
         return resolved, ""
+    if command_layer == "emergency" and operation_action != "transfer":
+        return resolved, (
+            "command_layer=emergency supports operation_action=transfer only."
+        )
     if operation_action not in _COMPACT_POLICY_OPERATION_ACTIONS:
         return resolved, (
             "operation commands require operation_action=create, update, "
@@ -4458,7 +4472,7 @@ def _resolve_compact_operation_command(
         resolved["__source_operation"] = dict(source_operation)
     resolved["operation_id"] = operation_id
     resolved["operation_action"] = operation_action
-    resolved["command_layer"] = "operation"
+    resolved["command_layer"] = command_layer
     resolved["__explicit_field_names"] = explicit_field_names
     return resolved, ""
 
@@ -4749,6 +4763,7 @@ def _compact_known_operation_with_composition(
     *,
     unit_requests: Sequence[Mapping[str, object]],
     goal: str,
+    command_layer: str,
     operation_edit: Mapping[str, object],
     cancelled_if_empty: bool = False,
 ) -> dict[str, object]:
@@ -4809,7 +4824,7 @@ def _compact_known_operation_with_composition(
     return {
         "operation_id": str(operation.get("operation_id", "") or ""),
         "goal": goal,
-        "command_layer": "operation",
+        "command_layer": command_layer,
         "tactical_task": task,
         "scope": scope,
         "lifetime": lifetime,

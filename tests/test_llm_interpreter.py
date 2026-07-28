@@ -1201,6 +1201,109 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             destination["operation_edit"]["counterpart_operation_id"],
         )
 
+    def test_myproxy_compact_emergency_transfer_preserves_emergency_layer(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰대 마린 한 기를 긴급 방어대로 이관합니다.",
+            "command": {
+                "operation_id": "defense-bravo",
+                "source_operation_id": "recon-alpha",
+                "operation_action": "transfer",
+                "explicit_override": True,
+                "confirmation_policy": "auto",
+                "goal": "정찰대 마린 한 기를 긴급 방어대로 이관",
+                "command_layer": "emergency",
+                "task_type": "defend_with_units",
+                "unit_requests": [
+                    {"unit_type": "marine", "count": 1, "role": "scout"},
+                ],
+            },
+        }
+        known_operations = [
+            {
+                "operation_id": "recon-alpha",
+                "goal": "마린 정찰",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 0,
+                    "max_units": 2,
+                    "allow_partial": True,
+                },
+                "scope": {
+                    "army_group": "scout",
+                    "location_intent": "enemy_main",
+                    "allow_partial_scope": True,
+                },
+                "composition_requirements": [
+                    {"unit_type": "TERRAN_MARINE", "count": 2, "role": "scout"},
+                ],
+                "lifetime": {"completion_state": "active"},
+            },
+            {
+                "operation_id": "defense-bravo",
+                "goal": "본진 방어",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "defend_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 2,
+                    "max_units": 4,
+                    "allow_partial": True,
+                },
+                "scope": {
+                    "army_group": "defense",
+                    "location_intent": "home",
+                    "allow_partial_scope": True,
+                },
+                "composition_requirements": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 2,
+                        "role": "frontline",
+                    },
+                ],
+                "lifetime": {"completion_state": "active"},
+            },
+        ]
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: FakeResponsesClient(
+                _responses_tool_response(payload)
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "긴급 상황이야. recon-alpha의 마린 한 기를 "
+                    "defense-bravo로 즉시 옮겨"
+                ),
+                commander_context={"active_operations": known_operations},
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        self.assertEqual("emergency", output["modulation"]["command_layer"])
+        operations = output["modulation"]["operations"]
+        self.assertEqual(2, len(operations))
+        self.assertTrue(
+            all(
+                operation["command_layer"] == "emergency"
+                for operation in operations
+            )
+        )
+        self.assertTrue(
+            all(
+                operation["operation_edit"]["explicit_override"]
+                for operation in operations
+            )
+        )
+
     def test_compact_operation_edit_preserves_role_specific_composition(self) -> None:
         merged, error = _compact_merge_unit_request_counts(
             [

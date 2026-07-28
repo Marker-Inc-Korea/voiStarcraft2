@@ -308,6 +308,11 @@
       "path": "patches/0060-operation-edit-ownership-handoff.patch",
       "order": 60,
       "scope": "parse authoritative operation_edit contracts, hand off same-operation generations without issuing SmartStop, execute reciprocal named-source transfers atomically while preserving one owner per unit tag and source composition, remove stale owners and actions, reject stale generations, and expose edit action, counterpart, before-after composition, transferred counts, resolution, and blocker telemetry"
+    },
+    {
+      "path": "patches/0061-operation-edit-review-closure.patch",
+      "order": 61,
+      "scope": "preserve same-type role-specific composition and ability policy by unit tag, keep assigned roles across generation handoff, reject reciprocal transfers atomically on either-side blockers, use active source roles for transfer preservation, and skip all execution for blocked transfer pairs"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

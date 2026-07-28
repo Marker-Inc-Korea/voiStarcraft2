@@ -74,6 +74,7 @@ Verified upstream:
 | `patches/0058-operation-production-review-closure.patch` | Attributes each represented unit increase to one operation owner only when parallel operations request the same unit type, excludes initial reservations again when those existing units transition into operation ownership, retracts credit from the owner whose owned count fell, carries unattributed unit-loss debt forward so unrelated replacements cannot satisfy another operation, resets count and debt epochs when the last owner of a type is released, and retains a bounded owner-keyed purge-event history so same-frame cancellation evidence cannot be overwritten or borrowed from another operation. |
 | `patches/0059-production-fifo-and-zero-owner-cleanup.patch` | Restores FIFO execution among equal-priority production items despite back-of-queue selection, records operation/generation-scoped cleanup at a positive frame whether cancellation stopped live owned units or released an operation with no owned units remaining, and preserves the first terminal cleanup action and frame idempotently across later release passes. |
 | `patches/0060-operation-edit-ownership-handoff.patch` | Consumes typed operation edits, preserves same-operation units across generation changes without `SmartStop`, performs reciprocal named-source transfers with source composition and explicit ability ownership protection, cleans stale owner/action state, and exposes before/after, transfer, resolution, and blocker telemetry. |
+| `patches/0061-operation-edit-review-closure.patch` | Preserves multiple roles for the same unit type with tag-scoped ownership, applies role-specific ability policy, rejects both sides of a reciprocal transfer before any handoff when either side is blocked, preserves role ownership across generations, and prevents blocked transfer pairs from executing. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -147,7 +148,7 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0060`, then copies the blackboard header and generates the embedded
+through `0061`, then copies the blackboard header and generates the embedded
 identity header before compilation. The
 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build

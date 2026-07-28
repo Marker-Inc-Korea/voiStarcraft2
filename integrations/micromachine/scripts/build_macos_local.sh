@@ -71,6 +71,7 @@ TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH_FILE="${REPO_ROOT}/integrations/micromachi
 OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0058-operation-production-review-closure.patch"
 PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0059-production-fifo-and-zero-owner-cleanup.patch"
 OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0060-operation-edit-ownership-handoff.patch"
+OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0061-operation-edit-review-closure.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 HOOK_MANIFEST_FILE="${REPO_ROOT}/integrations/micromachine/HOOK_MANIFEST.json"
@@ -300,6 +301,8 @@ git -C "${MICROMACHINE_DIR}" apply --check --ignore-space-change --whitespace=no
 git -C "${MICROMACHINE_DIR}" apply --ignore-space-change --whitespace=nowarn "${PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 rm -f \
@@ -315,6 +318,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-commit "${MICROMACHINE_COMMIT}" \
   --s2client-commit "${S2CLIENT_COMMIT}" \
   --micromachine-operation-edit-ownership-handoff-patch "${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}" \
+  --micromachine-operation-edit-review-closure-patch "${OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --write-embedded-identity-header \
   --initialize-source-attestation
@@ -399,6 +403,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-operation-production-review-closure-patch "${OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-production-fifo-zero-owner-cleanup-patch "${PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE}" \
   --micromachine-operation-edit-ownership-handoff-patch "${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}" \
+  --micromachine-operation-edit-review-closure-patch "${OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --finalize-build-attestation \

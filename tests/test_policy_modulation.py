@@ -441,9 +441,54 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 for requirement in vector.composition_requirements
             },
         )
-        self.assertEqual(1, len(vector.unit_roles))
-        self.assertEqual("focus_fire", vector.unit_roles[0].role)
-        self.assertEqual("if_available", vector.unit_roles[0].ability_policy)
+        self.assertEqual(2, len(vector.unit_roles))
+        roles = {assignment.role: assignment for assignment in vector.unit_roles}
+        self.assertEqual({"frontline", "focus_fire"}, set(roles))
+        self.assertEqual("if_available", roles["focus_fire"].ability_policy)
+
+    def test_emergency_transfer_is_a_schema_valid_operation_override(self) -> None:
+        source = TacticalOperationModulation(
+            operation_id="recon-alpha",
+            goal="release one scout immediately",
+            command_layer="emergency",
+            operation_edit=OperationEditModulation(
+                action="transfer_out",
+                counterpart_operation_id="defense-bravo",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                explicit_override=True,
+            ),
+        )
+        destination = TacticalOperationModulation(
+            operation_id="defense-bravo",
+            goal="receive one scout immediately",
+            command_layer="emergency",
+            operation_edit=OperationEditModulation(
+                action="transfer_in",
+                counterpart_operation_id="recon-alpha",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+                explicit_override=True,
+            ),
+        )
+
+        vector = PolicyModulationVector(
+            goal="emergency defense transfer",
+            override_level="emergency",
+            command_layer="emergency",
+            ttl_seconds=45,
+            operations=(source, destination),
+        )
+
+        self.assertIs(CommandLayer.EMERGENCY, vector.command_layer)
+        self.assertTrue(
+            all(
+                operation.command_layer is CommandLayer.EMERGENCY
+                for operation in vector.operations
+            )
+        )
 
     def test_command_layer_is_inferred_from_semantic_task_contract(self) -> None:
         macro = PolicyModulationVector(goal="keep making marines")
