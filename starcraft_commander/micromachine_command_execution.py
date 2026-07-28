@@ -828,7 +828,25 @@ def _aggregate_operation_payloads(
             continue
         for payload in _mapping_sequence(director.get("operations")):
             operation_id = str(payload.get("operation_id", "") or "")
-            generation = max(1, _int_value(payload.get("generation")) or 1)
+            active_generation = max(
+                1,
+                _int_value(payload.get("generation")) or 1,
+            )
+            rejected_generation = _int_value(
+                payload.get("edit_requested_generation")
+            )
+            rejected_update_id = str(
+                payload.get("edit_rejected_update_id", "") or ""
+            )
+            rejected_edit = bool(
+                rejected_generation > 0
+                and rejected_update_id == command_id
+                and str(payload.get("edit_resolution", "") or "") == "blocked"
+                and (operation_id, rejected_generation) in operation_epochs
+            )
+            generation = (
+                rejected_generation if rejected_edit else active_generation
+            )
             operation_key = (operation_id, generation)
             epoch = operation_epochs.get(operation_key)
             payload_snapshot_frame = snapshot_frame
@@ -842,7 +860,11 @@ def _aggregate_operation_payloads(
                 continue
             issued_at_frame, deadline_frame = epoch
             received_frame = _current_operation_evidence_frame(
-                payload.get("received_frame"),
+                (
+                    payload.get("edit_rejected_frame")
+                    if rejected_edit
+                    else payload.get("received_frame")
+                ),
                 issued_at_frame=issued_at_frame,
                 deadline_frame=deadline_frame,
                 snapshot_frame=payload_snapshot_frame,
@@ -876,6 +898,14 @@ def _aggregate_operation_payloads(
                 action_frame = 0
             normalized_payload = dict(payload)
             normalized_payload["generation"] = generation
+            if rejected_edit:
+                normalized_payload["active_generation"] = active_generation
+                normalized_payload["blocked_reason"] = (
+                    payload.get("edit_blocker")
+                    or payload.get("blocked_reason")
+                    or "operation_edit_rejected"
+                )
+                normalized_payload["status"] = "BLOCKED"
             previous = aggregate.get(operation_key, {})
             current_assigned_tags = tuple(
                 _int_value(tag)

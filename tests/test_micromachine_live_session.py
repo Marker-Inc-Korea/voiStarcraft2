@@ -875,7 +875,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                                     {
                                         "unit_type": "TERRAN_MARINE",
                                         "count": 1,
-                                        "role": "frontline",
+                                        "role": "scout",
                                     }
                                 ],
                                 "before_composition": [

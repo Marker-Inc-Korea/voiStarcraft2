@@ -2339,23 +2339,24 @@ def _validate_composition_requirements(
         values,
         CompositionRequirement,
     )
-    merged: dict[str, CompositionRequirement] = {}
+    merged: dict[tuple[str, str], CompositionRequirement] = {}
     for requirement in requirements:
         assert isinstance(requirement, CompositionRequirement)
-        previous = merged.get(requirement.unit_type)
+        key = (requirement.unit_type, requirement.role)
+        previous = merged.get(key)
         if previous is None:
-            merged[requirement.unit_type] = requirement
+            merged[key] = requirement
             continue
         total_count = previous.count + requirement.count
         if total_count > 200:
             raise ValueError(
                 "combined composition requirement count cannot exceed 200 "
-                f"for {requirement.unit_type}."
+                f"for {requirement.unit_type} role={requirement.role or '*'}."
             )
-        merged[requirement.unit_type] = CompositionRequirement(
+        merged[key] = CompositionRequirement(
             unit_type=requirement.unit_type,
             count=total_count,
-            role=requirement.role or previous.role,
+            role=requirement.role,
         )
     return tuple(merged.values())
 
@@ -2428,16 +2429,20 @@ def _validate_operation_edit_contracts(
         ):
             raise ValueError(
                 "transfer operation edit counterparts must select the same "
-                "unit types and counts."
+                "unit types, roles, and counts."
             )
 
 
 def _operation_edit_selection_counts(
     edit: OperationEditModulation,
-) -> tuple[tuple[str, int], ...]:
+) -> tuple[tuple[str, str, int], ...]:
     return tuple(
         sorted(
-            (requirement.unit_type, requirement.count)
+            (
+                requirement.unit_type,
+                requirement.role,
+                requirement.count,
+            )
             for requirement in edit.unit_selection
         )
     )

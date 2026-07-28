@@ -3925,13 +3925,21 @@ def _lower_compact_policy_modulation_tool_input(
                 else None
             )
             source_before = _compact_unit_requests_from_operation(source_operation)
-            source_selection = _compact_selection_with_base_metadata(
-                source_before,
-                edit_selection,
+            source_selection, selection_error = (
+                _compact_selection_with_base_metadata(
+                    source_before,
+                    edit_selection,
+                )
             )
+            if selection_error:
+                return {
+                    "status": "refused",
+                    "assistant_message": tool_input.get("assistant_message", ""),
+                    "refusal_reason": selection_error,
+                }
             source_after, edit_error = _compact_merge_unit_request_counts(
                 source_before,
-                edit_selection,
+                source_selection,
                 subtract=True,
             )
             if edit_error:
@@ -4014,7 +4022,11 @@ def _lower_compact_policy_modulation_tool_input(
                 if operation_action == "transfer"
                 else ""
             ),
-            selection=edit_selection,
+            selection=(
+                source_selection
+                if operation_action == "transfer"
+                else edit_selection
+            ),
             before=before_unit_requests,
             after=unit_requests,
             explicit_override=explicit_override,
@@ -4538,8 +4550,8 @@ def _compact_merge_unit_request_counts(
     *,
     subtract: bool = False,
 ) -> tuple[list[dict[str, object]], str]:
-    merged: dict[str, dict[str, object]] = {}
-    order: list[str] = []
+    merged: dict[tuple[str, str], dict[str, object]] = {}
+    order: list[tuple[str, str]] = []
     for item in base:
         unit_type = _canonical_compact_task_token(
             item.get("unit_type", "")
@@ -4547,8 +4559,18 @@ def _compact_merge_unit_request_counts(
         count = item.get("count")
         if not unit_type or type(count) is not int or count <= 0:
             continue
-        merged[unit_type] = dict(item)
-        order.append(unit_type)
+        role = str(item.get("role", "") or "").strip()
+        key = (unit_type, role)
+        previous = merged.get(key)
+        replacement = dict(previous or item)
+        replacement["unit_type"] = unit_type
+        replacement["role"] = role
+        replacement["count"] = (
+            int(previous.get("count", 0) or 0) if previous is not None else 0
+        ) + count
+        merged[key] = replacement
+        if key not in order:
+            order.append(key)
     for item in delta:
         unit_type = _canonical_compact_task_token(
             item.get("unit_type", "")
@@ -4556,7 +4578,22 @@ def _compact_merge_unit_request_counts(
         count = item.get("count")
         if not unit_type or type(count) is not int or count <= 0:
             continue
-        previous = merged.get(unit_type)
+        role = str(item.get("role", "") or "").strip()
+        key = (unit_type, role)
+        if subtract and key not in merged and not role:
+            matching_keys = [
+                candidate
+                for candidate in order
+                if candidate[0] == unit_type and candidate in merged
+            ]
+            if len(matching_keys) == 1:
+                key = matching_keys[0]
+            elif len(matching_keys) > 1:
+                return [], (
+                    f"operation edit selection for {unit_type} is ambiguous; "
+                    "specify the source role."
+                )
+        previous = merged.get(key)
         previous_count = (
             int(previous.get("count", 0) or 0)
             if previous is not None
@@ -4565,11 +4602,12 @@ def _compact_merge_unit_request_counts(
         next_count = previous_count - count if subtract else previous_count + count
         if next_count < 0:
             return [], (
-                f"operation edit requests {count} {unit_type} but the source "
+                f"operation edit requests {count} {unit_type}"
+                f"{f' role={key[1]}' if key[1] else ''} but the source "
                 f"contract contains only {previous_count}."
             )
         if next_count == 0:
-            merged.pop(unit_type, None)
+            merged.pop(key, None)
             continue
         replacement = dict(previous or item)
         if not subtract:
@@ -4581,30 +4619,54 @@ def _compact_merge_unit_request_counts(
                 }
             )
         replacement["unit_type"] = unit_type
+        replacement["role"] = key[1]
         replacement["count"] = next_count
-        merged[unit_type] = replacement
-        if unit_type not in order:
-            order.append(unit_type)
-    return [merged[unit_type] for unit_type in order if unit_type in merged], ""
+        merged[key] = replacement
+        if key not in order:
+            order.append(key)
+    return [merged[key] for key in order if key in merged], ""
 
 
 def _compact_selection_with_base_metadata(
     base: Sequence[Mapping[str, object]],
     selection: Sequence[Mapping[str, object]],
-) -> list[dict[str, object]]:
-    base_by_type = {
-        _canonical_compact_task_token(item.get("unit_type", "")): item
-        for item in base
-    }
+) -> tuple[list[dict[str, object]], str]:
+    base_by_type: dict[str, list[Mapping[str, object]]] = {}
+    for item in base:
+        unit_type = _canonical_compact_task_token(item.get("unit_type", ""))
+        if unit_type:
+            base_by_type.setdefault(unit_type, []).append(item)
     result: list[dict[str, object]] = []
     for item in selection:
         unit_type = _canonical_compact_task_token(item.get("unit_type", ""))
-        source = base_by_type.get(unit_type)
+        candidates = base_by_type.get(unit_type, [])
+        candidate_roles = {
+            str(candidate.get("role", "") or "").strip()
+            for candidate in candidates
+        }
+        requested_role = str(item.get("role", "") or "").strip()
+        source: Mapping[str, object] | None = None
+        if len(candidate_roles) == 1 and candidates:
+            source = candidates[0]
+        elif requested_role:
+            matching = [
+                candidate
+                for candidate in candidates
+                if str(candidate.get("role", "") or "").strip()
+                == requested_role
+            ]
+            if len(matching) == 1:
+                source = matching[0]
+        if source is None and len(candidate_roles) > 1:
+            return [], (
+                f"operation transfer selection for {unit_type} is ambiguous; "
+                "specify the source role."
+            )
         merged = dict(source or item)
         merged["unit_type"] = unit_type
         merged["count"] = item.get("count")
         result.append(merged)
-    return result
+    return result, ""
 
 
 def _compact_transfer_source_contract_error(
@@ -4710,11 +4772,7 @@ def _compact_known_operation_with_composition(
         allow_partial = previous_scope.get("allow_partial_scope")
     if type(allow_partial) is not bool:
         allow_partial = False
-    preserved_minimum = (
-        min(previous_minimum, exact_count)
-        if previous_minimum > 0
-        else exact_count
-    )
+    preserved_minimum = min(previous_minimum, exact_count)
     task = {
         "task_type": task_type,
         "task_id": str(operation.get("operation_id", "") or ""),

@@ -48,6 +48,8 @@ from starcraft_commander.llm_interpreter import (
     build_policy_modulation_tool_definition,
     build_policy_modulation_tool_input_schema,
     _compact_policy_commander_context,
+    _compact_merge_unit_request_counts,
+    _compact_selection_with_base_metadata,
 )
 from starcraft_commander.runtime_deps import ANTHROPIC_MODULE_NAME, OPENAI_MODULE_NAME
 from starcraft_commander.policy_modulation_provider import (
@@ -1106,7 +1108,7 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                 "tactical_task": {
                     "task_type": "scout_with_units",
                     "unit_classes": ["TERRAN_MARINE"],
-                    "min_units": 1,
+                    "min_units": 0,
                     "max_units": 2,
                     "allow_partial": True,
                 },
@@ -1178,6 +1180,8 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             "scout",
             source["composition_requirements"][0]["role"],
         )
+        self.assertEqual(0, source["tactical_task"]["min_units"])
+        self.assertEqual(0, source["scope"]["min_units"])
         self.assertEqual(
             5,
             destination["composition_requirements"][0]["count"],
@@ -1189,9 +1193,47 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         )
         self.assertEqual("transfer_in", destination["operation_edit"]["action"])
         self.assertEqual(
+            "scout",
+            destination["operation_edit"]["unit_selection"][0]["role"],
+        )
+        self.assertEqual(
             "recon-alpha",
             destination["operation_edit"]["counterpart_operation_id"],
         )
+
+    def test_compact_operation_edit_preserves_role_specific_composition(self) -> None:
+        merged, error = _compact_merge_unit_request_counts(
+            [
+                {"unit_type": "marine", "count": 2, "role": "scout"},
+                {"unit_type": "marine", "count": 4, "role": "frontline"},
+            ],
+            [{"unit_type": "marine", "count": 1, "role": "scout"}],
+            subtract=True,
+        )
+
+        self.assertEqual("", error)
+        self.assertEqual(
+            {
+                ("TERRAN_MARINE", "scout", 1),
+                ("TERRAN_MARINE", "frontline", 4),
+            },
+            {
+                (item["unit_type"], item["role"], item["count"])
+                for item in merged
+            },
+        )
+
+    def test_compact_transfer_requires_role_for_ambiguous_source(self) -> None:
+        selection, error = _compact_selection_with_base_metadata(
+            [
+                {"unit_type": "marine", "count": 2, "role": "scout"},
+                {"unit_type": "marine", "count": 4, "role": "frontline"},
+            ],
+            [{"unit_type": "marine", "count": 1}],
+        )
+
+        self.assertEqual([], selection)
+        self.assertIn("specify the source role", error)
 
     def test_myproxy_compact_transfer_rejects_implicit_source_contract_change(
         self,

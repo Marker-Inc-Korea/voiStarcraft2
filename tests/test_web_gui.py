@@ -2487,6 +2487,89 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             json.dumps(payload["operations"], ensure_ascii=False),
         )
 
+    def test_rejected_higher_generation_edit_uses_active_generation_telemetry(self):
+        update_id = "rejected-operation-edit"
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "manager_bias_domains": ["combat", "squad"],
+                    "vector": {
+                        "goal": "transfer one scout",
+                        "operations": [
+                            {
+                                "operation_id": "recon-alpha",
+                                "generation": 2,
+                                "goal": "release one scout",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "duration_seconds": 120,
+                                },
+                                "operation_edit": {
+                                    "action": "transfer_out",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 240},
+        }
+        telemetry_document = {
+            "frame": 240,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "status": "MOVING",
+                            "received_frame": 100,
+                            "edit_action": "transfer_out",
+                            "edit_requested_generation": 2,
+                            "edit_rejected_update_id": update_id,
+                            "edit_rejected_frame": 225,
+                            "edit_resolution": "blocked",
+                            "edit_blocker": "destination_priority_not_higher",
+                        }
+                    ],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=240,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            blackboard_dir="/tmp/rejected-operation-edit",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "정찰대 마린 한 기를 공격대로 이관해",
+            },
+        )
+
+        operation = payload["operations"][0]
+        self.assertTrue(operation["telemetry_current"])
+        self.assertEqual(
+            "destination_priority_not_higher",
+            operation["operation_edit"]["blocker"],
+        )
+        execution = operation["intervention"]["command_execution"]
+        self.assertEqual(2, execution["operation_generation"])
+        self.assertEqual("blocked", execution["state"])
+        self.assertEqual(
+            "destination_priority_not_higher",
+            execution["blocker_reason"],
+        )
+
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
         execution = web_gui._micromachine_operation_command_execution(
             update_id="parallel-zero-frames",

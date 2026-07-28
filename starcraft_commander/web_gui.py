@@ -1107,6 +1107,43 @@ def _micromachine_operation_director_entries(
     return entries
 
 
+def _micromachine_operation_entry_for_request(
+    entries: Mapping[tuple[str, int], Mapping[str, object]],
+    *,
+    update_id: str,
+    operation_id: str,
+    operation_generation: int,
+) -> dict[str, object] | None:
+    exact = entries.get((operation_id, operation_generation))
+    if exact is not None:
+        return dict(exact)
+    for (candidate_id, _active_generation), candidate in entries.items():
+        if (
+            candidate_id == operation_id
+            and candidate.get("edit_requested_generation")
+            == operation_generation
+            and str(candidate.get("edit_rejected_update_id", "") or "").strip()
+            == update_id
+            and str(candidate.get("edit_resolution", "") or "").strip()
+            == "blocked"
+        ):
+            rejected = dict(candidate)
+            rejected["active_generation"] = candidate.get("generation")
+            rejected["generation"] = operation_generation
+            rejected["status"] = "BLOCKED"
+            rejected["received_frame"] = candidate.get(
+                "edit_rejected_frame",
+                candidate.get("received_frame"),
+            )
+            rejected["blocked_reason"] = (
+                candidate.get("edit_blocker")
+                or candidate.get("blocked_reason")
+                or "operation_edit_rejected"
+            )
+            return rejected
+    return None
+
+
 def _micromachine_operation_telemetry_document(
     telemetry_document: Mapping[str, object],
     *,
@@ -1116,8 +1153,11 @@ def _micromachine_operation_telemetry_document(
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     """Return only OperationDirector evidence owned by one operation."""
 
-    entry = _micromachine_operation_director_entries(telemetry_document).get(
-        (operation_id, operation_generation)
+    entry = _micromachine_operation_entry_for_request(
+        _micromachine_operation_director_entries(telemetry_document),
+        update_id=update_id,
+        operation_id=operation_id,
+        operation_generation=operation_generation,
     )
     if entry is None:
         return {}, None

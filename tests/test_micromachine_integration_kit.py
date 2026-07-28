@@ -424,6 +424,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '"source_minimum_preservation"',
             '"source_exact_composition_protected"',
             '"source_composition_preservation"',
+            '"destination_priority_not_higher"',
+            '"transfer_preflight_plan_missing"',
             '"explicit_ability_owner_protected"',
             "m_voiExplicitAbilityStagingActorTag",
             "m_lastVoiExplicitAbilityActorTag",
@@ -436,8 +438,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '"operation_edit_transfer_out|counterpart="',
             '"operation_edit_transfer_in|counterpart="',
             "stale_operation_generation_preserved",
+            "higher_operation_generation_pending_handoff",
             "transferBlockerBeforeHandoff",
             "transferBlockers.find(",
+            "transferSelections",
+            "voiOperationUnitMatchesRequirement(",
+            "destination.priority\n+\t\t\t\t\t< sourceExisting->priority",
+            "editRequestedGeneration",
+            "editRejectedUpdateId",
+            "editRejectedFrame",
+            "editSupersessionMode",
             "isCurrentVoiOperationAction(",
             '\\"edit_before_composition\\":',
             '\\"edit_after_composition\\":',
@@ -445,6 +455,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '\\"transferred_out_count\\":',
             '\\"edit_resolution\\":\\"',
             '\\"edit_blocker\\":\\"',
+            '\\"edit_requested_generation\\":',
+            '\\"edit_rejected_update_id\\":\\"',
+            '\\"edit_rejected_frame\\":',
+            '\\"edit_supersession_mode\\":\\"',
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -458,6 +472,19 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertNotIn(
             "SmartStop",
             patch[handoff_start:handoff_end],
+        )
+        self.assertNotIn("sourceCompositionPreserved", patch)
+        self.assertLess(
+            patch.index('"source_composition_preservation"'),
+            handoff_start,
+        )
+        self.assertLess(
+            patch.index('"destination_priority_not_higher"'),
+            handoff_start,
+        )
+        self.assertLess(
+            patch.index('"explicit_ability_owner_protected"'),
+            handoff_start,
         )
         self.assertEqual(
             1,

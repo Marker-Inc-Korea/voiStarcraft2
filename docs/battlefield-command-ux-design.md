@@ -295,7 +295,7 @@ recon-alpha에서 마린 1기를 빼서 assault-bravo에 합류시켜.
 
 현재 typed edit와 런타임 handoff는 다음을 검사한다.
 
-1. 새 작전 우선순위가 기존 작전보다 높은가.
+1. 새 작전 우선순위가 기존 작전보다 낮지 않거나 Emergency인가.
 2. 유닛을 한 기 빼도 기존 작전의 `min_units`를 만족하는가.
 3. 유닛을 빼도 기존 작전의 exact composition requirement가 깨지지 않는가.
 4. 기존 action과 ownership을 제거한 뒤 새 operation owner를 원자적으로

@@ -136,7 +136,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 action="transfer_in",
                 counterpart_operation_id="recon-alpha",
                 unit_selection=(
-                    CompositionRequirement("marine", count=1, role="frontline"),
+                    CompositionRequirement("marine", count=1, role="scout"),
                 ),
             ),
         )
@@ -172,6 +172,37 @@ class PolicyModulationVectorTest(unittest.TestCase):
             ("recon-alpha", "assault-bravo"),
             tuple(operation.operation_id for operation in vector.operations),
         )
+
+    def test_transfer_edit_rejects_role_mismatch_between_counterparts(self) -> None:
+        source = TacticalOperationModulation(
+            operation_id="recon-alpha",
+            goal="release one scout marine",
+            operation_edit=OperationEditModulation(
+                action="transfer_out",
+                counterpart_operation_id="assault-bravo",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="scout"),
+                ),
+            ),
+        )
+        destination = TacticalOperationModulation(
+            operation_id="assault-bravo",
+            goal="receive one frontline marine",
+            operation_edit=OperationEditModulation(
+                action="transfer_in",
+                counterpart_operation_id="recon-alpha",
+                unit_selection=(
+                    CompositionRequirement("marine", count=1, role="frontline"),
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "unit types, roles, and counts"):
+            PolicyModulationVector(
+                goal="invalid role transfer",
+                command_layer="operation",
+                operations=(source, destination),
+            )
 
     def test_parallel_operations_preserve_independent_tactical_state(self) -> None:
         vector = PolicyModulationVector(
@@ -381,7 +412,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual("recon-replace", replaced.operations[0].operation_id)
         self.assertEqual("", replaced.tactical_task.task_type)
 
-    def test_merges_duplicate_composition_and_role_entries_by_unit_type(self) -> None:
+    def test_merges_composition_entries_by_unit_type_and_role(self) -> None:
         vector = PolicyModulationVector(
             goal="마린 요구를 하나의 작전 조합으로 병합",
             composition_requirements=(
@@ -399,9 +430,17 @@ class PolicyModulationVectorTest(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(1, len(vector.composition_requirements))
-        self.assertEqual(5, vector.composition_requirements[0].count)
-        self.assertEqual("focus_fire", vector.composition_requirements[0].role)
+        self.assertEqual(2, len(vector.composition_requirements))
+        self.assertEqual(
+            {
+                ("TERRAN_MARINE", "frontline", 2),
+                ("TERRAN_MARINE", "focus_fire", 3),
+            },
+            {
+                (requirement.unit_type, requirement.role, requirement.count)
+                for requirement in vector.composition_requirements
+            },
+        )
         self.assertEqual(1, len(vector.unit_roles))
         self.assertEqual("focus_fire", vector.unit_roles[0].role)
         self.assertEqual("if_available", vector.unit_roles[0].ability_policy)
