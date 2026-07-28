@@ -21,6 +21,7 @@ from starcraft_commander.micromachine_tactical_evidence import (
 )
 from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_OPERATION_TASKS,
+    TRANSIENT_PRODUCTION_BLOCKERS,
     canonical_terran_unit_family,
     operation_family_evidence,
 )
@@ -194,6 +195,7 @@ TRANSIENT_OPERATION_BLOCK_REASONS: Final[frozenset[str]] = frozenset(
         "no_available_units",
         "insufficient_units",
         "emergency_retreat_preempted",
+        *TRANSIENT_PRODUCTION_BLOCKERS,
     }
 )
 EXPIRY_OPERATION_REASONS: Final[frozenset[str]] = frozenset(

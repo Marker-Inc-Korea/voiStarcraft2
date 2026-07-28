@@ -18,12 +18,24 @@ TERRAN_OPERATION_TASKS: Final[tuple[str, ...]] = (
     "defend_with_units",
     "harass_with_units",
 )
+TRANSIENT_PRODUCTION_BLOCKERS: Final[frozenset[str]] = frozenset(
+    {
+        "missing_producer",
+        "missing_addon",
+        "missing_tech",
+        "producer_busy",
+        "supply_blocked",
+        "gas_pending",
+        "minerals_pending",
+    }
+)
 TRANSIENT_FAMILY_BLOCKERS: Final[frozenset[str]] = frozenset(
     {
         "production_queued",
         "training",
         "waiting_for_units",
         "waiting_for_exact_composition",
+        *TRANSIENT_PRODUCTION_BLOCKERS,
     }
 )
 

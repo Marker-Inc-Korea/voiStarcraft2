@@ -768,6 +768,88 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual(1, scout_operation.tactical_task.min_units)
         self.assertEqual(1, scout_operation.tactical_task.max_units)
 
+    def test_myproxy_compact_hellbat_harass_preserves_staged_form(self) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "화염기갑병 두 기를 적 일꾼 견제대로 편성합니다.",
+            "command": {
+                "goal": "화염기갑병 2기로 적 일꾼 견제",
+                "command_layer": "operation",
+                "operation_action": "create",
+                "task_type": "harass_with_units",
+                "unit_requests": [
+                    {
+                        "unit_type": "화염기갑병",
+                        "count": 2,
+                        "role": "worker_harass",
+                        "ability_policy": None,
+                    }
+                ],
+                "location_intent": "enemy_mineral_line",
+                "army_group": "harass",
+                "intensity": "high",
+                "stance": "aggressive",
+                "allow_partial": False,
+                "standing_order": False,
+            },
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(command_text="화염기갑병 2기로 적 일꾼 견제해")
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        modulation = output["modulation"]
+        self.assertEqual(
+            {
+                "TERRAN_FACTORY",
+                "TERRAN_ARMORY",
+                "TERRAN_HELLION",
+            },
+            set(modulation["production_plan"]["targets"]),
+        )
+        self.assertEqual(
+            "TERRAN_HELLION",
+            modulation["composition_requirements"][0]["unit_type"],
+        )
+        self.assertEqual(
+            "hellbat_mode",
+            modulation["unit_roles"][0]["ability_policy"],
+        )
+        self.assertIn(
+            "requested_form:TERRAN_HELLIONTANK",
+            modulation["tags"],
+        )
+        self.assertIn("mode_prerequisite:hellbat_mode", modulation["tags"])
+
+        compiled = compile_policy_modulation_provider_output(output)
+        self.assertTrue(compiled.ok, compiled.to_dict())
+        assert compiled.vector is not None
+        self.assertTrue(
+            {
+                "TERRAN_FACTORY",
+                "TERRAN_ARMORY",
+                "TERRAN_HELLION",
+            }
+            <= set(compiled.vector.production_plan.targets)
+        )
+        self.assertEqual(1, len(compiled.vector.operations))
+        hellbat_operation = compiled.vector.operations[0]
+        self.assertEqual(
+            "TERRAN_HELLION",
+            hellbat_operation.composition_requirements[0].unit_type,
+        )
+        self.assertEqual(
+            "hellbat_mode",
+            hellbat_operation.unit_roles[0].ability_policy,
+        )
+
     def test_myproxy_compact_standing_macro_lowers_prerequisites_and_lifetime(
         self,
     ) -> None:

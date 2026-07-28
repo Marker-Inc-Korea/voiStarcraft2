@@ -734,6 +734,47 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
             by_family["banshee"]["blocker"],
         )
 
+    def test_normal_production_waits_are_transient_family_blockers(self) -> None:
+        for blocker in (
+            "missing_producer",
+            "missing_addon",
+            "missing_tech",
+            "producer_busy",
+            "supply_blocked",
+            "gas_pending",
+            "minerals_pending",
+        ):
+            with self.subTest(blocker=blocker):
+                evidence = operation_family_evidence(
+                    {
+                        "update_id": "production-wait",
+                        "operation_id": "tank-production",
+                        "generation": 1,
+                        "family_evidence": [
+                            {
+                                "update_id": "production-wait",
+                                "operation_id": "tank-production",
+                                "generation": 1,
+                                "family": "siege_tank",
+                                "unit_type": "TERRAN_SIEGETANK",
+                                "role": "siege_support",
+                                "action": "squad_order:attack",
+                                "required_effect": "movement_or_engagement",
+                                "attempt_generation": 1,
+                                "blocker_manager": "ProductionManager",
+                                "blocker": blocker,
+                            }
+                        ],
+                    },
+                    expected_update_id="production-wait",
+                    expected_operation_id="tank-production",
+                    expected_generation=1,
+                )
+
+                self.assertEqual(1, len(evidence))
+                self.assertEqual("waiting", evidence[0]["stage"])
+                self.assertEqual(blocker, evidence[0]["blocker"])
+
 
 if __name__ == "__main__":
     unittest.main()

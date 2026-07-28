@@ -172,6 +172,15 @@ DEFAULT_OPENAI_MODEL: Final[str] = "gpt-5.5"
 DEFAULT_LLM_MODEL: Final[str] = DEFAULT_ANTHROPIC_MODEL
 """Backward-compatible default model for direct Anthropic interpreter tests."""
 
+_COMPACT_HELLBAT_REQUEST_TOKENS: Final[frozenset[str]] = frozenset(
+    {
+        "hellbat",
+        "hellbats",
+        "terranhelliontank",
+        "화염기갑병",
+    }
+)
+
 ANTHROPIC_API_KEY_ENV_VAR: Final[str] = "ANTHROPIC_API_KEY"
 """Environment variable consulted when no explicit API key is provided."""
 
@@ -4176,6 +4185,20 @@ def _lower_compact_policy_modulation_tool_input(
         for item in unit_requests
         if str(item.get("unit_type", "") or "").strip()
     ]
+    requested_form_production_targets = tuple(
+        str(target or "").strip()
+        for item in unit_requests
+        for target in (
+            item.get("__production_targets")
+            if isinstance(item.get("__production_targets"), Sequence)
+            and not isinstance(
+                item.get("__production_targets"),
+                (str, bytes, bytearray),
+            )
+            else ()
+        )
+        if str(target or "").strip()
+    )
     if (
         task_type == "sustain_production"
         and str(command.get("doctrine", "") or "").strip() == "marine_rush"
@@ -4189,6 +4212,7 @@ def _lower_compact_policy_modulation_tool_input(
     production_plan_targets = list(
         _merge_compact_tokens(
             production_targets,
+            requested_form_production_targets,
             requested_unit_types,
             (
                 str(item.get("building_type", "") or "").strip()
@@ -4273,6 +4297,17 @@ def _lower_compact_policy_modulation_tool_input(
             "llm_compact_semantic",
             f"command_layer:{command_layer}",
             f"task_type:{task_type or 'none'}",
+            *(
+                (
+                    "requested_form:TERRAN_HELLIONTANK",
+                    "mode_prerequisite:hellbat_mode",
+                )
+                if any(
+                    item.get("__requested_form") == "TERRAN_HELLIONTANK"
+                    for item in unit_requests
+                )
+                else ()
+            ),
             *(
                 (f"operation_action:{operation_action}",)
                 if operation_action
@@ -5335,9 +5370,13 @@ def _lower_compact_unit_requests(
     for item in value:
         if not isinstance(item, Mapping):
             continue
+        raw_unit_type = item.get("unit_type", "")
+        requested_hellbat = _compact_unit_request_is_hellbat(raw_unit_type)
         unit_type = _canonical_compact_task_token(
-            item.get("unit_type", "")
+            raw_unit_type
         )
+        if requested_hellbat:
+            unit_type = "TERRAN_HELLION"
         count = item.get("count", 0)
         if (
             not unit_type
@@ -5353,7 +5392,9 @@ def _lower_compact_unit_requests(
                 unit_type=unit_type,
             )
         ability_policy = str(item.get("ability_policy", "") or "").strip()
-        if ability_policy not in MICROMACHINE_ABILITY_POLICIES:
+        if requested_hellbat:
+            ability_policy = "hellbat_mode"
+        elif ability_policy not in MICROMACHINE_ABILITY_POLICIES:
             if task_type == "execute_ability" and ability:
                 ability_policy = ability
             elif role in {
@@ -5383,9 +5424,30 @@ def _lower_compact_unit_requests(
                 "role": role,
                 "priority": normalized_priority,
                 "ability_policy": ability_policy,
+                **(
+                    {
+                        "__requested_form": "TERRAN_HELLIONTANK",
+                        "__production_targets": (
+                            "TERRAN_FACTORY",
+                            "TERRAN_ARMORY",
+                            "TERRAN_HELLION",
+                        ),
+                    }
+                    if requested_hellbat
+                    else {}
+                ),
             }
         )
     return result[:16]
+
+
+def _compact_unit_request_is_hellbat(value: object) -> bool:
+    normalized = "".join(
+        character
+        for character in str(value or "").casefold()
+        if character.isalnum()
+    )
+    return normalized in _COMPACT_HELLBAT_REQUEST_TOKENS
 
 
 def _canonical_compact_task_token(value: object) -> str:

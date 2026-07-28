@@ -1582,6 +1582,61 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
             stages["queued_or_assigned"].reason,
         )
 
+    def test_normal_production_waits_do_not_fail_operation(self) -> None:
+        for blocker in (
+            "missing_producer",
+            "missing_addon",
+            "missing_tech",
+            "producer_busy",
+            "supply_blocked",
+            "gas_pending",
+            "minerals_pending",
+        ):
+            with self.subTest(blocker=blocker):
+                update, telemetry = _family_operation_case(
+                    task_type="pressure_with_main_army",
+                    canonical_task_type="attack",
+                    squad_order="attack",
+                    family="siege_tank",
+                    unit_type="TERRAN_SIEGETANK",
+                    role="siege_support",
+                    effect=False,
+                    blocker=blocker,
+                    blocker_manager="ProductionManager",
+                )
+                operation = telemetry["managers"]["OperationDirector"][
+                    "operations"
+                ][0]
+                operation["status"] = "BLOCKED"
+                operation["blocked_reason"] = blocker
+                operation["completed"] = False
+                operation["assigned_frame"] = 0
+                operation["submitted_frame"] = 0
+                operation["last_action_frame"] = 0
+                operation["assigned_unit_tags"] = []
+                operation["assigned_count"] = 0
+                evidence = operation["family_evidence"][0]
+                evidence["assigned"] = 0
+                evidence["represented"] = 0
+                evidence["attempted_count"] = 0
+                evidence["attempted_frame"] = 0
+                evidence["submitted_count"] = 0
+                evidence["submitted_frame"] = 0
+
+                report = classify_micromachine_operation_executions(
+                    latest_update=update,
+                    latest_telemetry=telemetry,
+                    latest_frame=180,
+                )[0]
+
+                self.assertFalse(report.failed, report.to_dict())
+                self.assertEqual("blocked", report.state)
+                self.assertEqual(
+                    "OperationDirector",
+                    report.blocker_manager,
+                )
+                self.assertEqual(blocker, report.blocker_reason)
+
     def test_family_mission_evidence_survives_terminal_cleanup(self) -> None:
         update, mission_telemetry = _family_operation_case(
             task_type="pressure_with_main_army",
