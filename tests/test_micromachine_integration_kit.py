@@ -638,6 +638,47 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertEqual(0, parse_result.returncode, parse_result.stderr)
 
+    def test_operation_transfer_runtime_preservation_closes_review_findings(
+        self,
+    ) -> None:
+        patch_path = (
+            KIT_DIR
+            / "patches"
+            / "0063-operation-transfer-runtime-preservation.patch"
+        )
+        patch = _read_patch_text(patch_path)
+
+        required_terms = (
+            "voiPreserveOperationForRejectedTransfer",
+            "annotatePreservedTransferEndpoint",
+            "voiShouldReconcileExistingOperation",
+            "voiExistingTransferEndpointActive",
+            '"transfer_endpoint_terminal"',
+            "voiTransferOwnershipAtomically",
+            '"transfer_ownership_changed_after_preflight"',
+            "ownersBeforeRejectedTransfer",
+            "selectedUnits.size()",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        missing_request_branch = patch.index("if (requested == nullptr)")
+        self.assertLess(
+            patch.index(
+                "voiPreserveOperationForRejectedTransfer",
+                missing_request_branch,
+            ),
+            patch.index("releaseVoiOperation(", missing_request_branch),
+        )
+        parse_result = subprocess.run(
+            ["git", "apply", "--numstat", str(patch_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
     def test_patch_bundle_is_contiguous_present_and_matches_build_apply_order(
         self,
     ) -> None:
@@ -647,9 +688,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 63)),
+            list(range(1, 64)),
         )
-        self.assertEqual(len(set(manifest_paths)), 62)
+        self.assertEqual(len(set(manifest_paths)), 63)
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
         )
@@ -4511,7 +4552,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0062`",
+            "through `0063`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -5026,6 +5067,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0063-operation-transfer-runtime-preservation.patch"',
+            build_script,
+        )
+        self.assertIn(
             'apply --recount --check --ignore-space-change '
             '--whitespace=nowarn '
             '"${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}"',
@@ -5047,6 +5094,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             2,
             build_script.count(
                 "--micromachine-operation-transfer-atomic-admission-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-transfer-runtime-preservation-patch"
             ),
         )
         self.assertIn(

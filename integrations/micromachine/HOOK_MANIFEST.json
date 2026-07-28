@@ -318,6 +318,11 @@
       "path": "patches/0062-operation-transfer-atomic-admission.patch",
       "order": 62,
       "scope": "make reciprocal transfer admission pair-atomic before any generation comparison or handoff, require both active endpoints to advance generation, reject blocked new counterparts before append, route role-specific ability selection and tag-role handoff through executable pure C++ helpers, and register no-SC2 CTest coverage for partial generation, new counterpart rejection, successful atomic admission, role preservation, and role-specific policy selection"
+    },
+    {
+      "path": "patches/0063-operation-transfer-runtime-preservation.patch",
+      "order": 63,
+      "scope": "preserve an omitted active transfer endpoint on one-sided rejection, keep rejected old-generation operations reconciling their existing squads, reject completed endpoints from pair admission, atomically validate and replace unit-tag ownership, and extend executable CTest coverage for preservation, terminal rejection, continued reconciliation, duplicate-tag rejection, and rollback-safe ownership changes"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {
