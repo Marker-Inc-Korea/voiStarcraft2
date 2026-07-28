@@ -8567,6 +8567,56 @@ const assert = require("assert");
     )
   );
 
+  // A delayed lower requested generation may carry a newer active generation.
+  // Accept its execution telemetry without replacing the newest rejected edit.
+  var staleEditWithNewerActiveGeneration = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit-stale-new-active",
+    "오래된 공격조 변경과 새 실행 세대",
+    "attack",
+    333,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    3
+  );
+  staleEditWithNewerActiveGeneration.requested_operation_generation = 3;
+  staleEditWithNewerActiveGeneration.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 6 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 7 }
+    ],
+    resolution: "blocked",
+    blocker: "stale_new_active_edit_must_not_replace_latest"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleEditWithNewerActiveGeneration]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.operationGeneration, 3);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 333);
+  assert.strictEqual(assaultRecord.updateId, "parallel-update-b-edit-latest");
+  assert.strictEqual(assaultRecord.text, "공격조 편성을 다시 변경");
+  assert.strictEqual(
+    assaultRecord.data.intervention.command_execution.operation_generation,
+    3
+  );
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "stale_new_active_edit_must_not_replace_latest"
+    )
+  );
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "오래된 공격조 변경과 새 실행 세대"
+    )
+  );
+
   // Older-generation cleanup may not overwrite the edited operation card.
   var staleGenerationCleanup = operationResult(
     "assault-bravo",
@@ -8592,8 +8642,8 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.terminal, false);
-  assert.strictEqual(assaultRecord.operationGeneration, 2);
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.operationGeneration, 3);
+  assert.strictEqual(assaultRecord.telemetryFrame, 333);
 
   // Cancellation remains active until matching release_stop cleanup arrives.
   var cancellationPending = operationResult(
@@ -8604,7 +8654,7 @@ const assert = require("assert");
     340,
     "cancelled",
     actionStages("attack").slice(0, 6),
-    2
+    3
   );
   cancellationPending.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
@@ -8615,7 +8665,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.terminal, false);
-  assert.strictEqual(assaultRecord.operationGeneration, 2);
+  assert.strictEqual(assaultRecord.operationGeneration, 3);
   assert.strictEqual(assaultRecord.disposition, "active");
   assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,
@@ -8631,7 +8681,7 @@ const assert = require("assert");
     350,
     "cancelled",
     actionStages("attack").slice(0, 6),
-    2
+    3
   );
   verifiedCancellation.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
@@ -8639,7 +8689,7 @@ const assert = require("assert");
     action: "release_no_owned_units|cancelled_by_policy",
     frame: 350,
     operation_id: "assault-bravo",
-    generation: 2
+    generation: 3
   };
   renderOperationConsole(serverResult({
     status: "published",
@@ -8763,6 +8813,64 @@ const assert = require("assert");
     )
   );
 
+  var staleTerminalEditWithNewerActiveGeneration = operationResult(
+    "recon-alpha",
+    "parallel-update-a-stale-new-active",
+    "오래된 정찰대 변경과 새 실행 세대",
+    "scouting",
+    421,
+    "completed",
+    actionStages("move", "new active generation waypoint reached"),
+    2
+  );
+  staleTerminalEditWithNewerActiveGeneration.requested_operation_generation = 1;
+  staleTerminalEditWithNewerActiveGeneration.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 1 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 3 }
+    ],
+    resolution: "blocked",
+    blocker: "stale_terminal_new_active_must_not_replace_latest"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleTerminalEditWithNewerActiveGeneration]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(operationRecords[reconKey].terminal, true);
+  assert.strictEqual(operationRecords[reconKey].operationGeneration, 2);
+  assert.strictEqual(operationRecords[reconKey].requestedOperationGeneration, 2);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 421);
+  assert.strictEqual(operationRecords[reconKey].updateId, "parallel-update-a-edit");
+  assert.strictEqual(operationRecords[reconKey].text, "정찰대를 마린 2기로 증원");
+  assert.strictEqual(
+    operationRecords[reconKey].data.intervention.command_execution
+      .operation_generation,
+    2
+  );
+  assert(
+    operationRecords[reconKey].node.textContent.includes(
+      "terminal_operation_edit_rejected"
+    )
+  );
+  assert(
+    operationRecords[reconKey].node.textContent.includes(
+      "new active generation waypoint reached"
+    )
+  );
+  assert(
+    !operationRecords[reconKey].node.textContent.includes(
+      "stale_terminal_new_active_must_not_replace_latest"
+    )
+  );
+  assert(
+    !operationRecords[reconKey].node.textContent.includes(
+      "오래된 정찰대 변경과 새 실행 세대"
+    )
+  );
+
   renderOperationConsole(serverResult({
     status: "published",
     operations: [
@@ -8778,7 +8886,7 @@ const assert = require("assert");
     ]
   }, OPERATION_SCOPE));
   assert.strictEqual(operationRecords[reconKey].terminal, true);
-  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 410);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 421);
   assert.strictEqual(
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"

@@ -10411,13 +10411,38 @@ function reconcileOperationRecord(operation, parentData) {
     )
     : 0;
   if (
+    !Number.isFinite(latestRequestedOperationGeneration) ||
+    latestRequestedOperationGeneration < 0
+  ) {
+    latestRequestedOperationGeneration = 0;
+  }
+  var staleRejectedEditPayload = Boolean(
     record &&
     rejectedEditPayload &&
-    operationGeneration === record.operationGeneration &&
     requestedOperationGeneration > 0 &&
     requestedOperationGeneration < latestRequestedOperationGeneration
+  );
+  if (
+    staleRejectedEditPayload &&
+    operationGeneration <= record.operationGeneration
   ) {
     return record;
+  }
+  if (
+    staleRejectedEditPayload &&
+    operationGeneration > record.operationGeneration
+  ) {
+    var latestData = record.data || {};
+    data = Object.assign({}, data, {
+      command_text: record.text || latestData.command_text || "",
+      compile_result: latestData.compile_result || {},
+      latest_request: latestData.latest_request || null,
+      update: latestData.update || {},
+      command_queue: latestData.command_queue || {},
+      requested_operation_generation: latestRequestedOperationGeneration,
+      operation_edit: operationEditPayload(latestData)
+    });
+    updateId = record.updateId || updateId;
   }
   var rejectedEditRefresh = Boolean(
     record &&
