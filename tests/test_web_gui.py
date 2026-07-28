@@ -8607,6 +8607,93 @@ const assert = require("assert");
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"
   );
+
+  // A rejected higher-generation edit augments the terminal card without
+  // replacing its verified execution state or creating another card.
+  var terminalReconNodeId = operationRecords[reconKey].node.id;
+  var rejectedTerminalEdit = operationResult(
+    "recon-alpha",
+    "parallel-update-a-edit",
+    "정찰대를 마린 2기로 증원",
+    "scouting",
+    410,
+    "completed",
+    actionStages("move", "recon waypoint reached"),
+    1
+  );
+  rejectedTerminalEdit.requested_operation_generation = 2;
+  rejectedTerminalEdit.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 1 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 2 }
+    ],
+    resolution: "blocked",
+    blocker: "terminal_operation_edit_rejected"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [rejectedTerminalEdit]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(nodes["operation-list"].querySelectorAll(".operation-card").length, 2);
+  assert.strictEqual(operationRecords[reconKey].node.id, terminalReconNodeId);
+  assert.strictEqual(operationRecords[reconKey].terminal, true);
+  assert.strictEqual(operationRecords[reconKey].operationGeneration, 1);
+  assert.strictEqual(operationRecords[reconKey].requestedOperationGeneration, 2);
+  assert.strictEqual(
+    operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
+    "실행 확인"
+  );
+  assert(operationRecords[reconKey].node.textContent.includes("reinforce"));
+  assert(operationRecords[reconKey].node.textContent.includes("MARINE ×1 → MARINE ×2"));
+  assert(
+    operationRecords[reconKey].node.textContent.includes(
+      "terminal_operation_edit_rejected"
+    )
+  );
+
+  // A stale requested generation may not overwrite the latest edit blocker.
+  var staleRejectedTerminalEdit = operationResult(
+    "recon-alpha",
+    "parallel-update-a-stale-edit",
+    "정찰대를 다시 변경",
+    "scouting",
+    420,
+    "completed",
+    actionStages("move", "recon waypoint reached"),
+    1
+  );
+  staleRejectedTerminalEdit.requested_operation_generation = 1;
+  staleRejectedTerminalEdit.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 1 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 3 }
+    ],
+    resolution: "blocked",
+    blocker: "stale_edit_must_not_replace_latest"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleRejectedTerminalEdit]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(operationRecords[reconKey].requestedOperationGeneration, 2);
+  assert(
+    operationRecords[reconKey].node.textContent.includes(
+      "terminal_operation_edit_rejected"
+    )
+  );
+  assert(
+    !operationRecords[reconKey].node.textContent.includes(
+      "stale_edit_must_not_replace_latest"
+    )
+  );
+
   renderOperationConsole(serverResult({
     status: "published",
     operations: [
@@ -8622,7 +8709,7 @@ const assert = require("assert");
     ]
   }, OPERATION_SCOPE));
   assert.strictEqual(operationRecords[reconKey].terminal, true);
-  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 400);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 410);
   assert.strictEqual(
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"

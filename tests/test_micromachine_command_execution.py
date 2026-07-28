@@ -271,9 +271,12 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         self.assertEqual(1, len(reports))
         report = reports[0]
         self.assertEqual(2, report.operation_generation)
-        self.assertFalse(report.failed)
-        self.assertEqual("engaged", report.state)
-        self.assertEqual("", report.blocker_reason)
+        self.assertTrue(report.failed)
+        self.assertEqual("blocked", report.state)
+        self.assertEqual(
+            "source_composition_preservation",
+            report.blocker_reason,
+        )
         consumed = next(
             stage
             for stage in report.stages
@@ -285,11 +288,27 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
             "source_composition_preservation",
             consumed.evidence["edit_blocker"],
         )
+        self.assertEqual(
+            {
+                "generation": 1,
+                "status": "MOVING",
+                "assigned_frame": 120,
+                "submitted_frame": 130,
+                "last_action_frame": 140,
+                "assigned_unit_tags": [11],
+                "assigned_count": 1,
+                "max_home_distance": 20.0,
+                "engaged": True,
+                "completed": None,
+                "last_action": "AttackUnitOrder",
+            },
+            consumed.evidence["active_execution"],
+        )
         stages = {stage.name: stage for stage in report.stages}
-        self.assertTrue(stages["queued_or_assigned"].ok)
-        self.assertTrue(stages["order_issued"].ok)
-        self.assertTrue(stages["action_issued"].ok)
-        self.assertTrue(stages["effect_observed"].ok)
+        self.assertFalse(stages["queued_or_assigned"].ok)
+        self.assertFalse(stages["order_issued"].ok)
+        self.assertFalse(stages["action_issued"].ok)
+        self.assertFalse(stages["effect_observed"].ok)
 
     def test_operation_evidence_requires_exact_command_identity(self) -> None:
         update = {

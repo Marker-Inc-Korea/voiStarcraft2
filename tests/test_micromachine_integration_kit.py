@@ -822,11 +822,24 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         required_terms = (
             "voiOperationTransferAlreadyApplied",
+            "voiApplyOperationTransferMutationOnce",
             "existingCounterpartOperationId",
             "existingEditResolution",
             "alreadyAppliedTransferOperations",
+            "sourceMutationEndpoint",
+            "destinationMutationEndpoint",
+            "transferMutationApplied",
             'existingEditResolution = "applied"',
             "alreadyAppliedDestination.requestedGeneration = 9",
+            "ReplayRuntimeState",
+            "mutationInvocationCount",
+            "replayState.owners",
+            "replayState.sourceSquad",
+            "replayState.destinationSquad",
+            "replayState.actions",
+            "transferredOutCount",
+            "transferredInCount",
+            "secondReplayMutation",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -840,6 +853,49 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             patch.index("alreadyAppliedTransferOperations.find("),
             patch.index("transferBlockers.find("),
         )
+        runtime_mutation = patch.index(
+            "const bool transferMutationApplied"
+        )
+        self.assertLess(
+            runtime_mutation,
+            patch.index(
+                "VoiOperationState sourceReplacement",
+                runtime_mutation,
+            ),
+        )
+        self.assertLess(
+            patch.index(
+                "VoiOperationState sourceReplacement",
+                runtime_mutation,
+            ),
+            patch.index(
+                "if (!transferMutationApplied)",
+                runtime_mutation,
+            ),
+        )
+        replay_test = patch.index("ReplayRuntimeState")
+        second_replay = patch.index(
+            "const bool secondReplayMutation",
+            replay_test,
+        )
+        self.assertLess(
+            patch.index(
+                "const bool firstReplayMutation",
+                replay_test,
+            ),
+            second_replay,
+        )
+        for invariant in (
+            "replayState.owners == replayOwnersAfterFirstMutation",
+            "replayState.sourceSquad == replaySourceSquadAfterFirstMutation",
+            "replayState.destinationSquad",
+            "replayState.actions == replayActionsAfterFirstMutation",
+            "replayState.transferredOutCount == 1",
+            "replayState.transferredInCount == 1",
+            "replayState.mutationInvocationCount == 1",
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, patch[second_replay:])
         parse_result = subprocess.run(
             ["git", "apply", "--numstat", str(patch_path)],
             check=False,
@@ -4721,7 +4777,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0064`",
+            "through `0066`",
         )
         for term in required_terms:
             with self.subTest(term=term):

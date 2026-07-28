@@ -10219,6 +10219,11 @@ function commandOperationData(operation, parentData) {
     operation_id: operationId,
     operation_key: operationRecordKey(scopeId, operationId),
     operation_generation: Number(operation.operation_generation || 0),
+    requested_operation_generation: Number(
+      operation.requested_operation_generation ||
+      operation.operation_generation ||
+      0
+    ),
     operation_disposition: disposition,
     operation_mission: String(operation.mission || "operation"),
     operation_edit: operation.operation_edit || {},
@@ -10282,6 +10287,7 @@ function beginOperationRecord(text, pendingId) {
     stageRank: 0,
     telemetryFrame: -1,
     operationGeneration: 0,
+    requestedOperationGeneration: 0,
     terminal: false,
     disposition: "pending",
     createdAt: Date.now(),
@@ -10381,6 +10387,32 @@ function reconcileOperationRecord(operation, parentData) {
   if (!Number.isFinite(operationGeneration) || operationGeneration < 0) {
     operationGeneration = 0;
   }
+  var requestedOperationGeneration = Number(
+    data.requested_operation_generation ||
+    operationGeneration ||
+    0
+  );
+  if (
+    !Number.isFinite(requestedOperationGeneration) ||
+    requestedOperationGeneration < 0
+  ) {
+    requestedOperationGeneration = 0;
+  }
+  var editPayload = operationEditPayload(data);
+  var rejectedEditRefresh = Boolean(
+    record &&
+    record.terminal &&
+    operationGeneration === record.operationGeneration &&
+    requestedOperationGeneration > (
+      record.requestedOperationGeneration ||
+      record.operationGeneration ||
+      0
+    ) &&
+    (
+      String(editPayload.resolution || "").toLowerCase() === "blocked" ||
+      Boolean(editPayload.blocker)
+    )
+  );
   if (
     record &&
     record.operationGeneration > 0 &&
@@ -10405,7 +10437,7 @@ function reconcileOperationRecord(operation, parentData) {
     record.terminal = false;
     record.disposition = "pending";
   }
-  if (record && record.terminal) {
+  if (record && record.terminal && !rejectedEditRefresh) {
     return record;
   }
   if (
@@ -10416,7 +10448,7 @@ function reconcileOperationRecord(operation, parentData) {
   ) {
     return record;
   }
-  if (record && stageRank < record.stageRank) {
+  if (record && stageRank < record.stageRank && !rejectedEditRefresh) {
     return record;
   }
   if (!record) {
@@ -10432,6 +10464,7 @@ function reconcileOperationRecord(operation, parentData) {
       stageRank: 0,
       telemetryFrame: -1,
       operationGeneration: operationGeneration,
+      requestedOperationGeneration: requestedOperationGeneration,
       terminal: false,
       disposition: "pending",
       createdAt: Date.now(),
@@ -10457,7 +10490,13 @@ function reconcileOperationRecord(operation, parentData) {
   record.stageRank = Math.max(record.stageRank, stageRank);
   record.telemetryFrame = Math.max(record.telemetryFrame, telemetryFrame);
   record.operationGeneration = operationGeneration || record.operationGeneration;
-  record.terminal = model.terminal;
+  record.requestedOperationGeneration = Math.max(
+    record.requestedOperationGeneration || 0,
+    requestedOperationGeneration
+  );
+  record.terminal = rejectedEditRefresh
+    ? Boolean(record.terminal || model.terminal)
+    : model.terminal;
   record.disposition = operationRecordDisposition(model, data);
   return record;
 }
