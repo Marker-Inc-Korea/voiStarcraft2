@@ -10399,19 +10399,32 @@ function reconcileOperationRecord(operation, parentData) {
     requestedOperationGeneration = 0;
   }
   var editPayload = operationEditPayload(data);
+  var rejectedEditPayload = Boolean(
+    String(editPayload.resolution || "").toLowerCase() === "blocked" ||
+    Boolean(editPayload.blocker)
+  );
+  var latestRequestedOperationGeneration = record
+    ? Number(
+      record.requestedOperationGeneration ||
+      record.operationGeneration ||
+      0
+    )
+    : 0;
+  if (
+    record &&
+    rejectedEditPayload &&
+    operationGeneration === record.operationGeneration &&
+    requestedOperationGeneration > 0 &&
+    requestedOperationGeneration < latestRequestedOperationGeneration
+  ) {
+    return record;
+  }
   var rejectedEditRefresh = Boolean(
     record &&
     record.terminal &&
     operationGeneration === record.operationGeneration &&
-    requestedOperationGeneration > (
-      record.requestedOperationGeneration ||
-      record.operationGeneration ||
-      0
-    ) &&
-    (
-      String(editPayload.resolution || "").toLowerCase() === "blocked" ||
-      Boolean(editPayload.blocker)
-    )
+    requestedOperationGeneration > latestRequestedOperationGeneration &&
+    rejectedEditPayload
   );
   if (
     record &&

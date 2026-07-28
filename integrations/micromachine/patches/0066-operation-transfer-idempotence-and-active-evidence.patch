@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 96ebf20..734ca26 100644
+index 96ebf20..02ecb28 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -4541,6 +4541,7 @@ void CombatCommander::updateVoiOperations()
@@ -59,7 +59,53 @@ index 96ebf20..734ca26 100644
  
  		const VoiOperationTransferAdmission admission =
  			voiDecideOperationTransferAdmission(
-@@ -5270,6 +5306,9 @@ void CombatCommander::updateVoiOperations()
+@@ -4785,6 +4821,10 @@ void CombatCommander::updateVoiOperations()
+ 			const VoiOperationState & requested,
+ 			const std::string & blocker)
+ 		{
++			voiApplyRejectedOperationEditMetadata(
++				existing,
++				[&]()
++				{
+ 			existing.policyUpdateId = policyUpdateId;
+ 			existing.editAction = requested.editAction;
+ 			existing.editCounterpartOperationId =
+@@ -4817,10 +4857,7 @@ void CombatCommander::updateVoiOperations()
+ 				requested.commandLayer == "emergency"
+ 					? "emergency_supersession"
+ 					: "priority_preemption";
+-			existing.lastAction =
+-				"operation_edit_blocked|" + blocker;
+-			existing.lastActionFrame =
+-				m_bot.GetGameLoop();
++				});
+ 		};
+ 	auto annotatePreservedTransferEndpoint =
+ 		[&](
+@@ -4828,6 +4865,10 @@ void CombatCommander::updateVoiOperations()
+ 			const VoiOperationState & counterpartRequest,
+ 			const std::string & blocker)
+ 		{
++			voiApplyRejectedOperationEditMetadata(
++				existing,
++				[&]()
++				{
+ 			existing.policyUpdateId = policyUpdateId;
+ 			existing.editAction =
+ 				counterpartRequest.editAction == "transfer_in"
+@@ -4862,10 +4903,7 @@ void CombatCommander::updateVoiOperations()
+ 				counterpartRequest.commandLayer == "emergency"
+ 					? "emergency_supersession"
+ 					: "priority_preemption";
+-			existing.lastAction =
+-				"operation_edit_blocked|" + blocker;
+-			existing.lastActionFrame =
+-				m_bot.GetGameLoop();
++				});
+ 		};
+ 	auto prepareGenerationReplacement =
+ 		[&](
+@@ -5270,6 +5308,9 @@ void CombatCommander::updateVoiOperations()
  	for (const auto & destinationRequested : requestedOperations)
  	{
  		if (destinationRequested.editAction != "transfer_in"
@@ -69,7 +115,7 @@ index 96ebf20..734ca26 100644
  			|| transferBlockers.find(
  				destinationRequested.operationId)
  				!= transferBlockers.end())
-@@ -5487,6 +5526,54 @@ void CombatCommander::updateVoiOperations()
+@@ -5487,6 +5528,54 @@ void CombatCommander::updateVoiOperations()
  			continue;
  		}
  
@@ -124,7 +170,7 @@ index 96ebf20..734ca26 100644
  		VoiOperationState sourceReplacement =
  			prepareGenerationReplacement(
  				*source,
-@@ -5659,6 +5746,11 @@ void CombatCommander::updateVoiOperations()
+@@ -5659,6 +5748,11 @@ void CombatCommander::updateVoiOperations()
  					+ "|terminal=transferred_all_units";
  			source->lastActionFrame =
  				m_bot.GetGameLoop();
@@ -137,7 +183,7 @@ index 96ebf20..734ca26 100644
  	}
  	std::sort(
 diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transfer_admission.hpp
-index 60ce7ab..b2afb4d 100644
+index 60ce7ab..26d1a02 100644
 --- a/src/voi_operation_transfer_admission.hpp
 +++ b/src/voi_operation_transfer_admission.hpp
 @@ -13,6 +13,9 @@ struct VoiOperationTransferEndpoint
@@ -150,7 +196,7 @@ index 60ce7ab..b2afb4d 100644
  	std::uint64_t existingGeneration = 0;
  	std::uint64_t requestedGeneration = 0;
  	bool requestedPresent = false;
-@@ -203,6 +206,52 @@ inline bool voiShouldReconcileExistingOperation(
+@@ -203,6 +206,66 @@ inline bool voiShouldReconcileExistingOperation(
  	return !completed && !staticBlock;
  }
  
@@ -200,11 +246,25 @@ index 60ce7ab..b2afb4d 100644
 +	return true;
 +}
 +
++template <typename Operation, typename Annotation>
++void voiApplyRejectedOperationEditMetadata(
++	Operation & operation,
++	Annotation annotation)
++{
++	const std::string activeLastAction =
++		operation.lastAction;
++	const auto activeLastActionFrame =
++		operation.lastActionFrame;
++	annotation();
++	operation.lastAction = activeLastAction;
++	operation.lastActionFrame = activeLastActionFrame;
++}
++
  inline VoiOperationTransferAdmission voiDecideOperationTransferAdmission(
  	const VoiOperationTransferEndpoint & first,
  	const VoiOperationTransferEndpoint & second)
 diff --git a/tests/operation_transfer_admission_test.cpp b/tests/operation_transfer_admission_test.cpp
-index 458e7f6..5d03079 100644
+index 458e7f6..be72828 100644
 --- a/tests/operation_transfer_admission_test.cpp
 +++ b/tests/operation_transfer_admission_test.cpp
 @@ -2,6 +2,8 @@
@@ -216,7 +276,7 @@ index 458e7f6..5d03079 100644
  #include <string>
  #include <vector>
  
-@@ -135,6 +137,169 @@ int main()
+@@ -135,6 +137,197 @@ int main()
  	assert(voiShouldReconcileExistingOperation(false, false, true));
  	assert(!voiShouldReconcileExistingOperation(true, false, true));
  	assert(!voiShouldReconcileExistingOperation(false, true, true));
@@ -257,6 +317,34 @@ index 458e7f6..5d03079 100644
 +		!voiOperationTransferAlreadyApplied(
 +			alreadyAppliedSource,
 +			alreadyAppliedDestination));
++
++	struct RejectedEditRuntimeState
++	{
++		std::string lastAction;
++		std::uint64_t lastActionFrame = 0;
++		std::string editBlocker;
++		std::uint64_t editRejectedFrame = 0;
++	};
++	RejectedEditRuntimeState rejectedEditState;
++	rejectedEditState.lastAction = "AttackUnitOrder";
++	rejectedEditState.lastActionFrame = 140;
++	voiApplyRejectedOperationEditMetadata(
++		rejectedEditState,
++		[&]()
++		{
++			rejectedEditState.editBlocker =
++				"source_composition_preservation";
++			rejectedEditState.editRejectedFrame = 225;
++			rejectedEditState.lastAction =
++				"operation_edit_blocked";
++			rejectedEditState.lastActionFrame = 225;
++		});
++	assert(rejectedEditState.lastAction == "AttackUnitOrder");
++	assert(rejectedEditState.lastActionFrame == 140);
++	assert(
++		rejectedEditState.editBlocker
++		== "source_composition_preservation");
++	assert(rejectedEditState.editRejectedFrame == 225);
 +
 +	using ReplayOwner = std::pair<std::string, std::uint64_t>;
 +	struct ReplayRuntimeState

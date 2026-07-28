@@ -8498,6 +8498,75 @@ const assert = require("assert");
   editControls[3].dispatchEvent({ type: "click" });
   assert(nodes["command-input"].value.includes("목표를 변경"));
 
+  // Non-terminal cards keep the newest rejected edit when an older rejected
+  // generation arrives later with a higher telemetry frame.
+  var latestActiveRejectedEdit = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit-latest",
+    "공격조 편성을 다시 변경",
+    "attack",
+    331,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    2
+  );
+  latestActiveRejectedEdit.requested_operation_generation = 4;
+  latestActiveRejectedEdit.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 6 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 8 }
+    ],
+    resolution: "blocked",
+    blocker: "latest_active_edit_blocker"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [latestActiveRejectedEdit]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+
+  var staleActiveRejectedEdit = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit-stale",
+    "오래된 공격조 변경",
+    "attack",
+    332,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    2
+  );
+  staleActiveRejectedEdit.requested_operation_generation = 3;
+  staleActiveRejectedEdit.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 6 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 7 }
+    ],
+    resolution: "blocked",
+    blocker: "stale_active_edit_must_not_replace_latest"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleActiveRejectedEdit]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "stale_active_edit_must_not_replace_latest"
+    )
+  );
+
   // Older-generation cleanup may not overwrite the edited operation card.
   var staleGenerationCleanup = operationResult(
     "assault-bravo",
@@ -8524,7 +8593,7 @@ const assert = require("assert");
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.terminal, false);
   assert.strictEqual(assaultRecord.operationGeneration, 2);
-  assert.strictEqual(assaultRecord.telemetryFrame, 330);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
 
   // Cancellation remains active until matching release_stop cleanup arrives.
   var cancellationPending = operationResult(

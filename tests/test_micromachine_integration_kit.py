@@ -823,6 +823,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         required_terms = (
             "voiOperationTransferAlreadyApplied",
             "voiApplyOperationTransferMutationOnce",
+            "voiApplyRejectedOperationEditMetadata",
             "existingCounterpartOperationId",
             "existingEditResolution",
             "alreadyAppliedTransferOperations",
@@ -840,6 +841,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "transferredOutCount",
             "transferredInCount",
             "secondReplayMutation",
+            "RejectedEditRuntimeState",
+            '"AttackUnitOrder"',
+            "rejectedEditState.lastActionFrame == 140",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -848,6 +852,54 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self.assertLess(
             patch.index("voiOperationTransferAlreadyApplied("),
             patch.index("voiDecideOperationTransferAdmission("),
+        )
+        first_runtime_annotation = patch.index(
+            "+\t\t\tvoiApplyRejectedOperationEditMetadata("
+        )
+        preserved_endpoint_marker = patch.index(
+            "auto annotatePreservedTransferEndpoint"
+        )
+        second_runtime_annotation = patch.index(
+            "+\t\t\tvoiApplyRejectedOperationEditMetadata(",
+            first_runtime_annotation + 1,
+        )
+        self.assertLess(
+            first_runtime_annotation,
+            preserved_endpoint_marker,
+        )
+        self.assertGreater(
+            second_runtime_annotation,
+            preserved_endpoint_marker,
+        )
+        self.assertLess(
+            first_runtime_annotation,
+            patch.index(
+                "existing.policyUpdateId = policyUpdateId",
+                first_runtime_annotation,
+            ),
+        )
+        self.assertLess(
+            second_runtime_annotation,
+            patch.index(
+                "existing.policyUpdateId = policyUpdateId",
+                second_runtime_annotation,
+            ),
+        )
+        rejected_state_test = patch.index("RejectedEditRuntimeState")
+        rejected_action_overwrite = patch.index(
+            "rejectedEditState.lastAction =",
+            rejected_state_test,
+        )
+        self.assertIn(
+            '"operation_edit_blocked"',
+            patch[rejected_action_overwrite:],
+        )
+        self.assertLess(
+            rejected_action_overwrite,
+            patch.index(
+                'rejectedEditState.lastAction == "AttackUnitOrder"',
+                rejected_state_test,
+            ),
         )
         self.assertLess(
             patch.index("alreadyAppliedTransferOperations.find("),
