@@ -3939,6 +3939,28 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertIn("unit_roles", operation_properties)
         self.assertIn("route_intent", operation_properties)
         self.assertIn("target_intent", operation_properties)
+        self.assertIn("generation", operation_properties)
+        self.assertEqual(1, operation_properties["generation"]["minimum"])
+        self.assertIn("issued_at_frame", operation_properties)
+        self.assertEqual(0, operation_properties["issued_at_frame"]["minimum"])
+        self.assertIn("operation_edit", operation_properties)
+        operation_edit_properties = operation_properties["operation_edit"]["properties"]
+        self.assertIn("transfer_in", operation_edit_properties["action"]["enum"])
+        self.assertIn("transfer_out", operation_edit_properties["action"]["enum"])
+        self.assertIn(
+            "required",
+            operation_edit_properties["confirmation_policy"]["enum"],
+        )
+        for field_name in (
+            "unit_selection",
+            "before_composition",
+            "after_composition",
+        ):
+            with self.subTest(operation_edit_field=field_name):
+                self.assertEqual(
+                    operation_properties["composition_requirements"]["items"],
+                    operation_edit_properties[field_name]["items"],
+                )
         self.assertIn(
             "TERRAN_BATTLECRUISER",
             rich_properties["composition_requirements"]["items"]["properties"][
@@ -4007,6 +4029,163 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertIn("flank_bias alone", build_policy_modulation_system_prompt())
         self.assertIn("building_tasks", build_policy_modulation_system_prompt())
         self.assertNotIn("assistant_message in Korean", build_policy_modulation_system_prompt())
+
+    def test_full_provider_forced_tool_accepts_atomic_operation_transfer(self) -> None:
+        selection = [
+            {"unit_type": "TERRAN_MARINE", "count": 1, "role": "scout"}
+        ]
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰대 마린 한 기를 공격대로 이관합니다.",
+            "modulation": {
+                "goal": "transfer one scout into the assault operation",
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "generation": 4,
+                        "issued_at_frame": 220,
+                        "goal": "마린 정찰",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "min_units": 0,
+                            "max_units": 1,
+                            "allow_partial": True,
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 1,
+                                "role": "scout",
+                            }
+                        ],
+                        "unit_roles": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "role": "scout",
+                                "priority": 0.91,
+                                "ability_policy": "escape",
+                            }
+                        ],
+                        "operation_edit": {
+                            "action": "transfer_out",
+                            "counterpart_operation_id": "assault-bravo",
+                            "unit_selection": selection,
+                            "before_composition": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 2,
+                                    "role": "scout",
+                                }
+                            ],
+                            "after_composition": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 1,
+                                    "role": "scout",
+                                }
+                            ],
+                            "explicit_override": True,
+                            "confirmation_policy": "auto",
+                        },
+                    },
+                    {
+                        "operation_id": "assault-bravo",
+                        "generation": 8,
+                        "issued_at_frame": 220,
+                        "goal": "마린 공격",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "min_units": 5,
+                            "max_units": 5,
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 4,
+                                "role": "frontline",
+                            },
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 1,
+                                "role": "scout",
+                            },
+                        ],
+                        "unit_roles": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "role": "scout",
+                                "priority": 0.91,
+                                "ability_policy": "escape",
+                            }
+                        ],
+                        "operation_edit": {
+                            "action": "transfer_in",
+                            "counterpart_operation_id": "recon-alpha",
+                            "unit_selection": selection,
+                            "before_composition": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 4,
+                                    "role": "frontline",
+                                }
+                            ],
+                            "after_composition": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 4,
+                                    "role": "frontline",
+                                },
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 1,
+                                    "role": "scout",
+                                },
+                            ],
+                            "explicit_override": True,
+                            "confirmation_policy": "auto",
+                        },
+                    },
+                ],
+            },
+        }
+        interpreter, fake_client = _make_llm_interpreter(_tool_response(payload))
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "recon-alpha의 마린 한 기를 assault-bravo로 이관해"
+                )
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        self.assertEqual(1, len(fake_client.calls))
+        submitted_schema = fake_client.calls[0]["tools"][0]["input_schema"]
+        submitted_operation = submitted_schema["properties"]["modulation"][
+            "properties"
+        ]["operations"]["items"]["properties"]
+        self.assertIn("operation_edit", submitted_operation)
+        compiled = compile_policy_modulation_provider_output(output)
+        self.assertTrue(compiled.ok, compiled.to_dict())
+        assert compiled.vector is not None
+        operations = {
+            operation.operation_id: operation
+            for operation in compiled.vector.operations
+        }
+        self.assertEqual(4, operations["recon-alpha"].generation)
+        self.assertEqual(8, operations["assault-bravo"].generation)
+        self.assertEqual(
+            "transfer_out",
+            operations["recon-alpha"].operation_edit.action,
+        )
+        self.assertEqual(
+            "transfer_in",
+            operations["assault-bravo"].operation_edit.action,
+        )
 
     def test_runtime_context_is_attached_to_intent_and_combo_calls(self) -> None:
         context = {

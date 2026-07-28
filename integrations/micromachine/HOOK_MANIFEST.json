@@ -328,6 +328,11 @@
       "path": "patches/0064-operation-transfer-transactional-closure.patch",
       "order": 64,
       "scope": "preserve the existing status and blocker when a transfer edit is rejected, reject terminal requested or existing endpoints, defer both generation handoffs until operation assignments, Squad membership, unit-tag owners, and in-flight action owners pass one runtime-used transaction plan, commit both generations and ownership together, and terminalize an empty source only after the complete-force transfer succeeds"
+    },
+    {
+      "path": "patches/0065-operation-transfer-final-review-closure.patch",
+      "order": 65,
+      "scope": "retain one-sided transfer counterparts until CombatCommander admission, require matching source and destination role ability policies, preserve selected tag roles across transfer, plan stale action cleanup with ownership and squad handoff, and expose rejected edits in the in-game HUD without replacing the active operation status"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

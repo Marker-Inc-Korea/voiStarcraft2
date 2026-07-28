@@ -1024,6 +1024,8 @@ _OPERATION_SEQUENCE_KEYS = {
 _OPERATION_KEYS = {
     "operation_id",
     "goal",
+    "generation",
+    "issued_at_frame",
     "command_layer",
     *_OPERATION_DOMAIN_KEYS,
     *_OPERATION_SEQUENCE_KEYS,
@@ -1549,7 +1551,13 @@ def _normalize_provider_operation_mapping(
     warnings: list[str] = []
     for key, value in mapping.items():
         canonical_key = _TOP_LEVEL_ALIASES.get(key, key)
-        if canonical_key in {"operation_id", "goal", "command_layer"}:
+        if canonical_key in {
+            "operation_id",
+            "goal",
+            "generation",
+            "issued_at_frame",
+            "command_layer",
+        }:
             result[canonical_key] = value
             continue
         if canonical_key in _DOMAIN_ALIASES:

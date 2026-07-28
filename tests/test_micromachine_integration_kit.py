@@ -750,6 +750,68 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         )
         self.assertEqual(0, parse_result.returncode, parse_result.stderr)
 
+    def test_operation_transfer_final_review_closure_is_runtime_visible(
+        self,
+    ) -> None:
+        patch_path = (
+            KIT_DIR
+            / "patches"
+            / "0065-operation-transfer-final-review-closure.patch"
+        )
+        patch = _read_patch_text(patch_path)
+
+        required_terms = (
+            "voiOperationReferencedByPendingTransfer",
+            '"pending_transfer_counterpart_admission"',
+            "source == sourceRoles.end()",
+            "replacementSourceRoles",
+            "replacementDestinationRoles",
+            "actionCleanupTags",
+            '"transfer_selected_role_missing"',
+            "voiOperationTransferHudSuffix",
+            '" edit=BLOCKED edit_gen="',
+            '" edit_reason="',
+            "oneSidedTransferRequest",
+            "transactionPlan.replacementDestinationRoles.at(11)",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        lifecycle = patch.index(
+            "pending_transfer_counterpart_admission"
+        )
+        self.assertLess(
+            patch.rfind(
+                "voiOperationReferencedByPendingTransfer",
+                0,
+                lifecycle,
+            ),
+            lifecycle,
+        )
+        transaction = patch.index(
+            "voiPlanOperationTransferTransaction("
+        )
+        self.assertLess(
+            transaction,
+            patch.index(
+                "transactionPlan.replacementSourceRoles",
+                transaction,
+            ),
+        )
+        self.assertLess(
+            patch.index("voiOperationTransferHudSuffix"),
+            patch.index("oneSidedTransferRequest"),
+        )
+
+        parse_result = subprocess.run(
+            ["git", "apply", "--numstat", str(patch_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
     def test_patch_bundle_is_contiguous_present_and_matches_build_apply_order(
         self,
     ) -> None:
@@ -759,9 +821,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 65)),
+            list(range(1, 66)),
         )
-        self.assertEqual(len(set(manifest_paths)), 64)
+        self.assertEqual(len(set(manifest_paths)), 65)
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
         )
@@ -5150,6 +5212,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             build_script,
         )
         self.assertIn(
+            'OPERATION_TRANSFER_FINAL_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0065-operation-transfer-final-review-closure.patch"',
+            build_script,
+        )
+        self.assertIn(
             'apply --recount --check --ignore-space-change '
             '--whitespace=nowarn '
             '"${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}"',
@@ -5183,6 +5251,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             2,
             build_script.count(
                 "--micromachine-operation-transfer-transactional-closure-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-transfer-final-review-closure-patch"
             ),
         )
         self.assertIn(

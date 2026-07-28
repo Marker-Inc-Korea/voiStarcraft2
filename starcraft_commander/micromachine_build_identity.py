@@ -15,7 +15,7 @@ from typing import Final
 
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 61
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 62
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = (
     "bin/BotConfig.txt",
 )
@@ -483,6 +483,13 @@ DEFAULT_MICROMACHINE_OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH: Final[Path]
     / "patches"
     / "0064-operation-transfer-transactional-closure.patch"
 )
+DEFAULT_MICROMACHINE_OPERATION_TRANSFER_FINAL_REVIEW_CLOSURE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0065-operation-transfer-final-review-closure.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -698,6 +705,9 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_operation_transfer_transactional_closure_patch: Path = (
         DEFAULT_MICROMACHINE_OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH
+    )
+    micromachine_operation_transfer_final_review_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_OPERATION_TRANSFER_FINAL_REVIEW_CLOSURE_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -1090,6 +1100,11 @@ def build_micromachine_build_identity(
                 config.micromachine_operation_transfer_transactional_closure_patch
             )
         ),
+        "micromachine_operation_transfer_final_review_closure_patch_sha256": (
+            _sha256_file(
+                config.micromachine_operation_transfer_final_review_closure_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1417,6 +1432,9 @@ def build_micromachine_build_identity(
             ),
             "micromachine_operation_transfer_transactional_closure_patch": str(
                 config.micromachine_operation_transfer_transactional_closure_patch
+            ),
+            "micromachine_operation_transfer_final_review_closure_patch": str(
+                config.micromachine_operation_transfer_final_review_closure_patch
             ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
@@ -2026,6 +2044,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-operation-transfer-final-review-closure-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_OPERATION_TRANSFER_FINAL_REVIEW_CLOSURE_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2258,6 +2282,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             micromachine_operation_transfer_transactional_closure_patch=Path(
                 args.micromachine_operation_transfer_transactional_closure_patch
+            ),
+            micromachine_operation_transfer_final_review_closure_patch=Path(
+                args.micromachine_operation_transfer_final_review_closure_patch
             ),
             s2client_patch=Path(args.s2client_patch),
             hook_manifest=Path(args.hook_manifest),

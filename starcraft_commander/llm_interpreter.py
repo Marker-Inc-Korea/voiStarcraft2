@@ -46,6 +46,8 @@ from starcraft_commander.policy_modulation import (
     MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES,
     MICROMACHINE_COMMAND_LAYERS,
     MICROMACHINE_DOCTRINES,
+    MICROMACHINE_OPERATION_CONFIRMATION_POLICIES,
+    MICROMACHINE_OPERATION_EDIT_ACTIONS,
     MICROMACHINE_ROUTE_INTENTS,
     MICROMACHINE_TACTICAL_ABILITIES,
     MICROMACHINE_TACTICAL_TASK_TYPES,
@@ -1365,6 +1367,41 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
         },
         "additionalProperties": False,
     }
+    operation_edit_schema = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": sorted(MICROMACHINE_OPERATION_EDIT_ACTIONS),
+            },
+            "counterpart_operation_id": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_.:-]*$",
+            },
+            "unit_selection": {
+                "type": "array",
+                "maxItems": 32,
+                "items": composition_requirement_schema,
+            },
+            "before_composition": {
+                "type": "array",
+                "maxItems": 32,
+                "items": composition_requirement_schema,
+            },
+            "after_composition": {
+                "type": "array",
+                "maxItems": 32,
+                "items": composition_requirement_schema,
+            },
+            "explicit_override": {"type": "boolean"},
+            "confirmation_policy": {
+                "type": "string",
+                "enum": sorted(MICROMACHINE_OPERATION_CONFIRMATION_POLICIES),
+            },
+        },
+        "additionalProperties": False,
+    }
     operation_schema = {
         "type": "object",
         "properties": {
@@ -1378,6 +1415,8 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
                     "reinforcing this operation."
                 ),
             },
+            "generation": {"type": "integer", "minimum": 1},
+            "issued_at_frame": {"type": "integer", "minimum": 0},
             "goal": {"type": "string", "minLength": 1},
             "command_layer": {
                 "type": "string",
@@ -1398,6 +1437,7 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
             },
             "route_intent": route_intent_schema,
             "target_intent": target_intent_schema,
+            "operation_edit": operation_edit_schema,
         },
         "required": ["operation_id", "goal", "tactical_task"],
         "additionalProperties": False,
