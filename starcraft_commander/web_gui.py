@@ -7963,21 +7963,23 @@ function applyCommandReceivedEvent(envelope, payload) {
   );
   if (
     activeCommandConsoleRecord.pendingId === operationId ||
-    activeCommandConsoleRecord.updateId === updateId
+    (Boolean(updateId) && activeCommandConsoleRecord.updateId === updateId)
   ) {
-    bindActiveCommandConsoleUpdate(
+    var activeBound = bindActiveCommandConsoleUpdate(
       text,
       operationId,
       String(envelope.blackboard_scope_id || ""),
       updateId
     );
-    renderActiveCommandConsole({
-      status: "received",
-      command_text: text,
-      update_id: updateId,
-      blackboard_scope_id: String(envelope.blackboard_scope_id || ""),
-      consumption_status: "received"
-    }, true);
+    if (activeBound) {
+      renderActiveCommandConsole({
+        status: "received",
+        command_text: text,
+        update_id: updateId,
+        blackboard_scope_id: String(envelope.blackboard_scope_id || ""),
+        consumption_status: "received"
+      }, true);
+    }
   }
 }
 

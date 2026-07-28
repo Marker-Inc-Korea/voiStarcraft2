@@ -8963,7 +8963,7 @@ sourceA.emit("micromachine_status", {
 });
 assert.strictEqual(fallbackPollingIntervals.length, 0);
 
-beginOperationRecord("unbound local card", "unbound-pending");
+beginActiveCommandConsole("legacy active order", "legacy-active");
 const beforeLegacyCardCount = Object.keys(operationRecords).length;
 sourceA.emit("command_received", {
   event_seq: 8,
@@ -8981,6 +8981,15 @@ assert.strictEqual(
   Object.keys(operationRecords).length,
   beforeLegacyCardCount + 1,
   "empty update IDs cannot collapse distinct operations"
+);
+assert.strictEqual(
+  activeCommandConsoleRecord.pendingId,
+  "legacy-active",
+  "another empty-update operation cannot take active console ownership"
+);
+assert.notStrictEqual(
+  activeCommandConsoleRecord.data && activeCommandConsoleRecord.data.command_text,
+  "legacy other-tab order"
 );
 
 blackboardInput.value = "/tmp/board-b";
