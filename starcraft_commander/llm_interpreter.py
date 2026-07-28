@@ -4065,7 +4065,7 @@ def _lower_compact_policy_modulation_tool_input(
                 }
             unit_requests, edit_error = _compact_merge_unit_request_counts(
                 before_unit_requests,
-                edit_selection,
+                source_selection,
             )
             if edit_error or source_operation is None:
                 return {
@@ -4272,9 +4272,7 @@ def _lower_compact_policy_modulation_tool_input(
                 )
                 else {}
             )
-            preserved_duration = _bounded_compact_context_duration(
-                previous_task.get("duration_seconds")
-            )
+            previous_duration = previous_task.get("duration_seconds")
             tactical_task.update(
                 {
                     "task_type": task_type,
@@ -4298,8 +4296,13 @@ def _lower_compact_policy_modulation_tool_input(
                     "safety_margin": 0.05,
                 }
             )
-            if preserved_duration:
-                tactical_task["duration_seconds"] = preserved_duration
+            if (
+                type(previous_duration) is not bool
+                and isinstance(previous_duration, (int, float))
+            ):
+                tactical_task["duration_seconds"] = (
+                    _bounded_compact_context_duration(previous_duration)
+                )
 
     if command_layer in {"operation", "emergency"} and operation_action:
         scope = modulation["scope"]
@@ -4310,9 +4313,7 @@ def _lower_compact_policy_modulation_tool_input(
                 and isinstance(previous_operation.get("scope"), Mapping)
                 else {}
             )
-            preserved_scope_duration = _bounded_compact_context_duration(
-                previous_scope.get("duration_seconds")
-            )
+            previous_scope_duration = previous_scope.get("duration_seconds")
             scope.update(
                 {
                     "army_group": army_group,
@@ -4333,8 +4334,15 @@ def _lower_compact_policy_modulation_tool_input(
                     "allow_partial_scope": allow_partial,
                 }
             )
-            if preserved_scope_duration:
-                scope["duration_seconds"] = preserved_scope_duration
+            if (
+                type(previous_scope_duration) is not bool
+                and isinstance(previous_scope_duration, (int, float))
+            ):
+                scope["duration_seconds"] = (
+                    _bounded_compact_context_duration(
+                        previous_scope_duration
+                    )
+                )
 
     route_type = str(command.get("route_type", "") or "").strip()
     if route_type:
@@ -4961,7 +4969,12 @@ def _compact_known_operation_with_composition(
             {
                 "unit_type": str(item.get("unit_type", "") or ""),
                 "role": str(item.get("role", "") or ""),
-                "priority": float(item.get("priority", 0.65) or 0.65),
+                "priority": (
+                    max(0.0, min(1.0, float(item.get("priority"))))
+                    if type(item.get("priority")) is not bool
+                    and isinstance(item.get("priority"), (int, float))
+                    else 0.65
+                ),
                 "ability_policy": str(
                     item.get("ability_policy", "if_available")
                     or "if_available"

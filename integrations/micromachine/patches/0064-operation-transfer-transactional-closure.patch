@@ -659,7 +659,7 @@ index 3385c33..80407c7 100644
 +		}
 +		*source = sourceReplacement;
 +		*destination = destinationReplacement;
-+		if (source->editAfterComposition.empty())
++		if (transactionPlan.sourceTags.empty())
 +		{
 +			releaseVoiOperation(
 +				*source,

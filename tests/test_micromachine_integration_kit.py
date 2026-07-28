@@ -723,6 +723,18 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '+\t\t\texisting.status = "WAITING_FOR_UNITS";',
             patch[:deferred_handoff],
         )
+        self.assertNotIn("source->editAfterComposition.empty()", patch)
+        terminalization = patch.index(
+            "if (transactionPlan.sourceTags.empty())",
+            transaction_plan,
+        )
+        self.assertLess(
+            terminalization,
+            patch.index(
+                "|terminal=transferred_all_units",
+                terminalization,
+            ),
+        )
         self.assertLess(transaction_plan, first_squad_mutation)
 
         parse_result = subprocess.run(

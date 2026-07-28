@@ -1202,9 +1202,13 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         )
         self.assertEqual(0, source["tactical_task"]["min_units"])
         self.assertEqual(0, source["scope"]["min_units"])
+        destination_composition = {
+            item["role"]: item["count"]
+            for item in destination["composition_requirements"]
+        }
         self.assertEqual(
-            5,
-            destination["composition_requirements"][0]["count"],
+            {"frontline": 4, "scout": 1},
+            destination_composition,
         )
         self.assertEqual("transfer_out", source["operation_edit"]["action"])
         self.assertEqual(
@@ -1239,6 +1243,15 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         )
         self.assertEqual(300, destination["tactical_task"]["duration_seconds"])
         self.assertEqual(300, destination["scope"]["duration_seconds"])
+        destination_roles = {
+            item["role"]: item
+            for item in destination["unit_roles"]
+        }
+        self.assertEqual(
+            "escape",
+            destination_roles["scout"]["ability_policy"],
+        )
+        self.assertEqual(0.91, destination_roles["scout"]["priority"])
 
     def test_myproxy_compact_full_force_transfer_stays_active_until_runtime_commit(
         self,
@@ -1280,6 +1293,14 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                 },
                 "composition_requirements": [
                     {"unit_type": "TERRAN_MARINE", "count": 1, "role": "scout"},
+                ],
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "role": "scout",
+                        "priority": 0.0,
+                        "ability_policy": "escape",
+                    }
                 ],
                 "lifetime": {
                     "mode": "standing_order",
@@ -1337,10 +1358,20 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual([], source["composition_requirements"])
         self.assertEqual("active", source["lifetime"]["completion_state"])
         self.assertEqual("standing_order", source["lifetime"]["mode"])
+        self.assertEqual(0, source["tactical_task"]["duration_seconds"])
+        self.assertEqual(0, source["scope"]["duration_seconds"])
         self.assertNotIn(
             "transferred_all_units",
             source["lifetime"]["completion_conditions"],
         )
+        destination = operations["assault-bravo"]
+        scout_role = next(
+            item
+            for item in destination["unit_roles"]
+            if item["role"] == "scout"
+        )
+        self.assertEqual(0.0, scout_role["priority"])
+        self.assertEqual("escape", scout_role["ability_policy"])
 
     def test_myproxy_compact_emergency_transfer_preserves_emergency_layer(
         self,
