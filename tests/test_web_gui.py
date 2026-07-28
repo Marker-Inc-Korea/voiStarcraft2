@@ -713,6 +713,42 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("board A secret order", stream)
         self.assertNotIn("board B private order", stream)
 
+    def test_sse_source_error_can_repeat_after_recovery(self):
+        http_server = self.server._http
+        http_server.publish_source_error(
+            "micromachine_status:test",
+            "micromachine_status",
+            {"error": "runtime unavailable"},
+        )
+        first_error_seq = http_server.event_journal.latest_seq
+        http_server.publish_source_error(
+            "micromachine_status:test",
+            "micromachine_status",
+            {"error": "runtime unavailable"},
+        )
+        self.assertEqual(
+            http_server.event_journal.latest_seq,
+            first_error_seq,
+        )
+
+        http_server.publish_source_recovered(
+            "micromachine_status:test",
+            "micromachine_status",
+        )
+        recovery_seq = http_server.event_journal.latest_seq
+        self.assertGreater(recovery_seq, first_error_seq)
+        http_server.publish_source_error(
+            "micromachine_status:test",
+            "micromachine_status",
+            {"error": "runtime unavailable"},
+        )
+
+        events = http_server.event_journal.events_after(first_error_seq)
+        self.assertEqual(
+            [event["event_type"] for event in events],
+            ["source_recovered", "source_error"],
+        )
+
     def test_server_stop_terminates_an_active_sse_handler(self):
         connection = http.client.HTTPConnection(
             "127.0.0.1",
@@ -8747,6 +8783,7 @@ var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
+var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var microMachinePollQueued = false;
 var microMachinePollAbortController = null;
@@ -8892,8 +8929,30 @@ sourceA.emit("source_error", {
 });
 assert.strictEqual(fallbackPollingIntervals.length, 3);
 assert(statusNode.textContent.includes("temporarily unavailable"));
-sourceA.emit("micromachine_status", {
+sourceA.emit("state", {
   event_seq: 5,
+  event_type: "state",
+  blackboard_scope_id: "scope-a",
+  payload: { available: true }
+});
+assert.strictEqual(
+  fallbackPollingIntervals.length,
+  3,
+  "unrelated source recovery cannot clear micromachine fallback"
+);
+sourceA.emit("source_recovered", {
+  event_seq: 6,
+  event_type: "source_recovered",
+  blackboard_scope_id: "scope-a",
+  payload: {
+    source: "micromachine_status",
+    blackboard_dir: "/tmp/board-a",
+    blackboard_scope_id: "scope-a"
+  }
+});
+assert.strictEqual(fallbackPollingIntervals.length, 0);
+sourceA.emit("micromachine_status", {
+  event_seq: 7,
   event_type: "micromachine_status",
   blackboard_scope_id: "scope-a",
   payload: {
@@ -8903,6 +8962,26 @@ sourceA.emit("micromachine_status", {
   }
 });
 assert.strictEqual(fallbackPollingIntervals.length, 0);
+
+beginOperationRecord("unbound local card", "unbound-pending");
+const beforeLegacyCardCount = Object.keys(operationRecords).length;
+sourceA.emit("command_received", {
+  event_seq: 8,
+  event_type: "command_received",
+  update_id: "",
+  operation_id: "legacy-other-tab",
+  blackboard_scope_id: "",
+  payload: {
+    command_text: "legacy other-tab order",
+    status: "received",
+    mode: "legacy_commander"
+  }
+});
+assert.strictEqual(
+  Object.keys(operationRecords).length,
+  beforeLegacyCardCount + 1,
+  "empty update IDs cannot collapse distinct operations"
+);
 
 blackboardInput.value = "/tmp/board-b";
 reconnectEventChannel();

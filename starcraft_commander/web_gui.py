@@ -6544,6 +6544,7 @@ var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
+var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var logBox = document.getElementById("log");
 var currentLang = "ko";
@@ -7795,7 +7796,6 @@ function eventSourceUrl() {
 
 function startPollingFallback() {
   if (fallbackPollingIntervals.length) { return; }
-  commandEventHealthy = false;
   pollHistory();
   pollState();
   pollMicroMachineStatus();
@@ -7818,6 +7818,26 @@ function stopPollingFallback() {
   ) {
     microMachinePollAbortController.abort();
   }
+}
+
+function refreshEventPollingFallback() {
+  if (Object.keys(commandEventFailedSources).length > 0) {
+    startPollingFallback();
+    return;
+  }
+  if (commandEventHealthy) {
+    stopPollingFallback();
+  }
+}
+
+function markEventSourceFailed(source) {
+  commandEventFailedSources[String(source || "event source")] = true;
+  refreshEventPollingFallback();
+}
+
+function markEventSourceRecovered(source) {
+  delete commandEventFailedSources[String(source || "event source")];
+  refreshEventPollingFallback();
 }
 
 function serverEventRegressesOperation(envelope) {
@@ -7871,7 +7891,11 @@ function applyHistoryEventPayload(payload) {
 
 function applyEventSnapshot(payload) {
   if (!payload || typeof payload !== "object") { return; }
+  commandEventFailedSources = {};
   var history = payload.history || {};
+  if (history.error) {
+    commandEventFailedSources.history = true;
+  }
   (history.events || []).forEach(applyHistoryEventPayload);
   if (typeof history.latest === "number" && history.latest > lastSeq) {
     lastSeq = history.latest;
@@ -7879,8 +7903,14 @@ function applyEventSnapshot(payload) {
   if (!isMicroMachineCommandMode() && payload.state) {
     renderState(payload.state);
   }
+  if (payload.state && payload.state.error) {
+    commandEventFailedSources.state = true;
+  }
   if (payload.micromachine_status) {
     safeRenderMicroMachineStatus(payload.micromachine_status);
+    if (payload.micromachine_status.status === "source_error") {
+      commandEventFailedSources.micromachine_status = true;
+    }
   }
 }
 
@@ -7904,7 +7934,7 @@ function operationRecordMatchesServerEvent(operationId, updateId) {
       (
         record.pendingId === operationId ||
         record.operationId === operationId ||
-        record.updateId === updateId
+        (Boolean(updateId) && record.updateId === updateId)
       )
     );
   });
@@ -7963,7 +7993,7 @@ function applyEventSourceError(envelope, payload) {
       "实时状态源错误：" + source + " · " + error
     );
   }
-  startPollingFallback();
+  markEventSourceFailed(source);
 }
 
 function applyServerEvent(event) {
@@ -7981,7 +8011,7 @@ function applyServerEvent(event) {
     applyEventSnapshot(payload);
     if (commandEventSource) {
       commandEventHealthy = true;
-      stopPollingFallback();
+      refreshEventPollingFallback();
     }
     return;
   }
@@ -7997,19 +8027,21 @@ function applyServerEvent(event) {
     applyEventSourceError(envelope, payload);
     return;
   }
+  if (eventType === "source_recovered") {
+    markEventSourceRecovered(payload.source);
+    return;
+  }
   if (eventType === "command_received") {
     applyCommandReceivedEvent(envelope, payload);
     return;
   }
-  if (commandEventSource) {
-    commandEventHealthy = true;
-    stopPollingFallback();
-  }
   if (eventType === "history") {
+    markEventSourceRecovered("history");
     applyHistoryEventPayload(payload);
     return;
   }
   if (eventType === "state") {
+    markEventSourceRecovered("state");
     if (!isMicroMachineCommandMode()) { renderState(payload); }
     return;
   }
@@ -8018,6 +8050,9 @@ function applyServerEvent(event) {
     eventType === "micromachine_submission"
   ) {
     if (serverEventMatchesCurrentBlackboard(envelope, payload)) {
+      if (eventType === "micromachine_status") {
+        markEventSourceRecovered("micromachine_status");
+      }
       safeRenderMicroMachineStatus(payload);
     }
   }
@@ -8046,7 +8081,7 @@ function connectEventChannel() {
   source.onopen = function() {
     if (commandEventSource !== source) { return; }
     commandEventHealthy = true;
-    stopPollingFallback();
+    refreshEventPollingFallback();
   };
   [
     "snapshot",
@@ -8055,7 +8090,8 @@ function connectEventChannel() {
     "micromachine_status",
     "micromachine_submission",
     "command_received",
-    "source_error"
+    "source_error",
+    "source_recovered"
   ].forEach(function(eventType) {
     source.addEventListener(eventType, function(event) {
       if (commandEventSource !== source) { return; }
@@ -12624,6 +12660,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._event_source_lock = threading.Lock()
         self._observed_history_seq = 0
         self._observed_payload_hashes: dict[str, str] = {}
+        self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
 
@@ -12693,6 +12730,46 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
 
         self.shutdown_event.set()
         self.event_journal.wake_waiters()
+
+    def publish_source_error(
+        self,
+        source_key: str,
+        source: str,
+        payload: Mapping[str, object],
+        *,
+        blackboard_dir: str = "",
+    ) -> None:
+        """Publish one deduplicated source failure until recovery is observed."""
+
+        self._failed_event_sources.add(source_key)
+        self.publish_changed_snapshot(
+            f"source:{source_key}",
+            "source_error",
+            {"source": source, **dict(payload)},
+            blackboard_dir=blackboard_dir,
+        )
+
+    def publish_source_recovered(
+        self,
+        source_key: str,
+        source: str,
+        *,
+        blackboard_dir: str = "",
+    ) -> None:
+        """Publish recovery once and allow the same later failure to reappear."""
+
+        if source_key not in self._failed_event_sources:
+            return
+        self._failed_event_sources.remove(source_key)
+        self._observed_payload_hashes.pop(f"source:{source_key}", None)
+        self.publish_event(
+            "source_recovered",
+            {
+                "source": source,
+                "blackboard_dir": blackboard_dir,
+            },
+            blackboard_dir=blackboard_dir,
+        )
 
 
 class _WebGuiRequestHandler(BaseHTTPRequestHandler):
@@ -13026,12 +13103,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         observed = max(observed, seq_value)
                     server.publish_event("history", payload)  # type: ignore[attr-defined]
                 server._observed_history_seq = max(observed, latest)  # type: ignore[attr-defined]
+                server.publish_source_recovered(  # type: ignore[attr-defined]
+                    "history",
+                    "history",
+                )
             except Exception as error:  # noqa: BLE001 - stream remains available.
-                server.publish_changed_snapshot(  # type: ignore[attr-defined]
-                    "error:history",
-                    "source_error",
+                server.publish_source_error(  # type: ignore[attr-defined]
+                    "history",
+                    "history",
                     {
-                        "source": "history",
                         "error": _redact_sensitive_text(
                             error,
                             normalize_whitespace=True,
@@ -13039,17 +13119,21 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     },
                 )
             try:
+                state_payload = self._state_payload()
                 server.publish_changed_snapshot(  # type: ignore[attr-defined]
                     "state",
                     "state",
-                    self._state_payload(),
+                    state_payload,
+                )
+                server.publish_source_recovered(  # type: ignore[attr-defined]
+                    "state",
+                    "state",
                 )
             except Exception as error:  # noqa: BLE001 - stream remains available.
-                server.publish_changed_snapshot(  # type: ignore[attr-defined]
-                    "error:state",
-                    "source_error",
+                server.publish_source_error(  # type: ignore[attr-defined]
+                    "state",
+                    "state",
                     {
-                        "source": "state",
                         "error": _redact_sensitive_text(
                             error,
                             normalize_whitespace=True,
@@ -13069,16 +13153,19 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     status,
                     blackboard_dir=blackboard_dir,
                 )
+                server.publish_source_recovered(  # type: ignore[attr-defined]
+                    f"micromachine_status:{scope}",
+                    "micromachine_status",
+                    blackboard_dir=blackboard_dir,
+                )
             except Exception as error:  # noqa: BLE001 - stream remains available.
-                server.publish_changed_snapshot(  # type: ignore[attr-defined]
-                    f"error:micromachine:{blackboard_dir}",
-                    "source_error",
+                scope_id = _micromachine_blackboard_scope_id(blackboard_dir)
+                server.publish_source_error(  # type: ignore[attr-defined]
+                    f"micromachine_status:{scope_id}",
+                    "micromachine_status",
                     {
-                        "source": "micromachine_status",
                         "blackboard_dir": blackboard_dir,
-                        "blackboard_scope_id": (
-                            _micromachine_blackboard_scope_id(blackboard_dir)
-                        ),
+                        "blackboard_scope_id": scope_id,
                         "error": _redact_sensitive_text(
                             error,
                             normalize_whitespace=True,
@@ -13197,6 +13284,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
             self._send_internal_error(error)
             return
+        legacy_operation_id = str(
+            document.get("operation_id", "")
+            or f"legacy-{uuid.uuid4().hex}"
+        )
         self.server.publish_event(  # type: ignore[attr-defined]
             "command_received",
             {
@@ -13204,7 +13295,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "status": "received",
                 "mode": COMMAND_MODE_LEGACY_COMMANDER,
             },
-            operation_id=str(document.get("operation_id", "") or ""),
+            operation_id=legacy_operation_id,
             generation=max(0, _web_event_int(document.get("generation"), 0)),
         )
         self._send_json(HTTPStatus.ACCEPTED, {"accepted": True})
