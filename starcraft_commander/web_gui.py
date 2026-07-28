@@ -24,7 +24,8 @@ Architecture (three seams, each independently swappable):
 
 The LLM-free invariant holds: nothing here runs per game frame. Commands flow
 only when the human submits text, exactly like the terminal demo. The browser
-polls read-only JSON endpoints; polling never touches the interpreter.
+uses an authenticated SSE event journal for command/state feedback and falls
+back to read-only JSON polling; neither path touches the interpreter.
 """
 
 from __future__ import annotations
@@ -369,9 +370,11 @@ def _require_micromachine_enemy_difficulty(
 
 
 def _default_micromachine_blackboard_dir() -> str:
-    return os.environ.get("VOI_MICROMACHINE_BLACKBOARD_DIR", "").strip() or (
-        "/private/tmp/voi-mm-live"
-    )
+    configured = os.environ.get("VOI_MICROMACHINE_BLACKBOARD_DIR", "").strip()
+    if configured:
+        return configured
+    temp_root = "/private/tmp" if os.path.isdir("/private/tmp") else tempfile.gettempdir()
+    return os.path.join(temp_root, "voi-mm-live")
 
 
 def _micromachine_compile_result_path(blackboard_dir: str) -> str:
@@ -2745,6 +2748,90 @@ def _mapping_child(mapping: Mapping[str, object], key: str) -> Mapping[str, obje
     return value if isinstance(value, Mapping) else {}
 
 
+def _web_event_int(value: object, default: int = 0) -> int:
+    if type(value) is int:
+        return value
+    try:
+        return int(str(value or "").strip())
+    except ValueError:
+        return default
+
+
+def _web_event_identity(
+    payload: Mapping[str, object],
+) -> tuple[str, str, int, int]:
+    """Extract stable operation identity from one web/runtime payload."""
+
+    compile_result = _mapping_child(payload, "compile_result")
+    update = _mapping_child(payload, "update")
+    latest_request = _mapping_child(payload, "latest_request")
+    intervention = _mapping_child(payload, "intervention")
+    execution = _mapping_child(intervention, "command_execution")
+    dashboard = _mapping_child(payload, "dashboard")
+    telemetry = _mapping_child(dashboard, "telemetry")
+    update_id = str(
+        execution.get("command_id")
+        or update.get("update_id")
+        or compile_result.get("update_id")
+        or latest_request.get("update_id")
+        or payload.get("update_id")
+        or ""
+    )
+    operation_id = str(
+        execution.get("operation_id")
+        or payload.get("operation_id")
+        or update_id
+        or ""
+    )
+    generation = _web_event_int(
+        execution.get("operation_generation")
+        or payload.get("operation_generation")
+        or payload.get("generation"),
+        0,
+    )
+    game_frame = _web_event_int(
+        intervention.get("telemetry_frame")
+        if intervention.get("telemetry_frame") is not None
+        else telemetry.get("frame"),
+        -1,
+    )
+    return update_id, operation_id, max(0, generation), game_frame
+
+
+def _web_event_blackboard_scope_id(
+    payload: Mapping[str, object],
+    *,
+    blackboard_dir: str = "",
+    blackboard_scope_id: str = "",
+) -> str:
+    """Return the opaque blackboard boundary attached to one web event."""
+
+    if blackboard_scope_id.strip():
+        return blackboard_scope_id.strip()
+    candidates = (
+        payload,
+        _mapping_child(payload, "compile_result"),
+        _mapping_child(payload, "latest_request"),
+        _mapping_child(payload, "update"),
+        _mapping_child(payload, "intervention"),
+    )
+    for candidate in candidates:
+        scope_id = str(candidate.get("blackboard_scope_id", "") or "").strip()
+        if scope_id:
+            return scope_id
+    resolved_dir = blackboard_dir.strip()
+    if not resolved_dir:
+        for candidate in candidates:
+            resolved_dir = str(candidate.get("blackboard_dir", "") or "").strip()
+            if resolved_dir:
+                break
+    return (
+        _micromachine_blackboard_scope_id(resolved_dir)
+        if resolved_dir
+        else ""
+    )
+
+
 def _number(value: object) -> float:
     if type(value) is bool or not isinstance(value, (int, float)):
         return 0.0
@@ -2859,7 +2946,16 @@ _LLM_SETUP_NETWORK_MARKERS: Final[frozenset[str]] = frozenset(
 """SDK error markers that mean the provider could not be reached."""
 
 WEB_GUI_POLL_INTERVAL_MS: Final[int] = 1000
-"""Browser polling interval for ``/api/state`` and ``/api/history``."""
+"""Browser polling interval used only while the SSE channel is unavailable."""
+
+WEB_GUI_EVENT_RETENTION: Final[int] = 512
+"""Maximum append-only web lifecycle events retained for SSE replay."""
+
+WEB_GUI_SSE_HEARTBEAT_SECONDS: Final[float] = 10.0
+"""Maximum quiet period before an SSE heartbeat comment is emitted."""
+
+WEB_GUI_SSE_REFRESH_SECONDS: Final[float] = 0.25
+"""Server-side source refresh cadence while at least one SSE client is open."""
 
 WEB_GUI_STATUS_COLORS: Final[Mapping[str, str]] = {
     "executed": "#1d8a3a",
@@ -3572,6 +3668,100 @@ class _SimpleHistory:
 
         with self._lock:
             return self._seq
+
+
+class _WebEventJournal:
+    """Thread-safe append-only event journal with bounded replay retention."""
+
+    def __init__(self, retention: int = WEB_GUI_EVENT_RETENTION) -> None:
+        if type(retention) is not int or retention < 1:
+            raise ValueError("Web event journal retention must be a positive int.")
+        self._retention = retention
+        self._condition = threading.Condition()
+        self._events: deque[dict[str, object]] = deque(maxlen=retention)
+        self._seq = 0
+
+    @property
+    def latest_seq(self) -> int:
+        with self._condition:
+            return self._seq
+
+    @property
+    def oldest_seq(self) -> int:
+        with self._condition:
+            if not self._events:
+                return self._seq + 1
+            return int(self._events[0]["event_seq"])
+
+    def publish(
+        self,
+        event_type: str,
+        payload: Mapping[str, object],
+        *,
+        update_id: str = "",
+        operation_id: str = "",
+        generation: int = 0,
+        game_frame: int = -1,
+        blackboard_scope_id: str = "",
+    ) -> dict[str, object]:
+        safe_payload = _redact_json_ready(payload)
+        if not isinstance(safe_payload, Mapping):
+            safe_payload = {"value": safe_payload}
+        with self._condition:
+            self._seq += 1
+            event = {
+                "event_seq": self._seq,
+                "event_type": str(event_type),
+                "created_at_unix_ms": int(time.time() * 1000),
+                "update_id": str(update_id or ""),
+                "operation_id": str(operation_id or ""),
+                "generation": max(0, int(generation)),
+                "game_frame": int(game_frame),
+                "blackboard_scope_id": str(blackboard_scope_id or ""),
+                "payload": dict(safe_payload),
+            }
+            self._events.append(event)
+            self._condition.notify_all()
+            return dict(event)
+
+    def replay_available(self, after: int) -> bool:
+        threshold = max(0, int(after))
+        with self._condition:
+            if threshold > self._seq:
+                return False
+            if not self._events:
+                return threshold >= self._seq
+            return threshold >= int(self._events[0]["event_seq"]) - 1
+
+    def events_after(self, after: int) -> tuple[dict[str, object], ...]:
+        threshold = max(0, int(after))
+        with self._condition:
+            return tuple(
+                dict(event)
+                for event in self._events
+                if int(event["event_seq"]) > threshold
+            )
+
+    def wake_waiters(self) -> None:
+        """Wake blocked SSE handlers so server shutdown does not leak threads."""
+
+        with self._condition:
+            self._condition.notify_all()
+
+    def wait_for_events(
+        self,
+        after: int,
+        timeout: float,
+    ) -> tuple[dict[str, object], ...]:
+        threshold = max(0, int(after))
+        with self._condition:
+            if self._seq <= threshold:
+                self._condition.wait(timeout=max(0.0, float(timeout)))
+            return tuple(
+                dict(event)
+                for event in self._events
+                if int(event["event_seq"]) > threshold
+            )
 
 
 class _LiveLaunchManager:
@@ -6349,6 +6539,13 @@ var token = new URLSearchParams(window.location.search).get("token") || "";
 var authQuery = token ? "?token=" + encodeURIComponent(token) : "";
 var authJoin = token ? "&token=" + encodeURIComponent(token) : "";
 var lastSeq = 0;
+var lastEventSeq = 0;
+var commandEventBlackboardDir = "";
+var commandEventSource = null;
+var commandEventReconnectTimer = null;
+var commandEventHealthy = false;
+var commandEventFailedSources = {};
+var fallbackPollingIntervals = [];
 var logBox = document.getElementById("log");
 var currentLang = "ko";
 var llmConfigured = false;
@@ -6374,6 +6571,7 @@ var microMachinePollBlackboardDir = null;
 var microMachineBlackboardContextGeneration = 0;
 var microMachineCommandAnnouncementSeq = 0;
 var microMachineSubmissionSeq = 0;
+var microMachineClientUpdateSeq = 0;
 var operationRecordSeq = 0;
 var microMachinePollInFlight = false;
 var microMachinePollQueued = false;
@@ -7569,6 +7767,357 @@ function pollHistory() {
     .catch(function () { /* 서버가 잠시 응답하지 않아도 폴링은 계속됩니다. */ });
 }
 
+function currentEventBlackboardDirectory() {
+  var input = document.getElementById("micromachine-blackboard-dir");
+  return input ? String(input.value || "").trim() : "";
+}
+
+function resetEventCursorForBlackboard(directory) {
+  var normalized = String(directory || "").trim();
+  if (commandEventBlackboardDir === normalized) { return false; }
+  commandEventBlackboardDir = normalized;
+  lastEventSeq = 0;
+  return true;
+}
+
+function eventSourceUrl() {
+  var params = [];
+  var directory = currentEventBlackboardDirectory();
+  resetEventCursorForBlackboard(directory);
+  if (token) { params.push("token=" + encodeURIComponent(token)); }
+  if (lastEventSeq > 0) {
+    params.push("after=" + encodeURIComponent(String(lastEventSeq)));
+  }
+  if (directory) {
+    params.push("blackboard_dir=" + encodeURIComponent(directory));
+  }
+  return "/api/events" + (params.length ? "?" + params.join("&") : "");
+}
+
+function startPollingFallback() {
+  if (fallbackPollingIntervals.length) { return; }
+  pollHistory();
+  pollState();
+  pollMicroMachineStatus();
+  fallbackPollingIntervals = [
+    window.setInterval(pollHistory, POLL_INTERVAL_MS),
+    window.setInterval(pollState, POLL_INTERVAL_MS),
+    window.setInterval(pollMicroMachineStatus, POLL_INTERVAL_MS)
+  ];
+}
+
+function stopPollingFallback() {
+  fallbackPollingIntervals.forEach(function(intervalId) {
+    window.clearInterval(intervalId);
+  });
+  fallbackPollingIntervals = [];
+  microMachinePollQueued = false;
+  if (
+    microMachinePollAbortController &&
+    typeof microMachinePollAbortController.abort === "function"
+  ) {
+    microMachinePollAbortController.abort();
+  }
+}
+
+function refreshEventPollingFallback() {
+  if (Object.keys(commandEventFailedSources).length > 0) {
+    startPollingFallback();
+    return;
+  }
+  if (commandEventHealthy) {
+    stopPollingFallback();
+  }
+}
+
+function markEventSourceFailed(source) {
+  commandEventFailedSources[String(source || "event source")] = true;
+  refreshEventPollingFallback();
+}
+
+function markEventSourceRecovered(source) {
+  delete commandEventFailedSources[String(source || "event source")];
+  refreshEventPollingFallback();
+}
+
+function serverEventRegressesOperation(envelope) {
+  var operationId = String(
+    envelope && (envelope.operation_id || envelope.update_id) || ""
+  );
+  var generation = Number(envelope && envelope.generation || 0);
+  var frame = Number(envelope && envelope.game_frame);
+  if (!operationId) { return false; }
+  var regresses = false;
+  Object.keys(operationRecords).some(function(key) {
+    var record = operationRecords[key];
+    if (
+      !record ||
+      (
+        record.operationId !== operationId &&
+        record.updateId !== operationId
+      )
+    ) {
+      return false;
+    }
+    if (
+      generation > 0 &&
+      record.operationGeneration > 0 &&
+      generation < record.operationGeneration
+    ) {
+      regresses = true;
+      return true;
+    }
+    if (
+      Number.isFinite(frame) &&
+      frame >= 0 &&
+      record.telemetryFrame >= 0 &&
+      frame < record.telemetryFrame
+    ) {
+      regresses = true;
+      return true;
+    }
+    return false;
+  });
+  return regresses;
+}
+
+function applyHistoryEventPayload(payload) {
+  if (!payload || typeof payload !== "object") { return; }
+  var historySeq = Number(payload.seq || 0);
+  if (historySeq > 0 && historySeq <= lastSeq) { return; }
+  appendLog(payload);
+  if (historySeq > lastSeq) { lastSeq = historySeq; }
+}
+
+function applyEventSnapshot(payload) {
+  if (!payload || typeof payload !== "object") { return; }
+  commandEventFailedSources = {};
+  var history = payload.history || {};
+  if (history.error) {
+    commandEventFailedSources.history = true;
+  }
+  (history.events || []).forEach(applyHistoryEventPayload);
+  if (typeof history.latest === "number" && history.latest > lastSeq) {
+    lastSeq = history.latest;
+  }
+  if (!isMicroMachineCommandMode() && payload.state) {
+    renderState(payload.state);
+  }
+  if (payload.state && payload.state.error) {
+    commandEventFailedSources.state = true;
+  }
+  if (payload.micromachine_status) {
+    safeRenderMicroMachineStatus(payload.micromachine_status);
+    if (payload.micromachine_status.status === "source_error") {
+      commandEventFailedSources.micromachine_status = true;
+    }
+  }
+}
+
+function serverEventMatchesCurrentBlackboard(envelope, payload) {
+  if (!payload || typeof payload !== "object") { return true; }
+  var currentDirectory = currentEventBlackboardDirectory();
+  var eventDirectory = String(payload.blackboard_dir || "").trim();
+  var expectedScope = String(envelope && envelope.blackboard_scope_id || "");
+  var payloadScope = String(payload.blackboard_scope_id || "");
+  if (expectedScope && payloadScope && expectedScope !== payloadScope) {
+    return false;
+  }
+  return !currentDirectory || !eventDirectory || currentDirectory === eventDirectory;
+}
+
+function operationRecordMatchesServerEvent(operationId, updateId) {
+  return Object.keys(operationRecords).some(function(key) {
+    var record = operationRecords[key];
+    return Boolean(
+      record &&
+      (
+        record.pendingId === operationId ||
+        record.operationId === operationId ||
+        (Boolean(updateId) && record.updateId === updateId)
+      )
+    );
+  });
+}
+
+function applyCommandReceivedEvent(envelope, payload) {
+  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return; }
+  var text = String(payload.command_text || "");
+  var operationId = String(
+    envelope.operation_id || envelope.update_id || ""
+  );
+  var updateId = String(envelope.update_id || "");
+  if (!text || !operationId) { return; }
+  if (!operationRecordMatchesServerEvent(operationId, updateId)) {
+    if (activeCommandConsoleRecord.state === "idle") {
+      beginActiveCommandConsole(text, operationId);
+    } else {
+      beginOperationRecord(text, operationId);
+    }
+  }
+  bindOperationRecordUpdate(
+    text,
+    operationId,
+    String(envelope.blackboard_scope_id || ""),
+    updateId
+  );
+  if (
+    activeCommandConsoleRecord.pendingId === operationId ||
+    (Boolean(updateId) && activeCommandConsoleRecord.updateId === updateId)
+  ) {
+    var activeBound = bindActiveCommandConsoleUpdate(
+      text,
+      operationId,
+      String(envelope.blackboard_scope_id || ""),
+      updateId
+    );
+    if (activeBound) {
+      renderActiveCommandConsole({
+        status: "received",
+        command_text: text,
+        update_id: updateId,
+        blackboard_scope_id: String(envelope.blackboard_scope_id || ""),
+        consumption_status: "received"
+      }, true);
+    }
+  }
+}
+
+function applyEventSourceError(envelope, payload) {
+  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return; }
+  var source = String(payload.source || "event source");
+  var error = String(payload.error || "source unavailable");
+  var node = document.getElementById("micromachine-status");
+  if (node) {
+    node.textContent = commandUiText(
+      "실시간 상태 소스 오류: " + source + " · " + error,
+      "Real-time state source error: " + source + " · " + error,
+      "实时状态源错误：" + source + " · " + error
+    );
+  }
+  markEventSourceFailed(source);
+}
+
+function applyServerEvent(event) {
+  var envelope;
+  try {
+    envelope = JSON.parse(event.data || "{}");
+  } catch (error) {
+    return;
+  }
+  var eventType = String(envelope.event_type || event.type || "message");
+  var eventSeq = Number(envelope.event_seq || event.lastEventId || 0);
+  var payload = envelope.payload || {};
+  if (eventType === "snapshot") {
+    lastEventSeq = Number.isFinite(eventSeq) && eventSeq >= 0 ? eventSeq : 0;
+    applyEventSnapshot(payload);
+    if (commandEventSource) {
+      commandEventHealthy = true;
+      refreshEventPollingFallback();
+    }
+    return;
+  }
+  if (
+    eventSeq > 0 &&
+    eventSeq <= lastEventSeq
+  ) {
+    return;
+  }
+  if (serverEventRegressesOperation(envelope)) { return; }
+  if (eventSeq > lastEventSeq) { lastEventSeq = eventSeq; }
+  if (eventType === "source_error") {
+    applyEventSourceError(envelope, payload);
+    return;
+  }
+  if (eventType === "source_recovered") {
+    markEventSourceRecovered(payload.source);
+    return;
+  }
+  if (eventType === "command_received") {
+    applyCommandReceivedEvent(envelope, payload);
+    return;
+  }
+  if (eventType === "history") {
+    markEventSourceRecovered("history");
+    applyHistoryEventPayload(payload);
+    return;
+  }
+  if (eventType === "state") {
+    markEventSourceRecovered("state");
+    if (!isMicroMachineCommandMode()) { renderState(payload); }
+    return;
+  }
+  if (
+    eventType === "micromachine_status" ||
+    eventType === "micromachine_submission"
+  ) {
+    if (serverEventMatchesCurrentBlackboard(envelope, payload)) {
+      if (eventType === "micromachine_status") {
+        markEventSourceRecovered("micromachine_status");
+      }
+      safeRenderMicroMachineStatus(payload);
+    }
+  }
+}
+
+function scheduleEventReconnect() {
+  if (commandEventReconnectTimer !== null) { return; }
+  commandEventReconnectTimer = window.setTimeout(function() {
+    commandEventReconnectTimer = null;
+    connectEventChannel();
+  }, Math.min(POLL_INTERVAL_MS, 1000));
+}
+
+function connectEventChannel() {
+  if (typeof window.EventSource !== "function") {
+    startPollingFallback();
+    return;
+  }
+  if (commandEventSource) {
+    commandEventSource.close();
+    commandEventSource = null;
+  }
+  startPollingFallback();
+  var source = new window.EventSource(eventSourceUrl());
+  commandEventSource = source;
+  source.onopen = function() {
+    if (commandEventSource !== source) { return; }
+    commandEventHealthy = true;
+    refreshEventPollingFallback();
+  };
+  [
+    "snapshot",
+    "history",
+    "state",
+    "micromachine_status",
+    "micromachine_submission",
+    "command_received",
+    "source_error",
+    "source_recovered"
+  ].forEach(function(eventType) {
+    source.addEventListener(eventType, function(event) {
+      if (commandEventSource !== source) { return; }
+      applyServerEvent(event);
+    });
+  });
+  source.onerror = function() {
+    if (commandEventSource !== source) { return; }
+    commandEventHealthy = false;
+    source.close();
+    commandEventSource = null;
+    startPollingFallback();
+    scheduleEventReconnect();
+  };
+}
+
+function reconnectEventChannel() {
+  if (commandEventReconnectTimer !== null) {
+    window.clearTimeout(commandEventReconnectTimer);
+    commandEventReconnectTimer = null;
+  }
+  connectEventChannel();
+}
+
 function setText(id, value) {
   document.getElementById(id).textContent = value;
 }
@@ -8717,11 +9266,11 @@ function beginActiveCommandConsole(text, pendingId) {
     scopeId: "",
     updateId: "",
     text: String(text || ""),
-    state: "interpreting",
+    state: "received",
     data: {
-      status: "queued",
+      status: "received",
       command_text: String(text || ""),
-      consumption_status: "pending_compile"
+      consumption_status: "received"
     },
     startedAt: Date.now(),
     stageRank: 0,
@@ -8988,6 +9537,7 @@ function commandConsoleStageModel(data) {
   var assigned = microMachineExecutionStage(execution, "queued_or_assigned");
   var observedEffect = microMachineExecutionEffectObserved(execution);
   var executionState = String(execution.state || "").toLowerCase();
+  var received = Boolean(data && data.status === "received");
   var blockerReason = String(execution.blocker_reason || "").toLowerCase();
   var cancelled = Boolean(
     executionState === "cancelled" ||
@@ -9072,6 +9622,7 @@ function commandConsoleStageModel(data) {
   }
   return {
     execution: execution,
+    received: received,
     interpreted: interpreted,
     assignmentReady: assignmentReady,
     actionIssued: actionIssued,
@@ -9335,6 +9886,13 @@ function commandConsoleVerification(data, model) {
       "SC2 效果观察延迟。命令标识会保留，稍后到达的真实效果仍会继续同步。"
     );
   }
+  if (model.received && !model.interpreted) {
+    return commandUiText(
+      "웹 커맨더가 명령을 수신했습니다. LLM 구조화 해석을 시작합니다.",
+      "The web commander received the order. Structured LLM interpretation is starting.",
+      "网页指挥官已收到命令，正在开始 LLM 结构化解析。"
+    );
+  }
   if (model.blocked) {
     var blockerManager = model.execution.blocker_manager || "TacticalEvidence";
     var blockerReason = (
@@ -9418,6 +9976,9 @@ function commandConsoleStateLabel(model) {
   }
   if (model.interpreted) {
     return commandUiText("MicroMachine 배정 중", "MicroMachine assigning", "MicroMachine 正在分配");
+  }
+  if (model.received) {
+    return commandUiText("명령 수신", "Order received", "已收到命令");
   }
   return commandUiText("명령 해석 중", "Interpreting order", "正在解析命令");
 }
@@ -9633,9 +10194,9 @@ function beginOperationRecord(text, pendingId) {
     operationId: clientId,
     text: String(text || ""),
     data: {
-      status: "queued",
+      status: "received",
       command_text: String(text || ""),
-      consumption_status: "pending_compile",
+      consumption_status: "received",
       operation_id: clientId
     },
     stageRank: 0,
@@ -10665,6 +11226,7 @@ function synchronizeMicroMachineBlackboardDirectory(directory) {
     return false;
   }
   microMachinePollBlackboardDir = normalized;
+  resetEventCursorForBlackboard(normalized);
   microMachineBlackboardContextGeneration += 1;
   microMachinePollQueued = false;
   if (
@@ -10859,6 +11421,11 @@ function buildMicroMachineModulationPayload(text) {
     payload.ttl_seconds = Math.floor(ttlSeconds);
   }
   return payload;
+}
+
+function newMicroMachineClientUpdateId() {
+  microMachineClientUpdateSeq += 1;
+  return "voi-web-" + Date.now() + "-" + microMachineClientUpdateSeq;
 }
 
 function looksLikeMicroMachineEmergencyCommand(text) {
@@ -11634,6 +12201,29 @@ function submitMicroMachineModulation(payload, options) {
   var contextGeneration = microMachineBlackboardContextGeneration;
   var blackboardDirectory = String(payload.blackboard_dir || "").trim();
   var operationId = String(options.operationId || options.pendingId || "");
+  if (!payload.update_id) {
+    payload.update_id = newMicroMachineClientUpdateId();
+  }
+  if (!operationId) { operationId = String(payload.update_id || ""); }
+  payload.operation_id = operationId;
+  payload.operation_generation = microMachineBlackboardContextGeneration + 1;
+  bindOperationRecordUpdate(
+    payload.text || "",
+    operationId,
+    "",
+    String(payload.update_id || "")
+  );
+  if (
+    activeCommandConsoleRecord.pendingId === operationId ||
+    !activeCommandConsoleRecord.updateId
+  ) {
+    bindActiveCommandConsoleUpdate(
+      payload.text || "",
+      operationId,
+      "",
+      String(payload.update_id || "")
+    );
+  }
   var timeoutId = null;
   if (
     (options.appendChat || operationId) &&
@@ -11865,7 +12455,7 @@ var microMachineBlackboardInput = document.getElementById("micromachine-blackboa
 if (microMachineBlackboardInput) {
   microMachineBlackboardInput.addEventListener("change", function () {
     synchronizeMicroMachineBlackboardDirectory(microMachineBlackboardInput.value);
-    pollMicroMachineStatus();
+    reconnectEventChannel();
   });
 }
 
@@ -12014,18 +12604,13 @@ function setupVoiceInput() {
   });
 }
 
-setInterval(pollHistory, POLL_INTERVAL_MS);
-setInterval(pollState, POLL_INTERVAL_MS);
-setInterval(pollMicroMachineStatus, POLL_INTERVAL_MS);
 applyLanguage("ko");
 setLlmStatus("checking", "llmCheckingLabel", t("llmChecking"));
 renderModelSelect(selectedProviderValue(), "");
 setupVoiceInput();
-pollHistory();
-pollState();
 pollLlmSettings();
 refreshLiveConnectionFlow();
-pollMicroMachineStatus();
+connectEventChannel();
 </script>
 </body>
 </html>
@@ -12069,10 +12654,124 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         handler_class: type[BaseHTTPRequestHandler],
         bridge: WebGuiBridgeInterface,
         auth_token: str = "",
+        event_journal: _WebEventJournal | None = None,
     ) -> None:
         self.bridge = bridge
         self.auth_token = auth_token
+        self.event_journal = event_journal or _WebEventJournal()
+        self._event_source_lock = threading.Lock()
+        self._observed_history_seq = 0
+        self._observed_payload_hashes: dict[str, str] = {}
+        self._failed_event_sources: set[str] = set()
+        self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
+
+    def publish_event(
+        self,
+        event_type: str,
+        payload: Mapping[str, object],
+        *,
+        update_id: str = "",
+        operation_id: str = "",
+        generation: int = 0,
+        game_frame: int = -1,
+        blackboard_dir: str = "",
+        blackboard_scope_id: str = "",
+    ) -> dict[str, object]:
+        scope_id = _web_event_blackboard_scope_id(
+            payload,
+            blackboard_dir=blackboard_dir,
+            blackboard_scope_id=blackboard_scope_id,
+        )
+        return self.event_journal.publish(
+            event_type,
+            payload,
+            update_id=update_id,
+            operation_id=operation_id,
+            generation=generation,
+            game_frame=game_frame,
+            blackboard_scope_id=scope_id,
+        )
+
+    def publish_changed_snapshot(
+        self,
+        cache_key: str,
+        event_type: str,
+        payload: Mapping[str, object],
+        *,
+        blackboard_dir: str = "",
+        blackboard_scope_id: str = "",
+    ) -> None:
+        safe_payload = _redact_json_ready(payload)
+        serialized = json.dumps(
+            safe_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        if self._observed_payload_hashes.get(cache_key) == digest:
+            return
+        self._observed_payload_hashes[cache_key] = digest
+        update_id, operation_id, generation, game_frame = (
+            _web_event_identity(payload)
+        )
+        self.publish_event(
+            event_type,
+            payload,
+            update_id=update_id,
+            operation_id=operation_id,
+            generation=generation,
+            game_frame=game_frame,
+            blackboard_dir=blackboard_dir,
+            blackboard_scope_id=blackboard_scope_id,
+        )
+
+    def begin_shutdown(self) -> None:
+        """Signal active streams and wake their journal waits."""
+
+        self.shutdown_event.set()
+        self.event_journal.wake_waiters()
+
+    def publish_source_error(
+        self,
+        source_key: str,
+        source: str,
+        payload: Mapping[str, object],
+        *,
+        blackboard_dir: str = "",
+    ) -> None:
+        """Publish one deduplicated source failure until recovery is observed."""
+
+        self._failed_event_sources.add(source_key)
+        self.publish_changed_snapshot(
+            f"source:{source_key}",
+            "source_error",
+            {"source": source, **dict(payload)},
+            blackboard_dir=blackboard_dir,
+        )
+
+    def publish_source_recovered(
+        self,
+        source_key: str,
+        source: str,
+        *,
+        blackboard_dir: str = "",
+    ) -> None:
+        """Publish recovery once and allow the same later failure to reappear."""
+
+        if source_key not in self._failed_event_sources:
+            return
+        self._failed_event_sources.remove(source_key)
+        self._observed_payload_hashes.pop(f"source:{source_key}", None)
+        self.publish_event(
+            "source_recovered",
+            {
+                "source": source,
+                "blackboard_dir": blackboard_dir,
+            },
+            blackboard_dir=blackboard_dir,
+        )
 
 
 class _WebGuiRequestHandler(BaseHTTPRequestHandler):
@@ -12114,6 +12813,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/history":
             self._handle_history()
+            return
+        if path == "/api/events":
+            self._handle_events()
             return
         if path == "/api/llm":
             self._handle_llm_status()
@@ -12195,6 +12897,339 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 latest = seq_value
         self._send_json(HTTPStatus.OK, {"events": events, "latest": latest})
 
+    def _handle_events(self) -> None:
+        params = parse_qs(urlsplit(self.path).query)
+        after_raw = (
+            self.headers.get("Last-Event-ID", "")
+            or params.get("after", ["0"])[0]
+            or "0"
+        ).strip()
+        try:
+            after = max(0, int(after_raw))
+        except ValueError:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "Last-Event-ID 또는 after 파라미터는 정수여야 합니다."},
+            )
+            return
+        blackboard_dir = self._resolved_micromachine_blackboard_dir(
+            params.get("blackboard_dir", [""])[0] or ""
+        )
+        blackboard_scope_id = _micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
+        once = (params.get("once", [""])[0] or "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        journal = self.server.event_journal  # type: ignore[attr-defined]
+        self.send_response(int(HTTPStatus.OK))
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        cursor = after
+        try:
+            if after == 0 or not journal.replay_available(after):
+                cursor = self._write_authoritative_sse_snapshot(
+                    journal,
+                    blackboard_dir,
+                    blackboard_scope_id,
+                )
+                cursor = self._write_visible_sse_events(
+                    journal.events_after(cursor),
+                    cursor=cursor,
+                    blackboard_scope_id=blackboard_scope_id,
+                )
+            else:
+                cursor = self._write_visible_sse_events(
+                    journal.events_after(after),
+                    cursor=cursor,
+                    blackboard_scope_id=blackboard_scope_id,
+                )
+            self._write_sse_heartbeat()
+            if once:
+                return
+            server = self.server  # type: ignore[assignment]
+            while not server.shutdown_event.is_set():  # type: ignore[attr-defined]
+                self._refresh_event_sources(blackboard_dir)
+                if not journal.replay_available(cursor):
+                    cursor = self._write_authoritative_sse_snapshot(
+                        journal,
+                        blackboard_dir,
+                        blackboard_scope_id,
+                    )
+                    continue
+                events = journal.wait_for_events(
+                    cursor,
+                    WEB_GUI_SSE_REFRESH_SECONDS,
+                )
+                if events:
+                    cursor = self._write_visible_sse_events(
+                        events,
+                        cursor=cursor,
+                        blackboard_scope_id=blackboard_scope_id,
+                    )
+                    continue
+                if (
+                    time.monotonic()
+                    - getattr(self, "_last_sse_write_monotonic", 0.0)
+                    >= WEB_GUI_SSE_HEARTBEAT_SECONDS
+                ):
+                    self._write_sse_heartbeat()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            return
+
+    def _write_authoritative_sse_snapshot(
+        self,
+        journal: _WebEventJournal,
+        blackboard_dir: str,
+        blackboard_scope_id: str,
+    ) -> int:
+        snapshot_cursor = journal.latest_seq
+        snapshot_event = {
+            "event_seq": snapshot_cursor,
+            "event_type": "snapshot",
+            "created_at_unix_ms": int(time.time() * 1000),
+            "update_id": "",
+            "operation_id": "",
+            "generation": 0,
+            "game_frame": -1,
+            "blackboard_scope_id": blackboard_scope_id,
+            "payload": self._authoritative_event_snapshot(blackboard_dir),
+        }
+        self._write_sse_event(snapshot_event)
+        return snapshot_cursor
+
+    def _write_visible_sse_events(
+        self,
+        events: Sequence[Mapping[str, object]],
+        *,
+        cursor: int,
+        blackboard_scope_id: str,
+    ) -> int:
+        """Advance over all journal events but emit only this subscriber's scope."""
+
+        next_cursor = cursor
+        for event in events:
+            next_cursor = max(next_cursor, int(event.get("event_seq", 0)))
+            event_scope_id = str(
+                event.get("blackboard_scope_id", "") or ""
+            )
+            if event_scope_id and event_scope_id != blackboard_scope_id:
+                continue
+            self._write_sse_event(event)
+        return next_cursor
+
+    def _resolved_micromachine_blackboard_dir(
+        self,
+        blackboard_dir: str,
+    ) -> str:
+        default_dir = _default_micromachine_blackboard_dir()
+        default_fn = getattr(
+            self._bridge,
+            "micromachine_blackboard_dir",
+            None,
+        )
+        if callable(default_fn):
+            default_dir = str(default_fn())
+        return _clean_blackboard_dir(blackboard_dir, default_dir)
+
+    def _authoritative_event_snapshot(
+        self,
+        blackboard_dir: str,
+    ) -> dict[str, object]:
+        try:
+            snapshot = self._state_payload()
+        except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+            snapshot = {
+                "available": False,
+                "error": _redact_sensitive_text(
+                    error,
+                    normalize_whitespace=True,
+                ),
+            }
+        try:
+            latest = int(self._bridge.latest_seq())
+            history = [dict(event) for event in self._bridge.history_since(0)]
+            for event in history:
+                seq_value = event.get("seq")
+                if isinstance(seq_value, int):
+                    latest = max(latest, seq_value)
+            history_payload: dict[str, object] = {
+                "events": history,
+                "latest": latest,
+            }
+        except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+            history_payload = {
+                "events": [],
+                "latest": 0,
+                "error": _redact_sensitive_text(
+                    error,
+                    normalize_whitespace=True,
+                ),
+            }
+        try:
+            micromachine_status = self._micromachine_status_payload(
+                blackboard_dir
+            )
+        except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+            micromachine_status = {
+                "enabled": False,
+                "status": "source_error",
+                "error": _redact_sensitive_text(
+                    error,
+                    normalize_whitespace=True,
+                ),
+            }
+        return {
+            "snapshot_reason": "initial_or_replay_unavailable",
+            "state": snapshot,
+            "history": history_payload,
+            "micromachine_status": micromachine_status,
+        }
+
+    def _refresh_event_sources(self, blackboard_dir: str) -> None:
+        server = self.server  # type: ignore[assignment]
+        with server._event_source_lock:  # type: ignore[attr-defined]
+            try:
+                latest = int(self._bridge.latest_seq())
+                observed = int(server._observed_history_seq)  # type: ignore[attr-defined]
+                for event in self._bridge.history_since(observed):
+                    payload = dict(event)
+                    seq_value = payload.get("seq")
+                    if isinstance(seq_value, int):
+                        observed = max(observed, seq_value)
+                    server.publish_event("history", payload)  # type: ignore[attr-defined]
+                server._observed_history_seq = max(observed, latest)  # type: ignore[attr-defined]
+                server.publish_source_recovered(  # type: ignore[attr-defined]
+                    "history",
+                    "history",
+                )
+            except Exception as error:  # noqa: BLE001 - stream remains available.
+                server.publish_source_error(  # type: ignore[attr-defined]
+                    "history",
+                    "history",
+                    {
+                        "error": _redact_sensitive_text(
+                            error,
+                            normalize_whitespace=True,
+                        ),
+                    },
+                )
+            try:
+                state_payload = self._state_payload()
+                server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                    "state",
+                    "state",
+                    state_payload,
+                )
+                server.publish_source_recovered(  # type: ignore[attr-defined]
+                    "state",
+                    "state",
+                )
+            except Exception as error:  # noqa: BLE001 - stream remains available.
+                server.publish_source_error(  # type: ignore[attr-defined]
+                    "state",
+                    "state",
+                    {
+                        "error": _redact_sensitive_text(
+                            error,
+                            normalize_whitespace=True,
+                        ),
+                    },
+                )
+            try:
+                status = self._micromachine_status_payload(blackboard_dir)
+                scope = str(
+                    status.get("blackboard_scope_id")
+                    or status.get("blackboard_dir")
+                    or blackboard_dir
+                )
+                server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                    f"micromachine:{scope}",
+                    "micromachine_status",
+                    status,
+                    blackboard_dir=blackboard_dir,
+                )
+                server.publish_source_recovered(  # type: ignore[attr-defined]
+                    f"micromachine_status:{scope}",
+                    "micromachine_status",
+                    blackboard_dir=blackboard_dir,
+                )
+            except Exception as error:  # noqa: BLE001 - stream remains available.
+                scope_id = _micromachine_blackboard_scope_id(blackboard_dir)
+                server.publish_source_error(  # type: ignore[attr-defined]
+                    f"micromachine_status:{scope_id}",
+                    "micromachine_status",
+                    {
+                        "blackboard_dir": blackboard_dir,
+                        "blackboard_scope_id": scope_id,
+                        "error": _redact_sensitive_text(
+                            error,
+                            normalize_whitespace=True,
+                        ),
+                    },
+                    blackboard_dir=blackboard_dir,
+                )
+
+    def _state_payload(self) -> dict[str, object]:
+        snapshot = self._bridge.state_snapshot()
+        if snapshot is None:
+            return {"available": False}
+        payload: dict[str, object] = {"available": True}
+        payload.update(dict(snapshot))
+        return payload
+
+    def _micromachine_status_payload(
+        self,
+        blackboard_dir: str,
+    ) -> dict[str, object]:
+        status_fn = getattr(self._bridge, "micromachine_status", None)
+        if not callable(status_fn):
+            return {
+                "enabled": False,
+                "error": "MicroMachine modulation bridge is disabled.",
+            }
+        payload = dict(status_fn(blackboard_dir=blackboard_dir))
+        runtime_snapshot = None
+        launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
+        if launcher is not None and callable(getattr(launcher, "snapshot", None)):
+            runtime_snapshot = dict(
+                launcher.snapshot(blackboard_dir=blackboard_dir)
+            )
+        return _micromachine_status_with_runtime_gate(
+            payload,
+            runtime_snapshot=runtime_snapshot,
+            blackboard_dir=str(
+                payload.get("blackboard_dir", blackboard_dir) or ""
+            ),
+        )
+
+    def _write_sse_event(self, event: Mapping[str, object]) -> None:
+        safe_event = _redact_json_ready(event)
+        body = json.dumps(
+            safe_event,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        event_seq = int(event.get("event_seq", 0))
+        event_type = str(event.get("event_type", "message") or "message")
+        self.wfile.write(f"id: {event_seq}\n".encode("utf-8"))
+        self.wfile.write(f"event: {event_type}\n".encode("utf-8"))
+        self.wfile.write(f"data: {body}\n\n".encode("utf-8"))
+        self.wfile.flush()
+        self._last_sse_write_monotonic = time.monotonic()
+
+    def _write_sse_heartbeat(self) -> None:
+        self.wfile.write(b": heartbeat\n\n")
+        self.wfile.flush()
+        self._last_sse_write_monotonic = time.monotonic()
+
     def _handle_command(self) -> None:
         body = self._read_request_body()
         if body is None:
@@ -12251,6 +13286,20 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
             self._send_internal_error(error)
             return
+        legacy_operation_id = str(
+            document.get("operation_id", "")
+            or f"legacy-{uuid.uuid4().hex}"
+        )
+        self.server.publish_event(  # type: ignore[attr-defined]
+            "command_received",
+            {
+                "command_text": text.strip(),
+                "status": "received",
+                "mode": COMMAND_MODE_LEGACY_COMMANDER,
+            },
+            operation_id=legacy_operation_id,
+            generation=max(0, _web_event_int(document.get("generation"), 0)),
+        )
         self._send_json(HTTPStatus.ACCEPTED, {"accepted": True})
 
     def _handle_llm_status(self) -> None:
@@ -12449,28 +13498,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         self._send_json(status, payload)
 
     def _handle_micromachine_status(self) -> None:
-        status_fn = getattr(self._bridge, "micromachine_status", None)
-        if not callable(status_fn):
-            self._send_json(
-                HTTPStatus.OK,
-                {"enabled": False, "error": "MicroMachine modulation bridge is disabled."},
-            )
-            return
         params = parse_qs(urlsplit(self.path).query)
         blackboard_dir = params.get("blackboard_dir", [""])[0] or ""
         try:
-            payload = dict(status_fn(blackboard_dir=blackboard_dir))
-            runtime_snapshot = None
-            launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
-            if launcher is not None and callable(getattr(launcher, "snapshot", None)):
-                runtime_snapshot = dict(launcher.snapshot(blackboard_dir=blackboard_dir))
             self._send_json(
                 HTTPStatus.OK,
-                _micromachine_status_with_runtime_gate(
-                    payload,
-                    runtime_snapshot=runtime_snapshot,
-                    blackboard_dir=str(payload.get("blackboard_dir", blackboard_dir) or ""),
-                ),
+                self._micromachine_status_payload(blackboard_dir),
             )
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
@@ -12520,6 +13553,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         cleaned_text = text.strip()
+        request_blackboard_dir = self._resolved_micromachine_blackboard_dir(
+            str(document.get("blackboard_dir", "") or "")
+        )
         commander_context = _extract_micromachine_language_context(
             document,
             cleaned_text,
@@ -12561,7 +13597,28 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             update_id = (
                 require_micromachine_update_id("update_id", document["update_id"])
                 if isinstance(document.get("update_id"), str)
-                else None
+                else _new_micromachine_update_id()
+            )
+            operation_id = str(document.get("operation_id", "") or update_id)
+            operation_generation = max(
+                0,
+                _web_event_int(document.get("operation_generation"), 0),
+            )
+            self.server.publish_event(  # type: ignore[attr-defined]
+                "command_received",
+                {
+                    "command_text": cleaned_text,
+                    "status": "received",
+                    "mode": COMMAND_MODE_MICROMACHINE,
+                    "blackboard_dir": request_blackboard_dir,
+                },
+                update_id=update_id,
+                operation_id=operation_id,
+                generation=operation_generation,
+                game_frame=(
+                    current_frame if isinstance(current_frame, int) else -1
+                ),
+                blackboard_dir=request_blackboard_dir,
             )
             if async_publish:
                 async_submit_fn = getattr(
@@ -12581,7 +13638,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 payload = dict(
                     async_submit_fn(
                         cleaned_text,
-                        blackboard_dir=str(document.get("blackboard_dir", "") or ""),
+                        blackboard_dir=request_blackboard_dir,
                         provider_output=provider_output,
                         allow_smoke_keyword_provider=allow_smoke_keyword_provider,
                         semantic_scope=semantic_scope,
@@ -12591,12 +13648,23 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         update_id=update_id,
                     )
                 )
+                self.server.publish_event(  # type: ignore[attr-defined]
+                    "micromachine_submission",
+                    payload,
+                    update_id=update_id,
+                    operation_id=operation_id,
+                    generation=operation_generation,
+                    game_frame=(
+                        current_frame if isinstance(current_frame, int) else -1
+                    ),
+                    blackboard_dir=request_blackboard_dir,
+                )
                 self._send_json(HTTPStatus.ACCEPTED, payload)
                 return
             payload = dict(
                 submit_fn(
                     cleaned_text,
-                    blackboard_dir=str(document.get("blackboard_dir", "") or ""),
+                    blackboard_dir=request_blackboard_dir,
                     provider_output=provider_output,
                     allow_smoke_keyword_provider=allow_smoke_keyword_provider,
                     semantic_scope=semantic_scope,
@@ -12646,6 +13714,22 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             else HTTPStatus.ACCEPTED
         )
         payload["accepted"] = bool(payload.get("ok"))
+        event_update_id, event_operation_id, event_generation, event_frame = (
+            _web_event_identity(payload)
+        )
+        self.server.publish_event(  # type: ignore[attr-defined]
+            "micromachine_submission",
+            payload,
+            update_id=event_update_id or update_id,
+            operation_id=event_operation_id or operation_id,
+            generation=event_generation or operation_generation,
+            game_frame=(
+                event_frame
+                if event_frame >= 0
+                else (current_frame if isinstance(current_frame, int) else -1)
+            ),
+            blackboard_dir=request_blackboard_dir,
+        )
         self._send_json(status, payload)
 
     def _read_request_body(self) -> bytes | None:
@@ -12680,7 +13764,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "error": (
                     f"지원하지 않는 경로입니다: {urlsplit(self.path).path}. "
                     "사용 가능한 경로: GET /, GET /api/state, "
-                    "GET /api/history?after=N, GET/POST /api/llm, "
+                    "GET /api/history?after=N, GET /api/events, "
+                    "GET/POST /api/llm, "
                     "POST /api/command, GET /api/runtime/status, "
                     "POST /api/runtime/start, GET /api/micromachine/status, "
                     "POST /api/micromachine/modulate."
@@ -12780,6 +13865,7 @@ class WebGuiServer:
         self._host = cleaned_host
         self._auth_token = cleaned_token
         self._auto_launch_live = bool(auto_launch_live)
+        self._event_journal = _WebEventJournal()
         self._live_launcher = _LiveLaunchManager()
         self._micromachine_launcher = _MicroMachineLaunchManager()
         self._lifecycle_lock = threading.Lock()
@@ -12830,6 +13916,7 @@ class WebGuiServer:
                 _WebGuiRequestHandler,
                 self._bridge,
                 self._auth_token,
+                self._event_journal,
             )
             self._http.auto_launch_live = self._auto_launch_live  # type: ignore[attr-defined]
             self._http.live_launcher = self._live_launcher  # type: ignore[attr-defined]
@@ -12851,6 +13938,7 @@ class WebGuiServer:
             self._http = None
             self._thread = None
         if http is not None:
+            http.begin_shutdown()
             http.shutdown()
             http.server_close()
         if thread is not None:
