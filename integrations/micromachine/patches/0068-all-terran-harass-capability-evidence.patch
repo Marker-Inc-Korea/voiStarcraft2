@@ -1,0 +1,980 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 98bc077..7f71c4f 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -1848,6 +1848,7 @@ bool voiResolveTacticalNukeTargetAnchor(
+ {
+ 	if (locationIntent == "enemy_main"
+ 		|| locationIntent == "enemy_base"
++		|| locationIntent == "enemy_mineral_line"
+ 		|| locationIntent == "enemy_start"
+ 		|| locationIntent == "enemy_start_location")
+ 	{
+@@ -1886,6 +1887,7 @@ CCPosition voiResolveCombatLocationIntent(CCBot & bot, const std::string & locat
+ 			true);
+ 	if (requireFreshEnemyObservation
+ 		&& (locationIntent == "enemy_main"
++			|| locationIntent == "enemy_mineral_line"
+ 			|| locationIntent == "enemy_start"
+ 			|| locationIntent == "enemy_start_location"
+ 			|| locationIntent == "enemy_natural"
+@@ -1899,7 +1901,10 @@ CCPosition voiResolveCombatLocationIntent(CCBot & bot, const std::string & locat
+ 	{
+ 		return voiEnemyNaturalCombatTarget(bot);
+ 	}
+-	if (locationIntent == "enemy_main" || locationIntent == "enemy_start" || locationIntent == "enemy_start_location")
++	if (locationIntent == "enemy_main"
++		|| locationIntent == "enemy_mineral_line"
++		|| locationIntent == "enemy_start"
++		|| locationIntent == "enemy_start_location")
+ 	{
+ 		return voiEnemyMainCombatTarget(bot);
+ 	}
+@@ -2069,6 +2074,7 @@ std::string voiResolveOperationTargetEvidence(
+ 	const bool searchIntent =
+ 		locationIntent == "enemy_main"
+ 		|| locationIntent == "enemy_base"
++		|| locationIntent == "enemy_mineral_line"
+ 		|| locationIntent == "enemy_start"
+ 		|| locationIntent == "enemy_start_location"
+ 		|| locationIntent == "enemy_natural"
+@@ -2181,6 +2187,204 @@ std::string voiOperationJsonEscape(const std::string & value)
+ 	return escaped.str();
+ }
+ 
++std::string voiTerranOperationFamily(const std::string & unitType)
++{
++	if (unitType == "TERRAN_MARINE") return "marine";
++	if (unitType == "TERRAN_MARAUDER") return "marauder";
++	if (unitType == "TERRAN_REAPER") return "reaper";
++	if (unitType == "TERRAN_GHOST") return "ghost";
++	if (unitType == "TERRAN_HELLION"
++		|| unitType == "TERRAN_HELLIONTANK")
++	{
++		return "hellion_hellbat";
++	}
++	if (unitType == "TERRAN_WIDOWMINE"
++		|| unitType == "TERRAN_WIDOWMINEBURROWED")
++	{
++		return "widow_mine";
++	}
++	if (unitType == "TERRAN_CYCLONE") return "cyclone";
++	if (unitType == "TERRAN_SIEGETANK"
++		|| unitType == "TERRAN_SIEGETANKSIEGED")
++	{
++		return "siege_tank";
++	}
++	if (unitType == "TERRAN_THOR"
++		|| unitType == "TERRAN_THORAP")
++	{
++		return "thor";
++	}
++	if (unitType == "TERRAN_MEDIVAC") return "medivac";
++	if (unitType == "TERRAN_RAVEN") return "raven";
++	if (unitType == "TERRAN_VIKINGFIGHTER"
++		|| unitType == "TERRAN_VIKINGASSAULT")
++	{
++		return "viking";
++	}
++	if (unitType == "TERRAN_BANSHEE") return "banshee";
++	if (unitType == "TERRAN_LIBERATOR"
++		|| unitType == "TERRAN_LIBERATORAG")
++	{
++		return "liberator";
++	}
++	if (unitType == "TERRAN_BATTLECRUISER") return "battlecruiser";
++	return "";
++}
++
++std::string voiCanonicalOperationTaskType(const std::string & taskType)
++{
++	if (taskType == "scout_with_units") return "scout";
++	if (taskType == "pressure_with_main_army") return "attack";
++	if (taskType == "defend_with_units") return "defend";
++	if (taskType == "harass_with_units") return "harass";
++	return taskType;
++}
++
++int voiOperationSquadOrderType(const std::string & taskType)
++{
++	if (taskType == "scout") return SquadOrderTypes::Scout;
++	if (taskType == "defend") return SquadOrderTypes::Defend;
++	if (taskType == "harass") return SquadOrderTypes::Harass;
++	if (taskType == "attack") return SquadOrderTypes::Attack;
++	return SquadOrderTypes::Idle;
++}
++
++float voiOperationSquadOrderRadius(const std::string & taskType)
++{
++	if (taskType == "scout") return ScoutOrderRadius;
++	if (taskType == "harass") return HarassOrderRadius;
++	return DefaultOrderRadius;
++}
++
++void voiSetOperationSquadOrder(
++	VoiOperationState & operation,
++	Squad & squad,
++	size_t orderType,
++	const CCPosition & position,
++	float radius,
++	const std::string & status)
++{
++	operation.squadOrderType = orderType;
++	operation.squadOrderRadius = radius;
++	squad.setSquadOrder(
++		SquadOrder(orderType, position, radius, status));
++}
++
++std::string voiSquadOrderName(size_t orderType)
++{
++	if (orderType == SquadOrderTypes::Scout) return "scout";
++	if (orderType == SquadOrderTypes::Defend) return "defend";
++	if (orderType == SquadOrderTypes::Harass) return "harass";
++	if (orderType == SquadOrderTypes::Attack) return "attack";
++	if (orderType == SquadOrderTypes::Retreat) return "retreat";
++	if (orderType == SquadOrderTypes::Regroup) return "regroup";
++	if (orderType == SquadOrderTypes::Idle) return "idle";
++	return "none";
++}
++
++std::string voiOperationFamilyEvidenceKey(
++	const std::string & unitType,
++	const std::string & role)
++{
++	return voiTerranOperationFamily(unitType) + "|" + role;
++}
++
++VoiOperationState::FamilyExecutionEvidence &
++voiEnsureOperationFamilyEvidence(
++	VoiOperationState & operation,
++	const std::string & unitType,
++	const std::string & role)
++{
++	const std::string key =
++		voiOperationFamilyEvidenceKey(unitType, role);
++	auto & evidence = operation.familyEvidenceByKey[key];
++	evidence.family = voiTerranOperationFamily(unitType);
++	evidence.unitType = unitType;
++	evidence.role = role;
++	return evidence;
++}
++
++std::string voiOperationFamilyActionName(const UnitAction & action)
++{
++	switch (action.microActionType)
++	{
++	case MicroActionType::AttackMove:
++		return "attack_move";
++	case MicroActionType::AttackUnit:
++		return "attack_unit";
++	case MicroActionType::Move:
++		return "move";
++	case MicroActionType::Ability:
++	case MicroActionType::AbilityPosition:
++	case MicroActionType::AbilityTarget:
++	case MicroActionType::ToggleAbility:
++		return std::string("ability:")
++			+ sc2::AbilityTypeToName(action.abilityID);
++	case MicroActionType::RightClick:
++		return "right_click";
++	case MicroActionType::Stop:
++		return "stop";
++	default:
++		return action.description.empty()
++			? "unknown"
++			: action.description;
++	}
++}
++
++std::string voiOperationRequiredEffect(const UnitAction & action)
++{
++	switch (action.microActionType)
++	{
++	case MicroActionType::Ability:
++	case MicroActionType::AbilityPosition:
++	case MicroActionType::AbilityTarget:
++	case MicroActionType::ToggleAbility:
++		return "ability_state_or_effect";
++	default:
++		return "movement_or_engagement";
++	}
++}
++
++bool voiOperationAbilityStateObserved(
++	const VoiOperationState::FamilyExecutionEvidence & evidence,
++	const Unit & unit)
++{
++	const std::string & action = evidence.action;
++	const auto unitType = unit.getAPIUnitType();
++	if (action.find("MORPH_SIEGEMODE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED;
++	if (action.find("UNSIEGE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_SIEGETANK;
++	if (action.find("BURROWDOWN_WIDOWMINE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED;
++	if (action.find("BURROWUP_WIDOWMINE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_WIDOWMINE;
++	if (action.find("MORPH_HELLBAT") != std::string::npos
++		|| action.find("MORPH_HELLIONTANK") != std::string::npos)
++	{
++		return unitType == sc2::UNIT_TYPEID::TERRAN_HELLIONTANK;
++	}
++	if (action.find("MORPH_HELLION") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_HELLION;
++	if (action.find("MORPH_VIKINGASSAULTMODE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT;
++	if (action.find("MORPH_VIKINGFIGHTERMODE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER;
++	if (action.find("MORPH_LIBERATORAGMODE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_LIBERATORAG;
++	if (action.find("MORPH_LIBERATORAAMODE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_LIBERATOR;
++	if (action.find("MORPH_THORHIGHIMPACTMODE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_THORAP;
++	if (action.find("MORPH_THOREXPLOSIVEMODE") != std::string::npos)
++		return unitType == sc2::UNIT_TYPEID::TERRAN_THOR;
++	if (action.find("CLOAKON") != std::string::npos)
++		return unit.getUnitPtr()->cloak != sc2::Unit::NotCloaked;
++	if (action.find("CLOAKOFF") != std::string::npos)
++		return unit.getUnitPtr()->cloak == sc2::Unit::NotCloaked;
++	return false;
++}
++
+ bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosition & wallCenterTile)
+ {
+ 	if (squad.getUnits().empty())
+@@ -2673,6 +2877,37 @@ void CombatCommander::recordVoiOperationSubmission(
+ 	}
+ 	operation->lastActionFrame = frame;
+ 	operation->lastAction = voiActionEvidence(action);
++	const std::string role =
++		voiOperationRoleForUnit(
++			operation,
++			unit);
++	auto & familyEvidence =
++		voiEnsureOperationFamilyEvidence(
++			*operation,
++			sc2::UnitTypeToName(unit->unit_type),
++			role);
++	const std::string actionName =
++		voiOperationFamilyActionName(action);
++	if (familyEvidence.action != actionName)
++	{
++		familyEvidence.attemptGeneration = std::max(
++			operation->generation,
++			familyEvidence.attemptGeneration + 1);
++		familyEvidence.attemptedCount = 0;
++		familyEvidence.attemptedFrame = 0;
++		familyEvidence.submittedCount = 0;
++		familyEvidence.submittedFrame = 0;
++		familyEvidence.effectKind.clear();
++		familyEvidence.effectUnitTags.clear();
++		familyEvidence.effectFrame = 0;
++	}
++	familyEvidence.action = actionName;
++	familyEvidence.requiredEffect =
++		voiOperationRequiredEffect(action);
++	++familyEvidence.submittedCount;
++	familyEvidence.submittedFrame = frame;
++	familyEvidence.blockerManager.clear();
++	familyEvidence.blockerReason.clear();
+ 	if (operation->status != "BLOCKED"
+ 		&& operation->status != "MOVING"
+ 		&& operation->status != "ENGAGED"
+@@ -2756,24 +2991,67 @@ void CombatCommander::observeVoiOperations()
+ 		}
+ 
+ 		bool observedMovement = false;
++		bool observedEnemy = false;
+ 		for (const auto & unit : observedUnits)
+ 		{
+ 			const auto submitted =
+ 				operation.submittedPositions.find(unit.getTag());
+-			if (submitted != operation.submittedPositions.end()
++			const bool unitMoved =
++				submitted != operation.submittedPositions.end()
+ 				&& Util::DistSq(
+ 					unit.getPosition(),
+-					submitted->second) >= 1.0f)
+-			{
+-				observedMovement = true;
+-				break;
++					submitted->second) >= 1.0f;
++			const std::vector<Unit> scopedUnit = {unit};
++			const bool unitEngaged =
++				voiHasVisibleEnemyNearSquad(
++					scopedUnit,
++					m_bot,
++					14.0f);
++			const std::string role =
++				voiOperationRoleForUnit(
++					&operation,
++					unit.getUnitPtr());
++			auto & evidence =
++				voiEnsureOperationFamilyEvidence(
++					operation,
++					sc2::UnitTypeToName(
++						unit.getAPIUnitType()),
++					role);
++			const bool abilityEffect =
++				evidence.requiredEffect
++						== "ability_state_or_effect"
++					&& voiOperationAbilityStateObserved(
++						evidence,
++						unit);
++			observedMovement =
++				observedMovement || unitMoved;
++			observedEnemy =
++				observedEnemy || unitEngaged;
++			if (abilityEffect)
++			{
++				evidence.effectKind = "ability_state";
++				evidence.effectUnitTags.insert(
++					unit.getTag());
++				evidence.effectFrame = currentFrame;
++				evidence.blockerManager.clear();
++				evidence.blockerReason.clear();
++			}
++			else if (
++				evidence.requiredEffect
++						== "movement_or_engagement"
++				&& (unitMoved || unitEngaged))
++			{
++				evidence.effectKind =
++					unitEngaged
++						? "engagement"
++						: "movement";
++				evidence.effectUnitTags.insert(
++					unit.getTag());
++				evidence.effectFrame = currentFrame;
++				evidence.blockerManager.clear();
++				evidence.blockerReason.clear();
+ 			}
+ 		}
+-		const bool observedEnemy =
+-			voiHasVisibleEnemyNearSquad(
+-				observedUnits,
+-				m_bot,
+-				14.0f);
+ 		if (observedEnemy)
+ 		{
+ 			operation.lastEnemyFrame = currentFrame;
+@@ -2802,20 +3080,15 @@ void CombatCommander::observeVoiOperations()
+ 			operation.routeStageComplete = true;
+ 			operation.activeTargetPosition =
+ 				operation.targetPosition;
+-			const int orderType =
+-				operation.taskType == "scout"
+-					? SquadOrderTypes::Scout
+-					: (operation.taskType == "defend"
+-						? SquadOrderTypes::Defend
+-						: SquadOrderTypes::Attack);
+-			squad.setSquadOrder(
+-				SquadOrder(
+-					orderType,
+-					operation.targetPosition,
+-					operation.taskType == "scout"
+-						? ScoutOrderRadius
+-						: DefaultOrderRadius,
+-					operation.status));
++			voiSetOperationSquadOrder(
++				operation,
++				squad,
++				voiOperationSquadOrderType(
++					operation.taskType),
++				operation.targetPosition,
++				voiOperationSquadOrderRadius(
++					operation.taskType),
++				operation.status);
+ 		}
+ 
+ 		const float completionRadius =
+@@ -2851,7 +3124,8 @@ void CombatCommander::observeVoiOperations()
+ 			{
+ 				objectiveCompleted = targetReached;
+ 			}
+-			else if (operation.taskType == "attack"
++			else if ((operation.taskType == "attack"
++					|| operation.taskType == "harass")
+ 				&& targetReached
+ 				&& !observedEnemy
+ 				&& m_bot.Map().isExplored(
+@@ -2913,22 +3187,18 @@ void CombatCommander::reconcileVoiOperation(
+ 	}
+ 	if (!m_squadData.squadExists(operation.squadName))
+ 	{
+-		const int orderType =
+-			operation.taskType == "scout"
+-				? SquadOrderTypes::Scout
+-				: (operation.taskType == "defend"
+-					? SquadOrderTypes::Defend
+-					: SquadOrderTypes::Attack);
++		operation.squadOrderType =
++			voiOperationSquadOrderType(operation.taskType);
++		operation.squadOrderRadius =
++			voiOperationSquadOrderRadius(operation.taskType);
+ 		m_squadData.addSquad(
+ 			operation.squadName,
+ 			Squad(
+ 				operation.squadName,
+ 				SquadOrder(
+-					orderType,
++					operation.squadOrderType,
+ 					operation.activeTargetPosition,
+-					operation.taskType == "scout"
+-						? ScoutOrderRadius
+-						: DefaultOrderRadius,
++					operation.squadOrderRadius,
+ 					operation.status),
+ 				ExplicitOperationPriority,
+ 				m_bot));
+@@ -3528,6 +3798,25 @@ void CombatCommander::reconcileVoiOperation(
+ 			snapshot.missingPrerequisites =
+ 				productionProgress.missingPrerequisiteTokens;
+ 		}
++		auto & familyEvidence =
++			voiEnsureOperationFamilyEvidence(
++				operation,
++				requirement.unitType,
++				requirement.role);
++		if (snapshot.missingCount() > 0
++			&& !snapshot.productionBlocker.empty()
++			&& snapshot.productionBlocker != "ready")
++		{
++			familyEvidence.blockerManager =
++				"ProductionManager";
++			familyEvidence.blockerReason =
++				snapshot.productionBlocker;
++		}
++		else if (familyEvidence.effectFrame == 0)
++		{
++			familyEvidence.blockerManager.clear();
++			familyEvidence.blockerReason.clear();
++		}
+ 		operation.requirementSnapshots.push_back(snapshot);
+ 	}
+ 	const VoiRuntimeConvergenceDecision convergence =
+@@ -3546,7 +3835,8 @@ void CombatCommander::reconcileVoiOperation(
+ 		m_bot.Commander().getVoiPolicyBool(
+ 			"emergency.force_retreat",
+ 			false)
+-		|| (operation.taskType == "attack"
++		|| ((operation.taskType == "attack"
++				|| operation.taskType == "harass")
+ 			&& m_bot.Commander().getVoiPolicyBool(
+ 				"emergency.cancel_attacks",
+ 				false));
+@@ -3555,12 +3845,13 @@ void CombatCommander::reconcileVoiOperation(
+ 		operation.status = "BLOCKED";
+ 		operation.blockedReason =
+ 			"emergency_retreat_preempted";
+-		squad.setSquadOrder(
+-			SquadOrder(
+-				SquadOrderTypes::Retreat,
+-				voiHomePosition(m_bot),
+-				DefaultOrderRadius,
+-				"Retreat"));
++		voiSetOperationSquadOrder(
++			operation,
++			squad,
++			SquadOrderTypes::Retreat,
++			voiHomePosition(m_bot),
++			DefaultOrderRadius,
++			"Retreat");
+ 		return;
+ 	}
+ 	const bool enoughUnits =
+@@ -3574,12 +3865,13 @@ void CombatCommander::reconcileVoiOperation(
+ 	{
+ 		operation.status = convergence.status;
+ 		operation.blockedReason = convergence.blocker;
+-		squad.setSquadOrder(
+-			SquadOrder(
+-				SquadOrderTypes::Idle,
+-				voiHomePosition(m_bot),
+-				DefaultOrderRadius,
+-				operation.status));
++		voiSetOperationSquadOrder(
++			operation,
++			squad,
++			SquadOrderTypes::Idle,
++			voiHomePosition(m_bot),
++			DefaultOrderRadius,
++			operation.status);
+ 		return;
+ 	}
+ 	if (operation.assignedFrame == 0)
+@@ -3594,22 +3886,15 @@ void CombatCommander::reconcileVoiOperation(
+ 	{
+ 		operation.status = "ASSIGNED";
+ 	}
+-	const int orderType =
+-		operation.taskType == "scout"
+-			? SquadOrderTypes::Scout
+-			: (operation.taskType == "defend"
+-				? SquadOrderTypes::Defend
+-				: SquadOrderTypes::Attack);
+-	const float orderRadius =
+-		operation.taskType == "scout"
+-			? ScoutOrderRadius
+-			: DefaultOrderRadius;
+-	squad.setSquadOrder(
+-		SquadOrder(
+-			orderType,
+-			operation.activeTargetPosition,
+-			orderRadius,
+-			operation.status));
++	voiSetOperationSquadOrder(
++		operation,
++		squad,
++		voiOperationSquadOrderType(
++			operation.taskType),
++		operation.activeTargetPosition,
++		voiOperationSquadOrderRadius(
++			operation.taskType),
++		operation.status);
+ }
+ 
+ void CombatCommander::updateVoiOperations()
+@@ -3765,26 +4050,15 @@ void CombatCommander::updateVoiOperations()
+ 		}
+ 		requested.policyUpdateId = policyUpdateId;
+ 		requested.receivedFrame = m_bot.GetGameLoop();
+-		requested.taskType =
++		requested.requestedTaskType =
+ 			m_bot.Commander().getVoiPolicyString(
+ 				prefix + ".tactical_task.task_type",
+ 				m_bot.Commander().getVoiPolicyString(
+ 					prefix + ".task_type",
+ 					""));
+-		if (requested.taskType == "scout_with_units")
+-		{
+-			requested.taskType = "scout";
+-		}
+-		else if (requested.taskType
+-			== "pressure_with_main_army")
+-		{
+-			requested.taskType = "attack";
+-		}
+-		else if (requested.taskType
+-			== "defend_with_units")
+-		{
+-			requested.taskType = "defend";
+-		}
++		requested.taskType =
++			voiCanonicalOperationTaskType(
++				requested.requestedTaskType);
+ 		requested.routeType =
+ 			m_bot.Commander().getVoiPolicyString(
+ 				prefix + ".route_intent.route_type",
+@@ -4155,7 +4429,8 @@ void CombatCommander::updateVoiOperations()
+ 		}
+ 		else if (requested.taskType != "scout"
+ 			&& requested.taskType != "attack"
+-			&& requested.taskType != "defend")
++			&& requested.taskType != "defend"
++			&& requested.taskType != "harass")
+ 		{
+ 			requested.status = "BLOCKED";
+ 			requested.blockedReason =
+@@ -4829,22 +5104,20 @@ void CombatCommander::updateVoiOperations()
+ 		{
+ 			if (!m_squadData.squadExists(operation.squadName))
+ 			{
+-				const int orderType =
+-					operation.taskType == "scout"
+-						? SquadOrderTypes::Scout
+-						: (operation.taskType == "defend"
+-							? SquadOrderTypes::Defend
+-							: SquadOrderTypes::Attack);
++				operation.squadOrderType =
++					voiOperationSquadOrderType(
++						operation.taskType);
++				operation.squadOrderRadius =
++					voiOperationSquadOrderRadius(
++						operation.taskType);
+ 				m_squadData.addSquad(
+ 					operation.squadName,
+ 					Squad(
+ 						operation.squadName,
+ 						SquadOrder(
+-							orderType,
++							operation.squadOrderType,
+ 							operation.activeTargetPosition,
+-							operation.taskType == "scout"
+-								? ScoutOrderRadius
+-								: DefaultOrderRadius,
++							operation.squadOrderRadius,
+ 							operation.status),
+ 						ExplicitOperationPriority,
+ 						m_bot));
+@@ -4877,6 +5150,8 @@ void CombatCommander::updateVoiOperations()
+ 					!= requested.policyUpdateId;
+ 			existing.policyUpdateId = policyUpdateId;
+ 			existing.commandLayer = requested.commandLayer;
++			existing.requestedTaskType =
++				requested.requestedTaskType;
+ 			existing.taskType = requested.taskType;
+ 			existing.unitClasses = requested.unitClasses;
+ 			existing.lifetimeMode = requested.lifetimeMode;
+@@ -4945,6 +5220,7 @@ void CombatCommander::updateVoiOperations()
+ 				existing.submissionObserved = false;
+ 				existing.submittedFrame = 0;
+ 				existing.submittedPositions.clear();
++				existing.familyEvidenceByKey.clear();
+ 			}
+ 		};
+ 	auto annotateRejectedEdit =
+@@ -6355,6 +6631,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ 		++index)
+ 	{
+ 		const auto & operation = m_voiOperations[index];
++		const std::string squadOrder =
++			voiSquadOrderName(operation.squadOrderType);
+ 		if (index > 0)
+ 		{
+ 			payload << ",";
+@@ -6366,10 +6644,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ 			<< "\","
+ 			<< "\"generation\":"
+ 			<< operation.generation << ","
++			<< "\"requested_task_type\":\""
++			<< voiOperationJsonEscape(
++				operation.requestedTaskType)
++			<< "\","
+ 			<< "\"task_type\":\""
+ 			<< voiOperationJsonEscape(
+ 				operation.taskType)
+ 			<< "\","
++			<< "\"squad_order\":\""
++			<< squadOrder
++			<< "\","
++			<< "\"squad_order_radius\":"
++			<< operation.squadOrderRadius
++			<< ","
+ 			<< "\"status\":\""
+ 			<< voiOperationJsonEscape(
+ 				operation.status)
+@@ -6465,6 +6753,127 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ 			}
+ 			payload << "]}";
+ 		}
++		payload << "],\"family_evidence\":[";
++		for (size_t requirementIndex = 0;
++			requirementIndex
++				< operation.requirementSnapshots.size();
++			++requirementIndex)
++		{
++			const auto & requirement =
++				operation.requirementSnapshots[
++					requirementIndex];
++			if (requirementIndex > 0)
++			{
++				payload << ",";
++			}
++			const std::string family =
++				voiTerranOperationFamily(
++					requirement.unitType);
++			const std::string familyKey =
++				voiOperationFamilyEvidenceKey(
++					requirement.unitType,
++					requirement.role);
++			const auto evidenceIt =
++				operation.familyEvidenceByKey.find(
++					familyKey);
++			const VoiOperationState::FamilyExecutionEvidence *
++				evidence =
++					evidenceIt
++							!= operation.familyEvidenceByKey.end()
++						? &evidenceIt->second
++						: nullptr;
++			const std::string action =
++				evidence != nullptr
++						&& !evidence->action.empty()
++					? evidence->action
++					: "squad_order:" + squadOrder;
++			const std::string blockerManager =
++				evidence != nullptr
++						&& !evidence->blockerManager.empty()
++					? evidence->blockerManager
++					: (!requirement.productionBlocker.empty()
++							&& requirement.productionBlocker
++								!= "ready"
++						? "ProductionManager"
++						: (!operation.blockedReason.empty()
++							? "OperationDirector"
++							: ""));
++			const std::string blocker =
++				evidence != nullptr
++						&& !evidence->blockerReason.empty()
++					? evidence->blockerReason
++					: (!requirement.productionBlocker.empty()
++							&& requirement.productionBlocker
++								!= "ready"
++						? requirement.productionBlocker
++						: operation.blockedReason);
++			payload << "{\"update_id\":\""
++				<< voiOperationJsonEscape(
++					operation.policyUpdateId)
++				<< "\",\"operation_id\":\""
++				<< voiOperationJsonEscape(
++					operation.operationId)
++				<< "\",\"generation\":"
++				<< operation.generation
++				<< ",\"family\":\""
++				<< voiOperationJsonEscape(family)
++				<< "\",\"unit_type\":\""
++				<< voiOperationJsonEscape(
++					requirement.unitType)
++				<< "\",\"role\":\""
++				<< voiOperationJsonEscape(
++					requirement.role)
++				<< "\",\"action\":\""
++				<< voiOperationJsonEscape(action)
++				<< "\",\"required_effect\":\""
++				<< (evidence != nullptr
++						? voiOperationJsonEscape(
++							evidence->requiredEffect)
++						: "movement_or_engagement")
++				<< "\",\"attempt_generation\":"
++				<< (evidence != nullptr
++						? evidence->attemptGeneration
++						: operation.generation)
++				<< ",\"assigned\":"
++				<< requirement.assignedCount
++				<< ",\"represented\":"
++				<< requirement.representedCount
++				<< ",\"attempted_count\":"
++				<< (evidence != nullptr
++						? evidence->attemptedCount
++						: 0)
++				<< ",\"attempted_frame\":"
++				<< (evidence != nullptr
++						? evidence->attemptedFrame
++						: 0)
++				<< ",\"submitted_count\":"
++				<< (evidence != nullptr
++						? evidence->submittedCount
++						: 0)
++				<< ",\"submitted_frame\":"
++				<< (evidence != nullptr
++						? evidence->submittedFrame
++						: 0)
++				<< ",\"effect_kind\":\""
++				<< (evidence != nullptr
++						? voiOperationJsonEscape(
++							evidence->effectKind)
++						: "")
++				<< "\",\"effect_count\":"
++				<< (evidence != nullptr
++						? evidence->effectUnitTags.size()
++						: 0)
++				<< ",\"effect_frame\":"
++				<< (evidence != nullptr
++						? evidence->effectFrame
++						: 0)
++				<< ",\"blocker_manager\":\""
++				<< voiOperationJsonEscape(
++					blockerManager)
++				<< "\",\"blocker\":\""
++				<< voiOperationJsonEscape(blocker)
++				<< "\"}";
++		}
+ 		payload << "],"
+ 			<< "\"target_x\":"
+ 			<< operation.targetX << ","
+@@ -13066,9 +13475,71 @@ void CombatCommander::drawVoiOperationHud()
+ 			<< " " << operation.taskType
+ 			<< " [" << operation.status << "]"
+ 			<< " units=" << operation.assignedCount
++			<< " order="
++			<< voiSquadOrderName(
++				operation.squadOrderType)
+ 			<< " route=" << operation.routeType
+ 			<< " target=" << operation.locationIntent
+-			<< "(" << operation.targetEvidence << ")";
++			<< "(" << operation.targetEvidence << ")"
++			<< " action="
++			<< (operation.submissionObserved
++				? "submitted"
++				: "pending")
++			<< " effect="
++			<< (operation.status == "MOVING"
++					|| operation.status == "ENGAGED"
++					|| operation.status == "COMPLETED"
++				? "observed"
++				: "pending");
++		if (!operation.requirementSnapshots.empty())
++		{
++			card << " force=";
++			for (size_t requirementIndex = 0;
++				requirementIndex
++					< operation.requirementSnapshots.size();
++				++requirementIndex)
++			{
++				const auto & requirement =
++					operation.requirementSnapshots[
++						requirementIndex];
++				if (requirementIndex > 0)
++				{
++					card << ",";
++				}
++				card
++					<< voiTerranOperationFamily(
++						requirement.unitType)
++					<< "/"
++					<< (requirement.role.empty()
++						? "default"
++						: requirement.role)
++					<< ":"
++					<< requirement.assignedCount
++					<< "/"
++					<< requirement.targetCount;
++				const auto evidence =
++					operation.familyEvidenceByKey.find(
++						voiOperationFamilyEvidenceKey(
++							requirement.unitType,
++							requirement.role));
++				if (evidence
++					!= operation.familyEvidenceByKey.end())
++				{
++					if (!evidence->second.effectKind.empty())
++					{
++						card << "@"
++							<< evidence->second.effectKind;
++					}
++					else if (!evidence
++						->second.blockerReason.empty())
++					{
++						card << "!"
++							<< evidence
++								->second.blockerReason;
++					}
++				}
++			}
++		}
+ 		if (operation.status == "BLOCKED"
+ 			&& !operation.blockedReason.empty())
+ 		{
+@@ -14044,6 +14515,48 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+ 		return false;
+ 	}
+ 
++	if (ownedOperation != nullptr)
++	{
++		VoiOperationState * operation =
++			findVoiOperation(
++				ownedOperation->operationId,
++				ownedOperation->generation);
++		if (operation != nullptr)
++		{
++			auto & evidence =
++				voiEnsureOperationFamilyEvidence(
++					*operation,
++					sc2::UnitTypeToName(
++						unit->unit_type),
++					voiRole);
++			const uint32_t attemptFrame =
++				m_bot.GetGameLoop();
++			const std::string actionName =
++				voiOperationFamilyActionName(action);
++			if (evidence.action != actionName
++				|| evidence.attemptedFrame
++					!= attemptFrame)
++			{
++				evidence.attemptGeneration =
++					std::max(
++						operation->generation,
++						evidence.attemptGeneration + 1);
++				evidence.attemptedCount = 0;
++				evidence.submittedCount = 0;
++				evidence.submittedFrame = 0;
++				evidence.effectKind.clear();
++				evidence.effectUnitTags.clear();
++				evidence.effectFrame = 0;
++			}
++			evidence.action = actionName;
++			evidence.requiredEffect =
++				voiOperationRequiredEffect(action);
++			++evidence.attemptedCount;
++			evidence.attemptedFrame = attemptFrame;
++			evidence.blockerManager.clear();
++			evidence.blockerReason.clear();
++		}
++	}
+ 	unitActions[unit] = action;
+ 	if (voiRoleBiasedAction || action.description.rfind("VoiRole", 0) == 0)
+ 	{
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index a872e09..9a10c35 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -161,8 +161,28 @@ struct VoiOperationState
+ 		float priority = 0.0f;
+ 	};
+ 
++	struct FamilyExecutionEvidence
++	{
++		std::string family;
++		std::string unitType;
++		std::string role;
++		std::string action;
++		std::string requiredEffect = "movement_or_engagement";
++		uint64_t attemptGeneration = 0;
++		int attemptedCount = 0;
++		uint32_t attemptedFrame = 0;
++		int submittedCount = 0;
++		uint32_t submittedFrame = 0;
++		std::string effectKind;
++		std::set<sc2::Tag> effectUnitTags;
++		uint32_t effectFrame = 0;
++		std::string blockerManager;
++		std::string blockerReason;
++	};
++
+ 	std::string operationId;
+ 	uint64_t generation = 0;
++	std::string requestedTaskType;
+ 	std::string taskType;
+ 	std::string status = "RECEIVED";
+ 	std::vector<sc2::Tag> assignedUnitTags;
+@@ -185,6 +205,8 @@ struct VoiOperationState
+ 	std::string policyUpdateId;
+ 	std::string commandLayer;
+ 	std::string squadName;
++	size_t squadOrderType = 0;
++	float squadOrderRadius = 0.0f;
+ 	std::string unitClasses;
+ 	std::string locationIntent;
+ 	std::string lifetimeMode;
+@@ -226,6 +248,8 @@ struct VoiOperationState
+ 	uint32_t editRejectedFrame = 0;
+ 	std::string editSupersessionMode;
+ 	std::map<sc2::Tag, CCPosition> submittedPositions;
++	std::map<std::string, FamilyExecutionEvidence>
++		familyEvidenceByKey;
+ 	std::map<sc2::Tag, std::string> previousSquadByTag;
+ };
+ 
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 4bbb024..3791f54 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -164,7 +164,8 @@ bool voiParallelOperationIsActive(CCBot & bot, int operationIndex)
+ 	if (operationId.empty()
+ 		|| (taskType != "scout_with_units"
+ 			&& taskType != "pressure_with_main_army"
+-			&& taskType != "defend_with_units"))
++			&& taskType != "defend_with_units"
++			&& taskType != "harass_with_units"))
+ 	{
+ 		return false;
+ 	}
+@@ -1200,6 +1201,7 @@ bool voiExactCompositionActive(CCBot & bot)
+ 	}
+ 	return taskType == "pressure_with_main_army"
+ 		|| taskType == "scout_with_units"
++		|| taskType == "harass_with_units"
+ 		|| taskType == "sustain_production"
+ 		|| taskType == "tech_transition";
+ }

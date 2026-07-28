@@ -193,12 +193,122 @@ _EXPLICIT_ABILITY_CONFIRMATION_EFFECTS: Final[
         }
     ),
     "tactical_jump": frozenset({"position:tactical_jump_destination"}),
-    "reaper_grenade": frozenset(
+    "kd8_charge": frozenset(
         {
+            "actor_order:effect_kd8charge",
+            "actor_order:kd8charge_kd8charge",
             "ability_availability:consumed",
-            "actor_energy:decreased",
         }
     ),
+    "reaper_grenade": frozenset(
+        {
+            "actor_order:effect_kd8charge",
+            "actor_order:kd8charge_kd8charge",
+            "ability_availability:consumed",
+        }
+    ),
+}
+
+_TERRAN_COMBAT_FAMILY_TYPES: Final[Mapping[str, frozenset[str]]] = {
+    "marine": frozenset({"MARINE", "TERRANMARINE", "UNITTYPEIDTERRANMARINE"}),
+    "marauder": frozenset(
+        {"MARAUDER", "TERRANMARAUDER", "UNITTYPEIDTERRANMARAUDER"}
+    ),
+    "reaper": frozenset({"REAPER", "TERRANREAPER", "UNITTYPEIDTERRANREAPER"}),
+    "ghost": frozenset({"GHOST", "TERRANGHOST", "UNITTYPEIDTERRANGHOST"}),
+    "hellion_hellbat": frozenset(
+        {
+            "HELLION",
+            "HELLIONTANK",
+            "HELLBAT",
+            "TERRANHELLION",
+            "TERRANHELLIONTANK",
+            "UNITTYPEIDTERRANHELLION",
+            "UNITTYPEIDTERRANHELLIONTANK",
+        }
+    ),
+    "widow_mine": frozenset(
+        {
+            "WIDOWMINE",
+            "WIDOWMINEBURROWED",
+            "TERRANWIDOWMINE",
+            "TERRANWIDOWMINEBURROWED",
+            "UNITTYPEIDTERRANWIDOWMINE",
+            "UNITTYPEIDTERRANWIDOWMINEBURROWED",
+        }
+    ),
+    "cyclone": frozenset(
+        {"CYCLONE", "TERRANCYCLONE", "UNITTYPEIDTERRANCYCLONE"}
+    ),
+    "siege_tank": frozenset(
+        {
+            "SIEGETANK",
+            "SIEGETANKSIEGED",
+            "TANK",
+            "TERRANSIEGETANK",
+            "TERRANSIEGETANKSIEGED",
+            "UNITTYPEIDTERRANSIEGETANK",
+            "UNITTYPEIDTERRANSIEGETANKSIEGED",
+        }
+    ),
+    "thor": frozenset(
+        {
+            "THOR",
+            "THORAP",
+            "TERRANTHOR",
+            "TERRANTHORAP",
+            "UNITTYPEIDTERRANTHOR",
+            "UNITTYPEIDTERRANTHORAP",
+        }
+    ),
+    "medivac": frozenset(
+        {"MEDIVAC", "TERRANMEDIVAC", "UNITTYPEIDTERRANMEDIVAC"}
+    ),
+    "raven": frozenset({"RAVEN", "TERRANRAVEN", "UNITTYPEIDTERRANRAVEN"}),
+    "viking": frozenset(
+        {
+            "VIKING",
+            "VIKINGFIGHTER",
+            "VIKINGASSAULT",
+            "TERRANVIKINGFIGHTER",
+            "TERRANVIKINGASSAULT",
+            "UNITTYPEIDTERRANVIKINGFIGHTER",
+            "UNITTYPEIDTERRANVIKINGASSAULT",
+        }
+    ),
+    "banshee": frozenset(
+        {"BANSHEE", "TERRANBANSHEE", "UNITTYPEIDTERRANBANSHEE"}
+    ),
+    "liberator": frozenset(
+        {
+            "LIBERATOR",
+            "LIBERATORAG",
+            "TERRANLIBERATOR",
+            "TERRANLIBERATORAG",
+            "UNITTYPEIDTERRANLIBERATOR",
+            "UNITTYPEIDTERRANLIBERATORAG",
+        }
+    ),
+    "battlecruiser": frozenset(
+        {
+            "BATTLECRUISER",
+            "BC",
+            "TERRANBATTLECRUISER",
+            "UNITTYPEIDTERRANBATTLECRUISER",
+        }
+    ),
+}
+_TERRAN_COMBAT_FAMILY_ALIASES: Final[Mapping[str, str]] = {
+    "hellion": "hellion_hellbat",
+    "hellbat": "hellion_hellbat",
+    "widowmine": "widow_mine",
+    "siegetank": "siege_tank",
+    "tank": "siege_tank",
+    "bc": "battlecruiser",
+    **{
+        family.replace("_", ""): family
+        for family in _TERRAN_COMBAT_FAMILY_TYPES
+    },
 }
 
 
@@ -465,6 +575,13 @@ def explicit_ability_terminal_is_valid(
             )
             or confirmation_effect == observed_accepted_evidence
         )
+        and (
+            ability not in {"kd8_charge", "reaper_grenade"}
+            or explicit_ability_effect_is_valid(
+                ability=ability,
+                confirmation_effect=observed_accepted_evidence,
+            )
+        )
         and str(submission_action)
         .split("|", 1)[0]
         .strip()
@@ -489,11 +606,7 @@ def explicit_ability_effect_is_valid(
         return False
     if normalized_effect in allowed_effects:
         return True
-    return (
-        normalized_ability == "reaper_grenade"
-        and normalized_effect.startswith("actor_order:")
-        and len(normalized_effect) > len("actor_order:")
-    )
+    return False
 
 
 def _classify_status(
@@ -588,7 +701,14 @@ def _effects_from_telemetry(
             if _manager_reports_tactical_scout_task(
                 manager,
                 payload,
-            ) or _manager_reports_combat_scout_command(manager, payload):
+            ) or _manager_reports_combat_scout_command(
+                manager,
+                payload,
+            ) or _manager_reports_operation_scout_command(
+                manager,
+                payload,
+                current_update_ids=current_update_ids,
+            ):
                 effects.append(_telemetry_effect("scout", manager, payload, frame))
             if _manager_reports_tactical_pressure_task(
                 manager,
@@ -660,7 +780,7 @@ def _concrete_tactical_task_effects(
         task_type = str(tactical.get("task_type", "") or "")
         if task_type == "scout_with_units":
             effects.add("scout")
-        elif task_type == "pressure_with_main_army":
+        elif task_type in {"pressure_with_main_army", "harass_with_units"}:
             effects.add("pressure")
     return frozenset(effects)
 
@@ -782,7 +902,8 @@ def _manager_reports_tactical_pressure_task(manager: str, payload: Mapping[str, 
     # CombatCommander proves that units actually moved. Do not count it as a
     # concrete live effect without the movement telemetry.
     return (
-        str(payload.get("task_type", "") or "") == "pressure_with_main_army"
+        str(payload.get("task_type", "") or "")
+        in {"pressure_with_main_army", "harass_with_units"}
         and str(payload.get("status", "") or "") == "executing"
         and _number(payload.get("actual_command_issued_count")) > 0
         and "squad=MainAttack" in str(payload.get("last_actual_command", "") or "")
@@ -800,7 +921,7 @@ def _manager_reports_tactical_scout_task(manager: str, payload: Mapping[str, obj
     return (
         str(payload.get("task_type", "") or "") == "scout_with_units"
         and str(payload.get("status", "") or "") == "executing"
-        and _payload_reports_marine_scout_command(
+        and _payload_reports_combat_scout_command(
             payload,
             command_count_key="actual_command_issued_count",
             command_key="last_actual_command",
@@ -827,7 +948,7 @@ def _manager_reports_combat_scout_command(manager: str, payload: Mapping[str, ob
         return False
     return (
         _number(payload.get("scout_last_action_frame")) > 0
-        and _payload_reports_marine_scout_command(
+        and _payload_reports_combat_scout_command(
             payload,
             command_count_key="scout_actual_command_issued_count",
             command_key="scout_last_issued_action",
@@ -835,27 +956,301 @@ def _manager_reports_combat_scout_command(manager: str, payload: Mapping[str, ob
     )
 
 
-def _payload_reports_marine_scout_command(
+def _manager_reports_operation_scout_command(
+    manager: str,
+    payload: Mapping[str, object],
+    *,
+    current_update_ids: frozenset[str],
+) -> bool:
+    if manager != "OperationDirector":
+        return False
+    policy_update_id = str(
+        payload.get("policy_update_id", "") or ""
+    ).strip()
+    if (
+        not policy_update_id
+        or (
+            current_update_ids
+            and policy_update_id not in current_update_ids
+        )
+    ):
+        return False
+    operations = _mapping_items(payload.get("operations"))
+    latest_generation_by_id: dict[str, int] = {}
+    for operation in operations:
+        operation_id = str(
+            operation.get("operation_id", "") or ""
+        ).strip()
+        generation = int(_number(operation.get("generation")))
+        if operation_id and generation > 0:
+            latest_generation_by_id[operation_id] = max(
+                generation,
+                latest_generation_by_id.get(operation_id, 0),
+            )
+    return any(
+        _operation_scout_evidence_is_valid(
+            operation,
+            policy_update_id=policy_update_id,
+            latest_generation_by_id=latest_generation_by_id,
+        )
+        for operation in operations
+    )
+
+
+def _operation_scout_evidence_is_valid(
+    operation: Mapping[str, object],
+    *,
+    policy_update_id: str,
+    latest_generation_by_id: Mapping[str, int],
+) -> bool:
+    operation_id = str(
+        operation.get("operation_id", "") or ""
+    ).strip()
+    generation = int(_number(operation.get("generation")))
+    requested_task_type = str(
+        operation.get("requested_task_type", "") or ""
+    ).strip().lower()
+    task_type = str(operation.get("task_type", "") or "").strip().lower()
+    if (
+        not operation_id
+        or generation <= 0
+        or latest_generation_by_id.get(operation_id) != generation
+        or requested_task_type != "scout_with_units"
+        or task_type not in {"scout", "scout_with_units"}
+        or str(operation.get("squad_order", "") or "").strip().lower()
+        != "scout"
+        or str(operation.get("status", "") or "").strip().upper()
+        not in {"MOVING", "ENGAGED", "COMPLETED"}
+        or operation.get("submission_observed") is not True
+        or _number(operation.get("submitted_frame")) <= 0
+        or _number(operation.get("last_action_frame")) <= 0
+        or _number(operation.get("max_home_distance"))
+        < _MIN_COMBAT_SCOUT_HOME_DISTANCE
+    ):
+        return False
+
+    assigned_tags = _positive_unique_unit_tags(
+        operation.get("assigned_unit_tags")
+    )
+    assigned_count = int(_number(operation.get("assigned_count")))
+    if (
+        not assigned_tags
+        or assigned_count != len(assigned_tags)
+        or not _operation_requested_tags_match(
+            operation,
+            assigned_tags=assigned_tags,
+        )
+    ):
+        return False
+
+    requirements = tuple(
+        requirement
+        for requirement in _mapping_items(
+            operation.get("requirement_progress")
+        )
+        if int(_number(requirement.get("target_count"))) > 0
+    )
+    if not requirements:
+        return False
+    target_count = sum(
+        int(_number(requirement.get("target_count")))
+        for requirement in requirements
+    )
+    if (
+        target_count != assigned_count
+        or (
+            _number(operation.get("requirement_target_count")) > 0
+            and int(
+                _number(operation.get("requirement_target_count"))
+            )
+            != target_count
+        )
+    ):
+        return False
+
+    family_evidence = _mapping_items(operation.get("family_evidence"))
+    for requirement in requirements:
+        requested_family = _canonical_terran_combat_family(
+            requirement.get("unit_type")
+        )
+        requested_count = int(_number(requirement.get("target_count")))
+        requested_role = str(
+            requirement.get("role", "") or ""
+        ).strip()
+        if (
+            not requested_family
+            or int(_number(requirement.get("assigned_count")))
+            != requested_count
+            or not _matching_operation_family_submission(
+                family_evidence,
+                policy_update_id=policy_update_id,
+                operation_id=operation_id,
+                generation=generation,
+                requested_family=requested_family,
+                requested_role=requested_role,
+                requested_count=requested_count,
+                assigned_tags=assigned_tags,
+            )
+        ):
+            return False
+    return True
+
+
+def _matching_operation_family_submission(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    policy_update_id: str,
+    operation_id: str,
+    generation: int,
+    requested_family: str,
+    requested_role: str,
+    requested_count: int,
+    assigned_tags: tuple[int, ...],
+) -> bool:
+    candidates: list[Mapping[str, object]] = []
+    for row in rows:
+        row_family = _canonical_terran_combat_family(
+            row.get("family")
+        )
+        row_type_family = _canonical_terran_combat_family(
+            row.get("unit_type")
+        )
+        row_role = str(row.get("role", "") or "").strip()
+        if (
+            str(row.get("update_id", "") or "").strip()
+            != policy_update_id
+            or str(row.get("operation_id", "") or "").strip()
+            != operation_id
+            or int(_number(row.get("generation"))) != generation
+            or not row_family
+            or row_family != requested_family
+            or row_type_family != requested_family
+            or (requested_role and row_role != requested_role)
+            or int(_number(row.get("attempt_generation"))) <= 0
+        ):
+            continue
+        candidates.append(row)
+    if not candidates:
+        return False
+    latest_attempt = max(
+        int(_number(row.get("attempt_generation")))
+        for row in candidates
+    )
+    latest_rows = tuple(
+        row
+        for row in candidates
+        if int(_number(row.get("attempt_generation")))
+        == latest_attempt
+    )
+    return any(
+        int(_number(row.get("assigned"))) == requested_count
+        and _number(row.get("attempted_count")) >= requested_count
+        and _number(row.get("attempted_frame")) > 0
+        and _number(row.get("submitted_count")) >= requested_count
+        and _number(row.get("submitted_frame")) > 0
+        and bool(str(row.get("action", "") or "").strip())
+        and _family_evidence_tags_match(
+            row,
+            assigned_tags=assigned_tags,
+        )
+        for row in latest_rows
+    )
+
+
+def _operation_requested_tags_match(
+    operation: Mapping[str, object],
+    *,
+    assigned_tags: tuple[int, ...],
+) -> bool:
+    assigned = set(assigned_tags)
+    requested_tag = int(_number(operation.get("requested_unit_tag")))
+    if requested_tag > 0 and requested_tag not in assigned:
+        return False
+    if "requested_unit_tags" in operation:
+        requested_tags = _positive_unique_unit_tags(
+            operation.get("requested_unit_tags")
+        )
+        if not requested_tags or set(requested_tags) != assigned:
+            return False
+    return True
+
+
+def _family_evidence_tags_match(
+    row: Mapping[str, object],
+    *,
+    assigned_tags: tuple[int, ...],
+) -> bool:
+    assigned = set(assigned_tags)
+    for key in (
+        "assigned_unit_tags",
+        "submitted_unit_tags",
+        "effect_unit_tags",
+    ):
+        if key not in row:
+            continue
+        tags = _positive_unique_unit_tags(row.get(key))
+        if not tags or not set(tags).issubset(assigned):
+            return False
+        if (
+            key == "effect_unit_tags"
+            and _number(row.get("effect_count")) > 0
+            and len(tags) != int(_number(row.get("effect_count")))
+        ):
+            return False
+    return True
+
+
+def _payload_reports_combat_scout_command(
     payload: Mapping[str, object],
     *,
     command_count_key: str,
     command_key: str,
 ) -> bool:
+    requested_family = _requested_scout_family(payload) or "marine"
+    commanded_family = _canonical_terran_combat_family(
+        payload.get("scout_last_commanded_unit_type")
+    )
+    assigned_count = _scout_assigned_count(
+        payload,
+        requested_family=requested_family,
+    )
+    commanded_tag = int(
+        _number(payload.get("scout_last_commanded_unit_tag"))
+    )
     return (
         _number(payload.get(command_count_key)) > 0
         and "squad=Scout" in str(payload.get(command_key, "") or "")
-        and _scout_assignment_matches_requested_count(payload)
-        and _number(payload.get("scout_last_commanded_unit_tag")) > 0
-        and _is_marine_unit_type(payload.get("scout_last_commanded_unit_type"))
-        and _number(payload.get("scout_marine_max_home_distance"))
+        and commanded_family == requested_family
+        and assigned_count > 0
+        and _scout_assignment_matches_requested_count(
+            payload,
+            assigned_count=assigned_count,
+        )
+        and commanded_tag > 0
+        and _scout_commanded_tag_matches_request(
+            payload,
+            commanded_tag=commanded_tag,
+        )
+        and _scout_generations_match(payload)
+        and _scout_update_ids_match(payload)
+        and _scout_family_max_home_distance(
+            payload,
+            requested_family=requested_family,
+        )
         >= _MIN_COMBAT_SCOUT_HOME_DISTANCE
     )
 
 
 def _scout_assignment_matches_requested_count(
     payload: Mapping[str, object],
+    *,
+    assigned_count: int | None = None,
 ) -> bool:
-    assigned = int(_number(payload.get("scout_marine_assigned_count")))
+    assigned = (
+        int(assigned_count)
+        if assigned_count is not None
+        else int(_number(payload.get("scout_marine_assigned_count")))
+    )
     if assigned <= 0:
         return False
     requested_min = int(
@@ -879,6 +1274,155 @@ def _scout_assignment_matches_requested_count(
     if requested_max > 0:
         return assigned <= requested_max
     return True
+
+
+def _requested_scout_family(payload: Mapping[str, object]) -> str:
+    for key in (
+        "scout_requested_unit_family",
+        "scout_scope_requested_unit_family",
+        "requested_unit_family",
+        "scout_requested_unit_type",
+        "scout_scope_requested_unit_type",
+        "requested_unit_type",
+    ):
+        family = _canonical_terran_combat_family(payload.get(key))
+        if family:
+            return family
+    unit_classes = payload.get("unit_classes")
+    if isinstance(unit_classes, Sequence) and not isinstance(
+        unit_classes,
+        (str, bytes, bytearray),
+    ):
+        families = {
+            _canonical_terran_combat_family(unit_type)
+            for unit_type in unit_classes
+        } - {""}
+        if len(families) == 1:
+            return families.pop()
+    if isinstance(unit_classes, str):
+        families = {
+            _canonical_terran_combat_family(unit_type)
+            for unit_type in unit_classes.split(",")
+        } - {""}
+        if len(families) == 1:
+            return families.pop()
+    return ""
+
+
+def _scout_assigned_count(
+    payload: Mapping[str, object],
+    *,
+    requested_family: str,
+) -> int:
+    family_key = requested_family.replace("-", "_")
+    return int(
+        max(
+            _number(payload.get(f"scout_{family_key}_assigned_count")),
+            _number(payload.get("scout_requested_family_assigned_count")),
+            _number(payload.get("scout_scope_assigned_unit_count")),
+            (
+                _number(payload.get("scout_marine_assigned_count"))
+                if requested_family == "marine"
+                else 0
+            ),
+        )
+    )
+
+
+def _scout_family_max_home_distance(
+    payload: Mapping[str, object],
+    *,
+    requested_family: str,
+) -> float:
+    family_key = requested_family.replace("-", "_")
+    return max(
+        _number(payload.get(f"scout_{family_key}_max_home_distance")),
+        _number(payload.get("scout_requested_family_max_home_distance")),
+        _number(payload.get("scout_max_home_distance")),
+        (
+            _number(payload.get("scout_marine_max_home_distance"))
+            if requested_family == "marine"
+            else 0
+        ),
+    )
+
+
+def _scout_commanded_tag_matches_request(
+    payload: Mapping[str, object],
+    *,
+    commanded_tag: int,
+) -> bool:
+    requested_tag = int(
+        max(
+            _number(payload.get("scout_requested_unit_tag")),
+            _number(payload.get("requested_unit_tag")),
+        )
+    )
+    if requested_tag > 0 and requested_tag != commanded_tag:
+        return False
+    for key in ("scout_assigned_unit_tags", "assigned_unit_tags"):
+        if key not in payload:
+            continue
+        assigned_tags = _positive_unique_unit_tags(payload.get(key))
+        if not assigned_tags or commanded_tag not in assigned_tags:
+            return False
+    return True
+
+
+def _scout_generations_match(payload: Mapping[str, object]) -> bool:
+    requested = _single_positive_number(
+        payload,
+        (
+            "scout_requested_generation",
+            "scout_scope_generation",
+            "generation",
+        ),
+    )
+    commanded = _single_positive_number(
+        payload,
+        (
+            "scout_command_generation",
+            "scout_last_command_generation",
+            "command_generation",
+        ),
+    )
+    if requested < 0 or commanded < 0:
+        return False
+    if requested == 0 and commanded == 0:
+        return True
+    return requested > 0 and requested == commanded
+
+
+def _scout_update_ids_match(payload: Mapping[str, object]) -> bool:
+    requested_update_id = str(
+        payload.get("update_id")
+        or payload.get("policy_update_id")
+        or ""
+    ).strip()
+    command_update_id = str(
+        payload.get("scout_explicit_update_id")
+        or payload.get("scout_command_update_id")
+        or ""
+    ).strip()
+    return (
+        not requested_update_id
+        or not command_update_id
+        or requested_update_id == command_update_id
+    )
+
+
+def _single_positive_number(
+    payload: Mapping[str, object],
+    keys: Sequence[str],
+) -> int:
+    values = {
+        int(_number(payload.get(key)))
+        for key in keys
+        if int(_number(payload.get(key))) > 0
+    }
+    if len(values) > 1:
+        return -1
+    return next(iter(values), 0)
 
 
 def _manager_reports_tactical_nuke_cast(
@@ -1003,12 +1547,44 @@ def _tactical_nuke_confirmation_frame(payload: Mapping[str, object]) -> int:
 
 
 def _is_marine_unit_type(value: object) -> bool:
+    return _canonical_terran_combat_family(value) == "marine"
+
+
+def _canonical_terran_combat_family(value: object) -> str:
     normalized = re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
-    return normalized in {
-        "MARINE",
-        "TERRANMARINE",
-        "UNITTYPEIDTERRANMARINE",
-    }
+    if not normalized:
+        return ""
+    alias = _TERRAN_COMBAT_FAMILY_ALIASES.get(normalized.lower())
+    if alias:
+        return alias
+    for family, unit_types in _TERRAN_COMBAT_FAMILY_TYPES.items():
+        if normalized in unit_types:
+            return family
+    return ""
+
+
+def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _positive_unique_unit_tags(value: object) -> tuple[int, ...]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return ()
+    tags: list[int] = []
+    for raw_tag in value:
+        tag = int(_number(raw_tag))
+        if tag <= 0 or tag in tags:
+            return ()
+        tags.append(tag)
+    return tuple(tags)
 
 
 def _actual_behavior_texts(payload: Mapping[str, object]) -> tuple[str, ...]:
@@ -1151,6 +1727,18 @@ def _current_update_ids(
                     )
                     if ability_update_id:
                         update_ids.add(ability_update_id)
+            if not update_ids:
+                operation_director = managers.get("OperationDirector")
+                if isinstance(operation_director, Mapping):
+                    operation_update_id = str(
+                        operation_director.get(
+                            "policy_update_id",
+                            "",
+                        )
+                        or ""
+                    )
+                    if operation_update_id:
+                        update_ids.add(operation_update_id)
         if update_ids:
             return frozenset(update_ids)
     return frozenset()

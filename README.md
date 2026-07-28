@@ -102,7 +102,7 @@ without deleting unrelated operations.
 
 The operation model is not Marine-specific. It reuses MicroMachine's existing
 Squad, RangedManager, MeleeManager, detector, transport, siege, cloak, and
-ability code paths for supported Terran combat families:
+ability code paths for 15 canonical Terran families:
 
 | Family | Units and behavior |
 | --- | --- |
@@ -140,11 +140,26 @@ The UI and telemetry distinguish transport from execution:
 | `queued_or_assigned` | An exclusive eligible unit set was assigned. |
 | `order_issued` | A concrete Squad order was created. |
 | `action_issued` | The SC2 API command path accepted an action. |
-| `effect_observed` | Movement, engagement, cast state, target arrival, or another game effect was observed. |
+| `effect_observed` | An operation-level effect such as movement, engagement, target arrival, or completion was observed. |
 
 `published` is never rendered as "executing." Operation telemetry is keyed by
-`update_id + operation_id`, uses monotonic frames, detects duplicate ownership,
-and records the first blocking manager and reason.
+`update_id + operation_id + generation`, uses monotonic frames, detects
+duplicate ownership, and records the first blocking manager and reason.
+
+An operation-level effect and a family ability effect are different evidence
+classes. A Tank operation moving away from home can satisfy the operation
+travel requirement, but it does not prove `siege_mode`; Banshee movement does
+not prove cloak; Widow Mine movement does not prove burrow; and a caster moving
+does not prove a spell. A family ability effect requires its requested
+action-specific runtime observation, effect kind, count, and frame.
+
+Each family row carries attempted, submitted, effect, and blocker evidence
+under the identity
+`update_id + operation_id + generation + family + action + attempt_generation`.
+Lower operation generations, mismatched update/operation identities, and older
+attempts for the same family/action are stale and cannot replace newer
+evidence. Mixed-family partial success remains explicit: one family may show an
+observed effect while another shows its blocking manager and reason.
 
 ## Operator UX
 
@@ -152,6 +167,9 @@ The web cockpit presents one card per operation rather than one global command
 bubble. Each card shows mission, force, target, route, lifecycle, assigned unit
 count, last SC2 action, movement or engagement evidence, and terminal state.
 Late responses and stale telemetry cannot overwrite a newer operation card.
+All-Terran family/action evidence extends the existing Operation card and its
+four-stage `해석 → 배정 → 제출 → 관측` rail; it does not introduce a separate
+dashboard or a new visual language.
 
 The patched in-game HUD mirrors the same operation identity and evidence inside
 StarCraft II so the operator can confirm commands without leaving the game:

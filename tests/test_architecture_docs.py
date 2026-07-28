@@ -182,6 +182,52 @@ class ArchitectureDocumentationTest(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, document)
 
+    def test_issue_126_docs_define_all_terran_family_evidence_contract(
+        self,
+    ) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        readme = (repo_root / "README.md").read_text()
+        design = (
+            repo_root / "docs" / "battlefield-command-ux-design.md"
+        ).read_text()
+
+        readme_terms = (
+            "15 canonical Terran families",
+            "operation-level effect",
+            "family ability effect",
+            (
+                "`update_id + operation_id + generation + family + action + "
+                "attempt_generation`"
+            ),
+            "existing Operation card",
+            "four-stage `해석 → 배정 → 제출 → 관측` rail",
+            "Comprehensive all-Terran live qualification",
+        )
+        for term in readme_terms:
+            with self.subTest(document="README", term=term):
+                self.assertIn(term, readme)
+
+        design_terms = (
+            "Family Evidence Contract",
+            '"family": "siege_tank"',
+            '"action": "siege_mode"',
+            '"attempt_generation": 3',
+            '"required_effect": "unit_type:TERRAN_SIEGETANKSIEGED"',
+            '"effect_kind": "unit_type:TERRAN_SIEGETANKSIEGED"',
+            "operation effect와 family ability effect",
+            (
+                "`update_id + operation_id + generation + family + action + "
+                "attempt_generation`"
+            ),
+            "stale family evidence",
+            "같은 Operation card",
+            "4-stage rail",
+            "HUD는 compact mirror",
+        )
+        for term in design_terms:
+            with self.subTest(document="UX design", term=term):
+                self.assertIn(term, design)
+
 
 if __name__ == "__main__":
     unittest.main()

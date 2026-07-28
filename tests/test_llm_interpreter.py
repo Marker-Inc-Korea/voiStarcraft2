@@ -3930,6 +3930,7 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                 "scout_with_units",
                 "pressure_with_main_army",
                 "defend_with_units",
+                "harass_with_units",
             },
             set(operation_task_schema["properties"]["task_type"]["enum"]),
         )

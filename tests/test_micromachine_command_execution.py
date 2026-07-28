@@ -10,6 +10,17 @@ from starcraft_commander.micromachine_tactical_evidence import (
     MicroMachineTacticalEffect,
     classify_micromachine_tactical_evidence,
 )
+from starcraft_commander.micromachine_terran_capabilities import (
+    TERRAN_UNIT_FAMILIES,
+)
+
+
+_OPERATION_ROUTING_CASES = (
+    ("scout_with_units", "scout", "scout"),
+    ("pressure_with_main_army", "attack", "attack"),
+    ("defend_with_units", "defend", "defend"),
+    ("harass_with_units", "harass", "harass"),
+)
 
 
 def _update() -> dict[str, object]:
@@ -66,6 +77,112 @@ def _telemetry(
             },
         },
     }
+
+
+def _family_operation_case(
+    *,
+    task_type: str,
+    canonical_task_type: str,
+    squad_order: str,
+    family: str,
+    unit_type: str,
+    role: str,
+    effect: bool = True,
+    blocker: str = "",
+    blocker_manager: str = "",
+) -> tuple[dict[str, object], dict[str, object]]:
+    update_id = f"{task_type}-{family}"
+    operation_id = f"{family}-{canonical_task_type}"
+    effect_kind = (
+        "nearby_enemy_engagement"
+        if task_type == "defend_with_units"
+        else "movement_observed"
+    )
+    update = {
+        "update_id": update_id,
+        "issued_at_frame": 100,
+        "expires_at_frame": 2_000,
+        "vector": {
+            "operations": [
+                {
+                    "operation_id": operation_id,
+                    "generation": 1,
+                    "composition_requirements": [
+                        {
+                            "unit_type": unit_type,
+                            "count": 1,
+                            "role": role,
+                        }
+                    ],
+                    "tactical_task": {
+                        "task_type": task_type,
+                        "unit_classes": [unit_type],
+                        "duration_seconds": 300,
+                    },
+                }
+            ]
+        },
+    }
+    telemetry = {
+        "frame": 180,
+        "managers": {
+            "OperationDirector": {
+                "policy_update_id": update_id,
+                "operations": [
+                    {
+                        "operation_id": operation_id,
+                        "generation": 1,
+                        "requested_task_type": task_type,
+                        "task_type": canonical_task_type,
+                        "squad_order": squad_order,
+                        "status": "COMPLETED",
+                        "received_frame": 110,
+                        "assigned_frame": 120,
+                        "submitted_frame": 140,
+                        "last_action_frame": 150,
+                        "assigned_unit_tags": [101],
+                        "assigned_count": 1,
+                        "max_home_distance": (
+                            0.0
+                            if task_type == "defend_with_units"
+                            else 24.0
+                        ),
+                        "engaged": task_type == "defend_with_units",
+                        "completed": True,
+                        "family_evidence": [
+                            {
+                                "update_id": update_id,
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "family": family,
+                                "unit_type": unit_type,
+                                "role": role,
+                                "assigned": 1,
+                                "represented": 1,
+                                "action": f"squad_order:{squad_order}",
+                                "required_effect": (
+                                    "movement_or_engagement"
+                                ),
+                                "attempt_generation": 3,
+                                "attempted_count": 1,
+                                "attempted_frame": 130,
+                                "submitted_count": 1,
+                                "submitted_frame": 140,
+                                "effect_kind": (
+                                    effect_kind if effect else ""
+                                ),
+                                "effect_count": 1 if effect else 0,
+                                "effect_frame": 160 if effect else 0,
+                                "blocker_manager": blocker_manager,
+                                "blocker": blocker,
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    }
+    return update, telemetry
 
 
 class MicroMachineCommandExecutionTest(unittest.TestCase):
@@ -1207,6 +1324,368 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
             by_id["assault-bravo"].failed,
             by_id["assault-bravo"].to_dict(),
         )
+
+    def test_all_terran_families_complete_all_supported_operation_routes(
+        self,
+    ) -> None:
+        self.assertEqual(15, len(TERRAN_UNIT_FAMILIES))
+        for task_type, canonical_task_type, squad_order in (
+            _OPERATION_ROUTING_CASES
+        ):
+            for capability in TERRAN_UNIT_FAMILIES:
+                with self.subTest(
+                    task_type=task_type,
+                    family=capability.family,
+                ):
+                    update, telemetry = _family_operation_case(
+                        task_type=task_type,
+                        canonical_task_type=canonical_task_type,
+                        squad_order=squad_order,
+                        family=capability.family,
+                        unit_type=capability.unit_types[0],
+                        role=capability.default_role,
+                    )
+
+                    report = classify_micromachine_operation_executions(
+                        latest_update=update,
+                        latest_telemetry=telemetry,
+                        latest_frame=180,
+                    )[0]
+
+                    self.assertTrue(report.ok, report.to_dict())
+                    self.assertEqual("completed", report.state)
+                    stages = {
+                        stage.name: stage for stage in report.stages
+                    }
+                    self.assertTrue(
+                        all(stage.ok for stage in report.stages),
+                        report.to_dict(),
+                    )
+                    routing = stages["order_issued"].evidence["routing"]
+                    self.assertTrue(routing["accepted"])
+                    self.assertEqual(
+                        canonical_task_type,
+                        routing["reported_task_type"],
+                    )
+                    self.assertEqual(
+                        squad_order,
+                        routing["reported_squad_order"],
+                    )
+                    lifecycle = stages[
+                        "effect_observed"
+                    ].evidence["family_lifecycle"]
+                    self.assertEqual(
+                        [capability.family],
+                        lifecycle["required_families"],
+                    )
+                    self.assertTrue(lifecycle["assignment_ok"])
+                    self.assertTrue(lifecycle["order_ok"])
+                    self.assertTrue(lifecycle["action_ok"])
+                    self.assertTrue(lifecycle["effect_ok"])
+
+    def test_global_operation_effect_cannot_fake_any_family_effect(
+        self,
+    ) -> None:
+        for task_type, canonical_task_type, squad_order in (
+            _OPERATION_ROUTING_CASES
+        ):
+            for capability in TERRAN_UNIT_FAMILIES:
+                with self.subTest(
+                    task_type=task_type,
+                    family=capability.family,
+                ):
+                    update, telemetry = _family_operation_case(
+                        task_type=task_type,
+                        canonical_task_type=canonical_task_type,
+                        squad_order=squad_order,
+                        family=capability.family,
+                        unit_type=capability.unit_types[0],
+                        role=capability.default_role,
+                        effect=False,
+                    )
+
+                    report = classify_micromachine_operation_executions(
+                        latest_update=update,
+                        latest_telemetry=telemetry,
+                        latest_frame=180,
+                    )[0]
+
+                    stages = {
+                        stage.name: stage for stage in report.stages
+                    }
+                    self.assertFalse(report.ok, report.to_dict())
+                    self.assertFalse(report.completed)
+                    self.assertTrue(stages["queued_or_assigned"].ok)
+                    self.assertTrue(stages["order_issued"].ok)
+                    self.assertTrue(stages["action_issued"].ok)
+                    self.assertFalse(stages["effect_observed"].ok)
+                    lifecycle = stages[
+                        "effect_observed"
+                    ].evidence["family_lifecycle"]
+                    self.assertFalse(lifecycle["effect_ok"])
+                    self.assertEqual(
+                        [capability.family],
+                        lifecycle["pending_effect_families"],
+                    )
+
+    def test_family_lifecycle_keeps_assignment_order_action_effect_distinct(
+        self,
+    ) -> None:
+        expected_by_phase = {
+            "assignment": (True, False, False, False),
+            "order": (True, True, False, False),
+            "action": (True, True, True, False),
+            "effect": (True, True, True, True),
+        }
+        for phase, expected in expected_by_phase.items():
+            with self.subTest(phase=phase):
+                update, telemetry = _family_operation_case(
+                    task_type="pressure_with_main_army",
+                    canonical_task_type="attack",
+                    squad_order="attack",
+                    family="marine",
+                    unit_type="TERRAN_MARINE",
+                    role="frontline",
+                    effect=phase == "effect",
+                )
+                operation = telemetry["managers"]["OperationDirector"][
+                    "operations"
+                ][0]
+                evidence = operation["family_evidence"][0]
+                if phase == "assignment":
+                    operation["submitted_frame"] = 0
+                    operation["last_action_frame"] = 0
+                    evidence["attempted_count"] = 0
+                    evidence["attempted_frame"] = 0
+                    evidence["submitted_count"] = 0
+                    evidence["submitted_frame"] = 0
+                elif phase == "order":
+                    operation["last_action_frame"] = 0
+                    evidence["submitted_count"] = 0
+                    evidence["submitted_frame"] = 0
+
+                report = classify_micromachine_operation_executions(
+                    latest_update=update,
+                    latest_telemetry=telemetry,
+                    latest_frame=180,
+                )[0]
+                stages = {
+                    stage.name: stage.ok for stage in report.stages
+                }
+
+                self.assertEqual(
+                    expected,
+                    (
+                        stages["queued_or_assigned"],
+                        stages["order_issued"],
+                        stages["action_issued"],
+                        stages["effect_observed"],
+                    ),
+                    report.to_dict(),
+                )
+
+    def test_each_supported_operation_rejects_incorrect_manager_routing(
+        self,
+    ) -> None:
+        for task_type, canonical_task_type, squad_order in (
+            _OPERATION_ROUTING_CASES
+        ):
+            with self.subTest(task_type=task_type):
+                update, telemetry = _family_operation_case(
+                    task_type=task_type,
+                    canonical_task_type=canonical_task_type,
+                    squad_order=squad_order,
+                    family="marine",
+                    unit_type="TERRAN_MARINE",
+                    role="frontline",
+                )
+                operation = telemetry["managers"]["OperationDirector"][
+                    "operations"
+                ][0]
+                operation["squad_order"] = (
+                    "defend" if squad_order != "defend" else "attack"
+                )
+
+                report = classify_micromachine_operation_executions(
+                    latest_update=update,
+                    latest_telemetry=telemetry,
+                    latest_frame=180,
+                )[0]
+
+                self.assertTrue(report.failed, report.to_dict())
+                self.assertFalse(report.completed)
+                self.assertEqual("failed", report.state)
+                self.assertEqual(
+                    "OperationDirector",
+                    report.blocker_manager,
+                )
+                self.assertIn("routing mismatch", report.blocker_reason)
+                order_stage = next(
+                    stage
+                    for stage in report.stages
+                    if stage.name == "order_issued"
+                )
+                self.assertFalse(order_stage.ok)
+                self.assertFalse(order_stage.evidence["routing"]["accepted"])
+
+    def test_family_blocker_routes_to_owning_manager_without_fake_assignment(
+        self,
+    ) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="harass_with_units",
+            canonical_task_type="harass",
+            squad_order="harass",
+            family="banshee",
+            unit_type="TERRAN_BANSHEE",
+            role="worker_harass",
+            effect=False,
+            blocker="missing_starport_techlab",
+            blocker_manager="ProductionManager",
+        )
+        operation = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]
+        operation["status"] = "BLOCKED"
+        operation["assigned_frame"] = 0
+        operation["submitted_frame"] = 0
+        operation["last_action_frame"] = 0
+        operation["assigned_unit_tags"] = []
+        operation["assigned_count"] = 0
+        evidence = operation["family_evidence"][0]
+        evidence["assigned"] = 0
+        evidence["represented"] = 0
+        evidence["attempted_count"] = 0
+        evidence["attempted_frame"] = 0
+        evidence["submitted_count"] = 0
+        evidence["submitted_frame"] = 0
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertTrue(report.failed, report.to_dict())
+        self.assertEqual("ProductionManager", report.blocker_manager)
+        self.assertEqual(
+            "missing_starport_techlab",
+            report.blocker_reason,
+        )
+        self.assertFalse(stages["queued_or_assigned"].ok)
+        self.assertEqual(
+            "ProductionManager",
+            stages["queued_or_assigned"].manager,
+        )
+        self.assertIn(
+            "missing_starport_techlab",
+            stages["queued_or_assigned"].reason,
+        )
+
+    def test_family_mission_evidence_survives_terminal_cleanup(self) -> None:
+        update, mission_telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="siege_tank",
+            unit_type="TERRAN_SIEGETANK",
+            role="siege_support",
+        )
+        mission_operation = mission_telemetry["managers"][
+            "OperationDirector"
+        ]["operations"][0]
+        cancelled_operation = {
+            **mission_operation,
+            "status": "CANCELLED",
+            "assigned_frame": 0,
+            "submitted_frame": 0,
+            "last_action_frame": 210,
+            "assigned_unit_tags": [],
+            "assigned_count": 0,
+            "completed": False,
+            "blocked_reason": "cancelled_by_policy",
+            "last_action": "release_stop|cancelled_by_policy",
+            "family_evidence": [
+                {
+                    **mission_operation["family_evidence"][0],
+                    "assigned": 0,
+                    "represented": 0,
+                    "attempted_count": 0,
+                    "attempted_frame": 0,
+                    "submitted_count": 0,
+                    "submitted_frame": 0,
+                    "effect_kind": "",
+                    "effect_count": 0,
+                    "effect_frame": 0,
+                    "blocker_manager": "OperationDirector",
+                    "blocker": "cancelled_by_policy",
+                }
+            ],
+        }
+        cancelled_telemetry = {
+            "frame": 220,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update["update_id"],
+                    "operations": [cancelled_operation],
+                }
+            },
+        }
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            telemetry_archive=(mission_telemetry,),
+            latest_telemetry=cancelled_telemetry,
+            latest_frame=220,
+        )[0]
+
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertEqual("cancelled", report.state)
+        self.assertFalse(report.failed, report.to_dict())
+        self.assertFalse(report.completed)
+        self.assertTrue(stages["queued_or_assigned"].ok)
+        self.assertTrue(stages["order_issued"].ok)
+        self.assertTrue(stages["action_issued"].ok)
+        self.assertTrue(stages["effect_observed"].ok)
+        self.assertEqual(
+            "release_stop|cancelled_by_policy",
+            stages["action_issued"].evidence["terminal_cleanup_action"],
+        )
+
+    def test_stale_generation_family_effect_cannot_complete_current_operation(
+        self,
+    ) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="harass_with_units",
+            canonical_task_type="harass",
+            squad_order="harass",
+            family="reaper",
+            unit_type="TERRAN_REAPER",
+            role="worker_harass",
+        )
+        operation_update = update["vector"]["operations"][0]
+        operation_update["generation"] = 2
+        stale_operation = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]
+        stale_operation["generation"] = 1
+        stale_operation["family_evidence"][0]["generation"] = 1
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertEqual(2, report.operation_generation)
+        self.assertEqual("published", report.state)
+        self.assertFalse(report.ok)
+        self.assertFalse(stages["consumed_by_manager"].ok)
+        self.assertFalse(stages["queued_or_assigned"].ok)
+        self.assertFalse(stages["order_issued"].ok)
+        self.assertFalse(stages["action_issued"].ok)
+        self.assertFalse(stages["effect_observed"].ok)
 
     def test_publish_only_cannot_complete_command(self) -> None:
         report = classify_micromachine_command_execution(

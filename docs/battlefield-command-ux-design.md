@@ -128,6 +128,65 @@ SSE 연결 전 또는 장애 때만 정확성 fallback으로 활성화된다. �
    snapshot으로 재동기화한다.
 5. 이벤트 스트림이 실패해도 1초 폴링 fallback으로 정확성은 유지한다.
 
+### 3.3 Family Evidence Contract
+
+Issue #126의 all-Terran 확장은 기존 Operation UX 안에서 family별 실행
+증거를 더 세밀하게 보여주는 계약이다. 새 패널이나 별도 색상 체계를 만드는
+visual redesign이 아니다.
+
+```json
+{
+  "update_id": "all-terran-update",
+  "operation_id": "tank-push",
+  "generation": 2,
+  "family": "siege_tank",
+  "unit_type": "TERRAN_SIEGETANK",
+  "role": "siege_support",
+  "action": "siege_mode",
+  "required_effect": "unit_type:TERRAN_SIEGETANKSIEGED",
+  "attempt_generation": 3,
+  "attempted_count": 1,
+  "attempted_frame": 410,
+  "submitted_count": 1,
+  "submitted_frame": 411,
+  "effect_kind": "unit_type:TERRAN_SIEGETANKSIEGED",
+  "effect_count": 1,
+  "effect_frame": 412,
+  "blocker_manager": "",
+  "blocker": ""
+}
+```
+
+operation effect와 family ability effect는 별도다. 작전 병력이 본진에서
+멀어지거나 교전한 사실은 operation의 이동/교전 효과를 증명하지만, Tank의
+`siege_mode`, Banshee의 cloak, Widow Mine의 burrow, Raven/Ghost의 cast를
+증명하지 않는다. family ability effect는 해당 `action`이 요구한
+`required_effect`와 일치하는 `effect_kind`, 양수 count, 제출 이후 frame이
+모두 있어야 한다.
+
+family evidence의 권위 identity는
+`update_id + operation_id + generation + family + action + attempt_generation`
+이다. 적용 규칙은 다음과 같다.
+
+1. update ID, operation ID, generation이 현재 카드와 다르면
+   stale family evidence로 거부한다.
+2. 같은 family/action에서 낮은 `attempt_generation`은 높은 attempt를
+   덮어쓰지 못한다.
+3. operation generation이 증가하면 이전 generation의 family evidence는
+   새 실행 세대의 성공이나 blocker로 재사용하지 않는다.
+4. family마다 상태를 독립 유지한다. Reaper는 effect가 관측되고 Banshee는
+   `missing_starport_techlab`로 막힌 mixed-family partial success가
+   가능하다.
+5. `attempted`, `submitted`, `effect`는 각각 count와 frame을 모두 가져야
+   하며, bool 하나만으로 단계를 승격하지 않는다.
+
+웹에서는 이 정보를 같은 Operation card의 `유닛 실행` detail에 표시하고,
+기존 4-stage rail `해석 → 배정 → 제출 → 관측`, ARIA status, 다섯 action
+버튼을 유지한다. HUD는 compact mirror이며 operation ID/generation,
+Squad order, family/role force, action/effect/blocker를 같은 identity로
+압축 표시한다. HUD 자체가 명령 입력 surface가 되거나 family별 새
+dashboard를 만들지는 않는다.
+
 ## 4. Squad Selection: Bias 이상의 선택
 
 스쿼드 선택은 단순히 `공격 성향을 높인다`는 bias에 의존하지 않는다. 명시적

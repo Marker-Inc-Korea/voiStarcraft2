@@ -237,6 +237,7 @@ _PARALLEL_OPERATION_TASK_TYPES: Final[frozenset[str]] = frozenset(
         "scout_with_units",
         "pressure_with_main_army",
         "defend_with_units",
+        "harass_with_units",
     }
 )
 """Task types that may own independent forces inside operations[]."""
@@ -597,6 +598,7 @@ _COMPACT_POLICY_LOCATION_INTENTS: Final[tuple[str, ...]] = (
     "home",
     "natural",
     "enemy_main",
+    "enemy_mineral_line",
     "enemy_natural",
     "enemy_third",
     "third",
@@ -926,24 +928,23 @@ def build_compact_policy_modulation_system_prompt() -> str:
     """Render the low-latency semantic parser prompt for Responses providers."""
 
     return (
-        "Convert exactly one StarCraft II commander utterance into one or more "
-        "forced-tool compact semantic commands. Do not emit the full manager DSL; "
-        "Python deterministically expands prerequisites, TTL, manager biases, "
-        "squad scope, and production plans.\n"
+        "Convert one StarCraft II commander utterance into forced-tool compact "
+        "semantic command(s). Never emit the full manager DSL; Python expands "
+        "prerequisites, TTL, biases, squad scope, and production plans.\n"
         "Rules:\n"
-        "1. Resolve Korean/English unit names, counts, locations, routes, "
-        "targets, abilities, and building placement. Never output coordinates, "
-        "unit tags, clicks, API calls, or raw SC2 commands.\n"
+        "1. Resolve Korean/English units, counts, locations, routes, targets, "
+        "abilities, and placement. Never output coordinates, tags, clicks, API "
+        "calls, or raw SC2 commands.\n"
         "2. command_layer: macro=economy/production/tech/building standing "
         "intent; operation=scout/attack/squad movement; micro=one explicit "
         "unit ability; emergency=retreat/cancel/hold interrupt.\n"
-        "3. task_type: sustain_production for composition/continuous production; "
-        "tech_transition for prerequisites or non-expansion buildings; "
-        "expand_or_land_command_center for expansion/landing; scout_with_units "
-        "for unit scouting; pressure_with_main_army for attack/harass; "
-        "defend_with_units for an independently assigned defense force; "
-        "execute_ability for an explicit ability. Emergency may use an empty "
-        "task_type.\n"
+        "3. task_type: sustain_production=composition/continuous production; "
+        "tech_transition=prerequisites/non-expansion buildings; "
+        "expand_or_land_command_center=expansion/landing; "
+        "scout_with_units=scouting; pressure_with_main_army=attack/pressure; "
+        "harass_with_units=bounded worker/economy raid; "
+        "defend_with_units=independent defense; execute_ability=explicit ability. "
+        "Emergency may leave task_type empty.\n"
         "4. Put every explicit combat unit/count in unit_requests. Use one "
         "Marine for '마린 한 마리 정찰'. Use production_targets for requested "
         "units, structures, upgrades, or TERRAN_NUKE. Python adds their complete "
@@ -951,16 +952,15 @@ def build_compact_policy_modulation_system_prompt() -> str:
         "5. For a Ghost tactical nuke use micro + execute_ability + "
         "ability=tactical_nuke + location_intent. For flank/alternate-route "
         "orders use flank_left or flank_right and preserve explicit direction.\n"
-        "6. Use commands[] when one utterance creates independent forces, for "
-        "example a scout operation and an assault operation. Give every item a "
-        "stable operation_id and reuse it for follow-up changes to that operation. "
+        "6. Use commands[] when one utterance creates independent forces. Give "
+        "each item a stable operation_id and reuse it for follow-up changes. "
         "Set operation_action explicitly. transfer uses operation_id=destination, "
         "source_operation_id=source, unit_requests=moved force, and "
         "explicit_override=true only for explicit reassignment. reinforce counts "
         "are additive; resize counts are final; retarget preserves force. A scoped "
         "cancel such as 'recon-alpha 정찰만 취소해' must use operation_action=cancel "
-        "with operation_id=recon-alpha; it is not a global emergency. Use command "
-        "for backward-compatible single-command output.\n"
+        "with operation_id=recon-alpha, not a global emergency. Use command for "
+        "single-command output.\n"
         "7. Read commander_context.active_operations for every active operation "
         "identity and commander_context.recent_commands for bounded layer history. "
         "Resolve follow-ups such as "
@@ -1682,6 +1682,7 @@ def build_policy_modulation_system_prompt() -> str:
         "specific doctrine is present.\n"
         "5. Use tactical_task when the user asks for a concrete bounded outcome: "
         "scout_with_units, pressure_with_main_army, defend_with_units, "
+        "harass_with_units, "
         "sustain_production, "
         "tech_transition, expand_or_land_command_center, or execute_ability. "
         "For an explicit unit ability, use task_type=execute_ability and one "
@@ -1719,7 +1720,8 @@ def build_policy_modulation_system_prompt() -> str:
         "unit_roles, route_intent, and target_intent. Reuse operation_id for "
         "follow-up updates, cancellation, reinforcement, or retargeting. "
         "Inside operations, tactical_task.task_type must be exactly "
-        "scout_with_units, pressure_with_main_army, or defend_with_units. Keep "
+        "scout_with_units, pressure_with_main_army, defend_with_units, or "
+        "harass_with_units. Keep "
         "macro production, tech, expansion, execute_ability, and emergency "
         "tasks in the top-level modulation envelope. Keep "
         "the legacy top-level tactical fields only for a single operation; never "
@@ -2521,6 +2523,7 @@ class LLMCommandInterpreter:
                 "Retry once with exactly one bounded tactical_task. Use "
                 "scout_with_units for unit scouting or exploration, "
                 "pressure_with_main_army for attack/rush/pressure, "
+                "harass_with_units for worker-line/economy harassment, "
                 "sustain_production for keep-producing, SCV, marine, or supply "
                 "continuity, tech_transition for tank/mech/factory/starport tech, "
                 "and expand_or_land_command_center for expansion or command-center "
@@ -4203,7 +4206,11 @@ def _lower_compact_policy_modulation_tool_input(
     if not army_group:
         if task_type == "scout_with_units":
             army_group = "scout"
-        elif task_type in {"pressure_with_main_army", "defend_with_units"}:
+        elif task_type in {
+            "pressure_with_main_army",
+            "defend_with_units",
+            "harass_with_units",
+        }:
             army_group = "main"
 
     modulation: dict[str, object] = {
@@ -5392,6 +5399,8 @@ def _canonical_compact_task_token(value: object) -> str:
 def _default_compact_unit_role(*, task_type: str, unit_type: str) -> str:
     if task_type == "scout_with_units":
         return "scout"
+    if task_type == "harass_with_units":
+        return "worker_harass"
     if task_type == "execute_ability":
         return "execute_ability"
     normalized = re.sub(r"[^a-z0-9가-힣]+", "", unit_type.lower())
@@ -5491,6 +5500,7 @@ def _compact_command_layer(
         "scout_with_units",
         "pressure_with_main_army",
         "defend_with_units",
+        "harass_with_units",
     }:
         return "operation"
     if task_type in {
@@ -5558,6 +5568,8 @@ def _compact_ttl_seconds(
         return 600
     if task_type == "defend_with_units":
         return 600
+    if task_type == "harass_with_units":
+        return 480
     return 300
 
 
@@ -5573,6 +5585,7 @@ def _compact_task_duration_seconds(
         "scout_with_units": 180,
         "pressure_with_main_army": 300,
         "defend_with_units": 300,
+        "harass_with_units": 240,
         "sustain_production": 300,
         "tech_transition": 600,
         "expand_or_land_command_center": 600,
@@ -5609,6 +5622,7 @@ def _compact_lifetime(
         "scout_with_units": "enemy_observed",
         "pressure_with_main_army": "target_reached",
         "defend_with_units": "target_reached",
+        "harass_with_units": "target_reached",
         "sustain_production": "unit_count_reached",
         "tech_transition": "building_completed",
         "expand_or_land_command_center": "building_completed",
@@ -5712,6 +5726,26 @@ def _apply_compact_command_biases(
             }
         )
         squad.update({"main_army_bias": 0.35, "reinforce_bias": priority})
+    elif task_type == "harass_with_units":
+        strategy["posture"] = "pressure"
+        combat.update(
+            {
+                "harassment_bias": priority,
+                "preserve_army_bias": max(
+                    float(combat.get("preserve_army_bias", 0.0)),
+                    0.35,
+                ),
+            }
+        )
+        squad.update(
+            {
+                "harassment_bias": priority,
+                "split_army_bias": max(
+                    float(squad.get("split_army_bias", 0.0)),
+                    0.45,
+                ),
+            }
+        )
     elif task_type in {"sustain_production", "tech_transition"}:
         production["production_continuity_bias"] = (
             max(0.8, priority) if standing_order else priority
@@ -6233,7 +6267,14 @@ _EXPLICIT_COUNT_UNIT_ALIASES: Final[dict[str, tuple[str, ...]]] = {
     "TERRAN_MARAUDER": ("marauders", "marauder", "불곰"),
     "TERRAN_REAPER": ("reapers", "reaper", "사신"),
     "TERRAN_GHOST": ("ghosts", "ghost", "유령"),
-    "TERRAN_HELLION": ("hellions", "hellion", "화염차"),
+    "TERRAN_HELLION": (
+        "hellions",
+        "hellion",
+        "hellbats",
+        "hellbat",
+        "화염기갑병",
+        "화염차",
+    ),
     "TERRAN_WIDOWMINE": ("widow mines", "widow mine", "땅거미지뢰", "지뢰"),
     "TERRAN_CYCLONE": ("cyclones", "cyclone", "사이클론"),
     "TERRAN_THOR": ("thors", "thor", "토르"),
@@ -6246,6 +6287,8 @@ _EXPLICIT_COUNT_UNIT_ALIASES: Final[dict[str, tuple[str, ...]]] = {
     "TERRAN_BATTLECRUISER": (
         "battlecruisers",
         "battlecruiser",
+        "bcs",
+        "bc",
         "전투순양함",
         "배틀크루저",
     ),

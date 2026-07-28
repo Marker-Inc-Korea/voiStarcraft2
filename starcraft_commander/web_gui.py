@@ -65,6 +65,9 @@ from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
     normalize_tactical_effect_tags,
 )
+from starcraft_commander.micromachine_terran_capabilities import (
+    operation_family_evidence,
+)
 from starcraft_commander.policy_modulation import (
     POLICY_MODULATION_TTL_MAX_SECONDS,
     POLICY_MODULATION_TTL_MIN_SECONDS,
@@ -1823,6 +1826,14 @@ def _micromachine_operation_status_payload(
         ),
         "requirements": normalized_requirement_progress,
     }
+    family_evidence = list(
+        operation_family_evidence(
+            operation_telemetry or {},
+            expected_update_id=update_id,
+            expected_operation_id=operation_id,
+            expected_generation=active_operation_generation,
+        )
+    )
     return {
         "operation_key": operation_key,
         "operation_id": operation_id,
@@ -1852,6 +1863,12 @@ def _micromachine_operation_status_payload(
         "disposition": disposition,
         "operation_edit": operation_edit,
         "operation_convergence": operation_convergence,
+        "squad_order": str(
+            operation_telemetry.get("squad_order", "")
+            if isinstance(operation_telemetry, Mapping)
+            else ""
+        ),
+        "family_evidence": family_evidence,
     }
 
 
@@ -10344,11 +10361,20 @@ function commandOperationData(operation, parentData) {
     operation_mission: String(operation.mission || "operation"),
     operation_edit: operation.operation_edit || {},
     operation_convergence: operation.operation_convergence || {},
+    squad_order: String(operation.squad_order || ""),
+    family_evidence: Array.isArray(operation.family_evidence)
+      ? operation.family_evidence
+      : [],
     telemetry_current: operation.telemetry_current === true
   };
 }
 
 function operationRecordDisposition(model, data) {
+  var reported = String(
+    data && data.operation_disposition || ""
+  ).toLowerCase();
+  var execution = model && model.execution || {};
+  var executionState = String(execution.state || "").toLowerCase();
   if (model.cancelled) {
     return commandConsoleTerminalCleanupVerified(model)
       ? "superseded"
@@ -10356,10 +10382,28 @@ function operationRecordDisposition(model, data) {
   }
   if (model.superseded) { return "superseded"; }
   if (model.blocked) {
-    return data.operation_disposition === "expired" ? "expired" : "blocked";
+    return reported === "expired" ? "expired" : "blocked";
   }
-  if (model.effectObserved) { return "completed"; }
-  return String(data.operation_disposition || "active");
+  if (
+    reported === "completed" ||
+    (
+      model.effectObserved &&
+      (execution.completed === true || executionState === "completed")
+    )
+  ) {
+    return "completed";
+  }
+  return reported || "active";
+}
+
+function operationRecordTerminal(model, data) {
+  var disposition = operationRecordDisposition(model, data);
+  return Boolean(
+    disposition === "completed" ||
+    disposition === "blocked" ||
+    disposition === "expired" ||
+    disposition === "superseded"
+  );
 }
 
 function resetOperationConsoleRegistry() {
@@ -10480,6 +10524,67 @@ function operationRecordForCandidate(key, updateId) {
     return false;
   });
   return match;
+}
+
+function operationFamilyEvidenceKey(item) {
+  return [
+    String(item && item.family || ""),
+    String(item && item.role || ""),
+    String(item && item.action || "")
+  ].join("|");
+}
+
+function operationFamilyEvidenceRank(item) {
+  var stageRank = {
+    waiting: 0,
+    represented: 1,
+    assigned: 2,
+    attempted: 3,
+    executed: 4,
+    effect: 5,
+    blocked: 6
+  };
+  return [
+    Number(item && item.attempt_generation || 0),
+    Number(item && item.effect_frame || 0),
+    Number(item && item.submitted_frame || 0),
+    Number(item && item.attempted_frame || 0),
+    Number(item && item.effect_count || 0),
+    Number(item && item.submitted_count || 0),
+    Number(item && item.attempted_count || 0),
+    Number(stageRank[String(item && item.stage || "waiting")] || 0)
+  ];
+}
+
+function operationFamilyEvidenceRankCompare(left, right) {
+  var leftRank = operationFamilyEvidenceRank(left);
+  var rightRank = operationFamilyEvidenceRank(right);
+  for (var index = 0; index < leftRank.length; index += 1) {
+    if (leftRank[index] !== rightRank[index]) {
+      return leftRank[index] - rightRank[index];
+    }
+  }
+  return 0;
+}
+
+function mergeOperationFamilyEvidence(previous, incoming) {
+  var merged = {};
+  var order = [];
+  function absorb(item) {
+    if (!item || typeof item !== "object") { return; }
+    var key = operationFamilyEvidenceKey(item);
+    if (!Object.prototype.hasOwnProperty.call(merged, key)) {
+      order.push(key);
+      merged[key] = item;
+      return;
+    }
+    if (operationFamilyEvidenceRankCompare(item, merged[key]) >= 0) {
+      merged[key] = item;
+    }
+  }
+  (Array.isArray(previous) ? previous : []).forEach(absorb);
+  (Array.isArray(incoming) ? incoming : []).forEach(absorb);
+  return order.map(function(key) { return merged[key]; });
 }
 
 function reconcileOperationRecord(operation, parentData) {
@@ -10642,6 +10747,15 @@ function reconcileOperationRecord(operation, parentData) {
     record.text ||
     operationId
   );
+  if (
+    record.data &&
+    operationGeneration === record.operationGeneration
+  ) {
+    data.family_evidence = mergeOperationFamilyEvidence(
+      record.data.family_evidence,
+      data.family_evidence
+    );
+  }
   record.data = data;
   record.stageRank = Math.max(record.stageRank, stageRank);
   record.telemetryFrame = Math.max(record.telemetryFrame, telemetryFrame);
@@ -10650,9 +10764,10 @@ function reconcileOperationRecord(operation, parentData) {
     record.requestedOperationGeneration || 0,
     requestedOperationGeneration
   );
+  var operationTerminal = operationRecordTerminal(model, data);
   record.terminal = rejectedEditRefresh
-    ? Boolean(record.terminal || model.terminal)
-    : model.terminal;
+    ? Boolean(record.terminal || operationTerminal)
+    : operationTerminal;
   record.disposition = operationRecordDisposition(model, data);
   return record;
 }
@@ -10839,6 +10954,50 @@ function operationConvergenceSummary(data) {
   return "";
 }
 
+function operationFamilyEvidenceSummary(data) {
+  var evidence = data && Array.isArray(data.family_evidence)
+    ? data.family_evidence
+    : [];
+  if (!evidence.length) { return ""; }
+  var stageLabels = {
+    waiting: commandUiText("대기", "waiting", "等待"),
+    represented: commandUiText("생산 반영", "represented", "已纳入生产"),
+    assigned: commandUiText("배정", "assigned", "已分配"),
+    attempted: commandUiText("명령 시도", "attempted", "已尝试命令"),
+    executed: commandUiText("SC2 제출", "SC2 submitted", "已提交 SC2"),
+    effect: commandUiText("효과 관측", "effect observed", "已观察效果"),
+    blocked: commandUiText("차단", "blocked", "受阻")
+  };
+  return evidence.map(function(item) {
+    var name = String(
+      item && (item.display_name || item.family || item.unit_type) || ""
+    ).replace(/^TERRAN_/, "");
+    var role = String(item && item.role || "");
+    var assigned = Number(item && item.assigned || 0);
+    var represented = Number(item && item.represented || 0);
+    var stage = String(item && item.stage || "waiting");
+    var action = String(item && item.action || "");
+    var effectKind = String(item && item.effect_kind || "");
+    var effectCount = Number(item && item.effect_count || 0);
+    var attemptedCount = Number(item && item.attempted_count || 0);
+    var submittedCount = Number(item && item.submitted_count || 0);
+    var blocker = String(item && item.blocker || "");
+    var text = name;
+    if (role) { text += "/" + role; }
+    text += " " + assigned + "/" + represented;
+    text += " · " + (stageLabels[stage] || stage);
+    if (action) { text += " · " + action; }
+    if (attemptedCount > 0) { text += " · try " + attemptedCount; }
+    if (submittedCount > 0) { text += " · SC2 " + submittedCount; }
+    if (effectKind) {
+      text += " · " + effectKind;
+      if (effectCount > 0) { text += " " + effectCount; }
+    }
+    if (blocker) { text += " · " + blocker; }
+    return text;
+  }).join(" | ");
+}
+
 function prefillOperationEdit(record, action) {
   var input = document.getElementById("command-input");
   if (!input) { return; }
@@ -10980,6 +11139,21 @@ function renderOperationCard(record) {
       commandUiText("병력 수렴", "Force convergence", "兵力收敛"),
       operationConvergenceSummary(data),
       "operation-card-verification"
+    );
+  }
+  if (operationFamilyEvidenceSummary(data)) {
+    operationAppendDetail(
+      details,
+      commandUiText("유닛 실행", "Unit execution", "单位执行"),
+      operationFamilyEvidenceSummary(data),
+      "operation-card-verification"
+    );
+  }
+  if (data.squad_order) {
+    operationAppendDetail(
+      details,
+      commandUiText("Squad 오더", "Squad order", "编队命令"),
+      String(data.squad_order)
     );
   }
   if (operationEditSummary(data)) {

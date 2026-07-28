@@ -27,6 +27,9 @@ from urllib.parse import quote
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
 )
+from starcraft_commander.micromachine_terran_capabilities import (
+    TERRAN_UNIT_FAMILIES,
+)
 from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.llm_interpreter import LocalLLMControl
@@ -2535,6 +2538,151 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "must-not-be-copied",
             json.dumps(payload["operations"], ensure_ascii=False),
         )
+
+    def test_micromachine_status_exposes_current_all_terran_family_evidence(
+        self,
+    ):
+        update_id = "all-terran-harass-update"
+        operation_id = "mixed-harass"
+        generation = 2
+        family_rows = []
+        for index, family in enumerate(TERRAN_UNIT_FAMILIES):
+            effect_observed = family.family == "reaper"
+            blocked = family.family == "banshee"
+            family_rows.append(
+                {
+                    "update_id": update_id,
+                    "operation_id": operation_id,
+                    "generation": generation,
+                    "family": family.family,
+                    "unit_type": family.unit_types[0],
+                    "role": family.default_role,
+                    "assigned": 0 if blocked else 1,
+                    "represented": 0 if blocked else 1,
+                    "action": family.abilities[0],
+                    "required_effect": f"ability:{family.abilities[0]}",
+                    "attempt_generation": index + 1,
+                    "attempted_count": 0 if blocked else 1,
+                    "attempted_frame": 0 if blocked else 215 + index,
+                    "submitted_count": 0 if blocked else 1,
+                    "submitted_frame": 0 if blocked else 230 + index,
+                    "effect_kind": (
+                        "movement_observed" if effect_observed else ""
+                    ),
+                    "effect_count": 1 if effect_observed else 0,
+                    "effect_frame": 260 if effect_observed else 0,
+                    "blocker_manager": (
+                        "ProductionManager" if blocked else ""
+                    ),
+                    "blocker": (
+                        "missing_starport_techlab" if blocked else ""
+                    ),
+                }
+            )
+        current_tank = next(
+            row for row in family_rows if row["family"] == "siege_tank"
+        )
+        stale_rows = [
+            {**current_tank, "update_id": "stale-update"},
+            {**current_tank, "operation_id": "stale-operation"},
+            {**current_tank, "generation": 1},
+            {**current_tank, "action": ""},
+        ]
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "manager_bias_domains": ["combat", "squad"],
+                    "vector": {
+                        "goal": "15-family mixed harass",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": generation,
+                                "goal": "가용 테란 병력으로 적 일꾼을 견제",
+                                "tactical_task": {
+                                    "task_type": "harass_with_units",
+                                    "location_intent": "enemy_mineral_line",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 300},
+        }
+        telemetry_document = {
+            "frame": 300,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "update_id": update_id,
+                            "operation_id": operation_id,
+                            "generation": generation,
+                            "status": "MOVING",
+                            "received_frame": 205,
+                            "assigned_frame": 210,
+                            "submitted_frame": 220,
+                            "last_action_frame": 240,
+                            "movement_frame": 250,
+                            "assigned_count": 14,
+                            "max_home_distance": 24.0,
+                            "last_action": "AttackMove",
+                            "squad_order": "harass",
+                            "family_evidence": family_rows + stale_rows,
+                        }
+                    ],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=300,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            blackboard_dir="/tmp/all-terran-family-evidence",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "가용 테란 병력으로 적 일꾼을 견제해",
+            },
+        )
+
+        self.assertEqual(1, len(payload["operations"]))
+        operation = payload["operations"][0]
+        self.assertEqual(operation_id, operation["operation_id"])
+        self.assertEqual(generation, operation["operation_generation"])
+        self.assertEqual("harass", operation["squad_order"])
+        evidence = operation["family_evidence"]
+        self.assertEqual(15, len(evidence))
+        self.assertEqual(
+            {family.family for family in TERRAN_UNIT_FAMILIES},
+            {row["family"] for row in evidence},
+        )
+        for row in evidence:
+            with self.subTest(family=row["family"]):
+                self.assertEqual(update_id, row["update_id"])
+                self.assertEqual(operation_id, row["operation_id"])
+                self.assertEqual(generation, row["generation"])
+                self.assertTrue(row["action"])
+                self.assertGreater(row["attempt_generation"], 0)
+        by_family = {row["family"]: row for row in evidence}
+        self.assertEqual("effect", by_family["reaper"]["stage"])
+        self.assertEqual("blocked", by_family["banshee"]["stage"])
+        self.assertEqual(
+            "missing_starport_techlab",
+            by_family["banshee"]["blocker"],
+        )
+        self.assertEqual("executed", by_family["siege_tank"]["stage"])
+        self.assertFalse(by_family["siege_tank"]["effect"])
 
     def test_rejected_higher_generation_edit_uses_active_generation_telemetry(self):
         update_id = "rejected-operation-edit"
@@ -8455,9 +8603,19 @@ const assert = require("assert");
   [reconRecord, assaultRecord].forEach(function(record) {
     var statusNode = record.node.querySelector(".operation-card-state");
     var controls = record.node.querySelectorAll("button");
+    var rail = record.node.querySelectorAll(".operation-stage");
     assert.strictEqual(statusNode.getAttribute("role"), "status");
     assert.strictEqual(record.node.getAttribute("role"), "listitem");
     assert(record.node.getAttribute("aria-labelledby"));
+    assert.strictEqual(rail.length, 4);
+    assert.deepStrictEqual(
+      rail.map(function(stage) { return stage.textContent; }),
+      ["해석", "배정", "제출", "관측"]
+    );
+    rail.forEach(function(stage) {
+      assert.strictEqual(stage.getAttribute("role"), "listitem");
+      assert(["step", "false"].includes(stage.getAttribute("aria-current")));
+    });
     assert.strictEqual(controls.length, 5);
     assert.deepStrictEqual(
       controls.map(function(control) {
@@ -8506,6 +8664,120 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.telemetryFrame, 320);
   assert(assaultRecord.node.textContent.includes("attack"));
   assert(!assaultRecord.node.textContent.includes("move"));
+
+  // All-Terran evidence extends the existing Operation card and four-stage
+  // rail instead of creating a separate family dashboard.
+  var allTerranFamilies = [
+    ["marine", "Marine", "frontline", "marine_stimpack"],
+    ["marauder", "Marauder", "frontline", "marauder_stimpack"],
+    ["reaper", "Reaper", "worker_harass", "kd8_charge"],
+    ["ghost", "Ghost", "spellcaster", "emp"],
+    ["hellion_hellbat", "Hellion/Hellbat", "worker_harass", "hellbat_mode"],
+    ["widow_mine", "Widow Mine", "ambush", "widow_mine_burrow"],
+    ["cyclone", "Cyclone", "kite", "lock_on"],
+    ["siege_tank", "Siege Tank", "siege_support", "siege_mode"],
+    ["thor", "Thor", "anti_air", "thor_high_impact_mode"],
+    ["medivac", "Medivac", "support", "medivac_heal"],
+    ["raven", "Raven", "support", "auto_turret"],
+    ["viking", "Viking", "anti_air", "viking_fighter_mode"],
+    ["banshee", "Banshee", "worker_harass", "banshee_cloak"],
+    ["liberator", "Liberator", "zone_control", "liberator_defender_mode"],
+    ["battlecruiser", "Battlecruiser", "capital_ship", "yamato"]
+  ];
+  var currentFamilyEvidence = allTerranFamilies.map(function(definition, index) {
+    var isTank = definition[0] === "siege_tank";
+    var isBlocked = definition[0] === "banshee";
+    return {
+      family: definition[0],
+      display_name: definition[1],
+      role: definition[2],
+      assigned: isBlocked ? 0 : 1,
+      represented: isBlocked ? 0 : 1,
+      action: definition[3],
+      attempt_generation: index + 1,
+      attempted: !isBlocked,
+      executed: !isBlocked,
+      effect: isTank,
+      stage: isBlocked ? "blocked" : (isTank ? "effect" : "executed"),
+      blocker: isBlocked ? "missing_starport_techlab" : ""
+    };
+  });
+  var allTerranAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "테란 혼성 견제",
+    "harass",
+    325,
+    "action_issued",
+    actionStages("harass").slice(0, 6)
+  );
+  allTerranAssault.squad_order = "harass";
+  allTerranAssault.family_evidence = currentFamilyEvidence;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [allTerranAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(nodes["operation-list"].children.length, 2);
+  assert.strictEqual(assaultRecord.node.querySelectorAll(".operation-stage").length, 4);
+  assert.strictEqual(assaultRecord.node.querySelectorAll("button").length, 5);
+  assert(assaultRecord.node.textContent.includes("유닛 실행"));
+  assert(assaultRecord.node.textContent.includes("Squad 오더"));
+  assert(assaultRecord.node.textContent.includes("harass"));
+  allTerranFamilies.forEach(function(definition) {
+    assert(
+      assaultRecord.node.textContent.includes(definition[1]),
+      "missing family evidence in Operation card: " + definition[1]
+    );
+  });
+  assert(assaultRecord.node.textContent.includes("missing_starport_techlab"));
+  assert.strictEqual(
+    assaultRecord.data.family_evidence.find(function(item) {
+      return item.family === "siege_tank";
+    }).attempt_generation,
+    8
+  );
+
+  // A later envelope carrying an older family/action attempt may advance the
+  // operation frame, but it cannot overwrite the newer family evidence row.
+  var staleFamilyEvidence = currentFamilyEvidence.map(function(item) {
+    if (item.family !== "siege_tank") { return Object.assign({}, item); }
+    return Object.assign({}, item, {
+      attempt_generation: 7,
+      effect: false,
+      stage: "blocked",
+      blocker: "stale_family_attempt_must_not_replace_latest"
+    });
+  });
+  var staleFamilyAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "테란 혼성 견제",
+    "harass",
+    326,
+    "action_issued",
+    actionStages("harass").slice(0, 6)
+  );
+  staleFamilyAssault.squad_order = "harass";
+  staleFamilyAssault.family_evidence = staleFamilyEvidence;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleFamilyAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.telemetryFrame, 326);
+  var retainedTankEvidence = assaultRecord.data.family_evidence.find(
+    function(item) { return item.family === "siege_tank"; }
+  );
+  assert.strictEqual(retainedTankEvidence.attempt_generation, 8);
+  assert.strictEqual(retainedTankEvidence.stage, "effect");
+  assert.strictEqual(retainedTankEvidence.blocker, "");
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "stale_family_attempt_must_not_replace_latest"
+    )
+  );
 
   // A newer generation edits the existing card instead of creating a duplicate.
   var editedAssault = operationResult(

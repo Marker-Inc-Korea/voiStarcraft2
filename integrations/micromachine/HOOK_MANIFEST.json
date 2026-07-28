@@ -343,6 +343,11 @@
       "path": "patches/0067-runtime-convergence-defense-placement-information.patch",
       "order": 67,
       "scope": "runtime force convergence with operation-owned queue and ProductionManager prerequisite/resource/producer introspection, explicit-operation defense isolation, self-ramp defense anchors, semantic placement validation, production-building mobility guards, visible/recent/remembered enemy evidence classification, and generation-stable target latching"
+    },
+    {
+      "path": "patches/0068-all-terran-harass-capability-evidence.patch",
+      "order": 68,
+      "scope": "admit harass_with_units as genuine SquadOrderTypes::Harass operations, preserve Harass order and radius across operation lifecycle paths, include harassment in production activity, and expose squad-order plus 15-family attempted, executed, effect, and blocker evidence in telemetry and the existing Battlefield Commander card"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

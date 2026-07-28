@@ -5,8 +5,83 @@ import unittest
 
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
+    explicit_ability_effect_is_valid,
     normalize_tactical_effect_tags,
 )
+
+
+def _operation_scout_telemetry(
+    *,
+    family: str,
+    requested_unit_type: str,
+    evidence_unit_type: str | None = None,
+    generation: int = 3,
+    tags: tuple[int, ...] = (4101, 4102),
+    update_id: str = "operation-scout-current",
+) -> dict[str, object]:
+    count = len(tags)
+    return {
+        "frame": 13000,
+        "active_modulation_ids": [update_id],
+        "managers": {
+            "GameCommander": {"update_id": update_id},
+            "OperationDirector": {
+                "policy_update_id": update_id,
+                "operations": [
+                    {
+                        "operation_id": "recon-non-marine",
+                        "generation": generation,
+                        "requested_task_type": "scout_with_units",
+                        "task_type": "scout",
+                        "squad_order": "Scout",
+                        "status": "MOVING",
+                        "assigned_unit_tags": list(tags),
+                        "assigned_count": count,
+                        "requirement_target_count": count,
+                        "requirement_progress": [
+                            {
+                                "unit_type": requested_unit_type,
+                                "role": "scout",
+                                "target_count": count,
+                                "assigned_count": count,
+                            }
+                        ],
+                        "family_evidence": [
+                            {
+                                "update_id": update_id,
+                                "operation_id": "recon-non-marine",
+                                "generation": generation,
+                                "family": family,
+                                "unit_type": (
+                                    evidence_unit_type
+                                    or requested_unit_type
+                                ),
+                                "role": "scout",
+                                "action": "squad_order:Scout",
+                                "required_effect": (
+                                    "movement_or_engagement"
+                                ),
+                                "attempt_generation": generation + 10,
+                                "assigned": count,
+                                "attempted_count": count,
+                                "attempted_frame": 12980,
+                                "submitted_count": count,
+                                "submitted_frame": 12990,
+                                "effect_kind": "movement",
+                                "effect_count": count,
+                                "effect_frame": 13000,
+                                "effect_unit_tags": list(tags),
+                            }
+                        ],
+                        "submitted_frame": 12990,
+                        "submission_observed": True,
+                        "last_action_frame": 12990,
+                        "max_home_distance": 18.0,
+                    }
+                ],
+            },
+        },
+    }
 
 
 class MicroMachineTacticalEvidenceTest(unittest.TestCase):
@@ -255,6 +330,211 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
         self.assertEqual("missing", evidence.status)
         self.assertEqual(("scout",), evidence.missing_effects)
         self.assertEqual((), evidence.observed_effects)
+
+    def test_combat_scout_validates_requested_non_marine_identity(
+        self,
+    ) -> None:
+        combat = {
+            "update_id": "viking-scout",
+            "scout_requested_unit_family": "viking",
+            "scout_requested_unit_type": "TERRAN_VIKINGFIGHTER",
+            "scout_requested_unit_tag": 5151,
+            "scout_requested_generation": 9,
+            "scout_scope_requested_min_units": 1,
+            "scout_scope_requested_max_units": 1,
+            "scout_scope_assigned_unit_count": 1,
+            "scout_max_home_distance": 16.0,
+            "scout_actual_command_issued_count": 1,
+            "scout_last_action_frame": 13000,
+            "scout_last_issued_action": (
+                "MoveToGoalOrder|squad=Scout|type=2|x=33.5|y=138.5"
+            ),
+            "scout_last_commanded_unit_tag": 5151,
+            "scout_last_commanded_unit_type": "TERRAN_VIKINGASSAULT",
+            "scout_command_generation": 9,
+            "scout_explicit_update_id": "viking-scout",
+            "scout_assigned_unit_tags": [5151],
+        }
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "managers": {"CombatCommander": combat},
+            },
+            expected_effects=("scout",),
+        )
+        self.assertTrue(evidence.ok, evidence.to_dict())
+
+        invalid_overrides = (
+            {"scout_requested_unit_family": "siege_tank"},
+            {"scout_last_commanded_unit_type": "TERRAN_BANSHEE"},
+            {"scout_last_commanded_unit_tag": 6161},
+            {"scout_scope_assigned_unit_count": 2},
+            {"scout_max_home_distance": 7.9},
+            {"scout_command_generation": 8},
+            {"scout_explicit_update_id": "stale-update"},
+        )
+        for override in invalid_overrides:
+            with self.subTest(override=override):
+                invalid = classify_micromachine_tactical_evidence(
+                    latest_telemetry={
+                        "frame": 13000,
+                        "managers": {
+                            "CombatCommander": {
+                                **combat,
+                                **override,
+                            }
+                        },
+                    },
+                    expected_effects=("scout",),
+                )
+                self.assertFalse(invalid.ok, invalid.to_dict())
+
+    def test_operation_scout_accepts_every_non_marine_terran_family(
+        self,
+    ) -> None:
+        cases = (
+            ("marauder", "TERRAN_MARAUDER", "TERRAN_MARAUDER"),
+            ("reaper", "TERRAN_REAPER", "TERRAN_REAPER"),
+            ("ghost", "TERRAN_GHOST", "TERRAN_GHOST"),
+            (
+                "hellion_hellbat",
+                "TERRAN_HELLION",
+                "TERRAN_HELLIONTANK",
+            ),
+            (
+                "widow_mine",
+                "TERRAN_WIDOWMINE",
+                "TERRAN_WIDOWMINEBURROWED",
+            ),
+            ("cyclone", "TERRAN_CYCLONE", "TERRAN_CYCLONE"),
+            (
+                "siege_tank",
+                "TERRAN_SIEGETANK",
+                "TERRAN_SIEGETANKSIEGED",
+            ),
+            ("thor", "TERRAN_THOR", "TERRAN_THORAP"),
+            ("medivac", "TERRAN_MEDIVAC", "TERRAN_MEDIVAC"),
+            ("raven", "TERRAN_RAVEN", "TERRAN_RAVEN"),
+            (
+                "viking",
+                "TERRAN_VIKINGFIGHTER",
+                "TERRAN_VIKINGASSAULT",
+            ),
+            ("banshee", "TERRAN_BANSHEE", "TERRAN_BANSHEE"),
+            (
+                "liberator",
+                "TERRAN_LIBERATOR",
+                "TERRAN_LIBERATORAG",
+            ),
+            (
+                "battlecruiser",
+                "TERRAN_BATTLECRUISER",
+                "TERRAN_BATTLECRUISER",
+            ),
+        )
+
+        for family, requested_type, evidence_type in cases:
+            with self.subTest(family=family):
+                evidence = classify_micromachine_tactical_evidence(
+                    latest_telemetry=_operation_scout_telemetry(
+                        family=family,
+                        requested_unit_type=requested_type,
+                        evidence_unit_type=evidence_type,
+                    ),
+                    expected_effects=("scout",),
+                )
+
+                self.assertTrue(evidence.ok, evidence.to_dict())
+                self.assertEqual(("scout",), evidence.observed_effects)
+
+    def test_operation_scout_rejects_wrong_family_type_and_tag(self) -> None:
+        wrong_family = _operation_scout_telemetry(
+            family="viking",
+            requested_unit_type="TERRAN_SIEGETANK",
+            evidence_unit_type="TERRAN_VIKINGFIGHTER",
+        )
+        wrong_type = _operation_scout_telemetry(
+            family="siege_tank",
+            requested_unit_type="TERRAN_SIEGETANK",
+            evidence_unit_type="TERRAN_VIKINGFIGHTER",
+        )
+        wrong_tag = _operation_scout_telemetry(
+            family="siege_tank",
+            requested_unit_type="TERRAN_SIEGETANK",
+            evidence_unit_type="TERRAN_SIEGETANKSIEGED",
+        )
+        wrong_tag["managers"]["OperationDirector"]["operations"][0][
+            "family_evidence"
+        ][0]["effect_unit_tags"] = [9999, 4102]
+
+        for name, telemetry in (
+            ("family", wrong_family),
+            ("type", wrong_type),
+            ("tag", wrong_tag),
+        ):
+            with self.subTest(name=name):
+                evidence = classify_micromachine_tactical_evidence(
+                    latest_telemetry=telemetry,
+                    expected_effects=("scout",),
+                )
+
+                self.assertEqual("missing", evidence.status)
+                self.assertEqual(("scout",), evidence.missing_effects)
+
+    def test_operation_scout_rejects_stale_generation(self) -> None:
+        stale = _operation_scout_telemetry(
+            family="viking",
+            requested_unit_type="TERRAN_VIKINGFIGHTER",
+            evidence_unit_type="TERRAN_VIKINGASSAULT",
+            generation=4,
+        )
+        current = _operation_scout_telemetry(
+            family="viking",
+            requested_unit_type="TERRAN_VIKINGFIGHTER",
+            evidence_unit_type="TERRAN_VIKINGASSAULT",
+            generation=5,
+        )
+        current_operation = current["managers"]["OperationDirector"][
+            "operations"
+        ][0]
+        current_operation.update(
+            {
+                "status": "ASSIGNED",
+                "submission_observed": False,
+                "submitted_frame": 0,
+                "last_action_frame": 0,
+                "max_home_distance": 0.0,
+            }
+        )
+        stale["managers"]["OperationDirector"]["operations"].append(
+            current_operation
+        )
+
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry=stale,
+            expected_effects=("scout",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("scout",), evidence.missing_effects)
+
+    def test_operation_scout_rejects_stale_family_generation(self) -> None:
+        telemetry = _operation_scout_telemetry(
+            family="raven",
+            requested_unit_type="TERRAN_RAVEN",
+            generation=8,
+        )
+        telemetry["managers"]["OperationDirector"]["operations"][0][
+            "family_evidence"
+        ][0]["generation"] = 7
+
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("scout",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("scout",), evidence.missing_effects)
 
     def test_marine_scout_requires_exact_requested_assignment_count(self) -> None:
         evidence = classify_micromachine_tactical_evidence(
@@ -527,6 +807,78 @@ class MicroMachineTacticalEvidenceTest(unittest.TestCase):
                     expected_effects=("ability_cast",),
                 )
                 self.assertTrue(evidence.ok, evidence.to_dict())
+
+    def test_kd8_charge_maps_to_exact_reaper_effect_evidence(self) -> None:
+        self.assertTrue(
+            explicit_ability_effect_is_valid(
+                ability="kd8_charge",
+                confirmation_effect="actor_order:EFFECT_KD8CHARGE",
+            )
+        )
+        for invalid_effect in (
+            "actor_order:MOVE",
+            "position:moved",
+            "movement",
+        ):
+            with self.subTest(invalid_effect=invalid_effect):
+                self.assertFalse(
+                    explicit_ability_effect_is_valid(
+                        ability="kd8_charge",
+                        confirmation_effect=invalid_effect,
+                    )
+                )
+
+    def test_generic_movement_does_not_invent_kd8_ability_effect(self) -> None:
+        telemetry = _operation_scout_telemetry(
+            family="reaper",
+            requested_unit_type="TERRAN_REAPER",
+        )
+
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry=telemetry,
+            expected_effects=("scout", "ability_cast"),
+        )
+
+        self.assertEqual("partial", evidence.status)
+        self.assertIn("scout", evidence.observed_effects)
+        self.assertNotIn("ability_cast", evidence.observed_effects)
+        self.assertEqual(("ability_cast",), evidence.missing_effects)
+
+    def test_kd8_observed_acceptance_rejects_generic_movement(self) -> None:
+        evidence = classify_micromachine_tactical_evidence(
+            latest_telemetry={
+                "frame": 13000,
+                "active_modulation_ids": ["kd8-current"],
+                "managers": {
+                    "GameCommander": {"update_id": "kd8-current"},
+                    "AbilityTask": {
+                        "update_id": "kd8-current",
+                        "task_type": "execute_ability",
+                        "ability": "kd8_charge",
+                        "status": "completed",
+                        "phase": "observed_accepted",
+                        "attempt_generation": 4,
+                        "submitted_attempt_generation": 4,
+                        "observed_accepted_attempt_generation": 4,
+                        "terminal_attempt_generation": 4,
+                        "submitted_count": 1,
+                        "last_action": (
+                            "VoiExplicitAbility:kd8_charge|"
+                            "ability=EFFECT_KD8CHARGE"
+                        ),
+                        "submission_frame": 12990,
+                        "observed_accepted_frame": 13000,
+                        "observed_accepted_evidence": "position:moved",
+                        "confirmation_state": "accepted",
+                        "confirmation_effect": "position:moved",
+                    },
+                },
+            },
+            expected_effects=("ability_cast",),
+        )
+
+        self.assertEqual("missing", evidence.status)
+        self.assertEqual(("ability_cast",), evidence.missing_effects)
 
     def test_generic_ability_rejects_mismatched_action_or_effect(self) -> None:
         confirmed_payload = {
