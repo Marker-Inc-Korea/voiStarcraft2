@@ -581,6 +581,7 @@ Important modules:
 Detailed design docs:
 
 - [docs/architecture.md](docs/architecture.md)
+- [docs/battlefield-command-ux-design.md](docs/battlefield-command-ux-design.md)
 - [docs/contracts.md](docs/contracts.md)
 - [docs/sc2-collaboration-policy-tree.md](docs/sc2-collaboration-policy-tree.md)
 - [docs/sc2-smoke-test.md](docs/sc2-smoke-test.md)

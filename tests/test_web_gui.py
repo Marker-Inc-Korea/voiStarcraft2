@@ -322,6 +322,31 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("application/json", content_type)
         return json.loads(payload.decode("utf-8"))
 
+    def get_sse(self, path="/api/events?once=1", headers=None):
+        status, content_type, payload = self.request(
+            "GET",
+            path,
+            headers=headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", content_type)
+        return payload.decode("utf-8")
+
+    def parse_sse_events(self, stream):
+        events = []
+        for block in stream.split("\n\n"):
+            fields = {}
+            for line in block.splitlines():
+                if not line or line.startswith(":") or ":" not in line:
+                    continue
+                name, value = line.split(":", 1)
+                fields[name] = value.lstrip()
+            if "data" not in fields:
+                continue
+            fields["data"] = json.loads(fields["data"])
+            events.append(fields)
+        return events
+
     def post_command(self, text):
         body = json.dumps({"text": text}).encode("utf-8")
         return self.request(
@@ -507,6 +532,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "renderMicroMachineStatus",
             "renderMicroMachineIntervention",
             "pollMicroMachineStatus",
+            "/api/events",
+            "EventSource",
+            "connectEventChannel",
+            "startPollingFallback",
+            "stopPollingFallback",
+            "lastEventSeq",
+            'status: "received"',
             "setInterval(pollHistory",
             "setInterval(pollState",
         ):
@@ -523,6 +555,117 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 r'class="sr-only"\s+role="status"\s+aria-live="polite"'
             ),
         )
+
+    def test_sse_initial_snapshot_contains_authoritative_sources_and_heartbeat(self):
+        stream = self.get_sse()
+        events = self.parse_sse_events(stream)
+
+        self.assertIn(": heartbeat", stream)
+        self.assertEqual(events[0]["event"], "snapshot")
+        document = events[0]["data"]
+        self.assertEqual(document["event_type"], "snapshot")
+        payload = document["payload"]
+        self.assertIn("state", payload)
+        self.assertIn("history", payload)
+        self.assertIn("micromachine_status", payload)
+        self.assertTrue(payload["state"]["available"])
+
+    def test_sse_last_event_id_replays_only_newer_events(self):
+        first = self.server._http.publish_event(
+            "command_received",
+            {"status": "received", "command_text": "first"},
+            update_id="voi-test-first",
+            operation_id="first",
+            generation=1,
+        )
+        second = self.server._http.publish_event(
+            "command_received",
+            {"status": "received", "command_text": "second"},
+            update_id="voi-test-second",
+            operation_id="second",
+            generation=2,
+        )
+
+        stream = self.get_sse(
+            "/api/events?once=1",
+            headers={"Last-Event-ID": str(first["event_seq"])},
+        )
+        events = self.parse_sse_events(stream)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event"], "command_received")
+        self.assertEqual(
+            events[0]["data"]["event_seq"],
+            second["event_seq"],
+        )
+        self.assertEqual(
+            events[0]["data"]["payload"]["command_text"],
+            "second",
+        )
+
+    def test_sse_truncated_cursor_falls_back_to_snapshot(self):
+        journal = web_gui._WebEventJournal(retention=2)
+        self.server._http.event_journal = journal
+        for index in range(4):
+            journal.publish(
+                "command_received",
+                {"status": "received", "command_text": f"command-{index}"},
+            )
+
+        stream = self.get_sse("/api/events?after=1&once=1")
+        events = self.parse_sse_events(stream)
+
+        self.assertEqual(events[0]["event"], "snapshot")
+        self.assertEqual(
+            events[0]["data"]["event_seq"],
+            journal.latest_seq,
+        )
+
+    def test_sse_endpoint_uses_existing_token_authentication(self):
+        server = WebGuiServer(
+            bridge=self.bridge,
+            port=0,
+            auth_token="event-secret",
+        )
+        server.start()
+        self.addCleanup(server.stop)
+
+        connection = http.client.HTTPConnection(
+            "127.0.0.1",
+            server.port,
+            timeout=5,
+        )
+        try:
+            connection.request("GET", "/api/events?once=1")
+            response = connection.getresponse()
+            payload = response.read()
+        finally:
+            connection.close()
+        self.assertEqual(response.status, 403)
+        self.assertIn("application/json", response.getheader("Content-Type", ""))
+        self.assertIn("인증 토큰", payload.decode("utf-8"))
+
+        connection = http.client.HTTPConnection(
+            "127.0.0.1",
+            server.port,
+            timeout=5,
+        )
+        try:
+            connection.request(
+                "GET",
+                "/api/events?once=1",
+                headers={WEB_GUI_TOKEN_HEADER: "event-secret"},
+            )
+            response = connection.getresponse()
+            payload = response.read()
+        finally:
+            connection.close()
+        self.assertEqual(response.status, 200)
+        self.assertIn(
+            "text/event-stream",
+            response.getheader("Content-Type", ""),
+        )
+        self.assertIn(b"event: snapshot", payload)
 
     def test_micromachine_modulation_endpoint_publishes_to_blackboard(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -3343,6 +3486,38 @@ class SessionLoopBridgeTest(unittest.TestCase):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)
         self.assertIsInstance(bridge, WebGuiBridgeInterface)
+
+    def test_web_event_journal_is_monotonic_bounded_and_redacted(self):
+        journal = web_gui._WebEventJournal(retention=2)
+        secret = "sk-" + "journal-secret-value-123456789"
+
+        first = journal.publish(
+            "command_received",
+            {"command_text": "first", "provider_error": secret},
+        )
+        second = journal.publish(
+            "command_received",
+            {"command_text": "second"},
+        )
+        third = journal.publish(
+            "command_received",
+            {"command_text": "third"},
+        )
+
+        self.assertEqual(first["event_seq"], 1)
+        self.assertEqual(second["event_seq"], 2)
+        self.assertEqual(third["event_seq"], 3)
+        self.assertEqual(journal.oldest_seq, 2)
+        self.assertFalse(journal.replay_available(0))
+        self.assertTrue(journal.replay_available(1))
+        self.assertEqual(
+            [event["event_seq"] for event in journal.events_after(1)],
+            [2, 3],
+        )
+        self.assertNotIn(
+            secret,
+            json.dumps(first, ensure_ascii=False),
+        )
 
     def test_constructor_rejects_invalid_seams(self):
         session, _bot = build_dry_run_session()
@@ -6384,7 +6559,7 @@ const assert = require("assert");
   }));
   assert.strictEqual(activeCommandConsoleRecord.pendingId, repeatedNewPendingId);
   assert.strictEqual(activeCommandConsoleRecord.updateId, "");
-  assert.strictEqual(nodes["command-console-state"].textContent, "명령 해석 중");
+  assert.strictEqual(nodes["command-console-state"].textContent, "명령 수신");
   assert(!nodes["active-command-console"].className.includes("command-console-verified"));
   assert.strictEqual(pendingCommandCount(), 1);
   assert.deepStrictEqual(pendingCommandTexts(), [repeatedText]);
@@ -7714,7 +7889,7 @@ const assert = require("assert");
   assert.notStrictEqual(directPublishAOperationId, directPublishBOperationId);
   directPublishATimeout();
   assert.strictEqual(nodes["command-console-title"].textContent, "고급 직접 publish B");
-  assert.strictEqual(nodes["command-console-state"].textContent, "명령 해석 중");
+  assert.strictEqual(nodes["command-console-state"].textContent, "명령 수신");
   directPublishBRequest.deferred.resolve(response(202, serverResult({
     ok: true,
     accepted: true,
@@ -8385,6 +8560,12 @@ assert(logBox.querySelectorAll(".message-full").some(function (node) {
         page = render_web_gui_page()
         self.assertIn("/api/history?after=", page)
         self.assertIn("/api/state", page)
+        self.assertIn("/api/events", page)
+        self.assertIn("new window.EventSource", page)
+        self.assertIn("source.onopen", page)
+        self.assertIn("source.onerror", page)
+        self.assertIn("startPollingFallback", page)
+        self.assertIn("stopPollingFallback", page)
         self.assertIn(f"POLL_INTERVAL_MS = {web_gui.WEB_GUI_POLL_INTERVAL_MS}", page)
         for forbidden in ("https://cdn.", "http://cdn.", "unpkg.com", "jsdelivr"):
             with self.subTest(forbidden=forbidden):
