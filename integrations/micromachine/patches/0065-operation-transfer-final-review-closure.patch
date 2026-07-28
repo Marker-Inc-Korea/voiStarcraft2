@@ -1,0 +1,506 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 5b9d881..96ebf20 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -5439,12 +5439,30 @@ void CombatCommander::updateVoiOperations()
+ 					action.second.operationGeneration)
+ 			});
+ 		}
++		const auto sourceAssignedRoles =
++			voiPreserveAssignedRolesForUnits(
++				source->assignedRoleByTag,
++				sourceUnits,
++				[](const Unit & unit)
++				{
++					return unit.getTag();
++				});
++		const auto destinationAssignedRoles =
++			voiPreserveAssignedRolesForUnits(
++				destination->assignedRoleByTag,
++				destinationUnits,
++				[](const Unit & unit)
++				{
++					return unit.getTag();
++				});
+ 		const auto transactionPlan =
+ 			voiPlanOperationTransferTransaction(
+ 				m_voiOperationUnitOwners,
+ 				operationAssignments,
+ 				squadAssignments,
+ 				actionAssignments,
++				sourceAssignedRoles,
++				destinationAssignedRoles,
+ 				plannedSelection->second,
+ 				currentSourceOwner,
+ 				currentDestinationOwner,
+@@ -5493,12 +5511,14 @@ void CombatCommander::updateVoiOperations()
+ 			}
+ 			sourceReplacement.previousSquadByTag.erase(tag);
+ 			sourceReplacement.submittedPositions.erase(tag);
+-			sourceReplacement.assignedRoleByTag.erase(tag);
+ 			destinationReplacement.previousSquadByTag[tag] =
+ 				restoreSquad;
+ 			destinationReplacement.submittedPositions.erase(tag);
+-			destinationReplacement.assignedRoleByTag.erase(tag);
+ 		}
++		sourceReplacement.assignedRoleByTag =
++			transactionPlan.replacementSourceRoles;
++		destinationReplacement.assignedRoleByTag =
++			transactionPlan.replacementDestinationRoles;
+ 		sourceReplacement.assignedUnitTags =
+ 			transactionPlan.sourceTags;
+ 		sourceReplacement.assignedCount =
+@@ -5609,12 +5629,10 @@ void CombatCommander::updateVoiOperations()
+ 			action != unitActions.end();)
+ 		{
+ 			if (action->first != nullptr
+-				&& unitsByTag.find(action->first->tag)
+-					!= unitsByTag.end()
+-				&& (action->second.operationId
+-						== source->operationId
+-					|| action->second.operationId
+-						== destination->operationId))
++				&& transactionPlan.actionCleanupTags.find(
++					action->first->tag)
++					!= transactionPlan
++						.actionCleanupTags.end())
+ 			{
+ 				action = unitActions.erase(action);
+ 			}
+@@ -5728,6 +5746,32 @@ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+ 			: 0;
+ 	const uint64_t currentFrame =
+ 		static_cast<uint64_t>(m_bot.GetCurrentFrame());
++	std::vector<VoiOperationTransferReference>
++		pendingTransferReferences;
++	for (int index = 0; index < operationCount; ++index)
++	{
++		const std::string prefix =
++			"operations." + std::to_string(index);
++		VoiOperationTransferReference reference;
++		reference.operationId =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".operation_id",
++				"");
++		reference.counterpartOperationId =
++			m_bot.Commander().getVoiPolicyString(
++				prefix
++					+ ".operation_edit.counterpart_operation_id",
++				"");
++		reference.editAction =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".operation_edit.action",
++				"");
++		if (!reference.operationId.empty()
++			&& !reference.counterpartOperationId.empty())
++		{
++			pendingTransferReferences.push_back(reference);
++		}
++	}
+ 	for (auto & operation : m_voiOperations)
+ 	{
+ 		bool retained = false;
+@@ -5776,6 +5820,15 @@ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+ 		}
+ 
+ 		if (matchingEntryCount == 0
++			&& voiOperationReferencedByPendingTransfer(
++				operation.operationId,
++				pendingTransferReferences))
++		{
++			retained = true;
++			reason =
++				"pending_transfer_counterpart_admission";
++		}
++		else if (matchingEntryCount == 0
+ 			&& (staleGenerationEntry
+ 				|| higherGenerationEntry))
+ 		{
+@@ -12656,6 +12709,10 @@ void CombatCommander::drawVoiOperationHud()
+ 		{
+ 			color = sc2::Colors::Red;
+ 		}
++		else if (operation.editResolution == "blocked")
++		{
++			color = sc2::Colors::Red;
++		}
+ 		else if (operation.status == "COMPLETED")
+ 		{
+ 			color = sc2::Colors::Green;
+@@ -12683,6 +12740,11 @@ void CombatCommander::drawVoiOperationHud()
+ 		{
+ 			card << " reason=" << operation.blockedReason;
+ 		}
++		card << voiOperationTransferHudSuffix(
++			operation.editResolution,
++			operation.editRequestedGeneration,
++			operation.editCounterpartOperationId,
++			operation.editBlocker);
+ 		m_bot.Map().drawTextScreen(
+ 			0.01f,
+ 			screenY,
+diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transfer_admission.hpp
+index 110be12..60ce7ab 100644
+--- a/src/voi_operation_transfer_admission.hpp
++++ b/src/voi_operation_transfer_admission.hpp
+@@ -27,6 +27,13 @@ struct VoiOperationTransferAdmission
+ 	std::string blocker;
+ };
+ 
++struct VoiOperationTransferReference
++{
++	std::string operationId;
++	std::string counterpartOperationId;
++	std::string editAction;
++};
++
+ template <typename Tag, typename Owner>
+ struct VoiOperationTransferTransactionPlan
+ {
+@@ -35,6 +42,9 @@ struct VoiOperationTransferTransactionPlan
+ 	std::map<Tag, Owner> replacementOwners;
+ 	std::vector<Tag> sourceTags;
+ 	std::vector<Tag> destinationTags;
++	std::map<Tag, std::string> replacementSourceRoles;
++	std::map<Tag, std::string> replacementDestinationRoles;
++	std::set<Tag> actionCleanupTags;
+ };
+ 
+ template <typename CompositionEntry>
+@@ -121,11 +131,11 @@ bool voiOperationTransferRolePoliciesMatch(
+ 				return role.unitType == selected.unitType
+ 					&& role.role == selected.role;
+ 			});
+-		if (source != sourceRoles.end()
+-			&& (source->abilityPolicy
++		if (source == sourceRoles.end()
++			|| source->abilityPolicy
+ 					!= destination->abilityPolicy
+-				|| source->priority
+-					!= destination->priority))
++			|| source->priority
++				!= destination->priority)
+ 		{
+ 			return false;
+ 		}
+@@ -147,6 +157,43 @@ inline bool voiPreserveOperationForRejectedTransfer(
+ 	return !requestPresent && transferRejected;
+ }
+ 
++inline bool voiOperationReferencedByPendingTransfer(
++	const std::string & operationId,
++	const std::vector<VoiOperationTransferReference> & references)
++{
++	for (const auto & reference : references)
++	{
++		if (reference.operationId != operationId
++			&& reference.counterpartOperationId == operationId
++			&& (reference.editAction == "transfer_in"
++				|| reference.editAction == "transfer_out"))
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
++inline std::string voiOperationTransferHudSuffix(
++	const std::string & editResolution,
++	std::uint64_t requestedGeneration,
++	const std::string & counterpartOperationId,
++	const std::string & blocker)
++{
++	if (editResolution != "blocked")
++	{
++		return "";
++	}
++	return " edit=BLOCKED edit_gen="
++		+ std::to_string(requestedGeneration)
++		+ " counterpart="
++		+ (counterpartOperationId.empty()
++			? std::string("none")
++			: counterpartOperationId)
++		+ " edit_reason="
++		+ (blocker.empty() ? std::string("unknown") : blocker);
++}
++
+ inline bool voiShouldReconcileExistingOperation(
+ 	bool completed,
+ 	bool staticBlock,
+@@ -243,6 +290,8 @@ voiPlanOperationTransferTransaction(
+ 	const std::vector<std::pair<Tag, Owner>> & operationAssignments,
+ 	const std::vector<std::pair<Tag, Owner>> & squadAssignments,
+ 	const std::vector<std::pair<Tag, Owner>> & actionAssignments,
++	const std::map<Tag, std::string> & sourceAssignedRoles,
++	const std::map<Tag, std::string> & destinationAssignedRoles,
+ 	const std::vector<Tag> & selectedTags,
+ 	const Owner & currentSource,
+ 	const Owner & currentDestination,
+@@ -338,6 +387,27 @@ voiPlanOperationTransferTransaction(
+ 			result.blocker = "transfer_action_owner_mismatch";
+ 			return result;
+ 		}
++		result.actionCleanupTags.insert(action.first);
++	}
++	for (const auto & role : sourceAssignedRoles)
++	{
++		const auto operation = operationByTag.find(role.first);
++		if (operation == operationByTag.end()
++			|| operation->second != currentSource)
++		{
++			result.blocker = "transfer_source_role_owner_mismatch";
++			return result;
++		}
++	}
++	for (const auto & role : destinationAssignedRoles)
++	{
++		const auto operation = operationByTag.find(role.first);
++		if (operation == operationByTag.end()
++			|| operation->second != currentDestination)
++		{
++			result.blocker = "transfer_destination_role_owner_mismatch";
++			return result;
++		}
+ 	}
+ 
+ 	std::set<Tag> selected;
+@@ -366,12 +436,47 @@ voiPlanOperationTransferTransaction(
+ 		{
+ 			result.replacementOwners[operation.first] = requestedSource;
+ 			result.sourceTags.push_back(operation.first);
++			const auto role =
++				sourceAssignedRoles.find(operation.first);
++			if (role != sourceAssignedRoles.end())
++			{
++				result.replacementSourceRoles[operation.first] =
++					role->second;
++			}
+ 		}
+ 		else
+ 		{
+ 			result.replacementOwners[operation.first] =
+ 				requestedDestination;
+ 			result.destinationTags.push_back(operation.first);
++			const auto sourceRole =
++				sourceAssignedRoles.find(operation.first);
++			const auto destinationRole =
++				destinationAssignedRoles.find(operation.first);
++			if (transferred)
++			{
++				if (sourceRole == sourceAssignedRoles.end())
++				{
++					result.admitted = false;
++					result.blocker =
++						"transfer_selected_role_missing";
++					result.replacementOwners.clear();
++					result.sourceTags.clear();
++					result.destinationTags.clear();
++					result.replacementSourceRoles.clear();
++					result.replacementDestinationRoles.clear();
++					result.actionCleanupTags.clear();
++					return result;
++				}
++				result.replacementDestinationRoles[operation.first] =
++					sourceRole->second;
++			}
++			else if (destinationRole
++				!= destinationAssignedRoles.end())
++			{
++				result.replacementDestinationRoles[operation.first] =
++					destinationRole->second;
++			}
+ 		}
+ 	}
+ 	result.admitted = true;
+diff --git a/tests/operation_transfer_admission_test.cpp b/tests/operation_transfer_admission_test.cpp
+index 3647985..458e7f6 100644
+--- a/tests/operation_transfer_admission_test.cpp
++++ b/tests/operation_transfer_admission_test.cpp
+@@ -98,6 +98,40 @@ int main()
+ 	assert(voiPreserveOperationForRejectedTransfer(false, true));
+ 	assert(!voiPreserveOperationForRejectedTransfer(false, false));
+ 	assert(!voiPreserveOperationForRejectedTransfer(true, true));
++	const std::vector<VoiOperationTransferReference>
++		oneSidedTransferRequest = {
++			{
++				"assault-bravo",
++				"recon-alpha",
++				"transfer_in"
++			},
++		};
++	assert(
++		voiOperationReferencedByPendingTransfer(
++			"recon-alpha",
++			oneSidedTransferRequest));
++	assert(
++		!voiOperationReferencedByPendingTransfer(
++			"hold-charlie",
++			oneSidedTransferRequest));
++	assert(
++		!voiOperationReferencedByPendingTransfer(
++			"assault-bravo",
++			oneSidedTransferRequest));
++	assert(
++		voiOperationTransferHudSuffix(
++			"blocked",
++			8,
++			"recon-alpha",
++			"transfer_counterpart_missing")
++		== " edit=BLOCKED edit_gen=8 counterpart=recon-alpha"
++			" edit_reason=transfer_counterpart_missing");
++	assert(
++		voiOperationTransferHudSuffix(
++			"applied",
++			8,
++			"recon-alpha",
++			"").empty());
+ 	assert(voiShouldReconcileExistingOperation(false, false, true));
+ 	assert(!voiShouldReconcileExistingOperation(true, false, true));
+ 	assert(!voiShouldReconcileExistingOperation(false, true, true));
+@@ -179,6 +213,15 @@ int main()
+ 			{ 22, currentSourceOwner },
+ 			{ 44, currentDestinationOwner },
+ 		};
++	const std::map<std::uint64_t, std::string>
++		sourceAssignedRoles = {
++			{ 11, "scout" },
++			{ 22, "frontline" },
++		};
++	const std::map<std::uint64_t, std::string>
++		destinationAssignedRoles = {
++			{ 44, "reserve" },
++		};
+ 	const auto transactionPlan =
+ 		voiPlanOperationTransferTransaction(
+ 			transactionOwners,
+@@ -188,6 +231,8 @@ int main()
+ 				{ 11, currentSourceOwner },
+ 				{ 44, currentDestinationOwner },
+ 			},
++			sourceAssignedRoles,
++			destinationAssignedRoles,
+ 			std::vector<std::uint64_t>{ 11 },
+ 			currentSourceOwner,
+ 			currentDestinationOwner,
+@@ -204,6 +249,18 @@ int main()
+ 	assert(
+ 		transactionPlan.replacementOwners.at(44)
+ 		== requestedDestinationOwner);
++	assert(
++		transactionPlan.replacementSourceRoles.at(22)
++		== "frontline");
++	assert(
++		transactionPlan.replacementDestinationRoles.at(11)
++		== "scout");
++	assert(
++		transactionPlan.replacementDestinationRoles.at(44)
++		== "reserve");
++	assert(transactionPlan.actionCleanupTags.size() == 2);
++	assert(transactionPlan.actionCleanupTags.count(11) == 1);
++	assert(transactionPlan.actionCleanupTags.count(44) == 1);
+ 	assert(transactionOwners.at(11) == currentSourceOwner);
+ 	assert(transactionOwners.at(22) == currentSourceOwner);
+ 	assert(transactionOwners.at(44) == currentDestinationOwner);
+@@ -213,6 +270,8 @@ int main()
+ 			operationAssignments,
+ 			operationAssignments,
+ 			std::vector<std::pair<std::uint64_t, Owner>>(),
++			sourceAssignedRoles,
++			destinationAssignedRoles,
+ 			std::vector<std::uint64_t>{ 11, 22 },
+ 			currentSourceOwner,
+ 			currentDestinationOwner,
+@@ -221,6 +280,16 @@ int main()
+ 	assert(fullForcePlan.admitted);
+ 	assert(fullForcePlan.sourceTags.empty());
+ 	assert(fullForcePlan.destinationTags.size() == 3);
++	assert(fullForcePlan.replacementSourceRoles.empty());
++	assert(
++		fullForcePlan.replacementDestinationRoles.at(11)
++		== "scout");
++	assert(
++		fullForcePlan.replacementDestinationRoles.at(22)
++		== "frontline");
++	assert(
++		fullForcePlan.replacementDestinationRoles.at(44)
++		== "reserve");
+ 	assert(transactionOwners.at(11) == currentSourceOwner);
+ 	assert(transactionOwners.at(22) == currentSourceOwner);
+ 
+@@ -284,6 +353,13 @@ int main()
+ 			sourceRolePolicies,
+ 			std::vector<RolePolicy>{
+ 				{ "TERRAN_MARINE", "frontline", "if_available", 0.8f },
++			},
++				scoutSelection));
++	assert(
++		!voiOperationTransferRolePoliciesMatch(
++			std::vector<RolePolicy>(),
++			std::vector<RolePolicy>{
++				{ "TERRAN_MARINE", "scout", "if_available", 0.8f },
+ 			},
+ 			scoutSelection));
+ 	assert(
+@@ -304,6 +380,8 @@ int main()
+ 			operationAssignments,
+ 			operationAssignments,
+ 			std::vector<std::pair<std::uint64_t, Owner>>(),
++			sourceAssignedRoles,
++			destinationAssignedRoles,
+ 			std::vector<std::uint64_t>{ 11 },
+ 			currentSourceOwner,
+ 			currentDestinationOwner,
+@@ -322,6 +400,8 @@ int main()
+ 		},
+ 		operationAssignments,
+ 		std::vector<std::pair<std::uint64_t, Owner>>(),
++		sourceAssignedRoles,
++		destinationAssignedRoles,
+ 		std::vector<std::uint64_t>{ 11 },
+ 		currentSourceOwner,
+ 		currentDestinationOwner,
+@@ -341,6 +421,8 @@ int main()
+ 			{ 44, currentDestinationOwner },
+ 		},
+ 		std::vector<std::pair<std::uint64_t, Owner>>(),
++		sourceAssignedRoles,
++		destinationAssignedRoles,
+ 		std::vector<std::uint64_t>{ 11 },
+ 		currentSourceOwner,
+ 		currentDestinationOwner,
+@@ -359,6 +441,8 @@ int main()
+ 		std::vector<std::pair<std::uint64_t, Owner>>{
+ 			{ 11, currentDestinationOwner },
+ 		},
++		sourceAssignedRoles,
++		destinationAssignedRoles,
+ 		std::vector<std::uint64_t>{ 11 },
+ 		currentSourceOwner,
+ 		currentDestinationOwner,
+@@ -370,6 +454,26 @@ int main()
+ 		== "transfer_action_owner_mismatch");
+ 	assert(rejectedPlan.replacementOwners.empty());
+ 
++	rejectedPlan = voiPlanOperationTransferTransaction(
++		transactionOwners,
++		operationAssignments,
++		operationAssignments,
++		std::vector<std::pair<std::uint64_t, Owner>>(),
++		std::map<std::uint64_t, std::string>{
++			{ 22, "frontline" },
++		},
++		destinationAssignedRoles,
++		std::vector<std::uint64_t>{ 11 },
++		currentSourceOwner,
++		currentDestinationOwner,
++		requestedSourceOwner,
++		requestedDestinationOwner);
++	assert(!rejectedPlan.admitted);
++	assert(
++		rejectedPlan.blocker
++		== "transfer_selected_role_missing");
++	assert(rejectedPlan.replacementOwners.empty());
++
+ 	const std::map<std::uint64_t, std::string> assignedRoles = {
+ 		{ 11, "scout" },
+ 		{ 22, "frontline" },

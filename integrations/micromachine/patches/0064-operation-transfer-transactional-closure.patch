@@ -1,0 +1,1247 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 3385c33..80407c7 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -4270,6 +4270,14 @@ void CombatCommander::updateVoiOperations()
+ 			return std::string(
+ 				"transfer_counterpart_contract_mismatch");
+ 		}
++		if (sourceRequested
++				->editBeforeComposition.empty()
++			|| destination
++				.editBeforeComposition.empty())
++		{
++			return std::string(
++				"transfer_before_composition_required");
++		}
+ 		const bool emergencySupersession =
+ 			destination.commandLayer == "emergency";
+ 		if (!emergencySupersession
+@@ -4323,6 +4331,39 @@ void CombatCommander::updateVoiOperations()
+ 			return std::string(
+ 				"transfer_after_composition_mismatch");
+ 		}
++		if (!voiOperationTransferCompositionDeltaMatches(
++				sourceRequested
++					->editBeforeComposition,
++				sourceRequested
++					->editUnitSelection,
++				sourceRequested
++					->editAfterComposition,
++				false))
++		{
++			return std::string(
++				"source_transfer_delta_mismatch");
++		}
++		if (!voiOperationTransferCompositionDeltaMatches(
++				destination
++					.editBeforeComposition,
++				destination
++					.editUnitSelection,
++				destination
++					.editAfterComposition,
++				true))
++		{
++			return std::string(
++				"destination_transfer_delta_mismatch");
++		}
++		if (!voiOperationTransferRolePoliciesMatch(
++				sourceExisting->unitRoles,
++				destination.unitRoles,
++				destination
++					.editUnitSelection))
++		{
++			return std::string(
++				"transfer_role_policy_mismatch");
++		}
+ 		const int sourceAfterCount =
+ 			voiOperationCompositionTotal(
+ 				sourceRequested
+@@ -4548,8 +4589,9 @@ void CombatCommander::updateVoiOperations()
+ 			requested.generation;
+ 		requestedEndpoint.requestedPresent = true;
+ 		requestedEndpoint.terminal =
+-			requestedExisting != nullptr
+-			&& requestedExisting->completed;
++			requested.completed
++			|| (requestedExisting != nullptr
++				&& requestedExisting->completed);
+ 		requestedEndpoint.existingActive =
+ 			voiExistingTransferEndpointActive(
+ 				requestedExisting != nullptr,
+@@ -4565,8 +4607,10 @@ void CombatCommander::updateVoiOperations()
+ 		counterpartEndpoint.requestedPresent =
+ 			counterpartRequested != nullptr;
+ 		counterpartEndpoint.terminal =
+-			counterpartExisting != nullptr
+-			&& counterpartExisting->completed;
++			(counterpartRequested != nullptr
++				&& counterpartRequested->completed)
++			|| (counterpartExisting != nullptr
++				&& counterpartExisting->completed);
+ 		counterpartEndpoint.existingActive =
+ 			voiExistingTransferEndpointActive(
+ 				counterpartExisting != nullptr,
+@@ -4773,11 +4817,6 @@ void CombatCommander::updateVoiOperations()
+ 				requested.commandLayer == "emergency"
+ 					? "emergency_supersession"
+ 					: "priority_preemption";
+-			if (requested.editAction == "transfer_in")
+-			{
+-				existing.status = "WAITING_FOR_UNITS";
+-				existing.blockedReason = blocker;
+-			}
+ 			existing.lastAction =
+ 				"operation_edit_blocked|" + blocker;
+ 			existing.lastActionFrame =
+@@ -4828,13 +4867,12 @@ void CombatCommander::updateVoiOperations()
+ 			existing.lastActionFrame =
+ 				m_bot.GetGameLoop();
+ 		};
+-	auto handoffGeneration =
++	auto prepareGenerationReplacement =
+ 		[&](
+-			VoiOperationState & existing,
+-			const VoiOperationState & requested)
++			const VoiOperationState & existing,
++			const VoiOperationState & requested,
++			const std::vector<Unit> & retainedUnits)
+ 		{
+-			const std::string previousSquadName =
+-				existing.squadName;
+ 			const uint64_t previousGeneration =
+ 				existing.generation;
+ 			const bool targetChanged =
+@@ -4842,15 +4880,6 @@ void CombatCommander::updateVoiOperations()
+ 					!= requested.targetPosition
+ 				|| existing.routeType
+ 					!= requested.routeType;
+-			std::vector<Unit> retainedUnits;
+-			if (!previousSquadName.empty()
+-				&& m_squadData.squadExists(
+-					previousSquadName))
+-			{
+-				retainedUnits =
+-					m_squadData.getSquad(
+-						previousSquadName).getUnits();
+-			}
+ 			VoiOperationState replacement = requested;
+ 			replacement.assignedUnitTags =
+ 				existing.assignedUnitTags;
+@@ -4904,6 +4933,42 @@ void CombatCommander::updateVoiOperations()
+ 				replacement.commandLayer == "emergency"
+ 					? "emergency_supersession"
+ 					: "priority_preemption";
++			replacement.lastAction =
++				"operation_generation_handoff|"
++					+ std::to_string(previousGeneration)
++					+ "->"
++					+ std::to_string(
++						replacement.generation)
++					+ "|retained="
++					+ std::to_string(
++						retainedUnits.size());
++			replacement.lastActionFrame =
++				m_bot.GetGameLoop();
++			return replacement;
++		};
++	auto handoffGeneration =
++		[&](
++			VoiOperationState & existing,
++			const VoiOperationState & requested)
++		{
++			const std::string previousSquadName =
++				existing.squadName;
++			const uint64_t previousGeneration =
++				existing.generation;
++			std::vector<Unit> retainedUnits;
++			if (!previousSquadName.empty()
++				&& m_squadData.squadExists(
++					previousSquadName))
++			{
++				retainedUnits =
++					m_squadData.getSquad(
++						previousSquadName).getUnits();
++			}
++			VoiOperationState replacement =
++				prepareGenerationReplacement(
++					existing,
++					requested,
++					retainedUnits);
+ 
+ 			Squad & replacementSquad =
+ 				ensureOperationSquad(replacement);
+@@ -4955,17 +5020,6 @@ void CombatCommander::updateVoiOperations()
+ 					unitActions.erase(action);
+ 				}
+ 			}
+-			replacement.lastAction =
+-				"operation_generation_handoff|"
+-					+ std::to_string(previousGeneration)
+-					+ "->"
+-					+ std::to_string(
+-						replacement.generation)
+-					+ "|retained="
+-					+ std::to_string(
+-						retainedUnits.size());
+-			replacement.lastActionFrame =
+-				m_bot.GetGameLoop();
+ 			existing = replacement;
+ 		};
+ 
+@@ -5097,6 +5151,14 @@ void CombatCommander::updateVoiOperations()
+ 				++index;
+ 				continue;
+ 			}
++			if (requested->editAction == "transfer_in"
++				|| requested->editAction == "transfer_out")
++			{
++				// Transfer generations commit together after both endpoints,
++				// squads, owners, and in-flight actions pass one snapshot.
++				++index;
++				continue;
++			}
+ 			handoffGeneration(
+ 				existing,
+ 				*requested);
+@@ -5205,200 +5267,381 @@ void CombatCommander::updateVoiOperations()
+ 			}
+ 			return latest;
+ 		};
+-	for (auto & destination : m_voiOperations)
++	for (const auto & destinationRequested : requestedOperations)
+ 	{
+-		if (destination.completed
+-			|| destination.editAction != "transfer_in"
+-			|| destination.editResolution == "applied"
+-			|| destination.editResolution == "blocked")
++		if (destinationRequested.editAction != "transfer_in"
++			|| transferBlockers.find(
++				destinationRequested.operationId)
++				!= transferBlockers.end())
+ 		{
+ 			continue;
+ 		}
++		const VoiOperationState * sourceRequested =
++			requestedByOperationId(
++				destinationRequested
++					.editCounterpartOperationId);
+ 		VoiOperationState * source =
+ 			currentOperationById(
+-				destination
++				destinationRequested
+ 					.editCounterpartOperationId);
++		VoiOperationState * destination =
++			currentOperationById(
++				destinationRequested.operationId);
+ 		const auto plannedSelection =
+ 			transferSelections.find(
+-				destination.operationId);
+-		if (source == nullptr
+-			|| source == &destination
+-			|| source->editResolution == "blocked"
++				destinationRequested.operationId);
++		if (sourceRequested == nullptr
++			|| source == nullptr
++			|| destination == nullptr
++			|| source == destination
+ 			|| plannedSelection == transferSelections.end())
+ 		{
+ 			Util::Log(
+ 				__FUNCTION__,
+-				"VOI transfer invariant missing after successful preflight id="
+-					+ destination.operationId,
++				"VOI transfer transaction snapshot missing id="
++					+ destinationRequested.operationId,
+ 				m_bot);
+ 			continue;
+ 		}
+-		Squad & sourceSquad =
+-			ensureOperationSquad(*source);
+-		Squad & destinationSquad =
+-			ensureOperationSquad(destination);
+-		std::set<sc2::Tag> selectedTags(
+-			plannedSelection->second.begin(),
+-			plannedSelection->second.end());
+-		std::vector<Unit> selectedUnits;
+-		for (const auto & unit : sourceSquad.getUnits())
++
++		const std::pair<std::string, uint64_t>
++			currentSourceOwner = std::make_pair(
++				source->operationId,
++				source->generation);
++		const std::pair<std::string, uint64_t>
++			currentDestinationOwner = std::make_pair(
++				destination->operationId,
++				destination->generation);
++		const std::pair<std::string, uint64_t>
++			requestedSourceOwner = std::make_pair(
++				sourceRequested->operationId,
++				sourceRequested->generation);
++		const std::pair<std::string, uint64_t>
++			requestedDestinationOwner = std::make_pair(
++				destinationRequested.operationId,
++				destinationRequested.generation);
++		std::vector<Unit> sourceUnits;
++		std::vector<Unit> destinationUnits;
++		std::string runtimeBlocker;
++		if (source->squadName.empty()
++			|| !m_squadData.squadExists(
++				source->squadName))
+ 		{
+-			const auto owner =
+-				m_voiOperationUnitOwners.find(
+-					unit.getTag());
+-			if (unit.isValid()
+-				&& unit.isAlive()
+-				&& owner
+-					!= m_voiOperationUnitOwners.end()
+-				&& owner->second.first
+-					== source->operationId
+-				&& owner->second.second
+-					== source->generation)
++			runtimeBlocker =
++				"transfer_source_squad_missing";
++		}
++		else
++		{
++			sourceUnits =
++				m_squadData.getSquad(
++					source->squadName).getUnits();
++		}
++		if (!destination->squadName.empty()
++			&& m_squadData.squadExists(
++				destination->squadName))
++		{
++			destinationUnits =
++				m_squadData.getSquad(
++					destination->squadName).getUnits();
++		}
++		for (const auto & unit : sourceUnits)
++		{
++			if (!unit.isValid() || !unit.isAlive())
+ 			{
+-				if (selectedTags.find(unit.getTag())
+-					!= selectedTags.end())
+-				{
+-					selectedUnits.push_back(unit);
+-				}
++				runtimeBlocker =
++					"transfer_source_squad_contains_invalid_unit";
++				break;
+ 			}
+ 		}
+-		std::sort(
+-			selectedUnits.begin(),
+-			selectedUnits.end(),
+-			[](const Unit & left, const Unit & right)
++		for (const auto & unit : destinationUnits)
++		{
++			if (!unit.isValid() || !unit.isAlive())
+ 			{
+-				return left.getTag() < right.getTag();
++				runtimeBlocker =
++					"transfer_destination_squad_contains_invalid_unit";
++				break;
++			}
++		}
++
++		std::vector<std::pair<
++			sc2::Tag,
++			std::pair<std::string, uint64_t>>>
++			operationAssignments;
++		for (const auto tag : source->assignedUnitTags)
++		{
++			operationAssignments.push_back({
++				tag,
++				currentSourceOwner
+ 			});
+-		const int transferCount =
+-			static_cast<int>(plannedSelection->second.size());
+-		std::vector<sc2::Tag> selectedUnitTags;
+-		for (const auto & unit : selectedUnits)
++		}
++		for (const auto tag : destination->assignedUnitTags)
+ 		{
+-			selectedUnitTags.push_back(unit.getTag());
++			operationAssignments.push_back({
++				tag,
++				currentDestinationOwner
++			});
+ 		}
+-		const std::pair<std::string, uint64_t>
+-			expectedSourceOwner = std::make_pair(
+-				source->operationId,
+-				source->generation);
+-		const std::pair<std::string, uint64_t>
+-			destinationOwner = std::make_pair(
+-				destination.operationId,
+-				destination.generation);
+-		if (selectedUnits.size()
+-				!= plannedSelection->second.size()
+-			|| !voiTransferOwnershipAtomically(
++		std::vector<std::pair<
++			sc2::Tag,
++			std::pair<std::string, uint64_t>>>
++			squadAssignments;
++		std::map<sc2::Tag, Unit> unitsByTag;
++		for (const auto & unit : sourceUnits)
++		{
++			squadAssignments.push_back({
++				unit.getTag(),
++				currentSourceOwner
++			});
++			unitsByTag.insert(
++				std::make_pair(
++					unit.getTag(),
++					unit));
++		}
++		for (const auto & unit : destinationUnits)
++		{
++			squadAssignments.push_back({
++				unit.getTag(),
++				currentDestinationOwner
++			});
++			if (unitsByTag.find(unit.getTag())
++				!= unitsByTag.end())
++			{
++				runtimeBlocker =
++					"transfer_duplicate_squad_tag";
++			}
++			else
++			{
++				unitsByTag.insert(
++					std::make_pair(
++						unit.getTag(),
++						unit));
++			}
++		}
++		std::vector<std::pair<
++			sc2::Tag,
++			std::pair<std::string, uint64_t>>>
++			actionAssignments;
++		for (const auto & action : unitActions)
++		{
++			if (action.first == nullptr
++				|| unitsByTag.find(action.first->tag)
++					== unitsByTag.end()
++				|| (action.second.operationId.empty()
++					&& action.second.operationGeneration
++						== 0))
++			{
++				continue;
++			}
++			actionAssignments.push_back({
++				action.first->tag,
++				std::make_pair(
++					action.second.operationId,
++					action.second.operationGeneration)
++			});
++		}
++		const auto transactionPlan =
++			voiPlanOperationTransferTransaction(
+ 				m_voiOperationUnitOwners,
+-				selectedUnitTags,
+-				expectedSourceOwner,
+-				destinationOwner))
+-		{
+-			source->editResolution = "blocked";
+-			destination.editResolution = "blocked";
+-			source->editBlocker =
+-				"transfer_ownership_changed_after_preflight";
+-			destination.editBlocker =
+-				source->editBlocker;
+-			source->lastAction =
+-				"operation_edit_blocked|"
+-					+ source->editBlocker;
+-			destination.lastAction =
+-				source->lastAction;
+-			source->lastActionFrame =
+-				m_bot.GetGameLoop();
+-			destination.lastActionFrame =
+-				m_bot.GetGameLoop();
++				operationAssignments,
++				squadAssignments,
++				actionAssignments,
++				plannedSelection->second,
++				currentSourceOwner,
++				currentDestinationOwner,
++				requestedSourceOwner,
++				requestedDestinationOwner);
++		if (runtimeBlocker.empty()
++			&& !transactionPlan.admitted)
++		{
++			runtimeBlocker =
++				transactionPlan.blocker;
++		}
++		if (!runtimeBlocker.empty())
++		{
++			annotateRejectedEdit(
++				*source,
++				*sourceRequested,
++				runtimeBlocker);
++			annotateRejectedEdit(
++				*destination,
++				destinationRequested,
++				runtimeBlocker);
+ 			continue;
+ 		}
+ 
+-		for (const auto & unit : selectedUnits)
++		VoiOperationState sourceReplacement =
++			prepareGenerationReplacement(
++				*source,
++				*sourceRequested,
++				sourceUnits);
++		VoiOperationState destinationReplacement =
++			prepareGenerationReplacement(
++				*destination,
++				destinationRequested,
++				destinationUnits);
++		for (const auto tag : plannedSelection->second)
+ 		{
+ 			std::string restoreSquad = "Backup";
+ 			const auto previous =
+-				source->previousSquadByTag.find(
+-					unit.getTag());
++				sourceReplacement.previousSquadByTag.find(
++					tag);
+ 			if (previous
+-				!= source->previousSquadByTag.end())
++				!= sourceReplacement
++					.previousSquadByTag.end())
+ 			{
+ 				restoreSquad = previous->second;
+ 			}
+-			sourceSquad.removeUnit(unit);
+-			source->previousSquadByTag.erase(
+-				unit.getTag());
+-			source->submittedPositions.erase(
+-				unit.getTag());
+-			source->assignedRoleByTag.erase(
+-				unit.getTag());
+-			source->assignedUnitTags.erase(
+-				std::remove(
+-					source->assignedUnitTags.begin(),
+-					source->assignedUnitTags.end(),
+-					unit.getTag()),
+-				source->assignedUnitTags.end());
+-			const auto action =
+-				unitActions.find(unit.getUnitPtr());
+-			if (action != unitActions.end()
+-				&& action->second.operationId
+-					== source->operationId
+-				&& action->second.operationGeneration
+-					== source->generation)
+-			{
+-				unitActions.erase(action);
+-			}
+-			destination.previousSquadByTag[
+-				unit.getTag()] = restoreSquad;
+-			destination.assignedRoleByTag.erase(
+-				unit.getTag());
+-			m_squadData.assignUnitToSquad(
+-				unit,
+-				destinationSquad);
++			sourceReplacement.previousSquadByTag.erase(tag);
++			sourceReplacement.submittedPositions.erase(tag);
++			sourceReplacement.assignedRoleByTag.erase(tag);
++			destinationReplacement.previousSquadByTag[tag] =
++				restoreSquad;
++			destinationReplacement.submittedPositions.erase(tag);
++			destinationReplacement.assignedRoleByTag.erase(tag);
+ 		}
+-		source->assignedCount =
++		sourceReplacement.assignedUnitTags =
++			transactionPlan.sourceTags;
++		sourceReplacement.assignedCount =
+ 			static_cast<int>(
+-				source->assignedUnitTags.size());
+-		destination.assignedUnitTags.clear();
+-		for (const auto & unit :
+-			destinationSquad.getUnits())
+-		{
+-			const auto owner =
+-				m_voiOperationUnitOwners.find(
+-					unit.getTag());
+-			if (owner
+-					!= m_voiOperationUnitOwners.end()
+-				&& owner->second.first
+-					== destination.operationId
+-				&& owner->second.second
+-					== destination.generation)
+-			{
+-				destination.assignedUnitTags.push_back(
+-					unit.getTag());
+-			}
+-		}
+-		std::sort(
+-			destination.assignedUnitTags.begin(),
+-			destination.assignedUnitTags.end());
+-		destination.assignedCount =
++				transactionPlan.sourceTags.size());
++		destinationReplacement.assignedUnitTags =
++			transactionPlan.destinationTags;
++		destinationReplacement.assignedCount =
+ 			static_cast<int>(
+-				destination.assignedUnitTags.size());
+-		source->transferredOutCount += transferCount;
+-		destination.transferredInCount += transferCount;
+-		source->editResolution = "applied";
+-		destination.editResolution = "applied";
+-		source->editBlocker.clear();
+-		destination.editBlocker.clear();
+-		source->lastAction =
++				transactionPlan.destinationTags.size());
++		const int transferCount =
++			static_cast<int>(
++				plannedSelection->second.size());
++		sourceReplacement.transferredOutCount =
++			source->transferredOutCount + transferCount;
++		destinationReplacement.transferredInCount =
++			destination->transferredInCount + transferCount;
++		sourceReplacement.editResolution = "applied";
++		destinationReplacement.editResolution = "applied";
++		sourceReplacement.editBlocker.clear();
++		destinationReplacement.editBlocker.clear();
++		sourceReplacement.lastAction =
+ 			"operation_edit_transfer_out|counterpart="
+-				+ destination.operationId
++				+ destinationReplacement.operationId
+ 				+ "|count="
+ 				+ std::to_string(transferCount);
+-		destination.lastAction =
++		destinationReplacement.lastAction =
+ 			"operation_edit_transfer_in|counterpart="
+-				+ source->operationId
++				+ sourceReplacement.operationId
+ 				+ "|count="
+ 				+ std::to_string(transferCount);
+-		source->lastActionFrame =
++		sourceReplacement.lastActionFrame =
+ 			m_bot.GetGameLoop();
+-		destination.lastActionFrame =
++		destinationReplacement.lastActionFrame =
+ 			m_bot.GetGameLoop();
++
++		if (!transactionPlan.sourceTags.empty())
++		{
++			ensureOperationSquad(sourceReplacement);
++		}
++		ensureOperationSquad(destinationReplacement);
++		const std::string previousSourceSquad =
++			source->squadName;
++		const std::string previousDestinationSquad =
++			destination->squadName;
++		for (const auto & unit : sourceUnits)
++		{
++			if (!previousSourceSquad.empty()
++				&& m_squadData.squadExists(
++					previousSourceSquad))
++			{
++				m_squadData.getSquad(
++					previousSourceSquad).removeUnit(unit);
++			}
++		}
++		for (const auto & unit : destinationUnits)
++		{
++			if (!previousDestinationSquad.empty()
++				&& m_squadData.squadExists(
++					previousDestinationSquad))
++			{
++				m_squadData.getSquad(
++					previousDestinationSquad)
++						.removeUnit(unit);
++			}
++		}
++		if (!previousSourceSquad.empty()
++			&& m_squadData.squadExists(
++				previousSourceSquad))
++		{
++			m_squadData.removeSquad(previousSourceSquad);
++		}
++		if (!previousDestinationSquad.empty()
++			&& m_squadData.squadExists(
++				previousDestinationSquad))
++		{
++			m_squadData.removeSquad(
++				previousDestinationSquad);
++		}
++		for (const auto & assignment :
++			transactionPlan.replacementOwners)
++		{
++			const auto unit = unitsByTag.find(
++				assignment.first);
++			if (unit == unitsByTag.end())
++			{
++				continue;
++			}
++			if (assignment.second == requestedSourceOwner)
++			{
++				m_squadData.assignUnitToSquad(
++					unit->second,
++					m_squadData.getSquad(
++						sourceReplacement.squadName));
++			}
++			else if (assignment.second
++				== requestedDestinationOwner)
++			{
++				m_squadData.assignUnitToSquad(
++					unit->second,
++					m_squadData.getSquad(
++						destinationReplacement.squadName));
++			}
++		}
++		m_voiOperationUnitOwners =
++			transactionPlan.replacementOwners;
++		for (auto action = unitActions.begin();
++			action != unitActions.end();)
++		{
++			if (action->first != nullptr
++				&& unitsByTag.find(action->first->tag)
++					!= unitsByTag.end()
++				&& (action->second.operationId
++						== source->operationId
++					|| action->second.operationId
++						== destination->operationId))
++			{
++				action = unitActions.erase(action);
++			}
++			else
++			{
++				++action;
++			}
++		}
++		*source = sourceReplacement;
++		*destination = destinationReplacement;
++		if (transactionPlan.sourceTags.empty())
++		{
++			releaseVoiOperation(
++				*source,
++				"transferred_all_units",
++				true);
++			source->editResolution = "applied";
++			source->editBlocker.clear();
++			source->lastAction =
++				"operation_edit_transfer_out|counterpart="
++					+ destination->operationId
++					+ "|count="
++					+ std::to_string(transferCount)
++					+ "|terminal=transferred_all_units";
++			source->lastActionFrame =
++				m_bot.GetGameLoop();
++		}
+ 	}
+ 	std::sort(
+ 		m_voiOperations.begin(),
+diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transfer_admission.hpp
+index 99cd745..b14c349 100644
+--- a/src/voi_operation_transfer_admission.hpp
++++ b/src/voi_operation_transfer_admission.hpp
+@@ -2,7 +2,10 @@
+ 
++#include <algorithm>
+ #include <cstdint>
+ #include <map>
++#include <set>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ struct VoiOperationTransferEndpoint
+@@ -24,6 +27,112 @@ struct VoiOperationTransferAdmission
+ 	std::string blocker;
+ };
+ 
++template <typename Tag, typename Owner>
++struct VoiOperationTransferTransactionPlan
++{
++	bool admitted = false;
++	std::string blocker;
++	std::map<Tag, Owner> replacementOwners;
++	std::vector<Tag> sourceTags;
++	std::vector<Tag> destinationTags;
++};
++
++template <typename CompositionEntry>
++std::map<std::pair<std::string, std::string>, int>
++voiOperationTransferCompositionCounts(
++	const std::vector<CompositionEntry> & composition)
++{
++	std::map<std::pair<std::string, std::string>, int> counts;
++	for (const auto & requirement : composition)
++	{
++		counts[{
++			requirement.unitType,
++			requirement.role
++		}] += requirement.count;
++	}
++	return counts;
++}
++
++template <typename CompositionEntry>
++bool voiOperationTransferCompositionDeltaMatches(
++	const std::vector<CompositionEntry> & before,
++	const std::vector<CompositionEntry> & selection,
++	const std::vector<CompositionEntry> & after,
++	bool addSelection)
++{
++	auto expected =
++		voiOperationTransferCompositionCounts(before);
++	for (const auto & selected : selection)
++	{
++		const std::pair<std::string, std::string> key = {
++			selected.unitType,
++			selected.role
++		};
++		const auto existing = expected.find(key);
++		if (!addSelection
++			&& (existing == expected.end()
++				|| existing->second < selected.count))
++		{
++			return false;
++		}
++		const int nextCount =
++			(existing == expected.end() ? 0 : existing->second)
++			+ (addSelection
++				? selected.count
++				: -selected.count);
++		if (nextCount == 0)
++		{
++			expected.erase(key);
++		}
++		else
++		{
++			expected[key] = nextCount;
++		}
++	}
++	return expected
++		== voiOperationTransferCompositionCounts(after);
++}
++
++template <typename RolePolicy, typename CompositionEntry>
++bool voiOperationTransferRolePoliciesMatch(
++	const std::vector<RolePolicy> & sourceRoles,
++	const std::vector<RolePolicy> & destinationRoles,
++	const std::vector<CompositionEntry> & selection)
++{
++	for (const auto & selected : selection)
++	{
++		const auto destination = std::find_if(
++			destinationRoles.begin(),
++			destinationRoles.end(),
++			[&](const RolePolicy & role)
++			{
++				return role.unitType == selected.unitType
++					&& role.role == selected.role;
++			});
++		if (destination == destinationRoles.end())
++		{
++			return false;
++		}
++		const auto source = std::find_if(
++			sourceRoles.begin(),
++			sourceRoles.end(),
++			[&](const RolePolicy & role)
++			{
++				return role.unitType == selected.unitType
++					&& role.role == selected.role;
++			});
++		if (source != sourceRoles.end()
++			&& (source->abilityPolicy
++					!= destination->abilityPolicy
++				|| source->priority
++					!= destination->priority))
++		{
++			return false;
++		}
++	}
++	return true;
++}
++
+ inline bool voiExistingTransferEndpointActive(
+ 	bool existingPresent,
+ 	bool existingTerminal)
+@@ -127,6 +236,148 @@ bool voiTransferOwnershipAtomically(
+ 	return true;
+ }
+ 
++template <typename Tag, typename Owner>
++VoiOperationTransferTransactionPlan<Tag, Owner>
++voiPlanOperationTransferTransaction(
++	const std::map<Tag, Owner> & owners,
++	const std::vector<std::pair<Tag, Owner>> & operationAssignments,
++	const std::vector<std::pair<Tag, Owner>> & squadAssignments,
++	const std::vector<std::pair<Tag, Owner>> & actionAssignments,
++	const std::vector<Tag> & selectedTags,
++	const Owner & currentSource,
++	const Owner & currentDestination,
++	const Owner & requestedSource,
++	const Owner & requestedDestination)
++{
++	VoiOperationTransferTransactionPlan<Tag, Owner> result;
++	auto assignmentMap =
++		[](
++			const std::vector<std::pair<Tag, Owner>> & assignments,
++			const std::string & duplicateBlocker,
++			std::string & blocker)
++		{
++			std::map<Tag, Owner> mapped;
++			for (const auto & assignment : assignments)
++			{
++				if (mapped.find(assignment.first) != mapped.end())
++				{
++					blocker = duplicateBlocker;
++					return std::map<Tag, Owner>();
++				}
++				mapped[assignment.first] = assignment.second;
++			}
++			return mapped;
++		};
++
++	std::string blocker;
++	const auto operationByTag = assignmentMap(
++		operationAssignments,
++		"transfer_duplicate_operation_tag",
++		blocker);
++	if (!blocker.empty())
++	{
++		result.blocker = blocker;
++		return result;
++	}
++	const auto squadByTag = assignmentMap(
++		squadAssignments,
++		"transfer_duplicate_squad_tag",
++		blocker);
++	if (!blocker.empty())
++	{
++		result.blocker = blocker;
++		return result;
++	}
++	if (operationByTag != squadByTag)
++	{
++		result.blocker = "transfer_operation_squad_mismatch";
++		return result;
++	}
++	for (const auto & assignment : operationByTag)
++	{
++		if (assignment.second != currentSource
++			&& assignment.second != currentDestination)
++		{
++			result.blocker = "transfer_operation_owner_out_of_scope";
++			return result;
++		}
++		const auto owner = owners.find(assignment.first);
++		if (owner == owners.end()
++			|| owner->second != assignment.second)
++		{
++			result.blocker = "transfer_owner_mismatch";
++			return result;
++		}
++	}
++	for (const auto & owner : owners)
++	{
++		if ((owner.second == currentSource
++				|| owner.second == currentDestination)
++			&& operationByTag.find(owner.first)
++				== operationByTag.end())
++		{
++			result.blocker = "transfer_owner_squad_mismatch";
++			return result;
++		}
++	}
++	const auto actionByTag = assignmentMap(
++		actionAssignments,
++		"transfer_duplicate_action_tag",
++		blocker);
++	if (!blocker.empty())
++	{
++		result.blocker = blocker;
++		return result;
++	}
++	for (const auto & action : actionByTag)
++	{
++		const auto operation = operationByTag.find(action.first);
++		if (operation == operationByTag.end()
++			|| operation->second != action.second)
++		{
++			result.blocker = "transfer_action_owner_mismatch";
++			return result;
++		}
++	}
++
++	std::set<Tag> selected;
++	for (const auto & tag : selectedTags)
++	{
++		if (!selected.insert(tag).second)
++		{
++			result.blocker = "transfer_duplicate_selected_tag";
++			return result;
++		}
++		const auto operation = operationByTag.find(tag);
++		if (operation == operationByTag.end()
++			|| operation->second != currentSource)
++		{
++			result.blocker = "transfer_selected_tag_not_source_owned";
++			return result;
++		}
++	}
++
++	result.replacementOwners = owners;
++	for (const auto & operation : operationByTag)
++	{
++		const bool transferred =
++			selected.find(operation.first) != selected.end();
++		if (operation.second == currentSource && !transferred)
++		{
++			result.replacementOwners[operation.first] = requestedSource;
++			result.sourceTags.push_back(operation.first);
++		}
++		else
++		{
++			result.replacementOwners[operation.first] =
++				requestedDestination;
++			result.destinationTags.push_back(operation.first);
++		}
++	}
++	result.admitted = true;
++	return result;
++}
++
+ template <typename Tag, typename Unit, typename TagGetter>
+ std::map<Tag, std::string> voiPreserveAssignedRolesForUnits(
+ 	const std::map<Tag, std::string> & assignedRoles,
+diff --git a/tests/operation_transfer_admission_test.cpp b/tests/operation_transfer_admission_test.cpp
+index 1f88e01..b508aea 100644
+--- a/tests/operation_transfer_admission_test.cpp
++++ b/tests/operation_transfer_admission_test.cpp
+@@ -119,6 +119,16 @@ int main()
+ 	assert(
+ 		terminalDecision.blocker
+ 		== "transfer_endpoint_terminal");
++	auto requestedTerminalEndpoint = destinationAdvanced;
++	requestedTerminalEndpoint.terminal = true;
++	const auto requestedTerminalDecision =
++		voiDecideOperationTransferAdmission(
++			sourceAdvanced,
++			requestedTerminalEndpoint);
++	assert(!requestedTerminalDecision.admitted);
++	assert(
++		requestedTerminalDecision.blocker
++		== "transfer_endpoint_terminal");
+ 
+ 	using Owner = std::pair<std::string, std::uint64_t>;
+ 	std::map<std::uint64_t, Owner> owners = {
+@@ -154,6 +164,212 @@ int main()
+ 			sourceOwner));
+ 	assert(owners == ownersBeforeRejectedTransfer);
+ 
++	const Owner currentSourceOwner = { "recon-alpha", 4 };
++	const Owner currentDestinationOwner = { "assault-bravo", 7 };
++	const Owner requestedSourceOwner = { "recon-alpha", 5 };
++	const Owner requestedDestinationOwner = { "assault-bravo", 8 };
++	const std::map<std::uint64_t, Owner> transactionOwners = {
++		{ 11, currentSourceOwner },
++		{ 22, currentSourceOwner },
++		{ 44, currentDestinationOwner },
++	};
++	const std::vector<std::pair<std::uint64_t, Owner>>
++		operationAssignments = {
++			{ 11, currentSourceOwner },
++			{ 22, currentSourceOwner },
++			{ 44, currentDestinationOwner },
++		};
++	const auto transactionPlan =
++		voiPlanOperationTransferTransaction(
++			transactionOwners,
++			operationAssignments,
++			operationAssignments,
++			std::vector<std::pair<std::uint64_t, Owner>>{
++				{ 11, currentSourceOwner },
++				{ 44, currentDestinationOwner },
++			},
++			std::vector<std::uint64_t>{ 11 },
++			currentSourceOwner,
++			currentDestinationOwner,
++			requestedSourceOwner,
++			requestedDestinationOwner);
++	assert(transactionPlan.admitted);
++	assert(transactionPlan.blocker.empty());
++	assert(
++		transactionPlan.replacementOwners.at(11)
++		== requestedDestinationOwner);
++	assert(
++		transactionPlan.replacementOwners.at(22)
++		== requestedSourceOwner);
++	assert(
++		transactionPlan.replacementOwners.at(44)
++		== requestedDestinationOwner);
++	assert(transactionOwners.at(11) == currentSourceOwner);
++	assert(transactionOwners.at(22) == currentSourceOwner);
++	assert(transactionOwners.at(44) == currentDestinationOwner);
++	const auto fullForcePlan =
++		voiPlanOperationTransferTransaction(
++			transactionOwners,
++			operationAssignments,
++			operationAssignments,
++			std::vector<std::pair<std::uint64_t, Owner>>(),
++			std::vector<std::uint64_t>{ 11, 22 },
++			currentSourceOwner,
++			currentDestinationOwner,
++			requestedSourceOwner,
++			requestedDestinationOwner);
++	assert(fullForcePlan.admitted);
++	assert(fullForcePlan.sourceTags.empty());
++	assert(fullForcePlan.destinationTags.size() == 3);
++	assert(transactionOwners.at(11) == currentSourceOwner);
++	assert(transactionOwners.at(22) == currentSourceOwner);
++
++	struct CompositionEntry
++	{
++		std::string unitType;
++		int count;
++		std::string role;
++	};
++	struct RolePolicy
++	{
++		std::string unitType;
++		std::string role;
++		std::string abilityPolicy;
++		float priority;
++	};
++	const std::vector<CompositionEntry> scoutSelection = {
++		{ "TERRAN_MARINE", 1, "scout" },
++	};
++	assert(
++		voiOperationTransferCompositionDeltaMatches(
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 1, "scout" },
++			},
++			scoutSelection,
++			std::vector<CompositionEntry>(),
++			false));
++	assert(
++		voiOperationTransferCompositionDeltaMatches(
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 4, "frontline" },
++			},
++			scoutSelection,
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 4, "frontline" },
++				{ "TERRAN_MARINE", 1, "scout" },
++			},
++			true));
++	assert(
++		!voiOperationTransferCompositionDeltaMatches(
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 4, "frontline" },
++			},
++			scoutSelection,
++			std::vector<CompositionEntry>{
++				{ "TERRAN_MARINE", 5, "frontline" },
++			},
++			true));
++	const std::vector<RolePolicy> sourceRolePolicies = {
++		{ "TERRAN_MARINE", "scout", "if_available", 0.8f },
++	};
++	assert(
++		voiOperationTransferRolePoliciesMatch(
++			sourceRolePolicies,
++			std::vector<RolePolicy>{
++				{ "TERRAN_MARINE", "scout", "if_available", 0.8f },
++			},
++			scoutSelection));
++	assert(
++		!voiOperationTransferRolePoliciesMatch(
++			sourceRolePolicies,
++			std::vector<RolePolicy>{
++				{ "TERRAN_MARINE", "frontline", "if_available", 0.8f },
++			},
++			scoutSelection));
++	assert(
++		!voiOperationTransferRolePoliciesMatch(
++			sourceRolePolicies,
++			std::vector<RolePolicy>{
++				{ "TERRAN_MARINE", "scout", "always", 0.8f },
++			},
++			scoutSelection));
++
++	auto rejectedPlan =
++		voiPlanOperationTransferTransaction(
++			std::map<std::uint64_t, Owner>{
++				{ 11, currentDestinationOwner },
++				{ 22, currentSourceOwner },
++				{ 44, currentDestinationOwner },
++			},
++			operationAssignments,
++			operationAssignments,
++			std::vector<std::pair<std::uint64_t, Owner>>(),
++			std::vector<std::uint64_t>{ 11 },
++			currentSourceOwner,
++			currentDestinationOwner,
++			requestedSourceOwner,
++			requestedDestinationOwner);
++	assert(!rejectedPlan.admitted);
++	assert(rejectedPlan.blocker == "transfer_owner_mismatch");
++	assert(rejectedPlan.replacementOwners.empty());
++
++	rejectedPlan = voiPlanOperationTransferTransaction(
++		transactionOwners,
++		std::vector<std::pair<std::uint64_t, Owner>>{
++			{ 11, currentSourceOwner },
++			{ 11, currentSourceOwner },
++			{ 44, currentDestinationOwner },
++		},
++		operationAssignments,
++		std::vector<std::pair<std::uint64_t, Owner>>(),
++		std::vector<std::uint64_t>{ 11 },
++		currentSourceOwner,
++		currentDestinationOwner,
++		requestedSourceOwner,
++		requestedDestinationOwner);
++	assert(!rejectedPlan.admitted);
++	assert(
++		rejectedPlan.blocker
++		== "transfer_duplicate_operation_tag");
++	assert(rejectedPlan.replacementOwners.empty());
++
++	rejectedPlan = voiPlanOperationTransferTransaction(
++		transactionOwners,
++		operationAssignments,
++		std::vector<std::pair<std::uint64_t, Owner>>{
++			{ 11, currentSourceOwner },
++			{ 44, currentDestinationOwner },
++		},
++		std::vector<std::pair<std::uint64_t, Owner>>(),
++		std::vector<std::uint64_t>{ 11 },
++		currentSourceOwner,
++		currentDestinationOwner,
++		requestedSourceOwner,
++		requestedDestinationOwner);
++	assert(!rejectedPlan.admitted);
++	assert(
++		rejectedPlan.blocker
++		== "transfer_operation_squad_mismatch");
++	assert(rejectedPlan.replacementOwners.empty());
++
++	rejectedPlan = voiPlanOperationTransferTransaction(
++		transactionOwners,
++		operationAssignments,
++		operationAssignments,
++		std::vector<std::pair<std::uint64_t, Owner>>{
++			{ 11, currentDestinationOwner },
++		},
++		std::vector<std::uint64_t>{ 11 },
++		currentSourceOwner,
++		currentDestinationOwner,
++		requestedSourceOwner,
++		requestedDestinationOwner);
++	assert(!rejectedPlan.admitted);
++	assert(
++		rejectedPlan.blocker
++		== "transfer_action_owner_mismatch");
++	assert(rejectedPlan.replacementOwners.empty());
++
+ 	const std::map<std::uint64_t, std::string> assignedRoles = {
+ 		{ 11, "scout" },
+ 		{ 22, "frontline" },

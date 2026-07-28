@@ -1107,6 +1107,34 @@ def _micromachine_operation_director_entries(
     return entries
 
 
+def _micromachine_operation_entry_for_request(
+    entries: Mapping[tuple[str, int], Mapping[str, object]],
+    *,
+    update_id: str,
+    operation_id: str,
+    operation_generation: int,
+) -> dict[str, object] | None:
+    exact = entries.get((operation_id, operation_generation))
+    if exact is not None:
+        return dict(exact)
+    for (candidate_id, _active_generation), candidate in entries.items():
+        if (
+            candidate_id == operation_id
+            and candidate.get("edit_requested_generation")
+            == operation_generation
+            and str(candidate.get("edit_rejected_update_id", "") or "").strip()
+            == update_id
+            and str(candidate.get("edit_resolution", "") or "").strip()
+            == "blocked"
+        ):
+            active = dict(candidate)
+            active["active_generation"] = candidate.get("generation")
+            active["requested_generation"] = operation_generation
+            active["edit_rejected"] = True
+            return active
+    return None
+
+
 def _micromachine_operation_telemetry_document(
     telemetry_document: Mapping[str, object],
     *,
@@ -1116,8 +1144,11 @@ def _micromachine_operation_telemetry_document(
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     """Return only OperationDirector evidence owned by one operation."""
 
-    entry = _micromachine_operation_director_entries(telemetry_document).get(
-        (operation_id, operation_generation)
+    entry = _micromachine_operation_entry_for_request(
+        _micromachine_operation_director_entries(telemetry_document),
+        update_id=update_id,
+        operation_id=operation_id,
+        operation_generation=operation_generation,
     )
     if entry is None:
         return {}, None
@@ -1555,6 +1586,16 @@ def _micromachine_operation_status_payload(
             operation_generation=operation_generation,
         )
     )
+    active_operation_generation = operation_generation
+    if (
+        operation_telemetry is not None
+        and operation_telemetry.get("edit_rejected") is True
+        and type(operation_telemetry.get("active_generation")) is int
+        and int(operation_telemetry["active_generation"]) > 0
+    ):
+        active_operation_generation = int(
+            operation_telemetry["active_generation"]
+        )
     consumption_status = _micromachine_consumption_status(
         operation_update if active else None,
         telemetry,
@@ -1608,7 +1649,7 @@ def _micromachine_operation_status_payload(
     command_execution = _micromachine_operation_command_execution(
         update_id=update_id,
         operation_id=operation_id,
-        operation_generation=operation_generation,
+        operation_generation=active_operation_generation,
         operation_telemetry=operation_telemetry or {},
         fallback=fallback_execution,
     )
@@ -1655,14 +1696,41 @@ def _micromachine_operation_status_payload(
         and consumption_status == "consumed"
     )
     operation_key = (
-        f"{scope_id}\0{operation_id}\0{operation_generation}"
+        f"{scope_id}\0{operation_id}\0{active_operation_generation}"
         if scope_id
-        else f"{operation_id}\0{operation_generation}"
+        else f"{operation_id}\0{active_operation_generation}"
     )
+    operation_edit = _mapping_child(operation_vector, "operation_edit")
+    if operation_telemetry is not None:
+        telemetry_edit = {
+            "action": operation_telemetry.get("edit_action"),
+            "counterpart_operation_id": operation_telemetry.get(
+                "edit_counterpart_operation_id"
+            ),
+            "before_count": operation_telemetry.get("edit_before_count"),
+            "after_count": operation_telemetry.get("edit_after_count"),
+            "transferred_in_count": operation_telemetry.get(
+                "transferred_in_count"
+            ),
+            "transferred_out_count": operation_telemetry.get(
+                "transferred_out_count"
+            ),
+            "resolution": operation_telemetry.get("edit_resolution"),
+            "blocker": operation_telemetry.get("edit_blocker"),
+        }
+        operation_edit = {
+            **operation_edit,
+            **{
+                key: value
+                for key, value in telemetry_edit.items()
+                if value not in {None, ""}
+            },
+        }
     return {
         "operation_key": operation_key,
         "operation_id": operation_id,
-        "operation_generation": operation_generation,
+        "operation_generation": active_operation_generation,
+        "requested_operation_generation": operation_generation,
         "update_id": update_id,
         "command_text": command_text,
         "mission": _micromachine_operation_mission(operation_update),
@@ -1685,6 +1753,7 @@ def _micromachine_operation_status_payload(
         "telemetry_frame": telemetry_frame,
         "telemetry_current": telemetry_current,
         "disposition": disposition,
+        "operation_edit": operation_edit,
     }
 
 
@@ -3256,6 +3325,17 @@ def _micromachine_recent_command_entry(
         or scope.get("location_intent")
         or ""
     )
+    raw_operations = vector.get("operations")
+    operations = (
+        [
+            json.loads(json.dumps(dict(operation), ensure_ascii=False))
+            for operation in raw_operations
+            if isinstance(operation, Mapping)
+        ]
+        if isinstance(raw_operations, Sequence)
+        and not isinstance(raw_operations, (str, bytes, bytearray))
+        else []
+    )
     return {
         "command_text": _micromachine_recent_context_text(
             command_text,
@@ -3313,6 +3393,7 @@ def _micromachine_recent_command_entry(
         "execution_status": _micromachine_recent_context_text(
             execution.get("state", "")
         ),
+        "operations": operations,
     }
 
 
@@ -9444,6 +9525,19 @@ function commandConsoleDataForUpdate(data, updateId) {
   var latestRequest = data.latest_request || {};
   var intervention = Object.assign({}, data.intervention || {});
   var execution = intervention.command_execution || {};
+  var executionOwnerUpdateId = String(
+    data.operation_console_execution_owner_update_id || ""
+  );
+  var operationGeneration = Number(data.operation_generation || 0);
+  var executionGeneration = Number(execution.operation_generation || 0);
+  var linkedOperationExecution = Boolean(
+    executionOwnerUpdateId &&
+    executionOwnerUpdateId === updateId &&
+    data.operation_id &&
+    String(execution.operation_id || "") === String(data.operation_id) &&
+    operationGeneration > 0 &&
+    executionGeneration === operationGeneration
+  );
   if (compileResult.update_id && String(compileResult.update_id) !== updateId) {
     result.compile_result = {};
   }
@@ -9453,13 +9547,18 @@ function commandConsoleDataForUpdate(data, updateId) {
   if (latestRequest.update_id && String(latestRequest.update_id) !== updateId) {
     result.latest_request = null;
   }
-  if (execution.command_id && String(execution.command_id) !== updateId) {
+  if (
+    execution.command_id &&
+    String(execution.command_id) !== updateId &&
+    !linkedOperationExecution
+  ) {
     intervention.command_execution = {};
   }
   if (
     intervention.latest_update_id &&
     String(intervention.latest_update_id) !== updateId &&
-    !(execution.command_id && String(execution.command_id) === updateId)
+    !(execution.command_id && String(execution.command_id) === updateId) &&
+    !linkedOperationExecution
   ) {
     intervention = { command_execution: intervention.command_execution || {} };
   }
@@ -10136,12 +10235,16 @@ function commandOperationData(operation, parentData) {
     dashboard: parentData && parentData.dashboard || {},
     blackboard_scope_id: scopeId,
     operation_id: operationId,
-    operation_key: String(
-      operation.operation_key ||
-      operationRecordKey(scopeId, operationId)
+    operation_key: operationRecordKey(scopeId, operationId),
+    operation_generation: Number(operation.operation_generation || 0),
+    requested_operation_generation: Number(
+      operation.requested_operation_generation ||
+      operation.operation_generation ||
+      0
     ),
     operation_disposition: disposition,
     operation_mission: String(operation.mission || "operation"),
+    operation_edit: operation.operation_edit || {},
     telemetry_current: operation.telemetry_current === true
   };
 }
@@ -10202,6 +10305,7 @@ function beginOperationRecord(text, pendingId) {
     stageRank: 0,
     telemetryFrame: -1,
     operationGeneration: 0,
+    requestedOperationGeneration: 0,
     terminal: false,
     disposition: "pending",
     createdAt: Date.now(),
@@ -10301,15 +10405,96 @@ function reconcileOperationRecord(operation, parentData) {
   if (!Number.isFinite(operationGeneration) || operationGeneration < 0) {
     operationGeneration = 0;
   }
+  var requestedOperationGeneration = Number(
+    data.requested_operation_generation ||
+    operationGeneration ||
+    0
+  );
+  if (
+    !Number.isFinite(requestedOperationGeneration) ||
+    requestedOperationGeneration < 0
+  ) {
+    requestedOperationGeneration = 0;
+  }
+  var editPayload = operationEditPayload(data);
+  var rejectedEditPayload = Boolean(
+    String(editPayload.resolution || "").toLowerCase() === "blocked" ||
+    Boolean(editPayload.blocker)
+  );
+  var latestRequestedOperationGeneration = record
+    ? Number(
+      record.requestedOperationGeneration ||
+      record.operationGeneration ||
+      0
+    )
+    : 0;
+  if (
+    !Number.isFinite(latestRequestedOperationGeneration) ||
+    latestRequestedOperationGeneration < 0
+  ) {
+    latestRequestedOperationGeneration = 0;
+  }
+  var staleRejectedEditPayload = Boolean(
+    record &&
+    rejectedEditPayload &&
+    requestedOperationGeneration > 0 &&
+    requestedOperationGeneration < latestRequestedOperationGeneration
+  );
+  if (
+    staleRejectedEditPayload &&
+    operationGeneration <= record.operationGeneration
+  ) {
+    return record;
+  }
+  if (
+    staleRejectedEditPayload &&
+    operationGeneration > record.operationGeneration
+  ) {
+    var latestData = record.data || {};
+    data = Object.assign({}, data, {
+      command_text: record.text || latestData.command_text || "",
+      compile_result: latestData.compile_result || {},
+      latest_request: latestData.latest_request || null,
+      update: latestData.update || {},
+      command_queue: latestData.command_queue || {},
+      requested_operation_generation: latestRequestedOperationGeneration,
+      operation_edit: operationEditPayload(latestData),
+      operation_console_execution_owner_update_id: record.updateId || ""
+    });
+    updateId = record.updateId || updateId;
+  }
+  var rejectedEditRefresh = Boolean(
+    record &&
+    record.terminal &&
+    operationGeneration === record.operationGeneration &&
+    requestedOperationGeneration > latestRequestedOperationGeneration &&
+    rejectedEditPayload
+  );
+  if (
+    record &&
+    record.operationGeneration > 0 &&
+    operationGeneration <= 0
+  ) {
+    return record;
+  }
   if (
     record &&
     record.operationGeneration > 0 &&
     operationGeneration > 0 &&
-    record.operationGeneration !== operationGeneration
+    operationGeneration < record.operationGeneration
   ) {
     return record;
   }
-  if (record && record.terminal) {
+  if (
+    record &&
+    operationGeneration > record.operationGeneration
+  ) {
+    record.stageRank = 0;
+    record.telemetryFrame = -1;
+    record.terminal = false;
+    record.disposition = "pending";
+  }
+  if (record && record.terminal && !rejectedEditRefresh) {
     return record;
   }
   if (
@@ -10320,7 +10505,7 @@ function reconcileOperationRecord(operation, parentData) {
   ) {
     return record;
   }
-  if (record && stageRank < record.stageRank) {
+  if (record && stageRank < record.stageRank && !rejectedEditRefresh) {
     return record;
   }
   if (!record) {
@@ -10336,6 +10521,7 @@ function reconcileOperationRecord(operation, parentData) {
       stageRank: 0,
       telemetryFrame: -1,
       operationGeneration: operationGeneration,
+      requestedOperationGeneration: requestedOperationGeneration,
       terminal: false,
       disposition: "pending",
       createdAt: Date.now(),
@@ -10361,7 +10547,13 @@ function reconcileOperationRecord(operation, parentData) {
   record.stageRank = Math.max(record.stageRank, stageRank);
   record.telemetryFrame = Math.max(record.telemetryFrame, telemetryFrame);
   record.operationGeneration = operationGeneration || record.operationGeneration;
-  record.terminal = model.terminal;
+  record.requestedOperationGeneration = Math.max(
+    record.requestedOperationGeneration || 0,
+    requestedOperationGeneration
+  );
+  record.terminal = rejectedEditRefresh
+    ? Boolean(record.terminal || model.terminal)
+    : model.terminal;
   record.disposition = operationRecordDisposition(model, data);
   return record;
 }
@@ -10376,6 +10568,79 @@ function operationAppendDetail(container, label, value, extraClass) {
   detail.appendChild(labelNode);
   detail.appendChild(valueNode);
   container.appendChild(detail);
+}
+
+function operationEditPayload(data) {
+  var edit = data && data.operation_edit;
+  return edit && typeof edit === "object" ? edit : {};
+}
+
+function operationCompositionLabel(value) {
+  if (!Array.isArray(value) || !value.length) {
+    return commandUiText("없음", "none", "无");
+  }
+  return value.map(function(requirement) {
+    var unitType = String(requirement && requirement.unit_type || "")
+      .replace(/^TERRAN_/, "");
+    var count = Number(requirement && requirement.count || 0);
+    return unitType + " ×" + count;
+  }).join(" · ");
+}
+
+function operationEditSummary(data) {
+  var edit = operationEditPayload(data);
+  var action = String(edit.action || "");
+  if (!action) { return ""; }
+  var counterpart = String(edit.counterpart_operation_id || "");
+  return counterpart ? action + " · " + counterpart : action;
+}
+
+function operationEditForceChange(data) {
+  var edit = operationEditPayload(data);
+  if (!edit.action) { return ""; }
+  return operationCompositionLabel(edit.before_composition) +
+    " → " + operationCompositionLabel(edit.after_composition);
+}
+
+function operationEditResolution(data) {
+  var edit = operationEditPayload(data);
+  if (!edit.action) { return ""; }
+  var parts = [];
+  if (edit.resolution) { parts.push(String(edit.resolution)); }
+  if (edit.blocker) { parts.push(String(edit.blocker)); }
+  if (Number(edit.transferred_in_count || 0) > 0) {
+    parts.push("+" + Number(edit.transferred_in_count) + " transferred");
+  }
+  if (Number(edit.transferred_out_count || 0) > 0) {
+    parts.push("-" + Number(edit.transferred_out_count) + " transferred");
+  }
+  return parts.join(" · ") || commandUiText(
+    "런타임 적용 대기",
+    "awaiting runtime application",
+    "等待运行时应用"
+  );
+}
+
+function prefillOperationEdit(record, action) {
+  var input = document.getElementById("command-input");
+  if (!input) { return; }
+  if (action === "reinforce") {
+    input.value = currentLang === "en"
+      ? "Reinforce operation " + record.operationId + " with "
+      : (currentLang === "zh"
+        ? "为作战 " + record.operationId + " 增援 "
+        : "작전 " + record.operationId + "에 병력을 증원해: ");
+  } else if (action === "retarget") {
+    input.value = currentLang === "en"
+      ? "Retarget operation " + record.operationId + " to "
+      : (currentLang === "zh"
+        ? "把作战 " + record.operationId + " 的目标改为 "
+        : "작전 " + record.operationId + "의 목표를 변경해: ");
+  } else {
+    input.value = record.text || "";
+  }
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
 }
 
 function operationActionButton(record, label, action, handler) {
@@ -10491,6 +10756,24 @@ function renderOperationCard(record) {
     commandUiText("배정 전력", "Assigned force", "已分配兵力"),
     commandConsoleAssignedForce(model)
   );
+  if (operationEditSummary(data)) {
+    operationAppendDetail(
+      details,
+      commandUiText("작전 변경", "Operation edit", "作战变更"),
+      operationEditSummary(data)
+    );
+    operationAppendDetail(
+      details,
+      commandUiText("병력 변화", "Force change", "兵力变化"),
+      operationEditForceChange(data)
+    );
+    operationAppendDetail(
+      details,
+      commandUiText("충돌 해결", "Conflict resolution", "冲突处理"),
+      operationEditResolution(data),
+      "operation-card-verification"
+    );
+  }
   operationAppendDetail(
     details,
     commandUiText("실제 SC2 명령", "Actual SC2 command", "实际 SC2 命令"),
@@ -10524,12 +10807,23 @@ function renderOperationCard(record) {
       record,
       commandUiText("수정", "Revise", "修改"),
       "revise",
-      function() {
-        var input = document.getElementById("command-input");
-        if (!input) { return; }
-        input.value = record.text || "";
-        input.focus();
-      }
+      function() { prefillOperationEdit(record, "revise"); }
+    )
+  );
+  actions.appendChild(
+    operationActionButton(
+      record,
+      commandUiText("증원", "Reinforce", "增援"),
+      "reinforce",
+      function() { prefillOperationEdit(record, "reinforce"); }
+    )
+  );
+  actions.appendChild(
+    operationActionButton(
+      record,
+      commandUiText("목표 변경", "Retarget", "变更目标"),
+      "retarget",
+      function() { prefillOperationEdit(record, "retarget"); }
     )
   );
   actions.appendChild(

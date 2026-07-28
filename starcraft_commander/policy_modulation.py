@@ -218,6 +218,27 @@ MICROMACHINE_ROUTE_INTENTS: Final[frozenset[str]] = frozenset(
 )
 """Semantic route labels, not raw pathing commands."""
 
+MICROMACHINE_OPERATION_EDIT_ACTIONS: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "create",
+        "update",
+        "resize",
+        "reinforce",
+        "retarget",
+        "transfer_in",
+        "transfer_out",
+        "cancel",
+        "restart",
+    }
+)
+"""Bounded operation edits; unit selection remains semantic and tag-free."""
+
+MICROMACHINE_OPERATION_CONFIRMATION_POLICIES: Final[frozenset[str]] = frozenset(
+    {"auto", "required"}
+)
+"""Whether an operation edit can publish immediately or requires confirmation."""
+
 MICROMACHINE_TARGET_INTENTS: Final[frozenset[str]] = frozenset(
     {
         "",
@@ -1604,6 +1625,101 @@ class TargetIntentModulation:
 
 
 @dataclass(frozen=True)
+class OperationEditModulation:
+    """Semantic before/after operation edit without raw unit selection."""
+
+    action: str = ""
+    counterpart_operation_id: str = ""
+    unit_selection: tuple[CompositionRequirement, ...] = ()
+    before_composition: tuple[CompositionRequirement, ...] = ()
+    after_composition: tuple[CompositionRequirement, ...] = ()
+    explicit_override: bool = False
+    confirmation_policy: str = "auto"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "action",
+            _optional_choice(
+                "action",
+                self.action,
+                set(MICROMACHINE_OPERATION_EDIT_ACTIONS),
+            ),
+        )
+        object.__setattr__(
+            self,
+            "counterpart_operation_id",
+            (
+                _validate_optional_identifier(
+                    "counterpart_operation_id",
+                    self.counterpart_operation_id,
+                )
+                if self.counterpart_operation_id
+                else ""
+            ),
+        )
+        object.__setattr__(
+            self,
+            "unit_selection",
+            _validate_composition_requirements(self.unit_selection),
+        )
+        object.__setattr__(
+            self,
+            "before_composition",
+            _validate_composition_requirements(self.before_composition),
+        )
+        object.__setattr__(
+            self,
+            "after_composition",
+            _validate_composition_requirements(self.after_composition),
+        )
+        object.__setattr__(
+            self,
+            "explicit_override",
+            _coerce_bool(self.explicit_override, "explicit_override"),
+        )
+        object.__setattr__(
+            self,
+            "confirmation_policy",
+            _optional_choice(
+                "confirmation_policy",
+                self.confirmation_policy,
+                set(MICROMACHINE_OPERATION_CONFIRMATION_POLICIES),
+            ),
+        )
+        if self.action in {"transfer_in", "transfer_out"}:
+            if not self.counterpart_operation_id:
+                raise ValueError(
+                    "transfer operation edits require counterpart_operation_id."
+                )
+            if not self.unit_selection:
+                raise ValueError(
+                    "transfer operation edits require semantic unit_selection."
+                )
+        elif self.counterpart_operation_id:
+            raise ValueError(
+                "counterpart_operation_id is valid only for transfer operation edits."
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "action": self.action,
+            "counterpart_operation_id": self.counterpart_operation_id,
+            "unit_selection": [
+                requirement.to_dict() for requirement in self.unit_selection
+            ],
+            "before_composition": [
+                requirement.to_dict() for requirement in self.before_composition
+            ],
+            "after_composition": [
+                requirement.to_dict() for requirement in self.after_composition
+            ],
+            "explicit_override": self.explicit_override,
+            "confirmation_policy": self.confirmation_policy,
+        }
+
+
+@dataclass(frozen=True)
 class TacticalOperationModulation:
     """One independently addressable manager-level tactical operation."""
 
@@ -1619,6 +1735,7 @@ class TacticalOperationModulation:
     unit_roles: tuple[UnitRoleAssignment, ...] = ()
     route_intent: RouteIntentModulation = field(default_factory=RouteIntentModulation)
     target_intent: TargetIntentModulation = field(default_factory=TargetIntentModulation)
+    operation_edit: OperationEditModulation = field(default_factory=OperationEditModulation)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1680,10 +1797,15 @@ class TacticalOperationModulation:
         )
         object.__setattr__(
             self,
+            "operation_edit",
+            _coerce_domain(self.operation_edit, OperationEditModulation),
+        )
+        object.__setattr__(
+            self,
             "command_layer",
-            _coerce_command_layer(
+            _coerce_tactical_operation_layer(
                 self.command_layer,
-                inferred=_infer_tactical_operation_layer(self),
+                operation=self,
             ),
         )
 
@@ -1703,6 +1825,7 @@ class TacticalOperationModulation:
             "unit_roles": [assignment.to_dict() for assignment in self.unit_roles],
             "route_intent": self.route_intent.to_dict(),
             "target_intent": self.target_intent.to_dict(),
+            "operation_edit": self.operation_edit.to_dict(),
         }
 
 
@@ -1840,6 +1963,7 @@ class PolicyModulationVector:
             _coerce_domain(self.target_intent, TargetIntentModulation),
         )
         operations = _validate_tactical_operations(self.operations)
+        _validate_operation_edit_contracts(operations)
         legacy_projection = _legacy_operation_projection(self)
         if operations:
             if len(operations) > 1:
@@ -2084,6 +2208,27 @@ def _coerce_command_layer(
     return normalized_layer
 
 
+def _coerce_tactical_operation_layer(
+    value: object,
+    *,
+    operation: TacticalOperationModulation,
+) -> CommandLayer:
+    inferred = _infer_tactical_operation_layer(operation)
+    normalized = (
+        value.value
+        if isinstance(value, CommandLayer)
+        else str(value or "").strip().lower()
+    )
+    if normalized == CommandLayer.EMERGENCY.value:
+        edit = operation.operation_edit
+        if (
+            edit.action in {"transfer_in", "transfer_out"}
+            and edit.explicit_override
+        ):
+            return CommandLayer.EMERGENCY
+    return _coerce_command_layer(value, inferred=inferred)
+
+
 def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
     emergency = vector.emergency.to_dict()
     if (
@@ -2215,23 +2360,24 @@ def _validate_composition_requirements(
         values,
         CompositionRequirement,
     )
-    merged: dict[str, CompositionRequirement] = {}
+    merged: dict[tuple[str, str], CompositionRequirement] = {}
     for requirement in requirements:
         assert isinstance(requirement, CompositionRequirement)
-        previous = merged.get(requirement.unit_type)
+        key = (requirement.unit_type, requirement.role)
+        previous = merged.get(key)
         if previous is None:
-            merged[requirement.unit_type] = requirement
+            merged[key] = requirement
             continue
         total_count = previous.count + requirement.count
         if total_count > 200:
             raise ValueError(
                 "combined composition requirement count cannot exceed 200 "
-                f"for {requirement.unit_type}."
+                f"for {requirement.unit_type} role={requirement.role or '*'}."
             )
-        merged[requirement.unit_type] = CompositionRequirement(
+        merged[key] = CompositionRequirement(
             unit_type=requirement.unit_type,
             count=total_count,
-            role=requirement.role or previous.role,
+            role=requirement.role,
         )
     return tuple(merged.values())
 
@@ -2244,12 +2390,13 @@ def _validate_unit_role_assignments(
         values,
         UnitRoleAssignment,
     )
-    merged: dict[str, UnitRoleAssignment] = {}
+    merged: dict[tuple[str, str], UnitRoleAssignment] = {}
     for assignment in assignments:
         assert isinstance(assignment, UnitRoleAssignment)
-        previous = merged.get(assignment.unit_type)
+        key = (assignment.unit_type, assignment.role)
+        previous = merged.get(key)
         if previous is None or assignment.priority >= previous.priority:
-            merged[assignment.unit_type] = assignment
+            merged[key] = assignment
     return tuple(merged.values())
 
 
@@ -2270,6 +2417,115 @@ def _validate_tactical_operations(
             )
         operation_ids.add(operation.operation_id)
     return tuple(operations)
+
+
+def _validate_operation_edit_contracts(
+    operations: tuple[TacticalOperationModulation, ...],
+) -> None:
+    by_id = {operation.operation_id: operation for operation in operations}
+    for operation in operations:
+        edit = operation.operation_edit
+        if edit.action not in {"transfer_in", "transfer_out"}:
+            continue
+        counterpart = by_id.get(edit.counterpart_operation_id)
+        if counterpart is None:
+            raise ValueError(
+                "transfer operation edits require the counterpart operation "
+                "in the same atomic operations update."
+            )
+        expected_action = (
+            "transfer_out" if edit.action == "transfer_in" else "transfer_in"
+        )
+        counterpart_edit = counterpart.operation_edit
+        if (
+            counterpart_edit.action != expected_action
+            or counterpart_edit.counterpart_operation_id
+            != operation.operation_id
+        ):
+            raise ValueError(
+                "transfer operation edits require symmetric transfer_in and "
+                "transfer_out counterparts."
+            )
+        if _operation_edit_selection_counts(edit) != (
+            _operation_edit_selection_counts(counterpart_edit)
+        ):
+            raise ValueError(
+                "transfer operation edit counterparts must select the same "
+                "unit types, roles, and counts."
+            )
+        if not edit.before_composition:
+            raise ValueError(
+                "transfer operation edits require a before_composition snapshot."
+            )
+        if _composition_requirement_counts(
+            edit.after_composition
+        ) != _composition_requirement_counts(operation.composition_requirements):
+            raise ValueError(
+                "transfer operation edit after_composition must match the "
+                "operation composition_requirements for "
+                f"{operation.operation_id!r}."
+            )
+
+        before_counts = _composition_requirement_counts(edit.before_composition)
+        selection_counts = _composition_requirement_counts(edit.unit_selection)
+        expected_after = dict(before_counts)
+        for key, selected_count in selection_counts.items():
+            current_count = expected_after.get(key, 0)
+            if edit.action == "transfer_out":
+                remaining_count = current_count - selected_count
+                if remaining_count < 0:
+                    raise ValueError(
+                        "transfer_out unit_selection cannot exceed the matching "
+                        "before_composition unit type and role."
+                    )
+                if remaining_count:
+                    expected_after[key] = remaining_count
+                else:
+                    expected_after.pop(key, None)
+            else:
+                expected_after[key] = current_count + selected_count
+
+        if expected_after != _composition_requirement_counts(edit.after_composition):
+            direction = "subtract" if edit.action == "transfer_out" else "add"
+            raise ValueError(
+                f"{edit.action} after_composition must {direction} unit_selection "
+                "by matching unit type and role."
+            )
+        if edit.action == "transfer_in":
+            destination_roles = {
+                (assignment.unit_type, assignment.role)
+                for assignment in operation.unit_roles
+            }
+            missing_roles = sorted(set(selection_counts) - destination_roles)
+            if missing_roles:
+                raise ValueError(
+                    "transfer_in selected unit types and roles must exist in "
+                    f"destination unit_roles: {missing_roles!r}."
+                )
+
+
+def _operation_edit_selection_counts(
+    edit: OperationEditModulation,
+) -> tuple[tuple[str, str, int], ...]:
+    return tuple(
+        sorted(
+            (
+                requirement.unit_type,
+                requirement.role,
+                requirement.count,
+            )
+            for requirement in edit.unit_selection
+        )
+    )
+
+
+def _composition_requirement_counts(
+    requirements: tuple[CompositionRequirement, ...],
+) -> dict[tuple[str, str], int]:
+    return {
+        (requirement.unit_type, requirement.role): requirement.count
+        for requirement in requirements
+    }
 
 
 def _tactical_operations_from_mapping(

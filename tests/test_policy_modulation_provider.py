@@ -29,6 +29,154 @@ class StaticModulationProvider:
 
 
 class PolicyModulationProviderCompilerTest(unittest.TestCase):
+    def test_provider_preserves_role_specific_transfer_delta(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "정찰 마린 한 기를 공격대로 이관",
+                "command_layer": "operation",
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "goal": "정찰 병력 이관",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "min_units": 0,
+                            "max_units": 1,
+                            "allow_partial": True,
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "marine",
+                                "count": 1,
+                                "role": "scout",
+                            }
+                        ],
+                        "unit_roles": [
+                            {
+                                "unit_type": "marine",
+                                "role": "scout",
+                                "priority": 0.91,
+                                "ability_policy": "escape",
+                            }
+                        ],
+                        "operation_edit": {
+                            "action": "transfer_out",
+                            "counterpart_operation_id": "assault-bravo",
+                            "unit_selection": [
+                                {
+                                    "unit_type": "marine",
+                                    "count": 1,
+                                    "role": "scout",
+                                }
+                            ],
+                            "before_composition": [
+                                {
+                                    "unit_type": "marine",
+                                    "count": 2,
+                                    "role": "scout",
+                                }
+                            ],
+                            "after_composition": [
+                                {
+                                    "unit_type": "marine",
+                                    "count": 1,
+                                    "role": "scout",
+                                }
+                            ],
+                            "explicit_override": True,
+                        },
+                    },
+                    {
+                        "operation_id": "assault-bravo",
+                        "goal": "공격대 증원",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "min_units": 5,
+                            "max_units": 5,
+                            "allow_partial": False,
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "marine",
+                                "count": 4,
+                                "role": "frontline",
+                            },
+                            {
+                                "unit_type": "marine",
+                                "count": 1,
+                                "role": "scout",
+                            },
+                        ],
+                        "unit_roles": [
+                            {
+                                "unit_type": "marine",
+                                "role": "frontline",
+                                "priority": 0.7,
+                                "ability_policy": "if_available",
+                            },
+                            {
+                                "unit_type": "marine",
+                                "role": "scout",
+                                "priority": 0.91,
+                                "ability_policy": "escape",
+                            },
+                        ],
+                        "operation_edit": {
+                            "action": "transfer_in",
+                            "counterpart_operation_id": "recon-alpha",
+                            "unit_selection": [
+                                {
+                                    "unit_type": "marine",
+                                    "count": 1,
+                                    "role": "scout",
+                                }
+                            ],
+                            "before_composition": [
+                                {
+                                    "unit_type": "marine",
+                                    "count": 4,
+                                    "role": "frontline",
+                                }
+                            ],
+                            "after_composition": [
+                                {
+                                    "unit_type": "marine",
+                                    "count": 4,
+                                    "role": "frontline",
+                                },
+                                {
+                                    "unit_type": "marine",
+                                    "count": 1,
+                                    "role": "scout",
+                                },
+                            ],
+                            "explicit_override": True,
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.vector is not None
+        destination = result.vector.operations[1]
+        self.assertEqual(
+            {
+                ("TERRAN_MARINE", "frontline", 4),
+                ("TERRAN_MARINE", "scout", 1),
+            },
+            {
+                (requirement.unit_type, requirement.role, requirement.count)
+                for requirement in destination.composition_requirements
+            },
+        )
+        roles = {role.role: role for role in destination.unit_roles}
+        self.assertEqual("escape", roles["scout"].ability_policy)
+        self.assertEqual(0.91, roles["scout"].priority)
+
     def test_compiles_simultaneous_scout_and_attack_operations_in_isolation(
         self,
     ) -> None:
@@ -281,7 +429,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertTrue(vector.production.allow_build_order_rewrite)
         self.assertGreaterEqual(vector.production.tech_switch_urgency, 0.9)
 
-    def test_duplicate_composition_entries_merge_before_launch_floor(self) -> None:
+    def test_role_specific_composition_preserves_launch_floor(self) -> None:
         result = compile_policy_modulation_provider_output(
             {
                 "source": "llm",
@@ -300,8 +448,16 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
         self.assertTrue(result.ok, result.to_dict())
         assert result.vector is not None
         vector = result.vector
-        self.assertEqual(1, len(vector.composition_requirements))
-        self.assertEqual(4, vector.composition_requirements[0].count)
+        self.assertEqual(
+            {
+                ("frontline", 2),
+                ("focus_fire", 2),
+            },
+            {
+                (requirement.role, requirement.count)
+                for requirement in vector.composition_requirements
+            },
+        )
         self.assertEqual(4, vector.scope.min_units)
         self.assertEqual(4, vector.tactical_task.min_units)
         self.assertGreaterEqual(

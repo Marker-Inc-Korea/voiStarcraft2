@@ -48,6 +48,8 @@ from starcraft_commander.llm_interpreter import (
     build_policy_modulation_tool_definition,
     build_policy_modulation_tool_input_schema,
     _compact_policy_commander_context,
+    _compact_merge_unit_request_counts,
+    _compact_selection_with_base_metadata,
 )
 from starcraft_commander.runtime_deps import ANTHROPIC_MODULE_NAME, OPENAI_MODULE_NAME
 from starcraft_commander.policy_modulation_provider import (
@@ -1078,6 +1080,625 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertEqual(3, operation["tactical_task"]["min_units"])
         self.assertEqual("safe_path", operation["route_intent"]["route_type"])
 
+    def test_myproxy_compact_transfer_edits_source_and_destination_atomically(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰대 마린 한 기를 공격대로 이관합니다.",
+            "command": {
+                "operation_id": "assault-bravo",
+                "source_operation_id": "recon-alpha",
+                "operation_action": "transfer",
+                "explicit_override": True,
+                "confirmation_policy": "auto",
+                "goal": "정찰대 마린 한 기를 공격대로 이관",
+                "command_layer": "operation",
+                "task_type": "pressure_with_main_army",
+                "unit_requests": [
+                    {"unit_type": "marine", "count": 1, "role": "frontline"},
+                ],
+            },
+        }
+        known_operations = [
+            {
+                "operation_id": "recon-alpha",
+                "goal": "마린 정찰",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 0,
+                    "max_units": 2,
+                    "allow_partial": True,
+                    "duration_seconds": 600,
+                },
+                "scope": {
+                    "army_group": "scout",
+                    "location_intent": "enemy_main",
+                    "allow_partial_scope": True,
+                    "duration_seconds": 600,
+                },
+                "composition_requirements": [
+                    {"unit_type": "TERRAN_MARINE", "count": 2, "role": "scout"},
+                ],
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "role": "scout",
+                        "priority": 0.91,
+                        "ability_policy": "escape",
+                    }
+                ],
+                "lifetime": {
+                    "mode": "standing_order",
+                    "completion_conditions": ["cancelled_by_user"],
+                    "completion_state": "active",
+                },
+            },
+            {
+                "operation_id": "assault-bravo",
+                "goal": "마린 공격",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 4,
+                    "max_units": 4,
+                    "duration_seconds": 300,
+                },
+                "scope": {
+                    "army_group": "main",
+                    "location_intent": "enemy_natural",
+                    "duration_seconds": 300,
+                },
+                "composition_requirements": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 4,
+                        "role": "frontline",
+                    },
+                ],
+                "lifetime": {
+                    "mode": "until_completed",
+                    "completion_conditions": ["target_reached"],
+                    "completion_state": "active",
+                },
+            },
+        ]
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: FakeResponsesClient(
+                _responses_tool_response(payload)
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "recon-alpha에서 마린 한 기를 빼서 "
+                    "assault-bravo에 합류시켜"
+                ),
+                commander_context={"active_operations": known_operations},
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        operations = {
+            operation["operation_id"]: operation
+            for operation in output["modulation"]["operations"]
+        }
+        self.assertEqual({"recon-alpha", "assault-bravo"}, set(operations))
+        source = operations["recon-alpha"]
+        destination = operations["assault-bravo"]
+        self.assertEqual(
+            1,
+            source["composition_requirements"][0]["count"],
+        )
+        self.assertEqual(
+            "scout",
+            source["composition_requirements"][0]["role"],
+        )
+        self.assertEqual(0, source["tactical_task"]["min_units"])
+        self.assertEqual(0, source["scope"]["min_units"])
+        destination_composition = {
+            item["role"]: item["count"]
+            for item in destination["composition_requirements"]
+        }
+        self.assertEqual(
+            {"frontline": 4, "scout": 1},
+            destination_composition,
+        )
+        self.assertEqual("transfer_out", source["operation_edit"]["action"])
+        self.assertEqual(
+            "scout",
+            source["operation_edit"]["unit_selection"][0]["role"],
+        )
+        self.assertEqual("transfer_in", destination["operation_edit"]["action"])
+        self.assertEqual(
+            "scout",
+            destination["operation_edit"]["unit_selection"][0]["role"],
+        )
+        self.assertEqual(
+            "recon-alpha",
+            destination["operation_edit"]["counterpart_operation_id"],
+        )
+        self.assertEqual("standing_order", source["lifetime"]["mode"])
+        self.assertEqual(
+            ["cancelled_by_user"],
+            source["lifetime"]["completion_conditions"],
+        )
+        self.assertEqual(
+            "escape",
+            source["unit_roles"][0]["ability_policy"],
+        )
+        self.assertEqual(0.91, source["unit_roles"][0]["priority"])
+        self.assertEqual(600, source["tactical_task"]["duration_seconds"])
+        self.assertEqual(600, source["scope"]["duration_seconds"])
+        self.assertEqual("until_completed", destination["lifetime"]["mode"])
+        self.assertEqual(
+            ["target_reached"],
+            destination["lifetime"]["completion_conditions"],
+        )
+        self.assertEqual(300, destination["tactical_task"]["duration_seconds"])
+        self.assertEqual(300, destination["scope"]["duration_seconds"])
+        destination_roles = {
+            item["role"]: item
+            for item in destination["unit_roles"]
+        }
+        self.assertEqual(
+            "escape",
+            destination_roles["scout"]["ability_policy"],
+        )
+        self.assertEqual(0.91, destination_roles["scout"]["priority"])
+
+    def test_myproxy_compact_full_force_transfer_stays_active_until_runtime_commit(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰 병력 전부를 공격대로 이관합니다.",
+            "command": {
+                "operation_id": "assault-bravo",
+                "source_operation_id": "recon-alpha",
+                "operation_action": "transfer",
+                "explicit_override": True,
+                "confirmation_policy": "auto",
+                "goal": "정찰 병력 전부 공격대로 이관",
+                "command_layer": "operation",
+                "task_type": "pressure_with_main_army",
+                "unit_requests": [
+                    {"unit_type": "marine", "count": 1, "role": "scout"},
+                ],
+            },
+        }
+        known_operations = [
+            {
+                "operation_id": "recon-alpha",
+                "goal": "standing recon",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 0,
+                    "max_units": 1,
+                    "allow_partial": True,
+                    "duration_seconds": 0,
+                },
+                "scope": {
+                    "army_group": "scout",
+                    "allow_partial_scope": True,
+                    "duration_seconds": 0,
+                },
+                "composition_requirements": [
+                    {"unit_type": "TERRAN_MARINE", "count": 1, "role": "scout"},
+                ],
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "role": "scout",
+                        "priority": 0.0,
+                        "ability_policy": "escape",
+                    }
+                ],
+                "lifetime": {
+                    "mode": "standing_order",
+                    "completion_conditions": ["cancelled_by_user"],
+                    "completion_state": "active",
+                },
+            },
+            {
+                "operation_id": "assault-bravo",
+                "goal": "assault",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 4,
+                    "max_units": 4,
+                },
+                "composition_requirements": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 4,
+                        "role": "frontline",
+                    },
+                ],
+                "lifetime": {
+                    "mode": "until_completed",
+                    "completion_conditions": ["target_reached"],
+                    "completion_state": "active",
+                },
+            },
+        ]
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: FakeResponsesClient(
+                _responses_tool_response(payload)
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "recon-alpha 병력 전부를 assault-bravo로 이관해"
+                ),
+                commander_context={"active_operations": known_operations},
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        operations = {
+            operation["operation_id"]: operation
+            for operation in output["modulation"]["operations"]
+        }
+        source = operations["recon-alpha"]
+        self.assertEqual([], source["composition_requirements"])
+        self.assertEqual("active", source["lifetime"]["completion_state"])
+        self.assertEqual("standing_order", source["lifetime"]["mode"])
+        self.assertEqual(0, source["tactical_task"]["duration_seconds"])
+        self.assertEqual(0, source["scope"]["duration_seconds"])
+        self.assertNotIn(
+            "transferred_all_units",
+            source["lifetime"]["completion_conditions"],
+        )
+        destination = operations["assault-bravo"]
+        scout_role = next(
+            item
+            for item in destination["unit_roles"]
+            if item["role"] == "scout"
+        )
+        self.assertEqual(0.0, scout_role["priority"])
+        self.assertEqual("escape", scout_role["ability_policy"])
+
+    def test_myproxy_compact_emergency_transfer_preserves_emergency_layer(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰대 마린 한 기를 긴급 방어대로 이관합니다.",
+            "command": {
+                "operation_id": "defense-bravo",
+                "source_operation_id": "recon-alpha",
+                "operation_action": "transfer",
+                "explicit_override": True,
+                "confirmation_policy": "auto",
+                "goal": "정찰대 마린 한 기를 긴급 방어대로 이관",
+                "command_layer": "emergency",
+                "task_type": "defend_with_units",
+                "unit_requests": [
+                    {"unit_type": "marine", "count": 1, "role": "scout"},
+                ],
+            },
+        }
+        known_operations = [
+            {
+                "operation_id": "recon-alpha",
+                "goal": "마린 정찰",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 0,
+                    "max_units": 2,
+                    "allow_partial": True,
+                },
+                "scope": {
+                    "army_group": "scout",
+                    "location_intent": "enemy_main",
+                    "allow_partial_scope": True,
+                },
+                "composition_requirements": [
+                    {"unit_type": "TERRAN_MARINE", "count": 2, "role": "scout"},
+                ],
+                "lifetime": {"completion_state": "active"},
+            },
+            {
+                "operation_id": "defense-bravo",
+                "goal": "본진 방어",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "defend_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 2,
+                    "max_units": 4,
+                    "allow_partial": True,
+                },
+                "scope": {
+                    "army_group": "defense",
+                    "location_intent": "home",
+                    "allow_partial_scope": True,
+                },
+                "composition_requirements": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 2,
+                        "role": "frontline",
+                    },
+                ],
+                "lifetime": {"completion_state": "active"},
+            },
+        ]
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: FakeResponsesClient(
+                _responses_tool_response(payload)
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "긴급 상황이야. recon-alpha의 마린 한 기를 "
+                    "defense-bravo로 즉시 옮겨"
+                ),
+                commander_context={"active_operations": known_operations},
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        self.assertEqual("emergency", output["modulation"]["command_layer"])
+        operations = output["modulation"]["operations"]
+        self.assertEqual(2, len(operations))
+        self.assertTrue(
+            all(
+                operation["command_layer"] == "emergency"
+                for operation in operations
+            )
+        )
+        self.assertTrue(
+            all(
+                operation["operation_edit"]["explicit_override"]
+                for operation in operations
+            )
+        )
+
+    def test_compact_operation_edit_preserves_role_specific_composition(self) -> None:
+        merged, error = _compact_merge_unit_request_counts(
+            [
+                {"unit_type": "marine", "count": 2, "role": "scout"},
+                {"unit_type": "marine", "count": 4, "role": "frontline"},
+            ],
+            [{"unit_type": "marine", "count": 1, "role": "scout"}],
+            subtract=True,
+        )
+
+        self.assertEqual("", error)
+        self.assertEqual(
+            {
+                ("TERRAN_MARINE", "scout", 1),
+                ("TERRAN_MARINE", "frontline", 4),
+            },
+            {
+                (item["unit_type"], item["role"], item["count"])
+                for item in merged
+            },
+        )
+
+    def test_compact_transfer_requires_role_for_ambiguous_source(self) -> None:
+        selection, error = _compact_selection_with_base_metadata(
+            [
+                {"unit_type": "marine", "count": 2, "role": "scout"},
+                {"unit_type": "marine", "count": 4, "role": "frontline"},
+            ],
+            [{"unit_type": "marine", "count": 1}],
+        )
+
+        self.assertEqual([], selection)
+        self.assertIn("specify the source role", error)
+
+    def test_myproxy_compact_transfer_rejects_implicit_source_contract_change(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "병력을 이관합니다.",
+            "command": {
+                "operation_id": "assault-bravo",
+                "source_operation_id": "recon-alpha",
+                "operation_action": "transfer",
+                "explicit_override": False,
+                "confirmation_policy": "auto",
+                "goal": "병력 이관",
+                "command_layer": "operation",
+                "task_type": "pressure_with_main_army",
+                "unit_requests": [{"unit_type": "marine", "count": 1}],
+            },
+        }
+        known_operations = [
+            {
+                "operation_id": operation_id,
+                "goal": operation_id,
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": task_type,
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": count,
+                    "max_units": count,
+                },
+                "composition_requirements": [
+                    {"unit_type": "TERRAN_MARINE", "count": count},
+                ],
+                "lifetime": {"completion_state": "active"},
+            }
+            for operation_id, task_type, count in (
+                ("recon-alpha", "scout_with_units", 1),
+                ("assault-bravo", "pressure_with_main_army", 4),
+            )
+        ]
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: FakeResponsesClient(
+                _responses_tool_response(payload),
+                _responses_tool_response(payload),
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="정찰대에서 공격대로 마린을 옮겨",
+                commander_context={"active_operations": known_operations},
+            )
+        )
+
+        self.assertEqual("refused", output["status"])
+        self.assertIn("explicit_override=true", output["refusal_reason"])
+
+    def test_myproxy_compact_transfer_cannot_override_exact_source_contract(
+        self,
+    ) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "병력을 이관합니다.",
+            "command": {
+                "operation_id": "assault-bravo",
+                "source_operation_id": "recon-alpha",
+                "operation_action": "transfer",
+                "explicit_override": True,
+                "confirmation_policy": "auto",
+                "goal": "병력 이관",
+                "command_layer": "operation",
+                "task_type": "pressure_with_main_army",
+                "unit_requests": [{"unit_type": "marine", "count": 1}],
+            },
+        }
+        known_operations = [
+            {
+                "operation_id": "recon-alpha",
+                "goal": "strict recon",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 1,
+                    "max_units": 2,
+                    "allow_partial": False,
+                },
+                "composition_requirements": [
+                    {"unit_type": "TERRAN_MARINE", "count": 2},
+                ],
+                "lifetime": {"completion_state": "active"},
+            },
+            {
+                "operation_id": "assault-bravo",
+                "goal": "assault",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "min_units": 4,
+                    "max_units": 4,
+                },
+                "composition_requirements": [
+                    {"unit_type": "TERRAN_MARINE", "count": 4},
+                ],
+                "lifetime": {"completion_state": "active"},
+            },
+        ]
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: FakeResponsesClient(
+                _responses_tool_response(payload)
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "recon-alpha에서 마린 한 기를 빼서 "
+                    "assault-bravo로 이관해"
+                ),
+                commander_context={"active_operations": known_operations},
+            )
+        )
+
+        self.assertEqual("refused", output["status"])
+        self.assertIn("exact composition", output["refusal_reason"])
+
+    def test_myproxy_compact_reinforce_adds_to_existing_force(self) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "공격대에 마린 두 기를 증원합니다.",
+            "command": {
+                "operation_id": "assault-bravo",
+                "operation_action": "reinforce",
+                "goal": "공격대 마린 두 기 증원",
+                "command_layer": "operation",
+                "task_type": "pressure_with_main_army",
+                "unit_requests": [{"unit_type": "marine", "count": 2}],
+            },
+        }
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: FakeResponsesClient(
+                _responses_tool_response(payload)
+            ),
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text="assault-bravo에 마린 두 기 더 붙여",
+                commander_context={
+                    "active_operations": [
+                        {
+                            "operation_id": "assault-bravo",
+                            "goal": "마린 공격",
+                            "command_layer": "operation",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "unit_classes": ["TERRAN_MARINE"],
+                                "min_units": 4,
+                                "max_units": 4,
+                            },
+                            "composition_requirements": [
+                                {"unit_type": "TERRAN_MARINE", "count": 4},
+                            ],
+                            "lifetime": {"completion_state": "active"},
+                        }
+                    ]
+                },
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        operation = output["modulation"]["operations"][0]
+        self.assertEqual(6, operation["composition_requirements"][0]["count"])
+        self.assertEqual("reinforce", operation["operation_edit"]["action"])
+        self.assertEqual(
+            4,
+            operation["operation_edit"]["before_composition"][0]["count"],
+        )
+        self.assertEqual(
+            6,
+            operation["operation_edit"]["after_composition"][0]["count"],
+        )
+
     def test_myproxy_compact_cancel_and_restart_are_scoped_lifecycle_changes(
         self,
     ) -> None:
@@ -1843,9 +2464,22 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                                 "role": "scout",
                             }
                         ],
+                        "unit_roles": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "role": "scout",
+                                "priority": 0.88,
+                                "ability_policy": "escape",
+                            }
+                        ],
                         "army_group": "recon",
                         "location_intent": "enemy_main",
-                        "completion_state": "active",
+                        "scope": {"duration_seconds": 180},
+                        "lifetime": {
+                            "mode": "standing_order",
+                            "completion_conditions": ["cancelled_by_user"],
+                            "completion_state": "active",
+                        },
                     }
                 ]
             }
@@ -1862,9 +2496,24 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
                     "unit_type": "TERRAN_MARINE",
                     "count": 1,
                     "role": "scout",
+                    "priority": 0.88,
+                    "ability_policy": "escape",
                 }
             ],
             operation["unit_requests"],
+        )
+        self.assertEqual(
+            {
+                "mode": "standing_order",
+                "completion_conditions": ["cancelled_by_user"],
+                "completion_state": "active",
+                "reason": "",
+            },
+            operation["lifetime"],
+        )
+        self.assertEqual(
+            180,
+            operation["tactical_task"]["duration_seconds"],
         )
 
     def test_terminal_active_operations_only_preserves_restart_context(
@@ -3290,6 +3939,28 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertIn("unit_roles", operation_properties)
         self.assertIn("route_intent", operation_properties)
         self.assertIn("target_intent", operation_properties)
+        self.assertIn("generation", operation_properties)
+        self.assertEqual(1, operation_properties["generation"]["minimum"])
+        self.assertIn("issued_at_frame", operation_properties)
+        self.assertEqual(0, operation_properties["issued_at_frame"]["minimum"])
+        self.assertIn("operation_edit", operation_properties)
+        operation_edit_properties = operation_properties["operation_edit"]["properties"]
+        self.assertIn("transfer_in", operation_edit_properties["action"]["enum"])
+        self.assertIn("transfer_out", operation_edit_properties["action"]["enum"])
+        self.assertIn(
+            "required",
+            operation_edit_properties["confirmation_policy"]["enum"],
+        )
+        for field_name in (
+            "unit_selection",
+            "before_composition",
+            "after_composition",
+        ):
+            with self.subTest(operation_edit_field=field_name):
+                self.assertEqual(
+                    operation_properties["composition_requirements"]["items"],
+                    operation_edit_properties[field_name]["items"],
+                )
         self.assertIn(
             "TERRAN_BATTLECRUISER",
             rich_properties["composition_requirements"]["items"]["properties"][
@@ -3358,6 +4029,163 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         self.assertIn("flank_bias alone", build_policy_modulation_system_prompt())
         self.assertIn("building_tasks", build_policy_modulation_system_prompt())
         self.assertNotIn("assistant_message in Korean", build_policy_modulation_system_prompt())
+
+    def test_full_provider_forced_tool_accepts_atomic_operation_transfer(self) -> None:
+        selection = [
+            {"unit_type": "TERRAN_MARINE", "count": 1, "role": "scout"}
+        ]
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정찰대 마린 한 기를 공격대로 이관합니다.",
+            "modulation": {
+                "goal": "transfer one scout into the assault operation",
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "generation": 4,
+                        "issued_at_frame": 220,
+                        "goal": "마린 정찰",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "min_units": 0,
+                            "max_units": 1,
+                            "allow_partial": True,
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 1,
+                                "role": "scout",
+                            }
+                        ],
+                        "unit_roles": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "role": "scout",
+                                "priority": 0.91,
+                                "ability_policy": "escape",
+                            }
+                        ],
+                        "operation_edit": {
+                            "action": "transfer_out",
+                            "counterpart_operation_id": "assault-bravo",
+                            "unit_selection": selection,
+                            "before_composition": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 2,
+                                    "role": "scout",
+                                }
+                            ],
+                            "after_composition": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 1,
+                                    "role": "scout",
+                                }
+                            ],
+                            "explicit_override": True,
+                            "confirmation_policy": "auto",
+                        },
+                    },
+                    {
+                        "operation_id": "assault-bravo",
+                        "generation": 8,
+                        "issued_at_frame": 220,
+                        "goal": "마린 공격",
+                        "command_layer": "operation",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "min_units": 5,
+                            "max_units": 5,
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 4,
+                                "role": "frontline",
+                            },
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 1,
+                                "role": "scout",
+                            },
+                        ],
+                        "unit_roles": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "role": "scout",
+                                "priority": 0.91,
+                                "ability_policy": "escape",
+                            }
+                        ],
+                        "operation_edit": {
+                            "action": "transfer_in",
+                            "counterpart_operation_id": "recon-alpha",
+                            "unit_selection": selection,
+                            "before_composition": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 4,
+                                    "role": "frontline",
+                                }
+                            ],
+                            "after_composition": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 4,
+                                    "role": "frontline",
+                                },
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 1,
+                                    "role": "scout",
+                                },
+                            ],
+                            "explicit_override": True,
+                            "confirmation_policy": "auto",
+                        },
+                    },
+                ],
+            },
+        }
+        interpreter, fake_client = _make_llm_interpreter(_tool_response(payload))
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "recon-alpha의 마린 한 기를 assault-bravo로 이관해"
+                )
+            )
+        )
+
+        self.assertEqual("compiled", output["status"], output)
+        self.assertEqual(1, len(fake_client.calls))
+        submitted_schema = fake_client.calls[0]["tools"][0]["input_schema"]
+        submitted_operation = submitted_schema["properties"]["modulation"][
+            "properties"
+        ]["operations"]["items"]["properties"]
+        self.assertIn("operation_edit", submitted_operation)
+        compiled = compile_policy_modulation_provider_output(output)
+        self.assertTrue(compiled.ok, compiled.to_dict())
+        assert compiled.vector is not None
+        operations = {
+            operation.operation_id: operation
+            for operation in compiled.vector.operations
+        }
+        self.assertEqual(4, operations["recon-alpha"].generation)
+        self.assertEqual(8, operations["assault-bravo"].generation)
+        self.assertEqual(
+            "transfer_out",
+            operations["recon-alpha"].operation_edit.action,
+        )
+        self.assertEqual(
+            "transfer_in",
+            operations["assault-bravo"].operation_edit.action,
+        )
 
     def test_runtime_context_is_attached_to_intent_and_combo_calls(self) -> None:
         context = {

@@ -43,8 +43,11 @@ from starcraft_commander.policy_modulation import (
     MICROMACHINE_BUILDING_PLACEMENT_ANCHORS,
     MICROMACHINE_BUILDING_PLACEMENT_DIRECTIONS,
     MICROMACHINE_BUILDING_PLACEMENT_INTENTS,
+    MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES,
     MICROMACHINE_COMMAND_LAYERS,
     MICROMACHINE_DOCTRINES,
+    MICROMACHINE_OPERATION_CONFIRMATION_POLICIES,
+    MICROMACHINE_OPERATION_EDIT_ACTIONS,
     MICROMACHINE_ROUTE_INTENTS,
     MICROMACHINE_TACTICAL_ABILITIES,
     MICROMACHINE_TACTICAL_TASK_TYPES,
@@ -643,6 +646,10 @@ _COMPACT_POLICY_EMERGENCY_ACTIONS: Final[tuple[str, ...]] = (
 _COMPACT_POLICY_OPERATION_ACTIONS: Final[tuple[str, ...]] = (
     "create",
     "update",
+    "resize",
+    "reinforce",
+    "retarget",
+    "transfer",
     "cancel",
     "restart",
 )
@@ -731,21 +738,27 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
                     "minLength": 1,
                     "maxLength": 128,
                     "pattern": "^[A-Za-z0-9_.:-]+$",
-                    "description": (
-                        "Stable operation id reused for follow-up updates to the "
-                        "same independently controlled force."
-                    ),
                 }
             ),
             "operation_action": nullable(
                 {
                     "type": "string",
                     "enum": list(_COMPACT_POLICY_OPERATION_ACTIONS),
-                    "description": (
-                        "Explicit lifecycle transition for an operation. Use create "
-                        "for a new force, update for a live operation, cancel for "
-                        "only that operation, and restart for a terminal operation."
-                    ),
+                }
+            ),
+            "source_operation_id": nullable(
+                {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_.:-]+$",
+                }
+            ),
+            "explicit_override": nullable({"type": "boolean"}),
+            "confirmation_policy": nullable(
+                {
+                    "type": "string",
+                    "enum": ["auto", "required"],
                 }
             ),
             "goal": {"type": "string", "minLength": 1},
@@ -847,6 +860,9 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
         "required": [
             "operation_id",
             "operation_action",
+            "source_operation_id",
+            "explicit_override",
+            "confirmation_policy",
             "goal",
             "command_layer",
             "task_type",
@@ -938,7 +954,10 @@ def build_compact_policy_modulation_system_prompt() -> str:
         "6. Use commands[] when one utterance creates independent forces, for "
         "example a scout operation and an assault operation. Give every item a "
         "stable operation_id and reuse it for follow-up changes to that operation. "
-        "Set operation_action=create/update/cancel/restart explicitly. A scoped "
+        "Set operation_action explicitly. transfer uses operation_id=destination, "
+        "source_operation_id=source, unit_requests=moved force, and "
+        "explicit_override=true only for explicit reassignment. reinforce counts "
+        "are additive; resize counts are final; retarget preserves force. A scoped "
         "cancel such as 'recon-alpha 정찰만 취소해' must use operation_action=cancel "
         "with operation_id=recon-alpha; it is not a global emergency. Use command "
         "for backward-compatible single-command output.\n"
@@ -1348,6 +1367,41 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
         },
         "additionalProperties": False,
     }
+    operation_edit_schema = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": sorted(MICROMACHINE_OPERATION_EDIT_ACTIONS),
+            },
+            "counterpart_operation_id": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_.:-]*$",
+            },
+            "unit_selection": {
+                "type": "array",
+                "maxItems": 32,
+                "items": composition_requirement_schema,
+            },
+            "before_composition": {
+                "type": "array",
+                "maxItems": 32,
+                "items": composition_requirement_schema,
+            },
+            "after_composition": {
+                "type": "array",
+                "maxItems": 32,
+                "items": composition_requirement_schema,
+            },
+            "explicit_override": {"type": "boolean"},
+            "confirmation_policy": {
+                "type": "string",
+                "enum": sorted(MICROMACHINE_OPERATION_CONFIRMATION_POLICIES),
+            },
+        },
+        "additionalProperties": False,
+    }
     operation_schema = {
         "type": "object",
         "properties": {
@@ -1361,6 +1415,8 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
                     "reinforcing this operation."
                 ),
             },
+            "generation": {"type": "integer", "minimum": 1},
+            "issued_at_frame": {"type": "integer", "minimum": 0},
             "goal": {"type": "string", "minLength": 1},
             "command_layer": {
                 "type": "string",
@@ -1381,6 +1437,7 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
             },
             "route_intent": route_intent_schema,
             "target_intent": target_intent_schema,
+            "operation_edit": operation_edit_schema,
         },
         "required": ["operation_id", "goal", "tactical_task"],
         "additionalProperties": False,
@@ -3249,6 +3306,8 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
     route = route_value if isinstance(route_value, Mapping) else {}
     target_value = value.get("target_intent")
     target = target_value if isinstance(target_value, Mapping) else {}
+    edit_value = value.get("operation_edit")
+    operation_edit = edit_value if isinstance(edit_value, Mapping) else {}
     count = task.get("count")
     task_count = count if isinstance(count, Mapping) else {}
     units = task.get("units", task.get("unit_classes", ()))
@@ -3258,22 +3317,51 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
         (str, bytes, bytearray),
     ):
         composition = value.get("unit_requests")
-    unit_requests = [
-        {
-            "unit_type": str(item.get("unit_type", "") or "")[:80],
-            "count": _bounded_compact_context_int(item.get("count")),
-            "role": str(item.get("role", "") or "")[:80],
-        }
-        for item in (
-            composition
-            if isinstance(composition, Sequence)
-            and not isinstance(composition, (str, bytes, bytearray))
-            else ()
-        )
+    role_value = value.get("unit_roles")
+    unit_roles = (
+        role_value
+        if isinstance(role_value, Sequence)
+        and not isinstance(role_value, (str, bytes, bytearray))
+        else ()
+    )
+    role_metadata = {
+        (
+            str(item.get("unit_type", "") or "").strip(),
+            str(item.get("role", "") or "").strip(),
+        ): item
+        for item in unit_roles
         if isinstance(item, Mapping)
         and str(item.get("unit_type", "") or "").strip()
-        and _bounded_compact_context_int(item.get("count")) > 0
-    ]
+    }
+    unit_requests: list[dict[str, object]] = []
+    for item in (
+        composition
+        if isinstance(composition, Sequence)
+        and not isinstance(composition, (str, bytes, bytearray))
+        else ()
+    ):
+        if not isinstance(item, Mapping):
+            continue
+        unit_type = str(item.get("unit_type", "") or "").strip()
+        count = _bounded_compact_context_int(item.get("count"))
+        if not unit_type or count <= 0:
+            continue
+        role = str(item.get("role", "") or "").strip()
+        metadata = role_metadata.get((unit_type, role), item)
+        compact_request: dict[str, object] = {
+            "unit_type": unit_type[:80],
+            "count": count,
+            "role": role[:80],
+        }
+        priority = metadata.get("priority")
+        if type(priority) is not bool and isinstance(priority, (int, float)):
+            compact_request["priority"] = _bounded_compact_context_priority(
+                priority
+            )
+        ability_policy = str(metadata.get("ability_policy", "") or "").strip()
+        if ability_policy:
+            compact_request["ability_policy"] = ability_policy[:80]
+        unit_requests.append(compact_request)
     compact_task = {
         "task_type": str(
             task.get("type", task.get("task_type", "")) or ""
@@ -3289,9 +3377,20 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
         "requested_units": _bounded_compact_context_int(
             task_count.get("requested", 0)
         ),
+        "duration_seconds": _bounded_compact_context_duration(
+            task.get("duration_seconds", scope.get("duration_seconds"))
+        ),
+        "allow_partial": (
+            task.get("allow_partial")
+            if type(task.get("allow_partial")) is bool
+            else bool(scope.get("allow_partial_scope", False))
+        ),
     }
     return {
         "operation_id": str(value.get("operation_id", "") or "")[:128],
+        "generation": _bounded_compact_context_int(
+            value.get("generation", value.get("operation_generation", 0))
+        ),
         "update_id": str(value.get("update_id", "") or "")[:160],
         "command_text": str(value.get("command_text", "") or "")[:500],
         "command_layer": str(
@@ -3305,6 +3404,33 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
         "doctrine": str(value.get("doctrine", "") or "")[:80],
         "tactical_task": compact_task,
         "unit_requests": unit_requests[:16],
+        "scope": {
+            "army_group": str(
+                scope.get("army_group", value.get("army_group", "")) or ""
+            )[:80],
+            "location_intent": str(
+                scope.get(
+                    "location_intent",
+                    value.get(
+                        "location_intent",
+                        task.get("location_intent", ""),
+                    ),
+                )
+                or ""
+            )[:80],
+            "duration_seconds": _bounded_compact_context_duration(
+                scope.get(
+                    "duration_seconds",
+                    task.get("duration_seconds"),
+                )
+            ),
+            "allow_partial_scope": bool(
+                scope.get(
+                    "allow_partial_scope",
+                    task.get("allow_partial", False),
+                )
+            ),
+        },
         "army_group": str(
             scope.get("army_group", value.get("army_group", "")) or ""
         )[:80],
@@ -3331,6 +3457,31 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
             )
             or ""
         )[:32],
+        "lifetime": {
+            "mode": str(lifetime.get("mode", "") or "")[:32],
+            "completion_conditions": list(
+                _compact_string_tokens(
+                    lifetime.get("completion_conditions")
+                )
+            )[:8],
+            "completion_state": str(
+                lifetime.get(
+                    "completion_state",
+                    value.get("completion_state", ""),
+                )
+                or ""
+            )[:32],
+            "reason": str(lifetime.get("reason", "") or "")[:240],
+        },
+        "operation_edit": {
+            "action": str(operation_edit.get("action", "") or "")[:32],
+            "counterpart_operation_id": str(
+                operation_edit.get("counterpart_operation_id", "") or ""
+            )[:128],
+            "explicit_override": bool(
+                operation_edit.get("explicit_override", False)
+            ),
+        },
         "consumption_status": str(
             value.get("consumption_status", "") or ""
         )[:80],
@@ -3342,6 +3493,18 @@ def _bounded_compact_context_int(value: object) -> int:
     if type(value) is bool or not isinstance(value, (int, float)):
         return 0
     return max(0, min(200, int(value)))
+
+
+def _bounded_compact_context_duration(value: object) -> int:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return 0
+    return max(0, min(900, int(value)))
+
+
+def _bounded_compact_context_priority(value: object) -> float:
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, min(1.0, float(value)))
 
 
 def _prepare_policy_modulation_tool_input(
@@ -3490,10 +3653,18 @@ def _compact_policy_modulation_semantic_error(
                     f"{command_path} is missing required semantic property "
                     "'operation_action'."
                 )
-            if command_layer != "operation" and operation_action:
+            if (
+                operation_action
+                and command_layer not in {"operation", "emergency"}
+            ):
                 return (
                     f"{command_path}.operation_action is only valid for the "
-                    "operation command layer."
+                    "operation or emergency command layer."
+                )
+            if command_layer == "emergency" and operation_action != "transfer":
+                return (
+                    f"{command_path}.command_layer=emergency supports "
+                    "operation_action=transfer only."
                 )
         return ""
 
@@ -3805,6 +3976,198 @@ def _lower_compact_policy_modulation_tool_input(
         ]
         allow_partial = False
 
+    explicit_field_names = {
+        str(value)
+        for value in (
+            command.get("__explicit_field_names")
+            if isinstance(command.get("__explicit_field_names"), Sequence)
+            and not isinstance(
+                command.get("__explicit_field_names"),
+                (str, bytes, bytearray),
+            )
+            else ()
+        )
+    }
+    previous_operation = (
+        command.get("__previous_operation")
+        if isinstance(command.get("__previous_operation"), Mapping)
+        else None
+    )
+    before_unit_requests = _compact_unit_requests_from_operation(
+        previous_operation
+    )
+    edit_selection = list(unit_requests)
+    operation_edit: dict[str, object] = {}
+    companion_operations: list[dict[str, object]] = []
+    explicit_override = bool(command.get("explicit_override"))
+    confirmation_policy = str(
+        command.get("confirmation_policy", "auto") or "auto"
+    ).strip()
+    if confirmation_policy not in {"auto", "required"}:
+        confirmation_policy = "auto"
+    if command_layer in {"operation", "emergency"} and operation_action:
+        if confirmation_policy == "required":
+            return {
+                "status": "clarification_required",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "clarification_prompt": (
+                    "이 작전 편집은 병력 소유권을 변경합니다. 같은 명령에 "
+                    "명시적으로 '확정'이라고 말해 주세요."
+                ),
+            }
+        if operation_action in {"resize", "reinforce", "transfer"} and (
+            "unit_requests" not in explicit_field_names or not edit_selection
+        ):
+            return {
+                "status": "refused",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "refusal_reason": (
+                    f"operation_action={operation_action} requires an explicit "
+                    "semantic unit_requests selection."
+                ),
+            }
+        if operation_action == "retarget" and not {
+            "location_intent",
+            "route_type",
+            "target_type",
+        }.intersection(explicit_field_names):
+            return {
+                "status": "refused",
+                "assistant_message": tool_input.get("assistant_message", ""),
+                "refusal_reason": (
+                    "operation_action=retarget requires an explicit location, "
+                    "route, or target change."
+                ),
+            }
+        if operation_action == "reinforce":
+            unit_requests, edit_error = _compact_merge_unit_request_counts(
+                before_unit_requests,
+                edit_selection,
+            )
+            if edit_error:
+                return {
+                    "status": "refused",
+                    "assistant_message": tool_input.get("assistant_message", ""),
+                    "refusal_reason": edit_error,
+                }
+        elif operation_action == "retarget":
+            unit_requests = list(before_unit_requests)
+            edit_selection = []
+        elif operation_action == "transfer":
+            source_operation = (
+                command.get("__source_operation")
+                if isinstance(command.get("__source_operation"), Mapping)
+                else None
+            )
+            source_before = _compact_unit_requests_from_operation(source_operation)
+            source_selection, selection_error = (
+                _compact_selection_with_base_metadata(
+                    source_before,
+                    edit_selection,
+                )
+            )
+            if selection_error:
+                return {
+                    "status": "refused",
+                    "assistant_message": tool_input.get("assistant_message", ""),
+                    "refusal_reason": selection_error,
+                }
+            source_after, edit_error = _compact_merge_unit_request_counts(
+                source_before,
+                source_selection,
+                subtract=True,
+            )
+            if edit_error:
+                return {
+                    "status": "refused",
+                    "assistant_message": tool_input.get("assistant_message", ""),
+                    "refusal_reason": edit_error,
+                }
+            if not explicit_override:
+                return {
+                    "status": "refused",
+                    "assistant_message": tool_input.get("assistant_message", ""),
+                    "refusal_reason": (
+                        "operation transfer requires explicit_override=true for "
+                        "the user's explicit semantic reassignment."
+                    ),
+                }
+            source_contract_error = _compact_transfer_source_contract_error(
+                source_operation,
+                before=source_before,
+                after=source_after,
+            )
+            if source_contract_error:
+                return {
+                    "status": "refused",
+                    "assistant_message": tool_input.get("assistant_message", ""),
+                    "refusal_reason": source_contract_error,
+                }
+            unit_requests, edit_error = _compact_merge_unit_request_counts(
+                before_unit_requests,
+                source_selection,
+            )
+            if edit_error or source_operation is None:
+                return {
+                    "status": "refused",
+                    "assistant_message": tool_input.get("assistant_message", ""),
+                    "refusal_reason": edit_error or "transfer source is unavailable.",
+                }
+            source_operation_id = str(
+                command.get("source_operation_id", "") or ""
+            )
+            destination_operation_id = str(
+                command.get("operation_id", "") or ""
+            )
+            source_edit = _compact_operation_edit_payload(
+                action="transfer_out",
+                counterpart_operation_id=destination_operation_id,
+                selection=source_selection,
+                before=source_before,
+                after=source_after,
+                explicit_override=explicit_override,
+                confirmation_policy=confirmation_policy,
+            )
+            companion_operations.append(
+                _compact_known_operation_with_composition(
+                    source_operation,
+                    unit_requests=source_after,
+                    goal=(
+                        f"{source_operation_id} 병력을 "
+                        f"{destination_operation_id}로 이관"
+                    ),
+                    command_layer=command_layer,
+                    operation_edit=source_edit,
+                )
+            )
+        elif operation_action == "resize":
+            unit_requests = list(edit_selection)
+        elif operation_action in {"cancel", "restart"}:
+            unit_requests = list(before_unit_requests or unit_requests)
+
+        edit_action = (
+            "transfer_in"
+            if operation_action == "transfer"
+            else operation_action
+        )
+        operation_edit = _compact_operation_edit_payload(
+            action=edit_action,
+            counterpart_operation_id=(
+                str(command.get("source_operation_id", "") or "")
+                if operation_action == "transfer"
+                else ""
+            ),
+            selection=(
+                source_selection
+                if operation_action == "transfer"
+                else edit_selection
+            ),
+            before=before_unit_requests,
+            after=unit_requests,
+            explicit_override=explicit_override,
+            confirmation_policy=confirmation_policy,
+        )
+
     requested_unit_types = [
         str(item.get("unit_type", "") or "").strip()
         for item in unit_requests
@@ -3914,6 +4277,16 @@ def _lower_compact_policy_modulation_tool_input(
             "manager-consumable MicroMachine DSL."
         ),
     }
+    if (
+        previous_operation is not None
+        and operation_action
+        in {"update", "resize", "reinforce", "retarget", "transfer"}
+    ):
+        previous_lifetime = previous_operation.get("lifetime")
+        if isinstance(previous_lifetime, Mapping):
+            preserved_lifetime = dict(previous_lifetime)
+            preserved_lifetime["completion_state"] = "active"
+            modulation["lifetime"] = preserved_lifetime
 
     doctrine = str(command.get("doctrine", "") or "").strip()
     strategy = modulation["strategy"]
@@ -3930,6 +4303,16 @@ def _lower_compact_policy_modulation_tool_input(
     if task_type:
         tactical_task = modulation["tactical_task"]
         if isinstance(tactical_task, dict):
+            previous_task = (
+                previous_operation.get("tactical_task")
+                if previous_operation is not None
+                and isinstance(
+                    previous_operation.get("tactical_task"),
+                    Mapping,
+                )
+                else {}
+            )
+            previous_duration = previous_task.get("duration_seconds")
             tactical_task.update(
                 {
                     "task_type": task_type,
@@ -3953,10 +4336,24 @@ def _lower_compact_policy_modulation_tool_input(
                     "safety_margin": 0.05,
                 }
             )
+            if (
+                type(previous_duration) is not bool
+                and isinstance(previous_duration, (int, float))
+            ):
+                tactical_task["duration_seconds"] = (
+                    _bounded_compact_context_duration(previous_duration)
+                )
 
-    if command_layer == "operation":
+    if command_layer in {"operation", "emergency"} and operation_action:
         scope = modulation["scope"]
         if isinstance(scope, dict):
+            previous_scope = (
+                previous_operation.get("scope")
+                if previous_operation is not None
+                and isinstance(previous_operation.get("scope"), Mapping)
+                else {}
+            )
+            previous_scope_duration = previous_scope.get("duration_seconds")
             scope.update(
                 {
                     "army_group": army_group,
@@ -3977,6 +4374,15 @@ def _lower_compact_policy_modulation_tool_input(
                     "allow_partial_scope": allow_partial,
                 }
             )
+            if (
+                type(previous_scope_duration) is not bool
+                and isinstance(previous_scope_duration, (int, float))
+            ):
+                scope["duration_seconds"] = (
+                    _bounded_compact_context_duration(
+                        previous_scope_duration
+                    )
+                )
 
     route_type = str(command.get("route_type", "") or "").strip()
     if route_type:
@@ -3998,7 +4404,7 @@ def _lower_compact_policy_modulation_tool_input(
             scouting["require_fresh_enemy_observation"] = fresh_observation
 
     explicit_operation_id = str(command.get("operation_id", "") or "").strip()
-    if command_layer == "operation" and explicit_operation_id:
+    if command_layer in {"operation", "emergency"} and explicit_operation_id:
         if operation_action == "cancel":
             modulation["lifetime"] = {
                 "mode": "until_cancelled",
@@ -4022,15 +4428,35 @@ def _lower_compact_policy_modulation_tool_input(
         tactical_task = modulation.get("tactical_task")
         if isinstance(tactical_task, dict) and task_type:
             tactical_task.setdefault("task_id", explicit_operation_id)
-        modulation["operations"] = [
-            _compact_operation_from_modulation(
+        operation_payload = _compact_operation_from_modulation(
                 modulation,
                 operation_id=explicit_operation_id,
                 goal=goal,
                 command_layer=command_layer,
                 operation_action=operation_action,
+                operation_edit=operation_edit,
             )
+        modulation["operations"] = [
+            *companion_operations,
+            operation_payload,
         ]
+        if len(modulation["operations"]) > 1:
+            modulation.update(
+                {
+                    "tactical_task": {},
+                    "scope": {},
+                    "composition_requirements": [],
+                    "unit_roles": [],
+                    "route_intent": {},
+                    "target_intent": {},
+                }
+            )
+            if operation_action == "transfer":
+                modulation["production_plan"] = {
+                    "targets": [],
+                    "allow_prerequisite_buildings": False,
+                    "priority": 0.0,
+                }
 
     return {
         "status": "compiled",
@@ -4046,20 +4472,30 @@ def _resolve_compact_operation_command(
     known_operations: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, object], str]:
     resolved = dict(command)
+    explicit_field_names = tuple(
+        str(key)
+        for key, value in command.items()
+        if value is not None
+    )
     command_layer = str(resolved.get("command_layer", "") or "").strip()
     operation_action = str(
         resolved.get("operation_action", "") or ""
     ).strip().lower()
-    if command_layer != "operation":
+    if command_layer not in {"operation", "emergency"}:
         if operation_action:
             return resolved, (
-                "operation_action is valid only when command_layer is operation."
+                "operation_action is valid only when command_layer is operation "
+                "or emergency."
             )
         return resolved, ""
+    if command_layer == "emergency" and operation_action != "transfer":
+        return resolved, (
+            "command_layer=emergency supports operation_action=transfer only."
+        )
     if operation_action not in _COMPACT_POLICY_OPERATION_ACTIONS:
         return resolved, (
             "operation commands require operation_action=create, update, "
-            "cancel, or restart."
+            "resize, reinforce, retarget, transfer, cancel, or restart."
         )
 
     known_by_id = {
@@ -4088,6 +4524,10 @@ def _resolve_compact_operation_command(
         )
 
     if operation_action == "create":
+        if str(resolved.get("source_operation_id", "") or "").strip():
+            return resolved, (
+                "source_operation_id is valid only for operation_action=transfer."
+            )
         operation_id = explicit_id or _stable_compact_operation_id(resolved)
         if operation_id in known_by_id:
             return resolved, (
@@ -4095,6 +4535,7 @@ def _resolve_compact_operation_command(
                 "restart instead of create."
             )
         resolved["operation_id"] = operation_id
+        resolved["__explicit_field_names"] = explicit_field_names
         return resolved, ""
 
     operation_id = explicit_id
@@ -4144,7 +4585,14 @@ def _resolve_compact_operation_command(
                 f"operation {operation_id!r} is still active; use update "
                 "instead of restart."
             )
-        if operation_action in {"update", "cancel"} and terminal:
+        if operation_action in {
+            "update",
+            "resize",
+            "reinforce",
+            "retarget",
+            "transfer",
+            "cancel",
+        } and terminal:
             return resolved, (
                 f"operation {operation_id!r} is terminal; use restart instead "
                 f"of {operation_action}."
@@ -4158,9 +4606,43 @@ def _resolve_compact_operation_command(
             **_compact_command_from_known_operation(previous),
             **explicit_fields,
         }
+        resolved["__previous_operation"] = dict(previous)
+    source_operation_id = str(
+        resolved.get("source_operation_id", "") or ""
+    ).strip()
+    if operation_action != "transfer" and source_operation_id:
+        return resolved, (
+            "source_operation_id is valid only for operation_action=transfer."
+        )
+    if operation_action == "transfer":
+        if not source_operation_id:
+            other_named_ids = [
+                candidate_id
+                for candidate_id in mentioned_ids
+                if candidate_id != operation_id
+            ]
+            if len(other_named_ids) == 1:
+                source_operation_id = other_named_ids[0]
+        source_operation = known_by_id.get(source_operation_id)
+        if not source_operation_id or source_operation is None:
+            return resolved, (
+                "operation_action=transfer requires an active "
+                "source_operation_id from commander_context.active_operations."
+            )
+        if source_operation_id == operation_id:
+            return resolved, (
+                "operation transfer source and destination must be different."
+            )
+        if _compact_operation_is_terminal(source_operation):
+            return resolved, (
+                f"transfer source operation {source_operation_id!r} is terminal."
+            )
+        resolved["source_operation_id"] = source_operation_id
+        resolved["__source_operation"] = dict(source_operation)
     resolved["operation_id"] = operation_id
     resolved["operation_action"] = operation_action
-    resolved["command_layer"] = "operation"
+    resolved["command_layer"] = command_layer
+    resolved["__explicit_field_names"] = explicit_field_names
     return resolved, ""
 
 
@@ -4209,6 +4691,9 @@ def _compact_command_from_known_operation(
             for item in unit_requests
             if isinstance(item, Mapping)
         ]
+    allow_partial = task.get("allow_partial")
+    if type(allow_partial) is bool:
+        result["allow_partial"] = allow_partial
     for source_name, target_name in (
         ("army_group", "army_group"),
         ("location_intent", "location_intent"),
@@ -4220,6 +4705,367 @@ def _compact_command_from_known_operation(
         if value:
             result[target_name] = value
     return result
+
+
+def _compact_unit_requests_from_operation(
+    operation: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    if not isinstance(operation, Mapping):
+        return []
+    task = (
+        operation.get("tactical_task")
+        if isinstance(operation.get("tactical_task"), Mapping)
+        else {}
+    )
+    requests = _lower_compact_unit_requests(
+        operation.get(
+            "unit_requests",
+            operation.get("composition_requirements", ()),
+        ),
+        task_type=str(task.get("task_type", "") or ""),
+        ability=str(task.get("ability", "") or ""),
+    )
+    roles = operation.get("unit_roles")
+    if not isinstance(roles, Sequence) or isinstance(
+        roles,
+        (str, bytes, bytearray),
+    ):
+        return requests
+    role_metadata = {
+        (
+            _canonical_compact_task_token(role.get("unit_type", "")),
+            str(role.get("role", "") or "").strip(),
+        ): role
+        for role in roles
+        if isinstance(role, Mapping)
+    }
+    for request in requests:
+        metadata = role_metadata.get(
+            (
+                str(request.get("unit_type", "") or ""),
+                str(request.get("role", "") or ""),
+            )
+        )
+        if metadata is None:
+            continue
+        if "priority" in metadata:
+            request["priority"] = metadata["priority"]
+        if "ability_policy" in metadata:
+            request["ability_policy"] = metadata["ability_policy"]
+    return requests
+
+
+def _compact_merge_unit_request_counts(
+    base: Sequence[Mapping[str, object]],
+    delta: Sequence[Mapping[str, object]],
+    *,
+    subtract: bool = False,
+) -> tuple[list[dict[str, object]], str]:
+    merged: dict[tuple[str, str], dict[str, object]] = {}
+    order: list[tuple[str, str]] = []
+    for item in base:
+        unit_type = _canonical_compact_task_token(
+            item.get("unit_type", "")
+        )
+        count = item.get("count")
+        if not unit_type or type(count) is not int or count <= 0:
+            continue
+        role = str(item.get("role", "") or "").strip()
+        key = (unit_type, role)
+        previous = merged.get(key)
+        replacement = dict(previous or item)
+        replacement["unit_type"] = unit_type
+        replacement["role"] = role
+        replacement["count"] = (
+            int(previous.get("count", 0) or 0) if previous is not None else 0
+        ) + count
+        merged[key] = replacement
+        if key not in order:
+            order.append(key)
+    for item in delta:
+        unit_type = _canonical_compact_task_token(
+            item.get("unit_type", "")
+        )
+        count = item.get("count")
+        if not unit_type or type(count) is not int or count <= 0:
+            continue
+        role = str(item.get("role", "") or "").strip()
+        key = (unit_type, role)
+        if subtract and key not in merged and not role:
+            matching_keys = [
+                candidate
+                for candidate in order
+                if candidate[0] == unit_type and candidate in merged
+            ]
+            if len(matching_keys) == 1:
+                key = matching_keys[0]
+            elif len(matching_keys) > 1:
+                return [], (
+                    f"operation edit selection for {unit_type} is ambiguous; "
+                    "specify the source role."
+                )
+        previous = merged.get(key)
+        previous_count = (
+            int(previous.get("count", 0) or 0)
+            if previous is not None
+            else 0
+        )
+        next_count = previous_count - count if subtract else previous_count + count
+        if next_count < 0:
+            return [], (
+                f"operation edit requests {count} {unit_type}"
+                f"{f' role={key[1]}' if key[1] else ''} but the source "
+                f"contract contains only {previous_count}."
+            )
+        if next_count == 0:
+            merged.pop(key, None)
+            continue
+        replacement = dict(previous or item)
+        if not subtract:
+            replacement.update(
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "count" and value not in {"", None}
+                }
+            )
+        replacement["unit_type"] = unit_type
+        replacement["role"] = key[1]
+        replacement["count"] = next_count
+        merged[key] = replacement
+        if key not in order:
+            order.append(key)
+    return [merged[key] for key in order if key in merged], ""
+
+
+def _compact_selection_with_base_metadata(
+    base: Sequence[Mapping[str, object]],
+    selection: Sequence[Mapping[str, object]],
+) -> tuple[list[dict[str, object]], str]:
+    base_by_type: dict[str, list[Mapping[str, object]]] = {}
+    for item in base:
+        unit_type = _canonical_compact_task_token(item.get("unit_type", ""))
+        if unit_type:
+            base_by_type.setdefault(unit_type, []).append(item)
+    result: list[dict[str, object]] = []
+    for item in selection:
+        unit_type = _canonical_compact_task_token(item.get("unit_type", ""))
+        candidates = base_by_type.get(unit_type, [])
+        candidate_roles = {
+            str(candidate.get("role", "") or "").strip()
+            for candidate in candidates
+        }
+        requested_role = str(item.get("role", "") or "").strip()
+        source: Mapping[str, object] | None = None
+        if len(candidate_roles) == 1 and candidates:
+            source = candidates[0]
+        elif requested_role:
+            matching = [
+                candidate
+                for candidate in candidates
+                if str(candidate.get("role", "") or "").strip()
+                == requested_role
+            ]
+            if len(matching) == 1:
+                source = matching[0]
+        if source is None and len(candidate_roles) > 1:
+            return [], (
+                f"operation transfer selection for {unit_type} is ambiguous; "
+                "specify the source role."
+            )
+        merged = dict(source or item)
+        merged["unit_type"] = unit_type
+        merged["count"] = item.get("count")
+        result.append(merged)
+    return result, ""
+
+
+def _compact_transfer_source_contract_error(
+    operation: Mapping[str, object],
+    *,
+    before: Sequence[Mapping[str, object]],
+    after: Sequence[Mapping[str, object]],
+) -> str:
+    task = (
+        operation.get("tactical_task")
+        if isinstance(operation.get("tactical_task"), Mapping)
+        else {}
+    )
+    scope = (
+        operation.get("scope")
+        if isinstance(operation.get("scope"), Mapping)
+        else {}
+    )
+    minimum = _bounded_compact_context_int(task.get("min_units"))
+    after_count = sum(int(item.get("count", 0) or 0) for item in after)
+    if after_count < minimum:
+        return (
+            "operation transfer would reduce the source below its protected "
+            f"minimum of {minimum} units."
+        )
+    allow_partial = task.get("allow_partial")
+    if type(allow_partial) is not bool:
+        allow_partial = scope.get("allow_partial_scope")
+    if type(allow_partial) is not bool:
+        allow_partial = False
+    if not allow_partial and _compact_composition_contract(before) != (
+        _compact_composition_contract(after)
+    ):
+        return (
+            "operation transfer would change the source operation's protected "
+            "exact composition; resize or relax that source operation first."
+        )
+    return ""
+
+
+def _compact_composition_contract(
+    unit_requests: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "unit_type": str(item.get("unit_type", "") or ""),
+            "count": int(item.get("count", 0) or 0),
+            "role": str(item.get("role", "") or ""),
+        }
+        for item in unit_requests
+        if str(item.get("unit_type", "") or "").strip()
+        and type(item.get("count")) is int
+        and int(item.get("count", 0) or 0) > 0
+    ]
+
+
+def _compact_operation_edit_payload(
+    *,
+    action: str,
+    counterpart_operation_id: str = "",
+    selection: Sequence[Mapping[str, object]] = (),
+    before: Sequence[Mapping[str, object]] = (),
+    after: Sequence[Mapping[str, object]] = (),
+    explicit_override: bool = False,
+    confirmation_policy: str = "auto",
+) -> dict[str, object]:
+    return {
+        "action": action,
+        "counterpart_operation_id": counterpart_operation_id,
+        "unit_selection": _compact_composition_contract(selection),
+        "before_composition": _compact_composition_contract(before),
+        "after_composition": _compact_composition_contract(after),
+        "explicit_override": explicit_override,
+        "confirmation_policy": confirmation_policy,
+    }
+
+
+def _compact_known_operation_with_composition(
+    operation: Mapping[str, object],
+    *,
+    unit_requests: Sequence[Mapping[str, object]],
+    goal: str,
+    command_layer: str,
+    operation_edit: Mapping[str, object],
+) -> dict[str, object]:
+    previous_task = (
+        operation.get("tactical_task")
+        if isinstance(operation.get("tactical_task"), Mapping)
+        else {}
+    )
+    task_type = str(previous_task.get("task_type", "") or "")
+    exact_count = sum(int(item.get("count", 0) or 0) for item in unit_requests)
+    previous_minimum = _bounded_compact_context_int(
+        previous_task.get("min_units")
+    )
+    allow_partial = previous_task.get("allow_partial")
+    if type(allow_partial) is not bool:
+        previous_scope = (
+            operation.get("scope")
+            if isinstance(operation.get("scope"), Mapping)
+            else {}
+        )
+        allow_partial = previous_scope.get("allow_partial_scope")
+    if type(allow_partial) is not bool:
+        allow_partial = False
+    preserved_minimum = min(previous_minimum, exact_count)
+    task = {
+        "task_type": task_type,
+        "task_id": str(operation.get("operation_id", "") or ""),
+        "ability": str(previous_task.get("ability", "") or ""),
+        "unit_classes": [
+            str(item.get("unit_type", "") or "") for item in unit_requests
+        ],
+        "location_intent": str(operation.get("location_intent", "") or ""),
+        "min_units": preserved_minimum,
+        "max_units": exact_count,
+        "allow_partial": allow_partial,
+        "duration_seconds": _bounded_compact_context_duration(
+            previous_task.get("duration_seconds")
+        ),
+    }
+    previous_scope = (
+        operation.get("scope")
+        if isinstance(operation.get("scope"), Mapping)
+        else {}
+    )
+    scope = {
+        "army_group": str(operation.get("army_group", "") or ""),
+        "unit_classes": list(task["unit_classes"]),
+        "location_intent": str(operation.get("location_intent", "") or ""),
+        "min_units": preserved_minimum,
+        "max_units": exact_count,
+        "allow_partial_scope": allow_partial,
+        "duration_seconds": _bounded_compact_context_duration(
+            previous_scope.get("duration_seconds")
+        ),
+    }
+    previous_lifetime = (
+        operation.get("lifetime")
+        if isinstance(operation.get("lifetime"), Mapping)
+        else {}
+    )
+    lifetime: dict[str, object] = dict(previous_lifetime)
+    lifetime.setdefault("mode", "until_completed")
+    lifetime["completion_state"] = "active"
+    route_type = str(operation.get("route", "") or "")
+    target_type = str(operation.get("target", "") or "")
+    return {
+        "operation_id": str(operation.get("operation_id", "") or ""),
+        "goal": goal,
+        "command_layer": command_layer,
+        "tactical_task": task,
+        "scope": scope,
+        "lifetime": lifetime,
+        "composition_requirements": _compact_composition_contract(unit_requests),
+        "unit_roles": [
+            {
+                "unit_type": str(item.get("unit_type", "") or ""),
+                "role": str(item.get("role", "") or ""),
+                "priority": (
+                    max(0.0, min(1.0, float(item.get("priority"))))
+                    if type(item.get("priority")) is not bool
+                    and isinstance(item.get("priority"), (int, float))
+                    else 0.65
+                ),
+                "ability_policy": str(
+                    item.get("ability_policy", "if_available")
+                    or "if_available"
+                ),
+            }
+            for item in unit_requests
+        ],
+        "route_intent": (
+            {
+                "route_type": route_type,
+                "avoid_enemy_strength": route_type
+                in {"flank_left", "flank_right", "safe_path", "avoid_enemy_army"},
+            }
+            if route_type
+            else {}
+        ),
+        "target_intent": (
+            {"target_type": target_type, "priority": 0.65}
+            if target_type
+            else {}
+        ),
+        "operation_edit": dict(operation_edit),
+    }
 
 
 def _lower_compact_policy_commands(
@@ -4299,19 +5145,26 @@ def _lower_compact_policy_commands(
                     f"compact policy commands[{index}] did not lower to an operation."
                 ),
             }
-        operation = lowered_operations[0]
-        if not isinstance(operation, Mapping):
-            return {
-                "status": "refused",
-                "assistant_message": tool_input.get("assistant_message", ""),
-                "refusal_reason": (
-                    f"compact policy commands[{index}] produced an invalid operation."
-                ),
-            }
-        operations.append(dict(operation))
-        command_layers.append(
-            str(operation.get("command_layer", "") or "").strip()
-        )
+        for operation in lowered_operations:
+            if not isinstance(operation, Mapping):
+                return {
+                    "status": "refused",
+                    "assistant_message": tool_input.get("assistant_message", ""),
+                    "refusal_reason": (
+                        f"compact policy commands[{index}] produced an invalid operation."
+                    ),
+                }
+            operation_id = str(operation.get("operation_id", "") or "").strip()
+            operations = [
+                existing
+                for existing in operations
+                if str(existing.get("operation_id", "") or "").strip()
+                != operation_id
+            ]
+            operations.append(dict(operation))
+            command_layers.append(
+                str(operation.get("command_layer", "") or "").strip()
+            )
         raw_ttl = modulation.get("ttl_seconds", 120)
         if type(raw_ttl) is int:
             ttl_seconds.append(raw_ttl)
@@ -4397,6 +5250,7 @@ def _compact_operation_from_modulation(
     goal: str,
     command_layer: str,
     operation_action: str,
+    operation_edit: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     lifetime = dict(
         modulation.get("lifetime")
@@ -4458,6 +5312,7 @@ def _compact_operation_from_modulation(
             if isinstance(modulation.get("target_intent"), Mapping)
             else {}
         ),
+        "operation_edit": dict(operation_edit or {}),
     }
 
 
@@ -4473,7 +5328,9 @@ def _lower_compact_unit_requests(
     for item in value:
         if not isinstance(item, Mapping):
             continue
-        unit_type = str(item.get("unit_type", "") or "").strip()
+        unit_type = _canonical_compact_task_token(
+            item.get("unit_type", "")
+        )
         count = item.get("count", 0)
         if (
             not unit_type
@@ -4505,16 +5362,31 @@ def _lower_compact_unit_requests(
                 ability_policy = "high_value_target"
             else:
                 ability_policy = "never"
+        priority = item.get("priority")
+        normalized_priority = (
+            max(0.0, min(1.0, float(priority)))
+            if type(priority) is not bool
+            and isinstance(priority, (int, float))
+            else (0.9 if task_type == "execute_ability" else 0.8)
+        )
         result.append(
             {
                 "unit_type": unit_type,
                 "count": normalized_count,
                 "role": role,
-                "priority": 0.9 if task_type == "execute_ability" else 0.8,
+                "priority": normalized_priority,
                 "ability_policy": ability_policy,
             }
         )
     return result[:16]
+
+
+def _canonical_compact_task_token(value: object) -> str:
+    token = str(value or "").strip()
+    normalized = "".join(
+        character for character in token.lower() if character.isalnum()
+    )
+    return MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES.get(normalized, token)
 
 
 def _default_compact_unit_role(*, task_type: str, unit_type: str) -> str:

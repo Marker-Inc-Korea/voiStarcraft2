@@ -231,6 +231,16 @@ PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH_FILE = (
     / "patches"
     / "0059-production-fifo-and-zero-owner-cleanup.patch"
 )
+OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0060-operation-edit-ownership-handoff.patch"
+)
+OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0061-operation-edit-review-closure.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -395,6 +405,557 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             patch,
         )
 
+    def test_operation_edit_patch_preserves_atomic_ownership_handoff(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE
+        )
+
+        required_terms = (
+            'prefix + ".operation_edit"',
+            'editPrefix + ".action"',
+            'requested.editCounterpartOperationId =',
+            '+ ".counterpart_operation_id"',
+            'editPrefix + ".unit_selection"',
+            'editPrefix + ".before_composition"',
+            'editPrefix + ".after_composition"',
+            '"operation_edit_confirmation_required"',
+            '"invalid_operation_edit_confirmation_policy"',
+            '"operation_edit_requires_generation_increment"',
+            '"operation_generation_handoff|"',
+            '"transfer_counterpart_contract_mismatch"',
+            '"transfer_capacity_or_source_minimum"',
+            '"source_minimum_preservation"',
+            '"source_exact_composition_protected"',
+            '"source_composition_preservation"',
+            '"destination_priority_not_higher"',
+            '"transfer_preflight_plan_missing"',
+            '"explicit_ability_owner_protected"',
+            "m_voiExplicitAbilityStagingActorTag",
+            "m_lastVoiExplicitAbilityActorTag",
+            "voiTacticalNukeTaskRequested(m_bot)",
+            "sourceSquad.removeUnit(unit);",
+            "unitActions.erase(action);",
+            "m_voiOperationUnitOwners[unit.getTag()] =",
+            "destination.operationId,",
+            "destination.generation);",
+            '"operation_edit_transfer_out|counterpart="',
+            '"operation_edit_transfer_in|counterpart="',
+            "stale_operation_generation_preserved",
+            "higher_operation_generation_pending_handoff",
+            "transferBlockerBeforeHandoff",
+            "transferBlockers.find(",
+            "transferSelections",
+            "voiOperationUnitMatchesRequirement(",
+            "destination.priority\n+\t\t\t\t\t< sourceExisting->priority",
+            "editRequestedGeneration",
+            "editRejectedUpdateId",
+            "editRejectedFrame",
+            "editSupersessionMode",
+            "isCurrentVoiOperationAction(",
+            '\\"edit_before_composition\\":',
+            '\\"edit_after_composition\\":',
+            '\\"transferred_in_count\\":',
+            '\\"transferred_out_count\\":',
+            '\\"edit_resolution\\":\\"',
+            '\\"edit_blocker\\":\\"',
+            '\\"edit_requested_generation\\":',
+            '\\"edit_rejected_update_id\\":\\"',
+            '\\"edit_rejected_frame\\":',
+            '\\"edit_supersession_mode\\":\\"',
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        handoff_start = patch.index("auto handoffGeneration =")
+        handoff_end = patch.index(
+            "std::set<std::string> consumedRequestedIds;",
+            handoff_start,
+        )
+        self.assertNotIn(
+            "SmartStop",
+            patch[handoff_start:handoff_end],
+        )
+        self.assertNotIn("sourceCompositionPreserved", patch)
+        self.assertLess(
+            patch.index('"source_composition_preservation"'),
+            handoff_start,
+        )
+        self.assertLess(
+            patch.index('"destination_priority_not_higher"'),
+            handoff_start,
+        )
+        self.assertLess(
+            patch.index('"explicit_ability_owner_protected"'),
+            handoff_start,
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.cpp "
+                "b/src/CombatCommander.cpp"
+            ),
+        )
+        self.assertEqual(
+            1,
+            patch.count(
+                "diff --git a/src/CombatCommander.h "
+                "b/src/CombatCommander.h"
+            ),
+        )
+
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_operation_edit_review_closure_enforces_roles_and_atomic_rejection(
+        self,
+    ) -> None:
+        patch = _read_patch_text(OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE)
+        combined_patch = (
+            _read_patch_text(OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE)
+            + patch
+        )
+
+        required_terms = (
+            "assignedRoleByTag",
+            "operation.assignedRoleByTag[unit.getTag()] =",
+            "requirement.role",
+            "operationRole.role == role",
+            "sourceExisting",
+            "destination.blockedReason",
+            "sourceRequested->blockedReason",
+            'destination.editResolution == "blocked"',
+            'source->editResolution == "blocked"',
+            "replacement.assignedRoleByTag =",
+            "requiredRole",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        for term in (
+            "transferBlockers",
+            "requested.editCounterpartOperationId",
+            "transferBlockers[requested.operationId]",
+        ):
+            with self.subTest(combined_term=term):
+                self.assertIn(term, combined_patch)
+        self.assertIn("+\t\t\t\t\t\t*ownerOperation,", patch)
+        self.assertIn("+\t\t\t\t\t\trequirement.unitType,", patch)
+        self.assertIn("+\t\t\t\t\t\trequirement.role)", patch)
+        self.assertIn("+\t\t\t\t\t\t\t*sourceExisting,", patch)
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_operation_transfer_atomic_admission_has_executable_cpp_contract(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            KIT_DIR
+            / "patches"
+            / "0062-operation-transfer-atomic-admission.patch"
+        )
+
+        required_terms = (
+            "voiDecideOperationTransferAdmission",
+            '"transfer_pair_requires_generation_increment"',
+            '"transfer_pair_not_active"',
+            "voiPreserveAssignedRolesForUnits",
+            "voiSelectRoleAbilityPolicy",
+            "evaluatedTransferOperations",
+            "transferBlockers.find(",
+            '"VOI rejected new transfer operation id="',
+            "include(CTest)",
+            "add_test(",
+            "voi_operation_transfer_admission_test",
+            "if (MSVC)",
+            "partialGeneration",
+            "newCounterpartDecision",
+            "atomicPair",
+            '"scout"',
+            '"frontline"',
+            '"avoid_combat"',
+            '"stim_focus_fire"',
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        blocker_index = patch.index(
+            "const auto transferBlocker ="
+        )
+        generation_index = patch.index(
+            "if (requested->generation < existing.generation)",
+            blocker_index,
+        )
+        self.assertLess(blocker_index, generation_index)
+        append_index = patch.index(
+            "m_voiOperations.push_back(requested);"
+        )
+        self.assertLess(
+            patch.index(
+                '"VOI rejected new transfer operation id="'
+            ),
+            append_index,
+        )
+
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(
+                    KIT_DIR
+                    / "patches"
+                    / "0062-operation-transfer-atomic-admission.patch"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_operation_transfer_runtime_preservation_closes_review_findings(
+        self,
+    ) -> None:
+        patch_path = (
+            KIT_DIR
+            / "patches"
+            / "0063-operation-transfer-runtime-preservation.patch"
+        )
+        patch = _read_patch_text(patch_path)
+
+        required_terms = (
+            "voiPreserveOperationForRejectedTransfer",
+            "annotatePreservedTransferEndpoint",
+            "voiShouldReconcileExistingOperation",
+            "voiExistingTransferEndpointActive",
+            '"transfer_endpoint_terminal"',
+            "voiTransferOwnershipAtomically",
+            '"transfer_ownership_changed_after_preflight"',
+            "ownersBeforeRejectedTransfer",
+            "selectedUnits.size()",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        missing_request_branch = patch.index("if (requested == nullptr)")
+        self.assertLess(
+            patch.index(
+                "voiPreserveOperationForRejectedTransfer",
+                missing_request_branch,
+            ),
+            patch.index("releaseVoiOperation(", missing_request_branch),
+        )
+        parse_result = subprocess.run(
+            ["git", "apply", "--numstat", str(patch_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_operation_transfer_transactional_closure_uses_runtime_snapshot(
+        self,
+    ) -> None:
+        patch_path = (
+            KIT_DIR
+            / "patches"
+            / "0064-operation-transfer-transactional-closure.patch"
+        )
+        patch = _read_patch_text(patch_path)
+
+        required_terms = (
+            "voiPlanOperationTransferTransaction",
+            "operationAssignments",
+            "squadAssignments",
+            "actionAssignments",
+            '"transfer_owner_mismatch"',
+            '"transfer_operation_squad_mismatch"',
+            '"transfer_action_owner_mismatch"',
+            "prepareGenerationReplacement",
+            "transactionPlan.replacementOwners",
+            "requested.completed",
+            "requestedTerminalDecision",
+            "fullForcePlan.sourceTags.empty()",
+            "|terminal=transferred_all_units",
+            "voiOperationTransferCompositionDeltaMatches",
+            "voiOperationTransferRolePoliciesMatch",
+            '"source_transfer_delta_mismatch"',
+            '"destination_transfer_delta_mismatch"',
+            '"transfer_role_policy_mismatch"',
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        deferred_handoff = patch.index(
+            "Transfer generations commit together"
+        )
+        transaction_plan = patch.index(
+            "voiPlanOperationTransferTransaction(",
+            deferred_handoff,
+        )
+        first_squad_mutation = patch.index(
+            "removeUnit(unit);",
+            transaction_plan,
+        )
+        self.assertNotIn(
+            '+\t\t\texisting.status = "WAITING_FOR_UNITS";',
+            patch[:deferred_handoff],
+        )
+        self.assertNotIn("source->editAfterComposition.empty()", patch)
+        terminalization = patch.index(
+            "if (transactionPlan.sourceTags.empty())",
+            transaction_plan,
+        )
+        self.assertLess(
+            terminalization,
+            patch.index(
+                "|terminal=transferred_all_units",
+                terminalization,
+            ),
+        )
+        self.assertLess(transaction_plan, first_squad_mutation)
+
+        parse_result = subprocess.run(
+            ["git", "apply", "--numstat", str(patch_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_operation_transfer_final_review_closure_is_runtime_visible(
+        self,
+    ) -> None:
+        patch_path = (
+            KIT_DIR
+            / "patches"
+            / "0065-operation-transfer-final-review-closure.patch"
+        )
+        patch = _read_patch_text(patch_path)
+
+        required_terms = (
+            "voiOperationReferencedByPendingTransfer",
+            '"pending_transfer_counterpart_admission"',
+            "source == sourceRoles.end()",
+            "replacementSourceRoles",
+            "replacementDestinationRoles",
+            "actionCleanupTags",
+            '"transfer_selected_role_missing"',
+            "voiOperationTransferHudSuffix",
+            '" edit=BLOCKED edit_gen="',
+            '" edit_reason="',
+            "oneSidedTransferRequest",
+            "transactionPlan.replacementDestinationRoles.at(11)",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        lifecycle = patch.index(
+            "pending_transfer_counterpart_admission"
+        )
+        self.assertLess(
+            patch.rfind(
+                "voiOperationReferencedByPendingTransfer",
+                0,
+                lifecycle,
+            ),
+            lifecycle,
+        )
+        transaction = patch.index(
+            "voiPlanOperationTransferTransaction("
+        )
+        self.assertLess(
+            transaction,
+            patch.index(
+                "transactionPlan.replacementSourceRoles",
+                transaction,
+            ),
+        )
+        self.assertLess(
+            patch.index("voiOperationTransferHudSuffix"),
+            patch.index("oneSidedTransferRequest"),
+        )
+
+        parse_result = subprocess.run(
+            ["git", "apply", "--numstat", str(patch_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_operation_transfer_idempotence_is_runtime_visible(self) -> None:
+        patch_path = (
+            KIT_DIR
+            / "patches"
+            / "0066-operation-transfer-idempotence-and-active-evidence.patch"
+        )
+        patch = _read_patch_text(patch_path)
+
+        required_terms = (
+            "voiOperationTransferAlreadyApplied",
+            "voiApplyOperationTransferMutationOnce",
+            "voiApplyRejectedOperationEditMetadata",
+            "existingCounterpartOperationId",
+            "existingEditResolution",
+            "alreadyAppliedTransferOperations",
+            "sourceMutationEndpoint",
+            "destinationMutationEndpoint",
+            "transferMutationApplied",
+            'existingEditResolution = "applied"',
+            "alreadyAppliedDestination.requestedGeneration = 9",
+            "ReplayRuntimeState",
+            "mutationInvocationCount",
+            "replayState.owners",
+            "replayState.sourceSquad",
+            "replayState.destinationSquad",
+            "replayState.actions",
+            "transferredOutCount",
+            "transferredInCount",
+            "secondReplayMutation",
+            "RejectedEditRuntimeState",
+            '"AttackUnitOrder"',
+            "rejectedEditState.lastActionFrame == 140",
+        )
+        for term in required_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        self.assertLess(
+            patch.index("voiOperationTransferAlreadyApplied("),
+            patch.index("voiDecideOperationTransferAdmission("),
+        )
+        first_runtime_annotation = patch.index(
+            "+\t\t\tvoiApplyRejectedOperationEditMetadata("
+        )
+        preserved_endpoint_marker = patch.index(
+            "auto annotatePreservedTransferEndpoint"
+        )
+        second_runtime_annotation = patch.index(
+            "+\t\t\tvoiApplyRejectedOperationEditMetadata(",
+            first_runtime_annotation + 1,
+        )
+        self.assertLess(
+            first_runtime_annotation,
+            preserved_endpoint_marker,
+        )
+        self.assertGreater(
+            second_runtime_annotation,
+            preserved_endpoint_marker,
+        )
+        self.assertLess(
+            first_runtime_annotation,
+            patch.index(
+                "existing.policyUpdateId = policyUpdateId",
+                first_runtime_annotation,
+            ),
+        )
+        self.assertLess(
+            second_runtime_annotation,
+            patch.index(
+                "existing.policyUpdateId = policyUpdateId",
+                second_runtime_annotation,
+            ),
+        )
+        rejected_state_test = patch.index("RejectedEditRuntimeState")
+        rejected_action_overwrite = patch.index(
+            "rejectedEditState.lastAction =",
+            rejected_state_test,
+        )
+        self.assertIn(
+            '"operation_edit_blocked"',
+            patch[rejected_action_overwrite:],
+        )
+        self.assertLess(
+            rejected_action_overwrite,
+            patch.index(
+                'rejectedEditState.lastAction == "AttackUnitOrder"',
+                rejected_state_test,
+            ),
+        )
+        self.assertLess(
+            patch.index("alreadyAppliedTransferOperations.find("),
+            patch.index("transferBlockers.find("),
+        )
+        runtime_mutation = patch.index(
+            "const bool transferMutationApplied"
+        )
+        self.assertLess(
+            runtime_mutation,
+            patch.index(
+                "VoiOperationState sourceReplacement",
+                runtime_mutation,
+            ),
+        )
+        self.assertLess(
+            patch.index(
+                "VoiOperationState sourceReplacement",
+                runtime_mutation,
+            ),
+            patch.index(
+                "if (!transferMutationApplied)",
+                runtime_mutation,
+            ),
+        )
+        replay_test = patch.index("ReplayRuntimeState")
+        second_replay = patch.index(
+            "const bool secondReplayMutation",
+            replay_test,
+        )
+        self.assertLess(
+            patch.index(
+                "const bool firstReplayMutation",
+                replay_test,
+            ),
+            second_replay,
+        )
+        for invariant in (
+            "replayState.owners == replayOwnersAfterFirstMutation",
+            "replayState.sourceSquad == replaySourceSquadAfterFirstMutation",
+            "replayState.destinationSquad",
+            "replayState.actions == replayActionsAfterFirstMutation",
+            "replayState.transferredOutCount == 1",
+            "replayState.transferredInCount == 1",
+            "replayState.mutationInvocationCount == 1",
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, patch[second_replay:])
+        parse_result = subprocess.run(
+            ["git", "apply", "--numstat", str(patch_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
     def test_patch_bundle_is_contiguous_present_and_matches_build_apply_order(
         self,
     ) -> None:
@@ -404,9 +965,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 60)),
+            list(range(1, 67)),
         )
-        self.assertEqual(len(set(manifest_paths)), 59)
+        self.assertEqual(len(set(manifest_paths)), 66)
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
         )
@@ -4268,7 +4829,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "through `0059`",
+            "through `0066`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -4762,6 +5323,100 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertIn(
             'ROOT_DIR="${ROOT_DIR:-/private/tmp/voi-micromachine-runtime}"',
+            build_script,
+        )
+        self.assertIn(
+            'OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0060-operation-edit-ownership-handoff.patch"',
+            build_script,
+        )
+        self.assertIn(
+            'OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0061-operation-edit-review-closure.patch"',
+            build_script,
+        )
+        self.assertIn(
+            'OPERATION_TRANSFER_ATOMIC_ADMISSION_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0062-operation-transfer-atomic-admission.patch"',
+            build_script,
+        )
+        self.assertIn(
+            'OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0063-operation-transfer-runtime-preservation.patch"',
+            build_script,
+        )
+        self.assertIn(
+            'OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0064-operation-transfer-transactional-closure.patch"',
+            build_script,
+        )
+        self.assertIn(
+            'OPERATION_TRANSFER_FINAL_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0065-operation-transfer-final-review-closure.patch"',
+            build_script,
+        )
+        self.assertIn(
+            'OPERATION_TRANSFER_IDEMPOTENCE_ACTIVE_EVIDENCE_PATCH_FILE="${REPO_ROOT}/'
+            'integrations/micromachine/patches/'
+            '0066-operation-transfer-idempotence-and-active-evidence.patch"',
+            build_script,
+        )
+        self.assertIn(
+            'apply --recount --check --ignore-space-change '
+            '--whitespace=nowarn '
+            '"${OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH_FILE}"',
+            build_script,
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-edit-ownership-handoff-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-edit-review-closure-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-transfer-atomic-admission-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-transfer-runtime-preservation-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-transfer-transactional-closure-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-transfer-final-review-closure-patch"
+            ),
+        )
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-operation-transfer-idempotence-active-evidence-patch"
+            ),
+        )
+        self.assertIn(
+            'ctest --test-dir "${MICROMACHINE_BUILD_DIR}" --output-on-failure',
             build_script,
         )
         for script_name, script in (

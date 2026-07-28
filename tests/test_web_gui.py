@@ -2316,6 +2316,21 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                                     "task_type": "pressure_with_main_army",
                                     "unit_classes": ["TERRAN_MARINE"],
                                 },
+                                "operation_edit": {
+                                    "action": "reinforce",
+                                    "before_composition": [
+                                        {
+                                            "unit_type": "TERRAN_MARINE",
+                                            "count": 2,
+                                        }
+                                    ],
+                                    "after_composition": [
+                                        {
+                                            "unit_type": "TERRAN_MARINE",
+                                            "count": 4,
+                                        }
+                                    ],
+                                },
                             },
                         ],
                     },
@@ -2354,6 +2369,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "operation_id": "assault-bravo",
                             "update_id": update_id,
                             "received_frame": 206,
+                            "edit_action": "reinforce",
+                            "edit_before_count": 2,
+                            "edit_after_count": 4,
+                            "transferred_in_count": 2,
+                            "edit_resolution": "blocked",
+                            "edit_blocker": "explicit_ability_owner_protected",
                             "assignment": {
                                 "status": "assigned",
                                 "assigned_unit_count": 4,
@@ -2436,6 +2457,23 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         self.assertEqual("assault-bravo", assault_execution["operation_id"])
         self.assertEqual("queued_or_assigned", assault_execution["state"])
+        self.assertEqual(
+            {
+                "action": "reinforce",
+                "before_composition": [
+                    {"unit_type": "TERRAN_MARINE", "count": 2}
+                ],
+                "after_composition": [
+                    {"unit_type": "TERRAN_MARINE", "count": 4}
+                ],
+                "before_count": 2,
+                "after_count": 4,
+                "transferred_in_count": 2,
+                "resolution": "blocked",
+                "blocker": "explicit_ability_owner_protected",
+            },
+            operations["assault-bravo"]["operation_edit"],
+        )
         self.assertNotIn(
             "action_issued",
             [stage["name"] for stage in assault_execution["stages"]],
@@ -2448,6 +2486,106 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "must-not-be-copied",
             json.dumps(payload["operations"], ensure_ascii=False),
         )
+
+    def test_rejected_higher_generation_edit_uses_active_generation_telemetry(self):
+        update_id = "rejected-operation-edit"
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "manager_bias_domains": ["combat", "squad"],
+                    "vector": {
+                        "goal": "transfer one scout",
+                        "operations": [
+                            {
+                                "operation_id": "recon-alpha",
+                                "generation": 2,
+                                "goal": "release one scout",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "duration_seconds": 120,
+                                },
+                                "operation_edit": {
+                                    "action": "transfer_out",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 240},
+        }
+        telemetry_document = {
+            "frame": 240,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "status": "MOVING",
+                            "received_frame": 100,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "last_action_frame": 140,
+                            "movement_frame": 150,
+                            "engagement_frame": 160,
+                            "assigned_unit_tags": [11],
+                            "assigned_count": 1,
+                            "max_home_distance": 20.0,
+                            "engaged": True,
+                            "last_action": "AttackUnitOrder",
+                            "edit_action": "transfer_out",
+                            "edit_requested_generation": 2,
+                            "edit_rejected_update_id": update_id,
+                            "edit_rejected_frame": 225,
+                            "edit_resolution": "blocked",
+                            "edit_blocker": "destination_priority_not_higher",
+                        }
+                    ],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=240,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            blackboard_dir="/tmp/rejected-operation-edit",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "정찰대 마린 한 기를 공격대로 이관해",
+            },
+        )
+
+        operation = payload["operations"][0]
+        self.assertTrue(operation["telemetry_current"])
+        self.assertEqual(
+            "destination_priority_not_higher",
+            operation["operation_edit"]["blocker"],
+        )
+        self.assertEqual(1, operation["operation_generation"])
+        self.assertEqual(2, operation["requested_operation_generation"])
+        execution = operation["intervention"]["command_execution"]
+        self.assertEqual(1, execution["operation_generation"])
+        self.assertEqual("effect_observed", execution["state"])
+        self.assertFalse(execution["failed"])
+        self.assertEqual("", execution["blocker_reason"])
+        successful_stages = {
+            stage["name"] for stage in execution["stages"] if stage["ok"]
+        }
+        self.assertIn("queued_or_assigned", successful_stages)
+        self.assertIn("order_issued", successful_stages)
+        self.assertIn("action_issued", successful_stages)
+        self.assertIn("effect_observed", successful_stages)
 
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
         execution = web_gui._micromachine_operation_command_execution(
@@ -4450,6 +4588,59 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ],
         )
 
+    def test_micromachine_recent_command_retains_operation_edit_context(self):
+        operation = {
+            "operation_id": "assault-bravo",
+            "generation": 3,
+            "goal": "attack with six marines",
+            "tactical_task": {
+                "task_type": "pressure_with_main_army",
+                "unit_classes": ["TERRAN_MARINE"],
+                "min_units": 6,
+                "max_units": 6,
+            },
+            "composition_requirements": [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": 6,
+                    "role": "frontline",
+                }
+            ],
+            "operation_edit": {
+                "action": "reinforce",
+                "before_composition": [
+                    {"unit_type": "TERRAN_MARINE", "count": 4}
+                ],
+                "after_composition": [
+                    {"unit_type": "TERRAN_MARINE", "count": 6}
+                ],
+            },
+        }
+        entry = web_gui._micromachine_recent_command_entry(
+            "assault-bravo에 마린 두 기 증원",
+            {
+                "status": "published",
+                "compile_result": {
+                    "status": "compiled",
+                    "update_id": "operation-edit-context",
+                    "vector": {
+                        "goal": "reinforce assault",
+                        "command_layer": "operation",
+                        "operations": [operation],
+                    },
+                },
+                "update": {"update_id": "operation-edit-context"},
+            },
+        )
+
+        self.assertEqual([operation], entry["operations"])
+        operation["generation"] = 99
+        self.assertEqual(3, entry["operations"][0]["generation"])
+        self.assertEqual(
+            "reinforce",
+            entry["operations"][0]["operation_edit"]["action"],
+        )
+
     def test_micromachine_recent_commands_are_bounded_and_isolated_per_blackboard(self):
         class RecordingPolicyModulationControl(FakePolicyModulationLLMControl):
             def __init__(self):
@@ -5448,6 +5639,8 @@ class FakeElement {
   }
 
   focus() {}
+
+  setSelectionRange() {}
 
   setAttribute(name, value) {
     this.attributes[name] = String(value);
@@ -8216,7 +8409,13 @@ const assert = require("assert");
     assert.strictEqual(statusNode.getAttribute("role"), "status");
     assert.strictEqual(record.node.getAttribute("role"), "listitem");
     assert(record.node.getAttribute("aria-labelledby"));
-    assert.strictEqual(controls.length, 3);
+    assert.strictEqual(controls.length, 5);
+    assert.deepStrictEqual(
+      controls.map(function(control) {
+        return control.getAttribute("data-operation-action");
+      }),
+      ["view", "revise", "reinforce", "retarget", "cancel"]
+    );
     controls.forEach(function(control) {
       assert(control.getAttribute("aria-label").includes(record.text));
     });
@@ -8259,16 +8458,217 @@ const assert = require("assert");
   assert(assaultRecord.node.textContent.includes("attack"));
   assert(!assaultRecord.node.textContent.includes("move"));
 
-  // Cancellation remains active until matching release_stop cleanup arrives.
-  var cancellationPending = operationResult(
+  // A newer generation edits the existing card instead of creating a duplicate.
+  var editedAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit",
+    "공격조를 마린 6기로 증원",
+    "attack",
+    330,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    2
+  );
+  editedAssault.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 4 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 6 }
+    ],
+    resolution: "blocked",
+    blocker: "explicit_ability_owner_protected"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [editedAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(assaultRecord.operationGeneration, 2);
+  assert.strictEqual(assaultRecord.telemetryFrame, 330);
+  assert(assaultRecord.node.textContent.includes("reinforce"));
+  assert(assaultRecord.node.textContent.includes("MARINE ×4 → MARINE ×6"));
+  assert(assaultRecord.node.textContent.includes("explicit_ability_owner_protected"));
+  var editControls = assaultRecord.node.querySelectorAll("button");
+  editControls[2].dispatchEvent({ type: "click" });
+  assert(nodes["command-input"].value.includes("assault-bravo"));
+  assert(nodes["command-input"].value.includes("증원"));
+  editControls[3].dispatchEvent({ type: "click" });
+  assert(nodes["command-input"].value.includes("목표를 변경"));
+
+  // Non-terminal cards keep the newest rejected edit when an older rejected
+  // generation arrives later with a higher telemetry frame.
+  var latestActiveRejectedEdit = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit-latest",
+    "공격조 편성을 다시 변경",
+    "attack",
+    331,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    2
+  );
+  latestActiveRejectedEdit.requested_operation_generation = 4;
+  latestActiveRejectedEdit.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 6 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 8 }
+    ],
+    resolution: "blocked",
+    blocker: "latest_active_edit_blocker"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [latestActiveRejectedEdit]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+
+  var staleActiveRejectedEdit = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit-stale",
+    "오래된 공격조 변경",
+    "attack",
+    332,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    2
+  );
+  staleActiveRejectedEdit.requested_operation_generation = 3;
+  staleActiveRejectedEdit.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 6 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 7 }
+    ],
+    resolution: "blocked",
+    blocker: "stale_active_edit_must_not_replace_latest"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleActiveRejectedEdit]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "stale_active_edit_must_not_replace_latest"
+    )
+  );
+
+  // A delayed lower requested generation may carry a newer active generation.
+  // Accept its execution telemetry without replacing the newest rejected edit.
+  var staleEditWithNewerActiveGeneration = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit-stale-new-active",
+    "오래된 공격조 변경과 새 실행 세대",
+    "attack",
+    333,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    3
+  );
+  staleEditWithNewerActiveGeneration.requested_operation_generation = 3;
+  staleEditWithNewerActiveGeneration.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 6 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 7 }
+    ],
+    resolution: "blocked",
+    blocker: "stale_new_active_edit_must_not_replace_latest"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleEditWithNewerActiveGeneration]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.operationGeneration, 3);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 333);
+  assert.strictEqual(assaultRecord.updateId, "parallel-update-b-edit-latest");
+  assert.strictEqual(assaultRecord.text, "공격조 편성을 다시 변경");
+  assert.strictEqual(
+    assaultRecord.data.intervention.command_execution.operation_generation,
+    3
+  );
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "stale_new_active_edit_must_not_replace_latest"
+    )
+  );
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "오래된 공격조 변경과 새 실행 세대"
+    )
+  );
+  assaultRecord.node.querySelectorAll("button")[0].dispatchEvent({
+    type: "click"
+  });
+  assert.strictEqual(
+    activeCommandConsoleRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert.strictEqual(
+    activeCommandConsoleRecord.data.intervention.command_execution
+      .operation_generation,
+    3
+  );
+  assert(nodes["command-console-units"].textContent.includes("marine"));
+  assert(nodes["command-console-units"].textContent.includes("4기"));
+
+  // Older-generation cleanup may not overwrite the edited operation card.
+  var staleGenerationCleanup = operationResult(
     "assault-bravo",
     "parallel-update-b",
     "마린 4기 공격",
     "attack",
-    330,
+    335,
     "cancelled",
     actionStages("attack").slice(0, 6),
     1
+  );
+  staleGenerationCleanup.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  staleGenerationCleanup.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 335,
+    operation_id: "assault-bravo",
+    generation: 1
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleGenerationCleanup]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.operationGeneration, 3);
+  assert.strictEqual(assaultRecord.telemetryFrame, 333);
+
+  // Cancellation remains active until matching release_stop cleanup arrives.
+  var cancellationPending = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit",
+    "공격조를 마린 6기로 증원",
+    "attack",
+    340,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    3
   );
   cancellationPending.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
@@ -8279,7 +8679,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.terminal, false);
-  assert.strictEqual(assaultRecord.operationGeneration, 1);
+  assert.strictEqual(assaultRecord.operationGeneration, 3);
   assert.strictEqual(assaultRecord.disposition, "active");
   assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,
@@ -8287,49 +8687,23 @@ const assert = require("assert");
   );
   assert(nodes["operation-summary"].textContent.includes("활성 2"));
 
-  var wrongGenerationCleanup = operationResult(
-    "assault-bravo",
-    "parallel-update-b",
-    "마린 4기 공격",
-    "attack",
-    335,
-    "cancelled",
-    actionStages("attack").slice(0, 6),
-    2
-  );
-  wrongGenerationCleanup.intervention.command_execution.blocker_reason =
-    "cancelled_by_policy";
-  wrongGenerationCleanup.intervention.command_execution.terminal_cleanup = {
-    action: "release_stop|cancelled_by_policy",
-    frame: 335,
-    operation_id: "assault-bravo",
-    generation: 2
-  };
-  renderOperationConsole(serverResult({
-    status: "published",
-    operations: [wrongGenerationCleanup]
-  }, OPERATION_SCOPE));
-  assaultRecord = operationRecords[assaultKey];
-  assert.strictEqual(assaultRecord.terminal, false);
-  assert.strictEqual(assaultRecord.telemetryFrame, 330);
-
   var verifiedCancellation = operationResult(
     "assault-bravo",
-    "parallel-update-b",
-    "마린 4기 공격",
+    "parallel-update-b-edit",
+    "공격조를 마린 6기로 증원",
     "attack",
-    340,
+    350,
     "cancelled",
     actionStages("attack").slice(0, 6),
-    1
+    3
   );
   verifiedCancellation.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
   verifiedCancellation.intervention.command_execution.terminal_cleanup = {
     action: "release_no_owned_units|cancelled_by_policy",
-    frame: 340,
+    frame: 350,
     operation_id: "assault-bravo",
-    generation: 1
+    generation: 3
   };
   renderOperationConsole(serverResult({
     status: "published",
@@ -8337,7 +8711,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.terminal, true);
-  assert.strictEqual(assaultRecord.telemetryFrame, 340);
+  assert.strictEqual(assaultRecord.telemetryFrame, 350);
   assert.strictEqual(assaultRecord.disposition, "superseded");
   assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,
@@ -8366,6 +8740,169 @@ const assert = require("assert");
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"
   );
+
+  // A rejected higher-generation edit augments the terminal card without
+  // replacing its verified execution state or creating another card.
+  var terminalReconNodeId = operationRecords[reconKey].node.id;
+  var rejectedTerminalEdit = operationResult(
+    "recon-alpha",
+    "parallel-update-a-edit",
+    "정찰대를 마린 2기로 증원",
+    "scouting",
+    410,
+    "completed",
+    actionStages("move", "recon waypoint reached"),
+    1
+  );
+  rejectedTerminalEdit.requested_operation_generation = 2;
+  rejectedTerminalEdit.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 1 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 2 }
+    ],
+    resolution: "blocked",
+    blocker: "terminal_operation_edit_rejected"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [rejectedTerminalEdit]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(nodes["operation-list"].querySelectorAll(".operation-card").length, 2);
+  assert.strictEqual(operationRecords[reconKey].node.id, terminalReconNodeId);
+  assert.strictEqual(operationRecords[reconKey].terminal, true);
+  assert.strictEqual(operationRecords[reconKey].operationGeneration, 1);
+  assert.strictEqual(operationRecords[reconKey].requestedOperationGeneration, 2);
+  assert.strictEqual(
+    operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
+    "실행 확인"
+  );
+  assert(operationRecords[reconKey].node.textContent.includes("reinforce"));
+  assert(operationRecords[reconKey].node.textContent.includes("MARINE ×1 → MARINE ×2"));
+  assert(
+    operationRecords[reconKey].node.textContent.includes(
+      "terminal_operation_edit_rejected"
+    )
+  );
+
+  // A stale requested generation may not overwrite the latest edit blocker.
+  var staleRejectedTerminalEdit = operationResult(
+    "recon-alpha",
+    "parallel-update-a-stale-edit",
+    "정찰대를 다시 변경",
+    "scouting",
+    420,
+    "completed",
+    actionStages("move", "recon waypoint reached"),
+    1
+  );
+  staleRejectedTerminalEdit.requested_operation_generation = 1;
+  staleRejectedTerminalEdit.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 1 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 3 }
+    ],
+    resolution: "blocked",
+    blocker: "stale_edit_must_not_replace_latest"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleRejectedTerminalEdit]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(operationRecords[reconKey].requestedOperationGeneration, 2);
+  assert(
+    operationRecords[reconKey].node.textContent.includes(
+      "terminal_operation_edit_rejected"
+    )
+  );
+  assert(
+    !operationRecords[reconKey].node.textContent.includes(
+      "stale_edit_must_not_replace_latest"
+    )
+  );
+
+  var staleTerminalEditWithNewerActiveGeneration = operationResult(
+    "recon-alpha",
+    "parallel-update-a-stale-new-active",
+    "오래된 정찰대 변경과 새 실행 세대",
+    "scouting",
+    421,
+    "completed",
+    actionStages("move", "new active generation waypoint reached"),
+    2
+  );
+  staleTerminalEditWithNewerActiveGeneration.requested_operation_generation = 1;
+  staleTerminalEditWithNewerActiveGeneration.operation_edit = {
+    action: "reinforce",
+    before_composition: [
+      { unit_type: "TERRAN_MARINE", count: 1 }
+    ],
+    after_composition: [
+      { unit_type: "TERRAN_MARINE", count: 3 }
+    ],
+    resolution: "blocked",
+    blocker: "stale_terminal_new_active_must_not_replace_latest"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleTerminalEditWithNewerActiveGeneration]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(operationRecords[reconKey].terminal, true);
+  assert.strictEqual(operationRecords[reconKey].operationGeneration, 2);
+  assert.strictEqual(operationRecords[reconKey].requestedOperationGeneration, 2);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 421);
+  assert.strictEqual(operationRecords[reconKey].updateId, "parallel-update-a-edit");
+  assert.strictEqual(operationRecords[reconKey].text, "정찰대를 마린 2기로 증원");
+  assert.strictEqual(
+    operationRecords[reconKey].data.intervention.command_execution
+      .operation_generation,
+    2
+  );
+  assert(
+    operationRecords[reconKey].node.textContent.includes(
+      "terminal_operation_edit_rejected"
+    )
+  );
+  assert(
+    operationRecords[reconKey].node.textContent.includes(
+      "new active generation waypoint reached"
+    )
+  );
+  assert(
+    !operationRecords[reconKey].node.textContent.includes(
+      "stale_terminal_new_active_must_not_replace_latest"
+    )
+  );
+  assert(
+    !operationRecords[reconKey].node.textContent.includes(
+      "오래된 정찰대 변경과 새 실행 세대"
+    )
+  );
+  operationRecords[reconKey].node.querySelectorAll("button")[0].dispatchEvent({
+    type: "click"
+  });
+  assert.strictEqual(
+    activeCommandConsoleRecord.updateId,
+    "parallel-update-a-edit"
+  );
+  assert.strictEqual(
+    activeCommandConsoleRecord.data.intervention.command_execution
+      .operation_generation,
+    2
+  );
+  assert(nodes["command-console-action"].textContent.includes("move"));
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "new active generation waypoint reached"
+    )
+  );
+
   renderOperationConsole(serverResult({
     status: "published",
     operations: [
@@ -8381,7 +8918,7 @@ const assert = require("assert");
     ]
   }, OPERATION_SCOPE));
   assert.strictEqual(operationRecords[reconKey].terminal, true);
-  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 400);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 421);
   assert.strictEqual(
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"

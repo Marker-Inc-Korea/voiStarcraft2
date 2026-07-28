@@ -1,0 +1,374 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 9ea49c6..3385c33 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2856,13 +2856,14 @@ void CombatCommander::reconcileVoiOperation(
+ 			== "invalid_operation_edit_confirmation_policy"
+ 		|| operation.blockedReason == "invalid_target"
+ 		|| operation.blockedReason == "cancelled_by_policy";
+-	if (operation.completed || staticBlock)
+-	{
+-		return;
+-	}
+-	if ((operation.editAction == "transfer_in"
++	const bool rejectedTransfer =
++		(operation.editAction == "transfer_in"
+ 			|| operation.editAction == "transfer_out")
+-		&& operation.editResolution == "blocked")
++		&& operation.editResolution == "blocked";
++	if (!voiShouldReconcileExistingOperation(
++		operation.completed,
++		staticBlock,
++		rejectedTransfer))
+ 	{
+ 		return;
+ 	}
+@@ -4546,10 +4547,13 @@ void CombatCommander::updateVoiOperations()
+ 		requestedEndpoint.requestedGeneration =
+ 			requested.generation;
+ 		requestedEndpoint.requestedPresent = true;
+-		requestedEndpoint.existingActive =
+-			requestedExisting != nullptr;
+ 		requestedEndpoint.terminal =
+-			requested.completed;
++			requestedExisting != nullptr
++			&& requestedExisting->completed;
++		requestedEndpoint.existingActive =
++			voiExistingTransferEndpointActive(
++				requestedExisting != nullptr,
++				requestedEndpoint.terminal);
+ 		requestedEndpoint.blocker =
+ 			requested.blockedReason;
+ 
+@@ -4560,8 +4564,13 @@ void CombatCommander::updateVoiOperations()
+ 			requested.operationId;
+ 		counterpartEndpoint.requestedPresent =
+ 			counterpartRequested != nullptr;
++		counterpartEndpoint.terminal =
++			counterpartExisting != nullptr
++			&& counterpartExisting->completed;
+ 		counterpartEndpoint.existingActive =
+-			counterpartExisting != nullptr;
++			voiExistingTransferEndpointActive(
++				counterpartExisting != nullptr,
++				counterpartEndpoint.terminal);
+ 		if (counterpartRequested != nullptr)
+ 		{
+ 			counterpartEndpoint.operationId =
+@@ -4573,8 +4582,6 @@ void CombatCommander::updateVoiOperations()
+ 				counterpartRequested->editAction;
+ 			counterpartEndpoint.requestedGeneration =
+ 				counterpartRequested->generation;
+-			counterpartEndpoint.terminal =
+-				counterpartRequested->completed;
+ 			counterpartEndpoint.blocker =
+ 				counterpartRequested->blockedReason;
+ 		}
+@@ -4776,6 +4783,51 @@ void CombatCommander::updateVoiOperations()
+ 			existing.lastActionFrame =
+ 				m_bot.GetGameLoop();
+ 		};
++	auto annotatePreservedTransferEndpoint =
++		[&](
++			VoiOperationState & existing,
++			const VoiOperationState & counterpartRequest,
++			const std::string & blocker)
++		{
++			existing.policyUpdateId = policyUpdateId;
++			existing.editAction =
++				counterpartRequest.editAction == "transfer_in"
++					? "transfer_out"
++					: "transfer_in";
++			existing.editCounterpartOperationId =
++				counterpartRequest.operationId;
++			existing.editUnitSelection =
++				counterpartRequest.editUnitSelection;
++			existing.editBeforeComposition =
++				existing.compositionRequirements;
++			existing.editAfterComposition =
++				existing.compositionRequirements;
++			existing.editExplicitOverride =
++				counterpartRequest.editExplicitOverride;
++			existing.editConfirmationPolicy =
++				counterpartRequest.editConfirmationPolicy;
++			existing.editBeforeCount =
++				existing.assignedCount;
++			existing.editAfterCount =
++				existing.assignedCount;
++			existing.transferredInCount = 0;
++			existing.transferredOutCount = 0;
++			existing.editResolution = "blocked";
++			existing.editBlocker = blocker;
++			existing.editRequestedGeneration = 0;
++			existing.editRejectedUpdateId =
++				counterpartRequest.policyUpdateId;
++			existing.editRejectedFrame =
++				m_bot.GetGameLoop();
++			existing.editSupersessionMode =
++				counterpartRequest.commandLayer == "emergency"
++					? "emergency_supersession"
++					: "priority_preemption";
++			existing.lastAction =
++				"operation_edit_blocked|" + blocker;
++			existing.lastActionFrame =
++				m_bot.GetGameLoop();
++		};
+ 	auto handoffGeneration =
+ 		[&](
+ 			VoiOperationState & existing,
+@@ -4928,6 +4980,38 @@ void CombatCommander::updateVoiOperations()
+ 				existing.operationId);
+ 		if (requested == nullptr)
+ 		{
++			const auto transferBlocker =
++				transferBlockers.find(
++					existing.operationId);
++			const VoiOperationState * counterpartRequest =
++				nullptr;
++			for (const auto & candidate :
++				requestedOperations)
++			{
++				if ((candidate.editAction == "transfer_in"
++						|| candidate.editAction
++							== "transfer_out")
++					&& candidate
++							.editCounterpartOperationId
++						== existing.operationId)
++				{
++					counterpartRequest = &candidate;
++					break;
++				}
++			}
++			if (voiPreserveOperationForRejectedTransfer(
++					false,
++					transferBlocker
++						!= transferBlockers.end())
++				&& counterpartRequest != nullptr)
++			{
++				annotatePreservedTransferEndpoint(
++					existing,
++					*counterpartRequest,
++					transferBlocker->second);
++				++index;
++				continue;
++			}
+ 			releaseVoiOperation(
+ 				existing,
+ 				"removed_from_policy",
+@@ -5187,6 +5271,44 @@ void CombatCommander::updateVoiOperations()
+ 			});
+ 		const int transferCount =
+ 			static_cast<int>(plannedSelection->second.size());
++		std::vector<sc2::Tag> selectedUnitTags;
++		for (const auto & unit : selectedUnits)
++		{
++			selectedUnitTags.push_back(unit.getTag());
++		}
++		const std::pair<std::string, uint64_t>
++			expectedSourceOwner = std::make_pair(
++				source->operationId,
++				source->generation);
++		const std::pair<std::string, uint64_t>
++			destinationOwner = std::make_pair(
++				destination.operationId,
++				destination.generation);
++		if (selectedUnits.size()
++				!= plannedSelection->second.size()
++			|| !voiTransferOwnershipAtomically(
++				m_voiOperationUnitOwners,
++				selectedUnitTags,
++				expectedSourceOwner,
++				destinationOwner))
++		{
++			source->editResolution = "blocked";
++			destination.editResolution = "blocked";
++			source->editBlocker =
++				"transfer_ownership_changed_after_preflight";
++			destination.editBlocker =
++				source->editBlocker;
++			source->lastAction =
++				"operation_edit_blocked|"
++					+ source->editBlocker;
++			destination.lastAction =
++				source->lastAction;
++			source->lastActionFrame =
++				m_bot.GetGameLoop();
++			destination.lastActionFrame =
++				m_bot.GetGameLoop();
++			continue;
++		}
+ 
+ 		for (const auto & unit : selectedUnits)
+ 		{
+@@ -5229,10 +5351,6 @@ void CombatCommander::updateVoiOperations()
+ 			m_squadData.assignUnitToSquad(
+ 				unit,
+ 				destinationSquad);
+-			m_voiOperationUnitOwners[unit.getTag()] =
+-				std::make_pair(
+-					destination.operationId,
+-					destination.generation);
+ 		}
+ 		source->assignedCount =
+ 			static_cast<int>(
+diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transfer_admission.hpp
+index c101468..99cd745 100644
+--- a/src/voi_operation_transfer_admission.hpp
++++ b/src/voi_operation_transfer_admission.hpp
+@@ -24,6 +24,29 @@ struct VoiOperationTransferAdmission
+ 	std::string blocker;
+ };
+ 
++inline bool voiExistingTransferEndpointActive(
++	bool existingPresent,
++	bool existingTerminal)
++{
++	return existingPresent && !existingTerminal;
++}
++
++inline bool voiPreserveOperationForRejectedTransfer(
++	bool requestPresent,
++	bool transferRejected)
++{
++	return !requestPresent && transferRejected;
++}
++
++inline bool voiShouldReconcileExistingOperation(
++	bool completed,
++	bool staticBlock,
++	bool transferRejected)
++{
++	(void)transferRejected;
++	return !completed && !staticBlock;
++}
++
+ inline VoiOperationTransferAdmission voiDecideOperationTransferAdmission(
+ 	const VoiOperationTransferEndpoint & first,
+ 	const VoiOperationTransferEndpoint & second)
+@@ -52,14 +75,14 @@ inline VoiOperationTransferAdmission voiDecideOperationTransferAdmission(
+ 	{
+ 		return { false, second.blocker };
+ 	}
+-	if (!first.existingActive || !second.existingActive)
+-	{
+-		return { false, "transfer_pair_not_active" };
+-	}
+ 	if (first.terminal || second.terminal)
+ 	{
+ 		return { false, "transfer_endpoint_terminal" };
+ 	}
++	if (!first.existingActive || !second.existingActive)
++	{
++		return { false, "transfer_pair_not_active" };
++	}
+ 	if (first.requestedGeneration < first.existingGeneration
+ 		|| second.requestedGeneration < second.existingGeneration)
+ 	{
+@@ -76,6 +99,34 @@ inline VoiOperationTransferAdmission voiDecideOperationTransferAdmission(
+ 	return { true, "" };
+ }
+ 
++template <typename Tag, typename Owner>
++bool voiTransferOwnershipAtomically(
++	std::map<Tag, Owner> & owners,
++	const std::vector<Tag> & tags,
++	const Owner & expectedSource,
++	const Owner & destination)
++{
++	std::map<Tag, Owner> replacement = owners;
++	std::map<Tag, bool> uniqueTags;
++	for (const auto & tag : tags)
++	{
++		if (uniqueTags.find(tag) != uniqueTags.end())
++		{
++			return false;
++		}
++		uniqueTags[tag] = true;
++		const auto owner = replacement.find(tag);
++		if (owner == replacement.end()
++			|| owner->second != expectedSource)
++		{
++			return false;
++		}
++		owner->second = destination;
++	}
++	owners.swap(replacement);
++	return true;
++}
++
+ template <typename Tag, typename Unit, typename TagGetter>
+ std::map<Tag, std::string> voiPreserveAssignedRolesForUnits(
+ 	const std::map<Tag, std::string> & assignedRoles,
+diff --git a/tests/operation_transfer_admission_test.cpp b/tests/operation_transfer_admission_test.cpp
+index 6365581..1f88e01 100644
+--- a/tests/operation_transfer_admission_test.cpp
++++ b/tests/operation_transfer_admission_test.cpp
+@@ -92,6 +92,68 @@ int main()
+ 	assert(atomicPair.admitted);
+ 	assert(atomicPair.blocker.empty());
+ 
++	assert(voiExistingTransferEndpointActive(true, false));
++	assert(!voiExistingTransferEndpointActive(true, true));
++	assert(!voiExistingTransferEndpointActive(false, false));
++	assert(voiPreserveOperationForRejectedTransfer(false, true));
++	assert(!voiPreserveOperationForRejectedTransfer(false, false));
++	assert(!voiPreserveOperationForRejectedTransfer(true, true));
++	assert(voiShouldReconcileExistingOperation(false, false, true));
++	assert(!voiShouldReconcileExistingOperation(true, false, true));
++	assert(!voiShouldReconcileExistingOperation(false, true, true));
++
++	const auto terminalDestination = endpoint(
++		"assault-bravo",
++		"recon-alpha",
++		"transfer_in",
++		7,
++		8);
++	auto terminalEndpoint = terminalDestination;
++	terminalEndpoint.existingActive = false;
++	terminalEndpoint.terminal = true;
++	const auto terminalDecision =
++		voiDecideOperationTransferAdmission(
++			sourceAdvanced,
++			terminalEndpoint);
++	assert(!terminalDecision.admitted);
++	assert(
++		terminalDecision.blocker
++		== "transfer_endpoint_terminal");
++
++	using Owner = std::pair<std::string, std::uint64_t>;
++	std::map<std::uint64_t, Owner> owners = {
++		{ 11, { "recon-alpha", 4 } },
++		{ 22, { "recon-alpha", 4 } },
++		{ 33, { "hold-charlie", 2 } },
++	};
++	const Owner sourceOwner = { "recon-alpha", 4 };
++	const Owner destinationOwner = { "assault-bravo", 8 };
++	assert(
++		voiTransferOwnershipAtomically(
++			owners,
++			std::vector<std::uint64_t>{ 11, 22 },
++			sourceOwner,
++			destinationOwner));
++	assert(owners.at(11) == destinationOwner);
++	assert(owners.at(22) == destinationOwner);
++	assert(owners.at(33) == Owner("hold-charlie", 2));
++
++	const auto ownersBeforeRejectedTransfer = owners;
++	assert(
++		!voiTransferOwnershipAtomically(
++			owners,
++			std::vector<std::uint64_t>{ 11, 33 },
++			destinationOwner,
++			sourceOwner));
++	assert(owners == ownersBeforeRejectedTransfer);
++	assert(
++		!voiTransferOwnershipAtomically(
++			owners,
++			std::vector<std::uint64_t>{ 11, 11 },
++			destinationOwner,
++			sourceOwner));
++	assert(owners == ownersBeforeRejectedTransfer);
++
+ 	const std::map<std::uint64_t, std::string> assignedRoles = {
+ 		{ 11, "scout" },
+ 		{ 22, "frontline" },

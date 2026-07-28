@@ -1,0 +1,476 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 96ebf20..02ecb28 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -4541,6 +4541,7 @@ void CombatCommander::updateVoiOperations()
+ 		};
+ 	std::map<std::string, std::string> transferBlockers;
+ 	std::set<std::string> evaluatedTransferOperations;
++	std::set<std::string> alreadyAppliedTransferOperations;
+ 	auto recordTransferBlocker =
+ 		[&](
+ 			const std::string & firstOperationId,
+@@ -4585,6 +4586,16 @@ void CombatCommander::updateVoiOperations()
+ 			requestedExisting == nullptr
+ 				? 0
+ 				: requestedExisting->generation;
++		if (requestedExisting != nullptr)
++		{
++			requestedEndpoint.existingCounterpartOperationId =
++				requestedExisting
++					->editCounterpartOperationId;
++			requestedEndpoint.existingEditAction =
++				requestedExisting->editAction;
++			requestedEndpoint.existingEditResolution =
++				requestedExisting->editResolution;
++		}
+ 		requestedEndpoint.requestedGeneration =
+ 			requested.generation;
+ 		requestedEndpoint.requestedPresent = true;
+@@ -4633,6 +4644,31 @@ void CombatCommander::updateVoiOperations()
+ 			counterpartExisting == nullptr
+ 				? 0
+ 				: counterpartExisting->generation;
++		if (counterpartExisting != nullptr)
++		{
++			counterpartEndpoint.existingCounterpartOperationId =
++				counterpartExisting
++					->editCounterpartOperationId;
++			counterpartEndpoint.existingEditAction =
++				counterpartExisting->editAction;
++			counterpartEndpoint.existingEditResolution =
++				counterpartExisting->editResolution;
++		}
++
++		if (voiOperationTransferAlreadyApplied(
++				requestedEndpoint,
++				counterpartEndpoint))
++		{
++			alreadyAppliedTransferOperations.insert(
++				requested.operationId);
++			alreadyAppliedTransferOperations.insert(
++				requested.editCounterpartOperationId);
++			evaluatedTransferOperations.insert(
++				requested.operationId);
++			evaluatedTransferOperations.insert(
++				requested.editCounterpartOperationId);
++			continue;
++		}
+ 
+ 		const VoiOperationTransferAdmission admission =
+ 			voiDecideOperationTransferAdmission(
+@@ -4785,6 +4821,10 @@ void CombatCommander::updateVoiOperations()
+ 			const VoiOperationState & requested,
+ 			const std::string & blocker)
+ 		{
++			voiApplyRejectedOperationEditMetadata(
++				existing,
++				[&]()
++				{
+ 			existing.policyUpdateId = policyUpdateId;
+ 			existing.editAction = requested.editAction;
+ 			existing.editCounterpartOperationId =
+@@ -4817,10 +4857,7 @@ void CombatCommander::updateVoiOperations()
+ 				requested.commandLayer == "emergency"
+ 					? "emergency_supersession"
+ 					: "priority_preemption";
+-			existing.lastAction =
+-				"operation_edit_blocked|" + blocker;
+-			existing.lastActionFrame =
+-				m_bot.GetGameLoop();
++				});
+ 		};
+ 	auto annotatePreservedTransferEndpoint =
+ 		[&](
+@@ -4828,6 +4865,10 @@ void CombatCommander::updateVoiOperations()
+ 			const VoiOperationState & counterpartRequest,
+ 			const std::string & blocker)
+ 		{
++			voiApplyRejectedOperationEditMetadata(
++				existing,
++				[&]()
++				{
+ 			existing.policyUpdateId = policyUpdateId;
+ 			existing.editAction =
+ 				counterpartRequest.editAction == "transfer_in"
+@@ -4862,10 +4903,7 @@ void CombatCommander::updateVoiOperations()
+ 				counterpartRequest.commandLayer == "emergency"
+ 					? "emergency_supersession"
+ 					: "priority_preemption";
+-			existing.lastAction =
+-				"operation_edit_blocked|" + blocker;
+-			existing.lastActionFrame =
+-				m_bot.GetGameLoop();
++				});
+ 		};
+ 	auto prepareGenerationReplacement =
+ 		[&](
+@@ -5270,6 +5308,9 @@ void CombatCommander::updateVoiOperations()
+ 	for (const auto & destinationRequested : requestedOperations)
+ 	{
+ 		if (destinationRequested.editAction != "transfer_in"
++			|| alreadyAppliedTransferOperations.find(
++				destinationRequested.operationId)
++				!= alreadyAppliedTransferOperations.end()
+ 			|| transferBlockers.find(
+ 				destinationRequested.operationId)
+ 				!= transferBlockers.end())
+@@ -5487,6 +5528,54 @@ void CombatCommander::updateVoiOperations()
+ 			continue;
+ 		}
+ 
++		auto mutationEndpoint =
++			[](
++				const VoiOperationState & existing,
++				const VoiOperationState & requested)
++			{
++				VoiOperationTransferEndpoint endpoint;
++				endpoint.operationId =
++					requested.operationId;
++				endpoint.counterpartOperationId =
++					requested.editCounterpartOperationId;
++				endpoint.editAction =
++					requested.editAction;
++				endpoint.existingCounterpartOperationId =
++					existing.editCounterpartOperationId;
++				endpoint.existingEditAction =
++					existing.editAction;
++				endpoint.existingEditResolution =
++					existing.editResolution;
++				endpoint.existingGeneration =
++					existing.generation;
++				endpoint.requestedGeneration =
++					requested.generation;
++				endpoint.requestedPresent = true;
++				endpoint.existingActive =
++					!existing.completed;
++				endpoint.terminal =
++					existing.completed
++					|| requested.completed;
++				endpoint.blocker =
++					requested.blockedReason;
++				return endpoint;
++			};
++		const VoiOperationTransferEndpoint
++			sourceMutationEndpoint =
++				mutationEndpoint(
++					*source,
++					*sourceRequested);
++		const VoiOperationTransferEndpoint
++			destinationMutationEndpoint =
++				mutationEndpoint(
++					*destination,
++					destinationRequested);
++		const bool transferMutationApplied =
++			voiApplyOperationTransferMutationOnce(
++				sourceMutationEndpoint,
++				destinationMutationEndpoint,
++				[&]()
++				{
+ 		VoiOperationState sourceReplacement =
+ 			prepareGenerationReplacement(
+ 				*source,
+@@ -5659,6 +5748,11 @@ void CombatCommander::updateVoiOperations()
+ 					+ "|terminal=transferred_all_units";
+ 			source->lastActionFrame =
+ 				m_bot.GetGameLoop();
++		}
++				});
++		if (!transferMutationApplied)
++		{
++			continue;
+ 		}
+ 	}
+ 	std::sort(
+diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transfer_admission.hpp
+index 60ce7ab..26d1a02 100644
+--- a/src/voi_operation_transfer_admission.hpp
++++ b/src/voi_operation_transfer_admission.hpp
+@@ -13,6 +13,9 @@ struct VoiOperationTransferEndpoint
+ 	std::string operationId;
+ 	std::string counterpartOperationId;
+ 	std::string editAction;
++	std::string existingCounterpartOperationId;
++	std::string existingEditAction;
++	std::string existingEditResolution;
+ 	std::uint64_t existingGeneration = 0;
+ 	std::uint64_t requestedGeneration = 0;
+ 	bool requestedPresent = false;
+@@ -203,6 +206,66 @@ inline bool voiShouldReconcileExistingOperation(
+ 	return !completed && !staticBlock;
+ }
+ 
++inline bool voiOperationTransferAlreadyApplied(
++	const VoiOperationTransferEndpoint & first,
++	const VoiOperationTransferEndpoint & second)
++{
++	if (!first.requestedPresent
++		|| !second.requestedPresent
++		|| !first.blocker.empty()
++		|| !second.blocker.empty()
++		|| first.operationId.empty()
++		|| second.operationId.empty()
++		|| first.operationId == second.operationId
++		|| first.counterpartOperationId != second.operationId
++		|| second.counterpartOperationId != first.operationId
++		|| first.existingCounterpartOperationId
++			!= first.counterpartOperationId
++		|| second.existingCounterpartOperationId
++			!= second.counterpartOperationId
++		|| first.existingEditAction != first.editAction
++		|| second.existingEditAction != second.editAction
++		|| first.existingEditResolution != "applied"
++		|| second.existingEditResolution != "applied"
++		|| first.requestedGeneration != first.existingGeneration
++		|| second.requestedGeneration != second.existingGeneration)
++	{
++		return false;
++	}
++	return (first.editAction == "transfer_in"
++			&& second.editAction == "transfer_out")
++		|| (first.editAction == "transfer_out"
++			&& second.editAction == "transfer_in");
++}
++
++template <typename Mutation>
++bool voiApplyOperationTransferMutationOnce(
++	const VoiOperationTransferEndpoint & first,
++	const VoiOperationTransferEndpoint & second,
++	Mutation mutation)
++{
++	if (voiOperationTransferAlreadyApplied(first, second))
++	{
++		return false;
++	}
++	mutation();
++	return true;
++}
++
++template <typename Operation, typename Annotation>
++void voiApplyRejectedOperationEditMetadata(
++	Operation & operation,
++	Annotation annotation)
++{
++	const std::string activeLastAction =
++		operation.lastAction;
++	const auto activeLastActionFrame =
++		operation.lastActionFrame;
++	annotation();
++	operation.lastAction = activeLastAction;
++	operation.lastActionFrame = activeLastActionFrame;
++}
++
+ inline VoiOperationTransferAdmission voiDecideOperationTransferAdmission(
+ 	const VoiOperationTransferEndpoint & first,
+ 	const VoiOperationTransferEndpoint & second)
+diff --git a/tests/operation_transfer_admission_test.cpp b/tests/operation_transfer_admission_test.cpp
+index 458e7f6..be72828 100644
+--- a/tests/operation_transfer_admission_test.cpp
++++ b/tests/operation_transfer_admission_test.cpp
+@@ -2,6 +2,8 @@
+ 
+ #include <cassert>
+ #include <cstdint>
++#include <map>
++#include <set>
+ #include <string>
+ #include <vector>
+ 
+@@ -135,6 +137,197 @@ int main()
+ 	assert(voiShouldReconcileExistingOperation(false, false, true));
+ 	assert(!voiShouldReconcileExistingOperation(true, false, true));
+ 	assert(!voiShouldReconcileExistingOperation(false, true, true));
++	VoiOperationTransferEndpoint alreadyAppliedSource;
++	alreadyAppliedSource.operationId = "recon-alpha";
++	alreadyAppliedSource.counterpartOperationId = "assault-bravo";
++	alreadyAppliedSource.editAction = "transfer_out";
++	alreadyAppliedSource.existingCounterpartOperationId =
++		"assault-bravo";
++	alreadyAppliedSource.existingEditAction = "transfer_out";
++	alreadyAppliedSource.existingEditResolution = "applied";
++	alreadyAppliedSource.existingGeneration = 4;
++	alreadyAppliedSource.requestedGeneration = 4;
++	alreadyAppliedSource.requestedPresent = true;
++	VoiOperationTransferEndpoint alreadyAppliedDestination;
++	alreadyAppliedDestination.operationId = "assault-bravo";
++	alreadyAppliedDestination.counterpartOperationId = "recon-alpha";
++	alreadyAppliedDestination.editAction = "transfer_in";
++	alreadyAppliedDestination.existingCounterpartOperationId =
++		"recon-alpha";
++	alreadyAppliedDestination.existingEditAction = "transfer_in";
++	alreadyAppliedDestination.existingEditResolution = "applied";
++	alreadyAppliedDestination.existingGeneration = 8;
++	alreadyAppliedDestination.requestedGeneration = 8;
++	alreadyAppliedDestination.requestedPresent = true;
++	assert(
++		voiOperationTransferAlreadyApplied(
++			alreadyAppliedSource,
++			alreadyAppliedDestination));
++	alreadyAppliedDestination.existingEditResolution = "blocked";
++	assert(
++		!voiOperationTransferAlreadyApplied(
++			alreadyAppliedSource,
++			alreadyAppliedDestination));
++	alreadyAppliedDestination.existingEditResolution = "applied";
++	alreadyAppliedDestination.requestedGeneration = 9;
++	assert(
++		!voiOperationTransferAlreadyApplied(
++			alreadyAppliedSource,
++			alreadyAppliedDestination));
++
++	struct RejectedEditRuntimeState
++	{
++		std::string lastAction;
++		std::uint64_t lastActionFrame = 0;
++		std::string editBlocker;
++		std::uint64_t editRejectedFrame = 0;
++	};
++	RejectedEditRuntimeState rejectedEditState;
++	rejectedEditState.lastAction = "AttackUnitOrder";
++	rejectedEditState.lastActionFrame = 140;
++	voiApplyRejectedOperationEditMetadata(
++		rejectedEditState,
++		[&]()
++		{
++			rejectedEditState.editBlocker =
++				"source_composition_preservation";
++			rejectedEditState.editRejectedFrame = 225;
++			rejectedEditState.lastAction =
++				"operation_edit_blocked";
++			rejectedEditState.lastActionFrame = 225;
++		});
++	assert(rejectedEditState.lastAction == "AttackUnitOrder");
++	assert(rejectedEditState.lastActionFrame == 140);
++	assert(
++		rejectedEditState.editBlocker
++		== "source_composition_preservation");
++	assert(rejectedEditState.editRejectedFrame == 225);
++
++	using ReplayOwner = std::pair<std::string, std::uint64_t>;
++	struct ReplayRuntimeState
++	{
++		std::map<std::uint64_t, ReplayOwner> owners;
++		std::set<std::uint64_t> sourceSquad;
++		std::set<std::uint64_t> destinationSquad;
++		std::map<std::uint64_t, std::string> actions;
++		int transferredOutCount = 0;
++		int transferredInCount = 0;
++		int mutationInvocationCount = 0;
++	};
++	ReplayRuntimeState replayState;
++	const ReplayOwner replaySourceOwner = { "recon-alpha", 3 };
++	const ReplayOwner replayDestinationOwner = {
++		"assault-bravo",
++		7
++	};
++	const ReplayOwner replayRequestedSourceOwner = {
++		"recon-alpha",
++		4
++	};
++	const ReplayOwner replayRequestedDestinationOwner = {
++		"assault-bravo",
++		8
++	};
++	replayState.owners = {
++		{ 11, replaySourceOwner },
++		{ 22, replaySourceOwner },
++		{ 44, replayDestinationOwner },
++	};
++	replayState.sourceSquad = { 11, 22 };
++	replayState.destinationSquad = { 44 };
++	replayState.actions = {
++		{ 11, "source-owned-action" },
++		{ 44, "destination-owned-action" },
++	};
++	auto replaySource = endpoint(
++		"recon-alpha",
++		"assault-bravo",
++		"transfer_out",
++		3,
++		4);
++	auto replayDestination = endpoint(
++		"assault-bravo",
++		"recon-alpha",
++		"transfer_in",
++		7,
++		8);
++	const bool firstReplayMutation =
++		voiApplyOperationTransferMutationOnce(
++			replaySource,
++			replayDestination,
++			[&]()
++			{
++				replayState.owners[11] =
++					replayRequestedDestinationOwner;
++				replayState.owners[22] =
++					replayRequestedSourceOwner;
++				replayState.owners[44] =
++					replayRequestedDestinationOwner;
++				replayState.sourceSquad.erase(11);
++				replayState.destinationSquad.insert(11);
++				replayState.actions.erase(11);
++				replayState.actions.erase(44);
++				++replayState.transferredOutCount;
++				++replayState.transferredInCount;
++				++replayState.mutationInvocationCount;
++			});
++	assert(firstReplayMutation);
++	assert(
++		replayState.owners.at(11)
++		== replayRequestedDestinationOwner);
++	assert(
++		replayState.owners.at(22)
++		== replayRequestedSourceOwner);
++	assert(
++		replayState.owners.at(44)
++		== replayRequestedDestinationOwner);
++	assert(replayState.sourceSquad == std::set<std::uint64_t>{ 22 });
++	assert(
++		replayState.destinationSquad
++		== std::set<std::uint64_t>({ 11, 44 }));
++	assert(replayState.actions.empty());
++	assert(replayState.transferredOutCount == 1);
++	assert(replayState.transferredInCount == 1);
++	assert(replayState.mutationInvocationCount == 1);
++
++	replaySource.existingCounterpartOperationId = "assault-bravo";
++	replaySource.existingEditAction = "transfer_out";
++	replaySource.existingEditResolution = "applied";
++	replaySource.existingGeneration = 4;
++	replayDestination.existingCounterpartOperationId = "recon-alpha";
++	replayDestination.existingEditAction = "transfer_in";
++	replayDestination.existingEditResolution = "applied";
++	replayDestination.existingGeneration = 8;
++	const auto replayOwnersAfterFirstMutation = replayState.owners;
++	const auto replaySourceSquadAfterFirstMutation =
++		replayState.sourceSquad;
++	const auto replayDestinationSquadAfterFirstMutation =
++		replayState.destinationSquad;
++	const auto replayActionsAfterFirstMutation = replayState.actions;
++	const bool secondReplayMutation =
++		voiApplyOperationTransferMutationOnce(
++			replaySource,
++			replayDestination,
++			[&]()
++			{
++				replayState.owners.clear();
++				replayState.sourceSquad.clear();
++				replayState.destinationSquad.clear();
++				replayState.actions[99] = "unexpected";
++				++replayState.transferredOutCount;
++				++replayState.transferredInCount;
++				++replayState.mutationInvocationCount;
++			});
++	assert(!secondReplayMutation);
++	assert(replayState.owners == replayOwnersAfterFirstMutation);
++	assert(replayState.sourceSquad == replaySourceSquadAfterFirstMutation);
++	assert(
++		replayState.destinationSquad
++		== replayDestinationSquadAfterFirstMutation);
++	assert(replayState.actions == replayActionsAfterFirstMutation);
++	assert(replayState.transferredOutCount == 1);
++	assert(replayState.transferredInCount == 1);
++	assert(replayState.mutationInvocationCount == 1);
+ 
+ 	const auto terminalDestination = endpoint(
+ 		"assault-bravo",

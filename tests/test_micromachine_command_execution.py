@@ -215,6 +215,101 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
                 self.assertEqual("OperationDirector", report.blocker_manager)
                 self.assertIn("Duplicate unit ownership", report.blocker_reason)
 
+    def test_rejected_edit_preserves_active_generation_execution(self) -> None:
+        update = {
+            "update_id": "rejected-edit",
+            "issued_at_frame": 200,
+            "vector": {
+                "operations": [
+                    {
+                        "operation_id": "recon-alpha",
+                        "generation": 2,
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "duration_seconds": 120,
+                        },
+                    }
+                ]
+            },
+        }
+        telemetry = {
+            "frame": 240,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "rejected-edit",
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "status": "MOVING",
+                            "received_frame": 100,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "last_action_frame": 140,
+                            "assigned_unit_tags": [11],
+                            "assigned_count": 1,
+                            "max_home_distance": 20.0,
+                            "engaged": True,
+                            "last_action": "AttackUnitOrder",
+                            "edit_requested_generation": 2,
+                            "edit_rejected_update_id": "rejected-edit",
+                            "edit_rejected_frame": 225,
+                            "edit_resolution": "blocked",
+                            "edit_blocker": "source_composition_preservation",
+                        }
+                    ],
+                }
+            },
+        }
+
+        reports = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=240,
+        )
+
+        self.assertEqual(1, len(reports))
+        report = reports[0]
+        self.assertEqual(2, report.operation_generation)
+        self.assertTrue(report.failed)
+        self.assertEqual("blocked", report.state)
+        self.assertEqual(
+            "source_composition_preservation",
+            report.blocker_reason,
+        )
+        consumed = next(
+            stage
+            for stage in report.stages
+            if stage.name == "consumed_by_manager"
+        )
+        self.assertTrue(consumed.ok)
+        self.assertEqual(1, consumed.evidence["active_generation"])
+        self.assertEqual(
+            "source_composition_preservation",
+            consumed.evidence["edit_blocker"],
+        )
+        self.assertEqual(
+            {
+                "generation": 1,
+                "status": "MOVING",
+                "assigned_frame": 120,
+                "submitted_frame": 130,
+                "last_action_frame": 140,
+                "assigned_unit_tags": [11],
+                "assigned_count": 1,
+                "max_home_distance": 20.0,
+                "engaged": True,
+                "completed": None,
+                "last_action": "AttackUnitOrder",
+            },
+            consumed.evidence["active_execution"],
+        )
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertFalse(stages["queued_or_assigned"].ok)
+        self.assertFalse(stages["order_issued"].ok)
+        self.assertFalse(stages["action_issued"].ok)
+        self.assertFalse(stages["effect_observed"].ok)
+
     def test_operation_evidence_requires_exact_command_identity(self) -> None:
         update = {
             "update_id": "identity-bound-operation",

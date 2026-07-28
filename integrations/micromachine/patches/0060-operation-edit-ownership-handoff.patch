@@ -1,0 +1,1517 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index efbb509..fa66dae 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2286,6 +2286,99 @@ CCPosition voiForwardRallyPosition(CCBot & bot, const CCPosition & operationTarg
+ 	}
+ 	return home + forward * std::min(8.0f, distance * 0.25f);
+ }
++
++using VoiOperationCompositionKey =
++	std::pair<std::string, std::string>;
++
++std::map<VoiOperationCompositionKey, int> voiOperationCompositionCounts(
++	const std::vector<VoiOperationState::CompositionRequirement> & requirements)
++{
++	std::map<VoiOperationCompositionKey, int> counts;
++	for (const auto & requirement : requirements)
++	{
++		if (!requirement.unitType.empty() && requirement.count > 0)
++		{
++			counts[std::make_pair(
++				requirement.unitType,
++				requirement.role)] += requirement.count;
++		}
++	}
++	return counts;
++}
++
++int voiOperationCompositionTotal(
++	const std::vector<VoiOperationState::CompositionRequirement> & requirements)
++{
++	int total = 0;
++	for (const auto & count : voiOperationCompositionCounts(requirements))
++	{
++		total += count.second;
++	}
++	return total;
++}
++
++bool voiOperationCompositionMatches(
++	const std::vector<VoiOperationState::CompositionRequirement> & left,
++	const std::vector<VoiOperationState::CompositionRequirement> & right)
++{
++	return voiOperationCompositionCounts(left)
++		== voiOperationCompositionCounts(right);
++}
++
++bool voiOperationUnitMatchesRequirement(
++	const VoiOperationState & operation,
++	const Unit & unit,
++	const VoiOperationState::CompositionRequirement & requirement)
++{
++	if (!voiUnitMatchesCompositionToken(
++		unit,
++		requirement.unitType))
++	{
++		return false;
++	}
++	return requirement.role.empty()
++		|| voiOperationRoleForUnit(
++			&operation,
++			unit.getUnitPtr()) == requirement.role;
++}
++
++bool voiIsSupportedOperationEditAction(const std::string & action)
++{
++	return action.empty()
++		|| action == "create"
++		|| action == "update"
++		|| action == "resize"
++		|| action == "reinforce"
++		|| action == "retarget"
++		|| action == "transfer_in"
++		|| action == "transfer_out"
++		|| action == "cancel"
++		|| action == "restart";
++}
++
++std::string voiOperationCompositionTelemetryJson(
++	const std::vector<VoiOperationState::CompositionRequirement> & requirements)
++{
++	std::ostringstream payload;
++	payload << "[";
++	const auto counts = voiOperationCompositionCounts(requirements);
++	size_t index = 0;
++	for (const auto & count : counts)
++	{
++		if (index++ > 0)
++		{
++			payload << ",";
++		}
++		payload << "{\"unit_type\":\""
++			<< voiOperationJsonEscape(count.first.first)
++			<< "\",\"count\":" << count.second
++			<< ",\"role\":\""
++			<< voiOperationJsonEscape(count.first.second)
++			<< "\"}";
++	}
++	payload << "]";
++	return payload.str();
++}
+ }
+ 
+ CombatCommander::CombatCommander(CCBot & bot)
+@@ -2749,12 +2842,26 @@ void CombatCommander::reconcileVoiOperation(
+ 		|| operation.blockedReason
+ 			== "missing_operation_issued_at_frame"
+ 		|| operation.blockedReason == "unsupported_task_type"
++		|| operation.blockedReason
++			== "unsupported_operation_edit_action"
++		|| operation.blockedReason
++			== "invalid_transfer_edit_contract"
++		|| operation.blockedReason
++			== "operation_edit_confirmation_required"
++		|| operation.blockedReason
++			== "invalid_operation_edit_confirmation_policy"
+ 		|| operation.blockedReason == "invalid_target"
+ 		|| operation.blockedReason == "cancelled_by_policy";
+ 	if (operation.completed || staticBlock)
+ 	{
+ 		return;
+ 	}
++	if ((operation.editAction == "transfer_in"
++			|| operation.editAction == "transfer_out")
++		&& operation.editResolution == "blocked")
++	{
++		return;
++	}
+ 	if (operation.targetPosition == CCPosition()
+ 		|| !m_bot.Map().isValidPosition(
+ 			operation.targetPosition))
+@@ -2791,6 +2898,16 @@ void CombatCommander::reconcileVoiOperation(
+ 	auto restoreUnit = [&](const Unit & unit)
+ 	{
+ 		squad.removeUnit(unit);
++		const auto action =
++			unitActions.find(unit.getUnitPtr());
++		if (action != unitActions.end()
++			&& action->second.operationId
++				== operation.operationId
++			&& action->second.operationGeneration
++				== operation.generation)
++		{
++			unitActions.erase(action);
++		}
+ 		const auto owner =
+ 			m_voiOperationUnitOwners.find(unit.getTag());
+ 		if (owner != m_voiOperationUnitOwners.end()
+@@ -3367,6 +3484,48 @@ void CombatCommander::updateVoiOperations()
+ 		seenOperationKeys;
+ 	std::set<std::pair<std::string, uint64_t>>
+ 		duplicateOperationKeys;
++	auto readEditComposition =
++		[&](const std::string & collectionPrefix)
++		{
++			std::vector<VoiOperationState::CompositionRequirement>
++				requirements;
++			const int count = std::min(
++				32,
++				std::max(
++					0,
++					m_bot.Commander().getVoiPolicyInt(
++						collectionPrefix + ".count",
++						0)));
++			for (int itemIndex = 0;
++				itemIndex < count;
++				++itemIndex)
++			{
++				const std::string itemPrefix =
++					collectionPrefix + "."
++						+ std::to_string(itemIndex);
++				const std::string unitType =
++					m_bot.Commander().getVoiPolicyString(
++						itemPrefix + ".unit_type",
++						"");
++				const int unitCount = std::max(
++					0,
++					m_bot.Commander().getVoiPolicyInt(
++						itemPrefix + ".count",
++						0));
++				if (unitType.empty() || unitCount == 0)
++				{
++					continue;
++				}
++				requirements.push_back({
++					unitType,
++					unitCount,
++					m_bot.Commander().getVoiPolicyString(
++						itemPrefix + ".role",
++						"")
++				});
++			}
++			return requirements;
++		};
+ 	for (int index = 0; index < operationCount; ++index)
+ 	{
+ 		const std::string prefix =
+@@ -3386,6 +3545,10 @@ void CombatCommander::updateVoiOperations()
+ 					m_bot.Commander().getVoiPolicyInt(
+ 						prefix + ".generation",
+ 						1)));
++		requested.commandLayer =
++			m_bot.Commander().getVoiPolicyString(
++				prefix + ".command_layer",
++				"operation");
+ 		const auto operationKey = std::make_pair(
+ 			requested.operationId,
+ 			requested.generation);
+@@ -3625,6 +3788,44 @@ void CombatCommander::updateVoiOperations()
+ 						0.0f)
+ 				});
+ 		}
++		const std::string editPrefix =
++			prefix + ".operation_edit";
++		requested.editAction =
++			m_bot.Commander().getVoiPolicyString(
++				editPrefix + ".action",
++				"");
++		requested.editCounterpartOperationId =
++			m_bot.Commander().getVoiPolicyString(
++				editPrefix
++					+ ".counterpart_operation_id",
++				"");
++		requested.editUnitSelection =
++			readEditComposition(
++				editPrefix + ".unit_selection");
++		requested.editBeforeComposition =
++			readEditComposition(
++				editPrefix + ".before_composition");
++		requested.editAfterComposition =
++			readEditComposition(
++				editPrefix + ".after_composition");
++		requested.editExplicitOverride =
++			m_bot.Commander().getVoiPolicyBool(
++				editPrefix + ".explicit_override",
++				false);
++		requested.editConfirmationPolicy =
++			m_bot.Commander().getVoiPolicyString(
++				editPrefix + ".confirmation_policy",
++				"auto");
++		requested.editBeforeCount =
++			voiOperationCompositionTotal(
++				requested.editBeforeComposition);
++		requested.editAfterCount =
++			voiOperationCompositionTotal(
++				requested.editAfterComposition);
++		requested.editResolution =
++			requested.editAction.empty()
++				? "none"
++				: "pending";
+ 		if (requested.maxUnits == 0)
+ 		{
+ 			requested.maxUnits =
+@@ -3779,6 +3980,40 @@ void CombatCommander::updateVoiOperations()
+ 			requested.blockedReason =
+ 				"unsupported_task_type";
+ 		}
++		else if (!voiIsSupportedOperationEditAction(
++			requested.editAction))
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				"unsupported_operation_edit_action";
++			requested.editResolution = "blocked";
++			requested.editBlocker =
++				requested.blockedReason;
++		}
++		else if (!requested.editAction.empty()
++			&& requested.editConfirmationPolicy != "auto")
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				requested.editConfirmationPolicy == "required"
++					? "operation_edit_confirmation_required"
++					: "invalid_operation_edit_confirmation_policy";
++			requested.editResolution = "blocked";
++			requested.editBlocker =
++				requested.blockedReason;
++		}
++		else if ((requested.editAction == "transfer_in"
++				|| requested.editAction == "transfer_out")
++			&& (requested.editCounterpartOperationId.empty()
++				|| requested.editUnitSelection.empty()))
++		{
++			requested.status = "BLOCKED";
++			requested.blockedReason =
++				"invalid_transfer_edit_contract";
++			requested.editResolution = "blocked";
++			requested.editBlocker =
++				requested.blockedReason;
++		}
+ 		else if (requested.targetPosition == CCPosition()
+ 			|| !m_bot.Map().isValidPosition(
+ 				requested.targetPosition))
+@@ -3898,111 +4133,949 @@ void CombatCommander::updateVoiOperations()
+ 			return left.generation < right.generation;
+ 		});
+ 
+-	for (size_t index = 0;
+-		index < m_voiOperations.size();)
+-	{
+-		bool retained = false;
+-		for (const auto & requested : requestedOperations)
++	auto requestedByOperationId =
++		[&](const std::string & operationId)
++			-> const VoiOperationState *
+ 		{
+-			if (m_voiOperations[index].operationId
+-					== requested.operationId
+-				&& m_voiOperations[index].generation
+-					== requested.generation)
++			for (const auto & requested : requestedOperations)
+ 			{
+-				retained = true;
+-				break;
++				if (requested.operationId == operationId)
++				{
++					return &requested;
++				}
++			}
++			return nullptr;
++		};
++	auto existingOperationById =
++		[&](const std::string & operationId)
++			-> VoiOperationState *
++		{
++			VoiOperationState * latest = nullptr;
++			for (auto & operation : m_voiOperations)
++			{
++				if (operation.operationId == operationId
++					&& (latest == nullptr
++						|| operation.generation
++							> latest->generation))
++				{
++					latest = &operation;
++				}
++			}
++			return latest;
++		};
++	std::map<std::string, std::vector<sc2::Tag>>
++		transferSelections;
++	auto transferBlockerBeforeHandoff =
++		[&](const VoiOperationState & destination)
++		{
++			if (destination.editAction != "transfer_in")
++			{
++				return std::string();
++			}
++			const VoiOperationState * sourceRequested =
++				requestedByOperationId(
++					destination
++						.editCounterpartOperationId);
++			VoiOperationState * sourceExisting =
++				existingOperationById(
++					destination
++						.editCounterpartOperationId);
++			VoiOperationState * destinationExisting =
++				existingOperationById(
++					destination.operationId);
++			if (sourceRequested == nullptr
++				|| sourceExisting == nullptr
++				|| destinationExisting == nullptr
++				|| sourceExisting == destinationExisting)
++			{
++				return std::string(
++					"transfer_source_not_active");
++			}
++			if (sourceRequested->editAction
++					!= "transfer_out"
++				|| sourceRequested
++						->editCounterpartOperationId
++					!= destination.operationId
++				|| !sourceRequested->editExplicitOverride
++				|| !destination.editExplicitOverride
++				|| !voiOperationCompositionMatches(
++					sourceRequested->editUnitSelection,
++					destination.editUnitSelection))
++			{
++				return std::string(
++					"transfer_counterpart_contract_mismatch");
++			}
++			const bool emergencySupersession =
++				destination.commandLayer == "emergency";
++			if (!emergencySupersession
++				&& destination.priority
++					< sourceExisting->priority)
++			{
++				return std::string(
++					"destination_priority_not_higher");
++			}
++			if ((!sourceRequested
++						->editBeforeComposition.empty()
++					&& !voiOperationCompositionMatches(
++						sourceExisting
++							->compositionRequirements,
++						sourceRequested
++							->editBeforeComposition))
++				|| (!destination
++						.editBeforeComposition.empty()
++					&& !voiOperationCompositionMatches(
++						destinationExisting
++							->compositionRequirements,
++						destination
++							.editBeforeComposition)))
++			{
++				return std::string(
++					"before_composition_mismatch");
++			}
++			if ((!sourceRequested
++						->editAfterComposition.empty()
++					&& !voiOperationCompositionMatches(
++						sourceRequested
++							->compositionRequirements,
++						sourceRequested
++							->editAfterComposition))
++				|| (!destination
++						.editAfterComposition.empty()
++					&& !voiOperationCompositionMatches(
++						destination
++							.compositionRequirements,
++						destination
++							.editAfterComposition)))
++			{
++				return std::string(
++					"transfer_after_composition_mismatch");
++			}
++			const int sourceAfterCount =
++				voiOperationCompositionTotal(
++					sourceRequested
++						->editAfterComposition);
++			if (sourceAfterCount
++				< sourceExisting->minUnits)
++			{
++				return std::string(
++					"source_minimum_preservation");
++			}
++			if (!sourceExisting->allowPartial
++				&& !voiOperationCompositionMatches(
++					sourceExisting
++						->compositionRequirements,
++					sourceRequested
++						->editAfterComposition))
++			{
++				return std::string(
++					"source_exact_composition_protected");
++			}
++			if (sourceExisting->squadName.empty()
++				|| !m_squadData.squadExists(
++					sourceExisting->squadName))
++			{
++				return std::string(
++					"transfer_source_not_active");
++			}
++			Squad & sourceSquad =
++				m_squadData.getSquad(
++					sourceExisting->squadName);
++			std::vector<Unit> sourceUnits;
++			for (const auto & unit : sourceSquad.getUnits())
++			{
++				const auto owner =
++					m_voiOperationUnitOwners.find(
++						unit.getTag());
++				if (unit.isValid()
++					&& unit.isAlive()
++					&& owner
++						!= m_voiOperationUnitOwners.end()
++					&& owner->second.first
++						== sourceExisting->operationId
++					&& owner->second.second
++						== sourceExisting->generation)
++				{
++					sourceUnits.push_back(unit);
++				}
++			}
++			std::sort(
++				sourceUnits.begin(),
++				sourceUnits.end(),
++				[](const Unit & left, const Unit & right)
++				{
++					return left.getTag() < right.getTag();
++				});
++			const int transferCount =
++				voiOperationCompositionTotal(
++					destination.editUnitSelection);
++			int destinationOwned = 0;
++			if (!destinationExisting->squadName.empty()
++				&& m_squadData.squadExists(
++					destinationExisting->squadName))
++			{
++				for (const auto & unit :
++					m_squadData.getSquad(
++						destinationExisting
++							->squadName).getUnits())
++				{
++					const auto owner =
++						m_voiOperationUnitOwners.find(
++							unit.getTag());
++					if (unit.isValid()
++						&& unit.isAlive()
++						&& owner
++							!= m_voiOperationUnitOwners.end()
++						&& owner->second.first
++							== destinationExisting
++								->operationId
++						&& owner->second.second
++							== destinationExisting
++								->generation)
++					{
++						++destinationOwned;
++					}
++				}
++			}
++			if (transferCount <= 0
++				|| destinationOwned + transferCount
++					> destination.maxUnits
++				|| static_cast<int>(sourceUnits.size())
++						- transferCount
++					< sourceExisting->minUnits)
++			{
++				return std::string(
++					"transfer_capacity_or_source_minimum");
++			}
++			std::set<sc2::Tag> selectedTags;
++			bool protectedAbilityCasterMatched = false;
++			const auto isProtectedAbilityCaster =
++				[&](const Unit & unit)
++				{
++					return unit.getTag()
++							== m_voiExplicitAbilityStagingActorTag
++						|| unit.getTag()
++							== m_lastVoiExplicitAbilityActorTag
++						|| (voiTacticalNukeTaskRequested(m_bot)
++							&& unit.getAPIUnitType()
++								== sc2::UNIT_TYPEID::TERRAN_GHOST);
++				};
++			for (const auto & selection :
++				destination.editUnitSelection)
++			{
++				int selectedForType = 0;
++				for (const auto & unit : sourceUnits)
++				{
++					if (selectedForType >= selection.count)
++					{
++						break;
++					}
++					if (selectedTags.find(unit.getTag())
++							!= selectedTags.end()
++						|| !voiOperationUnitMatchesRequirement(
++							*sourceExisting,
++							unit,
++							selection))
++					{
++						continue;
++					}
++					if (isProtectedAbilityCaster(unit))
++					{
++						protectedAbilityCasterMatched = true;
++						continue;
++					}
++					selectedTags.insert(unit.getTag());
++					++selectedForType;
++				}
++				if (selectedForType != selection.count)
++				{
++					return protectedAbilityCasterMatched
++						? std::string(
++							"explicit_ability_owner_protected")
++						: std::string(
++							"transfer_units_unavailable");
++				}
+ 			}
++			for (const auto & requirement :
++				sourceRequested->compositionRequirements)
++			{
++				int remainingForRequirement = 0;
++				for (const auto & unit : sourceUnits)
++				{
++					if (selectedTags.find(unit.getTag())
++							== selectedTags.end()
++						&& voiOperationUnitMatchesRequirement(
++							*sourceRequested,
++							unit,
++							requirement))
++					{
++						++remainingForRequirement;
++					}
++				}
++				if (remainingForRequirement
++					< requirement.count)
++				{
++					return std::string(
++						"source_composition_preservation");
++				}
++			}
++			const std::vector<sc2::Tag> selectionPlan(
++				selectedTags.begin(),
++				selectedTags.end());
++			transferSelections[destination.operationId] =
++				selectionPlan;
++			transferSelections[sourceExisting->operationId] =
++				selectionPlan;
++			return std::string();
++		};
++	std::map<std::string, std::string>
++		transferBlockers;
++	for (const auto & requested : requestedOperations)
++	{
++		const std::string blocker =
++			transferBlockerBeforeHandoff(requested);
++		if (blocker.empty())
++		{
++			continue;
+ 		}
+-		if (!retained)
++		transferBlockers[requested.operationId] =
++			blocker;
++		transferBlockers[
++			requested.editCounterpartOperationId] =
++				blocker;
++	}
++	auto ensureOperationSquad =
++		[&](VoiOperationState & operation) -> Squad &
++		{
++			if (!m_squadData.squadExists(operation.squadName))
++			{
++				const int orderType =
++					operation.taskType == "scout"
++						? SquadOrderTypes::Scout
++						: (operation.taskType == "defend"
++							? SquadOrderTypes::Defend
++							: SquadOrderTypes::Attack);
++				m_squadData.addSquad(
++					operation.squadName,
++					Squad(
++						operation.squadName,
++						SquadOrder(
++							orderType,
++							operation.activeTargetPosition,
++							operation.taskType == "scout"
++								? ScoutOrderRadius
++								: DefaultOrderRadius,
++							operation.status),
++						ExplicitOperationPriority,
++						m_bot));
++			}
++			return m_squadData.getSquad(operation.squadName);
++		};
++	auto applyRequestedConfiguration =
++		[&](
++			VoiOperationState & existing,
++			const VoiOperationState & requested)
++		{
++			const bool targetChanged =
++				existing.targetPosition
++					!= requested.targetPosition
++				|| existing.routeType
++					!= requested.routeType;
++			const bool newEditEpoch =
++				existing.policyUpdateId
++					!= requested.policyUpdateId;
++			existing.policyUpdateId = policyUpdateId;
++			existing.commandLayer = requested.commandLayer;
++			existing.taskType = requested.taskType;
++			existing.routeType = requested.routeType;
++			existing.unitClasses = requested.unitClasses;
++			existing.locationIntent =
++				requested.locationIntent;
++			existing.lifetimeMode = requested.lifetimeMode;
++			existing.completionConditions =
++				requested.completionConditions;
++			existing.durationSeconds =
++				requested.durationSeconds;
++			existing.standing = requested.standing;
++			existing.minUnits = requested.minUnits;
++			existing.maxUnits = requested.maxUnits;
++			existing.allowPartial = requested.allowPartial;
++			existing.priority = requested.priority;
++			existing.compositionRequirements =
++				requested.compositionRequirements;
++			existing.unitRoles = requested.unitRoles;
++			existing.targetPosition =
++				requested.targetPosition;
++			existing.targetEvidence =
++				requested.targetEvidence;
++			existing.targetX = requested.targetX;
++			existing.targetY = requested.targetY;
++			if (newEditEpoch)
++			{
++				existing.editAction =
++					requested.editAction;
++				existing.editCounterpartOperationId =
++					requested.editCounterpartOperationId;
++				existing.editUnitSelection =
++					requested.editUnitSelection;
++				existing.editBeforeComposition =
++					requested.editBeforeComposition;
++				existing.editAfterComposition =
++					requested.editAfterComposition;
++				existing.editExplicitOverride =
++					requested.editExplicitOverride;
++				existing.editConfirmationPolicy =
++					requested.editConfirmationPolicy;
++				existing.editBeforeCount =
++					requested.editBeforeCount;
++				existing.editAfterCount =
++					requested.editAfterCount;
++				existing.transferredInCount = 0;
++				existing.transferredOutCount = 0;
++				existing.editResolution =
++					requested.editResolution;
++				existing.editBlocker =
++					requested.editBlocker;
++				existing.editRequestedGeneration = 0;
++				existing.editRejectedUpdateId.clear();
++				existing.editRejectedFrame = 0;
++				existing.editSupersessionMode.clear();
++			}
++			if (targetChanged)
++			{
++				existing.activeTargetPosition =
++					requested.activeTargetPosition;
++				existing.routeStageComplete =
++					requested.routeStageComplete;
++				existing.submissionObserved = false;
++				existing.submittedFrame = 0;
++				existing.submittedPositions.clear();
++			}
++		};
++	auto annotateRejectedEdit =
++		[&](
++			VoiOperationState & existing,
++			const VoiOperationState & requested,
++			const std::string & blocker)
++		{
++			existing.policyUpdateId = policyUpdateId;
++			existing.editAction = requested.editAction;
++			existing.editCounterpartOperationId =
++				requested.editCounterpartOperationId;
++			existing.editUnitSelection =
++				requested.editUnitSelection;
++			existing.editBeforeComposition =
++				requested.editBeforeComposition;
++			existing.editAfterComposition =
++				requested.editAfterComposition;
++			existing.editExplicitOverride =
++				requested.editExplicitOverride;
++			existing.editConfirmationPolicy =
++				requested.editConfirmationPolicy;
++			existing.editBeforeCount =
++				requested.editBeforeCount;
++			existing.editAfterCount =
++				requested.editAfterCount;
++			existing.transferredInCount = 0;
++			existing.transferredOutCount = 0;
++			existing.editResolution = "blocked";
++			existing.editBlocker = blocker;
++			existing.editRequestedGeneration =
++				requested.generation;
++			existing.editRejectedUpdateId =
++				requested.policyUpdateId;
++			existing.editRejectedFrame =
++				m_bot.GetGameLoop();
++			existing.editSupersessionMode =
++				requested.commandLayer == "emergency"
++					? "emergency_supersession"
++					: "priority_preemption";
++			if (requested.editAction == "transfer_in")
++			{
++				existing.status = "WAITING_FOR_UNITS";
++				existing.blockedReason = blocker;
++			}
++			existing.lastAction =
++				"operation_edit_blocked|" + blocker;
++			existing.lastActionFrame =
++				m_bot.GetGameLoop();
++		};
++	auto handoffGeneration =
++		[&](
++			VoiOperationState & existing,
++			const VoiOperationState & requested)
++		{
++			const std::string previousSquadName =
++				existing.squadName;
++			const uint64_t previousGeneration =
++				existing.generation;
++			const bool targetChanged =
++				existing.targetPosition
++					!= requested.targetPosition
++				|| existing.routeType
++					!= requested.routeType;
++			std::vector<Unit> retainedUnits;
++			if (!previousSquadName.empty()
++				&& m_squadData.squadExists(
++					previousSquadName))
++			{
++				retainedUnits =
++					m_squadData.getSquad(
++						previousSquadName).getUnits();
++			}
++			VoiOperationState replacement = requested;
++			replacement.assignedUnitTags =
++				existing.assignedUnitTags;
++			replacement.assignedCount =
++				existing.assignedCount;
++			replacement.assignedFrame =
++				existing.assignedFrame;
++			replacement.submittedFrame =
++				targetChanged ? 0 : existing.submittedFrame;
++			replacement.lastActionFrame =
++				existing.lastActionFrame;
++			replacement.maxHomeDistance =
++				existing.maxHomeDistance;
++			replacement.engaged = existing.engaged;
++			replacement.submissionObserved =
++				targetChanged
++					? false
++					: existing.submissionObserved;
++			replacement.lastAction =
++				existing.lastAction;
++			replacement.lastEnemyFrame =
++				existing.lastEnemyFrame;
++			replacement.previousSquadByTag =
++				existing.previousSquadByTag;
++			replacement.submittedPositions =
++				targetChanged
++					? std::map<sc2::Tag, CCPosition>()
++					: existing.submittedPositions;
++			replacement.editResolution =
++				replacement.editAction.empty()
++					? "generation_handoff"
++					: ((replacement.editAction
++							== "transfer_in"
++						|| replacement.editAction
++							== "transfer_out")
++						? "pending"
++						: "applied");
++			replacement.editBlocker.clear();
++			replacement.editRequestedGeneration = 0;
++			replacement.editRejectedUpdateId.clear();
++			replacement.editRejectedFrame = 0;
++			replacement.editSupersessionMode =
++				replacement.commandLayer == "emergency"
++					? "emergency_supersession"
++					: "priority_preemption";
++
++			Squad & replacementSquad =
++				ensureOperationSquad(replacement);
++			if (!previousSquadName.empty()
++				&& m_squadData.squadExists(
++					previousSquadName))
++			{
++				Squad & previousSquad =
++					m_squadData.getSquad(
++						previousSquadName);
++				for (const auto & unit : retainedUnits)
++				{
++					previousSquad.removeUnit(unit);
++					if (unit.isValid() && unit.isAlive())
++					{
++						m_squadData.assignUnitToSquad(
++							unit,
++							replacementSquad);
++					}
++				}
++				m_squadData.removeSquad(
++					previousSquadName);
++			}
++			for (const auto & unit : retainedUnits)
++			{
++				const auto owner =
++					m_voiOperationUnitOwners.find(
++						unit.getTag());
++				if (owner
++						!= m_voiOperationUnitOwners.end()
++					&& owner->second.first
++						== existing.operationId
++					&& owner->second.second
++						== previousGeneration)
++				{
++					owner->second = std::make_pair(
++						replacement.operationId,
++						replacement.generation);
++				}
++				const auto action =
++					unitActions.find(
++						unit.getUnitPtr());
++				if (action != unitActions.end()
++					&& action->second.operationId
++						== existing.operationId
++					&& action->second.operationGeneration
++						== previousGeneration)
++				{
++					unitActions.erase(action);
++				}
++			}
++			replacement.lastAction =
++				"operation_generation_handoff|"
++					+ std::to_string(previousGeneration)
++					+ "->"
++					+ std::to_string(
++						replacement.generation)
++					+ "|retained="
++					+ std::to_string(
++						retainedUnits.size());
++			replacement.lastActionFrame =
++				m_bot.GetGameLoop();
++			existing = replacement;
++		};
++
++	std::set<std::string> consumedRequestedIds;
++	for (size_t index = 0;
++		index < m_voiOperations.size();)
++	{
++		VoiOperationState & existing =
++			m_voiOperations[index];
++		const VoiOperationState * requested =
++			requestedByOperationId(
++				existing.operationId);
++		if (requested == nullptr)
+ 		{
+ 			releaseVoiOperation(
+-				m_voiOperations[index],
+-				"replaced_or_removed",
++				existing,
++				"removed_from_policy",
+ 				false);
+ 			m_voiOperations.erase(
+ 				m_voiOperations.begin() + index);
++			continue;
+ 		}
+-		else
+-		{
++		consumedRequestedIds.insert(
++			requested->operationId);
++		if (requested->generation < existing.generation)
++		{
++			existing.editResolution =
++				"ignored_stale_generation";
++			existing.editBlocker =
++				"stale_operation_generation";
++			existing.lastAction =
++				"operation_edit_ignored|"
++					"stale_operation_generation";
++			existing.lastActionFrame =
++				m_bot.GetGameLoop();
+ 			++index;
++			continue;
+ 		}
+-	}
+-
+-	for (const auto & requested : requestedOperations)
+-	{
+-		VoiOperationState * existing = findVoiOperation(
+-			requested.operationId,
+-			requested.generation);
+-		if (existing == nullptr)
++		if (requested->generation > existing.generation)
+ 		{
+-			m_voiOperations.push_back(requested);
++			const auto transferBlocker =
++				transferBlockers.find(
++					existing.operationId);
++			if (transferBlocker
++				!= transferBlockers.end())
++			{
++				annotateRejectedEdit(
++					existing,
++					*requested,
++					transferBlocker->second);
++				++index;
++				continue;
++			}
++			if ((requested->editAction == "transfer_in"
++					|| requested->editAction == "transfer_out")
++				&& transferSelections.find(
++					existing.operationId)
++					== transferSelections.end())
++			{
++				annotateRejectedEdit(
++					existing,
++					*requested,
++					"transfer_preflight_plan_missing");
++				++index;
++				continue;
++			}
++			if (!requested->editBeforeComposition.empty()
++				&& !voiOperationCompositionMatches(
++					existing.compositionRequirements,
++					requested->editBeforeComposition))
++			{
++				annotateRejectedEdit(
++					existing,
++					*requested,
++					"before_composition_mismatch");
++				++index;
++				continue;
++			}
++			if (!requested->blockedReason.empty()
++				&& !requested->completed)
++			{
++				annotateRejectedEdit(
++					existing,
++					*requested,
++					requested->blockedReason);
++				++index;
++				continue;
++			}
++			if (requested->completed)
++			{
++				releaseVoiOperation(
++					existing,
++					requested->blockedReason.empty()
++						? "completed_by_policy"
++						: requested->blockedReason,
++					true);
++				existing = *requested;
++				++index;
++				continue;
++			}
++			handoffGeneration(
++				existing,
++				*requested);
++			++index;
+ 			continue;
+ 		}
+-		const bool targetChanged =
+-			existing->targetPosition
+-				!= requested.targetPosition
+-			|| existing->routeType
+-				!= requested.routeType;
+-		existing->policyUpdateId = policyUpdateId;
+-		existing->taskType = requested.taskType;
+-		existing->routeType = requested.routeType;
+-		existing->unitClasses = requested.unitClasses;
+-		existing->locationIntent = requested.locationIntent;
+-		existing->lifetimeMode = requested.lifetimeMode;
+-		existing->completionConditions =
+-			requested.completionConditions;
+-		existing->durationSeconds = requested.durationSeconds;
+-		existing->standing = requested.standing;
+-		existing->minUnits = requested.minUnits;
+-		existing->maxUnits = requested.maxUnits;
+-		existing->allowPartial = requested.allowPartial;
+-		existing->priority = requested.priority;
+-		existing->compositionRequirements =
+-			requested.compositionRequirements;
+-		existing->unitRoles = requested.unitRoles;
+-		existing->targetPosition =
+-			requested.targetPosition;
+-		existing->targetEvidence =
+-			requested.targetEvidence;
+-		existing->targetX = requested.targetX;
+-		existing->targetY = requested.targetY;
+-		existing->squadName = requested.squadName;
+-		if (targetChanged)
++
++		if (existing.policyUpdateId
++				!= requested->policyUpdateId
++			&& !requested->editAction.empty())
+ 		{
+-			existing->activeTargetPosition =
+-				requested.activeTargetPosition;
+-			existing->routeStageComplete =
+-				requested.routeStageComplete;
+-			existing->submissionObserved = false;
+-			existing->submittedFrame = 0;
+-			existing->submittedPositions.clear();
++			annotateRejectedEdit(
++				existing,
++				*requested,
++				"operation_edit_requires_generation_increment");
++			++index;
++			continue;
+ 		}
+-		if (requested.completed)
++		applyRequestedConfiguration(
++			existing,
++			*requested);
++		if (requested->completed)
+ 		{
+ 			releaseVoiOperation(
+-				*existing,
+-				requested.blockedReason.empty()
++				existing,
++				requested->blockedReason.empty()
+ 					? "completed_by_policy"
+-					: requested.blockedReason,
++					: requested->blockedReason,
+ 				true);
+-			existing->status = requested.status;
+-			existing->blockedReason =
+-				requested.blockedReason;
++			existing.status = requested->status;
++			existing.blockedReason =
++				requested->blockedReason;
+ 		}
+-		else if (!requested.blockedReason.empty())
++		else if (!requested->blockedReason.empty())
+ 		{
+ 			releaseVoiOperation(
+-				*existing,
+-				requested.blockedReason,
++				existing,
++				requested->blockedReason,
+ 				false);
+ 		}
+-		else if (existing->status == "BLOCKED")
++		else if (existing.status == "BLOCKED")
+ 		{
+-			existing->status = "RECEIVED";
+-			existing->blockedReason.clear();
+-			existing->lastAction.clear();
+-			existing->lastActionFrame = 0;
++			existing.status = "RECEIVED";
++			existing.blockedReason.clear();
++			existing.lastAction.clear();
++			existing.lastActionFrame = 0;
+ 		}
++		++index;
++	}
++	for (const auto & requested : requestedOperations)
++	{
++		if (consumedRequestedIds.find(
++				requested.operationId)
++			== consumedRequestedIds.end())
++		{
++			m_voiOperations.push_back(requested);
++		}
++	}
++	for (auto & operation : m_voiOperations)
++	{
++		if (!operation.completed
++			&& !operation.editAction.empty()
++			&& operation.editAction != "transfer_in"
++			&& operation.editAction != "transfer_out"
++			&& operation.editResolution == "pending")
++		{
++			operation.editResolution = "applied";
++			operation.editBlocker.clear();
++			operation.lastAction =
++				"operation_edit_applied|"
++					+ operation.editAction;
++			operation.lastActionFrame =
++				m_bot.GetGameLoop();
++		}
++	}
++
++	auto currentOperationById =
++		[&](const std::string & operationId)
++			-> VoiOperationState *
++		{
++			VoiOperationState * latest = nullptr;
++			for (auto & operation : m_voiOperations)
++			{
++				if (operation.operationId == operationId
++					&& (latest == nullptr
++						|| operation.generation
++							> latest->generation))
++				{
++					latest = &operation;
++				}
++			}
++			return latest;
++		};
++	for (auto & destination : m_voiOperations)
++	{
++		if (destination.completed
++			|| destination.editAction != "transfer_in"
++			|| destination.editResolution == "applied")
++		{
++			continue;
++		}
++		VoiOperationState * source =
++			currentOperationById(
++				destination
++					.editCounterpartOperationId);
++		const auto plannedSelection =
++			transferSelections.find(
++				destination.operationId);
++		if (source == nullptr
++			|| source == &destination
++			|| plannedSelection == transferSelections.end())
++		{
++			Util::Log(
++				__FUNCTION__,
++				"VOI transfer invariant missing after successful preflight id="
++					+ destination.operationId,
++				m_bot);
++			continue;
++		}
++		Squad & sourceSquad =
++			ensureOperationSquad(*source);
++		Squad & destinationSquad =
++			ensureOperationSquad(destination);
++		std::set<sc2::Tag> selectedTags(
++			plannedSelection->second.begin(),
++			plannedSelection->second.end());
++		std::vector<Unit> selectedUnits;
++		for (const auto & unit : sourceSquad.getUnits())
++		{
++			const auto owner =
++				m_voiOperationUnitOwners.find(
++					unit.getTag());
++			if (unit.isValid()
++				&& unit.isAlive()
++				&& owner
++					!= m_voiOperationUnitOwners.end()
++				&& owner->second.first
++					== source->operationId
++				&& owner->second.second
++					== source->generation)
++			{
++				if (selectedTags.find(unit.getTag())
++					!= selectedTags.end())
++				{
++					selectedUnits.push_back(unit);
++				}
++			}
++		}
++		std::sort(
++			selectedUnits.begin(),
++			selectedUnits.end(),
++			[](const Unit & left, const Unit & right)
++			{
++				return left.getTag() < right.getTag();
++			});
++		const int transferCount =
++			static_cast<int>(plannedSelection->second.size());
++
++		for (const auto & unit : selectedUnits)
++		{
++			std::string restoreSquad = "Backup";
++			const auto previous =
++				source->previousSquadByTag.find(
++					unit.getTag());
++			if (previous
++				!= source->previousSquadByTag.end())
++			{
++				restoreSquad = previous->second;
++			}
++			sourceSquad.removeUnit(unit);
++			source->previousSquadByTag.erase(
++				unit.getTag());
++			source->submittedPositions.erase(
++				unit.getTag());
++			source->assignedUnitTags.erase(
++				std::remove(
++					source->assignedUnitTags.begin(),
++					source->assignedUnitTags.end(),
++					unit.getTag()),
++				source->assignedUnitTags.end());
++			const auto action =
++				unitActions.find(unit.getUnitPtr());
++			if (action != unitActions.end()
++				&& action->second.operationId
++					== source->operationId
++				&& action->second.operationGeneration
++					== source->generation)
++			{
++				unitActions.erase(action);
++			}
++			destination.previousSquadByTag[
++				unit.getTag()] = restoreSquad;
++			m_squadData.assignUnitToSquad(
++				unit,
++				destinationSquad);
++			m_voiOperationUnitOwners[unit.getTag()] =
++				std::make_pair(
++					destination.operationId,
++					destination.generation);
++		}
++		source->assignedCount =
++			static_cast<int>(
++				source->assignedUnitTags.size());
++		destination.assignedUnitTags.clear();
++		for (const auto & unit :
++			destinationSquad.getUnits())
++		{
++			const auto owner =
++				m_voiOperationUnitOwners.find(
++					unit.getTag());
++			if (owner
++					!= m_voiOperationUnitOwners.end()
++				&& owner->second.first
++					== destination.operationId
++				&& owner->second.second
++					== destination.generation)
++			{
++				destination.assignedUnitTags.push_back(
++					unit.getTag());
++			}
++		}
++		std::sort(
++			destination.assignedUnitTags.begin(),
++			destination.assignedUnitTags.end());
++		destination.assignedCount =
++			static_cast<int>(
++				destination.assignedUnitTags.size());
++		source->transferredOutCount += transferCount;
++		destination.transferredInCount += transferCount;
++		source->editResolution = "applied";
++		destination.editResolution = "applied";
++		source->editBlocker.clear();
++		destination.editBlocker.clear();
++		source->lastAction =
++			"operation_edit_transfer_out|counterpart="
++				+ destination.operationId
++				+ "|count="
++				+ std::to_string(transferCount);
++		destination.lastAction =
++			"operation_edit_transfer_in|counterpart="
++				+ source->operationId
++				+ "|count="
++				+ std::to_string(transferCount);
++		source->lastActionFrame =
++			m_bot.GetGameLoop();
++		destination.lastActionFrame =
++			m_bot.GetGameLoop();
+ 	}
+ 	std::sort(
+ 		m_voiOperations.begin(),
+@@ -4026,6 +5099,48 @@ void CombatCommander::updateVoiOperations()
+ 	{
+ 		reconcileVoiOperation(operation);
+ 	}
++	for (auto owner = m_voiOperationUnitOwners.begin();
++		owner != m_voiOperationUnitOwners.end();)
++	{
++		const VoiOperationState * operation =
++			findVoiOperation(
++				owner->second.first,
++				owner->second.second);
++		if (operation == nullptr
++			|| operation->completed
++			|| operation->squadName.empty()
++			|| !m_squadData.squadExists(
++				operation->squadName)
++			|| !m_squadData.getSquad(
++				operation->squadName)
++					.containsUnit(owner->first))
++		{
++			owner =
++				m_voiOperationUnitOwners.erase(owner);
++		}
++		else
++		{
++			++owner;
++		}
++	}
++	for (auto action = unitActions.begin();
++		action != unitActions.end();)
++	{
++		const bool operationAction =
++			!action->second.operationId.empty()
++			|| action->second.operationGeneration != 0;
++		if (operationAction
++			&& !isCurrentVoiOperationAction(
++				action->first,
++				action->second))
++		{
++			action = unitActions.erase(action);
++		}
++		else
++		{
++			++action;
++		}
++	}
+ }
+ 
+ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+@@ -4055,6 +5170,8 @@ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+ 			"removed_from_policy_before_production";
+ 		int matchingEntryCount = 0;
+ 		int matchingIndex = -1;
++		bool staleGenerationEntry = false;
++		bool higherGenerationEntry = false;
+ 		for (int index = 0;
+ 			index < operationCount;
+ 			++index)
+@@ -4063,13 +5180,28 @@ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+ 				"operations." + std::to_string(index);
+ 			if (m_bot.Commander().getVoiPolicyString(
+ 					prefix + ".operation_id",
+-					"") != operation.operationId
+-				|| static_cast<uint64_t>(
++					"") != operation.operationId)
++			{
++				continue;
++			}
++			const uint64_t requestedGeneration =
++				static_cast<uint64_t>(
+ 					std::max(
+ 						1,
+ 						m_bot.Commander().getVoiPolicyInt(
+ 							prefix + ".generation",
+-							1))) != operation.generation)
++							1)));
++			if (requestedGeneration < operation.generation)
++			{
++				staleGenerationEntry = true;
++				continue;
++			}
++			if (requestedGeneration > operation.generation)
++			{
++				higherGenerationEntry = true;
++				continue;
++			}
++			if (requestedGeneration != operation.generation)
+ 			{
+ 				continue;
+ 			}
+@@ -4077,7 +5209,17 @@ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+ 			matchingIndex = index;
+ 		}
+ 
+-		if (matchingEntryCount > 1)
++		if (matchingEntryCount == 0
++			&& (staleGenerationEntry
++				|| higherGenerationEntry))
++		{
++			retained = true;
++			reason =
++				higherGenerationEntry
++					? "higher_operation_generation_pending_handoff"
++					: "stale_operation_generation_preserved";
++		}
++		else if (matchingEntryCount > 1)
+ 		{
+ 			reason =
+ 				"duplicate_operation_key_before_production";
+@@ -4451,6 +5593,50 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+ 			<< "\"completed\":"
+ 			<< (operation.completed ? "true" : "false")
+ 			<< ","
++			<< "\"edit_action\":\""
++			<< voiOperationJsonEscape(
++				operation.editAction)
++			<< "\","
++			<< "\"edit_counterpart_operation_id\":\""
++			<< voiOperationJsonEscape(
++				operation.editCounterpartOperationId)
++			<< "\","
++			<< "\"edit_before_composition\":"
++			<< voiOperationCompositionTelemetryJson(
++				operation.editBeforeComposition)
++			<< ","
++			<< "\"edit_after_composition\":"
++			<< voiOperationCompositionTelemetryJson(
++				operation.editAfterComposition)
++			<< ","
++			<< "\"edit_before_count\":"
++			<< operation.editBeforeCount << ","
++			<< "\"edit_after_count\":"
++			<< operation.editAfterCount << ","
++			<< "\"transferred_in_count\":"
++			<< operation.transferredInCount << ","
++			<< "\"transferred_out_count\":"
++			<< operation.transferredOutCount << ","
++			<< "\"edit_resolution\":\""
++			<< voiOperationJsonEscape(
++				operation.editResolution)
++			<< "\","
++			<< "\"edit_blocker\":\""
++			<< voiOperationJsonEscape(
++				operation.editBlocker)
++			<< "\","
++			<< "\"edit_requested_generation\":"
++			<< operation.editRequestedGeneration << ","
++			<< "\"edit_rejected_update_id\":\""
++			<< voiOperationJsonEscape(
++				operation.editRejectedUpdateId)
++			<< "\","
++			<< "\"edit_rejected_frame\":"
++			<< operation.editRejectedFrame << ","
++			<< "\"edit_supersession_mode\":\""
++			<< voiOperationJsonEscape(
++				operation.editSupersessionMode)
++			<< "\","
+ 			<< "\"blocked_reason\":\""
+ 			<< voiOperationJsonEscape(
+ 				operation.blockedReason)
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 3a08bc3..6ec745b 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -182,6 +182,7 @@ struct VoiOperationState
+ 	std::string lastAction;
+ 
+ 	std::string policyUpdateId;
++	std::string commandLayer;
+ 	std::string squadName;
+ 	std::string unitClasses;
+ 	std::string locationIntent;
+@@ -201,6 +202,23 @@ struct VoiOperationState
+ 	CCPosition activeTargetPosition = CCPosition();
+ 	std::vector<CompositionRequirement> compositionRequirements;
+ 	std::vector<UnitRole> unitRoles;
++	std::string editAction;
++	std::string editCounterpartOperationId;
++	std::vector<CompositionRequirement> editUnitSelection;
++	std::vector<CompositionRequirement> editBeforeComposition;
++	std::vector<CompositionRequirement> editAfterComposition;
++	bool editExplicitOverride = false;
++	std::string editConfirmationPolicy = "auto";
++	int editBeforeCount = 0;
++	int editAfterCount = 0;
++	int transferredInCount = 0;
++	int transferredOutCount = 0;
++	std::string editResolution = "none";
++	std::string editBlocker;
++	uint64_t editRequestedGeneration = 0;
++	std::string editRejectedUpdateId;
++	uint32_t editRejectedFrame = 0;
++	std::string editSupersessionMode;
+ 	std::map<sc2::Tag, CCPosition> submittedPositions;
+ 	std::map<sc2::Tag, std::string> previousSquadByTag;
+ };
