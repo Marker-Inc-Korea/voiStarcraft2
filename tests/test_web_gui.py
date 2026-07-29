@@ -327,6 +327,146 @@ def attached_runtime_telemetry(document, runtime_instance_id):
     return payload
 
 
+def semantic_operation_payload(
+    *,
+    operation_id="flank-alpha",
+    generation=1,
+    requested_generation=None,
+    frame=100,
+    session_epoch=1700000000000,
+    execution_state="action_issued",
+    owner_count=4,
+    required_count=4,
+    blocker="",
+    launch_decision="launch",
+    movement=False,
+    engagement=False,
+    target_reached=False,
+    terminal=False,
+    standing=False,
+    disposition="active",
+    operation_edit=None,
+):
+    """Return one reducer-ready canonical operation status fixture."""
+
+    requested = (
+        generation
+        if requested_generation is None
+        else requested_generation
+    )
+    update_id = f"update-{operation_id}-{requested}"
+    overview = deepcopy(
+        battlefield_projection_telemetry(
+            update_id=f"battlefield-{session_epoch}",
+            frame=frame,
+            generation=max(1, generation),
+            session_epoch=session_epoch,
+        )["battlefield_overview"]
+    )
+    projection = overview["operation_ownership"][0]
+    projection["identity"].update(
+        {
+            "update_id": update_id,
+            "scope": f"operation:{operation_id}",
+            "operation_id": operation_id,
+            "generation": generation,
+            "stage": "completed" if terminal else execution_state,
+            "game_frame": frame,
+        }
+    )
+    projection["operation_id"] = operation_id
+    projection["generation"] = generation
+    projection["operation_ownership"]["owner_count"] = owner_count
+    projection["operation_ownership"]["owner_tags"] = list(
+        range(1000, 1000 + owner_count)
+    )
+    projection["operation_launch_policy"].update(
+        {
+            "min_units": required_count,
+            "max_units": required_count,
+            "launch_count": owner_count,
+            "missing_count": max(0, required_count - owner_count),
+            "decision": launch_decision,
+            "blocker": blocker,
+        }
+    )
+    projection["operation_lifetime"].update(
+        {
+            "standing": standing,
+            "completed": terminal,
+            "completion_state": "completed" if terminal else "active",
+            "completion_reason": "target_reached" if terminal else "",
+            "completed_frame": frame if terminal else 0,
+        }
+    )
+    projection["operation_completion"].update(
+        {
+            "movement_observed": movement,
+            "engagement_observed": engagement,
+            "target_reached": target_reached,
+            "terminal": terminal,
+            "state": "completed" if terminal else "active",
+            "reason": "target_reached" if terminal else "",
+            "frame": frame if terminal else 0,
+            "generation": generation,
+        }
+    )
+    stages = [
+        {"name": "parsed", "ok": True},
+        {"name": "consumed_by_manager", "ok": True},
+    ]
+    if owner_count:
+        stages.append({"name": "queued_or_assigned", "ok": True})
+    if execution_state in {
+        "action_issued",
+        "effect_observed",
+        "moving",
+        "engaged",
+        "completed",
+    }:
+        stages.extend(
+            [
+                {"name": "order_issued", "ok": True},
+                {"name": "action_issued", "ok": True},
+            ]
+        )
+    operation = {
+        "operation_id": operation_id,
+        "operation_generation": generation,
+        "requested_operation_generation": requested,
+        "update_id": update_id,
+        "command_text": f"operate {operation_id}",
+        "mission": "attack",
+        "transport_status": "published",
+        "consumption_status": "consumed",
+        "telemetry_frame": frame,
+        "disposition": disposition,
+        "compile_result": {"status": "compiled", "update_id": update_id},
+        "operation_convergence": {
+            "target_count": required_count,
+            "represented_count": owner_count,
+            "missing_count": max(0, required_count - owner_count),
+            "blocker": blocker,
+        },
+        "operation_edit": dict(operation_edit or {}),
+        "intervention": {
+            "command_execution": {
+                "state": execution_state,
+                "operation_id": operation_id,
+                "operation_generation": generation,
+                "blocker_reason": blocker,
+                "stages": stages,
+            }
+        },
+        "battlefield_operation": projection,
+    }
+    return {
+        "blackboard_scope_id": "scope-semantic-test",
+        "battlefield_overview": overview,
+        "operations": [operation],
+    }
+
+
 def contains_hangul(text):
     """Return whether the text contains at least one Hangul syllable."""
 
@@ -867,6 +1007,112 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("history", payload)
         self.assertIn("micromachine_status", payload)
         self.assertTrue(payload["state"]["available"])
+
+    def test_operation_event_snapshot_hydration_does_not_republish_old_events(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        scope_id = "scope-operation-events"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "scout-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-scout-alpha",
+            "kind": "assigned",
+            "game_frame": 100,
+            "summary": "assigned",
+            "technical": {},
+        }
+        status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+
+        handler._publish_new_operation_events(
+            status,
+            blackboard_dir="/tmp/operation-events",
+            publish=False,
+        )
+        self.assertEqual(
+            [],
+            [
+                event
+                for event in self.server._http.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "submitted",
+            "game_frame": 101,
+            "summary": "submitted",
+        }
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second],
+            },
+            blackboard_dir="/tmp/operation-events",
+            publish=True,
+        )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual("submitted", operation_events[0]["payload"]["kind"])
+        self.assertEqual("update-scout-alpha", operation_events[0]["update_id"])
+        self.assertEqual(1, operation_events[0]["generation"])
+        self.assertEqual(101, operation_events[0]["game_frame"])
+
+    def test_sse_snapshot_holds_source_cut_until_authoritative_payload_is_captured(self):
+        original = self.bridge.micromachine_status
+        status_entered = threading.Event()
+        status_release = threading.Event()
+        contender_acquired = threading.Event()
+
+        def blocking_status(*, blackboard_dir=""):
+            status_entered.set()
+            if not status_release.wait(2):
+                raise TimeoutError("test did not release snapshot status")
+            return original(blackboard_dir=blackboard_dir)
+
+        self.bridge.micromachine_status = blocking_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status",
+            original,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            response_future = pool.submit(self.get_sse)
+            self.assertTrue(
+                status_entered.wait(1),
+                "authoritative snapshot did not enter MicroMachine status",
+            )
+
+            def contend_for_source_cut():
+                with self.server._http._event_source_lock:
+                    contender_acquired.set()
+
+            contender_future = pool.submit(contend_for_source_cut)
+            self.assertFalse(
+                contender_acquired.wait(0.1),
+                "source refresh entered during the authoritative snapshot cut",
+            )
+            status_release.set()
+            stream = response_future.result(timeout=3)
+            contender_future.result(timeout=3)
+
+        self.assertTrue(contender_acquired.is_set())
+        self.assertEqual(
+            "snapshot",
+            self.parse_sse_events(stream)[0]["event"],
+        )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
         original = self.bridge.micromachine_status
@@ -6318,6 +6564,336 @@ class SessionLoopBridgeTest(unittest.TestCase):
             json.dumps(first, ensure_ascii=False),
         )
 
+    def test_operation_timeline_dedupes_unchanged_snapshots_and_boolean_transitions(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            movement=True,
+            engagement=True,
+            target_reached=True,
+        )
+
+        first = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-semantic-test",
+        )
+        second = reducer.observe(
+            deepcopy(payload),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        self.assertEqual(
+            first["operation_event_latest_seq"],
+            second["operation_event_latest_seq"],
+        )
+        kinds = [
+            event["kind"]
+            for event in second["operations"][0]["semantic_timeline"]
+        ]
+        for kind in (
+            "received",
+            "planned",
+            "assigned",
+            "submitted",
+            "movement_observed",
+            "engagement_observed",
+            "target_reached",
+        ):
+            self.assertEqual(kinds.count(kind), 1, kind)
+        self.assertNotIn("completed", kinds)
+
+    def test_operation_timeline_rejects_generation_frame_and_same_frame_conflicts(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        current = semantic_operation_payload(generation=2, frame=200)
+        accepted = reducer.observe(
+            current,
+            blackboard_scope_id="scope-semantic-test",
+        )
+        baseline_seq = accepted["operation_event_latest_seq"]
+
+        lower_generation = semantic_operation_payload(
+            generation=1,
+            frame=300,
+            movement=True,
+            terminal=True,
+        )
+        regressing_frame = semantic_operation_payload(
+            generation=2,
+            frame=199,
+            movement=True,
+            terminal=True,
+        )
+        conflicting_same_frame = semantic_operation_payload(
+            generation=2,
+            frame=200,
+            movement=True,
+            terminal=True,
+        )
+        for stale in (
+            lower_generation,
+            regressing_frame,
+            conflicting_same_frame,
+        ):
+            result = reducer.observe(
+                stale,
+                blackboard_scope_id="scope-semantic-test",
+            )
+            self.assertEqual(
+                baseline_seq,
+                result["operation_event_latest_seq"],
+            )
+            self.assertNotIn(
+                "completed",
+                [
+                    event["kind"]
+                    for event in result["operation_events"]
+                ],
+            )
+
+        advanced = reducer.observe(
+            semantic_operation_payload(
+                generation=2,
+                frame=201,
+                movement=True,
+                terminal=True,
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+        self.assertIn(
+            "completed",
+            [event["kind"] for event in advanced["operation_events"]],
+        )
+
+    def test_operation_timeline_session_epoch_resets_generation_and_retained_state(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        first = reducer.observe(
+            semantic_operation_payload(
+                generation=3,
+                frame=300,
+                session_epoch=111,
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        reset = reducer.observe(
+            semantic_operation_payload(
+                generation=1,
+                frame=10,
+                session_epoch=222,
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        self.assertGreater(
+            reset["operation_event_latest_seq"],
+            first["operation_event_latest_seq"],
+        )
+        self.assertTrue(reset["operation_events"])
+        self.assertEqual(
+            {"222"},
+            {
+                event["session_epoch"]
+                for event in reset["operation_events"]
+            },
+        )
+        self.assertTrue(
+            all(key[1] == "222" for key in reducer._states),
+        )
+
+    def test_operation_timeline_standing_operation_is_not_completed_by_activity(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        result = reducer.observe(
+            semantic_operation_payload(
+                standing=True,
+                movement=True,
+                engagement=True,
+                target_reached=True,
+                terminal=False,
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        kinds = [
+            event["kind"]
+            for event in result["operations"][0]["semantic_timeline"]
+        ]
+        self.assertIn("movement_observed", kinds)
+        self.assertIn("engagement_observed", kinds)
+        self.assertIn("target_reached", kinds)
+        self.assertNotIn("completed", kinds)
+
+    def test_operation_timeline_supports_concurrent_operations_and_bounded_retention(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        attack = semantic_operation_payload(
+            operation_id="attack-alpha",
+            movement=True,
+        )
+        scout = semantic_operation_payload(
+            operation_id="scout-bravo",
+            owner_count=1,
+            required_count=1,
+            movement=True,
+        )
+        concurrent = deepcopy(attack)
+        concurrent["operations"].extend(scout["operations"])
+        concurrent["battlefield_overview"]["operation_ownership"].extend(
+            scout["battlefield_overview"]["operation_ownership"]
+        )
+
+        result = reducer.observe(
+            concurrent,
+            blackboard_scope_id="scope-semantic-test",
+        )
+        self.assertEqual(
+            {"attack-alpha", "scout-bravo"},
+            {
+                event["operation_id"]
+                for event in result["operation_events"]
+            },
+        )
+
+        for frame in range(101, 150):
+            result = reducer.observe(
+                semantic_operation_payload(
+                    operation_id="attack-alpha",
+                    frame=frame,
+                    blocker=f"wait-{frame}",
+                    launch_decision="wait",
+                ),
+                blackboard_scope_id="scope-semantic-test",
+            )
+        attack_timeline = result["operations"][0]["semantic_timeline"]
+        self.assertLessEqual(
+            len(attack_timeline),
+            reducer._PER_OPERATION_RETENTION,
+        )
+
+        for generation in range(2, 90):
+            result = reducer.observe(
+                semantic_operation_payload(
+                    operation_id="retention-operation",
+                    generation=generation,
+                    frame=200 + generation,
+                    blocker=f"generation-wait-{generation}",
+                    launch_decision="wait",
+                ),
+                blackboard_scope_id="scope-semantic-test",
+            )
+        self.assertEqual(
+            reducer._PER_SCOPE_RETENTION,
+            len(result["operation_events"]),
+        )
+        self.assertLessEqual(
+            len(reducer._states),
+            reducer._PER_SCOPE_OPERATION_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._generation_high_water),
+            reducer._PER_SCOPE_OPERATION_RETENTION,
+        )
+        self.assertTrue(
+            all(
+                len(state["tokens"])
+                <= reducer._PER_OPERATION_TOKEN_RETENTION
+                for state in reducer._states.values()
+            )
+        )
+
+    def test_operation_timeline_bounds_scope_and_operation_state(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        for scope_number in range(reducer._SCOPE_RETENTION + 3):
+            scope_id = f"scope-{scope_number}"
+            for operation_number in range(
+                reducer._PER_SCOPE_OPERATION_RETENTION + 3
+            ):
+                reducer.observe(
+                    semantic_operation_payload(
+                        operation_id=f"operation-{operation_number}",
+                        frame=100 + operation_number,
+                        session_epoch=scope_number + 1,
+                    ),
+                    blackboard_scope_id=scope_id,
+                )
+
+        self.assertLessEqual(
+            len(reducer._scope_order),
+            reducer._SCOPE_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._scope_events),
+            reducer._SCOPE_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._scope_epochs),
+            reducer._SCOPE_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._scope_families),
+            reducer._SCOPE_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._states),
+            (
+                reducer._SCOPE_RETENTION
+                * reducer._PER_SCOPE_OPERATION_RETENTION
+            ),
+        )
+        self.assertLessEqual(
+            len(reducer._generation_high_water),
+            (
+                reducer._SCOPE_RETENTION
+                * reducer._PER_SCOPE_OPERATION_RETENTION
+            ),
+        )
+
+    def test_operation_timeline_emits_edit_and_ownership_identity(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        result = reducer.observe(
+            semantic_operation_payload(
+                generation=1,
+                requested_generation=2,
+                operation_edit={
+                    "action": "transfer",
+                    "resolution": "transferred",
+                    "transferred_in_count": 2,
+                    "transferred_out_count": 1,
+                },
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        events = result["operations"][0]["semantic_timeline"]
+        kinds = {event["kind"] for event in events}
+        self.assertTrue(
+            {
+                "edit_applied",
+                "ownership_transferred",
+                "ownership_released",
+            }.issubset(kinds)
+        )
+        edit_event = next(
+            event for event in events if event["kind"] == "edit_applied"
+        )
+        self.assertEqual(1, edit_event["generation"])
+        self.assertEqual(2, edit_event["requested_generation"])
+        self.assertEqual("update-flank-alpha-2", edit_event["update_id"])
+
+    def test_operation_timeline_ignores_generation_zero_transport_records(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(generation=1)
+        payload["operations"][0]["operation_generation"] = 0
+        payload["operations"][0]["battlefield_operation"]["generation"] = 0
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        self.assertEqual([], result["operation_events"])
+        self.assertEqual(
+            [],
+            result["operations"][0]["semantic_timeline"],
+        )
+
     def test_constructor_rejects_invalid_seams(self):
         session, _bot = build_dry_run_session()
         cases = (
@@ -8345,8 +8921,10 @@ var nodes = {
   "micromachine-log-snippets": element("micromachine-log-snippets", "ul"),
   "micromachine-raw-evidence": element("micromachine-raw-evidence", "pre"),
   "operation-console": element("operation-console", "section"),
-  "operation-list": element("operation-list", "div"),
-  "operation-summary": element("operation-summary", "span"),
+      "operation-list": element("operation-list", "div"),
+      "operation-summary": element("operation-summary", "span"),
+      "operation-timeline": element("operation-timeline", "ol"),
+      "operation-timeline-selection": element("operation-timeline-selection", "span"),
   "active-command-console": element("active-command-console", "section"),
   "command-console-title": element("command-console-title", "h2"),
   "command-console-state": element("command-console-state", "span"),
@@ -8367,9 +8945,14 @@ var nodes = {
   "battlefield-link-badge": element("battlefield-link-badge", "span"),
   "battlefield-command-state": element("battlefield-command-state"),
   "battlefield-frame": element("battlefield-frame"),
-  "battlefield-force": element("battlefield-force"),
-  "battlefield-posture": element("battlefield-posture"),
-  "battlefield-control-summary": element("battlefield-control-summary")
+      "battlefield-force": element("battlefield-force"),
+      "battlefield-posture": element("battlefield-posture"),
+      "battlefield-unassigned": element("battlefield-unassigned"),
+      "battlefield-readiness": element("battlefield-readiness"),
+      "battlefield-transfer": element("battlefield-transfer"),
+      "battlefield-integrity": element("battlefield-integrity"),
+      "battlefield-production-waits": element("battlefield-production-waits"),
+      "battlefield-control-summary": element("battlefield-control-summary")
 };
 nodes["log"] = logBox;
 nodes["llm-model-select"].value = "gpt-test";
@@ -10844,6 +11427,9 @@ const assert = require("assert");
     generation
   ) {
     generation = generation || 1;
+    var terminal = state === "completed";
+    var submitted = state === "action_issued" || terminal;
+    var requestedCount = mission === "scouting" ? 1 : 4;
     return {
       operation_id: operationId,
       operation_generation: generation,
@@ -10854,6 +11440,87 @@ const assert = require("assert");
       consumption_status: "consumed",
       telemetry_frame: frame,
       disposition: "active",
+      operation_convergence: {
+        target_count: requestedCount,
+        represented_count: requestedCount,
+        missing_count: 0,
+        blocker: "",
+        requirements: []
+      },
+      battlefield_operation: {
+        identity: {
+          update_id: updateId,
+          scope: "operation:" + operationId,
+          session_epoch: 1700000000000,
+          operation_id: operationId,
+          generation: generation,
+          stage: terminal ? "completed" : (submitted ? "submitted" : "assigned"),
+          game_frame: frame
+        },
+        operation_id: operationId,
+        generation: generation,
+        operation_route: {
+          requested_route_type: mission === "scouting" ? "direct" : "flank_right",
+          applied_route_type: mission === "scouting" ? "direct" : "flank_right",
+          location_intent: "enemy_natural",
+          target_type: "enemy_expansion",
+          resolved_target_label: "enemy natural",
+          target_x: 120,
+          target_y: 44,
+          target_evidence: "observed_enemy_structure"
+        },
+        operation_lifetime: {
+          mode: "until_completed",
+          completion_state: terminal ? "completed" : "active",
+          completion_conditions: ["target_reached", "cancelled_by_user"],
+          duration_seconds: 300,
+          issued_at_frame: 200,
+          deadline_frame: 4700,
+          standing: false,
+          completed: terminal,
+          completion_reason: terminal ? "target_reached" : "",
+          completed_frame: terminal ? frame : 0
+        },
+        operation_ownership: {
+          owner_count: requestedCount,
+          integrity_status: "valid"
+        },
+        operation_launch_policy: {
+          min_units: requestedCount,
+          max_units: requestedCount,
+          allow_partial_requested: false,
+          strict_scope: true,
+          partial_launch_allowed: false,
+          partial_launch_safe: false,
+          launch_count: requestedCount,
+          missing_count: 0,
+          decision: "launch",
+          blocker: "",
+          recommended_choices: [],
+          safety_evidence: {}
+        },
+        operation_completion: {
+          movement_observed: submitted,
+          engagement_observed: terminal,
+          target_reached: terminal,
+          terminal: terminal,
+          state: terminal ? "completed" : "active",
+          reason: terminal ? "target_reached" : "",
+          frame: terminal ? frame : 0,
+          generation: generation
+        }
+      },
+      semantic_timeline: [
+        {
+          timeline_seq: frame,
+          operation_id: operationId,
+          generation: generation,
+          kind: submitted ? "submitted" : "assigned",
+          game_frame: frame,
+          summary: submitted ? "SC2 action submitted" : "Force assigned",
+          technical: { state: state }
+        }
+      ],
       update: {
         update_id: updateId,
         vector: { goal: commandText, operation_id: operationId }
@@ -10933,6 +11600,21 @@ const assert = require("assert");
   assert(assaultRecord);
   assert.strictEqual(Object.keys(operationRecords).length, 2);
   assert.strictEqual(nodes["operation-list"].querySelectorAll(".operation-card").length, 2);
+  assert.strictEqual(reconRecord.node.parentNode.id, "operation-lane-executing");
+  assert.strictEqual(assaultRecord.node.parentNode.id, "operation-lane-planning");
+  assert(reconRecord.node.textContent.includes("recon-alpha#1"));
+  assert(reconRecord.node.textContent.includes("direct → direct"));
+  assert(reconRecord.node.textContent.includes("until_completed"));
+  assert(reconRecord.node.textContent.includes("실제 소유 1"));
+  assert(reconRecord.node.textContent.includes("이동"));
+  assert.strictEqual(
+    nodes["operation-timeline-selection"].textContent,
+    "recon-alpha#1"
+  );
+  assert.strictEqual(
+    nodes["operation-timeline"].querySelectorAll(".operation-timeline-item").length,
+    1
+  );
   assert(reconRecord.node.textContent.includes("move"));
   assert(!assaultRecord.node.textContent.includes("move"));
   assert(reconRecord.node.className.includes("command-console-executing"));
@@ -11009,6 +11691,7 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.telemetryFrame, 320);
   assert(assaultRecord.node.textContent.includes("attack"));
   assert(!assaultRecord.node.textContent.includes("move"));
+  assert.strictEqual(assaultRecord.node.parentNode.id, "operation-lane-executing");
 
   // All-Terran evidence extends the existing Operation card and four-stage
   // rail instead of creating a separate family dashboard.
@@ -11064,7 +11747,14 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(Object.keys(operationRecords).length, 2);
-  assert.strictEqual(nodes["operation-list"].children.length, 2);
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-lane").length,
+    4
+  );
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-card").length,
+    2
+  );
   assert.strictEqual(assaultRecord.node.querySelectorAll(".operation-stage").length, 4);
   assert.strictEqual(assaultRecord.node.querySelectorAll("button").length, 5);
   assert(assaultRecord.node.textContent.includes("유닛 실행"));
@@ -11123,6 +11813,156 @@ const assert = require("assert");
       "stale_family_attempt_must_not_replace_latest"
     )
   );
+
+  // The overview consumes only the canonical battlefield projection. A
+  // representative manager snapshot cannot change ownership/readiness totals.
+  var authoritativeOverview = {
+    schema_version: 2,
+    authority: "micromachine_cpp",
+    identity: { game_frame: 327 },
+    eligible_combat_count: 11,
+    explicit_operation_owned_count: 6,
+    autonomous_owned_count: 3,
+    unassigned_count: 2,
+    duplicate_owner_count: 0,
+    operation_ownership: [],
+    bases: [
+      {
+        base_id: "main",
+        semantic_anchor: "self_main",
+        base_readiness: {
+          readiness_state: "ready",
+          reason: "protected_minimum_satisfied",
+          protected_minimum: [
+            { family: "marine", count: 2 }
+          ]
+        }
+      }
+    ],
+    transfer_availability: {
+      entries: [
+        {
+          source_owner_id: "assault-bravo",
+          source_owner_count: 4,
+          transferable_count: 2,
+          transfer_safe: true,
+          atomic_runtime_blocker: ""
+        }
+      ]
+    }
+  };
+  renderBattlefieldControlOverview({
+    battlefield_overview: authoritativeOverview,
+    intervention: {
+      manager_snapshot: {
+        CombatCommander: { combat_unit_count: 999 },
+        ScoutManager: { scout_unit_count: 999 }
+      }
+    }
+  });
+  assert.strictEqual(nodes["battlefield-force"].textContent, "11");
+  assert(nodes["battlefield-posture"].textContent.includes("명시 6"));
+  assert(nodes["battlefield-posture"].textContent.includes("자율 3"));
+  assert.strictEqual(nodes["battlefield-unassigned"].textContent, "2");
+  assert(nodes["battlefield-readiness"].textContent.includes("self_main"));
+  assert(nodes["battlefield-readiness"].textContent.includes("marine 2"));
+  assert(nodes["battlefield-transfer"].textContent.includes("2/4"));
+  assert(!nodes["battlefield-control-summary"].textContent.includes("999"));
+
+  // Contextual resolution controls are separate from the five standard card
+  // actions and fail closed until canonical runtime safety says they are safe.
+  var unsafeResolutionAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "부분 출동 안전성 확인",
+    "attack",
+    327,
+    "action_issued",
+    actionStages("attack").slice(0, 6)
+  );
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .recommended_choices = ["launch_partial", "wait_for_full_force"];
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .partial_launch_allowed = true;
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .partial_launch_safe = false;
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .decision = "wait";
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .blocker = "protected_minimum_not_respected";
+  renderOperationConsole(serverResult({
+    status: "published",
+    battlefield_overview: {
+      transfer_availability: {
+        entries: [
+          {
+            source_owner_id: "assault-bravo",
+            transfer_safe: false,
+            atomic_runtime_blocker: "protected_minimum_not_respected",
+            recommended_resolution_choices: ["transfer_two_units"]
+          }
+        ]
+      }
+    },
+    operations: [unsafeResolutionAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  var standardActions = assaultRecord.node.querySelector(
+    ".operation-card-actions"
+  ).querySelectorAll("button");
+  assert.strictEqual(standardActions.length, 5);
+  var unsafeResolutionButtons = assaultRecord.node.querySelector(
+    ".operation-resolution-actions"
+  ).querySelectorAll("button");
+  var unsafePartialButton = unsafeResolutionButtons.find(function(button) {
+    return button.textContent === "launch_partial";
+  });
+  var safeWaitButton = unsafeResolutionButtons.find(function(button) {
+    return button.textContent === "wait_for_full_force";
+  });
+  var unsafeTransferButton = unsafeResolutionButtons.find(function(button) {
+    return button.textContent === "transfer_two_units";
+  });
+  assert.strictEqual(unsafePartialButton.disabled, true);
+  assert.strictEqual(safeWaitButton.disabled, false);
+  assert.strictEqual(unsafeTransferButton.disabled, true);
+  assert(
+    unsafePartialButton.getAttribute("aria-description").includes(
+      "protected_minimum_not_respected"
+    )
+  );
+
+  var safeResolutionAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "부분 출동 안전성 확인",
+    "attack",
+    328,
+    "action_issued",
+    actionStages("attack").slice(0, 6)
+  );
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .recommended_choices = ["launch_partial"];
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .partial_launch_allowed = true;
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .partial_launch_safe = true;
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .decision = "launch";
+  renderOperationConsole(serverResult({
+    status: "published",
+    battlefield_overview: {
+      transfer_availability: { entries: [] }
+    },
+    operations: [safeResolutionAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  var safePartialButton = assaultRecord.node.querySelector(
+    ".operation-resolution-actions"
+  ).querySelectorAll("button").find(function(button) {
+    return button.textContent === "launch_partial";
+  });
+  assert.strictEqual(safePartialButton.disabled, false);
 
   // A newer generation edits the existing card instead of creating a duplicate.
   var editedAssault = operationResult(
@@ -11386,26 +12226,45 @@ const assert = require("assert");
   assert(assaultRecord.node.textContent.includes("중지 명령 없이"));
 
   // Terminal evidence is sticky even if a newer non-terminal payload arrives.
+  var canonicalReconCompletion = operationResult(
+    "recon-alpha",
+    "parallel-update-a",
+    "마린 1기 정찰",
+    "scouting",
+    400,
+    "action_issued",
+    actionStages("move").slice(0, 6)
+  );
+  canonicalReconCompletion.battlefield_operation.operation_lifetime.completed =
+    true;
+  canonicalReconCompletion.battlefield_operation.operation_lifetime
+    .completion_state = "completed";
+  canonicalReconCompletion.battlefield_operation.operation_completion.terminal =
+    true;
+  canonicalReconCompletion.battlefield_operation.operation_completion.state =
+    "completed";
+  canonicalReconCompletion.battlefield_operation.operation_completion.reason =
+    "recon_waypoint_reached";
   renderOperationConsole(serverResult({
     status: "published",
-    operations: [
-      operationResult(
-        "recon-alpha",
-        "parallel-update-a",
-        "마린 1기 정찰",
-        "scouting",
-        400,
-        "completed",
-        actionStages("move", "recon waypoint reached")
-      )
-    ]
+    operations: [canonicalReconCompletion]
   }, OPERATION_SCOPE));
   assert.strictEqual(operationRecords[reconKey].terminal, true);
   assert.strictEqual(operationRecords[reconKey].telemetryFrame, 400);
   assert.strictEqual(
+    operationRecords[reconKey].node.parentNode.id,
+    "operation-lane-completed"
+  );
+  assert.strictEqual(
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"
   );
+
+  operationRecords[reconKey].node
+    .querySelectorAll(".operation-stage")
+    .forEach(function(stage) {
+      assert(stage.className.includes("stage-done"));
+    });
 
   // A rejected higher-generation edit augments the terminal card without
   // replacing its verified execution state or creating another card.
@@ -11641,10 +12500,23 @@ const assert = require("assert");
             page,
         )
         self.assertIn('<div id="log" aria-live="off" role="log"></div>', page)
+        self.assertIn(
+            'id="operation-timeline"\n'
+            '            class="operation-timeline"\n'
+            '            role="log"\n'
+            '            aria-live="off"',
+            page,
+        )
         self.assertIn('<div id="micromachine-status" aria-live="off">', page)
         self.assertNotIn('botMessage.setAttribute("role", "status")', page)
         self.assertNotIn('botMessage.setAttribute("aria-live", "polite")', page)
         self.assertEqual(page.count('class="command-stage" role="listitem"'), 4)
+        self.assertEqual(page.count('data-operation-lane="'), 4)
+        for lane in ("planning", "executing", "completed", "waiting"):
+            self.assertIn(f'id="operation-lane-{lane}"', page)
+        for action in ("view", "revise", "reinforce", "retarget", "cancel"):
+            self.assertIn(f'"{action}"', page)
+        self.assertIn('className = "operation-resolution-actions"', page)
         self.assertIn(
             ".command-stage.stage-done {\n"
             "    color: #7dd3fc;",

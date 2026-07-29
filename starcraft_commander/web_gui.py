@@ -2212,6 +2212,57 @@ def _public_operation_family_evidence(
     return public_rows
 
 
+def _battlefield_operation_index(
+    battlefield_overview: Mapping[str, object] | None,
+) -> dict[tuple[str, int], dict[str, object]]:
+    if not isinstance(battlefield_overview, Mapping):
+        return {}
+    operations = battlefield_overview.get("operation_ownership")
+    if not isinstance(operations, Sequence) or isinstance(
+        operations,
+        (str, bytes, bytearray),
+    ):
+        return {}
+    index: dict[tuple[str, int], dict[str, object]] = {}
+    for operation in operations:
+        if not isinstance(operation, Mapping):
+            continue
+        operation_id = str(operation.get("operation_id", "") or "").strip()
+        generation = operation.get("generation")
+        if (
+            not operation_id
+            or type(generation) is not int
+            or int(generation) <= 0
+        ):
+            continue
+        index[(operation_id, int(generation))] = dict(operation)
+    return index
+
+
+def _attach_battlefield_operation_projections(
+    operations: Sequence[Mapping[str, object]],
+    battlefield_overview: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    index = _battlefield_operation_index(battlefield_overview)
+    attached: list[dict[str, object]] = []
+    for operation in operations:
+        item = dict(operation)
+        operation_id = str(item.get("operation_id", "") or "").strip()
+        generation = item.get("operation_generation")
+        projection = (
+            index.get((operation_id, int(generation)))
+            if operation_id
+            and type(generation) is int
+            and int(generation) > 0
+            else None
+        )
+        item["battlefield_operation"] = (
+            dict(projection) if projection is not None else None
+        )
+        attached.append(item)
+    return attached
+
+
 _PUBLIC_BATTLEFIELD_SCALAR: Final[object] = object()
 _PUBLIC_BATTLEFIELD_DROP: Final[object] = object()
 _PUBLIC_BATTLEFIELD_IDENTITY_SCHEMA: Final[Mapping[str, object]] = {
@@ -2923,6 +2974,16 @@ def _micromachine_status_payload(
         compile_result=compile_result,
         result_stream=result_stream,
     )
+    battlefield_overview = (
+        dict(battlefield_projection.battlefield_overview)
+        if battlefield_projection.ok
+        and battlefield_projection.battlefield_overview is not None
+        else None
+    )
+    operations = _attach_battlefield_operation_projections(
+        operations,
+        battlefield_overview,
+    )
     representative = next(
         (operation for operation in operations if operation.get("active") is True),
         None,
@@ -2955,12 +3016,7 @@ def _micromachine_status_payload(
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
         "battlefield_projection": battlefield_projection.to_dict(),
-        "battlefield_overview": (
-            dict(battlefield_projection.battlefield_overview)
-            if battlefield_projection.ok
-            and battlefield_projection.battlefield_overview is not None
-            else None
-        ),
+        "battlefield_overview": battlefield_overview,
         "battlefield_projection_identity": (
             battlefield_projection.identity.to_dict()
             if battlefield_projection.identity is not None
@@ -4844,6 +4900,655 @@ class _WebEventJournal:
             )
 
 
+class _OperationSemanticTimelineReducer:
+    """Reduce repeated operation snapshots into bounded semantic events."""
+
+    _SCOPE_RETENTION = 8
+    _PER_SCOPE_OPERATION_RETENTION = 64
+    _PER_OPERATION_RETENTION = 32
+    _PER_OPERATION_TOKEN_RETENTION = 64
+    _PER_SCOPE_RETENTION = 192
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seq = 0
+        self._states: dict[
+            tuple[str, str, str, int],
+            dict[str, object],
+        ] = {}
+        self._generation_high_water: dict[
+            tuple[str, str, str],
+            int,
+        ] = {}
+        self._scope_events: dict[str, deque[dict[str, object]]] = {}
+        self._scope_epochs: dict[str, str] = {}
+        self._scope_order: deque[str] = deque()
+        self._scope_families: dict[
+            str,
+            deque[tuple[str, str, str]],
+        ] = {}
+
+    def _drop_scope(self, scope_id: str) -> None:
+        self._scope_events.pop(scope_id, None)
+        self._scope_epochs.pop(scope_id, None)
+        self._scope_families.pop(scope_id, None)
+        self._states = {
+            key: value
+            for key, value in self._states.items()
+            if key[0] != scope_id
+        }
+        self._generation_high_water = {
+            key: value
+            for key, value in self._generation_high_water.items()
+            if key[0] != scope_id
+        }
+
+    def _touch_scope(self, scope_id: str) -> None:
+        try:
+            self._scope_order.remove(scope_id)
+        except ValueError:
+            pass
+        self._scope_order.append(scope_id)
+        while len(self._scope_order) > self._SCOPE_RETENTION:
+            self._drop_scope(self._scope_order.popleft())
+
+    def _reset_scope_epoch(self, scope_id: str, session_epoch: str) -> None:
+        self._drop_scope(scope_id)
+        self._scope_epochs[scope_id] = session_epoch
+        self._scope_events[scope_id] = deque(
+            maxlen=self._PER_SCOPE_RETENTION
+        )
+        self._scope_families[scope_id] = deque()
+
+    def _touch_family(
+        self,
+        family_key: tuple[str, str, str],
+    ) -> None:
+        scope_id = family_key[0]
+        families = self._scope_families.setdefault(scope_id, deque())
+        try:
+            families.remove(family_key)
+        except ValueError:
+            pass
+        families.append(family_key)
+        while len(families) > self._PER_SCOPE_OPERATION_RETENTION:
+            evicted = families.popleft()
+            self._generation_high_water.pop(evicted, None)
+            self._states = {
+                key: value
+                for key, value in self._states.items()
+                if key[:3] != evicted
+            }
+
+    @staticmethod
+    def _execution_stage_ok(
+        execution: Mapping[str, object],
+        *names: str,
+    ) -> bool:
+        stages = execution.get("stages")
+        if not isinstance(stages, Sequence) or isinstance(
+            stages,
+            (str, bytes, bytearray),
+        ):
+            return False
+        accepted = set(names)
+        return any(
+            isinstance(stage, Mapping)
+            and str(stage.get("name", "") or "") in accepted
+            and stage.get("ok") is True
+            for stage in stages
+        )
+
+    @staticmethod
+    def _operation_frame(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> int:
+        candidates: list[object] = [
+            operation.get("telemetry_frame"),
+            _mapping_child(battlefield_operation, "identity").get(
+                "game_frame"
+            ),
+            _mapping_child(
+                battlefield_operation,
+                "operation_completion",
+            ).get("frame"),
+        ]
+        frames = [
+            int(value)
+            for value in candidates
+            if type(value) is int and int(value) >= 0
+        ]
+        return max(frames) if frames else -1
+
+    @staticmethod
+    def _semantic_fingerprint(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> str:
+        intervention = _mapping_child(operation, "intervention")
+        document = {
+            "update_id": str(operation.get("update_id", "") or ""),
+            "operation_id": str(operation.get("operation_id", "") or ""),
+            "operation_generation": _int_or_none(
+                operation.get("operation_generation")
+            ),
+            "requested_operation_generation": _int_or_none(
+                operation.get("requested_operation_generation")
+            ),
+            "telemetry_frame": _int_or_none(
+                operation.get("telemetry_frame")
+            ),
+            "disposition": str(operation.get("disposition", "") or ""),
+            "transport_status": str(
+                operation.get("transport_status", "") or ""
+            ),
+            "consumption_status": str(
+                operation.get("consumption_status", "") or ""
+            ),
+            "compile_result": _mapping_child(operation, "compile_result"),
+            "command_execution": _mapping_child(
+                intervention,
+                "command_execution",
+            ),
+            "operation_convergence": _mapping_child(
+                operation,
+                "operation_convergence",
+            ),
+            "operation_edit": _mapping_child(
+                operation,
+                "operation_edit",
+            ),
+            "battlefield_operation": dict(battlefield_operation),
+        }
+        return hashlib.sha256(
+            json.dumps(
+                _redact_json_ready(document),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _event_candidates(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> list[tuple[str, str, str, dict[str, object]]]:
+        operation_id = str(operation.get("operation_id", "") or "")
+        generation = max(
+            0,
+            _int_or_none(operation.get("operation_generation")) or 0,
+        )
+        disposition = str(operation.get("disposition", "") or "").lower()
+        transport_status = str(
+            operation.get("transport_status", "") or ""
+        ).lower()
+        consumption_status = str(
+            operation.get("consumption_status", "") or ""
+        ).lower()
+        compile_result = _mapping_child(operation, "compile_result")
+        intervention = _mapping_child(operation, "intervention")
+        execution = _mapping_child(intervention, "command_execution")
+        execution_state = str(execution.get("state", "") or "").lower()
+        convergence = _mapping_child(operation, "operation_convergence")
+        edit = _mapping_child(operation, "operation_edit")
+        ownership = _mapping_child(
+            battlefield_operation,
+            "operation_ownership",
+        )
+        launch = _mapping_child(
+            battlefield_operation,
+            "operation_launch_policy",
+        )
+        completion = _mapping_child(
+            battlefield_operation,
+            "operation_completion",
+        )
+        lifetime = _mapping_child(
+            battlefield_operation,
+            "operation_lifetime",
+        )
+        owner_count = max(
+            0,
+            _int_or_none(ownership.get("owner_count")) or 0,
+        )
+        required_count = max(
+            0,
+            _int_or_none(launch.get("min_units"))
+            or _int_or_none(convergence.get("target_count"))
+            or 0,
+        )
+        represented_count = max(
+            0,
+            _int_or_none(convergence.get("represented_count")) or 0,
+        )
+        requested_generation = max(
+            generation,
+            _int_or_none(
+                operation.get("requested_operation_generation")
+            )
+            or generation,
+        )
+        update_id = str(operation.get("update_id", "") or "")
+        launch_decision = str(launch.get("decision", "") or "").lower()
+        blocker = str(
+            launch.get("blocker")
+            or convergence.get("blocker")
+            or execution.get("blocker_reason")
+            or ""
+        )
+        common = {
+            "operation_id": operation_id,
+            "generation": generation,
+            "owner_count": owner_count,
+            "required_count": required_count,
+            "represented_count": represented_count,
+            "disposition": disposition,
+            "requested_generation": requested_generation,
+            "update_id": update_id,
+        }
+        candidates: list[tuple[str, str, str, dict[str, object]]] = [
+            (
+                "received",
+                "received",
+                f"Operation {operation_id} received.",
+                common,
+            )
+        ]
+        if (
+            str(compile_result.get("status", "") or "").lower() == "compiled"
+            or transport_status == "published"
+            or consumption_status
+            not in {"", "received", "pending_compile"}
+        ):
+            candidates.append(
+                (
+                    "planned",
+                    "planned",
+                    f"Operation {operation_id}#{generation} planned.",
+                    common,
+                )
+            )
+        assigned = owner_count > 0 or execution_state in {
+            "queued_or_assigned",
+            "assigned",
+        }
+        if assigned:
+            if required_count > 0 and owner_count < required_count:
+                candidates.append(
+                    (
+                        "partially_assigned",
+                        "partially_assigned",
+                        (
+                            f"{owner_count}/{required_count} units assigned; "
+                            f"{max(0, required_count - owner_count)} still needed."
+                        ),
+                        common,
+                    )
+                )
+            else:
+                candidates.append(
+                    (
+                        "assigned",
+                        "assigned",
+                        f"{owner_count or represented_count} units assigned.",
+                        common,
+                    )
+                )
+        waiting = (
+            launch_decision in {"wait", "waiting", "blocked"}
+            or execution_state.startswith("waiting")
+            or bool(blocker)
+            and disposition not in {"blocked", "expired", "superseded"}
+        )
+        if waiting:
+            waiting_token = (
+                f"waiting:{blocker}:{owner_count}:{required_count}:"
+                f"{launch_decision}"
+            )
+            candidates.append(
+                (
+                    "waiting",
+                    waiting_token,
+                    blocker or "Waiting for operation conditions.",
+                    {
+                        **common,
+                        "launch_decision": launch_decision,
+                        "blocker": blocker,
+                    },
+                )
+            )
+        if (
+            execution_state in {
+                "action_issued",
+                "effect_observed",
+                "moving",
+                "engaged",
+                "completed",
+            }
+            or _OperationSemanticTimelineReducer._execution_stage_ok(
+                execution,
+                "order_issued",
+                "action_issued",
+            )
+        ):
+            candidates.append(
+                (
+                    "submitted",
+                    "submitted",
+                    "Matching-generation SC2 action submitted.",
+                    {**common, "execution_state": execution_state},
+                )
+            )
+        if completion.get("movement_observed") is True:
+            candidates.append(
+                (
+                    "movement_observed",
+                    "movement_observed",
+                    "Operation movement observed.",
+                    {**common, "completion": dict(completion)},
+                )
+            )
+        if completion.get("engagement_observed") is True:
+            candidates.append(
+                (
+                    "engagement_observed",
+                    "engagement_observed",
+                    "Operation engagement observed.",
+                    {**common, "completion": dict(completion)},
+                )
+            )
+        if completion.get("target_reached") is True:
+            candidates.append(
+                (
+                    "target_reached",
+                    "target_reached",
+                    "Operation target reached.",
+                    {**common, "completion": dict(completion)},
+                )
+            )
+        projection_present = bool(battlefield_operation)
+        authoritative_completed = bool(
+            completion.get("terminal") is True
+            and (
+                lifetime.get("completed") is True
+                or str(completion.get("state", "") or "").lower()
+                in {"completed", "succeeded", "success"}
+            )
+        )
+        fallback_completed = bool(
+            not projection_present
+            and (
+                execution.get("completed") is True
+                or execution_state in {"completed", "succeeded", "success"}
+            )
+        )
+        if authoritative_completed or fallback_completed:
+            candidates.append(
+                (
+                    "completed",
+                    "completed",
+                    str(
+                        completion.get("reason")
+                        or lifetime.get("completion_reason")
+                        or "Operation completed."
+                    ),
+                    {**common, "completion": dict(completion)},
+                )
+            )
+        if disposition in {"blocked", "expired", "superseded"}:
+            candidates.append(
+                (
+                    "blocked",
+                    f"blocked:{disposition}:{blocker}",
+                    blocker or f"Operation {disposition}.",
+                    {**common, "blocker": blocker},
+                )
+            )
+        edit_action = str(edit.get("action", "") or "")
+        edit_resolution = str(edit.get("resolution", "") or "").lower()
+        edit_blocker = str(edit.get("blocker", "") or "")
+        edit_identity = (
+            f"{requested_generation}:{update_id}:{edit_action}"
+        )
+        if edit_action and (
+            edit_resolution in {"blocked", "rejected"}
+            or bool(edit_blocker)
+        ):
+            candidates.append(
+                (
+                    "edit_rejected",
+                    f"edit_rejected:{edit_identity}:{edit_blocker}",
+                    edit_blocker or f"{edit_action} edit rejected.",
+                    {**common, "operation_edit": dict(edit)},
+                )
+            )
+        elif edit_action and edit_resolution in {
+            "applied",
+            "accepted",
+            "resolved",
+            "transferred",
+        }:
+            candidates.append(
+                (
+                    "edit_applied",
+                    f"edit_applied:{edit_identity}:{edit_resolution}",
+                    f"{edit_action} edit applied.",
+                    {**common, "operation_edit": dict(edit)},
+                )
+            )
+        transferred_in = max(
+            0,
+            _int_or_none(edit.get("transferred_in_count")) or 0,
+        )
+        transferred_out = max(
+            0,
+            _int_or_none(edit.get("transferred_out_count")) or 0,
+        )
+        if transferred_in:
+            candidates.append(
+                (
+                    "ownership_transferred",
+                    f"ownership_transferred:{edit_identity}:{transferred_in}",
+                    f"{transferred_in} units transferred into the operation.",
+                    {**common, "operation_edit": dict(edit)},
+                )
+            )
+        if transferred_out:
+            candidates.append(
+                (
+                    "ownership_released",
+                    f"ownership_released:{edit_identity}:{transferred_out}",
+                    f"{transferred_out} units released from the operation.",
+                    {**common, "operation_edit": dict(edit)},
+                )
+            )
+        return candidates
+
+    def observe(
+        self,
+        payload: Mapping[str, object],
+        *,
+        blackboard_scope_id: str,
+    ) -> dict[str, object]:
+        result = dict(payload)
+        raw_operations = payload.get("operations")
+        operations = (
+            [dict(item) for item in raw_operations if isinstance(item, Mapping)]
+            if isinstance(raw_operations, Sequence)
+            and not isinstance(raw_operations, (str, bytes, bytearray))
+            else []
+        )
+        scope_id = str(blackboard_scope_id or "")
+        battlefield_overview = payload.get("battlefield_overview")
+        battlefield_identity = (
+            battlefield_overview.get("identity")
+            if isinstance(battlefield_overview, Mapping)
+            else None
+        )
+        incoming_epoch = str(
+            battlefield_identity.get("session_epoch", "")
+            if isinstance(battlefield_identity, Mapping)
+            else ""
+        )
+        with self._lock:
+            self._touch_scope(scope_id)
+            current_epoch = self._scope_epochs.get(scope_id, "")
+            session_epoch = incoming_epoch or current_epoch
+            if incoming_epoch and incoming_epoch != current_epoch:
+                self._reset_scope_epoch(scope_id, incoming_epoch)
+            scope_events = self._scope_events.setdefault(
+                scope_id,
+                deque(maxlen=self._PER_SCOPE_RETENTION),
+            )
+            for operation in operations:
+                operation_id = str(
+                    operation.get("operation_id", "") or ""
+                ).strip()
+                generation = max(
+                    0,
+                    _int_or_none(operation.get("operation_generation")) or 0,
+                )
+                if not operation_id or generation <= 0:
+                    operation["semantic_timeline"] = []
+                    continue
+                family_key = (scope_id, session_epoch, operation_id)
+                high_water = self._generation_high_water.get(family_key, 0)
+                key = (
+                    scope_id,
+                    session_epoch,
+                    operation_id,
+                    generation,
+                )
+                if generation < high_water:
+                    stale_state = self._states.get(key)
+                    operation["semantic_timeline"] = [
+                        dict(event)
+                        for event in (
+                            stale_state["events"]
+                            if stale_state is not None
+                            else ()
+                        )
+                    ]
+                    continue
+                if generation > high_water:
+                    self._generation_high_water[family_key] = generation
+                    self._states = {
+                        state_key: value
+                        for state_key, value in self._states.items()
+                        if state_key[:3] != family_key
+                    }
+                self._touch_family(family_key)
+                state = self._states.setdefault(
+                    key,
+                    {
+                        "last_frame": -1,
+                        "last_fingerprint": "",
+                        "tokens": deque(
+                            maxlen=self._PER_OPERATION_TOKEN_RETENTION
+                        ),
+                        "events": deque(
+                            maxlen=self._PER_OPERATION_RETENTION
+                        ),
+                    },
+                )
+                battlefield_operation = operation.get(
+                    "battlefield_operation"
+                )
+                battlefield_operation = (
+                    dict(battlefield_operation)
+                    if isinstance(battlefield_operation, Mapping)
+                    else {}
+                )
+                frame = self._operation_frame(
+                    operation,
+                    battlefield_operation,
+                )
+                last_frame = int(state["last_frame"])
+                fingerprint = self._semantic_fingerprint(
+                    operation,
+                    battlefield_operation,
+                )
+                regressing = (
+                    last_frame >= 0 and (frame < 0 or frame < last_frame)
+                )
+                conflicting_same_frame = bool(
+                    frame >= 0
+                    and frame == last_frame
+                    and state["last_fingerprint"]
+                    and fingerprint != state["last_fingerprint"]
+                )
+                if not regressing and not conflicting_same_frame:
+                    if frame >= 0:
+                        state["last_frame"] = max(last_frame, frame)
+                        state["last_fingerprint"] = fingerprint
+                    for kind, token, summary, technical in (
+                        self._event_candidates(
+                            operation,
+                            battlefield_operation,
+                        )
+                    ):
+                        tokens = state["tokens"]
+                        if token in tokens:
+                            continue
+                        tokens.append(token)
+                        self._seq += 1
+                        event = {
+                            "timeline_seq": self._seq,
+                            "blackboard_scope_id": scope_id,
+                            "session_epoch": session_epoch,
+                            "operation_id": operation_id,
+                            "generation": generation,
+                            "requested_generation": max(
+                                generation,
+                                _int_or_none(
+                                    technical.get(
+                                        "requested_generation"
+                                    )
+                                )
+                                or generation,
+                            ),
+                            "update_id": str(
+                                technical.get("update_id", "") or ""
+                            ),
+                            "kind": kind,
+                            "game_frame": frame,
+                            "owner_count": max(
+                                0,
+                                _int_or_none(
+                                    technical.get("owner_count")
+                                )
+                                or 0,
+                            ),
+                            "required_count": max(
+                                0,
+                                _int_or_none(
+                                    technical.get("required_count")
+                                )
+                                or 0,
+                            ),
+                            "summary": str(summary or kind),
+                            "technical": dict(technical),
+                        }
+                        state["events"].append(event)
+                        scope_events.append(event)
+                operation["semantic_timeline"] = [
+                    dict(event) for event in state["events"]
+                ]
+            result["operations"] = operations
+            result["operation_events"] = [
+                dict(event) for event in scope_events
+            ]
+            result["operation_event_latest_seq"] = (
+                int(scope_events[-1]["timeline_seq"])
+                if scope_events
+                else 0
+            )
+        return result
+
+
 class _LiveLaunchManager:
     """Start one legacy python-sc2 live process and expose safe metadata."""
 
@@ -5435,6 +6140,9 @@ class SessionLoopBridge:
         self._micromachine_battlefield_cursors: dict[
             tuple[str, str], _BattlefieldProjectionCursor
         ] = {}
+        self._micromachine_operation_timeline = (
+            _OperationSemanticTimelineReducer()
+        )
         self._lifecycle_lock = threading.Lock()
         self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
         self._micromachine_request_lock = threading.Lock()
@@ -6247,6 +6955,12 @@ class SessionLoopBridge:
                 result_stream=compile_result_stream,
                 battlefield_projection=battlefield_projection,
             )
+            blackboard_scope_id = _micromachine_blackboard_scope_id(root)
+            status_payload["blackboard_scope_id"] = blackboard_scope_id
+            status_payload = self._micromachine_operation_timeline.observe(
+                status_payload,
+                blackboard_scope_id=blackboard_scope_id,
+            )
             projection = status_payload.get("battlefield_projection")
             identity = status_payload.get("battlefield_projection_identity")
             if (
@@ -6802,6 +7516,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .language-switcher button, .connection-pill, #command-panel, #state-panel,
     .metric-card, .collapsible-panel, .message, #log, #command-form,
     .runtime-mode-panel, .mode-option, .operation-console, .operation-card,
+    .operation-lane, .operation-card-detail, .operation-timeline-panel,
+    .operation-timeline-item,
     .active-command-console, .battlefield-control-overview,
     .command-console-field, .command-stage {
       forced-color-adjust: auto; background: Canvas; color: CanvasText;
@@ -6945,12 +7661,32 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     font-size: 0.68rem; font-weight: 900; white-space: nowrap;
   }
   .operation-list {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-    gap: 10px; max-height: 390px; overflow-y: auto; overscroll-behavior: contain;
-    scrollbar-gutter: stable;
+    display: grid; grid-template-columns: repeat(4, minmax(250px, 1fr));
+    gap: 10px; max-height: 430px; overflow: auto; overscroll-behavior: contain;
+    scrollbar-gutter: stable both-edges; align-items: start;
+  }
+  .operation-lane {
+    min-width: 0; padding: 9px; border: 1px solid rgba(136, 169, 255, 0.18);
+    border-radius: 16px; background: rgba(255, 255, 255, 0.028);
+  }
+  .operation-lane-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin-bottom: 8px;
+  }
+  .operation-lane-title {
+    margin: 0; color: var(--ink); font-size: 0.7rem; font-weight: 900;
+  }
+  .operation-lane-count {
+    min-width: 1.7rem; padding: 3px 6px; border: 1px solid var(--line);
+    border-radius: 999px; color: var(--muted); font-size: 0.58rem;
+    font-weight: 900; text-align: center;
+  }
+  .operation-lane-list {
+    display: flex; flex-direction: column; gap: 8px; min-height: 54px;
   }
   .operation-empty {
-    margin: 0; padding: 12px; border: 1px dashed var(--line); border-radius: 14px;
+    grid-column: 1 / -1; margin: 0; padding: 12px;
+    border: 1px dashed var(--line); border-radius: 14px;
     color: var(--muted); font-size: 0.78rem; text-align: center;
   }
   .operation-card {
@@ -7032,6 +7768,67 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .operation-card-actions button:disabled { opacity: 0.48; cursor: not-allowed; }
   .operation-card-actions .operation-cancel-button {
     color: #fff1f4; border-color: rgba(255, 107, 138, 0.36);
+  }
+  .operation-resolution-actions {
+    margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line);
+  }
+  .operation-resolution-actions > span {
+    display: block; margin-bottom: 6px; color: var(--muted);
+    font-size: 0.58rem; font-weight: 900;
+  }
+  .operation-resolution-actions div {
+    display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  .operation-resolution-actions button {
+    margin: 0; padding: 6px 8px; border: 1px solid rgba(77, 238, 234, 0.3);
+    border-radius: 9px; color: var(--accent); background: rgba(77, 238, 234, 0.07);
+    font-size: 0.62rem; font-weight: 900; cursor: pointer;
+  }
+  .operation-resolution-actions button:disabled {
+    color: var(--muted); border-color: var(--line); opacity: 0.62; cursor: not-allowed;
+  }
+  .operation-timeline-panel {
+    margin-top: 11px; padding: 11px; border: 1px solid rgba(136, 169, 255, 0.2);
+    border-radius: 16px; background: rgba(255, 255, 255, 0.025);
+  }
+  .operation-timeline-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; margin-bottom: 8px;
+  }
+  .operation-timeline-header h3 {
+    margin: 0; color: var(--ink); font-size: 0.74rem; font-weight: 900;
+  }
+  .operation-timeline-selection {
+    color: var(--accent); font-size: 0.62rem; font-weight: 900;
+    overflow-wrap: anywhere; text-align: right;
+  }
+  .operation-timeline {
+    display: grid; gap: 7px; max-height: 190px; margin: 0; padding: 0;
+    overflow-y: auto; list-style: none; overscroll-behavior: contain;
+  }
+  .operation-timeline-item {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px; align-items: start; padding: 8px;
+    border: 1px solid rgba(136, 169, 255, 0.14); border-radius: 11px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+  .operation-timeline-kind {
+    color: var(--accent); font-size: 0.58rem; font-weight: 900;
+    text-transform: uppercase;
+  }
+  .operation-timeline-summary {
+    color: var(--ink); font-size: 0.68rem; line-height: 1.35;
+    font-weight: 800; overflow-wrap: anywhere;
+  }
+  .operation-timeline-frame {
+    color: var(--muted); font-size: 0.58rem; font-weight: 900;
+    white-space: nowrap;
+  }
+  .operation-timeline-item details { grid-column: 1 / -1; color: var(--muted); }
+  .operation-timeline-item summary { cursor: pointer; font-size: 0.58rem; font-weight: 900; }
+  .operation-timeline-item pre {
+    max-height: 110px; overflow: auto; margin: 6px 0 0; white-space: pre-wrap;
+    overflow-wrap: anywhere; color: var(--ink); font-size: 0.58rem;
   }
   .active-command-console {
     order: 1;
@@ -7536,6 +8333,9 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .dashboard-grid, .mode-options, .micro-scope-grid, .micro-intervention-grid,
     .provider-options, .operation-list, .operation-card-details,
     .command-console-grid, .battlefield-control-grid { grid-template-columns: 1fr; }
+    .operation-list { max-height: 640px; }
+    .operation-timeline-item { grid-template-columns: 1fr; }
+    .operation-timeline-frame, .operation-timeline-selection { text-align: left; }
     .command-stage-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .operation-console { margin: 10px 10px 0; padding: 12px; }
     .operation-summary { display: inline-block; margin-top: 9px; }
@@ -7600,10 +8400,58 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       </div>
       <div id="operation-list"
            class="operation-list"
-           role="list"
-           aria-label="MicroMachine 병렬 작전 목록">
-        <p class="operation-empty">아직 추적 중인 작전이 없습니다.</p>
+           role="group"
+           aria-label="MicroMachine 병렬 작전 상태 lane">
+        <section class="operation-lane" data-operation-lane="planning"
+                 aria-labelledby="operation-lane-planning-title">
+          <div class="operation-lane-header">
+            <h3 id="operation-lane-planning-title" class="operation-lane-title">해석/편성</h3>
+            <span id="operation-lane-planning-count" class="operation-lane-count">0</span>
+          </div>
+          <div id="operation-lane-planning" class="operation-lane-list"
+               role="list" aria-label="해석 및 편성 중인 작전"></div>
+        </section>
+        <section class="operation-lane" data-operation-lane="executing"
+                 aria-labelledby="operation-lane-executing-title">
+          <div class="operation-lane-header">
+            <h3 id="operation-lane-executing-title" class="operation-lane-title">실행 중</h3>
+            <span id="operation-lane-executing-count" class="operation-lane-count">0</span>
+          </div>
+          <div id="operation-lane-executing" class="operation-lane-list"
+               role="list" aria-label="실행 중인 작전"></div>
+        </section>
+        <section class="operation-lane" data-operation-lane="completed"
+                 aria-labelledby="operation-lane-completed-title">
+          <div class="operation-lane-header">
+            <h3 id="operation-lane-completed-title" class="operation-lane-title">관측 완료</h3>
+            <span id="operation-lane-completed-count" class="operation-lane-count">0</span>
+          </div>
+          <div id="operation-lane-completed" class="operation-lane-list"
+               role="list" aria-label="권위 있게 완료된 작전"></div>
+        </section>
+        <section class="operation-lane" data-operation-lane="waiting"
+                 aria-labelledby="operation-lane-waiting-title">
+          <div class="operation-lane-header">
+            <h3 id="operation-lane-waiting-title" class="operation-lane-title">대기/차단</h3>
+            <span id="operation-lane-waiting-count" class="operation-lane-count">0</span>
+          </div>
+          <div id="operation-lane-waiting" class="operation-lane-list"
+               role="list" aria-label="대기 또는 차단된 작전"></div>
+        </section>
       </div>
+      <section class="operation-timeline-panel"
+               aria-labelledby="operation-timeline-title">
+        <div class="operation-timeline-header">
+          <h3 id="operation-timeline-title">작전 사건 기록</h3>
+          <span id="operation-timeline-selection"
+                class="operation-timeline-selection">작전을 선택하세요</span>
+        </div>
+        <ol id="operation-timeline"
+            class="operation-timeline"
+            role="log"
+            aria-live="off"
+            aria-label="선택된 작전의 의미 사건 기록"></ol>
+      </section>
     </section>
     <section id="active-command-console"
              class="active-command-console command-console-idle"
@@ -7709,20 +8557,40 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       </div>
       <dl class="battlefield-control-grid">
         <div>
-          <dt data-i18n="battlefieldCommandState">현재 명령</dt>
-          <dd id="battlefield-command-state" data-i18n="commandConsoleIdleState">명령 대기</dd>
+          <dt>권위 소스</dt>
+          <dd id="battlefield-command-state">대기</dd>
         </div>
         <div>
           <dt data-i18n="battlefieldFrame">전장 프레임</dt>
           <dd id="battlefield-frame">-</dd>
         </div>
         <div>
-          <dt data-i18n="battlefieldForce">통제 병력</dt>
+          <dt>전투 가능 병력</dt>
           <dd id="battlefield-force">-</dd>
         </div>
         <div>
-          <dt data-i18n="battlefieldPosture">현재 자세</dt>
+          <dt>소유권 분포</dt>
           <dd id="battlefield-posture">-</dd>
+        </div>
+        <div>
+          <dt>미배정 병력</dt>
+          <dd id="battlefield-unassigned">-</dd>
+        </div>
+        <div>
+          <dt>기지 준비도</dt>
+          <dd id="battlefield-readiness">-</dd>
+        </div>
+        <div>
+          <dt>이관 가능성</dt>
+          <dd id="battlefield-transfer">-</dd>
+        </div>
+        <div>
+          <dt>소유권 무결성</dt>
+          <dd id="battlefield-integrity">-</dd>
+        </div>
+        <div class="wide-card">
+          <dt>생산/선행조건 대기</dt>
+          <dd id="battlefield-production-waits">-</dd>
         </div>
       </dl>
       <p id="battlefield-control-summary" class="battlefield-control-summary" data-i18n="battlefieldControlWaiting">명령을 입력하면 MicroMachine의 실제 배정·실행·효과 확인 상태를 추적합니다.</p>
@@ -7984,6 +8852,7 @@ var latestMicroMachinePlanText = "";
 var operationRecords = {};
 var operationRecordOrder = [];
 var operationConsoleScopeId = "";
+var selectedOperationKey = "";
 var activeCommandConsoleRecord = {
   pendingId: "",
   scopeId: "",
@@ -9386,6 +10255,36 @@ function applyEventSourceError(envelope, payload) {
   markEventSourceFailed(source);
 }
 
+function applyOperationSemanticEvent(envelope, payload) {
+  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return; }
+  var scopeId = String(
+    payload.blackboard_scope_id ||
+    envelope.blackboard_scope_id ||
+    operationConsoleScopeId ||
+    ""
+  );
+  var operationId = String(
+    payload.operation_id || envelope.operation_id || ""
+  );
+  var generation = Number(
+    payload.generation || envelope.generation || 0
+  );
+  if (!operationId || generation <= 0) { return; }
+  var record = operationRecords[
+    operationRecordKey(scopeId, operationId)
+  ];
+  if (!record || Number(record.operationGeneration || 0) !== generation) {
+    return;
+  }
+  record.data = Object.assign({}, record.data || {}, {
+    semantic_timeline: mergeOperationSemanticTimeline(
+      record.data && record.data.semantic_timeline,
+      [payload]
+    )
+  });
+  renderOperationRecords();
+}
+
 function applyServerEvent(event) {
   var envelope;
   try {
@@ -9428,6 +10327,10 @@ function applyServerEvent(event) {
   if (eventType === "history") {
     markEventSourceRecovered("history");
     applyHistoryEventPayload(payload);
+    return;
+  }
+  if (eventType === "operation_event") {
+    applyOperationSemanticEvent(envelope, payload);
     return;
   }
   if (eventType === "state") {
@@ -9539,6 +10442,11 @@ function renderMicroMachineStatePlaceholder() {
     setMicroMachineText("battlefield-frame", "-");
     setMicroMachineText("battlefield-force", "-");
     setMicroMachineText("battlefield-posture", "-");
+    setMicroMachineText("battlefield-unassigned", "-");
+    setMicroMachineText("battlefield-readiness", "-");
+    setMicroMachineText("battlefield-transfer", "-");
+    setMicroMachineText("battlefield-integrity", "-");
+    setMicroMachineText("battlefield-production-waits", "-");
     setMicroMachineText("battlefield-control-summary", t("battlefieldControlWaiting"));
   }
 }
@@ -10722,6 +11630,11 @@ function resetActiveCommandConsole() {
   setMicroMachineText("battlefield-frame", "-");
   setMicroMachineText("battlefield-force", "-");
   setMicroMachineText("battlefield-posture", "-");
+  setMicroMachineText("battlefield-unassigned", "-");
+  setMicroMachineText("battlefield-readiness", "-");
+  setMicroMachineText("battlefield-transfer", "-");
+  setMicroMachineText("battlefield-integrity", "-");
+  setMicroMachineText("battlefield-production-waits", "-");
   setMicroMachineText("battlefield-control-summary", t("battlefieldControlWaiting"));
   var badge = document.getElementById("battlefield-link-badge");
   if (badge) {
@@ -11553,12 +12466,38 @@ function commandOperationData(operation, parentData) {
     operation_mission: String(operation.mission || "operation"),
     operation_edit: operation.operation_edit || {},
     operation_convergence: operation.operation_convergence || {},
+    battlefield_operation: operation.battlefield_operation || null,
+    battlefield_overview: parentData && parentData.battlefield_overview || null,
+    semantic_timeline: Array.isArray(operation.semantic_timeline)
+      ? operation.semantic_timeline
+      : [],
     squad_order: String(operation.squad_order || ""),
     family_evidence: Array.isArray(operation.family_evidence)
       ? operation.family_evidence
       : [],
     telemetry_current: operation.telemetry_current === true
   };
+}
+
+function operationCanonicalCompletion(data) {
+  var projection = data && data.battlefield_operation;
+  if (
+    !projection ||
+    typeof projection !== "object" ||
+    !projection.operation_id
+  ) {
+    return false;
+  }
+  var completion = projection.operation_completion || {};
+  var lifetime = projection.operation_lifetime || {};
+  var state = String(completion.state || "").toLowerCase();
+  return Boolean(
+    completion.terminal === true &&
+    (
+      lifetime.completed === true ||
+      ["completed", "succeeded", "success"].indexOf(state) >= 0
+    )
+  );
 }
 
 function operationRecordDisposition(model, data) {
@@ -11578,6 +12517,7 @@ function operationRecordDisposition(model, data) {
   }
   if (
     reported === "completed" ||
+    operationCanonicalCompletion(data) ||
     (
       model.effectObserved &&
       (execution.completed === true || executionState === "completed")
@@ -11602,18 +12542,13 @@ function resetOperationConsoleRegistry() {
   operationRecords = {};
   operationRecordOrder = [];
   operationConsoleScopeId = "";
-  var list = document.getElementById("operation-list");
-  if (list) {
-    list.textContent = "";
-    var empty = document.createElement("p");
-    empty.className = "operation-empty";
-    empty.textContent = commandUiText(
-      "아직 추적 중인 작전이 없습니다.",
-      "No operations are being tracked yet.",
-      "尚无正在跟踪的作战。"
-    );
-    list.appendChild(empty);
-  }
+  selectedOperationKey = "";
+  var lanes = ensureOperationLaneContainers();
+  Object.keys(lanes).forEach(function(name) {
+    lanes[name].textContent = "";
+    setMicroMachineText("operation-lane-" + name + "-count", "0");
+  });
+  renderOperationTimeline(null);
   setMicroMachineText(
     "operation-summary",
     commandUiText("활성 작전 0개", "0 active operations", "0 个活跃作战")
@@ -11658,6 +12593,9 @@ function rekeyOperationRecord(record, newKey) {
   delete operationRecords[oldKey];
   record.key = newKey;
   operationRecords[newKey] = record;
+  if (selectedOperationKey === oldKey) {
+    selectedOperationKey = newKey;
+  }
   var index = operationRecordOrder.indexOf(oldKey);
   if (index >= 0) {
     operationRecordOrder[index] = newKey;
@@ -11947,6 +12885,10 @@ function reconcileOperationRecord(operation, parentData) {
       record.data.family_evidence,
       data.family_evidence
     );
+    data.semantic_timeline = mergeOperationSemanticTimeline(
+      record.data.semantic_timeline,
+      data.semantic_timeline
+    );
   }
   record.data = data;
   record.stageRank = Math.max(record.stageRank, stageRank);
@@ -11974,6 +12916,149 @@ function operationAppendDetail(container, label, value, extraClass) {
   detail.appendChild(labelNode);
   detail.appendChild(valueNode);
   container.appendChild(detail);
+}
+
+function operationProjection(data) {
+  var projection = data && data.battlefield_operation;
+  return projection && typeof projection === "object" ? projection : {};
+}
+
+function operationRouteSummary(data) {
+  var route = operationProjection(data).operation_route || {};
+  var requested = String(route.requested_route_type || "-");
+  var applied = String(route.applied_route_type || "-");
+  var target = String(
+    route.resolved_target_label ||
+    route.location_intent ||
+    route.target_type ||
+    "-"
+  );
+  return requested + " → " + applied + " · " + target;
+}
+
+function operationLifetimeSummary(data) {
+  var lifetime = operationProjection(data).operation_lifetime || {};
+  var conditions = Array.isArray(lifetime.completion_conditions)
+    ? lifetime.completion_conditions.join(", ")
+    : "-";
+  var parts = [
+    String(lifetime.mode || "-"),
+    commandUiText("종료 ", "deadline ", "截止 ") +
+      String(lifetime.deadline_frame || "-"),
+    conditions
+  ];
+  if (lifetime.standing === true) {
+    parts.push(commandUiText("지속 작전", "standing", "持续作战"));
+  }
+  return parts.join(" · ");
+}
+
+function operationForceSummary(data) {
+  var projection = operationProjection(data);
+  var ownership = projection.operation_ownership || {};
+  var launch = projection.operation_launch_policy || {};
+  var convergence = data && data.operation_convergence || {};
+  var requested = Number(
+    convergence.target_count ||
+    launch.max_units ||
+    launch.min_units ||
+    0
+  );
+  var represented = Number(convergence.represented_count || 0);
+  var owners = Number(ownership.owner_count || 0);
+  return commandUiText("요구 ", "requested ", "请求 ") + requested +
+    commandUiText(" · 반영 ", " · represented ", " · 已反映 ") + represented +
+    commandUiText(" · 실제 소유 ", " · exact owners ", " · 实际所有者 ") + owners;
+}
+
+function operationLaunchSummary(data) {
+  var launch = operationProjection(data).operation_launch_policy || {};
+  var decision = String(launch.decision || "unavailable");
+  var launchCount = Number(launch.launch_count || 0);
+  var missing = Number(launch.missing_count || 0);
+  var safety = launch.partial_launch_allowed === true
+    ? (
+      launch.partial_launch_safe === true
+        ? commandUiText("부분 출동 안전", "partial launch safe", "部分出动安全")
+        : commandUiText("부분 출동 불가", "partial launch unsafe", "部分出动不安全")
+    )
+    : commandUiText("정원 출동", "full-force policy", "满编策略");
+  return decision + " · " + launchCount +
+    commandUiText(" 출동 · 부족 ", " launched · missing ", " 出动 · 缺少 ") +
+    missing + " · " + safety;
+}
+
+function operationCompletionSummary(data) {
+  var completion = operationProjection(data).operation_completion || {};
+  var observed = [];
+  if (completion.movement_observed === true) {
+    observed.push(commandUiText("이동", "movement", "移动"));
+  }
+  if (completion.engagement_observed === true) {
+    observed.push(commandUiText("교전", "engagement", "交战"));
+  }
+  if (completion.target_reached === true) {
+    observed.push(commandUiText("목표 도달", "target reached", "到达目标"));
+  }
+  if (completion.terminal === true) {
+    observed.push(commandUiText("권위 종료", "authoritative terminal", "权威终止"));
+  }
+  return observed.length
+    ? observed.join(" · ") + (completion.reason ? " · " + completion.reason : "")
+    : commandUiText("관측 증거 대기", "awaiting observed evidence", "等待观测证据");
+}
+
+function operationBlockerSummary(data) {
+  var projection = operationProjection(data);
+  var launch = projection.operation_launch_policy || {};
+  var lifetime = projection.operation_lifetime || {};
+  var convergence = data && data.operation_convergence || {};
+  var intervention = data && data.intervention || {};
+  var execution = intervention.command_execution || {};
+  var blocker = String(
+    launch.blocker ||
+    convergence.blocker ||
+    execution.blocker_reason ||
+    ""
+  );
+  var choices = Array.isArray(launch.recommended_choices)
+    ? launch.recommended_choices
+    : [];
+  var resolution = choices.length
+    ? choices.join(", ")
+    : (
+      Array.isArray(lifetime.completion_conditions)
+        ? lifetime.completion_conditions.join(", ")
+        : ""
+    );
+  return (blocker || commandUiText("차단 없음", "no blocker", "无阻塞")) +
+    " · " +
+    (resolution || commandUiText("런타임 재평가", "runtime re-evaluation", "运行时重新评估"));
+}
+
+function mergeOperationSemanticTimeline(previous, incoming) {
+  var merged = {};
+  (Array.isArray(previous) ? previous : []).concat(
+    Array.isArray(incoming) ? incoming : []
+  ).forEach(function(event) {
+    if (!event || typeof event !== "object") { return; }
+    var sequence = Number(event.timeline_seq || 0);
+    var key = sequence > 0
+      ? String(sequence)
+      : [
+        event.operation_id,
+        event.generation,
+        event.kind,
+        event.game_frame,
+        event.summary
+      ].join("|");
+    merged[key] = event;
+  });
+  return Object.keys(merged).map(function(key) {
+    return merged[key];
+  }).sort(function(left, right) {
+    return Number(left.timeline_seq || 0) - Number(right.timeline_seq || 0);
+  }).slice(-32);
 }
 
 function operationEditPayload(data) {
@@ -12230,8 +13315,162 @@ function operationActionButton(record, label, action, handler) {
   return button;
 }
 
+function operationResolutionChoices(data) {
+  var projection = operationProjection(data);
+  var launch = projection.operation_launch_policy || {};
+  var overview = data && data.battlefield_overview || {};
+  var choices = [];
+  (Array.isArray(launch.recommended_choices)
+    ? launch.recommended_choices
+    : []
+  ).forEach(function(choice) {
+    var label = String(choice || "");
+    if (!label) { return; }
+    var partial = label.toLowerCase().indexOf("partial") >= 0;
+    choices.push({
+      label: label,
+      safe: !partial || launch.partial_launch_safe === true,
+      reason: partial && launch.partial_launch_safe !== true
+        ? String(launch.blocker || "partial_launch_not_safe")
+        : ""
+    });
+  });
+  var transfer = overview.transfer_availability || {};
+  var entries = Array.isArray(transfer.entries) ? transfer.entries : [];
+  entries.forEach(function(entry) {
+    if (
+      !entry ||
+      String(entry.source_owner_id || "") !== String(data.operation_id || "")
+    ) {
+      return;
+    }
+    (Array.isArray(entry.recommended_resolution_choices)
+      ? entry.recommended_resolution_choices
+      : []
+    ).forEach(function(choice) {
+      var label = String(choice || "");
+      if (!label) { return; }
+      choices.push({
+        label: label,
+        safe: entry.transfer_safe === true &&
+          !String(entry.atomic_runtime_blocker || ""),
+        reason: String(entry.atomic_runtime_blocker || "")
+      });
+    });
+  });
+  return choices;
+}
+
+function renderOperationResolutionActions(record, data) {
+  var choices = operationResolutionChoices(data);
+  if (!choices.length) { return null; }
+  var container = document.createElement("div");
+  container.className = "operation-resolution-actions";
+  var label = document.createElement("span");
+  label.textContent = commandUiText(
+    "상황별 해결 선택",
+    "Contextual resolution",
+    "情境解决选项"
+  );
+  container.appendChild(label);
+  var controls = document.createElement("div");
+  choices.forEach(function(choice) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = choice.label;
+    button.disabled = choice.safe !== true;
+    button.setAttribute("data-operation-resolution", choice.label);
+    button.setAttribute(
+      "aria-label",
+      choice.label + ": " + (record.text || record.operationId)
+    );
+    if (choice.reason) {
+      button.title = choice.reason;
+      button.setAttribute("aria-description", choice.reason);
+    }
+    button.addEventListener("click", function() {
+      if (button.disabled) { return; }
+      submitCommanderControlOrder(
+        currentLang === "en"
+          ? "Apply resolution " + choice.label + " to operation " + record.operationId
+          : (currentLang === "zh"
+            ? "对作战 " + record.operationId + " 应用解决方案 " + choice.label
+            : "작전 " + record.operationId + "에 해결 선택 " + choice.label + " 적용해")
+      );
+    });
+    controls.appendChild(button);
+  });
+  container.appendChild(controls);
+  return container;
+}
+
+function renderOperationTimeline(record) {
+  var list = document.getElementById("operation-timeline");
+  var selection = document.getElementById("operation-timeline-selection");
+  if (!list || !selection) { return; }
+  list.textContent = "";
+  if (!record || !record.data) {
+    selection.textContent = commandUiText(
+      "작전을 선택하세요",
+      "Select an operation",
+      "请选择作战"
+    );
+    return;
+  }
+  var generation = Number(record.operationGeneration || 0);
+  selection.textContent = record.operationId + "#" + generation;
+  var events = Array.isArray(record.data.semantic_timeline)
+    ? record.data.semantic_timeline
+    : [];
+  if (!events.length) {
+    var empty = document.createElement("li");
+    empty.className = "operation-empty";
+    empty.textContent = commandUiText(
+      "아직 의미 사건이 없습니다.",
+      "No semantic events yet.",
+      "尚无语义事件。"
+    );
+    list.appendChild(empty);
+    return;
+  }
+  events.forEach(function(event) {
+    var item = document.createElement("li");
+    item.className = "operation-timeline-item";
+    item.setAttribute("data-operation-event-kind", String(event.kind || ""));
+    item.setAttribute("data-operation-event-seq", String(event.timeline_seq || 0));
+    var kind = document.createElement("span");
+    kind.className = "operation-timeline-kind";
+    kind.textContent = String(event.kind || "event");
+    var summary = document.createElement("strong");
+    summary.className = "operation-timeline-summary";
+    summary.textContent = String(event.summary || event.kind || "");
+    var frame = document.createElement("span");
+    frame.className = "operation-timeline-frame";
+    frame.textContent = Number(event.game_frame || -1) >= 0
+      ? "f" + Number(event.game_frame)
+      : commandUiText("프레임 대기", "frame pending", "等待帧");
+    item.appendChild(kind);
+    item.appendChild(summary);
+    item.appendChild(frame);
+    var details = document.createElement("details");
+    var detailsSummary = document.createElement("summary");
+    detailsSummary.textContent = commandUiText(
+      "기술 증거",
+      "Technical evidence",
+      "技术证据"
+    );
+    var technical = document.createElement("pre");
+    technical.textContent = JSON.stringify(event.technical || {}, null, 2);
+    details.appendChild(detailsSummary);
+    details.appendChild(technical);
+    item.appendChild(details);
+    list.appendChild(item);
+  });
+}
+
 function focusOperationRecord(record) {
   if (!record || !record.data) { return; }
+  selectedOperationKey = record.key;
   microMachineCommandAnnouncementSeq += 1;
   activeCommandConsoleRecord = {
     pendingId: "",
@@ -12248,6 +13487,7 @@ function focusOperationRecord(record) {
     announcementOrdinal: microMachineCommandAnnouncementSeq
   };
   renderActiveCommandConsole(record.data, true);
+  renderOperationTimeline(record);
 }
 
 function renderOperationCard(record) {
@@ -12277,7 +13517,7 @@ function renderOperationCard(record) {
   var kicker = document.createElement("span");
   kicker.className = "operation-card-kicker";
   kicker.textContent = String(data.operation_mission || "operation") +
-    " · " + record.operationId;
+    " · " + record.operationId + "#" + Number(record.operationGeneration || 0);
   var title = document.createElement("h3");
   title.id = record.domId + "-title";
   title.className = "operation-card-title";
@@ -12290,7 +13530,9 @@ function renderOperationCard(record) {
   state.setAttribute("role", "status");
   state.setAttribute("aria-live", "polite");
   state.setAttribute("aria-atomic", "true");
-  state.textContent = commandConsoleStateLabel(model);
+  state.textContent = operationCanonicalCompletion(data)
+    ? commandUiText("실행 확인", "Execution verified", "执行已确认")
+    : commandConsoleStateLabel(model);
   header.appendChild(titleGroup);
   header.appendChild(state);
   card.appendChild(header);
@@ -12306,7 +13548,9 @@ function renderOperationCard(record) {
   ].forEach(function(stageDefinition) {
     var stageName = stageDefinition[0];
     var stage = document.createElement("span");
-    var stageState = commandConsoleStageState(stageName, model);
+    var stageState = operationCanonicalCompletion(data)
+      ? "stage-done"
+      : commandConsoleStageState(stageName, model);
     stage.className = "operation-stage " + stageState;
     stage.setAttribute("role", "listitem");
     stage.setAttribute(
@@ -12325,6 +13569,41 @@ function renderOperationCard(record) {
     commandUiText("배정 전력", "Assigned force", "已分配兵力"),
     commandConsoleAssignedForce(model)
   );
+  operationAppendDetail(
+    details,
+    commandUiText("작전/태스크", "Mission/task", "作战/任务"),
+    String(data.operation_mission || "operation")
+  );
+  if (data.squad_order) {
+    operationAppendDetail(
+      details,
+      commandUiText("Squad 오더", "Squad order", "编队命令"),
+      String(data.squad_order)
+    );
+  }
+  operationAppendDetail(
+    details,
+    commandUiText("경로/의미 목표", "Route/semantic target", "路线/语义目标"),
+    operationRouteSummary(data)
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("수명/종료 조건", "Lifetime/completion", "生命周期/完成条件"),
+    operationLifetimeSummary(data),
+    "operation-card-verification"
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("요구/반영/실소유", "Requested/represented/owned", "请求/反映/所有"),
+    operationForceSummary(data),
+    "operation-card-verification"
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("출동 결정", "Launch decision", "出动决定"),
+    operationLaunchSummary(data),
+    "operation-card-verification"
+  );
   if (operationConvergenceSummary(data)) {
     operationAppendDetail(
       details,
@@ -12339,13 +13618,6 @@ function renderOperationCard(record) {
       commandUiText("유닛 실행", "Unit execution", "单位执行"),
       operationFamilyEvidenceSummary(data),
       "operation-card-verification"
-    );
-  }
-  if (data.squad_order) {
-    operationAppendDetail(
-      details,
-      commandUiText("Squad 오더", "Squad order", "编队命令"),
-      String(data.squad_order)
     );
   }
   if (operationEditSummary(data)) {
@@ -12380,6 +13652,18 @@ function renderOperationCard(record) {
     details,
     commandUiText("실행 증거", "Execution evidence", "执行证据"),
     commandConsoleVerification(data, model),
+    "operation-card-verification"
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("권위 관측", "Canonical observation", "权威观测"),
+    operationCompletionSummary(data),
+    "operation-card-verification"
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("첫 차단/해결 조건", "First blocker/resolution", "首个阻塞/解决条件"),
+    operationBlockerSummary(data),
     "operation-card-verification"
   );
   card.appendChild(details);
@@ -12436,7 +13720,98 @@ function renderOperationCard(record) {
     )
   );
   card.appendChild(actions);
+  var resolutionActions = renderOperationResolutionActions(record, data);
+  if (resolutionActions) {
+    card.appendChild(resolutionActions);
+  }
   return card;
+}
+
+function operationLaneDefinitions() {
+  return [
+    ["planning", commandUiText("해석/편성", "Planning", "解析/编组")],
+    ["executing", commandUiText("실행 중", "Executing", "执行中")],
+    ["completed", commandUiText("관측 완료", "Completed", "观测完成")],
+    ["waiting", commandUiText("대기/차단", "Waiting/blocked", "等待/阻塞")]
+  ];
+}
+
+function ensureOperationLaneContainers() {
+  var root = document.getElementById("operation-list");
+  var lanes = {};
+  if (!root) { return lanes; }
+  operationLaneDefinitions().forEach(function(definition) {
+    var name = definition[0];
+    var laneList = document.getElementById("operation-lane-" + name);
+    if (!laneList) {
+      var lane = document.createElement("section");
+      lane.className = "operation-lane";
+      lane.setAttribute("data-operation-lane", name);
+      var header = document.createElement("div");
+      header.className = "operation-lane-header";
+      var title = document.createElement("h3");
+      title.className = "operation-lane-title";
+      title.textContent = definition[1];
+      var count = document.createElement("span");
+      count.id = "operation-lane-" + name + "-count";
+      count.className = "operation-lane-count";
+      count.textContent = "0";
+      header.appendChild(title);
+      header.appendChild(count);
+      laneList = document.createElement("div");
+      laneList.id = "operation-lane-" + name;
+      laneList.className = "operation-lane-list";
+      laneList.setAttribute("role", "list");
+      lane.appendChild(header);
+      lane.appendChild(laneList);
+      root.appendChild(lane);
+    }
+    lanes[name] = laneList;
+  });
+  return lanes;
+}
+
+function operationRecordLane(record) {
+  var data = record && record.data || {};
+  var model = commandConsoleStageModel(data);
+  var projection = operationProjection(data);
+  var launch = projection.operation_launch_policy || {};
+  var convergence = data.operation_convergence || {};
+  var intervention = data.intervention || {};
+  var execution = intervention.command_execution || {};
+  var executionState = String(execution.state || "").toLowerCase();
+  var disposition = String(record && record.disposition || "").toLowerCase();
+  if (
+    disposition === "completed" &&
+    (
+      !projection.operation_id ||
+      operationCanonicalCompletion(data)
+    )
+  ) {
+    return "completed";
+  }
+  if (
+    disposition === "blocked" ||
+    disposition === "expired" ||
+    disposition === "superseded" ||
+    record && record.terminal ||
+    ["wait", "waiting", "blocked"].indexOf(
+      String(launch.decision || "").toLowerCase()
+    ) >= 0 ||
+    Boolean(launch.blocker || convergence.blocker) ||
+    executionState.indexOf("waiting") === 0
+  ) {
+    return "waiting";
+  }
+  if (
+    model.actionIssued ||
+    ["action_issued", "effect_observed", "moving", "engaged"].indexOf(
+      executionState
+    ) >= 0
+  ) {
+    return "executing";
+  }
+  return "planning";
 }
 
 function pruneOperationRecords() {
@@ -12460,7 +13835,14 @@ function renderOperationRecords() {
   var list = document.getElementById("operation-list");
   if (!list) { return; }
   pruneOperationRecords();
-  list.textContent = "";
+  var lanes = ensureOperationLaneContainers();
+  var oldEmpty = document.getElementById("operation-list-empty");
+  if (oldEmpty && oldEmpty.parentNode) {
+    oldEmpty.parentNode.removeChild(oldEmpty);
+  }
+  Object.keys(lanes).forEach(function(name) {
+    lanes[name].textContent = "";
+  });
   var visibleRecords = operationRecordOrder.map(function(key) {
     return operationRecords[key];
   }).filter(function(record) {
@@ -12468,6 +13850,7 @@ function renderOperationRecords() {
   });
   if (!visibleRecords.length) {
     var empty = document.createElement("p");
+    empty.id = "operation-list-empty";
     empty.className = "operation-empty";
     empty.textContent = commandUiText(
       "아직 추적 중인 작전이 없습니다.",
@@ -12477,9 +13860,32 @@ function renderOperationRecords() {
     list.appendChild(empty);
   } else {
     visibleRecords.forEach(function(record) {
-      list.appendChild(renderOperationCard(record));
+      var laneName = operationRecordLane(record);
+      var lane = lanes[laneName] || lanes.planning;
+      var card = renderOperationCard(record);
+      if (card.parentNode && card.parentNode !== lane) {
+        card.parentNode.removeChild(card);
+      }
+      lane.appendChild(card);
     });
   }
+  Object.keys(lanes).forEach(function(name) {
+    setMicroMachineText(
+      "operation-lane-" + name + "-count",
+      String(lanes[name].children.length)
+    );
+  });
+  if (
+    !selectedOperationKey ||
+    !operationRecords[selectedOperationKey]
+  ) {
+    selectedOperationKey = visibleRecords.length
+      ? visibleRecords[0].key
+      : "";
+  }
+  renderOperationTimeline(
+    selectedOperationKey ? operationRecords[selectedOperationKey] : null
+  );
   var activeCount = visibleRecords.filter(function(record) {
     return !record.terminal;
   }).length;
@@ -12702,29 +14108,139 @@ function renderActiveCommandFailure(text, error, pendingId) {
 }
 
 function renderBattlefieldControlOverview(data, model) {
-  var intervention = (data && data.intervention) || {};
-  var managers = intervention.manager_snapshot || {};
-  var combat = managers.CombatCommander || {};
-  var scout = managers.ScoutManager || {};
-  var frame = intervention.telemetry_frame;
+  var overview = data && data.battlefield_overview;
+  overview = overview && typeof overview === "object" ? overview : null;
+  var identity = overview && overview.identity || {};
+  var frame = overview ? identity.game_frame : null;
   var badge = document.getElementById("battlefield-link-badge");
   if (badge) {
-    var linked = frame !== null && frame !== undefined && frame !== "";
+    var linked = Boolean(
+      overview &&
+      String(overview.authority || "") &&
+      frame !== null &&
+      frame !== undefined &&
+      frame !== ""
+    );
     badge.className = "battlefield-link-badge" + (linked ? " control-linked" : "");
     badge.textContent = linked ? t("battlefieldLinkConnected") : t("battlefieldLinkWaiting");
   }
-  setMicroMachineText("battlefield-command-state", commandConsoleStateLabel(model));
+  if (!overview) {
+    [
+      "battlefield-command-state",
+      "battlefield-frame",
+      "battlefield-force",
+      "battlefield-posture",
+      "battlefield-unassigned",
+      "battlefield-readiness",
+      "battlefield-transfer",
+      "battlefield-integrity",
+      "battlefield-production-waits"
+    ].forEach(function(id) { setMicroMachineText(id, "-"); });
+    setMicroMachineText(
+      "battlefield-control-summary",
+      commandUiText(
+        "권위 battlefield_overview를 기다리는 중입니다.",
+        "Waiting for the authoritative battlefield_overview.",
+        "正在等待权威 battlefield_overview。"
+      )
+    );
+    return;
+  }
+  var explicit = Number(overview.explicit_operation_owned_count || 0);
+  var autonomous = Number(overview.autonomous_owned_count || 0);
+  var unassigned = Number(overview.unassigned_count || 0);
+  var duplicate = Number(overview.duplicate_owner_count || 0);
+  setMicroMachineText(
+    "battlefield-command-state",
+    String(overview.authority || "-") + " · schema " +
+      String(overview.schema_version || "-")
+  );
   setMicroMachineText("battlefield-frame", frame);
-  var forceParts = [];
-  if (combat.combat_unit_count !== null && combat.combat_unit_count !== undefined) {
-    forceParts.push(commandUiText("전투 ", "combat ", "战斗 ") + combat.combat_unit_count);
-  }
-  if (scout.scout_unit_count !== null && scout.scout_unit_count !== undefined) {
-    forceParts.push(commandUiText("정찰 ", "scout ", "侦察 ") + scout.scout_unit_count);
-  }
-  setMicroMachineText("battlefield-force", forceParts.length ? forceParts.join(" · ") : "-");
-  setMicroMachineText("battlefield-posture", intervention.tactical_posture || "-");
-  setMicroMachineText("battlefield-control-summary", commandConsoleVerification(data, model));
+  setMicroMachineText(
+    "battlefield-force",
+    String(Number(overview.eligible_combat_count || 0))
+  );
+  setMicroMachineText(
+    "battlefield-posture",
+    commandUiText("명시 ", "explicit ", "显式 ") + explicit +
+      commandUiText(" · 자율 ", " · autonomous ", " · 自主 ") + autonomous
+  );
+  setMicroMachineText("battlefield-unassigned", String(unassigned));
+
+  var bases = Array.isArray(overview.bases) ? overview.bases : [];
+  var readinessParts = bases.map(function(base) {
+    var readiness = base && base.base_readiness || {};
+    var protectedMinimum = Array.isArray(readiness.protected_minimum)
+      ? readiness.protected_minimum.map(function(item) {
+        return String(item.family || item.role || "unit") + " " +
+          Number(item.count || 0);
+      }).join(", ")
+      : "";
+    return String(base.semantic_anchor || base.base_id || "base") + ": " +
+      String(readiness.readiness_state || "unknown") +
+      (readiness.reason ? " · " + readiness.reason : "") +
+      (protectedMinimum
+        ? commandUiText(" · 보호 ", " · protected ", " · 保护 ") + protectedMinimum
+        : "");
+  });
+  setMicroMachineText(
+    "battlefield-readiness",
+    readinessParts.length ? readinessParts.join(" | ") : "-"
+  );
+
+  var transfer = overview.transfer_availability || {};
+  var transferEntries = Array.isArray(transfer.entries) ? transfer.entries : [];
+  var transferParts = transferEntries.map(function(entry) {
+    return String(entry.source_owner_id || "owner") + ": " +
+      Number(entry.transferable_count || 0) + "/" +
+      Number(entry.source_owner_count || 0) +
+      (entry.transfer_safe === true
+        ? commandUiText(" 안전", " safe", " 安全")
+        : " · " + String(entry.atomic_runtime_blocker || "unsafe"));
+  });
+  setMicroMachineText(
+    "battlefield-transfer",
+    transferParts.length ? transferParts.join(" | ") : "-"
+  );
+  setMicroMachineText(
+    "battlefield-integrity",
+    duplicate === 0
+      ? commandUiText("정상 · 중복 0", "valid · duplicates 0", "有效 · 重复 0")
+      : commandUiText("경고 · 중복 ", "alert · duplicates ", "警告 · 重复 ") + duplicate
+  );
+
+  var operations = Array.isArray(overview.operation_ownership)
+    ? overview.operation_ownership
+    : [];
+  var waits = operations.map(function(operation) {
+    var launch = operation && operation.operation_launch_policy || {};
+    var decision = String(launch.decision || "").toLowerCase();
+    var blocker = String(launch.blocker || "");
+    if (
+      ["wait", "waiting", "blocked"].indexOf(decision) < 0 &&
+      !blocker
+    ) {
+      return "";
+    }
+    return String(operation.operation_id || "operation") + ": " +
+      (blocker || decision) + " · " +
+      Number(launch.launch_count || 0) + "/" +
+      Number(launch.min_units || 0);
+  }).filter(Boolean);
+  setMicroMachineText(
+    "battlefield-production-waits",
+    waits.length
+      ? waits.join(" | ")
+      : commandUiText("대기 없음", "no canonical waits", "无权威等待")
+  );
+  setMicroMachineText(
+    "battlefield-control-summary",
+    commandUiText("전투 가능 ", "Eligible ", "可战斗 ") +
+      Number(overview.eligible_combat_count || 0) +
+      commandUiText(" · 명시 소유 ", " · explicit ", " · 显式所有 ") + explicit +
+      commandUiText(" · 자율 소유 ", " · autonomous ", " · 自主所有 ") + autonomous +
+      commandUiText(" · 미배정 ", " · unassigned ", " · 未分配 ") + unassigned
+  );
 }
 
 function summarizeMicroMachineManagers(managers) {
@@ -13034,6 +14550,7 @@ function renderMicroMachineStatus(data) {
   if (!data || data.enabled === false) {
     node.textContent = (data && data.error) || "MicroMachine modulation disabled.";
     renderOperationConsole(data || {});
+    renderBattlefieldControlOverview(data || {});
     renderActiveCommandConsole(data || {});
     renderMicroMachineIntervention(data || {});
     return;
@@ -13045,6 +14562,7 @@ function renderMicroMachineStatus(data) {
     maybeAppendMicroMachineAsyncCompletion(result);
   });
   renderOperationConsole(data);
+  renderBattlefieldControlOverview(data);
   if (microMachineStatusIsStaleForActiveCommand(data)) {
     return;
   }
@@ -14548,6 +16066,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._event_source_lock = threading.Lock()
         self._observed_history_seq = 0
         self._observed_payload_hashes: dict[str, str] = {}
+        self._observed_operation_event_seq: dict[str, int] = {}
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
@@ -14875,7 +16394,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         blackboard_dir: str,
         blackboard_scope_id: str,
     ) -> int:
-        snapshot_cursor = journal.latest_seq
+        server = self.server  # type: ignore[assignment]
+        with server._event_source_lock:  # type: ignore[attr-defined]
+            snapshot_cursor = journal.latest_seq
+            snapshot_payload = self._authoritative_event_snapshot(
+                blackboard_dir
+            )
         snapshot_event = {
             "event_seq": snapshot_cursor,
             "event_type": "snapshot",
@@ -14885,7 +16409,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             "generation": 0,
             "game_frame": -1,
             "blackboard_scope_id": blackboard_scope_id,
-            "payload": self._authoritative_event_snapshot(blackboard_dir),
+            "payload": snapshot_payload,
         }
         self._write_sse_event(snapshot_event)
         return snapshot_cursor
@@ -14962,6 +16486,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             micromachine_status = self._micromachine_status_payload(
                 blackboard_dir
             )
+            self._publish_new_operation_events(
+                micromachine_status,
+                blackboard_dir=blackboard_dir,
+                publish=False,
+            )
         except Exception as error:  # noqa: BLE001 - snapshot remains usable.
             micromachine_status = {
                 "enabled": False,
@@ -15035,6 +16564,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     or status.get("blackboard_dir")
                     or blackboard_dir
                 )
+                self._publish_new_operation_events(
+                    status,
+                    blackboard_dir=blackboard_dir,
+                    publish=True,
+                )
                 server.publish_changed_snapshot(  # type: ignore[attr-defined]
                     f"micromachine:{scope}",
                     "micromachine_status",
@@ -15061,6 +16595,57 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     },
                     blackboard_dir=blackboard_dir,
                 )
+
+    def _publish_new_operation_events(
+        self,
+        status: Mapping[str, object],
+        *,
+        blackboard_dir: str,
+        publish: bool,
+    ) -> None:
+        server = self.server  # type: ignore[assignment]
+        scope_id = str(
+            status.get("blackboard_scope_id")
+            or _micromachine_blackboard_scope_id(blackboard_dir)
+        )
+        raw_events = status.get("operation_events")
+        events = (
+            [dict(item) for item in raw_events if isinstance(item, Mapping)]
+            if isinstance(raw_events, Sequence)
+            and not isinstance(raw_events, (str, bytes, bytearray))
+            else []
+        )
+        observed = int(
+            server._observed_operation_event_seq.get(scope_id, 0)  # type: ignore[attr-defined]
+        )
+        latest = observed
+        for event in sorted(
+            events,
+            key=lambda item: _web_event_int(
+                item.get("timeline_seq"),
+                0,
+            ),
+        ):
+            timeline_seq = _web_event_int(event.get("timeline_seq"), 0)
+            if timeline_seq <= observed:
+                continue
+            latest = max(latest, timeline_seq)
+            if not publish:
+                continue
+            server.publish_event(  # type: ignore[attr-defined]
+                "operation_event",
+                event,
+                update_id=str(event.get("update_id", "") or ""),
+                operation_id=str(event.get("operation_id", "") or ""),
+                generation=max(
+                    0,
+                    _web_event_int(event.get("generation"), 0),
+                ),
+                game_frame=_web_event_int(event.get("game_frame"), -1),
+                blackboard_dir=blackboard_dir,
+                blackboard_scope_id=scope_id,
+            )
+        server._observed_operation_event_seq[scope_id] = latest  # type: ignore[attr-defined]
 
     def _state_payload(self) -> dict[str, object]:
         snapshot = self._bridge.state_snapshot()

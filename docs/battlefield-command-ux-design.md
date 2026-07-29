@@ -1,6 +1,6 @@
 # Battlefield Command UX Design
 
-> 최종 수정: 2026-07-28  
+> 최종 수정: 2026-07-29
 > 목적: 사용자가 채팅 옆의 봇을 구경하는 것이 아니라, 실제 전장의 병력을
 > 나누고 명령하고 결과를 확인한다는 감각을 제공한다.
 
@@ -59,6 +59,7 @@ flowchart LR
 | 인게임 작전 HUD | **Implemented** | 작전 ID, 병력, 목표, 이동, 교전, blocker 증거를 게임 안에 표시한다. |
 | 웹 상태 전송 | **Implemented: SSE primary** | `/api/events`가 state, history, MicroMachine lifecycle을 push하며 1000ms polling은 연결 장애 때만 fallback으로 동작한다. |
 | SSE 이벤트 스트리밍 | **Implemented** | append-only journal, 전역 `event_seq`, heartbeat, `Last-Event-ID` replay, snapshot 재동기화를 지원한다. |
+| 전장 상황 cockpit | **Implemented: pre-live** | 기존 Operation card를 planning/executing/completed/waiting 네 lane으로 이동시키고, canonical ownership/readiness와 operation timeline을 표시한다. 실제 SC2 화면 체감은 사용자 live QA가 최종 gate다. |
 | 음성 입력과 녹음 waveform | **Implemented** | 브라우저 SpeechRecognition 결과가 일반 명령 경로로 들어간다. |
 | 전술 radio TTS/readback | **Proposed** | 짧은 편성 확인, 차단, 교전 시작을 음성으로 알려주는 기능은 아직 완성되지 않았다. |
 | 명시적 병력 이관/편집 UX | **Implemented: pre-live** | resize, reinforce, retarget, transfer, cancel을 typed operation edit로 처리하고 기존 카드에서 전후 편성·counterpart·해결 결과를 표시한다. 실제 SC2 이관 이동은 live QA가 최종 gate다. |
@@ -522,6 +523,28 @@ feedback은 구현 완료로 표시하면 안 된다.
 14:21:12 assault-bravo Marine 4 배정 후 출동
 ```
 
+현재 구현은 기존 Battlefield Commander 카드와 시각 언어를 유지한 채 다음
+네 lane으로 같은 DOM card를 이동시킨다.
+
+| Lane | 의미 |
+| --- | --- |
+| `해석/편성` (`planning`) | 수신, 해석, publish, consume, assign 단계지만 matching-generation SC2 submission은 아직 없다. |
+| `실행 중` (`executing`) | matching-generation SC2 action이 제출됐고 authoritative terminal 상태는 아니다. |
+| `관측 완료` (`completed`) | canonical completion projection이 terminal completion을 확인했다. |
+| `대기/차단` (`waiting`) | 병력/선행조건 대기, blocker, 실패, 만료, 취소, supersede 상태다. |
+
+각 card는 기존 다섯 동작 `view / revise / reinforce / retarget / cancel`을
+유지한다. backend가 안전성 근거와 `recommended_choices`를 제공할 때만 별도
+resolution 영역을 표시하며, protected minimum이나 transfer 안전 조건을
+통과하지 못한 선택은 이유와 함께 disabled 상태로 남는다.
+
+`view`는 `blackboard_scope_id + operation_id + generation` 단위 timeline을
+선택한다. timeline은 반복 snapshot을 그대로 나열하지 않고 `received`,
+`planned`, `assigned`, `waiting`, `submitted`, movement/engagement/target,
+completion, edit, ownership 사건으로 축약한다. stale generation, regressing
+frame, 같은 frame의 상충 snapshot은 최신 상태를 되돌리지 못하며 snapshot
+hydration은 과거 사건을 새 live 사건처럼 재생하지 않는다.
+
 ## 12. In-Game HUD Contract
 
 웹을 보지 않아도 게임 안에서 다음을 확인할 수 있어야 한다.
@@ -613,6 +636,22 @@ production/prerequisite
 - stale generation과 늦은 telemetry의 UI 역행 차단
 - ownership handoff, stale action cleanup, transferred count runtime telemetry
 - clean build와 자동 테스트 완료 후 실제 SC2 이동 관측은 수동 live QA gate
+
+### Completed: Situational Cockpit and Operation Timeline
+
+- 기존 Battlefield Commander visual language와 command dock 유지
+- 정확히 네 단계 `해석 / 배정 / 제출 / 관측`과 다섯 card action 유지
+- planning/executing/completed/waiting 네 lane과 card DOM identity 유지
+- operation ID/generation, route, lifetime, requested/represented/owned force,
+  launch decision, actual SC2 command, canonical observation, blocker 표시
+- top-level canonical `battlefield_overview` 기반 ownership/readiness/transfer
+  표시, 대표 manager snapshot에 의한 overview 오염 차단
+- scope/session epoch/operation/generation 단위 semantic timeline
+- generation/frame regression, same-frame conflict, duplicate transition 차단
+- snapshot/replay source cut과 과거 operation event hydration 억제
+- contextual resolution choice의 protected-minimum/transfer 안전성 fail-closed
+- desktop/mobile/keyboard/reduced-motion/forced-colors 자동 회귀 검증
+- 실제 게임에서 카드와 유닛 행동의 체감 일치는 사용자 live QA가 최종 gate
 
 ### P1: Voice Tactical Loop
 
