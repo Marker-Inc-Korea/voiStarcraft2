@@ -2559,15 +2559,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "role": family.default_role,
                     "assigned": 0 if blocked else 1,
                     "represented": 0 if blocked else 1,
-                    "action": family.abilities[0],
-                    "required_effect": f"ability:{family.abilities[0]}",
+                    "action": f"ability:{family.abilities[0]}",
+                    "required_effect": "ability_state_or_effect",
                     "attempt_generation": index + 1,
                     "attempted_count": 0 if blocked else 1,
                     "attempted_frame": 0 if blocked else 215 + index,
                     "submitted_count": 0 if blocked else 1,
                     "submitted_frame": 0 if blocked else 230 + index,
                     "effect_kind": (
-                        "movement_observed" if effect_observed else ""
+                        "ability_state" if effect_observed else ""
                     ),
                     "effect_count": 1 if effect_observed else 0,
                     "effect_frame": 260 if effect_observed else 0,

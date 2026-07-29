@@ -1088,7 +1088,19 @@ def _normalized_family_evidence_item(
     attempt_generation = _positive_int(
         item.get("attempt_generation")
     ) or generation
-    if not action or attempt_generation <= 0:
+    required_effect = str(
+        item.get("required_effect", "") or ""
+    ).strip()
+    effect_kind = str(item.get("effect_kind", "") or "").strip()
+    if (
+        not action
+        or attempt_generation <= 0
+        or not _family_effect_contract_is_valid(
+            action=action,
+            required_effect=required_effect,
+            effect_kind=effect_kind,
+        )
+    ):
         return None
     return _family_evidence_payload(
         family=family,
@@ -1100,9 +1112,7 @@ def _normalized_family_evidence_item(
         operation_id=operation_id,
         generation=generation,
         action=action,
-        required_effect=str(
-            item.get("required_effect", "") or ""
-        ).strip(),
+        required_effect=required_effect,
         attempt_generation=attempt_generation,
         attempted_count=max(
             _int_value(item.get("attempted_count")),
@@ -1114,7 +1124,7 @@ def _normalized_family_evidence_item(
             int(item.get("executed") is True),
         ),
         submitted_frame=max(0, _int_value(item.get("submitted_frame"))),
-        effect_kind=str(item.get("effect_kind", "") or "").strip(),
+        effect_kind=effect_kind,
         effect_count=max(
             _int_value(item.get("effect_count")),
             int(item.get("effect") is True),
@@ -1125,6 +1135,23 @@ def _normalized_family_evidence_item(
         ).strip(),
         blocker=str(item.get("blocker", "") or "").strip(),
     )
+
+
+def _family_effect_contract_is_valid(
+    *,
+    action: str,
+    required_effect: str,
+    effect_kind: str,
+) -> bool:
+    is_ability_action = action.lower().startswith("ability:")
+    if required_effect == "movement_or_engagement":
+        return (
+            not is_ability_action
+            and effect_kind in {"", "movement", "engagement"}
+        )
+    if required_effect == "ability_state_or_effect":
+        return is_ability_action and effect_kind in {"", "ability_state"}
+    return False
 
 
 def _family_evidence_payload(

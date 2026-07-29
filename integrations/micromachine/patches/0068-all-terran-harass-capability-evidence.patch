@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 98bc077..8974e1d 100644
+index 98bc077..47e6d52 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1848,6 +1848,7 @@ bool voiResolveTacticalNukeTargetAnchor(
@@ -38,7 +38,7 @@ index 98bc077..8974e1d 100644
  		|| locationIntent == "enemy_start"
  		|| locationIntent == "enemy_start_location"
  		|| locationIntent == "enemy_natural"
-@@ -2181,6 +2187,215 @@ std::string voiOperationJsonEscape(const std::string & value)
+@@ -2181,6 +2187,322 @@ std::string voiOperationJsonEscape(const std::string & value)
  	return escaped.str();
  }
  
@@ -100,19 +100,24 @@ index 98bc077..8974e1d 100644
 +
 +std::string voiOperationFamilyEvidenceKey(
 +	const std::string & unitType,
-+	const std::string & role)
++	const std::string & role,
++	const std::string & action)
 +{
-+	return voiTerranOperationFamily(unitType) + "|" + role;
++	return unitType + "|" + role + "|" + action;
 +}
 +
 +uint64_t voiNextOperationFamilyAttemptGeneration(
 +	VoiOperationState & operation,
 +	const std::string & unitType,
 +	const std::string & role,
++	const std::string & action,
 +	uint64_t currentAttemptGeneration)
 +{
 +	const std::string key =
-+		voiOperationFamilyEvidenceKey(unitType, role);
++		voiOperationFamilyEvidenceKey(
++			unitType,
++			role,
++			action);
 +	auto & generation =
 +		operation.familyAttemptGenerationByKey[key];
 +	return voiNextMonotonicAttemptGeneration(
@@ -125,15 +130,115 @@ index 98bc077..8974e1d 100644
 +voiEnsureOperationFamilyEvidence(
 +	VoiOperationState & operation,
 +	const std::string & unitType,
-+	const std::string & role)
++	const std::string & role,
++	const std::string & action)
 +{
 +	const std::string key =
-+		voiOperationFamilyEvidenceKey(unitType, role);
++		voiOperationFamilyEvidenceKey(
++			unitType,
++			role,
++			action);
 +	auto & evidence = operation.familyEvidenceByKey[key];
 +	evidence.family = voiTerranOperationFamily(unitType);
 +	evidence.unitType = unitType;
 +	evidence.role = role;
++	evidence.action = action;
 +	return evidence;
++}
++
++void voiRemoveUnitFromOtherFamilyEvidence(
++	VoiOperationState & operation,
++	const std::string & unitType,
++	const std::string & role,
++	const std::string & action,
++	sc2::Tag unitTag)
++{
++	const std::string family = voiTerranOperationFamily(unitType);
++	const std::string keepKey =
++		voiOperationFamilyEvidenceKey(
++			unitType,
++			role,
++			action);
++	for (auto & evidenceEntry : operation.familyEvidenceByKey)
++	{
++		auto & evidence = evidenceEntry.second;
++		if (evidenceEntry.first == keepKey
++			|| evidence.family != family
++			|| evidence.role != role)
++		{
++			continue;
++		}
++		evidence.attemptedUnitTags.erase(unitTag);
++		evidence.submittedPositions.erase(unitTag);
++		evidence.effectUnitTags.erase(unitTag);
++		evidence.attemptedCount =
++			static_cast<int>(
++				evidence.attemptedUnitTags.size());
++		evidence.submittedCount =
++			static_cast<int>(
++				evidence.submittedPositions.size());
++		if (evidence.attemptedUnitTags.empty())
++		{
++			evidence.attemptedFrame = 0;
++		}
++		if (evidence.submittedPositions.empty())
++		{
++			evidence.submittedFrame = 0;
++		}
++		if (evidence.effectUnitTags.empty())
++		{
++			evidence.effectKind.clear();
++			evidence.effectFrame = 0;
++		}
++	}
++}
++
++VoiOperationState::FamilyExecutionEvidence *
++voiFindSubmittedOperationFamilyEvidence(
++	VoiOperationState & operation,
++	const std::string & role,
++	sc2::Tag unitTag)
++{
++	for (auto & evidenceEntry : operation.familyEvidenceByKey)
++	{
++		auto & evidence = evidenceEntry.second;
++		if (evidence.role == role
++			&& evidence.submittedPositions.find(unitTag)
++				!= evidence.submittedPositions.end())
++		{
++			return &evidence;
++		}
++	}
++	return nullptr;
++}
++
++bool voiOperationFamilyEvidenceMatchesRequirement(
++	const VoiOperationState & operation,
++	const VoiOperationState::FamilyExecutionEvidence & evidence,
++	const VoiRuntimeRequirementSnapshot & requirement)
++{
++	if (evidence.role != requirement.role)
++	{
++		return false;
++	}
++	if (evidence.unitType == requirement.unitType)
++	{
++		return true;
++	}
++	const std::string family =
++		voiTerranOperationFamily(requirement.unitType);
++	int familyRoleRequirementCount = 0;
++	for (const auto & candidate : operation.requirementSnapshots)
++	{
++		if (candidate.role == requirement.role
++			&& voiTerranOperationFamily(candidate.unitType)
++				== family)
++		{
++			++familyRoleRequirementCount;
++		}
++	}
++	return familyRoleRequirementCount == 1
++		&& evidence.family == family;
 +}
 +
 +std::string voiOperationFamilyActionName(const UnitAction & action)
@@ -227,9 +332,11 @@ index 98bc077..8974e1d 100644
 +	snapshot.action = evidence.action;
 +	snapshot.requiredEffect = evidence.requiredEffect;
 +	snapshot.attemptGeneration = evidence.attemptGeneration;
-+	snapshot.attemptedCount = evidence.attemptedCount;
++	snapshot.attemptedCount =
++		evidence.attemptedUnitTags.size();
 +	snapshot.attemptedFrame = evidence.attemptedFrame;
-+	snapshot.submittedCount = evidence.submittedCount;
++	snapshot.submittedCount =
++		evidence.submittedPositions.size();
 +	snapshot.submittedFrame = evidence.submittedFrame;
 +	snapshot.effectKind = evidence.effectKind;
 +	snapshot.effectCount = evidence.effectUnitTags.size();
@@ -254,7 +361,7 @@ index 98bc077..8974e1d 100644
  bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosition & wallCenterTile)
  {
  	if (squad.getUnits().empty())
-@@ -2673,6 +2888,47 @@ void CombatCommander::recordVoiOperationSubmission(
+@@ -2673,6 +2995,64 @@ void CombatCommander::recordVoiOperationSubmission(
  	}
  	operation->lastActionFrame = frame;
  	operation->lastAction = voiActionEvidence(action);
@@ -262,23 +369,34 @@ index 98bc077..8974e1d 100644
 +		voiOperationRoleForUnit(
 +			operation,
 +			unit);
++	const std::string unitType =
++		sc2::UnitTypeToName(unit->unit_type);
++	const std::string actionName =
++		voiOperationFamilyActionName(action);
++	voiRemoveUnitFromOtherFamilyEvidence(
++		*operation,
++		unitType,
++		role,
++		actionName,
++		unit->tag);
 +	auto & familyEvidence =
 +		voiEnsureOperationFamilyEvidence(
 +			*operation,
-+			sc2::UnitTypeToName(unit->unit_type),
-+			role);
-+	const std::string actionName =
-+		voiOperationFamilyActionName(action);
++			unitType,
++			role,
++			actionName);
 +	if (familyEvidence.policyUpdateId
 +			!= operation->policyUpdateId
-+		|| familyEvidence.action != actionName)
++		|| familyEvidence.attemptGeneration == 0)
 +	{
 +		familyEvidence.attemptGeneration =
 +			voiNextOperationFamilyAttemptGeneration(
 +				*operation,
-+				sc2::UnitTypeToName(unit->unit_type),
++				unitType,
 +				role,
++				actionName,
 +				familyEvidence.attemptGeneration);
++		familyEvidence.attemptedUnitTags.clear();
 +		familyEvidence.attemptedCount = 0;
 +		familyEvidence.attemptedFrame = 0;
 +		familyEvidence.submittedCount = 0;
@@ -293,16 +411,22 @@ index 98bc077..8974e1d 100644
 +	familyEvidence.action = actionName;
 +	familyEvidence.requiredEffect =
 +		voiOperationRequiredEffect(action);
-+	++familyEvidence.submittedCount;
-+	familyEvidence.submittedFrame = frame;
++	familyEvidence.attemptedUnitTags.insert(unit->tag);
++	familyEvidence.attemptedCount =
++		static_cast<int>(
++			familyEvidence.attemptedUnitTags.size());
 +	familyEvidence.submittedPositions[unit->tag] =
 +		unit->pos;
++	familyEvidence.submittedCount =
++		static_cast<int>(
++			familyEvidence.submittedPositions.size());
++	familyEvidence.submittedFrame = frame;
 +	familyEvidence.blockerManager.clear();
 +	familyEvidence.blockerReason.clear();
  	if (operation->status != "BLOCKED"
  		&& operation->status != "MOVING"
  		&& operation->status != "ENGAGED"
-@@ -2717,6 +2973,12 @@ void CombatCommander::observeVoiOperations()
+@@ -2717,6 +3097,12 @@ void CombatCommander::observeVoiOperations()
  			{
  				operation.previousSquadByTag.erase(owner->first);
  				operation.submittedPositions.erase(owner->first);
@@ -315,7 +439,7 @@ index 98bc077..8974e1d 100644
  				owner = m_voiOperationUnitOwners.erase(owner);
  			}
  			else
-@@ -2756,24 +3018,123 @@ void CombatCommander::observeVoiOperations()
+@@ -2756,24 +3142,126 @@ void CombatCommander::observeVoiOperations()
  		}
  
  		bool observedMovement = false;
@@ -332,29 +456,32 @@ index 98bc077..8974e1d 100644
 +				voiOperationRoleForUnit(
 +					&operation,
 +					unit.getUnitPtr());
-+			auto & evidence =
-+				voiEnsureOperationFamilyEvidence(
++			auto * evidence =
++				voiFindSubmittedOperationFamilyEvidence(
 +					operation,
-+					sc2::UnitTypeToName(
-+						unit.getAPIUnitType()),
-+					role);
++					role,
++					unit.getTag());
++			if (evidence == nullptr)
++			{
++				continue;
++			}
  			const auto submitted =
 -				operation.submittedPositions.find(unit.getTag());
 -			if (submitted != operation.submittedPositions.end()
-+				evidence.submittedPositions.find(
++				evidence->submittedPositions.find(
 +					unit.getTag());
 +			const bool matchingSubmission =
 +				voiFamilyEffectHasMatchingSubmission(
 +					voiFamilyEffectTelemetrySnapshot(
 +						operation.generation,
-+						evidence),
++						*evidence),
 +					operation.policyUpdateId,
 +					operation.generation,
 +					currentFrame);
 +			const bool unitMoved =
 +				matchingSubmission
 +				&& submitted
-+					!= evidence.submittedPositions.end()
++					!= evidence->submittedPositions.end()
  				&& Util::DistSq(
  					unit.getPosition(),
 -					submitted->second) >= 1.0f)
@@ -363,26 +490,26 @@ index 98bc077..8974e1d 100644
 +				voiFamilyEffectHasMatchingObservation(
 +					voiFamilyEffectTelemetrySnapshot(
 +						operation.generation,
-+						evidence),
++						*evidence),
 +					operation.policyUpdateId,
 +					operation.generation,
 +					currentFrame,
 +					submitted
-+						!= evidence.submittedPositions.end(),
++						!= evidence->submittedPositions.end(),
 +					unitMoved,
 +					unitEngaged);
 +			const bool abilityEffect =
 +				voiFamilyAbilityEffectHasMatchingUnitObservation(
 +					voiFamilyEffectTelemetrySnapshot(
 +						operation.generation,
-+						evidence),
++						*evidence),
 +					operation.policyUpdateId,
 +					operation.generation,
 +					currentFrame,
-+					evidence.submittedPositions,
++					evidence->submittedPositions,
 +					unit.getTag(),
 +					voiOperationAbilityStateObserved(
-+						evidence,
++						*evidence,
 +						unit));
 +			observedMovement =
 +				observedMovement || unitMoved;
@@ -390,27 +517,27 @@ index 98bc077..8974e1d 100644
 +				observedEnemy || unitEngaged;
 +			if (abilityEffect)
 +			{
-+				evidence.effectKind = "ability_state";
-+				evidence.effectUnitTags.insert(
++				evidence->effectKind = "ability_state";
++				evidence->effectUnitTags.insert(
 +					unit.getTag());
-+				evidence.effectFrame = currentFrame;
-+				evidence.blockerManager.clear();
-+				evidence.blockerReason.clear();
++				evidence->effectFrame = currentFrame;
++				evidence->blockerManager.clear();
++				evidence->blockerReason.clear();
 +			}
 +			else if (
-+				evidence.requiredEffect
++				evidence->requiredEffect
 +						== "movement_or_engagement"
 +				&& movementOrEngagementEffect)
 +			{
-+				evidence.effectKind =
++				evidence->effectKind =
 +					unitEngaged
 +						? "engagement"
 +						: "movement";
-+				evidence.effectUnitTags.insert(
++				evidence->effectUnitTags.insert(
 +					unit.getTag());
-+				evidence.effectFrame = currentFrame;
-+				evidence.blockerManager.clear();
-+				evidence.blockerReason.clear();
++				evidence->effectFrame = currentFrame;
++				evidence->blockerManager.clear();
++				evidence->blockerReason.clear();
 +			}
 +		}
 +		for (auto & evidenceEntry :
@@ -449,7 +576,7 @@ index 98bc077..8974e1d 100644
  		if (observedEnemy)
  		{
  			operation.lastEnemyFrame = currentFrame;
-@@ -2802,20 +3163,15 @@ void CombatCommander::observeVoiOperations()
+@@ -2802,20 +3290,15 @@ void CombatCommander::observeVoiOperations()
  			operation.routeStageComplete = true;
  			operation.activeTargetPosition =
  				operation.targetPosition;
@@ -479,7 +606,7 @@ index 98bc077..8974e1d 100644
  		}
  
  		const float completionRadius =
-@@ -2851,7 +3207,8 @@ void CombatCommander::observeVoiOperations()
+@@ -2851,7 +3334,8 @@ void CombatCommander::observeVoiOperations()
  			{
  				objectiveCompleted = targetReached;
  			}
@@ -489,7 +616,7 @@ index 98bc077..8974e1d 100644
  				&& targetReached
  				&& !observedEnemy
  				&& m_bot.Map().isExplored(
-@@ -2913,22 +3270,18 @@ void CombatCommander::reconcileVoiOperation(
+@@ -2913,22 +3397,18 @@ void CombatCommander::reconcileVoiOperation(
  	}
  	if (!m_squadData.squadExists(operation.squadName))
  	{
@@ -518,7 +645,7 @@ index 98bc077..8974e1d 100644
  					operation.status),
  				ExplicitOperationPriority,
  				m_bot));
-@@ -3528,6 +3881,25 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3528,6 +4008,28 @@ void CombatCommander::reconcileVoiOperation(
  			snapshot.missingPrerequisites =
  				productionProgress.missingPrerequisiteTokens;
  		}
@@ -526,7 +653,10 @@ index 98bc077..8974e1d 100644
 +			voiEnsureOperationFamilyEvidence(
 +				operation,
 +				requirement.unitType,
-+				requirement.role);
++				requirement.role,
++				"squad_order:"
++					+ voiSquadOrderName(
++						operation.squadOrderType));
 +		if (snapshot.missingCount() > 0
 +			&& !snapshot.productionBlocker.empty()
 +			&& snapshot.productionBlocker != "ready")
@@ -544,7 +674,7 @@ index 98bc077..8974e1d 100644
  		operation.requirementSnapshots.push_back(snapshot);
  	}
  	const VoiRuntimeConvergenceDecision convergence =
-@@ -3546,7 +3918,8 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3546,7 +4048,8 @@ void CombatCommander::reconcileVoiOperation(
  		m_bot.Commander().getVoiPolicyBool(
  			"emergency.force_retreat",
  			false)
@@ -554,7 +684,7 @@ index 98bc077..8974e1d 100644
  			&& m_bot.Commander().getVoiPolicyBool(
  				"emergency.cancel_attacks",
  				false));
-@@ -3555,12 +3928,13 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3555,12 +4058,13 @@ void CombatCommander::reconcileVoiOperation(
  		operation.status = "BLOCKED";
  		operation.blockedReason =
  			"emergency_retreat_preempted";
@@ -574,7 +704,7 @@ index 98bc077..8974e1d 100644
  		return;
  	}
  	const bool enoughUnits =
-@@ -3574,12 +3948,13 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3574,12 +4078,13 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = convergence.status;
  		operation.blockedReason = convergence.blocker;
@@ -594,7 +724,7 @@ index 98bc077..8974e1d 100644
  		return;
  	}
  	if (operation.assignedFrame == 0)
-@@ -3594,22 +3969,15 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3594,22 +4099,15 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = "ASSIGNED";
  	}
@@ -626,7 +756,7 @@ index 98bc077..8974e1d 100644
  }
  
  void CombatCommander::updateVoiOperations()
-@@ -3765,26 +4133,15 @@ void CombatCommander::updateVoiOperations()
+@@ -3765,26 +4263,15 @@ void CombatCommander::updateVoiOperations()
  		}
  		requested.policyUpdateId = policyUpdateId;
  		requested.receivedFrame = m_bot.GetGameLoop();
@@ -657,7 +787,7 @@ index 98bc077..8974e1d 100644
  		requested.routeType =
  			m_bot.Commander().getVoiPolicyString(
  				prefix + ".route_intent.route_type",
-@@ -4155,7 +4512,8 @@ void CombatCommander::updateVoiOperations()
+@@ -4155,7 +4642,8 @@ void CombatCommander::updateVoiOperations()
  		}
  		else if (requested.taskType != "scout"
  			&& requested.taskType != "attack"
@@ -667,7 +797,7 @@ index 98bc077..8974e1d 100644
  		{
  			requested.status = "BLOCKED";
  			requested.blockedReason =
-@@ -4829,22 +5187,20 @@ void CombatCommander::updateVoiOperations()
+@@ -4829,22 +5317,20 @@ void CombatCommander::updateVoiOperations()
  		{
  			if (!m_squadData.squadExists(operation.squadName))
  			{
@@ -698,7 +828,7 @@ index 98bc077..8974e1d 100644
  							operation.status),
  						ExplicitOperationPriority,
  						m_bot));
-@@ -4877,6 +5233,8 @@ void CombatCommander::updateVoiOperations()
+@@ -4877,6 +5363,8 @@ void CombatCommander::updateVoiOperations()
  					!= requested.policyUpdateId;
  			existing.policyUpdateId = policyUpdateId;
  			existing.commandLayer = requested.commandLayer;
@@ -707,7 +837,7 @@ index 98bc077..8974e1d 100644
  			existing.taskType = requested.taskType;
  			existing.unitClasses = requested.unitClasses;
  			existing.lifetimeMode = requested.lifetimeMode;
-@@ -4945,6 +5303,7 @@ void CombatCommander::updateVoiOperations()
+@@ -4945,6 +5433,7 @@ void CombatCommander::updateVoiOperations()
  				existing.submissionObserved = false;
  				existing.submittedFrame = 0;
  				existing.submittedPositions.clear();
@@ -715,7 +845,7 @@ index 98bc077..8974e1d 100644
  			}
  		};
  	auto annotateRejectedEdit =
-@@ -5051,6 +5410,10 @@ void CombatCommander::updateVoiOperations()
+@@ -5051,6 +5540,10 @@ void CombatCommander::updateVoiOperations()
  				|| existing.routeType
  					!= requested.routeType;
  			VoiOperationState replacement = requested;
@@ -726,7 +856,7 @@ index 98bc077..8974e1d 100644
  			replacement.assignedUnitTags =
  				existing.assignedUnitTags;
  			replacement.assignedCount =
-@@ -6355,6 +6718,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6355,6 +6848,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  		++index)
  	{
  		const auto & operation = m_voiOperations[index];
@@ -735,7 +865,7 @@ index 98bc077..8974e1d 100644
  		if (index > 0)
  		{
  			payload << ",";
-@@ -6366,10 +6731,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6366,10 +6861,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  			<< "\","
  			<< "\"generation\":"
  			<< operation.generation << ","
@@ -756,11 +886,12 @@ index 98bc077..8974e1d 100644
  			<< "\"status\":\""
  			<< voiOperationJsonEscape(
  				operation.status)
-@@ -6465,6 +6840,155 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6465,6 +6970,170 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  			}
  			payload << "]}";
  		}
 +		payload << "],\"family_evidence\":[";
++		size_t familyEvidenceIndex = 0;
 +		for (size_t requirementIndex = 0;
 +			requirementIndex
 +				< operation.requirementSnapshots.size();
@@ -769,150 +900,164 @@ index 98bc077..8974e1d 100644
 +			const auto & requirement =
 +				operation.requirementSnapshots[
 +					requirementIndex];
-+			if (requirementIndex > 0)
++			std::vector<
++				const VoiOperationState::FamilyExecutionEvidence *>
++				matchingEvidence;
++			for (const auto & evidenceEntry :
++				operation.familyEvidenceByKey)
 +			{
-+				payload << ",";
++				if (voiOperationFamilyEvidenceMatchesRequirement(
++					operation,
++					evidenceEntry.second,
++					requirement))
++				{
++					matchingEvidence.push_back(
++						&evidenceEntry.second);
++				}
++			}
++			if (matchingEvidence.empty())
++			{
++				matchingEvidence.push_back(nullptr);
 +			}
 +			const std::string family =
 +				voiTerranOperationFamily(
 +					requirement.unitType);
-+			const std::string familyKey =
-+				voiOperationFamilyEvidenceKey(
-+					requirement.unitType,
-+					requirement.role);
-+			const auto evidenceIt =
-+				operation.familyEvidenceByKey.find(
-+					familyKey);
-+			const VoiOperationState::FamilyExecutionEvidence *
-+				evidence =
-+					evidenceIt
-+							!= operation.familyEvidenceByKey.end()
-+						? &evidenceIt->second
-+						: nullptr;
-+			VoiFamilyEffectTelemetrySnapshot selectedEvidence;
-+			const VoiFamilyEffectTelemetrySnapshot *
-+				telemetryEvidence = nullptr;
-+			if (evidence != nullptr)
++			for (const auto * evidence : matchingEvidence)
 +			{
-+				selectedEvidence =
-+					voiSelectFamilyEffectTelemetry(
-+						operation.generation,
-+						*evidence);
-+				telemetryEvidence = &selectedEvidence;
++				if (familyEvidenceIndex++ > 0)
++				{
++					payload << ",";
++				}
++				VoiFamilyEffectTelemetrySnapshot selectedEvidence;
++				const VoiFamilyEffectTelemetrySnapshot *
++					telemetryEvidence = nullptr;
++				if (evidence != nullptr)
++				{
++					selectedEvidence =
++						voiSelectFamilyEffectTelemetry(
++							operation.generation,
++							*evidence);
++					telemetryEvidence = &selectedEvidence;
++				}
++				const std::string action =
++					telemetryEvidence != nullptr
++							&& !telemetryEvidence->action.empty()
++						? telemetryEvidence->action
++						: "squad_order:" + squadOrder;
++				const std::string blockerManager =
++					telemetryEvidence != nullptr
++							&& !telemetryEvidence
++								->blockerManager.empty()
++						? telemetryEvidence->blockerManager
++						: (!requirement.productionBlocker.empty()
++								&& requirement.productionBlocker
++									!= "ready"
++							? "ProductionManager"
++							: (!operation.blockedReason.empty()
++								? "OperationDirector"
++								: ""));
++				const std::string blocker =
++					telemetryEvidence != nullptr
++							&& !telemetryEvidence
++								->blockerReason.empty()
++						? telemetryEvidence->blockerReason
++						: (!requirement.productionBlocker.empty()
++								&& requirement.productionBlocker
++									!= "ready"
++							? requirement.productionBlocker
++							: operation.blockedReason);
++				const std::string evidenceUpdateId =
++					telemetryEvidence != nullptr
++							&& !telemetryEvidence
++								->policyUpdateId.empty()
++						? telemetryEvidence->policyUpdateId
++						: operation.policyUpdateId;
++				payload << "{\"update_id\":\""
++					<< voiOperationJsonEscape(
++						evidenceUpdateId)
++					<< "\",\"operation_id\":\""
++					<< voiOperationJsonEscape(
++						operation.operationId)
++					<< "\",\"generation\":"
++					<< operation.generation
++					<< ",\"family\":\""
++					<< voiOperationJsonEscape(
++						evidence != nullptr
++							? evidence->family
++							: family)
++					<< "\",\"unit_type\":\""
++					<< voiOperationJsonEscape(
++						evidence != nullptr
++							? evidence->unitType
++							: requirement.unitType)
++					<< "\",\"role\":\""
++					<< voiOperationJsonEscape(
++						requirement.role)
++					<< "\",\"action\":\""
++					<< voiOperationJsonEscape(action)
++					<< "\",\"required_effect\":\""
++					<< (telemetryEvidence != nullptr
++							? voiOperationJsonEscape(
++								telemetryEvidence
++									->requiredEffect)
++							: "movement_or_engagement")
++					<< "\",\"attempt_generation\":"
++					<< (telemetryEvidence != nullptr
++							? telemetryEvidence
++								->attemptGeneration
++							: operation.generation)
++					<< ",\"assigned\":"
++					<< requirement.assignedCount
++					<< ",\"represented\":"
++					<< requirement.representedCount
++					<< ",\"attempted_count\":"
++					<< (telemetryEvidence != nullptr
++							? telemetryEvidence
++								->attemptedCount
++							: 0)
++					<< ",\"attempted_frame\":"
++					<< (telemetryEvidence != nullptr
++							? telemetryEvidence
++								->attemptedFrame
++							: 0)
++					<< ",\"submitted_count\":"
++					<< (telemetryEvidence != nullptr
++							? telemetryEvidence
++								->submittedCount
++							: 0)
++					<< ",\"submitted_frame\":"
++					<< (telemetryEvidence != nullptr
++							? telemetryEvidence
++								->submittedFrame
++							: 0)
++					<< ",\"effect_kind\":\""
++					<< (telemetryEvidence != nullptr
++							? voiOperationJsonEscape(
++								telemetryEvidence
++									->effectKind)
++							: "")
++					<< "\",\"effect_count\":"
++					<< (telemetryEvidence != nullptr
++							? telemetryEvidence
++								->effectCount
++							: 0)
++					<< ",\"effect_frame\":"
++					<< (telemetryEvidence != nullptr
++							? telemetryEvidence
++								->effectFrame
++							: 0)
++					<< ",\"blocker_manager\":\""
++					<< voiOperationJsonEscape(
++						blockerManager)
++					<< "\",\"blocker\":\""
++					<< voiOperationJsonEscape(blocker)
++					<< "\"}";
 +			}
-+			const std::string action =
-+				telemetryEvidence != nullptr
-+						&& !telemetryEvidence->action.empty()
-+					? telemetryEvidence->action
-+					: "squad_order:" + squadOrder;
-+			const std::string blockerManager =
-+				telemetryEvidence != nullptr
-+						&& !telemetryEvidence
-+							->blockerManager.empty()
-+					? telemetryEvidence->blockerManager
-+					: (!requirement.productionBlocker.empty()
-+							&& requirement.productionBlocker
-+								!= "ready"
-+						? "ProductionManager"
-+						: (!operation.blockedReason.empty()
-+							? "OperationDirector"
-+							: ""));
-+			const std::string blocker =
-+				telemetryEvidence != nullptr
-+						&& !telemetryEvidence
-+							->blockerReason.empty()
-+					? telemetryEvidence->blockerReason
-+					: (!requirement.productionBlocker.empty()
-+							&& requirement.productionBlocker
-+								!= "ready"
-+						? requirement.productionBlocker
-+						: operation.blockedReason);
-+			const std::string evidenceUpdateId =
-+				telemetryEvidence != nullptr
-+						&& !telemetryEvidence
-+							->policyUpdateId.empty()
-+					? telemetryEvidence->policyUpdateId
-+					: operation.policyUpdateId;
-+			payload << "{\"update_id\":\""
-+				<< voiOperationJsonEscape(
-+					evidenceUpdateId)
-+				<< "\",\"operation_id\":\""
-+				<< voiOperationJsonEscape(
-+					operation.operationId)
-+				<< "\",\"generation\":"
-+				<< operation.generation
-+				<< ",\"family\":\""
-+				<< voiOperationJsonEscape(family)
-+				<< "\",\"unit_type\":\""
-+				<< voiOperationJsonEscape(
-+					requirement.unitType)
-+				<< "\",\"role\":\""
-+				<< voiOperationJsonEscape(
-+					requirement.role)
-+				<< "\",\"action\":\""
-+				<< voiOperationJsonEscape(action)
-+				<< "\",\"required_effect\":\""
-+				<< (telemetryEvidence != nullptr
-+						? voiOperationJsonEscape(
-+							telemetryEvidence
-+								->requiredEffect)
-+						: "movement_or_engagement")
-+				<< "\",\"attempt_generation\":"
-+				<< (telemetryEvidence != nullptr
-+						? telemetryEvidence
-+							->attemptGeneration
-+						: operation.generation)
-+				<< ",\"assigned\":"
-+				<< requirement.assignedCount
-+				<< ",\"represented\":"
-+				<< requirement.representedCount
-+				<< ",\"attempted_count\":"
-+				<< (telemetryEvidence != nullptr
-+						? telemetryEvidence
-+							->attemptedCount
-+						: 0)
-+				<< ",\"attempted_frame\":"
-+				<< (telemetryEvidence != nullptr
-+						? telemetryEvidence
-+							->attemptedFrame
-+						: 0)
-+				<< ",\"submitted_count\":"
-+				<< (telemetryEvidence != nullptr
-+						? telemetryEvidence
-+							->submittedCount
-+						: 0)
-+				<< ",\"submitted_frame\":"
-+				<< (telemetryEvidence != nullptr
-+						? telemetryEvidence
-+							->submittedFrame
-+						: 0)
-+				<< ",\"effect_kind\":\""
-+				<< (telemetryEvidence != nullptr
-+						? voiOperationJsonEscape(
-+							telemetryEvidence
-+								->effectKind)
-+						: "")
-+				<< "\",\"effect_count\":"
-+				<< (telemetryEvidence != nullptr
-+						? telemetryEvidence
-+							->effectCount
-+						: 0)
-+				<< ",\"effect_frame\":"
-+				<< (telemetryEvidence != nullptr
-+						? telemetryEvidence
-+							->effectFrame
-+						: 0)
-+				<< ",\"blocker_manager\":\""
-+				<< voiOperationJsonEscape(
-+					blockerManager)
-+				<< "\",\"blocker\":\""
-+				<< voiOperationJsonEscape(blocker)
-+				<< "\"}";
 +		}
  		payload << "],"
  			<< "\"target_x\":"
  			<< operation.targetX << ","
-@@ -6569,10 +7093,101 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6569,10 +7238,101 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  				operation.lastAction)
  			<< "\"}";
  	}
@@ -1014,7 +1159,7 @@ index 98bc077..8974e1d 100644
  void CombatCommander::bindCurrentVoiExplicitAbilityAttempt(
  	UnitAction & action) const
  {
-@@ -13066,9 +13681,75 @@ void CombatCommander::drawVoiOperationHud()
+@@ -13066,9 +13826,93 @@ void CombatCommander::drawVoiOperationHud()
  			<< " " << operation.taskType
  			<< " [" << operation.status << "]"
  			<< " units=" << operation.assignedCount
@@ -1061,18 +1206,36 @@ index 98bc077..8974e1d 100644
 +					<< requirement.assignedCount
 +					<< "/"
 +					<< requirement.targetCount;
-+				const auto evidence =
-+					operation.familyEvidenceByKey.find(
-+						voiOperationFamilyEvidenceKey(
-+							requirement.unitType,
-+							requirement.role));
-+				if (evidence
-+					!= operation.familyEvidenceByKey.end())
++				const VoiOperationState::FamilyExecutionEvidence *
++					evidence = nullptr;
++				for (const auto & evidenceEntry :
++					operation.familyEvidenceByKey)
++				{
++					if (!voiOperationFamilyEvidenceMatchesRequirement(
++						operation,
++						evidenceEntry.second,
++						requirement))
++					{
++						continue;
++					}
++					if (evidence == nullptr
++						|| evidenceEntry.second.effectFrame
++							> evidence->effectFrame
++						|| (evidenceEntry.second.effectFrame
++								== evidence->effectFrame
++							&& evidenceEntry.second
++									.attemptedFrame
++								> evidence->attemptedFrame))
++					{
++						evidence = &evidenceEntry.second;
++					}
++				}
++				if (evidence != nullptr)
 +				{
 +					const auto selectedEvidence =
 +						voiSelectFamilyEffectTelemetry(
 +							operation.generation,
-+							evidence->second);
++							*evidence);
 +					if (!selectedEvidence.effectKind.empty())
 +					{
 +						card << "@"
@@ -1091,7 +1254,7 @@ index 98bc077..8974e1d 100644
  		if (operation.status == "BLOCKED"
  			&& !operation.blockedReason.empty())
  		{
-@@ -14044,6 +14725,56 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+@@ -14044,6 +14888,67 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
  		return false;
  	}
  
@@ -1103,29 +1266,37 @@ index 98bc077..8974e1d 100644
 +				ownedOperation->generation);
 +		if (operation != nullptr)
 +		{
++			const std::string unitType =
++				sc2::UnitTypeToName(
++					unit->unit_type);
++			const std::string actionName =
++				voiOperationFamilyActionName(action);
++			voiRemoveUnitFromOtherFamilyEvidence(
++				*operation,
++				unitType,
++				voiRole,
++				actionName,
++				unit->tag);
 +			auto & evidence =
 +				voiEnsureOperationFamilyEvidence(
 +					*operation,
-+					sc2::UnitTypeToName(
-+						unit->unit_type),
-+					voiRole);
++					unitType,
++					voiRole,
++					actionName);
 +			const uint32_t attemptFrame =
 +				m_bot.GetGameLoop();
-+			const std::string actionName =
-+				voiOperationFamilyActionName(action);
 +			if (evidence.policyUpdateId
 +					!= operation->policyUpdateId
-+				|| evidence.action != actionName
-+				|| evidence.attemptedFrame
-+					!= attemptFrame)
++				|| evidence.attemptGeneration == 0)
 +			{
 +				evidence.attemptGeneration =
 +					voiNextOperationFamilyAttemptGeneration(
 +						*operation,
-+						sc2::UnitTypeToName(
-+							unit->unit_type),
++						unitType,
 +						voiRole,
++						actionName,
 +						evidence.attemptGeneration);
++				evidence.attemptedUnitTags.clear();
 +				evidence.attemptedCount = 0;
 +				evidence.submittedCount = 0;
 +				evidence.submittedFrame = 0;
@@ -1139,7 +1310,10 @@ index 98bc077..8974e1d 100644
 +			evidence.action = actionName;
 +			evidence.requiredEffect =
 +				voiOperationRequiredEffect(action);
-+			++evidence.attemptedCount;
++			evidence.attemptedUnitTags.insert(unit->tag);
++			evidence.attemptedCount =
++				static_cast<int>(
++					evidence.attemptedUnitTags.size());
 +			evidence.attemptedFrame = attemptFrame;
 +			evidence.blockerManager.clear();
 +			evidence.blockerReason.clear();
@@ -1149,7 +1323,7 @@ index 98bc077..8974e1d 100644
  	if (voiRoleBiasedAction || action.description.rfind("VoiRole", 0) == 0)
  	{
 diff --git a/src/CombatCommander.h b/src/CombatCommander.h
-index a872e09..715b876 100644
+index a872e09..73e93a0 100644
 --- a/src/CombatCommander.h
 +++ b/src/CombatCommander.h
 @@ -4,6 +4,7 @@
@@ -1160,7 +1334,7 @@ index a872e09..715b876 100644
  #include "voi_runtime_convergence.hpp"
  #include <list>  
  
-@@ -161,8 +162,31 @@ struct VoiOperationState
+@@ -161,8 +162,32 @@ struct VoiOperationState
  		float priority = 0.0f;
  	};
  
@@ -1173,6 +1347,7 @@ index a872e09..715b876 100644
 +		std::string action;
 +		std::string requiredEffect = "movement_or_engagement";
 +		uint64_t attemptGeneration = 0;
++		std::set<sc2::Tag> attemptedUnitTags;
 +		int attemptedCount = 0;
 +		uint32_t attemptedFrame = 0;
 +		int submittedCount = 0;
@@ -1192,7 +1367,7 @@ index a872e09..715b876 100644
  	std::string taskType;
  	std::string status = "RECEIVED";
  	std::vector<sc2::Tag> assignedUnitTags;
-@@ -185,6 +209,8 @@ struct VoiOperationState
+@@ -185,6 +210,8 @@ struct VoiOperationState
  	std::string policyUpdateId;
  	std::string commandLayer;
  	std::string squadName;
@@ -1201,7 +1376,7 @@ index a872e09..715b876 100644
  	std::string unitClasses;
  	std::string locationIntent;
  	std::string lifetimeMode;
-@@ -226,6 +252,10 @@ struct VoiOperationState
+@@ -226,6 +253,10 @@ struct VoiOperationState
  	uint32_t editRejectedFrame = 0;
  	std::string editSupersessionMode;
  	std::map<sc2::Tag, CCPosition> submittedPositions;
@@ -1212,7 +1387,7 @@ index a872e09..715b876 100644
  	std::map<sc2::Tag, std::string> previousSquadByTag;
  };
  
-@@ -472,6 +502,8 @@ class CombatCommander
+@@ -472,6 +503,8 @@ class CombatCommander
  	std::set<Unit> m_backstabbers;	// Workers that backstab the enemy probes when probe rushed
  	std::map<int, long> m_cachedBiles;	// <corrosive bile location (mapkey generated with Util::ToMapKey), last frame seen>
  	std::vector<VoiOperationState> m_voiOperations;
@@ -1221,7 +1396,7 @@ index a872e09..715b876 100644
  	std::map<sc2::Tag, std::pair<std::string, uint64_t>> m_voiOperationUnitOwners;
  	std::string m_voiOperationPolicyUpdateId;
  	bool m_workersStacked = false;
-@@ -767,6 +799,7 @@ public:
+@@ -767,6 +800,7 @@ public:
  	int getVoiAssignableUnownedUnitCount(
  		const std::string & compositionToken) const;
  	std::string getVoiOperationDirectorTelemetryJson() const;
@@ -1304,7 +1479,7 @@ index 4bbb024..3791f54 100644
  }
 diff --git a/src/voi_family_effect_lifecycle.hpp b/src/voi_family_effect_lifecycle.hpp
 new file mode 100644
-index 0000000..2c0481c
+index 0000000..7565108
 --- /dev/null
 +++ b/src/voi_family_effect_lifecycle.hpp
 @@ -0,0 +1,525 @@
@@ -1857,7 +2032,7 @@ index e0a09df..526cc7d 100644
 +)
 diff --git a/tests/family_effect_lifecycle_test.cpp b/tests/family_effect_lifecycle_test.cpp
 new file mode 100644
-index 0000000..77ff92d
+index 0000000..be51a4c
 --- /dev/null
 +++ b/tests/family_effect_lifecycle_test.cpp
 @@ -0,0 +1,605 @@

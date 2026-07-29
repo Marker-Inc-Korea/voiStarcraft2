@@ -574,11 +574,7 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
             expected_generation=2,
         )
 
-        self.assertEqual(1, len(evidence))
-        self.assertTrue(evidence[0]["attempted"])
-        self.assertTrue(evidence[0]["executed"])
-        self.assertFalse(evidence[0]["effect"])
-        self.assertEqual("executed", evidence[0]["stage"])
+        self.assertEqual((), evidence)
 
     def test_family_evidence_rejects_stale_operation_identity(self) -> None:
         current = {
@@ -590,14 +586,14 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
             "role": "siege_support",
             "assigned": 1,
             "represented": 1,
-            "action": "siege_mode",
-            "required_effect": "unit_type:TERRAN_SIEGETANKSIEGED",
+            "action": "ability:MORPH_SIEGEMODE",
+            "required_effect": "ability_state_or_effect",
             "attempt_generation": 4,
             "attempted_count": 1,
             "attempted_frame": 420,
             "submitted_count": 1,
             "submitted_frame": 421,
-            "effect_kind": "unit_type:TERRAN_SIEGETANKSIEGED",
+            "effect_kind": "ability_state",
             "effect_count": 1,
             "effect_frame": 422,
         }
@@ -623,7 +619,10 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
         self.assertEqual("ability-update", evidence[0]["update_id"])
         self.assertEqual("tank-push", evidence[0]["operation_id"])
         self.assertEqual(2, evidence[0]["generation"])
-        self.assertEqual("siege_mode", evidence[0]["action"])
+        self.assertEqual(
+            "ability:MORPH_SIEGEMODE",
+            evidence[0]["action"],
+        )
         self.assertEqual(4, evidence[0]["attempt_generation"])
         self.assertTrue(evidence[0]["effect"])
 
@@ -797,8 +796,8 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
             "role": "siege_support",
             "assigned": 1,
             "represented": 1,
-            "action": "siege_mode",
-            "required_effect": "unit_type:TERRAN_SIEGETANKSIEGED",
+            "action": "ability:MORPH_SIEGEMODE",
+            "required_effect": "ability_state_or_effect",
         }
         evidence = operation_family_evidence(
             {
@@ -820,7 +819,7 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
                         "attempted_frame": 420,
                         "submitted_count": 1,
                         "submitted_frame": 421,
-                        "effect_kind": "unit_type:TERRAN_SIEGETANKSIEGED",
+                        "effect_kind": "ability_state",
                         "effect_count": 1,
                         "effect_frame": 422,
                     },
@@ -859,7 +858,7 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
                         "attempted_frame": 100,
                         "submitted_count": 1,
                         "submitted_frame": 101,
-                        "effect_kind": "movement_observed",
+                        "effect_kind": "movement",
                         "effect_count": 1,
                         "effect_frame": 102,
                     },
@@ -872,8 +871,8 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
                         "role": "worker_harass",
                         "assigned": 0,
                         "represented": 0,
-                        "action": "banshee_cloak",
-                        "required_effect": "cloak_state:cloaked",
+                        "action": "ability:BEHAVIOR_CLOAKON",
+                        "required_effect": "ability_state_or_effect",
                         "attempt_generation": 1,
                         "blocker_manager": "ProductionManager",
                         "blocker": "missing_starport_techlab",

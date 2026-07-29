@@ -1207,7 +1207,16 @@ def _operation_family_evidence_matches_request(
     required_effect = str(
         row.get("required_effect", "") or ""
     ).strip()
+    ability_policies = contract.get("ability_policies", set())
+    normalized_policies = (
+        ability_policies if isinstance(ability_policies, set) else set()
+    )
+    specific_policies = (
+        normalized_policies - _GENERIC_TERRAN_ABILITY_POLICIES
+    )
     if required_effect == "movement_or_engagement":
+        if specific_policies:
+            return False
         allowed_actions = {
             "move",
             "attack_move",
@@ -1219,10 +1228,9 @@ def _operation_family_evidence_matches_request(
         return action in allowed_actions
     if required_effect != "ability_state_or_effect":
         return False
-    ability_policies = contract.get("ability_policies", set())
     return _operation_family_ability_action_matches_request(
         action,
-        ability_policies if isinstance(ability_policies, set) else set(),
+        normalized_policies,
     )
 
 
@@ -1337,12 +1345,14 @@ def _operation_family_lifecycle(
                 1,
                 _int_value(contract.get("count")),
             )
-            observed_count = max(
-                (
-                    _int_value(row.get(field_name))
-                    for row in contract_rows
-                ),
-                default=0,
+            row_counts = tuple(
+                max(0, _int_value(row.get(field_name)))
+                for row in contract_rows
+            )
+            observed_count = (
+                max(row_counts, default=0)
+                if stage_name == "assignment"
+                else min(required_count, sum(row_counts))
             )
             satisfied = observed_count >= required_count
             if not satisfied:
