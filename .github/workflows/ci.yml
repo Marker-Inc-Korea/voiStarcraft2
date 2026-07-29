@@ -29,3 +29,14 @@ jobs:
           bash -n integrations/micromachine/scripts/smoke_macos_local.sh
           bash -n integrations/micromachine/scripts/soak_macos_local.sh
           bash -n integrations/micromachine/scripts/soak_matrix_macos_local.sh
+
+  micromachine-macos-contracts:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build cumulative MicroMachine integration contracts
+        env:
+          ROOT_DIR: ${{ runner.temp }}/voi-micromachine-runtime
+          BUILD_JOBS: "3"
+        run: integrations/micromachine/scripts/build_macos_local.sh

@@ -311,6 +311,22 @@ def battlefield_projection_telemetry(
     }
 
 
+def attached_runtime_telemetry(document, runtime_instance_id):
+    payload = {
+        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+        "frame": int(document["frame"]),
+        "bot_name": "MicroMachine",
+        "race": "Terran",
+        "managers": {},
+        "active_modulation_ids": [],
+        "last_failure": None,
+        "runtime_instance_id": runtime_instance_id,
+    }
+    payload.update(deepcopy(document))
+    payload["runtime_instance_id"] = runtime_instance_id
+    return payload
+
+
 def contains_hangul(text):
     """Return whether the text contains at least one Hangul syllable."""
 
@@ -659,6 +675,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "telemetry_stale_or_detached": False,
                     "telemetry_frame": telemetry_frame,
                 }
+
+            def validated_snapshot(self, blackboard_dir=""):
+                root = blackboard_dir or directory
+                telemetry_path = os.path.join(root, "latest_telemetry.json")
+                with open(telemetry_path, encoding="utf-8") as handle:
+                    telemetry = json.load(handle)
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata=self.snapshot(root),
+                    telemetry_document=telemetry,
+                )
 
         self.server._http.micromachine_launcher = FakeAttachedMicroMachineLauncher()
 
@@ -1552,6 +1578,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             payload = bridge.micromachine_status_for_runtime(
                 blackboard_dir=directory,
                 runtime_instance_id=runtime_instance_id,
+                telemetry_document=telemetry,
             )
 
         self.assertTrue(
@@ -1590,20 +1617,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
             bridge = SessionLoopBridge(session=self.session)
 
-            payload = bridge.micromachine_status_for_runtime(
-                blackboard_dir=directory,
-                runtime_instance_id="c" * 32,
-            )
-
-        self.assertFalse(payload["battlefield_projection"]["ok"])
-        self.assertIsNone(payload["battlefield_overview"])
-        self.assertIn(
-            "no_valid_battlefield_projection",
-            {
-                blocker["code"]
-                for blocker in payload["battlefield_projection"]["blockers"]
-            },
-        )
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id="c" * 32,
+                    telemetry_document=telemetry,
+                )
 
     def test_micromachine_status_malformed_latest_projection_fails_closed(self):
         valid_archive = battlefield_projection_telemetry(
@@ -1742,31 +1761,20 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
         }
 
-        class Telemetry:
-            def __init__(self, document):
-                self.document = document
-                self.frame = document["frame"]
-
-            def to_dict(self):
-                return dict(self.document)
-
         class Backend:
             def __init__(self, _root):
                 pass
 
-            def read_latest_telemetry(self):
-                return Telemetry(current["telemetry"])
-
             def read_recent_telemetry_archive(self, **_kwargs):
                 return ()
 
-            def dashboard_snapshot(self, **_kwargs):
-                return SimpleNamespace(
-                    to_dict=lambda: {"active_updates": []}
-                )
+            def read_latest_update(self, **_kwargs):
+                return None
 
         with tempfile.TemporaryDirectory() as directory:
             bridge = SessionLoopBridge(session=self.session)
+            runtime_a = "a" * 32
+            runtime_b = "b" * 32
             with mock.patch(
                 "starcraft_commander.micromachine_runtime."
                 "MicroMachineFilesystemBlackboard",
@@ -1774,7 +1782,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ):
                 first = bridge.micromachine_status_for_runtime(
                     blackboard_dir=directory,
-                    runtime_instance_id="runtime-a",
+                    runtime_instance_id=runtime_a,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_a,
+                    ),
                 )
                 self.assertTrue(first["battlefield_projection"]["ok"])
 
@@ -1785,7 +1797,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 )
                 stale = bridge.micromachine_status_for_runtime(
                     blackboard_dir=directory,
-                    runtime_instance_id="runtime-a",
+                    runtime_instance_id=runtime_a,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_a,
+                    ),
                 )
                 self.assertFalse(stale["battlefield_projection"]["ok"])
                 self.assertIn(
@@ -1806,7 +1822,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 )
                 reset = bridge.micromachine_status_for_runtime(
                     blackboard_dir=directory,
-                    runtime_instance_id="runtime-a",
+                    runtime_instance_id=runtime_a,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_a,
+                    ),
                 )
                 self.assertTrue(
                     reset["battlefield_projection"]["ok"],
@@ -1827,7 +1847,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 )
                 replacement = bridge.micromachine_status_for_runtime(
                     blackboard_dir=directory,
-                    runtime_instance_id="runtime-b",
+                    runtime_instance_id=runtime_b,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_b,
+                    ),
                 )
                 self.assertTrue(
                     replacement["battlefield_projection"]["ok"],
@@ -1849,31 +1873,19 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
         }
 
-        class Telemetry:
-            def __init__(self, document):
-                self.document = document
-                self.frame = document["frame"]
-
-            def to_dict(self):
-                return deepcopy(self.document)
-
         class Backend:
             def __init__(self, _root):
                 pass
 
-            def read_latest_telemetry(self):
-                return Telemetry(current["telemetry"])
-
             def read_recent_telemetry_archive(self, **_kwargs):
                 return ()
 
-            def dashboard_snapshot(self, **_kwargs):
-                return SimpleNamespace(
-                    to_dict=lambda: {"active_updates": []}
-                )
+            def read_latest_update(self, **_kwargs):
+                return None
 
         with tempfile.TemporaryDirectory() as directory:
             bridge = SessionLoopBridge(session=self.session)
+            runtime_id = "a" * 32
             with mock.patch(
                 "starcraft_commander.micromachine_runtime."
                 "MicroMachineFilesystemBlackboard",
@@ -1881,7 +1893,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ):
                 first = bridge.micromachine_status_for_runtime(
                     blackboard_dir=directory,
-                    runtime_instance_id="runtime-a",
+                    runtime_instance_id=runtime_id,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_id,
+                    ),
                 )
                 self.assertTrue(first["battlefield_projection"]["ok"])
 
@@ -1892,7 +1908,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 current["telemetry"] = mutated
                 collision = bridge.micromachine_status_for_runtime(
                     blackboard_dir=directory,
-                    runtime_instance_id="runtime-a",
+                    runtime_instance_id=runtime_id,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_id,
+                    ),
                 )
 
         self.assertFalse(collision["battlefield_projection"]["ok"])
@@ -2059,6 +2079,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             def read_recent_telemetry_archive(self, **_kwargs):
                 return ()
 
+            def read_latest_update(self, **_kwargs):
+                return None
+
             def dashboard_snapshot(self, **_kwargs):
                 return SimpleNamespace(
                     to_dict=lambda: {"active_updates": []}
@@ -2066,12 +2089,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         class Launcher:
             attached = False
+            runtime_instance_id = "d" * 32
 
             def snapshot(self, blackboard_dir=""):
                 return {
                     "status": "connected" if self.attached else "idle",
                     "runtime_instance_id": (
-                        "attached-runtime" if self.attached else ""
+                        self.runtime_instance_id if self.attached else ""
                     ),
                     "runtime_attached": self.attached,
                     "telemetry_present": True,
@@ -2080,6 +2104,20 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "telemetry_frame": current["telemetry"]["frame"],
                     "blackboard_dir": blackboard_dir,
                 }
+
+            def validated_snapshot(self, blackboard_dir=""):
+                telemetry_document = (
+                    attached_runtime_telemetry(
+                        current["telemetry"],
+                        self.runtime_instance_id,
+                    )
+                    if self.attached
+                    else None
+                )
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata=self.snapshot(blackboard_dir),
+                    telemetry_document=telemetry_document,
+                )
 
         with tempfile.TemporaryDirectory() as directory:
             launcher = Launcher()
@@ -2114,6 +2152,82 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 1700000000100,
                 attached["battlefield_projection_identity"]["session_epoch"],
             )
+
+    def test_attached_status_consumes_validated_telemetry_snapshot_after_file_replace(
+        self,
+    ):
+        runtime_instance_id = "e" * 32
+        original = attached_runtime_telemetry(
+            battlefield_projection_telemetry(
+                update_id="validated-original",
+                frame=320,
+                generation=1,
+            ),
+            runtime_instance_id,
+        )
+        replacement = attached_runtime_telemetry(
+            battlefield_projection_telemetry(
+                update_id="same-runtime-replacement",
+                frame=640,
+                generation=2,
+            ),
+            runtime_instance_id,
+        )
+
+        class FakeRunningProcess:
+            pid = 4242
+
+            def poll(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            telemetry_path = os.path.join(directory, "latest_telemetry.json")
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(original, handle)
+            write_ns = time.time_ns()
+            os.utime(telemetry_path, ns=(write_ns, write_ns))
+
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            launcher._blackboard_dir = directory  # noqa: SLF001
+            launcher._process = FakeRunningProcess()  # noqa: SLF001
+            launcher._status = "running"  # noqa: SLF001
+            launcher._runtime_instance_id = runtime_instance_id  # noqa: SLF001
+            launcher._launch_started_at_ns = write_ns - 1_000_000  # noqa: SLF001
+            self.server._http.micromachine_launcher = launcher
+
+            original_status = self.bridge.micromachine_status_for_runtime
+
+            def replace_after_validation(**kwargs):
+                with open(telemetry_path, "w", encoding="utf-8") as handle:
+                    json.dump(replacement, handle)
+                replacement_ns = time.time_ns()
+                os.utime(
+                    telemetry_path,
+                    ns=(replacement_ns, replacement_ns),
+                )
+                return original_status(**kwargs)
+
+            with mock.patch.object(
+                self.bridge,
+                "micromachine_status_for_runtime",
+                side_effect=replace_after_validation,
+            ):
+                document = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+
+            with open(telemetry_path, encoding="utf-8") as handle:
+                file_document = json.load(handle)
+
+        self.assertEqual(
+            "same-runtime-replacement",
+            file_document["battlefield_overview"]["identity"]["update_id"],
+        )
+        self.assertEqual(
+            "validated-original",
+            document["battlefield_projection_identity"]["update_id"],
+        )
+        self.assertEqual(320, document["telemetry_frame"])
 
     def test_micromachine_runtime_gate_redacts_runtime_identity_text(self):
         cases = (

@@ -46,6 +46,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,6 +56,8 @@ from weakref import WeakValueDictionary
 
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_GAME_LOOPS_PER_SECOND,
+    MicroMachineBridgeFailureMode,
+    MicroMachineTelemetry,
     require_micromachine_update_id,
 )
 from starcraft_commander.micromachine_battlefield_projection import (
@@ -5007,6 +5010,21 @@ class _MicroMachineTelemetryFileIdentity:
     sha256: str
 
 
+@dataclass(frozen=True)
+class _MicroMachineTelemetrySnapshot:
+    document: Mapping[str, object] | None = None
+    file_identity: _MicroMachineTelemetryFileIdentity | None = None
+    frame: int | None = None
+    current_for_process: bool = False
+
+
+@dataclass(frozen=True)
+class _MicroMachineValidatedRuntimeSnapshot:
+    metadata: Mapping[str, object]
+    telemetry_document: Mapping[str, object] | None = None
+    telemetry_file_identity: _MicroMachineTelemetryFileIdentity | None = None
+
+
 def _read_micromachine_telemetry_file(
     path: str,
 ) -> tuple[object | None, _MicroMachineTelemetryFileIdentity] | None:
@@ -5181,6 +5199,29 @@ class _MicroMachineLaunchManager:
             telemetry = self._refresh_unlocked()
             return self._snapshot_unlocked(telemetry)
 
+    def validated_snapshot(
+        self,
+        blackboard_dir: str = "",
+    ) -> _MicroMachineValidatedRuntimeSnapshot:
+        """Capture metadata and the exact telemetry document validated with it."""
+
+        root = _clean_blackboard_dir(blackboard_dir, self._blackboard_dir)
+        with self._lock:
+            if self._process is None or self._process.poll() is not None:
+                self._blackboard_dir = root
+            telemetry = self._refresh_unlocked()
+            telemetry_document = (
+                deepcopy(dict(telemetry.document))
+                if telemetry.current_for_process
+                and isinstance(telemetry.document, Mapping)
+                else None
+            )
+            return _MicroMachineValidatedRuntimeSnapshot(
+                metadata=self._snapshot_unlocked(telemetry),
+                telemetry_document=telemetry_document,
+                telemetry_file_identity=telemetry.file_identity,
+            )
+
     def _read_output(self, process: subprocess.Popen[str]) -> None:
         if process.stdout is None:
             return
@@ -5199,7 +5240,7 @@ class _MicroMachineLaunchManager:
                     self._status = "running"
                 if "MicroMachine smoke passed" in clean:
                     self._status = "passed"
-                elif self._latest_telemetry_unlocked()[1]:
+                elif self._latest_telemetry_unlocked().current_for_process:
                     self._status = "connected"
         process.wait()
         with self._lock:
@@ -5212,18 +5253,17 @@ class _MicroMachineLaunchManager:
                 self._status = "failed"
                 self._error = self._last_line or f"process exited {process.returncode}"
 
-    def _refresh_unlocked(self) -> tuple[int | None, bool]:
+    def _refresh_unlocked(self) -> _MicroMachineTelemetrySnapshot:
         process = self._process
         telemetry = self._latest_telemetry_unlocked()
-        telemetry_frame, telemetry_current_for_process = telemetry
         if process is not None and process.poll() is None:
             if (
-                telemetry_current_for_process
+                telemetry.current_for_process
                 and self._status in {"starting", "running"}
             ):
                 self._status = "connected"
             elif (
-                not telemetry_current_for_process
+                not telemetry.current_for_process
                 and self._status == "connected"
             ):
                 self._status = "running"
@@ -5235,22 +5275,26 @@ class _MicroMachineLaunchManager:
             elif self._status not in {"failed", "passed"}:
                 self._status = "failed"
                 self._error = self._last_line or f"process exited {process.returncode}"
-            return telemetry_frame, False
+            return _MicroMachineTelemetrySnapshot(
+                document=telemetry.document,
+                file_identity=telemetry.file_identity,
+                frame=telemetry.frame,
+            )
         return telemetry
 
     def _snapshot_unlocked(
         self,
-        telemetry: tuple[int | None, bool] | None = None,
+        telemetry: _MicroMachineTelemetrySnapshot | None = None,
     ) -> dict[str, object]:
         process = self._process
-        telemetry_frame, telemetry_fresh_for_process = (
+        telemetry_snapshot = (
             telemetry
             if telemetry is not None
             else self._latest_telemetry_unlocked()
         )
         runtime_attached = process is not None and process.poll() is None
         telemetry_current_for_process = bool(
-            runtime_attached and telemetry_fresh_for_process
+            runtime_attached and telemetry_snapshot.current_for_process
         )
         return {
             "enabled": True,
@@ -5266,31 +5310,43 @@ class _MicroMachineLaunchManager:
             "script_path": self._script_path,
             "last_line": self._last_line,
             "error": self._error,
-            "telemetry_present": telemetry_frame is not None,
+            "telemetry_present": telemetry_snapshot.frame is not None,
             "telemetry_current_for_process": telemetry_current_for_process,
             "telemetry_stale_or_detached": (
-                telemetry_frame is not None and not telemetry_current_for_process
+                telemetry_snapshot.frame is not None
+                and not telemetry_current_for_process
             ),
-            "telemetry_frame": telemetry_frame,
+            "telemetry_frame": telemetry_snapshot.frame,
         }
 
-    def _latest_telemetry_unlocked(self) -> tuple[int | None, bool]:
+    def _latest_telemetry_unlocked(self) -> _MicroMachineTelemetrySnapshot:
         path = os.path.join(self._blackboard_dir, "latest_telemetry.json")
         root_real = os.path.realpath(self._blackboard_dir)
         path_real = os.path.realpath(path)
         if not path_real.startswith(root_real + os.sep) or not os.path.isfile(path_real):
-            return None, False
+            return _MicroMachineTelemetrySnapshot()
         telemetry_file = _read_micromachine_telemetry_file(path_real)
         if telemetry_file is None:
-            return None, False
+            return _MicroMachineTelemetrySnapshot()
         document, file_identity = telemetry_file
         if not isinstance(document, Mapping):
-            return None, False
+            return _MicroMachineTelemetrySnapshot(file_identity=file_identity)
         if document.get("protocol_version") != "voi-mm-bridge/v1":
-            return None, False
+            return _MicroMachineTelemetrySnapshot(
+                document=document,
+                file_identity=file_identity,
+            )
         frame = document.get("frame")
         if type(frame) is not int:
-            return None, False
+            return _MicroMachineTelemetrySnapshot(
+                document=document,
+                file_identity=file_identity,
+            )
+        snapshot = _MicroMachineTelemetrySnapshot(
+            document=document,
+            file_identity=file_identity,
+            frame=frame,
+        )
         process = self._process
         if (
             process is not None
@@ -5298,23 +5354,27 @@ class _MicroMachineLaunchManager:
             and self._launch_started_at_ns
         ):
             if file_identity.mtime_ns <= self._launch_started_at_ns:
-                return None, False
+                return _MicroMachineTelemetrySnapshot()
             if (
                 self._launch_telemetry_baseline is not None
                 and file_identity == self._launch_telemetry_baseline
             ):
-                return None, False
+                return _MicroMachineTelemetrySnapshot()
             if (
                 document.get("runtime_instance_id")
                 != self._runtime_instance_id
             ):
-                return frame, False
+                return snapshot
             age_ns = time.time_ns() - file_identity.mtime_ns
-            return (
-                frame,
-                0 <= age_ns <= _MICROMACHINE_TELEMETRY_FRESHNESS_NS,
+            return _MicroMachineTelemetrySnapshot(
+                document=document,
+                file_identity=file_identity,
+                frame=frame,
+                current_for_process=(
+                    0 <= age_ns <= _MICROMACHINE_TELEMETRY_FRESHNESS_NS
+                ),
             )
-        return frame, False
+        return snapshot
 
 
 @dataclass(frozen=True)
@@ -6036,15 +6096,27 @@ class SessionLoopBridge:
         *,
         blackboard_dir: str = "",
         runtime_instance_id: str,
+        telemetry_document: Mapping[str, object],
     ) -> Mapping[str, object]:
-        """Read status and commit freshness only for an attached runtime."""
+        """Build status from the exact telemetry document validated by launcher."""
 
         instance_id = str(runtime_instance_id or "").strip()
         if not instance_id:
             raise ValueError("runtime_instance_id must not be empty.")
+        if not isinstance(telemetry_document, Mapping):
+            raise ValueError("telemetry_document must be a mapping.")
+        telemetry = MicroMachineTelemetry.from_mapping(
+            deepcopy(dict(telemetry_document))
+        )
+        if telemetry.runtime_instance_id != instance_id:
+            raise ValueError(
+                "telemetry_document runtime_instance_id does not match "
+                "the attached runtime."
+            )
         return self._micromachine_status(
             blackboard_dir=blackboard_dir,
             runtime_instance_id=instance_id,
+            validated_runtime_telemetry=telemetry,
         )
 
     def _micromachine_status(
@@ -6052,46 +6124,63 @@ class SessionLoopBridge:
         *,
         blackboard_dir: str,
         runtime_instance_id: str,
+        validated_runtime_telemetry: MicroMachineTelemetry | None = None,
     ) -> Mapping[str, object]:
         from starcraft_commander.micromachine_runtime import (
             MicroMachineFilesystemBlackboard,
         )
         from starcraft_commander.policy_observability import (
             PolicyModulationBridgeStatus,
+            build_policy_modulation_dashboard_snapshot,
         )
 
         root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
         backend = MicroMachineFilesystemBlackboard(root)
-        telemetry = backend.read_latest_telemetry()
+        telemetry = (
+            validated_runtime_telemetry
+            if runtime_instance_id
+            else backend.read_latest_telemetry()
+        )
         telemetry_archive = backend.read_recent_telemetry_archive(
             pending_family_effects_only=True,
         )
         if runtime_instance_id:
-            reported_runtime_instance_id = (
-                getattr(telemetry, "runtime_instance_id", None)
-                if telemetry is not None
-                else None
-            )
-            telemetry = (
-                telemetry
-                if telemetry is not None
-                and (
-                    reported_runtime_instance_id is None
-                    or reported_runtime_instance_id == runtime_instance_id
+            if telemetry is None:
+                raise ValueError(
+                    "validated_runtime_telemetry is required for attached runtime."
                 )
-                else None
-            )
+            if telemetry.runtime_instance_id != runtime_instance_id:
+                raise ValueError(
+                    "validated telemetry does not belong to attached runtime."
+                )
             telemetry_archive = tuple(
                 entry
                 for entry in telemetry_archive
-                if getattr(entry, "runtime_instance_id", None)
-                in {None, runtime_instance_id}
+                if entry.runtime_instance_id in {"", runtime_instance_id}
+                and entry.frame <= telemetry.frame
             )
         frame = telemetry.frame if telemetry is not None else 0
-        snapshot = backend.dashboard_snapshot(
-            current_frame=frame,
-            bridge_status=PolicyModulationBridgeStatus.CONNECTED,
-        )
+        if runtime_instance_id:
+            updates = ()
+            last_failure = telemetry.last_failure
+            try:
+                update = backend.read_latest_update(current_frame=frame)
+                if update is not None:
+                    updates = (update,)
+            except (OSError, TypeError, ValueError):
+                last_failure = MicroMachineBridgeFailureMode.INVALID_PAYLOAD
+            snapshot = build_policy_modulation_dashboard_snapshot(
+                updates,
+                current_frame=frame,
+                bridge_status=PolicyModulationBridgeStatus.CONNECTED,
+                telemetry=telemetry,
+                last_failure=last_failure,
+            )
+        else:
+            snapshot = backend.dashboard_snapshot(
+                current_frame=frame,
+                bridge_status=PolicyModulationBridgeStatus.CONNECTED,
+            )
         compile_document = _read_micromachine_compile_result(root)
         compile_result = _latest_compile_result_payload(compile_document)
         compile_history = _read_micromachine_compile_result_history(root)
@@ -6121,9 +6210,13 @@ class SessionLoopBridge:
                     if telemetry is not None
                     else None
                 ),
-                telemetry_archive=tuple(
-                    _telemetry_to_mapping(entry)
-                    for entry in telemetry_archive
+                telemetry_archive=(
+                    ()
+                    if runtime_instance_id
+                    else tuple(
+                        _telemetry_to_mapping(entry)
+                        for entry in telemetry_archive
+                    )
                 ),
                 expected_scope="battlefield",
                 previous_identity=(
@@ -14980,16 +15073,44 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "error": "MicroMachine modulation bridge is disabled.",
             }
         runtime_snapshot = None
+        validated_telemetry_document = None
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
-        if launcher is not None and callable(getattr(launcher, "snapshot", None)):
+        validated_snapshot_fn = getattr(
+            launcher,
+            "validated_snapshot",
+            None,
+        )
+        if callable(validated_snapshot_fn):
+            validated_snapshot = validated_snapshot_fn(
+                blackboard_dir=blackboard_dir
+            )
+            if isinstance(
+                validated_snapshot,
+                _MicroMachineValidatedRuntimeSnapshot,
+            ):
+                runtime_snapshot = dict(validated_snapshot.metadata)
+                if isinstance(
+                    validated_snapshot.telemetry_document,
+                    Mapping,
+                ):
+                    validated_telemetry_document = deepcopy(
+                        dict(validated_snapshot.telemetry_document)
+                    )
+        elif launcher is not None and callable(getattr(launcher, "snapshot", None)):
             runtime_snapshot = dict(
                 launcher.snapshot(blackboard_dir=blackboard_dir)
             )
+            if runtime_snapshot.get("runtime_attached") is True:
+                runtime_snapshot["telemetry_current_for_process"] = False
+                runtime_snapshot["telemetry_stale_or_detached"] = (
+                    runtime_snapshot.get("telemetry_present") is True
+                )
         runtime_instance_id = ""
         if (
             isinstance(runtime_snapshot, Mapping)
             and runtime_snapshot.get("runtime_attached") is True
             and runtime_snapshot.get("telemetry_current_for_process") is True
+            and isinstance(validated_telemetry_document, Mapping)
         ):
             runtime_instance_id = str(
                 runtime_snapshot.get("runtime_instance_id", "") or ""
@@ -15004,6 +15125,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 runtime_status_fn(
                     blackboard_dir=blackboard_dir,
                     runtime_instance_id=runtime_instance_id,
+                    telemetry_document=validated_telemetry_document,
                 )
             )
         else:
