@@ -14940,6 +14940,14 @@ const assert = require("assert");
     1
   );
   delete legacyOperation.battlefield_operation;
+  var foreignLegacyExecution = Object.assign(
+    {},
+    legacyOperation.intervention.command_execution,
+    {
+      operation_id: "foreign-operation",
+      operation_generation: 99
+    }
+  );
   renderMicroMachineStatus(serverResult({
     ok: true,
     accepted: true,
@@ -14956,8 +14964,39 @@ const assert = require("assert");
     intervention: {
       latest_update_id: legacyOperationUpdateId,
       telemetry_frame: 15,
-      command_execution:
-        legacyOperation.intervention.command_execution
+      command_execution: foreignLegacyExecution
+    },
+    operations: [legacyOperation]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, legacyOperationUpdateId),
+    "foreign operation identity must not finish a legacy operation"
+  );
+  var legacyEffectExecution = Object.assign(
+    {},
+    legacyOperation.intervention.command_execution,
+    {
+      state: "effect_observed",
+      completed: false
+    }
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: legacyOperationUpdateId
+    },
+    update: {
+      update_id: legacyOperationUpdateId,
+      vector: { goal: legacyOperationCommand }
+    },
+    intervention: {
+      latest_update_id: legacyOperationUpdateId,
+      telemetry_frame: 16,
+      command_execution: legacyEffectExecution
     },
     operations: [legacyOperation]
   }, OPERATION_SCOPE));

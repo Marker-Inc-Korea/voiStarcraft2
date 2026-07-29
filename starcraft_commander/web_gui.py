@@ -16928,6 +16928,7 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     canceled: true,
     cancelled: true,
     completed: true,
+    effect_observed: true,
     failed: true,
     expired: true,
     rejected: true,
@@ -16987,9 +16988,48 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
         return commandConsoleStageModel(candidate).terminal;
       })
     );
-    var terminalExecution = Boolean(
+    var legacyOperation = (
       !operationCandidates.length &&
-      terminalExecutionStates[executionState]
+      operationsForUpdate.length === 1
+    ) ? operationsForUpdate[0] : null;
+    var legacyOperationId = legacyOperation
+      ? operationPayloadOperationId(legacyOperation)
+      : "";
+    var legacyOperationGeneration = legacyOperation
+      ? Number(legacyOperation.operation_generation || 0)
+      : 0;
+    var legacyOperationExecutionMatches = Boolean(
+      legacyOperation &&
+      operationExecutionMatchesPayload(
+        legacyOperation,
+        execution,
+        legacyOperationId,
+        updateId,
+        legacyOperationGeneration
+      )
+    );
+    var executionGeneration = Number(
+      execution.operation_generation || execution.generation || 0
+    );
+    var unscopedLegacyExecution = Boolean(
+      !operationsForUpdate.length &&
+      String(execution.command_id || "") === updateId &&
+      !execution.operation_id &&
+      executionGeneration <= 0
+    );
+    var terminalExecutionState = Boolean(
+      terminalExecutionStates[executionState] &&
+      (
+        executionState !== "effect_observed" ||
+        microMachineExecutionEffectObserved(execution)
+      )
+    );
+    var terminalExecution = Boolean(
+      terminalExecutionState &&
+      (
+        legacyOperationExecutionMatches ||
+        unscopedLegacyExecution
+      )
     );
     if (
       !terminalForUpdate &&
