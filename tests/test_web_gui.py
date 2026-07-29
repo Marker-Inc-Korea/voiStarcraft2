@@ -5136,59 +5136,71 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ),
         )
         bridge.start()
-        self.addCleanup(bridge.stop)
 
         with (
             tempfile.TemporaryDirectory() as blackboard_a,
             tempfile.TemporaryDirectory() as blackboard_b,
         ):
-            bridge.submit_micromachine_modulation_background(
-                "탱크로 수비해",
-                blackboard_dir=blackboard_b,
-                current_frame=10,
-                update_id="blackboard-b-normal",
-            )
-            self.assertTrue(started.wait(1))
-            bridge.submit_micromachine_modulation_background(
-                "긴급 즉시 후퇴",
-                blackboard_dir=blackboard_a,
-                provider_output={
-                    "goal": "긴급 즉시 후퇴",
-                    "override_level": "emergency",
-                    "command_layer": "emergency",
-                    "ttl_seconds": 45,
-                    "emergency": {
-                        "cancel_attacks": True,
-                        "force_retreat": True,
+            try:
+                bridge.submit_micromachine_modulation_background(
+                    "탱크로 수비해",
+                    blackboard_dir=blackboard_b,
+                    current_frame=10,
+                    update_id="blackboard-b-normal",
+                )
+                self.assertTrue(started.wait(1))
+                bridge.submit_micromachine_modulation_background(
+                    "긴급 즉시 후퇴",
+                    blackboard_dir=blackboard_a,
+                    provider_output={
+                        "goal": "긴급 즉시 후퇴",
+                        "override_level": "emergency",
+                        "command_layer": "emergency",
+                        "ttl_seconds": 45,
+                        "emergency": {
+                            "cancel_attacks": True,
+                            "force_retreat": True,
+                        },
                     },
-                },
-                current_frame=11,
-                update_id="blackboard-a-emergency",
-            )
+                    current_frame=11,
+                    update_id="blackboard-a-emergency",
+                )
 
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                path = os.path.join(blackboard_a, "latest_modulation.json")
-                if os.path.isfile(path):
-                    break
-                time.sleep(0.02)
-            with bridge._micromachine_request_lock:
-                normal_request = bridge._micromachine_requests[
-                    "blackboard-b-normal"
-                ]
-                self.assertFalse(normal_request.cancel_event.is_set())
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    path = os.path.join(
+                        blackboard_a,
+                        "latest_modulation.json",
+                    )
+                    if os.path.isfile(path):
+                        break
+                    time.sleep(0.02)
+                with bridge._micromachine_request_lock:
+                    normal_request = bridge._micromachine_requests[
+                        "blackboard-b-normal"
+                    ]
+                    self.assertFalse(normal_request.cancel_event.is_set())
 
-            release.set()
-            deadline = time.monotonic() + 2
-            latest_b = {}
-            while time.monotonic() < deadline:
-                path = os.path.join(blackboard_b, "latest_modulation.json")
-                if os.path.isfile(path):
-                    with open(path, encoding="utf-8") as handle:
-                        latest_b = json.load(handle)
-                    break
-                time.sleep(0.02)
-            self.assertEqual("blackboard-b-normal", latest_b.get("update_id"))
+                release.set()
+                deadline = time.monotonic() + 2
+                latest_b = {}
+                while time.monotonic() < deadline:
+                    path = os.path.join(
+                        blackboard_b,
+                        "latest_modulation.json",
+                    )
+                    if os.path.isfile(path):
+                        with open(path, encoding="utf-8") as handle:
+                            latest_b = json.load(handle)
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(
+                    "blackboard-b-normal",
+                    latest_b.get("update_id"),
+                )
+            finally:
+                release.set()
+                bridge.stop()
 
     def test_micromachine_emergency_classifier_ignores_negated_commands(self):
         for command in (
