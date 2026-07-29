@@ -3233,6 +3233,133 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             },
         )
 
+    def test_micromachine_operation_ability_requires_matching_family_effect(self):
+        update_id = "siege-ability-operation"
+        operation_id = "siege-alpha"
+        operation_update = {
+            "update_id": update_id,
+            "issued_at_frame": 100,
+            "vector": {
+                "operation_id": operation_id,
+                "generation": 1,
+                "composition_requirements": [
+                    {
+                        "unit_type": "TERRAN_SIEGETANK",
+                        "count": 1,
+                        "role": "siege_support",
+                    }
+                ],
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_SIEGETANK",
+                        "role": "siege_support",
+                        "ability_policy": "siege_mode",
+                    }
+                ],
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_SIEGETANK"],
+                },
+            },
+        }
+        family_row = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": 1,
+            "family": "siege_tank",
+            "unit_type": "TERRAN_SIEGETANK",
+            "role": "siege_support",
+            "assigned": 1,
+            "represented": 1,
+            "action": "attack_move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 1,
+            "attempted_count": 1,
+            "attempted_frame": 130,
+            "attempted_unit_tags": [7001],
+            "submitted_count": 1,
+            "submitted_frame": 140,
+            "submitted_unit_tags": [7001],
+            "effect_kind": "engagement",
+            "effect_count": 1,
+            "effect_frame": 150,
+            "effect_unit_tags": [7001],
+            "blocker_manager": "",
+            "blocker": "",
+        }
+        operation_telemetry = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": 1,
+            "requested_task_type": "pressure_with_main_army",
+            "task_type": "attack",
+            "squad_order": "attack",
+            "status": "MOVING",
+            "received_frame": 110,
+            "assigned_frame": 120,
+            "submitted_frame": 140,
+            "last_action_frame": 145,
+            "assigned_unit_tags": [7001],
+            "assigned_count": 1,
+            "max_home_distance": 24.0,
+            "engaged": True,
+            "family_evidence": [family_row],
+        }
+
+        def execution_for_current_row():
+            telemetry_document = {
+                "frame": 160,
+                "active_modulation_ids": [update_id],
+                "managers": {
+                    "OperationDirector": {
+                        "policy_update_id": update_id,
+                        "operations": [operation_telemetry],
+                    }
+                },
+            }
+            strict = web_gui._micromachine_strict_operation_execution(
+                operation_update,
+                operation_id=operation_id,
+                operation_generation=1,
+                operation_telemetry_document=telemetry_document,
+            )
+            return web_gui._micromachine_operation_command_execution(
+                update_id=update_id,
+                operation_id=operation_id,
+                operation_generation=1,
+                operation_telemetry=operation_telemetry,
+                fallback=strict,
+            )
+
+        movement_only = execution_for_current_row()
+        movement_stages = {
+            stage["name"]: stage for stage in movement_only["stages"]
+        }
+        self.assertTrue(
+            web_gui._micromachine_execution_has_active_family_contract(
+                movement_only
+            )
+        )
+        self.assertNotIn("effect_observed", {
+            name for name, stage in movement_stages.items() if stage["ok"]
+        })
+        self.assertNotEqual("effect_observed", movement_only["state"])
+        self.assertFalse(movement_only["completed"])
+
+        family_row.update(
+            {
+                "action": "ability:MORPH_SIEGEMODE",
+                "required_effect": "ability_state_or_effect",
+                "effect_kind": "ability_state",
+            }
+        )
+        ability_confirmed = execution_for_current_row()
+        ability_stages = {
+            stage["name"]: stage for stage in ability_confirmed["stages"]
+        }
+        self.assertTrue(ability_stages["effect_observed"]["ok"])
+        self.assertEqual("effect_observed", ability_confirmed["state"])
+
     def test_micromachine_operation_root_update_id_is_fail_closed(self):
         update_id = "parallel-current-update"
 
@@ -3877,6 +4004,116 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         document = json.loads(payload.decode("utf-8"))
         self.assertEqual(document["status"], "connected")
         self.assertEqual(document["telemetry_frame"], 42)
+
+    def test_runtime_endpoints_strip_internal_unit_identity(self):
+        def launcher_payload(status):
+            return {
+                "enabled": True,
+                "status": status,
+                "last_line": "actor_tag=7001 action=attack",
+                "error": "target_unit_tags=[8001, 8002]",
+                "nested": {"commanded_unit_tag": 9001},
+                "tags": ["public-strategy-tag"],
+            }
+
+        class FakeLegacyLauncher:
+            def configure(self, provider, api_key, model=""):
+                return None
+
+            def snapshot(self):
+                return launcher_payload("connected")
+
+            def start(self):
+                return launcher_payload("starting")
+
+        class FakeMicroMachineLauncher:
+            def snapshot(self, blackboard_dir=""):
+                return {
+                    **launcher_payload("connected"),
+                    "blackboard_dir": blackboard_dir,
+                }
+
+            def start(self, blackboard_dir="", enemy_difficulty=7):
+                return {
+                    **launcher_payload("starting"),
+                    "blackboard_dir": blackboard_dir,
+                    "enemy_difficulty": enemy_difficulty,
+                }
+
+        self.server._http.live_launcher = FakeLegacyLauncher()
+        self.server._http.micromachine_launcher = FakeMicroMachineLauncher()
+        self.server._http.auto_launch_live = True
+        requests = (
+            ("GET", "/api/live/status", None),
+            ("GET", "/api/runtime/status?mode=legacy_commander", None),
+            (
+                "POST",
+                "/api/runtime/start",
+                {"mode": "legacy_commander"},
+            ),
+            (
+                "GET",
+                "/api/runtime/status?mode=micromachine&blackboard_dir=/tmp/mm",
+                None,
+            ),
+            (
+                "POST",
+                "/api/runtime/start",
+                {
+                    "mode": "micromachine",
+                    "blackboard_dir": "/tmp/mm",
+                    "enemy_difficulty": 7,
+                },
+            ),
+            (
+                "POST",
+                "/api/llm",
+                {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "api_key": "unit-test-sensitive",
+                },
+            ),
+        )
+
+        for method, path, document in requests:
+            with self.subTest(method=method, path=path):
+                body = (
+                    json.dumps(document).encode("utf-8")
+                    if document is not None
+                    else None
+                )
+                status, content_type, payload = self.request(
+                    method,
+                    path,
+                    body=body,
+                    headers=(
+                        {"Content-Type": "application/json"}
+                        if body is not None
+                        else None
+                    ),
+                )
+                self.assertIn(
+                    HTTPStatus(status),
+                    {HTTPStatus.OK, HTTPStatus.ACCEPTED},
+                )
+                self.assertIn("application/json", content_type)
+                response = json.loads(payload.decode("utf-8"))
+                serialized = json.dumps(response, sort_keys=True)
+                runtime_payload = response.get("live_start", response)
+
+                self.assertNotIn("actor_tag", serialized)
+                self.assertNotIn("target_unit_tags", serialized)
+                self.assertNotIn("commanded_unit_tag", serialized)
+                self.assertNotIn("7001", serialized)
+                self.assertNotIn("8001", serialized)
+                self.assertNotIn("8002", serialized)
+                self.assertNotIn("9001", serialized)
+                self.assertEqual(
+                    ["public-strategy-tag"],
+                    runtime_payload["tags"],
+                )
+                self.assertIn("action=attack", runtime_payload["last_line"])
 
     def test_runtime_start_rejects_invalid_micromachine_enemy_difficulty(self):
         for difficulty in (0, 11, 7.5, True, "7"):

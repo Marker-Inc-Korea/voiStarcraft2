@@ -63,6 +63,7 @@ from starcraft_commander.micromachine_command_execution import (
     HARD_OPERATION_STATUSES,
     TRANSIENT_OPERATION_BLOCK_REASONS,
     classify_micromachine_command_execution,
+    classify_micromachine_operation_executions,
 )
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
@@ -1307,6 +1308,7 @@ def _micromachine_operation_telemetry_document(
             "frame": frame,
             "active_modulation_ids": active_ids,
             "managers": {"OperationDirector": scoped_entry},
+            "_pending_only": pending_only,
         },
         scoped_entry,
     )
@@ -1401,6 +1403,63 @@ def _micromachine_execution_stage_ok(
     )
 
 
+def _micromachine_execution_has_active_family_contract(
+    execution: Mapping[str, object],
+) -> bool:
+    stages = execution.get("stages")
+    if not isinstance(stages, Sequence) or isinstance(
+        stages,
+        (str, bytes, bytearray),
+    ):
+        return False
+    return any(
+        isinstance(stage, Mapping)
+        and isinstance(stage.get("evidence"), Mapping)
+        and isinstance(stage["evidence"].get("family_lifecycle"), Mapping)
+        and stage["evidence"]["family_lifecycle"].get("active") is True
+        for stage in stages
+    )
+
+
+def _micromachine_strict_operation_execution(
+    operation_update: Mapping[str, object],
+    *,
+    operation_id: str,
+    operation_generation: int,
+    operation_telemetry_document: Mapping[str, object],
+) -> dict[str, object]:
+    operation = dict(_mapping_child(operation_update, "vector"))
+    operation["operation_id"] = operation_id
+    operation["generation"] = operation_generation
+    classifier_update = dict(operation_update)
+    classifier_update["vector"] = {"operations": [operation]}
+    latest_frame = operation_telemetry_document.get("frame")
+    reports = classify_micromachine_operation_executions(
+        latest_update=classifier_update,
+        latest_telemetry=operation_telemetry_document,
+        latest_frame=(
+            int(latest_frame)
+            if type(latest_frame) is int and latest_frame > 0
+            else 0
+        ),
+    )
+    if len(reports) != 1:
+        return {}
+    report = reports[0]
+    if (
+        report.operation_id != operation_id
+        or report.operation_generation != operation_generation
+    ):
+        return {}
+    result = report.to_dict()
+    if (
+        str(result.get("state", "") or "") in {"moving", "engaged"}
+        and _micromachine_execution_stage_ok(result, "effect_observed")
+    ):
+        result["state"] = "effect_observed"
+    return result
+
+
 def _micromachine_operation_command_execution(
     *,
     update_id: str,
@@ -1420,6 +1479,24 @@ def _micromachine_operation_command_execution(
         operation_id=operation_id,
         operation_generation=operation_generation,
     )
+    if (
+        str(fallback.get("command_id", "") or "") == update_id
+        and str(fallback.get("operation_id", "") or "") == operation_id
+        and fallback.get("operation_generation") == operation_generation
+        and _micromachine_execution_has_active_family_contract(fallback)
+    ):
+        result = dict(fallback)
+        state = str(result.get("state", "") or "").lower()
+        result["superseded"] = state in {
+            "superseded",
+            "replaced",
+            "cancelled",
+            "canceled",
+        }
+        result["terminal_cleanup"] = terminal_cleanup
+        result["telemetry"] = dict(operation_telemetry)
+        return result
+
     received, received_evidence = _micromachine_operation_signal(
         operation_telemetry,
         "received",
@@ -1868,6 +1945,18 @@ def _micromachine_operation_status_payload(
     fallback_execution = intervention.get("command_execution")
     if not isinstance(fallback_execution, Mapping):
         fallback_execution = {}
+    if (
+        current_family_evidence
+        and operation_telemetry_document.get("_pending_only") is not True
+    ):
+        strict_operation_execution = _micromachine_strict_operation_execution(
+            operation_update,
+            operation_id=operation_id,
+            operation_generation=active_operation_generation,
+            operation_telemetry_document=operation_telemetry_document,
+        )
+        if strict_operation_execution:
+            fallback_execution = strict_operation_execution
     command_execution = _micromachine_operation_command_execution(
         update_id=update_id,
         operation_id=operation_id,
@@ -2123,6 +2212,13 @@ def _public_micromachine_runtime_payload(value: object) -> object:
     if isinstance(value, str):
         return _redact_micromachine_internal_unit_tag_text(value)
     return value
+
+
+def _public_runtime_launcher_payload(
+    value: Mapping[str, object],
+) -> dict[str, object]:
+    public_payload = _public_micromachine_runtime_payload(value)
+    return dict(public_payload) if isinstance(public_payload, Mapping) else {}
 
 
 _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -14421,7 +14517,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             launcher.configure(provider, api_key, model)
         if bool(getattr(self.server, "auto_launch_live", False)):  # type: ignore[attr-defined]
             if launcher is not None:
-                response["live_start"] = launcher.start()
+                response["live_start"] = _public_runtime_launcher_payload(
+                    launcher.start()
+                )
         self._send_json(HTTPStatus.OK, response)
 
     def _handle_live_status(self) -> None:
@@ -14432,7 +14530,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"enabled": False, "status": "disabled", "url": "", "error": ""},
             )
             return
-        self._send_json(HTTPStatus.OK, launcher.snapshot())
+        self._send_json(
+            HTTPStatus.OK,
+            _public_runtime_launcher_payload(launcher.snapshot()),
+        )
 
     def _handle_runtime_status(self) -> None:
         params = parse_qs(urlsplit(self.path).query)
@@ -14453,7 +14554,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 return
             payload = dict(launcher.snapshot())
             payload["mode"] = mode
-            self._send_json(HTTPStatus.OK, payload)
+            self._send_json(
+                HTTPStatus.OK,
+                _public_runtime_launcher_payload(payload),
+            )
             return
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
         if launcher is None:
@@ -14471,7 +14575,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         try:
             self._send_json(
                 HTTPStatus.OK,
-                launcher.snapshot(blackboard_dir=blackboard_dir),
+                _public_runtime_launcher_payload(
+                    launcher.snapshot(blackboard_dir=blackboard_dir)
+                ),
             )
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
@@ -14521,7 +14627,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if payload.get("status") == "blocked"
                 else HTTPStatus.ACCEPTED
             )
-            self._send_json(status, payload)
+            self._send_json(
+                status,
+                _public_runtime_launcher_payload(payload),
+            )
             return
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
         if launcher is None:
@@ -14566,7 +14675,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             if payload.get("status") == "blocked"
             else HTTPStatus.ACCEPTED
         )
-        self._send_json(status, payload)
+        self._send_json(
+            status,
+            _public_runtime_launcher_payload(payload),
+        )
 
     def _handle_micromachine_status(self) -> None:
         params = parse_qs(urlsplit(self.path).query)
