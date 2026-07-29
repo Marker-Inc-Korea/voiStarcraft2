@@ -57,6 +57,9 @@ from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_GAME_LOOPS_PER_SECOND,
     require_micromachine_update_id,
 )
+from starcraft_commander.micromachine_battlefield_projection import (
+    select_latest_battlefield_projection,
+)
 from starcraft_commander.micromachine_command_execution import (
     EXPIRY_OPERATION_REASONS,
     HARD_OPERATION_BLOCK_REASONS,
@@ -2205,11 +2208,18 @@ def _public_operation_family_evidence(
 
 def _public_micromachine_runtime_payload(value: object) -> object:
     if isinstance(value, Mapping):
-        return {
-            key: _public_micromachine_runtime_payload(item)
-            for key, item in value.items()
-            if not _micromachine_internal_unit_tag_key(key)
-        }
+        public_payload: dict[object, object] = {}
+        for key, item in value.items():
+            if _micromachine_internal_unit_tag_key(key):
+                continue
+            if _public_micromachine_semantic_tag_key(key):
+                semantic_tags = _public_micromachine_semantic_tag_value(item)
+                if semantic_tags is _MICROMACHINE_DROP_PUBLIC_FIELD:
+                    continue
+                public_payload[key] = semantic_tags
+                continue
+            public_payload[key] = _public_micromachine_runtime_payload(item)
+        return public_payload
     if isinstance(value, list):
         return [
             _public_micromachine_runtime_payload(item)
@@ -2261,12 +2271,74 @@ _MICROMACHINE_PUBLIC_SEMANTIC_TAG_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 
+_MICROMACHINE_DROP_PUBLIC_FIELD: Final[object] = object()
+_MICROMACHINE_SEMANTIC_TAG_NUMERIC_WRAPPER_PATTERN: Final[re.Pattern[str]] = (
+    re.compile(r"[\s\[\](){}<>,;|]+")
+)
+_MICROMACHINE_SEMANTIC_TAG_RAW_IDENTITY_PATTERN: Final[re.Pattern[str]] = (
+    re.compile(
+        r"""(?ix)
+        (?:^|[^a-z0-9])
+        (?:
+            (?:unit|actor|owner|selected|assigned|commanded|target)
+            (?:[_\s-]*tags?)?
+            |
+            tags?
+        )
+        [_:\s=#-]*\d+
+        |
+        (?<!\d)\d{4,}(?!\d)
+        """
+    )
+)
+
 
 def _redact_micromachine_internal_unit_tag_text(value: str) -> str:
     return _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN.sub(
         "[internal unit identity]: [redacted]",
         value,
     )
+
+
+def _public_micromachine_semantic_tag_key(key: object) -> bool:
+    return str(key or "").strip().lower() in _MICROMACHINE_PUBLIC_SEMANTIC_TAG_KEYS
+
+
+def _micromachine_safe_semantic_tag(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if _redact_micromachine_internal_unit_tag_text(value) != value:
+        return False
+    if _MICROMACHINE_SEMANTIC_TAG_RAW_IDENTITY_PATTERN.search(stripped):
+        return False
+    numeric_identity = _MICROMACHINE_SEMANTIC_TAG_NUMERIC_WRAPPER_PATTERN.sub(
+        "",
+        stripped,
+    )
+    return not numeric_identity.isdigit()
+
+
+def _public_micromachine_semantic_tag_value(value: object) -> object:
+    if isinstance(value, str):
+        return value if _micromachine_safe_semantic_tag(value) else (
+            _MICROMACHINE_DROP_PUBLIC_FIELD
+        )
+    if isinstance(value, list):
+        return [
+            item
+            for item in value
+            if isinstance(item, str)
+            and _micromachine_safe_semantic_tag(item)
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            item
+            for item in value
+            if isinstance(item, str)
+            and _micromachine_safe_semantic_tag(item)
+        )
+    return _MICROMACHINE_DROP_PUBLIC_FIELD
 
 
 def _micromachine_internal_unit_tag_key(key: object) -> bool:
@@ -2504,6 +2576,19 @@ def _micromachine_status_payload(
 ) -> dict[str, object]:
     """Promote latest blackboard state into the same top-level UI contract."""
 
+    latest_telemetry_document = (
+        _telemetry_to_mapping(telemetry)
+        if telemetry is not None
+        else None
+    )
+    battlefield_projection = select_latest_battlefield_projection(
+        latest_telemetry=latest_telemetry_document,
+        telemetry_archive=tuple(
+            _telemetry_to_mapping(entry)
+            for entry in telemetry_archive
+        ),
+        expected_scope="battlefield",
+    )
     updates = dashboard.get("active_updates")
     active_updates = updates if isinstance(updates, list) else []
     latest = (
@@ -2583,6 +2668,21 @@ def _micromachine_status_payload(
         "command_queue": command_queue,
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
+        "battlefield_projection": battlefield_projection.to_dict(),
+        "battlefield_overview": (
+            dict(battlefield_projection.battlefield_overview)
+            if battlefield_projection.ok
+            and battlefield_projection.battlefield_overview is not None
+            else None
+        ),
+        "battlefield_projection_identity": (
+            battlefield_projection.identity.to_dict()
+            if battlefield_projection.identity is not None
+            else None
+        ),
+        "battlefield_projection_integrity": dict(
+            battlefield_projection.integrity
+        ),
     }
     public_payload = _public_micromachine_runtime_payload(payload)
     return (

@@ -55,6 +55,189 @@ EXECUTED_FAMILY_STATUSES = frozenset({"executed", "partially_executed"})
 BRIDGE_THREAD_NAME = "voiStarcraft2-web-gui-session-loop"
 
 
+def battlefield_projection_telemetry(
+    *,
+    update_id="battlefield-current",
+    frame=320,
+    generation=7,
+):
+    """Return one complete authoritative battlefield projection fixture."""
+
+    return {
+        "frame": frame,
+        "battlefield_overview": {
+            "schema_version": 1,
+            "authority": "micromachine_cpp",
+            "identity": {
+                "update_id": update_id,
+                "scope": "battlefield",
+                "generation": generation,
+                "stage": "observed",
+                "game_frame": frame,
+            },
+            "eligible_combat_count": 8,
+            "explicit_operation_owned_count": 4,
+            "autonomous_owned_count": 2,
+            "unassigned_count": 2,
+            "duplicate_owner_count": 0,
+            "operation_ownership": [
+                {
+                    "identity": {
+                        "update_id": "battlefield-operation",
+                        "scope": "operation:flank-alpha",
+                        "operation_id": "flank-alpha",
+                        "generation": 3,
+                        "stage": "effect_observed",
+                        "game_frame": frame,
+                    },
+                    "operation_id": "flank-alpha",
+                    "generation": 3,
+                    "operation_route": {
+                        "requested_route_type": "flank_right",
+                        "applied_route_type": "flank_right",
+                        "location_intent": "enemy_natural",
+                        "target_type": "enemy_expansion",
+                        "resolved_target_label": "enemy natural",
+                        "target_x": 120.0,
+                        "target_y": 44.0,
+                        "target_evidence": "observed_enemy_structure",
+                    },
+                    "operation_lifetime": {
+                        "mode": "until_completed",
+                        "completion_state": "active",
+                        "completion_conditions": [
+                            "target_reached",
+                            "cancelled_by_user",
+                        ],
+                        "duration_seconds": 300,
+                        "issued_at_frame": 200,
+                        "deadline_frame": 4700,
+                        "standing": False,
+                        "completed": False,
+                        "completion_reason": "",
+                        "completed_frame": 0,
+                    },
+                    "operation_ownership": {
+                        "owner_count": 4,
+                        "owner_tags": [101, 102, 103, 104],
+                        "integrity_status": "valid",
+                    },
+                    "operation_launch_policy": {
+                        "min_units": 4,
+                        "max_units": 4,
+                        "allow_partial_requested": True,
+                        "strict_scope": False,
+                        "partial_launch_allowed": True,
+                        "partial_launch_safe": True,
+                        "launch_count": 4,
+                        "missing_count": 0,
+                        "decision": "launch",
+                        "blocker": "",
+                        "recommended_choices": [],
+                        "safety_evidence": {
+                            "evaluated_at_frame": frame,
+                            "protected_defense_minimum_respected": True,
+                            "source_operation_minimum_respected": True,
+                            "transfer_admission": "accepted",
+                            "emergency_preemption": "none",
+                        },
+                    },
+                    "operation_completion": {
+                        "movement_observed": True,
+                        "engagement_observed": False,
+                        "target_reached": False,
+                        "terminal": False,
+                        "state": "active",
+                        "reason": "",
+                        "frame": 0,
+                        "generation": 3,
+                    },
+                }
+            ],
+            "autonomous_ownership": [
+                {
+                    "owner_id": "BaseDefense:main",
+                    "owner_count": 2,
+                    "owner_tags": [201, 202],
+                    "integrity_status": "valid",
+                }
+            ],
+            "unassigned_unit_tags": [301, 302],
+            "bases": [
+                {
+                    "base_id": "main",
+                    "semantic_anchor": "self_main",
+                    "base_readiness": {
+                        "readiness_state": "ready",
+                        "reason": "protected_minimum_satisfied",
+                        "ground_threat": 2.0,
+                        "air_threat": 0.0,
+                        "observed_enemy_strength": 2.0,
+                        "last_evidence_frame": frame - 2,
+                        "evidence_class": "observed_enemy_units",
+                        "assigned_defender_count": 2,
+                        "required_defender_count": 2,
+                        "protected_minimum": [
+                            {
+                                "family": "marine",
+                                "role": "defender",
+                                "count": 2,
+                            }
+                        ],
+                    },
+                }
+            ],
+            "transfer_availability": {
+                "evaluated_at_frame": frame,
+                "atomic_revalidation_required": True,
+                "entries": [
+                    {
+                        "source_owner_id": "flank-alpha",
+                        "source_owner_count": 4,
+                        "protected_minimum": 2,
+                        "transferable_count": 2,
+                        "transferable_unit_tags": [103, 104],
+                        "transfer_safe": True,
+                        "atomic_runtime_blocker": "",
+                        "recommended_resolution_choices": [],
+                        "safety_evidence": {
+                            "evaluated_at_frame": frame,
+                            "protected_minimum_respected": True,
+                            "atomic_revalidation_required": True,
+                        },
+                        "atomic_revalidation_inputs": {
+                            "requested": False,
+                            "selected_unit_tags": [103, 104],
+                            "requested_count": 0,
+                            "source_owner_id": "flank-alpha",
+                            "action": "availability",
+                            "requested_generation": 3,
+                            "counterpart_operation_id": "",
+                            "counterpart_action": "",
+                            "counterpart_generation": 0,
+                            "edit_resolution": "none",
+                            "counterpart_present": False,
+                            "counterpart_pending": False,
+                            "reciprocal_action": True,
+                            "reciprocal_counterpart": True,
+                            "reciprocal_generation": True,
+                            "reciprocal_count": True,
+                            "source_active": True,
+                            "destination_active": True,
+                            "ownership_integrity": True,
+                            "operation_assignments_match": True,
+                            "squad_assignments_match": True,
+                            "action_assignments_match": True,
+                            "role_assignments_match": True,
+                            "atomic_revalidation_ready": True,
+                        },
+                    }
+                ],
+            },
+        },
+    }
+
+
 def contains_hangul(text):
     """Return whether the text contains at least one Hangul syllable."""
 
@@ -1212,6 +1395,150 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 intervention["manager_bias_domains"],
             )
             self.assertEqual("수비", intervention["goal"])
+
+    def test_micromachine_status_exposes_authoritative_battlefield_overview(self):
+        telemetry = battlefield_projection_telemetry()
+        payload = web_gui._micromachine_status_payload(
+            {
+                "active_updates": [
+                    {
+                        "update_id": "representative-operation",
+                        "manager_bias_domains": ["combat"],
+                        "vector": {
+                            "goal": "representative operation",
+                            "operations": [
+                                {
+                                    "operation_id": "representative-operation",
+                                    "generation": 1,
+                                    "goal": "representative operation",
+                                    "tactical_task": {
+                                        "task_type": "pressure_with_main_army",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+            telemetry=telemetry,
+        )
+
+        self.assertTrue(payload["battlefield_projection"]["ok"])
+        overview = payload["battlefield_overview"]
+        self.assertEqual(8, overview["eligible_combat_count"])
+        self.assertEqual(4, overview["explicit_operation_owned_count"])
+        self.assertEqual(2, overview["autonomous_owned_count"])
+        self.assertEqual(2, overview["unassigned_count"])
+        self.assertEqual(
+            overview["identity"],
+            payload["battlefield_projection_identity"],
+        )
+        self.assertEqual(
+            "valid",
+            payload["battlefield_projection_integrity"]["status"],
+        )
+        self.assertNotEqual(
+            payload["update"]["update_id"],
+            overview["identity"]["update_id"],
+        )
+
+    def test_micromachine_status_malformed_latest_projection_fails_closed(self):
+        valid_archive = battlefield_projection_telemetry(
+            update_id="archive-valid",
+            frame=300,
+        )
+        malformed_latest = battlefield_projection_telemetry(
+            update_id="latest-malformed",
+            frame=320,
+        )
+        del malformed_latest["battlefield_overview"]["bases"]
+
+        payload = web_gui._micromachine_status_payload(
+            {"active_updates": []},
+            telemetry=malformed_latest,
+            telemetry_archive=(valid_archive,),
+        )
+
+        self.assertFalse(payload["battlefield_projection"]["ok"])
+        self.assertIsNone(payload["battlefield_overview"])
+        self.assertEqual(
+            "blocked",
+            payload["battlefield_projection_integrity"]["status"],
+        )
+        self.assertIn(
+            "invalid_projection_sequence",
+            {
+                blocker["code"]
+                for blocker in payload["battlefield_projection"]["blockers"]
+            },
+        )
+
+    def test_micromachine_status_selects_latest_monotonic_archive_projection(self):
+        payload = web_gui._micromachine_status_payload(
+            {"active_updates": []},
+            telemetry_archive=(
+                battlefield_projection_telemetry(
+                    update_id="archive-older",
+                    frame=300,
+                    generation=6,
+                ),
+                battlefield_projection_telemetry(
+                    update_id="archive-current",
+                    frame=320,
+                    generation=7,
+                ),
+            ),
+        )
+
+        self.assertTrue(payload["battlefield_projection"]["ok"])
+        self.assertEqual(
+            "archive-current",
+            payload["battlefield_overview"]["identity"]["update_id"],
+        )
+        self.assertEqual(
+            320,
+            payload["battlefield_projection_identity"]["game_frame"],
+        )
+        self.assertEqual(
+            "archive",
+            payload["battlefield_projection"]["source"],
+        )
+        self.assertEqual(
+            1,
+            payload["battlefield_projection"]["source_index"],
+        )
+
+    def test_micromachine_status_redacts_battlefield_unit_identity(self):
+        telemetry = battlefield_projection_telemetry()
+
+        payload = web_gui._micromachine_status_payload(
+            {"active_updates": []},
+            telemetry=telemetry,
+        )
+        serialized = json.dumps(payload, sort_keys=True)
+
+        for forbidden_key in (
+            "owner_tags",
+            "unassigned_unit_tags",
+            "transferable_unit_tags",
+            "duplicate_owner_tags",
+            "excluded_unit_tags",
+        ):
+            self.assertNotIn(forbidden_key, serialized)
+        for raw_tag in ("101", "102", "103", "104", "201", "202", "301", "302"):
+            self.assertNotIn(raw_tag, serialized)
+        self.assertEqual(
+            4,
+            payload["battlefield_overview"]["operation_ownership"][0][
+                "operation_ownership"
+            ]["owner_count"],
+        )
+        self.assertEqual(
+            2,
+            payload["battlefield_overview"]["transfer_availability"]["entries"][0][
+                "transferable_count"
+            ],
+        )
 
     def test_micromachine_status_requires_post_publish_telemetry_before_consumed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -3536,6 +3863,57 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             for raw_tag in raw_tags:
                 self.assertNotIn(raw_tag, payload[line_name])
 
+    def test_public_runtime_payload_semantic_tags_reject_unit_identities(self):
+        payload = web_gui._public_runtime_launcher_payload(
+            {
+                "tags": [
+                    "pressure",
+                    "phase-2",
+                    "squad-42",
+                    9101,
+                    "9102",
+                    "unit_9108",
+                    "tag 9109",
+                    ["nested-label", 9103],
+                    {"nested": 9104},
+                    "tag=9105",
+                    "[9106, 9107]",
+                ],
+                "strategic_tags": (
+                    "flank",
+                    9201,
+                    "9202|9203",
+                    ("nested-label", 9204),
+                ),
+                "expected_tags": [
+                    "scouting_map_control",
+                    {"nested": [9301]},
+                    9302,
+                    "<9303 9304>",
+                ],
+                "tech_path_tags": 9401,
+                "expected_profile_tags": {
+                    "label": "pressure",
+                    "unit_identity": 9501,
+                },
+            }
+        )
+
+        self.assertEqual(
+            ["pressure", "phase-2", "squad-42"],
+            payload["tags"],
+        )
+        self.assertEqual(("flank",), payload["strategic_tags"])
+        self.assertEqual(
+            ["scouting_map_control"],
+            payload["expected_tags"],
+        )
+        self.assertNotIn("tech_path_tags", payload)
+        self.assertNotIn("expected_profile_tags", payload)
+        serialized = json.dumps(payload, sort_keys=True)
+        for raw_tag in (*range(9101, 9502), 9108, 9109):
+            self.assertNotIn(str(raw_tag), serialized)
+
     def test_micromachine_operation_root_update_id_is_fail_closed(self):
         update_id = "parallel-current-update"
 
@@ -4189,7 +4567,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "last_line": "actor_tag=7001 action=attack",
                 "error": "target_unit_tags=[8001, 8002]",
                 "nested": {"commanded_unit_tag": 9001},
-                "tags": ["public-strategy-tag"],
+                "tags": [
+                    "public-strategy-tag",
+                    9101,
+                    ["nested-label", 9102],
+                ],
+                "strategic_tags": ["pressure", 9201, "9202"],
+                "expected_tags": ["scouting-map-control", {"tag": 9301}],
             }
 
         class FakeLegacyLauncher:
@@ -4285,9 +4669,22 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 self.assertNotIn("8001", serialized)
                 self.assertNotIn("8002", serialized)
                 self.assertNotIn("9001", serialized)
+                self.assertNotIn("9101", serialized)
+                self.assertNotIn("9102", serialized)
+                self.assertNotIn("9201", serialized)
+                self.assertNotIn("9202", serialized)
+                self.assertNotIn("9301", serialized)
                 self.assertEqual(
                     ["public-strategy-tag"],
                     runtime_payload["tags"],
+                )
+                self.assertEqual(
+                    ["pressure"],
+                    runtime_payload["strategic_tags"],
+                )
+                self.assertEqual(
+                    ["scouting-map-control"],
+                    runtime_payload["expected_tags"],
                 )
                 self.assertIn("action=attack", runtime_payload["last_line"])
 

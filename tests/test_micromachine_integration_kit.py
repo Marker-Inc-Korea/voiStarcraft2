@@ -246,6 +246,11 @@ ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH_FILE = (
     / "patches"
     / "0068-all-terran-harass-capability-evidence.patch"
 )
+AUTHORITATIVE_BATTLEFIELD_OWNERSHIP_READINESS_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0069-authoritative-battlefield-ownership-readiness.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -970,14 +975,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 69)),
+            list(range(1, 70)),
         )
-        self.assertEqual(len(set(manifest_paths)), 68)
+        self.assertEqual(len(set(manifest_paths)), 69)
         self.assertEqual(
             manifest_paths[-1],
             (
                 "patches/"
-                "0068-all-terran-harass-capability-evidence.patch"
+                "0069-authoritative-battlefield-ownership-readiness.patch"
             ),
         )
         self.assertTrue(
@@ -1182,8 +1187,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 68,
             },
             {
-                "path": manifest["patch_bundle"][-1]["path"],
-                "order": manifest["patch_bundle"][-1]["order"],
+                "path": manifest["patch_bundle"][-2]["path"],
+                "order": manifest["patch_bundle"][-2]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1213,6 +1218,97 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "apply",
                 "--numstat",
                 str(ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_battlefield_projection_patch_has_authoritative_runtime_contract(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            AUTHORITATIVE_BATTLEFIELD_OWNERSHIP_READINESS_PATCH_FILE
+        )
+
+        for source_path in (
+            "--- a/src/CombatCommander.cpp",
+            "--- a/src/CombatCommander.h",
+            "--- a/src/GameCommander.cpp",
+            "+++ b/src/voi_battlefield_projection.hpp",
+            "+++ b/tests/battlefield_projection_test.cpp",
+            "--- a/tests/CMakeLists.txt",
+        ):
+            with self.subTest(source_path=source_path):
+                self.assertIn(source_path, patch)
+        for contract in (
+            "voiMakeBattlefieldProjection",
+            "voiProjectBattlefieldTransfer",
+            "battlefield_overview",
+            "eligibleCombatCount",
+            "duplicateOwnershipCount",
+            '\\"operation_ownership\\"',
+            '\\"autonomous_ownership\\"',
+            "unassignedTags",
+            "protectedMinimum",
+            "atomicRevalidationReady",
+            "atomic_revalidation_inputs",
+            "selected_unit_tags",
+            "source_owner_id",
+            "counterpart_action",
+            "targetReached",
+            "completionReason",
+            "completionFrame",
+            'status == "FAILED"',
+            'return "failed"',
+            "voi_battlefield_projection_ndebug_test",
+            "NDEBUG",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, patch)
+
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": (
+                    "patches/"
+                    "0069-authoritative-battlefield-ownership-readiness.patch"
+                ),
+                "order": 69,
+            },
+            {
+                "path": manifest["patch_bundle"][-1]["path"],
+                "order": manifest["patch_bundle"][-1]["order"],
+            },
+        )
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = (
+            "AUTHORITATIVE_BATTLEFIELD_OWNERSHIP_READINESS_PATCH_FILE"
+        )
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0069-authoritative-battlefield-ownership-readiness.patch"',
+            build_script,
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${'
+            f'{patch_variable}'
+            '}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            f'"${{{patch_variable}}}"'
+        )
+        self.assertLess(patch_check, patch_apply)
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(AUTHORITATIVE_BATTLEFIELD_OWNERSHIP_READINESS_PATCH_FILE),
             ],
             check=False,
             capture_output=True,
@@ -5043,7 +5139,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
             "patches/0068-all-terran-harass-capability-evidence.patch",
-            "through `0068`",
+            "patches/0069-authoritative-battlefield-ownership-readiness.patch",
+            "through `0069`",
         )
         for term in required_terms:
             with self.subTest(term=term):

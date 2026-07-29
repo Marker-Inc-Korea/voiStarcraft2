@@ -348,6 +348,11 @@
       "path": "patches/0068-all-terran-harass-capability-evidence.patch",
       "order": 68,
       "scope": "admit harass_with_units as genuine SquadOrderTypes::Harass operations, preserve Harass order and radius across operation lifecycle paths, include harassment in production activity, and expose squad-order plus 15-family attempted, executed, effect, and blocker evidence in telemetry and the existing Battlefield Commander card, with effect attribution bound to the exact policy update, operation generation, action attempt, and later matching submission observation, serialized-family-only acknowledgement after a successful authoritative write, and failed-write retention"
+    },
+    {
+      "path": "patches/0069-authoritative-battlefield-ownership-readiness.patch",
+      "order": 69,
+      "scope": "project all eligible combat units into exclusive explicit-operation, autonomous, or unassigned ownership; expose generation-scoped route, lifetime, launch, completion, base-readiness, and transfer-safety evidence; atomically revalidate exact transfer selections immediately before mutation; and make telemetry plus the in-game HUD consume one canonical battlefield projection"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {
