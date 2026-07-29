@@ -14922,6 +14922,59 @@ const assert = require("assert");
     "a sibling without canonical projection must keep the combined command pending"
   );
 
+  var legacyOperationUpdateId = "legacy-operation-update";
+  var legacyOperationCommand = "legacy operation 완료";
+  rememberServerPending(
+    legacyOperationCommand,
+    legacyOperationUpdateId,
+    OPERATION_SCOPE
+  );
+  var legacyOperation = operationResult(
+    "legacy-operation",
+    legacyOperationUpdateId,
+    legacyOperationCommand,
+    "attack",
+    15,
+    "completed",
+    actionStages("attack"),
+    1
+  );
+  delete legacyOperation.battlefield_operation;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: legacyOperationUpdateId
+    },
+    update: {
+      update_id: legacyOperationUpdateId,
+      vector: { goal: legacyOperationCommand }
+    },
+    intervention: {
+      latest_update_id: legacyOperationUpdateId,
+      telemetry_frame: 15,
+      command_execution:
+        legacyOperation.intervention.command_execution
+    },
+    operations: [legacyOperation]
+  }, OPERATION_SCOPE));
+  assert(!hasPending(OPERATION_SCOPE, legacyOperationUpdateId));
+  var legacyOperationEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(legacyOperationCommand);
+    }
+  );
+  assert(legacyOperationEntry);
+  assert.strictEqual(
+    legacyOperationEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "executed"
+  );
+
   renderMicroMachineStatus(serverResult({
     ok: true,
     accepted: true,

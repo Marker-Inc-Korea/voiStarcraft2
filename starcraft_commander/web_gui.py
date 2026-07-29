@@ -16988,7 +16988,7 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
       })
     );
     var terminalExecution = Boolean(
-      !operationsForUpdate.length &&
+      !operationCandidates.length &&
       terminalExecutionStates[executionState]
     );
     if (
