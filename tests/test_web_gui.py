@@ -3390,6 +3390,65 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             missing_family_execution["state"],
         )
 
+        legacy_only_payload = (
+            web_gui._micromachine_operation_status_payload(
+                operation_update,
+                operation_id=operation_id,
+                operation_count=1,
+                active=True,
+                telemetry={
+                    "frame": 160,
+                    "active_modulation_ids": [update_id],
+                    "managers": {
+                        "GameCommander": {"update_id": update_id},
+                        "CombatCommander": {
+                            "policy_update_id": update_id,
+                            "main_attack_actual_command_issued_count": 1,
+                            "main_attack_last_action_frame": 145,
+                            "main_attack_last_issued_action": "attack_move",
+                            "main_attack_max_home_distance": 24.0,
+                        },
+                        "UnitRoleTask": {
+                            "task_update_id": update_id,
+                            "unit_type": "TERRAN_SIEGETANK",
+                            "role": "siege_support",
+                            "ability_policy": "siege_mode",
+                            "status": "executed",
+                            "attempted_count": 1,
+                            "executed_count": 1,
+                            "last_action_frame": 145,
+                            "issued_action": "attack_move",
+                            "max_home_distance": 24.0,
+                        },
+                    },
+                },
+                telemetry_archive=(),
+                blackboard_dir="",
+                result_item={},
+                compile_result={},
+            )
+        )
+        legacy_only_execution = legacy_only_payload[
+            "intervention"
+        ]["command_execution"]
+        legacy_only_stages = {
+            stage["name"]: stage
+            for stage in legacy_only_execution["stages"]
+        }
+        self.assertTrue(
+            web_gui._micromachine_execution_has_active_family_contract(
+                legacy_only_execution
+            )
+        )
+        self.assertFalse(
+            legacy_only_stages["effect_observed"]["ok"],
+            legacy_only_execution,
+        )
+        self.assertNotEqual(
+            "effect_observed",
+            legacy_only_execution["state"],
+        )
+
         operation_telemetry["family_evidence"] = [family_row]
         family_row.update(
             {
@@ -3410,9 +3469,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             {
                 "assigned_tags": [7001, 7002],
                 "selected_worker_tags": [8001],
+                "commanded_tags": [8101],
+                "actor_tags": [8201],
+                "owned_tags": [8301],
                 "last_line": (
                     "assigned_tags=[7001,7002] "
-                    "selected_worker_tags=[8001]"
+                    "selected_worker_tags=[8001] "
+                    "commanded_tags=[8101] "
+                    "actor_tags=[8201] "
+                    "owned_tags=[8301]"
                 ),
                 "strategic_tags": ["pressure", "flank"],
             }
@@ -3420,11 +3485,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         self.assertNotIn("assigned_tags", payload)
         self.assertNotIn("selected_worker_tags", payload)
+        self.assertNotIn("commanded_tags", payload)
+        self.assertNotIn("actor_tags", payload)
+        self.assertNotIn("owned_tags", payload)
         self.assertEqual(["pressure", "flank"], payload["strategic_tags"])
-        self.assertNotIn("7001", payload["last_line"])
-        self.assertNotIn("8001", payload["last_line"])
+        for raw_tag in ("7001", "8001", "8101", "8201", "8301"):
+            self.assertNotIn(raw_tag, payload["last_line"])
         self.assertEqual(
-            2,
+            5,
             payload["last_line"].count(
                 "[internal unit identity]: [redacted]"
             ),

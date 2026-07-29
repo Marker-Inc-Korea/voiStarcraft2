@@ -1952,13 +1952,9 @@ def _micromachine_operation_status_payload(
         )
     )
     if (
-        operation_telemetry is not None
-        and (
-            current_family_evidence
-            or operation_requires_ability_evidence
-        )
-        and operation_telemetry_document.get("_pending_only") is not True
-    ):
+        current_family_evidence
+        or operation_requires_ability_evidence
+    ) and operation_telemetry_document.get("_pending_only") is not True:
         strict_operation_execution = _micromachine_strict_operation_execution(
             operation_update,
             operation_id=operation_id,
@@ -2241,6 +2237,7 @@ _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN: Final[re.Pattern[str]] = re.compil
     ['"]?
     (?:
         [a-z][a-z0-9_]*_tag
+        |[a-z][a-z0-9_]*_tags
         |(?:[a-z][a-z0-9_]*_)?unit_tags
         |[a-z][a-z0-9_]*_units_tags
         |[a-z][a-z0-9_]*_owner_tags
@@ -2277,6 +2274,16 @@ _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN: Final[re.Pattern[str]] = re.compil
     """
 )
 
+_MICROMACHINE_PUBLIC_SEMANTIC_TAG_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "tags",
+        "strategic_tags",
+        "tech_path_tags",
+        "expected_tags",
+        "expected_profile_tags",
+    }
+)
+
 
 def _redact_micromachine_internal_unit_tag_text(value: str) -> str:
     return _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN.sub(
@@ -2287,35 +2294,17 @@ def _redact_micromachine_internal_unit_tag_text(value: str) -> str:
 
 def _micromachine_internal_unit_tag_key(key: object) -> bool:
     normalized = str(key or "").strip().lower()
-    identity_tag_aliases = {
-        "assigned",
-        "attempted",
-        "submitted",
-        "effect",
-        "requested",
-        "selected",
-        "target",
-        "source",
-        "matching",
-        "duplicate",
-        "conflict",
-        "caster",
-        "passenger",
-        "transport",
-        "worker",
-    }
-    tag_prefix_tokens = set(
-        normalized.removesuffix("_tags").split("_")
-        if normalized.endswith("_tags")
-        else ()
-    )
     return (
         normalized in {"tag", "unit_tags"}
         or normalized.endswith("_tag")
         or normalized.endswith("_unit_tags")
         or normalized.endswith("_units_tags")
         or normalized.endswith("_owner_tags")
-        or bool(tag_prefix_tokens & identity_tag_aliases)
+        or (
+            normalized.endswith("_tags")
+            and normalized
+            not in _MICROMACHINE_PUBLIC_SEMANTIC_TAG_KEYS
+        )
         or normalized
         in {
             "owner_tags",
