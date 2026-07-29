@@ -358,6 +358,11 @@
       "path": "patches/0070-battlefield-projection-review-closure.patch",
       "order": 70,
       "scope": "emit parseable battlefield JSON, seed session identity from a process-unique wall-clock epoch, and execute parser-backed C++ regression contracts so distinct MicroMachine launches cannot reuse authoritative projection identity"
+    },
+    {
+      "path": "patches/0071-battlefield-identity-transfer-integrity.patch",
+      "order": 71,
+      "scope": "bind telemetry to a launcher-provided runtime instance identity, strengthen session identity, fail closed when global operation or autonomous ownership evidence is incomplete or duplicated, and revalidate the canonical battlefield projection immediately before transfer mutation"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

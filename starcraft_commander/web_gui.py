@@ -5118,6 +5118,10 @@ class _MicroMachineLaunchManager:
             env["SMOKE_ENEMY_DIFFICULTY"] = str(difficulty)
             max_attempts = env.get(_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV, "1")
             env.setdefault("SMOKE_MAX_ATTEMPTS", max_attempts)
+            self._runtime_instance_id = uuid.uuid4().hex
+            env["VOI_MICROMACHINE_RUNTIME_INSTANCE_ID"] = (
+                self._runtime_instance_id
+            )
             argv = [
                 "bash",
                 self._script_path,
@@ -5139,7 +5143,6 @@ class _MicroMachineLaunchManager:
                     baseline[1] if baseline is not None else None
                 )
                 self._launch_started_at_ns = time.time_ns()
-                self._runtime_instance_id = uuid.uuid4().hex
                 self._process = subprocess.Popen(
                     argv,
                     cwd=self._cwd,
@@ -5301,6 +5304,11 @@ class _MicroMachineLaunchManager:
                 and file_identity == self._launch_telemetry_baseline
             ):
                 return None, False
+            if (
+                document.get("runtime_instance_id")
+                != self._runtime_instance_id
+            ):
+                return frame, False
             age_ns = time.time_ns() - file_identity.mtime_ns
             return (
                 frame,
@@ -6058,6 +6066,27 @@ class SessionLoopBridge:
         telemetry_archive = backend.read_recent_telemetry_archive(
             pending_family_effects_only=True,
         )
+        if runtime_instance_id:
+            reported_runtime_instance_id = (
+                getattr(telemetry, "runtime_instance_id", None)
+                if telemetry is not None
+                else None
+            )
+            telemetry = (
+                telemetry
+                if telemetry is not None
+                and (
+                    reported_runtime_instance_id is None
+                    or reported_runtime_instance_id == runtime_instance_id
+                )
+                else None
+            )
+            telemetry_archive = tuple(
+                entry
+                for entry in telemetry_archive
+                if getattr(entry, "runtime_instance_id", None)
+                in {None, runtime_instance_id}
+            )
         frame = telemetry.frame if telemetry is not None else 0
         snapshot = backend.dashboard_snapshot(
             current_frame=frame,

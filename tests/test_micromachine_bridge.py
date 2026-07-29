@@ -357,6 +357,44 @@ class MicroMachineBridgeContractsTest(unittest.TestCase):
             restored.battlefield_overview["identity"]["owner_tags"],
         )
 
+    def test_telemetry_preserves_legacy_positional_argument_order(self) -> None:
+        telemetry = MicroMachineTelemetry(
+            42,
+            "LegacyBot",
+            "Terran",
+            {},
+            (),
+            MicroMachineBridgeFailureMode.BRIDGE_DISCONNECTED,
+            MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+        )
+
+        self.assertEqual(
+            MicroMachineBridgeFailureMode.BRIDGE_DISCONNECTED,
+            telemetry.last_failure,
+        )
+        self.assertEqual(
+            MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+            telemetry.protocol_version,
+        )
+        self.assertIsNone(telemetry.battlefield_overview)
+        self.assertEqual("", telemetry.runtime_instance_id)
+
+    def test_telemetry_runtime_instance_identity_round_trip(self) -> None:
+        runtime_instance_id = "a" * 32
+        telemetry = MicroMachineTelemetry(
+            frame=512,
+            runtime_instance_id=runtime_instance_id,
+        )
+
+        restored = MicroMachineTelemetry.from_mapping(telemetry.to_dict())
+
+        self.assertEqual(runtime_instance_id, restored.runtime_instance_id)
+        with self.assertRaisesRegex(ValueError, "32-character lowercase hex"):
+            MicroMachineTelemetry(
+                frame=512,
+                runtime_instance_id="wrong-runtime",
+            )
+
     def test_bridge_error_envelope_covers_disconnected_and_provider_failures(self) -> None:
         for mode in (
             MicroMachineBridgeFailureMode.BRIDGE_DISCONNECTED,

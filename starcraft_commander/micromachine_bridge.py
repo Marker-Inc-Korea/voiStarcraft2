@@ -34,6 +34,11 @@ MICROMACHINE_UPDATE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 """Safe identifier subset shared by JSON telemetry and KV blackboard files."""
 
+MICROMACHINE_RUNTIME_INSTANCE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^[a-f0-9]{32}$"
+)
+"""Launcher-generated runtime identity emitted back by the C++ process."""
+
 
 class MicroMachineBridgeMessageType(str, Enum):
     """Message types exchanged with the MicroMachine sidecar."""
@@ -74,6 +79,7 @@ MICROMACHINE_TELEMETRY_SCHEMA: Final[dict[str, object]] = {
         "active_modulation_ids": {"type": "array", "items": {"type": "string"}},
         "battlefield_overview": {"type": ["object", "null"]},
         "last_failure": {"type": ["string", "null"]},
+        "runtime_instance_id": {"type": "string"},
     },
 }
 """JSON-schema-like telemetry contract; validated by local dataclasses."""
@@ -146,9 +152,10 @@ class MicroMachineTelemetry:
     race: str = "Terran"
     managers: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
     active_modulation_ids: tuple[str, ...] = ()
-    battlefield_overview: Mapping[str, object] | None = None
     last_failure: MicroMachineBridgeFailureMode | str | None = None
     protocol_version: str = MICROMACHINE_BRIDGE_PROTOCOL_VERSION
+    battlefield_overview: Mapping[str, object] | None = None
+    runtime_instance_id: str = ""
 
     def __post_init__(self) -> None:
         _require_protocol(self.protocol_version)
@@ -180,6 +187,18 @@ class MicroMachineTelemetry:
         if failure is not None:
             failure = _coerce_failure_mode(failure)
         object.__setattr__(self, "last_failure", failure)
+        runtime_instance_id = str(self.runtime_instance_id or "").strip()
+        if (
+            runtime_instance_id
+            and MICROMACHINE_RUNTIME_INSTANCE_ID_PATTERN.fullmatch(
+                runtime_instance_id
+            )
+            is None
+        ):
+            raise ValueError(
+                "runtime_instance_id must be a 32-character lowercase hex value."
+            )
+        object.__setattr__(self, "runtime_instance_id", runtime_instance_id)
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> "MicroMachineTelemetry":
@@ -199,6 +218,7 @@ class MicroMachineTelemetry:
                 "battlefield_overview",
             ),
             last_failure=mapping.get("last_failure"),
+            runtime_instance_id=str(mapping.get("runtime_instance_id", "") or ""),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -215,6 +235,7 @@ class MicroMachineTelemetry:
                 else None
             ),
             "last_failure": self.last_failure.value if self.last_failure else None,
+            "runtime_instance_id": self.runtime_instance_id,
         }
 
 

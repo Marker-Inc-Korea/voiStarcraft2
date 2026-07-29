@@ -321,6 +321,8 @@ def _telemetry(
                             "counterpart_operation_id": "assault-bravo",
                             "counterpart_action": "transfer_in",
                             "counterpart_generation": 5,
+                            "requested_source_generation": 4,
+                            "requested_counterpart_generation": 6,
                             "edit_resolution": "pending",
                             "counterpart_present": True,
                             "counterpart_pending": True,
@@ -394,13 +396,17 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
     def test_terminal_completion_preserves_reason_frame_and_generation(self) -> None:
         telemetry = _telemetry(game_frame=500)
         overview = telemetry["battlefield_overview"]
-        overview["operation_ownership"][0] = _operation(
+        operation = _operation(
             game_frame=500,
             state="completed",
             terminal=True,
             reason="target_reached",
             completion_frame=488,
         )
+        operation["operation_transfer_selection"] = deepcopy(
+            overview["operation_ownership"][0]["operation_transfer_selection"]
+        )
+        overview["operation_ownership"][0] = operation
 
         result = validate_battlefield_overview(
             telemetry,
@@ -745,6 +751,53 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertIn(code, _blocker_codes(result))
 
+    def test_transfer_selection_endpoints_must_publish_same_exact_tags(
+        self,
+    ) -> None:
+        telemetry = _telemetry()
+        counterpart_selection = telemetry["battlefield_overview"][
+            "operation_ownership"
+        ][1]["operation_transfer_selection"]
+        counterpart_selection["identity"]["selected_unit_tags"] = [101, 102]
+        counterpart_selection["write_identity"]["selection_identity"][
+            "selected_unit_tags"
+        ] = [101, 102]
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "reciprocal_transfer_selection_mismatch",
+            _blocker_codes(result),
+        )
+
+    def test_transfer_selection_must_match_atomic_availability_selection(
+        self,
+    ) -> None:
+        telemetry = _telemetry()
+        for operation in telemetry["battlefield_overview"][
+            "operation_ownership"
+        ]:
+            selection = operation["operation_transfer_selection"]
+            selection["identity"]["selected_unit_tags"] = [999, 1000]
+            selection["write_identity"]["selection_identity"][
+                "selected_unit_tags"
+            ] = [999, 1000]
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "atomic_transfer_selection_evidence_mismatch",
+            _blocker_codes(result),
+        )
+
     def test_transfer_selection_resolution_binds_current_generation(self) -> None:
         telemetry = _telemetry()
         operation = telemetry["battlefield_overview"]["operation_ownership"][0]
@@ -754,9 +807,11 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         operation["generation"] = 4
         operation["operation_completion"]["generation"] = 4
         selection["write_identity"]["operation_generation"] = 4
-        telemetry["battlefield_overview"]["transfer_availability"]["entries"][
-            0
-        ]["atomic_revalidation_inputs"]["requested_generation"] = 4
+        atomic_inputs = telemetry["battlefield_overview"][
+            "transfer_availability"
+        ]["entries"][0]["atomic_revalidation_inputs"]
+        atomic_inputs["requested_generation"] = 4
+        atomic_inputs["edit_resolution"] = "applied"
 
         result = validate_battlefield_overview(
             telemetry,
@@ -1134,6 +1189,24 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         self.assertIn("launch_count_exceeds_maximum", _blocker_codes(result))
         self.assertIn("launch_count_exceeds_owner_count", _blocker_codes(result))
 
+    def test_launch_decision_requires_nonzero_force(self) -> None:
+        telemetry = _telemetry()
+        launch = telemetry["battlefield_overview"]["operation_ownership"][0][
+            "operation_launch_policy"
+        ]
+        launch["launch_count"] = 0
+        launch["missing_count"] = 4
+        launch["partial_launch_safe"] = True
+        launch["decision"] = "launch"
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("empty_launch_decision", _blocker_codes(result))
+
     def test_base_readiness_requires_protected_minimum_and_threat_evidence(self) -> None:
         field_paths = (
             "protected_minimum",
@@ -1279,6 +1352,23 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
             "counterpart_operation_id",
             "counterpart_action",
             "counterpart_generation",
+            "requested_source_generation",
+            "requested_counterpart_generation",
+            "edit_resolution",
+            "counterpart_present",
+            "counterpart_pending",
+            "reciprocal_action",
+            "reciprocal_counterpart",
+            "reciprocal_generation",
+            "reciprocal_count",
+            "source_active",
+            "destination_active",
+            "ownership_integrity",
+            "operation_assignments_match",
+            "squad_assignments_match",
+            "action_assignments_match",
+            "role_assignments_match",
+            "atomic_revalidation_ready",
         )
         for field_name in required_fields:
             with self.subTest(field_name=field_name):
@@ -1341,6 +1431,21 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                 6,
                 "atomic_counterpart_generation_mismatch",
             ),
+            (
+                "requested_source_generation",
+                5,
+                "atomic_transfer_selection_evidence_mismatch",
+            ),
+            (
+                "requested_counterpart_generation",
+                7,
+                "atomic_transfer_selection_evidence_mismatch",
+            ),
+            (
+                "edit_resolution",
+                "blocked",
+                "atomic_edit_resolution_mismatch",
+            ),
         )
         for field_name, value, code in cases:
             with self.subTest(field_name=field_name):
@@ -1357,6 +1462,44 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
 
                 self.assertFalse(result.ok)
                 self.assertIn(code, _blocker_codes(result))
+
+    def test_atomic_revalidation_requires_every_runtime_readiness_flag(
+        self,
+    ) -> None:
+        readiness_fields = (
+            "counterpart_present",
+            "counterpart_pending",
+            "reciprocal_action",
+            "reciprocal_counterpart",
+            "reciprocal_generation",
+            "reciprocal_count",
+            "source_active",
+            "destination_active",
+            "ownership_integrity",
+            "operation_assignments_match",
+            "squad_assignments_match",
+            "action_assignments_match",
+            "role_assignments_match",
+            "atomic_revalidation_ready",
+        )
+        for field_name in readiness_fields:
+            with self.subTest(field_name=field_name):
+                telemetry = _telemetry()
+                inputs = telemetry["battlefield_overview"][
+                    "transfer_availability"
+                ]["entries"][0]["atomic_revalidation_inputs"]
+                inputs[field_name] = False
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "atomic_revalidation_not_ready",
+                    _blocker_codes(result),
+                )
 
     def test_atomic_selected_tags_must_belong_to_source_and_transferable_set(
         self,
@@ -1420,6 +1563,11 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                     operation["operation_lifetime"]["completion_reason"] = value
                 elif field_name == "frame":
                     operation["operation_lifetime"]["completed_frame"] = value
+                operation["operation_transfer_selection"] = deepcopy(
+                    telemetry["battlefield_overview"]["operation_ownership"][0][
+                        "operation_transfer_selection"
+                    ]
+                )
                 telemetry["battlefield_overview"]["operation_ownership"][0] = (
                     operation
                 )
@@ -1431,6 +1579,33 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
 
                 self.assertFalse(result.ok)
                 self.assertIn(code, _blocker_codes(result))
+
+    def test_terminal_completion_cannot_predate_operation_issue(self) -> None:
+        telemetry = _telemetry(game_frame=500)
+        operation = _operation(
+            game_frame=500,
+            state="completed",
+            terminal=True,
+            reason="target_reached",
+            completion_frame=100,
+        )
+        operation["operation_transfer_selection"] = deepcopy(
+            telemetry["battlefield_overview"]["operation_ownership"][0][
+                "operation_transfer_selection"
+            ]
+        )
+        telemetry["battlefield_overview"]["operation_ownership"][0] = operation
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "completion_before_operation_issue",
+            _blocker_codes(result),
+        )
 
     def test_previous_identity_rejects_stale_generation_or_frame(self) -> None:
         previous = BattlefieldProjectionIdentity(

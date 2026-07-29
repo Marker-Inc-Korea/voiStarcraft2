@@ -84,6 +84,7 @@ Verified upstream:
 | `patches/0068-all-terran-harass-capability-evidence.patch` | Admits `harass_with_units` as a genuine `SquadOrderTypes::Harass` operation, preserves Harass order/radius and lifecycle behavior, includes harassment in production activity, and adds operation-scoped squad-order plus 15-family attempted/executed/effect/blocker evidence to telemetry and the existing Battlefield Commander card. Effect evidence is bound to the exact policy update, operation generation, action attempt, and later matching submission observation; only family snapshots serialized by a successful authoritative telemetry write are acknowledged, while failed writes retain pending evidence. The patch is a required schema-68 build input bound into build identity and source attestation. |
 | `patches/0069-authoritative-battlefield-ownership-readiness.patch` | Adds the canonical C++ battlefield projection used by telemetry and the in-game HUD. It partitions every eligible combat unit into one explicit operation, autonomous owner, or unassigned set; fails closed on duplicate ownership; preserves generation-scoped route/lifetime/completion identity; computes launch, base-readiness, protected-minimum, and transfer-safety evidence; and atomically revalidates exact transfer selections immediately before runtime mutation. The patch is a required schema-69 build input bound into build identity and source attestation. |
 | `patches/0070-battlefield-projection-review-closure.patch` | Closes independent-review blockers in the authoritative battlefield projection: fixes malformed numeric identity JSON, seeds each MicroMachine process with a wall-clock nanosecond session epoch, and parses the emitted projection in C++ tests. The patch is a required schema-70 build input bound into build identity and source attestation. |
+| `patches/0071-battlefield-identity-transfer-integrity.patch` | Closes the remaining independent-review blockers: binds telemetry to the exact launcher runtime instance, strengthens session identity, fails closed on incomplete or duplicate global ownership evidence, and revalidates the canonical battlefield projection immediately before transfer mutation. The patch is a required schema-71 build input bound into build identity and source attestation. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -157,10 +158,10 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0070`, runs the runtime CTest contracts, then copies the blackboard
+through `0071`, runs the runtime CTest contracts, then copies the blackboard
 header and generates the embedded
 identity header before compilation. The
-schema-70 report includes pinned MicroMachine and `s2client-api` commits, every patch
+schema-71 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its
 hash, size, and executable-reported build-input identity to the attested source

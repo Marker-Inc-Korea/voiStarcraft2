@@ -1,0 +1,882 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2815,14 +2815,23 @@
+ 	input.updateId = m_voiOperationPolicyUpdateId.empty()
+ 		? "micromachine-autonomous"
+ 		: m_voiOperationPolicyUpdateId;
+-	input.ownershipEvidencePresent = true;
++	bool ownershipEvidencePresent =
++		m_bot.Observation() != nullptr;
+ 
+ 	std::map<sc2::Tag, VoiBattlefieldUnitInput> unitsByTag;
++	std::set<sc2::Tag> observedAllyTags;
+ 	for (const auto & allyEntry : m_bot.GetAllyUnits())
+ 	{
+ 		const Unit & unit = allyEntry.second;
+ 		VoiBattlefieldUnitInput projected;
+ 		projected.tag = unit.getTag();
++		if (!unit.isValid()
++			|| projected.tag == 0
++			|| !observedAllyTags.insert(
++				projected.tag).second)
++		{
++			ownershipEvidencePresent = false;
++		}
+ 		projected.alive = unit.isValid() && unit.isAlive();
+ 		projected.selfOwned =
+ 			unit.isValid() && unit.getPlayer() == Players::Self;
+@@ -2852,6 +2861,10 @@
+ 				std::make_pair(
+ 					tag,
+ 					VoiBattlefieldUnitInput()));
++			if (inserted.second)
++			{
++				ownershipEvidencePresent = false;
++			}
+ 			inserted.first->second.tag = tag;
+ 			return inserted.first->second;
+ 		};
+@@ -2868,13 +2881,17 @@
+ 			const std::string & operationId,
+ 			uint64_t generation)
+ 		{
+-			if (!operationId.empty() && generation > 0)
++			if (tag == 0
++				|| operationId.empty()
++				|| generation == 0)
+ 			{
+-				ensureUnit(tag).explicitOwners.push_back(
+-					operationOwnerKey(
+-						operationId,
+-						generation));
++				ownershipEvidencePresent = false;
++				return;
+ 			}
++			ensureUnit(tag).explicitOwners.push_back(
++				operationOwnerKey(
++					operationId,
++					generation));
+ 		};
+ 
+ 	for (const auto & owner : m_voiOperationUnitOwners)
+@@ -2886,6 +2903,11 @@
+ 	}
+ 	for (const auto & operation : m_voiOperations)
+ 	{
++		if (operation.operationId.empty()
++			|| operation.generation == 0)
++		{
++			ownershipEvidencePresent = false;
++		}
+ 		for (const auto tag : operation.assignedUnitTags)
+ 		{
+ 			addExplicitOwner(
+@@ -2911,6 +2933,11 @@
+ 			findVoiOperationBySquad(squadName);
+ 		for (const auto & unit : squadEntry.second.getUnits())
+ 		{
++			if (!unit.isValid() || !unit.isAlive())
++			{
++				ownershipEvidencePresent = false;
++				continue;
++			}
+ 			if (operation != nullptr)
+ 			{
+ 				addExplicitOwner(
+@@ -2931,7 +2958,15 @@
+ 	}
+ 	for (const auto & actionEntry : unitActions)
+ 	{
+-		if (actionEntry.first != nullptr)
++		if (actionEntry.first == nullptr)
++		{
++			ownershipEvidencePresent = false;
++			continue;
++		}
++		const bool actionHasOwner =
++			!actionEntry.second.operationId.empty()
++			|| actionEntry.second.operationGeneration > 0;
++		if (actionHasOwner)
+ 		{
+ 			addExplicitOwner(
+ 				actionEntry.first->tag,
+@@ -3555,15 +3590,21 @@
+ 					+ availability.sourceMinimum,
+ 				owner.second.end());
+ 		}
+-		availability.operationAssignmentsMatch = true;
+-		availability.squadAssignmentsMatch = true;
+-		availability.actionAssignmentsMatch = true;
+-		availability.roleAssignmentsMatch = true;
++		availability.operationAssignmentsMatch =
++			ownershipEvidencePresent;
++		availability.squadAssignmentsMatch =
++			ownershipEvidencePresent;
++		availability.actionAssignmentsMatch =
++			ownershipEvidencePresent;
++		availability.roleAssignmentsMatch =
++			ownershipEvidencePresent;
+ 		availability.admissionBlocker =
+ 			"autonomous_transfer_requires_operation_admission";
+ 		input.transferAvailability.push_back(availability);
+ 	}
+ 
++	input.ownershipEvidencePresent =
++		ownershipEvidencePresent;
+ 	m_voiBattlefieldProjection =
+ 		voiMakeBattlefieldProjection(input);
+ }
+@@ -7068,118 +7109,52 @@
+ 				currentDestinationOwner,
+ 				requestedSourceOwner,
+ 				requestedDestinationOwner);
+-			if (runtimeBlocker.empty()
+-				&& !transactionPlan.admitted)
++		if (runtimeBlocker.empty()
++			&& !transactionPlan.admitted)
++		{
++			runtimeBlocker =
++				transactionPlan.blocker;
++		}
++		if (runtimeBlocker.empty())
++		{
++			updateVoiBattlefieldProjection();
++			const auto canonicalValidation =
++				voiValidateBattlefieldTransferMutation(
++					m_voiBattlefieldProjection,
++					source->operationId,
++					source->generation,
++					destination->operationId,
++					destination->generation,
++					plannedSelection->second
++						.selectedUnitTags);
++			if (!canonicalValidation.valid)
+ 			{
+ 				runtimeBlocker =
+-					transactionPlan.blocker;
++					canonicalValidation.blocker;
+ 			}
+-			if (runtimeBlocker.empty())
+-				{
+-					VoiBattlefieldTransferInput admission;
+-					admission.requested = true;
+-					admission.sourceUpdateId =
+-						sourceRequested->policyUpdateId;
+-					admission.counterpartUpdateId =
+-						destinationRequested.policyUpdateId;
+-					admission.action =
+-						sourceRequested->editAction;
+-				admission.counterpartOperationId =
+-					destination->operationId;
+-				admission.sourceOwnerId =
+-					source->operationId;
+-				admission.requestedGeneration =
+-					plannedSelection->second
+-						.sourceGeneration;
+-				admission.counterpartGeneration =
+-					plannedSelection->second
+-						.counterpartGeneration;
+-				admission.requestedSourceGeneration =
+-					plannedSelection->second
+-						.requestedSourceGeneration;
+-				admission.requestedCounterpartGeneration =
+-					plannedSelection->second
+-						.requestedCounterpartGeneration;
+-				admission.editResolution = "pending";
+-				admission.counterpartPresent = true;
+-				admission.counterpartPending = true;
+-				admission.counterpartAction =
+-					destinationRequested.editAction;
+-				admission.counterpartCounterpartOperationId =
+-					source->operationId;
+-				admission.counterpartRequestedGeneration =
+-					destinationRequested.generation;
+-				admission.counterpartRequestedCount =
+-					plannedSelection->second
+-						.selectedUnitTags.size();
+-				admission.sourceActive = true;
+-				admission.destinationActive = true;
+-				admission.requestedCount =
+-					plannedSelection->second
+-						.selectedUnitTags.size();
+-				admission.sourceOwnerTags =
+-					source->assignedUnitTags;
+-				admission.selectedTags =
+-					plannedSelection->second
+-						.selectedUnitTags;
+-				admission.admittedSelectionIdentity =
+-					plannedSelection->second;
+-				admission.sourceOwnedCount =
+-					source->assignedUnitTags.size();
+-				admission.sourceMinimum =
+-					static_cast<std::size_t>(
+-						std::max(0, source->minUnits));
+-				admission.destinationOwnedCount =
+-					destination->assignedUnitTags.size();
+-				admission.destinationMaximum =
+-					static_cast<std::size_t>(
+-						std::max(0, destinationRequested.maxUnits));
+-				admission.operationAssignmentsMatch = true;
+-				admission.squadAssignmentsMatch = true;
+-				admission.actionAssignmentsMatch = true;
+-				admission.roleAssignmentsMatch = true;
+-				std::set<std::uint64_t> eligibleTransferTags;
+-				eligibleTransferTags.insert(
+-					source->assignedUnitTags.begin(),
+-					source->assignedUnitTags.end());
+-				eligibleTransferTags.insert(
+-					destination->assignedUnitTags.begin(),
+-					destination->assignedUnitTags.end());
+-				const auto battlefieldAdmission =
+-					voiProjectBattlefieldTransfer(
+-						admission,
+-						true,
+-						eligibleTransferTags);
+-				if (!battlefieldAdmission.atomicRevalidationReady)
+-				{
+-					runtimeBlocker =
+-						battlefieldAdmission.blocker.empty()
+-							? "transfer_atomic_revalidation_failed"
+-							: battlefieldAdmission.blocker;
+-				}
+-			}
+-			if (!runtimeBlocker.empty())
+-			{
+-				annotateRejectedEdit(
+-					*source,
+-					*sourceRequested,
++		}
++		if (!runtimeBlocker.empty())
++		{
++			annotateRejectedEdit(
++				*source,
++				*sourceRequested,
+ 				runtimeBlocker);
+ 			annotateRejectedEdit(
+-					*destination,
+-					destinationRequested,
+-					runtimeBlocker);
+-				source->editSelectionIdentity =
+-					plannedSelection->second;
+-				destination->editSelectionIdentity =
+-					plannedSelection->second;
+-				source->editSelectionAcknowledgement =
+-					VoiOperationTransferSelectionAcknowledgement<
+-						sc2::Tag>();
+-				destination->editSelectionAcknowledgement =
+-					VoiOperationTransferSelectionAcknowledgement<
+-						sc2::Tag>();
+-				continue;
+-			}
++				*destination,
++				destinationRequested,
++				runtimeBlocker);
++			source->editSelectionIdentity =
++				plannedSelection->second;
++			destination->editSelectionIdentity =
++				plannedSelection->second;
++			source->editSelectionAcknowledgement =
++				VoiOperationTransferSelectionAcknowledgement<
++					sc2::Tag>();
++			destination->editSelectionAcknowledgement =
++				VoiOperationTransferSelectionAcknowledgement<
++					sc2::Tag>();
++			continue;
++		}
+ 
+ 		auto mutationEndpoint =
+ 			[](
+@@ -7223,10 +7198,19 @@
+ 				mutationEndpoint(
+ 					*destination,
+ 					destinationRequested);
++		std::string canonicalMutationBlocker;
+ 		const bool transferMutationApplied =
+-			voiApplyOperationTransferMutationOnce(
++			voiApplyBattlefieldTransferMutationOnce(
++				m_voiBattlefieldProjection,
++				source->operationId,
++				source->generation,
++				destination->operationId,
++				destination->generation,
++				plannedSelection->second
++					.selectedUnitTags,
+ 				sourceMutationEndpoint,
+ 				destinationMutationEndpoint,
++				canonicalMutationBlocker,
+ 				[&]()
+ 				{
+ 		VoiOperationState sourceReplacement =
+@@ -7415,6 +7399,28 @@
+ 				m_bot.GetGameLoop();
+ 		}
+ 				});
++		if (!canonicalMutationBlocker.empty())
++		{
++			annotateRejectedEdit(
++				*source,
++				*sourceRequested,
++				canonicalMutationBlocker);
++			annotateRejectedEdit(
++				*destination,
++				destinationRequested,
++				canonicalMutationBlocker);
++			source->editSelectionIdentity =
++				plannedSelection->second;
++			destination->editSelectionIdentity =
++				plannedSelection->second;
++			source->editSelectionAcknowledgement =
++				VoiOperationTransferSelectionAcknowledgement<
++					sc2::Tag>();
++			destination->editSelectionAcknowledgement =
++				VoiOperationTransferSelectionAcknowledgement<
++					sc2::Tag>();
++			continue;
++		}
+ 		if (!transferMutationApplied)
+ 		{
+ 			continue;
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -1,6 +1,7 @@
+ #include "GameCommander.h"
+ #include "CCBot.h"
+ #include "Util.h"
++#include "voi_runtime_identity.hpp"
+ 
+ #include <cstdlib>
+ #include <cmath>
+@@ -585,6 +586,9 @@
+     std::ostringstream payload;
+     payload
+         << "{"
++        << voiRuntimeInstanceTelemetryJsonFields(
++            voiRuntimeInstanceIdentityFromEnvironment())
++        << ","
+         << "\"protocol_version\":\"voi-mm-bridge/v1\","
+         << "\"frame\":" << m_bot.GetGameLoop() << ","
+         << "\"bot_name\":\"MicroMachine\","
+diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
+--- a/src/voi_battlefield_projection.hpp
++++ b/src/voi_battlefield_projection.hpp
+@@ -1,7 +1,6 @@
+ #pragma once
+ 
+ #include <algorithm>
+-#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+ #include <limits>
+@@ -12,17 +11,7 @@
+ #include <vector>
+ 
+ #include "voi_operation_transfer_admission.hpp"
+-
+-inline std::uint64_t voiCurrentBattlefieldSessionEpoch()
+-{
+-	const auto ticks = std::chrono::duration_cast<
+-		std::chrono::nanoseconds>(
+-			std::chrono::system_clock::now().time_since_epoch())
+-			.count();
+-	return ticks > 0
+-		? static_cast<std::uint64_t>(ticks)
+-		: 1;
+-}
++#include "voi_runtime_identity.hpp"
+ 
+ inline std::uint64_t voiNextBattlefieldSessionEpoch(
+ 	std::uint64_t previous,
+@@ -504,8 +493,149 @@
+ 	return std::vector<std::uint64_t>(
+ 		unique.begin(),
+ 		unique.end());
++}
++
++struct VoiBattlefieldTransferMutationValidation
++{
++	bool valid = false;
++	std::string blocker;
++};
++
++inline VoiBattlefieldTransferMutationValidation
++voiValidateBattlefieldTransferMutation(
++	const VoiBattlefieldProjection & projection,
++	const std::string & sourceOperationId,
++	std::uint64_t sourceGeneration,
++	const std::string & destinationOperationId,
++	std::uint64_t destinationGeneration,
++	const std::vector<std::uint64_t> & selectedTags)
++{
++	if (!projection.ownershipEvidencePresent)
++	{
++		return {
++			false,
++			"ownership_evidence_missing"
++		};
++	}
++	if (!projection.ownershipIntegrity
++		|| projection.failClosed)
++	{
++		return {
++			false,
++			"ownership_integrity_fail_closed"
++		};
++	}
++
++	const VoiBattlefieldOperationProjection * source = nullptr;
++	const VoiBattlefieldOperationProjection * destination = nullptr;
++	std::size_t sourceMatches = 0;
++	std::size_t destinationMatches = 0;
++	for (const auto & operation : projection.operations)
++	{
++		if (operation.operationId == sourceOperationId
++			&& operation.generation == sourceGeneration)
++		{
++			source = &operation;
++			++sourceMatches;
++		}
++		if (operation.operationId == destinationOperationId
++			&& operation.generation == destinationGeneration)
++		{
++			destination = &operation;
++			++destinationMatches;
++		}
++	}
++	if (sourceMatches != 1 || destinationMatches != 1
++		|| source == nullptr || destination == nullptr)
++	{
++		return {
++			false,
++			"transfer_canonical_endpoint_mismatch"
++		};
++	}
++	if (!source->ownershipEvidencePresent
++		|| !destination->ownershipEvidencePresent)
++	{
++		return {
++			false,
++			"transfer_canonical_assignment_evidence_missing"
++		};
++	}
++	if (!source->transfer.atomicRevalidationReady
++		|| !source->transfer.transferSafe)
++	{
++		return {
++			false,
++			source->transfer.blocker.empty()
++				? "transfer_canonical_revalidation_failed"
++				: source->transfer.blocker
++		};
++	}
++	if (source->transfer.sourceOwnerId
++			!= sourceOperationId
++		|| source->transfer.counterpartOperationId
++			!= destinationOperationId
++		|| source->transfer.requestedGeneration
++			!= sourceGeneration
++		|| source->transfer.counterpartGeneration
++			!= destinationGeneration)
++	{
++		return {
++			false,
++			"transfer_canonical_identity_mismatch"
++		};
++	}
++
++	const std::set<std::uint64_t> selected(
++		selectedTags.begin(),
++		selectedTags.end());
++	const std::set<std::uint64_t> canonicalSelected(
++		source->transfer.transferableTags.begin(),
++		source->transfer.transferableTags.end());
++	if (selected.size() != selectedTags.size()
++		|| selected != canonicalSelected)
++	{
++		return {
++			false,
++			"transfer_canonical_selection_mismatch"
++		};
++	}
++	return { true, "" };
+ }
+ 
++template <typename Mutation>
++bool voiApplyBattlefieldTransferMutationOnce(
++	const VoiBattlefieldProjection & projection,
++	const std::string & sourceOperationId,
++	std::uint64_t sourceGeneration,
++	const std::string & destinationOperationId,
++	std::uint64_t destinationGeneration,
++	const std::vector<std::uint64_t> & selectedTags,
++	const VoiOperationTransferEndpoint & sourceEndpoint,
++	const VoiOperationTransferEndpoint & destinationEndpoint,
++	std::string & blocker,
++	Mutation mutation)
++{
++	const auto validation =
++		voiValidateBattlefieldTransferMutation(
++			projection,
++			sourceOperationId,
++			sourceGeneration,
++			destinationOperationId,
++			destinationGeneration,
++			selectedTags);
++	if (!validation.valid)
++	{
++		blocker = validation.blocker;
++		return false;
++	}
++	blocker.clear();
++	return voiApplyOperationTransferMutationOnce(
++		sourceEndpoint,
++		destinationEndpoint,
++		mutation);
++}
++
+ inline VoiBattlefieldTransferProjection
+ voiProjectBattlefieldTransfer(
+ 	const VoiBattlefieldTransferInput & input,
+diff --git a/src/voi_runtime_identity.hpp b/src/voi_runtime_identity.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/voi_runtime_identity.hpp
+@@ -0,0 +1,159 @@
++#pragma once
++
++#include <chrono>
++#include <cstddef>
++#include <cstdint>
++#include <cstdlib>
++#include <sstream>
++#include <string>
++
++#if defined(_WIN32)
++#include <process.h>
++#else
++#include <unistd.h>
++#endif
++
++struct VoiRuntimeInstanceIdentity
++{
++	std::string value;
++	bool valid = false;
++	std::string status = "missing";
++};
++
++inline bool voiRuntimeInstanceIdentityCharacterAllowed(char value)
++{
++	return (value >= 'a' && value <= 'f')
++		|| (value >= '0' && value <= '9');
++}
++
++inline VoiRuntimeInstanceIdentity voiParseRuntimeInstanceIdentity(
++	const char * value)
++{
++	VoiRuntimeInstanceIdentity result;
++	if (value == nullptr || value[0] == '\0')
++	{
++		return result;
++	}
++
++	constexpr std::size_t RequiredLength = 32;
++	for (std::size_t index = 0;
++		index < RequiredLength;
++		++index)
++	{
++		const char character = value[index];
++		if (!voiRuntimeInstanceIdentityCharacterAllowed(
++			character))
++		{
++			result.status = "invalid";
++			return result;
++		}
++	}
++	if (value[RequiredLength] != '\0')
++	{
++		result.status = "invalid";
++		return result;
++	}
++
++	result.value.assign(value, RequiredLength);
++	result.valid = true;
++	result.status = "valid";
++	return result;
++}
++
++inline const VoiRuntimeInstanceIdentity &
++voiRuntimeInstanceIdentityFromEnvironment()
++{
++	static const VoiRuntimeInstanceIdentity identity =
++		voiParseRuntimeInstanceIdentity(
++			std::getenv(
++				"VOI_MICROMACHINE_RUNTIME_INSTANCE_ID"));
++	return identity;
++}
++
++inline std::string voiRuntimeInstanceTelemetryJsonFields(
++	const VoiRuntimeInstanceIdentity & identity)
++{
++	std::ostringstream output;
++	output << "\"runtime_instance_id\":\""
++		<< (identity.valid ? identity.value : "")
++		<< "\",\"runtime_instance_id_valid\":"
++		<< (identity.valid ? "true" : "false")
++		<< ",\"runtime_instance_id_status\":\""
++		<< identity.status
++		<< "\"";
++	return output.str();
++}
++
++inline std::uint64_t voiMixBattlefieldSessionComponent(
++	std::uint64_t value)
++{
++	value += 0x9e3779b97f4a7c15ULL;
++	value = (value ^ (value >> 30))
++		* 0xbf58476d1ce4e5b9ULL;
++	value = (value ^ (value >> 27))
++		* 0x94d049bb133111ebULL;
++	return value ^ (value >> 31);
++}
++
++inline std::uint64_t voiComposeBattlefieldSessionIdentity(
++	std::uint64_t wallClockNanoseconds,
++	std::uint64_t processId,
++	std::uint64_t processNonce)
++{
++	std::uint64_t value =
++		voiMixBattlefieldSessionComponent(
++			wallClockNanoseconds);
++	value = voiMixBattlefieldSessionComponent(
++		value ^ processId);
++	value = voiMixBattlefieldSessionComponent(
++		value ^ processNonce);
++	return value == 0 ? 1 : value;
++}
++
++inline std::uint64_t voiCurrentBattlefieldProcessId()
++{
++#if defined(_WIN32)
++	return static_cast<std::uint64_t>(_getpid());
++#else
++	return static_cast<std::uint64_t>(getpid());
++#endif
++}
++
++inline std::uint64_t voiCurrentBattlefieldSessionEpoch()
++{
++	static int processAnchor = 0;
++	static const std::uint64_t processIdentity = []()
++	{
++		const auto wallClockTicks =
++			std::chrono::duration_cast<
++				std::chrono::nanoseconds>(
++				std::chrono::system_clock::now()
++					.time_since_epoch())
++				.count();
++		const auto monotonicTicks =
++			std::chrono::duration_cast<
++				std::chrono::nanoseconds>(
++				std::chrono::steady_clock::now()
++					.time_since_epoch())
++				.count();
++		const std::uint64_t wallClock =
++			wallClockTicks > 0
++				? static_cast<std::uint64_t>(
++					wallClockTicks)
++				: 1;
++		const std::uint64_t monotonic =
++			monotonicTicks > 0
++				? static_cast<std::uint64_t>(
++					monotonicTicks)
++				: 1;
++		const std::uint64_t addressNonce =
++			static_cast<std::uint64_t>(
++				reinterpret_cast<std::uintptr_t>(
++					&processAnchor));
++		return voiComposeBattlefieldSessionIdentity(
++			wallClock,
++			voiCurrentBattlefieldProcessId(),
++			monotonic ^ addressNonce);
++	}();
++	return processIdentity;
++}
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -147,9 +147,67 @@
+ 		== 1700000000000ULL);
+ 	CHECK(voiCurrentBattlefieldSessionEpoch() > 1);
+ 	CHECK(
++		voiCurrentBattlefieldSessionEpoch()
++		== voiCurrentBattlefieldSessionEpoch());
++	const std::uint64_t equalTimestamp =
++		1700000000000000000ULL;
++	const auto firstProcessIdentity =
++		voiComposeBattlefieldSessionIdentity(
++			equalTimestamp,
++			101,
++			7001);
++	const auto secondProcessIdentity =
++		voiComposeBattlefieldSessionIdentity(
++			equalTimestamp,
++			102,
++			7001);
++	CHECK(firstProcessIdentity > 0);
++	CHECK(secondProcessIdentity > 0);
++	CHECK(firstProcessIdentity != secondProcessIdentity);
++	CHECK(
+ 		voiNextBattlefieldSessionEpoch(
+ 			std::numeric_limits<std::uint64_t>::max())
+ 		== std::numeric_limits<std::uint64_t>::max());
++	const auto runtimeIdentity =
++		voiParseRuntimeInstanceIdentity(
++			"0123456789abcdef0123456789abcdef");
++	CHECK(runtimeIdentity.valid);
++	CHECK(
++		voiRuntimeInstanceTelemetryJsonFields(
++			runtimeIdentity)
++		== "\"runtime_instance_id\":"
++			"\"0123456789abcdef0123456789abcdef\","
++			"\"runtime_instance_id_valid\":true,"
++			"\"runtime_instance_id_status\":\"valid\"");
++	const auto invalidRuntimeIdentity =
++		voiParseRuntimeInstanceIdentity(
++			"0123456789abcdef0123456789abcdeg");
++	CHECK(!invalidRuntimeIdentity.valid);
++	CHECK(invalidRuntimeIdentity.value.empty());
++	CHECK(
++		voiRuntimeInstanceTelemetryJsonFields(
++			invalidRuntimeIdentity)
++		== "\"runtime_instance_id\":\"\","
++			"\"runtime_instance_id_valid\":false,"
++			"\"runtime_instance_id_status\":\"invalid\"");
++	const auto missingRuntimeIdentity =
++		voiParseRuntimeInstanceIdentity(nullptr);
++	CHECK(!missingRuntimeIdentity.valid);
++	CHECK(
++		voiRuntimeInstanceTelemetryJsonFields(
++			missingRuntimeIdentity)
++		== "\"runtime_instance_id\":\"\","
++			"\"runtime_instance_id_valid\":false,"
++			"\"runtime_instance_id_status\":\"missing\"");
++	CHECK(
++		!voiParseRuntimeInstanceIdentity(
++			"0123456789abcdef0123456789abcde").valid);
++	CHECK(
++		!voiParseRuntimeInstanceIdentity(
++			"0123456789abcdef0123456789abcdef0").valid);
++	CHECK(
++		!voiParseRuntimeInstanceIdentity(
++			"0123456789ABCDEF0123456789ABCDEF").valid);
+ 	CHECK(projection.sessionEpoch == 1700000000000ULL);
+ 	CHECK(projection.generation == 7);
+ 	CHECK(
+@@ -346,7 +404,106 @@
+ 	CHECK(
+ 		transferProjection.operations[0]
+ 			.transferSelection.identityValid);
++	VoiOperationTransferEndpoint sourceMutationEndpoint;
++	sourceMutationEndpoint.operationId = "assault-alpha";
++	sourceMutationEndpoint.counterpartOperationId =
++		"defense-bravo";
++	sourceMutationEndpoint.editAction = "transfer_out";
++	sourceMutationEndpoint.existingGeneration = 4;
++	sourceMutationEndpoint.requestedGeneration = 5;
++	sourceMutationEndpoint.requestedPresent = true;
++	sourceMutationEndpoint.existingActive = true;
++	VoiOperationTransferEndpoint destinationMutationEndpoint;
++	destinationMutationEndpoint.operationId = "defense-bravo";
++	destinationMutationEndpoint.counterpartOperationId =
++		"assault-alpha";
++	destinationMutationEndpoint.editAction = "transfer_in";
++	destinationMutationEndpoint.existingGeneration = 2;
++	destinationMutationEndpoint.requestedGeneration = 3;
++	destinationMutationEndpoint.requestedPresent = true;
++	destinationMutationEndpoint.existingActive = true;
++	int mutationInvocationCount = 0;
++	std::string mutationBlocker;
++	CHECK(
++		voiApplyBattlefieldTransferMutationOnce(
++			transferProjection,
++			"assault-alpha",
++			4,
++			"defense-bravo",
++			2,
++			std::vector<std::uint64_t>({ 11 }),
++			sourceMutationEndpoint,
++			destinationMutationEndpoint,
++			mutationBlocker,
++			[&]()
++			{
++				++mutationInvocationCount;
++			}));
++	CHECK(mutationBlocker.empty());
++	CHECK(mutationInvocationCount == 1);
+ 
++	auto thirdOperationConflict = transfer;
++	thirdOperationConflict.units[0].explicitOwners.push_back(
++		"operation:hold-charlie#1");
++	thirdOperationConflict.operations.push_back(
++		operation("hold-charlie", 1, { 11 }));
++	const auto thirdOperationProjection =
++		voiMakeBattlefieldProjection(
++			thirdOperationConflict);
++	CHECK(!thirdOperationProjection.ownershipIntegrity);
++	CHECK(
++		thirdOperationProjection.duplicateOwnershipTags
++		== std::vector<std::uint64_t>({ 11 }));
++	mutationBlocker.clear();
++	CHECK(
++		!voiApplyBattlefieldTransferMutationOnce(
++			thirdOperationProjection,
++			"assault-alpha",
++			4,
++			"defense-bravo",
++			2,
++			std::vector<std::uint64_t>({ 11 }),
++			sourceMutationEndpoint,
++			destinationMutationEndpoint,
++			mutationBlocker,
++			[&]()
++			{
++				++mutationInvocationCount;
++			}));
++	CHECK(
++		mutationBlocker
++		== "ownership_integrity_fail_closed");
++	CHECK(mutationInvocationCount == 1);
++
++	auto thirdAutonomousConflict = transfer;
++	thirdAutonomousConflict.units[0]
++		.autonomousOwners.push_back(
++			"squad:ThirdOwner");
++	const auto thirdAutonomousProjection =
++		voiMakeBattlefieldProjection(
++			thirdAutonomousConflict);
++	CHECK(!thirdAutonomousProjection.ownershipIntegrity);
++	mutationBlocker.clear();
++	CHECK(
++		!voiApplyBattlefieldTransferMutationOnce(
++			thirdAutonomousProjection,
++			"assault-alpha",
++			4,
++			"defense-bravo",
++			2,
++			std::vector<std::uint64_t>({ 11 }),
++			sourceMutationEndpoint,
++			destinationMutationEndpoint,
++			mutationBlocker,
++			[&]()
++			{
++				++mutationInvocationCount;
++			}));
++	CHECK(
++		mutationBlocker
++		== "ownership_integrity_fail_closed");
++	CHECK(mutationInvocationCount == 1);
++
+ 	transfer.operations[0].transfer.selectedTags = { 31 };
+ 	const auto wrongSelection =
+ 		voiMakeBattlefieldProjection(transfer);

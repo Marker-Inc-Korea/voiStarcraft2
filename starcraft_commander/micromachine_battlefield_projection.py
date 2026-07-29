@@ -199,6 +199,10 @@ class _OwnershipEvidence:
     partition_tags: Mapping[str, frozenset[int]]
     owner_tags_by_id: Mapping[str, frozenset[int]]
     owner_generations_by_id: Mapping[str, int]
+    transfer_selection_identities_by_operation_id: Mapping[
+        str,
+        _TransferSelectionIdentity,
+    ]
 
 
 @dataclass(frozen=True)
@@ -627,6 +631,10 @@ def _validate_ownership_partition(
     owner_tags_by_id: dict[str, frozenset[int]] = {}
     owner_generations_by_id: dict[str, int] = {}
     operation_identities_by_id: dict[str, BattlefieldProjectionIdentity] = {}
+    transfer_selection_identities_by_operation_id: dict[
+        str,
+        _TransferSelectionIdentity,
+    ] = {}
     operation_rows_with_identity: list[
         tuple[Mapping[str, object], str, BattlefieldProjectionIdentity | None]
     ] = []
@@ -721,13 +729,22 @@ def _validate_ownership_partition(
             )
 
     for operation, path, operation_identity in operation_rows_with_identity:
-        _validate_operation_transfer_selection(
+        selection_identity = _validate_operation_transfer_selection(
             operation.get("operation_transfer_selection"),
             path=f"{path}.operation_transfer_selection",
             operation_identity=operation_identity,
             operation_identities_by_id=operation_identities_by_id,
             validation=validation,
         )
+        if selection_identity is not None and operation_identity is not None:
+            operation_id = operation_identity.scope.removeprefix("operation:")
+            transfer_selection_identities_by_operation_id[operation_id] = (
+                selection_identity
+            )
+    _validate_reciprocal_transfer_selection_identities(
+        transfer_selection_identities_by_operation_id,
+        validation=validation,
+    )
 
     validation.checks["operation_blocks_valid"] = (
         len(validation.blockers) == operation_blocks_start
@@ -881,6 +898,9 @@ def _validate_ownership_partition(
         },
         owner_tags_by_id=owner_tags_by_id,
         owner_generations_by_id=owner_generations_by_id,
+        transfer_selection_identities_by_operation_id=(
+            transfer_selection_identities_by_operation_id
+        ),
     )
 
 
@@ -975,14 +995,14 @@ def _validate_operation_transfer_selection(
         BattlefieldProjectionIdentity,
     ],
     validation: _Validation,
-) -> None:
+) -> _TransferSelectionIdentity | None:
     selection = _required_mapping(
         value,
         path=path,
         validation=validation,
     )
     if selection is None:
-        return
+        return None
 
     present = _required_bool(
         selection.get("present"),
@@ -1213,6 +1233,58 @@ def _validate_operation_transfer_selection(
                 "malformed_successful_transfer_selection_acknowledgement",
                 f"{path}.successful_write_acknowledgement",
                 "The successful acknowledgement identity is malformed.",
+            )
+    if present is True and identity_valid is True:
+        return selection_identity
+    return None
+
+
+def _validate_reciprocal_transfer_selection_identities(
+    identities_by_operation_id: Mapping[str, _TransferSelectionIdentity],
+    *,
+    validation: _Validation,
+) -> None:
+    seen_pairs: set[tuple[str, str]] = set()
+    for identity in identities_by_operation_id.values():
+        pair = tuple(
+            sorted(
+                (
+                    identity.source_owner_id,
+                    identity.counterpart_operation_id,
+                )
+            )
+        )
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        source_identity = identities_by_operation_id.get(
+            identity.source_owner_id
+        )
+        counterpart_identity = identities_by_operation_id.get(
+            identity.counterpart_operation_id
+        )
+        if source_identity is None or counterpart_identity is None:
+            validation.block(
+                "missing_reciprocal_transfer_selection",
+                "$.battlefield_overview.operation_ownership",
+                (
+                    "Both transfer endpoints must publish the same exact "
+                    "selection identity."
+                ),
+                source_owner_id=identity.source_owner_id,
+                counterpart_operation_id=identity.counterpart_operation_id,
+            )
+            continue
+        if source_identity != counterpart_identity:
+            validation.block(
+                "reciprocal_transfer_selection_mismatch",
+                "$.battlefield_overview.operation_ownership",
+                (
+                    "Transfer endpoints disagree about the admitted unit "
+                    "selection or generation identity."
+                ),
+                source_owner_id=identity.source_owner_id,
+                counterpart_operation_id=identity.counterpart_operation_id,
             )
 
 
@@ -1770,6 +1842,13 @@ def _validate_launch_policy(
             f"{path}.decision",
             "A launch decision contradicts its authoritative safety evidence.",
         )
+    if decision == "launch" and (launch_count is None or launch_count <= 0):
+        validation.block(
+            "empty_launch_decision",
+            f"{path}.decision",
+            "A launch decision requires at least one authoritative owner.",
+            launch_count=launch_count,
+        )
 
 
 def _validate_bases(
@@ -2172,6 +2251,7 @@ def _validate_transfer_availability(
             path=f"{path}.atomic_revalidation_inputs",
             entry_source_owner_id=source_owner_id,
             transferable_tags=candidate_tags,
+            transfer_safe=transfer_safe,
             owner_tags=owner_tags,
             validation=validation,
         )
@@ -2253,6 +2333,7 @@ def _validate_atomic_revalidation_inputs(
     path: str,
     entry_source_owner_id: str | None,
     transferable_tags: Sequence[int],
+    transfer_safe: bool | None,
     owner_tags: _OwnershipEvidence,
     validation: _Validation,
 ) -> None:
@@ -2279,6 +2360,23 @@ def _validate_atomic_revalidation_inputs(
         "counterpart_operation_id",
         "counterpart_action",
         "counterpart_generation",
+        "requested_source_generation",
+        "requested_counterpart_generation",
+        "edit_resolution",
+        "counterpart_present",
+        "counterpart_pending",
+        "reciprocal_action",
+        "reciprocal_counterpart",
+        "reciprocal_generation",
+        "reciprocal_count",
+        "source_active",
+        "destination_active",
+        "ownership_integrity",
+        "operation_assignments_match",
+        "squad_assignments_match",
+        "action_assignments_match",
+        "role_assignments_match",
+        "atomic_revalidation_ready",
     )
     for field_name in required_fields:
         if field_name not in inputs:
@@ -2334,6 +2432,44 @@ def _validate_atomic_revalidation_inputs(
         path=f"{path}.counterpart_generation",
         validation=validation,
     )
+    requested_source_generation = _required_nonnegative_int(
+        inputs.get("requested_source_generation"),
+        path=f"{path}.requested_source_generation",
+        validation=validation,
+    )
+    requested_counterpart_generation = _required_nonnegative_int(
+        inputs.get("requested_counterpart_generation"),
+        path=f"{path}.requested_counterpart_generation",
+        validation=validation,
+    )
+    edit_resolution = _required_string_allow_empty(
+        inputs.get("edit_resolution"),
+        path=f"{path}.edit_resolution",
+        validation=validation,
+    )
+    readiness_fields = {
+        field_name: _required_bool(
+            inputs.get(field_name),
+            path=f"{path}.{field_name}",
+            validation=validation,
+        )
+        for field_name in (
+            "counterpart_present",
+            "counterpart_pending",
+            "reciprocal_action",
+            "reciprocal_counterpart",
+            "reciprocal_generation",
+            "reciprocal_count",
+            "source_active",
+            "destination_active",
+            "ownership_integrity",
+            "operation_assignments_match",
+            "squad_assignments_match",
+            "action_assignments_match",
+            "role_assignments_match",
+            "atomic_revalidation_ready",
+        )
+    }
 
     if selected_tags != list(transferable_tags):
         validation.block(
@@ -2402,6 +2538,16 @@ def _validate_atomic_revalidation_inputs(
         else None
     )
     if requested is True:
+        if edit_resolution not in {"pending", "applied"}:
+            validation.block(
+                "atomic_edit_resolution_mismatch",
+                f"{path}.edit_resolution",
+                (
+                    "A requested transfer must carry a pending or applied "
+                    "runtime resolution."
+                ),
+                actual=edit_resolution,
+            )
         if source_action != "transfer_out":
             validation.block(
                 "atomic_source_action_mismatch",
@@ -2472,6 +2618,76 @@ def _validate_atomic_revalidation_inputs(
                 reported=counterpart_generation,
                 operation_generation=counterpart_owner_generation,
             )
+        selection_identity = (
+            owner_tags.transfer_selection_identities_by_operation_id.get(
+                source_owner_id
+            )
+            if source_owner_id is not None
+            else None
+        )
+        counterpart_selection_identity = (
+            owner_tags.transfer_selection_identities_by_operation_id.get(
+                counterpart_operation_id
+            )
+            if counterpart_operation_id
+            else None
+        )
+        if (
+            selection_identity is None
+            or counterpart_selection_identity is None
+            or selection_identity != counterpart_selection_identity
+        ):
+            validation.block(
+                "atomic_transfer_selection_evidence_mismatch",
+                path,
+                (
+                    "Atomic admission requires matching reciprocal operation "
+                    "selection evidence."
+                ),
+            )
+        elif (
+            selection_identity.source_owner_id != source_owner_id
+            or selection_identity.counterpart_operation_id
+            != counterpart_operation_id
+            or selection_identity.source_action != source_action
+            or selection_identity.counterpart_action != counterpart_action
+            or source_generation
+            not in {
+                selection_identity.source_generation,
+                selection_identity.requested_source_generation,
+            }
+            or counterpart_generation
+            not in {
+                selection_identity.counterpart_generation,
+                selection_identity.requested_counterpart_generation,
+            }
+            or selection_identity.requested_source_generation
+            != requested_source_generation
+            or selection_identity.requested_counterpart_generation
+            != requested_counterpart_generation
+            or selection_identity.requested_count != requested_count
+            or selection_identity.selected_unit_tags != tuple(selected_tags)
+        ):
+            validation.block(
+                "atomic_transfer_selection_evidence_mismatch",
+                path,
+                (
+                    "Atomic admission inputs must match the exact reciprocal "
+                    "operation selection identity."
+                ),
+            )
+        not_ready = sorted(
+            field_name
+            for field_name, field_value in readiness_fields.items()
+            if field_value is not True
+        )
+        if not_ready:
+            validation.block(
+                "atomic_revalidation_not_ready",
+                path,
+                "Requested transfer evidence is not atomically ready.",
+                failed_fields=not_ready,
+            )
     elif requested is False:
         if source_action != "availability":
             validation.block(
@@ -2497,6 +2713,15 @@ def _validate_atomic_revalidation_inputs(
                 reported=source_generation,
                 operation_generation=source_owner_generation,
             )
+    if (
+        transfer_safe is True
+        and readiness_fields.get("atomic_revalidation_ready") is not True
+    ):
+        validation.block(
+            "contradictory_transfer_safety",
+            f"{path}.atomic_revalidation_ready",
+            "A safe transfer requires atomic revalidation readiness.",
+        )
 
 
 def _validate_completion(
@@ -2684,6 +2909,19 @@ def _validate_completion(
             "Operation issue frame cannot be newer than the projection.",
             projection_frame=overview_frame,
             issued_at_frame=issued_at_frame,
+        )
+    if (
+        completion_frame is not None
+        and completion_frame > 0
+        and issued_at_frame is not None
+        and completion_frame < issued_at_frame
+    ):
+        validation.block(
+            "completion_before_operation_issue",
+            f"{path}.operation_completion.frame",
+            "Terminal completion cannot predate operation issuance.",
+            issued_at_frame=issued_at_frame,
+            completion_frame=completion_frame,
         )
     if (
         issued_at_frame is not None
