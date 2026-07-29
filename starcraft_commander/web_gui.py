@@ -5602,6 +5602,8 @@ class _OperationSemanticTimelineReducer:
                 intervention,
                 "command_execution",
             ),
+            "update": _mapping_child(operation, "update"),
+            "family_evidence": operation.get("family_evidence", ()),
             "operation_convergence": _mapping_child(
                 operation,
                 "operation_convergence",
@@ -5610,6 +5612,7 @@ class _OperationSemanticTimelineReducer:
                 operation,
                 "operation_edit",
             ),
+            "squad_order": str(operation.get("squad_order", "") or ""),
             "battlefield_operation": dict(battlefield_operation),
         }
         return hashlib.sha256(
@@ -5623,11 +5626,320 @@ class _OperationSemanticTimelineReducer:
         ).hexdigest()
 
     @staticmethod
+    def _operation_vector(
+        operation: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        update_vector = _mapping_child(
+            _mapping_child(operation, "update"),
+            "vector",
+        )
+        if update_vector:
+            return update_vector
+        return _mapping_child(
+            _mapping_child(operation, "compile_result"),
+            "vector",
+        )
+
+    @staticmethod
+    def _operation_force_counts(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> tuple[int, int]:
+        ownership = _mapping_child(
+            battlefield_operation,
+            "operation_ownership",
+        )
+        launch = _mapping_child(
+            battlefield_operation,
+            "operation_launch_policy",
+        )
+        convergence = _mapping_child(operation, "operation_convergence")
+        return (
+            max(
+                0,
+                _int_or_none(ownership.get("owner_count")) or 0,
+            ),
+            max(
+                0,
+                _int_or_none(launch.get("min_units"))
+                or _int_or_none(convergence.get("target_count"))
+                or 0,
+            ),
+        )
+
+    @staticmethod
+    def _projection_matches_operation(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> bool:
+        operation_id = str(operation.get("operation_id", "") or "")
+        generation = max(
+            0,
+            _int_or_none(operation.get("operation_generation")) or 0,
+        )
+        update_id = str(
+            operation.get(
+                "operation_console_execution_owner_update_id",
+                "",
+            )
+            or operation.get("update_id", "")
+            or ""
+        )
+        projection_identity = _mapping_child(
+            battlefield_operation,
+            "identity",
+        )
+        return bool(
+            update_id
+            and operation_id
+            and generation > 0
+            and str(projection_identity.get("update_id", "") or "")
+            == update_id
+            and str(battlefield_operation.get("operation_id", "") or "")
+            == operation_id
+            and _int_or_none(
+                battlefield_operation.get("generation")
+            )
+            == generation
+            and str(projection_identity.get("operation_id", "") or "")
+            == operation_id
+            and _int_or_none(projection_identity.get("generation"))
+            == generation
+        )
+
+    @staticmethod
+    def _critical_ability_failure(
+        operation: Mapping[str, object],
+        execution: Mapping[str, object],
+        *,
+        update_id: str,
+        operation_id: str,
+        generation: int,
+    ) -> tuple[str, str, int] | None:
+        vector = _OperationSemanticTimelineReducer._operation_vector(
+            operation
+        )
+        tactical_task = _mapping_child(vector, "tactical_task")
+        ability = str(tactical_task.get("ability", "") or "").strip()
+        task_type = str(
+            tactical_task.get("task_type", "") or ""
+        ).strip().lower()
+        if not ability or task_type != "execute_ability":
+            return None
+        execution_state = str(execution.get("state", "") or "").lower()
+        execution_blocker = str(
+            execution.get("blocker_reason", "") or ""
+        ).strip()
+        execution_blocker_manager = str(
+            execution.get("blocker_manager", "") or ""
+        ).strip()
+        if (
+            execution.get("failed") is not True
+            and execution_state
+            not in {"blocked", "failed", "rejected", "expired"}
+        ) or not execution_blocker:
+            return None
+        raw_evidence = operation.get("family_evidence")
+        evidence_rows = (
+            raw_evidence
+            if isinstance(raw_evidence, Sequence)
+            and not isinstance(
+                raw_evidence,
+                (str, bytes, bytearray),
+            )
+            else ()
+        )
+        for raw_row in evidence_rows:
+            if not isinstance(raw_row, Mapping):
+                continue
+            row = dict(raw_row)
+            if (
+                str(row.get("update_id", "") or "") != update_id
+                or str(row.get("operation_id", "") or "")
+                != operation_id
+                or _int_or_none(row.get("generation")) != generation
+            ):
+                continue
+            action = str(row.get("action", "") or "").lower()
+            blocker = str(row.get("blocker", "") or "").strip()
+            blocker_manager = str(
+                row.get("blocker_manager", "") or ""
+            ).strip()
+            required_effect = str(
+                row.get("required_effect", "") or ""
+            ).lower()
+            effect_count = max(
+                0,
+                _int_or_none(row.get("effect_count")) or 0,
+            )
+            effect_frame = max(
+                0,
+                _int_or_none(row.get("effect_frame")) or 0,
+            )
+            attempted_count = max(
+                0,
+                _int_or_none(row.get("attempted_count")) or 0,
+            )
+            attempted_frame = max(
+                0,
+                _int_or_none(row.get("attempted_frame")) or 0,
+            )
+            stage = str(row.get("stage", "") or "").lower()
+            if (
+                not action.startswith("ability:")
+                or required_effect != "ability_state_or_effect"
+                or stage != "blocked"
+                or attempted_count <= 0
+                or attempted_frame <= 0
+                or effect_count > 0
+                or effect_frame > 0
+                or not blocker
+                or blocker != execution_blocker
+                or (
+                    blocker_manager
+                    and execution_blocker_manager
+                    and blocker_manager != execution_blocker_manager
+                )
+            ):
+                continue
+            attempt_generation = max(
+                0,
+                _int_or_none(row.get("attempt_generation")) or 0,
+            )
+            reason = (
+                f"{blocker_manager}: {blocker}"
+                if blocker_manager
+                else blocker
+            )
+            return ability, reason, attempt_generation
+        return None
+
+    @staticmethod
+    def _base_threats(
+        battlefield_overview: Mapping[str, object] | None,
+    ) -> dict[str, dict[str, object]]:
+        if not isinstance(battlefield_overview, Mapping):
+            return {}
+        raw_bases = battlefield_overview.get("bases")
+        bases = (
+            raw_bases
+            if isinstance(raw_bases, Sequence)
+            and not isinstance(raw_bases, (str, bytes, bytearray))
+            else ()
+        )
+        result: dict[str, dict[str, object]] = {}
+        for raw_base in bases:
+            if not isinstance(raw_base, Mapping):
+                continue
+            base_id = str(raw_base.get("base_id", "") or "").strip()
+            readiness = _mapping_child(raw_base, "base_readiness")
+            if not base_id or not readiness:
+                continue
+            ground_threat = max(
+                0.0,
+                _number(readiness.get("ground_threat")),
+            )
+            air_threat = max(
+                0.0,
+                _number(readiness.get("air_threat")),
+            )
+            observed_strength = max(
+                0.0,
+                _number(readiness.get("observed_enemy_strength")),
+            )
+            readiness_state = str(
+                readiness.get("readiness_state", "") or ""
+            ).lower()
+            result[base_id] = {
+                "active": bool(
+                    readiness_state == "unsafe"
+                    and (
+                        ground_threat > 0
+                        or air_threat > 0
+                        or observed_strength > 0
+                    )
+                ),
+                "semantic_anchor": str(
+                    raw_base.get("semantic_anchor", "") or ""
+                ),
+                "readiness_state": readiness_state,
+                "reason": str(readiness.get("reason", "") or ""),
+                "evidence_class": str(
+                    readiness.get("evidence_class", "") or ""
+                ),
+                "last_evidence_frame": max(
+                    0,
+                    _int_or_none(
+                        readiness.get("last_evidence_frame")
+                    )
+                    or 0,
+                ),
+                "ground_threat": ground_threat,
+                "air_threat": air_threat,
+                "observed_enemy_strength": observed_strength,
+            }
+        return result
+
+    @staticmethod
+    def _emergency_retreat_active(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> bool:
+        convergence = _mapping_child(operation, "operation_convergence")
+        launch = _mapping_child(
+            battlefield_operation,
+            "operation_launch_policy",
+        )
+        launch_safety = _mapping_child(launch, "safety_evidence")
+        emergency_preemption = str(
+            launch_safety.get("emergency_preemption", "") or ""
+        ).lower()
+        return bool(
+            str(convergence.get("status", "") or "").upper() == "BLOCKED"
+            and str(convergence.get("blocker", "") or "")
+            == "emergency_retreat_preempted"
+            and str(operation.get("squad_order", "") or "").lower()
+            == "retreat"
+            and emergency_preemption
+            not in {"", "none", "inactive", "not_required"}
+        )
+
+    @staticmethod
+    def _base_attack_active(
+        battlefield_operation: Mapping[str, object],
+        base_threats: Mapping[str, Mapping[str, object]],
+    ) -> bool:
+        launch = _mapping_child(
+            battlefield_operation,
+            "operation_launch_policy",
+        )
+        launch_safety = _mapping_child(launch, "safety_evidence")
+        return bool(
+            any(
+                threat.get("active") is True
+                for threat in base_threats.values()
+            )
+            and str(launch.get("blocker", "") or "")
+            == "base_protected_minimum_not_met"
+            and launch_safety.get(
+                "protected_defense_minimum_respected"
+            )
+            is False
+        )
+
+    @staticmethod
     def _event_candidates(
         operation: Mapping[str, object],
         battlefield_operation: Mapping[str, object],
         *,
         allow_edit_events: bool = True,
+        previous_owner_count: int | None = None,
+        previous_required_count: int = 0,
+        previous_transferred_out_count: int = 0,
+        previous_emergency_retreat_active: bool = False,
+        previous_base_attack_active: bool = False,
+        base_threats: Mapping[str, Mapping[str, object]] | None = None,
+        frame: int = -1,
     ) -> list[tuple[str, str, str, dict[str, object]]]:
         operation_id = str(operation.get("operation_id", "") or "")
         generation = max(
@@ -5682,15 +5994,11 @@ class _OperationSemanticTimelineReducer:
             battlefield_operation,
             "operation_lifetime",
         )
-        owner_count = max(
-            0,
-            _int_or_none(ownership.get("owner_count")) or 0,
-        )
-        required_count = max(
-            0,
-            _int_or_none(launch.get("min_units"))
-            or _int_or_none(convergence.get("target_count"))
-            or 0,
+        owner_count, required_count = (
+            _OperationSemanticTimelineReducer._operation_force_counts(
+                operation,
+                battlefield_operation,
+            )
         )
         represented_count = max(
             0,
@@ -5720,19 +6028,12 @@ class _OperationSemanticTimelineReducer:
             "requested_generation": requested_generation,
             "update_id": update_id,
         }
-        projection_matches_operation = bool(
-            str(projection_identity.get("update_id", "") or "")
-            == execution_owner_update_id
-            and str(battlefield_operation.get("operation_id", "") or "")
-            == operation_id
-            and _int_or_none(
-                battlefield_operation.get("generation")
+        projection_matches_operation = (
+            _OperationSemanticTimelineReducer
+            ._projection_matches_operation(
+                operation,
+                battlefield_operation,
             )
-            == generation
-            and str(projection_identity.get("operation_id", "") or "")
-            == operation_id
-            and _int_or_none(projection_identity.get("generation"))
-            == generation
         )
         canonical_completion_identity = bool(
             projection_matches_operation
@@ -5819,6 +6120,179 @@ class _OperationSemanticTimelineReducer:
                     "submitted",
                     "Matching-generation SC2 action submitted.",
                     {**common, "execution_state": execution_state},
+                )
+            )
+        launch_safety = _mapping_child(launch, "safety_evidence")
+        emergency_preemption = str(
+            launch_safety.get("emergency_preemption", "") or ""
+        ).lower()
+        emergency_retreat_active = bool(
+            projection_matches_operation
+            and _OperationSemanticTimelineReducer
+            ._emergency_retreat_active(
+                operation,
+                battlefield_operation,
+            )
+        )
+        if (
+            emergency_retreat_active
+            and not previous_emergency_retreat_active
+        ):
+            candidates.append(
+                (
+                    "emergency_retreat",
+                    f"emergency_retreat:{frame}",
+                    "Emergency retreat order is active.",
+                    {
+                        **common,
+                        "operation_convergence": dict(convergence),
+                        "squad_order": str(
+                            operation.get("squad_order", "") or ""
+                        ),
+                        "emergency_preemption": emergency_preemption,
+                    },
+                )
+            )
+        active_base_threats = {
+            base_id: dict(threat)
+            for base_id, threat in (base_threats or {}).items()
+            if threat.get("active") is True
+        }
+        base_attack_active = bool(
+            projection_matches_operation
+            and _OperationSemanticTimelineReducer._base_attack_active(
+                battlefield_operation,
+                active_base_threats,
+            )
+        )
+        if base_attack_active and not previous_base_attack_active:
+            base_ids = sorted(active_base_threats)
+            base_reasons = [
+                str(active_base_threats[base_id].get("reason", "") or "")
+                for base_id in base_ids
+            ]
+            candidates.append(
+                (
+                    "base_under_attack",
+                    f"base_under_attack:{frame}:{','.join(base_ids)}",
+                    (
+                        "; ".join(
+                            reason
+                            for reason in base_reasons
+                            if reason
+                        )
+                        or "Base defense minimum is not met under attack."
+                    ),
+                    {
+                        **common,
+                        "base_ids": base_ids,
+                        "base_threats": active_base_threats,
+                        "launch_safety": dict(launch_safety),
+                    },
+                )
+            )
+        critical_failure = (
+            _OperationSemanticTimelineReducer._critical_ability_failure(
+                operation,
+                execution,
+                update_id=update_id,
+                operation_id=operation_id,
+                generation=generation,
+            )
+        )
+        if critical_failure is not None:
+            ability, reason, attempt_generation = critical_failure
+            candidates.append(
+                (
+                    "critical_ability_failure",
+                    (
+                        "critical_ability_failure:"
+                        f"{ability}:{attempt_generation}:{reason}"
+                    ),
+                    f"{ability} failed: {reason}",
+                    {
+                        **common,
+                        "ability": ability,
+                        "attempt_generation": attempt_generation,
+                        "blocker": reason,
+                    },
+                )
+            )
+        previous_minimum = max(
+            0,
+            previous_required_count or required_count,
+        )
+        current_transferred_out_count = max(
+            0,
+            _int_or_none(edit.get("transferred_out_count")) or 0,
+        )
+        transferred_out_delta = max(
+            0,
+            current_transferred_out_count
+            - max(0, previous_transferred_out_count),
+        )
+        ownership_integrity = str(
+            ownership.get("integrity_status", "") or ""
+        ).lower()
+        completion_state = str(
+            completion.get("state", "") or ""
+        ).lower()
+        lifetime_state = str(
+            lifetime.get("completion_state", "") or ""
+        ).lower()
+        nonterminal = (
+            completion_state
+            not in {
+                "completed",
+                "failed",
+                "cancelled",
+                "expired",
+                "superseded",
+            }
+            and lifetime_state
+            not in {
+                "completed",
+                "failed",
+                "cancelled",
+                "expired",
+                "superseded",
+            }
+        )
+        raw_owner_loss = (
+            max(0, previous_owner_count - owner_count)
+            if previous_owner_count is not None
+            else 0
+        )
+        net_owner_loss = max(
+            0,
+            raw_owner_loss - transferred_out_delta,
+        )
+        if (
+            previous_owner_count is not None
+            and previous_minimum > 0
+            and previous_owner_count >= previous_minimum
+            and owner_count < required_count
+            and net_owner_loss > 0
+            and ownership_integrity == "valid"
+            and nonterminal
+        ):
+            candidates.append(
+                (
+                    "force_loss",
+                    (
+                        f"force_loss:{frame}:{previous_owner_count}:"
+                        f"{owner_count}:{required_count}"
+                    ),
+                    (
+                        f"Operation force fell from {previous_owner_count} "
+                        f"to {owner_count}; minimum is {required_count}."
+                    ),
+                    {
+                        **common,
+                        "previous_owner_count": previous_owner_count,
+                        "transferred_out_delta": transferred_out_delta,
+                        "net_owner_loss": net_owner_loss,
+                    },
                 )
             )
         if (
@@ -6053,13 +6527,18 @@ class _OperationSemanticTimelineReducer:
                     maxlen=self._PER_SCOPE_RETENTION
                 )
                 self._scope_families[scope_id] = deque()
+            scope_events = self._scope_events.setdefault(
+                scope_id,
+                deque(maxlen=self._PER_SCOPE_RETENTION),
+            )
             if isinstance(battlefield_overview, Mapping):
                 self._scope_battlefield_overviews[scope_id] = deepcopy(
                     dict(battlefield_overview)
                 )
-            scope_events = self._scope_events.setdefault(
-                scope_id,
-                deque(maxlen=self._PER_SCOPE_RETENTION),
+            base_threats = self._base_threats(
+                battlefield_overview
+                if isinstance(battlefield_overview, Mapping)
+                else None
             )
             accepted_operations: list[dict[str, object]] = []
             incoming_family_keys: set[tuple[str, str, str]] = set()
@@ -6186,6 +6665,11 @@ class _OperationSemanticTimelineReducer:
                         "events": deque(
                             maxlen=self._PER_OPERATION_RETENTION
                         ),
+                        "last_owner_count": None,
+                        "last_required_count": 0,
+                        "last_transferred_out_count": 0,
+                        "emergency_retreat_active": False,
+                        "base_attack_active": False,
                     },
                 )
                 if requested_generation > requested_high_water:
@@ -6207,6 +6691,35 @@ class _OperationSemanticTimelineReducer:
                         allow_edit_events=(
                             not stale_requested_generation
                         ),
+                        previous_owner_count=(
+                            state.get("last_owner_count")
+                            if type(state.get("last_owner_count")) is int
+                            else None
+                        ),
+                        previous_required_count=max(
+                            0,
+                            _int_or_none(
+                                state.get("last_required_count")
+                            )
+                            or 0,
+                        ),
+                        previous_transferred_out_count=max(
+                            0,
+                            _int_or_none(
+                                state.get(
+                                    "last_transferred_out_count"
+                                )
+                            )
+                            or 0,
+                        ),
+                        previous_emergency_retreat_active=bool(
+                            state.get("emergency_retreat_active")
+                        ),
+                        previous_base_attack_active=bool(
+                            state.get("base_attack_active")
+                        ),
+                        base_threats=base_threats,
+                        frame=frame,
                     )
                 ):
                     if kind in self._PERMANENT_MILESTONE_KINDS:
@@ -6259,6 +6772,44 @@ class _OperationSemanticTimelineReducer:
                     }
                     state["events"].append(event)
                     scope_events.append(event)
+                owner_count, required_count = (
+                    self._operation_force_counts(
+                        operation,
+                        battlefield_operation,
+                    )
+                )
+                state["last_owner_count"] = owner_count
+                state["last_required_count"] = required_count
+                state["last_transferred_out_count"] = max(
+                    0,
+                    _int_or_none(
+                        _mapping_child(
+                            operation,
+                            "operation_edit",
+                        ).get("transferred_out_count")
+                    )
+                    or 0,
+                )
+                projection_matches_operation = (
+                    self._projection_matches_operation(
+                        operation,
+                        battlefield_operation,
+                    )
+                )
+                state["emergency_retreat_active"] = bool(
+                    projection_matches_operation
+                    and self._emergency_retreat_active(
+                        operation,
+                        battlefield_operation,
+                    )
+                )
+                state["base_attack_active"] = bool(
+                    projection_matches_operation
+                    and self._base_attack_active(
+                        battlefield_operation,
+                        base_threats,
+                    )
+                )
                 operation["semantic_timeline"] = [
                     dict(event) for event in state["events"]
                 ]
@@ -9716,6 +10267,7 @@ var TACTICAL_RADIO_MAX_QUEUE = 8;
 var TACTICAL_RADIO_MAX_CAPTION_HISTORY = 20;
 var TACTICAL_RADIO_MAX_SPEECH_CHARS = 180;
 var TACTICAL_RADIO_MAX_PLAN_OPERATIONS = 3;
+var VOICE_FINALIZATION_GRACE_MS = 350;
 var TACTICAL_RADIO_PRIORITY_INTERVAL_MS = {
   0: 0,
   1: 1200,
@@ -9811,6 +10363,7 @@ var tacticalRadio = {
   queue: [],
   captions: [],
   dedupe: {},
+  planAnnouncements: {},
   frameHighWater: {},
   scopeId: "",
   speechToken: 0,
@@ -10000,6 +10553,7 @@ var I18N = {
     tacticalPlanConfirmed: "계획 확인",
     tacticalOperationIdentity: "작전",
     tacticalForceAssigned: "병력 배정",
+    tacticalForcePartiallyAssigned: "부분 편성",
     tacticalMoving: "이동 시작",
     tacticalEngaged: "교전 시작",
     tacticalTargetReached: "목표 도달",
@@ -10211,6 +10765,7 @@ var I18N = {
     tacticalPlanConfirmed: "Plan confirmed",
     tacticalOperationIdentity: "Operation",
     tacticalForceAssigned: "Force assigned",
+    tacticalForcePartiallyAssigned: "Force partially assigned",
     tacticalMoving: "Movement started",
     tacticalEngaged: "Engagement started",
     tacticalTargetReached: "Target reached",
@@ -10422,6 +10977,7 @@ var I18N = {
     tacticalPlanConfirmed: "Plan confirmed",
     tacticalOperationIdentity: "Operation",
     tacticalForceAssigned: "Force assigned",
+    tacticalForcePartiallyAssigned: "Force partially assigned",
     tacticalMoving: "Movement started",
     tacticalEngaged: "Engagement started",
     tacticalTargetReached: "Target reached",
@@ -10744,7 +11300,7 @@ function oldestTrimCandidate() {
   for (var i = 0; i < entries.length; i += 1) {
     if (
       entries[i] !== pendingAggregateNode &&
-      (!activeVoiceSession || entries[i] !== activeVoiceSession.node)
+      !voiceSessionForNode(entries[i])
     ) {
       return entries[i];
     }
@@ -10896,7 +11452,11 @@ function appendPendingCommand(text, voiceSession) {
     voiceSession.state = "pending";
     voiceSessionsByPendingId[pendingId] = voiceSession;
   }
-  renderPendingAggregate(text);
+  if (voiceSession) {
+    renderVoiceSessionPending(voiceSession, text);
+  } else {
+    renderPendingAggregate(text);
+  }
   updateAssistantPendingState();
   logBox.scrollTop = logBox.scrollHeight;
   return pendingId;
@@ -10906,31 +11466,25 @@ function pendingCommandTexts() {
   var texts = [];
   Object.keys(pendingNodes).forEach(function (key) {
     var ids = pendingNodes[key] || [];
-    ids.forEach(function () { texts.push(key); });
+    ids.forEach(function (pendingId) {
+      if (!voiceSessionForPendingId(pendingId)) {
+        texts.push(key);
+      }
+    });
   });
   return texts;
 }
 
 function renderPendingAggregate(latestText) {
   var texts = pendingCommandTexts();
-  var voiceSession = pendingVoiceSessionForPendingTexts();
-  var entry = voiceSession ? voiceSession.node : pendingAggregateNode;
-  if (!entry && !voiceSession) {
-    entry = document.getElementById(pendingAggregateId);
-  }
+  var entry = pendingAggregateNode ||
+    document.getElementById(pendingAggregateId);
   if (!texts.length) {
-    if (entry && !voiceSessionForNode(entry)) { entry.remove(); }
+    if (entry) { entry.remove(); }
     pendingAggregateNode = null;
     return;
   }
   var displayText = latestText || texts[texts.length - 1] || "";
-  if (
-    pendingAggregateNode &&
-    pendingAggregateNode !== entry &&
-    !voiceSessionForNode(pendingAggregateNode)
-  ) {
-    pendingAggregateNode.remove();
-  }
   if (!entry) {
     entry = document.createElement("div");
     entry.className = "log-entry pending-entry";
@@ -10938,13 +11492,8 @@ function renderPendingAggregate(latestText) {
     logBox.appendChild(entry);
   }
   pendingAggregateNode = entry;
-  if (voiceSession) {
-    voiceSession.state = "pending";
-    entry.className = "log-entry pending-entry voice-session-entry";
-  } else {
-    entry.className = "log-entry pending-entry";
-    entry.id = pendingAggregateId;
-  }
+  entry.className = "log-entry pending-entry";
+  entry.id = pendingAggregateId;
   entry.textContent = "";
 
   var userMessage = document.createElement("div");
@@ -10955,12 +11504,6 @@ function renderPendingAggregate(latestText) {
   userMeta.textContent = t("userLabel");
   userMessage.appendChild(userMeta);
   appendCompactText(userMessage, displayText, "command-text");
-  if (voiceSession) {
-    var voiceState = document.createElement("span");
-    voiceState.className = "voice-session-state";
-    voiceState.textContent = t("voiceFinalizing");
-    userMessage.appendChild(voiceState);
-  }
   if (texts.length > 1) {
     var aggregateMeta = document.createElement("span");
     aggregateMeta.className = "message-meta";
@@ -10994,9 +11537,30 @@ function renderPendingAggregate(latestText) {
 }
 
 function clearPendingMicroMachinePlan() {
+  var pendingVoiceSessions = Object.keys(
+    voiceSessionsByPendingId
+  ).map(function(pendingId) {
+    return voiceSessionsByPendingId[pendingId];
+  }).filter(Boolean);
+  pendingVoiceSessions.forEach(function(session) {
+    clearVoiceFinalizationTimer(session);
+    if (session.pendingId) {
+      removePendingById(session.pendingId);
+    }
+    renderVoiceSessionTerminal(
+      session,
+      "blocked",
+      commandUiText(
+        "MicroMachine 전장 링크가 전환되어 이전 음성 명령 추적을 종료했습니다.",
+        "The MicroMachine battlefield link changed, so the previous voice order is no longer tracked.",
+        "MicroMachine battlefield link changed; the previous voice order is no longer tracked."
+      )
+    );
+  });
   Object.keys(pendingNodes).forEach(function (key) {
     delete pendingNodes[key];
   });
+  voiceSessionsByPendingId = {};
   renderPendingAggregate();
   updateAssistantPendingState();
 }
@@ -11023,6 +11587,7 @@ function appendVoiceRecordingBubble() {
     submitted: false,
     pendingId: "",
     error: false,
+    finalizationTimerId: null,
     node: entry
   };
   activeVoiceSession = session;
@@ -11077,8 +11642,65 @@ function renderVoiceSession(session) {
   entry.appendChild(userMessage);
 }
 
+function renderVoiceSessionPending(session, text) {
+  if (!session || !session.node) { return; }
+  session.state = "pending";
+  var entry = session.node;
+  entry.className = "log-entry pending-entry voice-session-entry";
+  entry.textContent = "";
+
+  var userMessage = document.createElement("div");
+  userMessage.className = "message message-user";
+  userMessage.setAttribute("data-full-text", String(text || ""));
+  var userMeta = document.createElement("span");
+  userMeta.className = "message-meta";
+  userMeta.textContent = t("userLabel");
+  userMessage.appendChild(userMeta);
+  appendCompactText(userMessage, text, "command-text");
+  var voiceState = document.createElement("span");
+  voiceState.className = "voice-session-state";
+  voiceState.textContent = t("voiceFinalizing");
+  userMessage.appendChild(voiceState);
+  entry.appendChild(userMessage);
+
+  var botMessage = document.createElement("div");
+  botMessage.className = "message message-bot message-pending";
+  botMessage.setAttribute("data-full-text", t("assistantThinking"));
+  botMessage.setAttribute("data-status", "pending");
+  botMessage.setAttribute("aria-label", t("assistantWaiting"));
+  var botMeta = document.createElement("span");
+  botMeta.className = "message-meta";
+  botMeta.textContent = t("commanderLabel");
+  botMessage.appendChild(botMeta);
+  var narration = document.createElement("span");
+  narration.className = "narration";
+  narration.textContent = t("assistantThinking");
+  botMessage.appendChild(narration);
+  var typingIndicator = document.createElement("span");
+  typingIndicator.className = "typing-indicator";
+  typingIndicator.setAttribute("aria-hidden", "true");
+  for (var index = 0; index < 3; index += 1) {
+    typingIndicator.appendChild(document.createElement("span"));
+  }
+  botMessage.appendChild(typingIndicator);
+  entry.appendChild(botMessage);
+  trimChatLog();
+}
+
+function clearVoiceFinalizationTimer(session) {
+  if (
+    session &&
+    session.finalizationTimerId !== null &&
+    window.clearTimeout
+  ) {
+    window.clearTimeout(session.finalizationTimerId);
+  }
+  if (session) { session.finalizationTimerId = null; }
+}
+
 function removeVoiceRecordingBubble() {
   if (activeVoiceSession && activeVoiceSession.node) {
+    clearVoiceFinalizationTimer(activeVoiceSession);
     activeVoiceSession.node.remove();
   }
   activeVoiceSession = null;
@@ -11128,13 +11750,11 @@ function releaseVoicePendingSession(session) {
   if (session.pendingId) {
     delete voiceSessionsByPendingId[session.pendingId];
   }
-  if (pendingAggregateNode === session.node) {
-    pendingAggregateNode = null;
-  }
 }
 
 function renderVoiceSessionTerminal(session, status, narration) {
   if (!session || !session.node) { return; }
+  clearVoiceFinalizationTimer(session);
   session.state = status === "blocked" ? "failed" : "completed";
   releaseVoicePendingSession(session);
   var entry = session.node;
@@ -11169,6 +11789,7 @@ function renderVoiceSessionTerminal(session, status, narration) {
 
 function failVoiceSession(session, message) {
   if (!session || (session.submitted && session.pendingId)) { return; }
+  clearVoiceFinalizationTimer(session);
   session.error = true;
   session.state = "failed";
   renderVoiceSessionTerminal(
@@ -11280,6 +11901,7 @@ function resetTacticalRadio(scopeId) {
   cancelTacticalRadioSpeechAndQueue();
   tacticalRadio.scopeId = String(scopeId || "");
   tacticalRadio.dedupe = {};
+  tacticalRadio.planAnnouncements = {};
   tacticalRadio.frameHighWater = {};
   tacticalRadio.captions = [];
   tacticalRadio.lastSpokenAt = { 0: 0, 1: 0, 2: 0 };
@@ -11653,44 +12275,64 @@ function announceAcceptedTacticalPlan(data, source) {
     ""
   );
   ensureTacticalRadioScope(scopeId);
-  var allDetails = operations.map(function(operation) {
-    return t("tacticalOperationIdentity") + " " +
+  var updateId = String(
+    data.update_id ||
+    compileResult.update_id ||
+    ""
+  );
+  var announced = false;
+  var extraOperationCount = Math.max(
+    0,
+    operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS
+  );
+  operations.forEach(function(operation, index) {
+    var operationKey = [
+      scopeId,
+      operation.operationId,
+      operation.generation
+    ].join("|");
+    var announcementKey = [
+      scopeId,
+      updateId,
+      operation.operationId,
+      operation.generation
+    ].join("|");
+    if (tacticalRadio.planAnnouncements[announcementKey]) { return; }
+    var detail = t("tacticalOperationIdentity") + " " +
       operation.operationId + "#" + operation.generation + " · " +
       tacticalRequirementSummary(operation.requirements) + " · " +
       operation.task + " · " + operation.target + " · " +
       operation.route + " · " + operation.lifetime;
+    var speech = "";
+    if (index < TACTICAL_RADIO_MAX_PLAN_OPERATIONS) {
+      speech = t("tacticalPlanConfirmed") + ". " + detail;
+      if (
+        extraOperationCount > 0 &&
+        index === TACTICAL_RADIO_MAX_PLAN_OPERATIONS - 1
+      ) {
+        speech += ". " + commandUiText(
+          "추가 " + extraOperationCount + "개 작전",
+          extraOperationCount + " more operations",
+          extraOperationCount + " more operations"
+        );
+      }
+    }
+    var queued = queueTacticalRadioCallout({
+      priority: 2,
+      caption: t("tacticalPlanConfirmed") + " · " + detail,
+      speech: speech,
+      dedupeKey: announcementKey + "|plan",
+      operationKey: operationKey,
+      progressionRank: 0,
+      createdAt: tacticalRadioNow(),
+      source: source || "submission"
+    });
+    if (queued) {
+      tacticalRadio.planAnnouncements[announcementKey] = true;
+      announced = true;
+    }
   });
-  var speechDetails = allDetails.slice(
-    0,
-    TACTICAL_RADIO_MAX_PLAN_OPERATIONS
-  );
-  if (operations.length > TACTICAL_RADIO_MAX_PLAN_OPERATIONS) {
-    speechDetails.push(
-      commandUiText(
-        "추가 " + (operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS) + "개 작전",
-        (operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS) + " more operations",
-        (operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS) + " more operations"
-      )
-    );
-  }
-  var identity = operations.map(function(operation) {
-    return operation.operationId + "#" + operation.generation;
-  }).join(",");
-  return queueTacticalRadioCallout({
-    priority: 2,
-    caption: t("tacticalPlanConfirmed") + " · " + allDetails.join(" | "),
-    speech: t("tacticalPlanConfirmed") + ". " + speechDetails.join(". "),
-    dedupeKey: [
-      scopeId,
-      String(data.update_id || compileResult.update_id || ""),
-      identity,
-      "plan"
-    ].join("|"),
-    operationKey: identity,
-    progressionRank: 0,
-    createdAt: tacticalRadioNow(),
-    source: source || "submission"
-  });
+  return announced;
 }
 
 function normalizedTacticalReason(payload) {
@@ -11747,10 +12389,13 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
   var priority = 3;
   var label = "";
   var progressionRank = -1;
-  if (kind === "assigned" || kind === "partially_assigned") {
+  if (kind === "assigned") {
     priority = 2;
     label = t("tacticalForceAssigned");
     progressionRank = 1;
+  } else if (kind === "partially_assigned") {
+    priority = 3;
+    label = t("tacticalForcePartiallyAssigned");
   } else if (kind === "movement_observed" || kind === "moving") {
     priority = 2;
     label = t("tacticalMoving");
@@ -17399,8 +18044,18 @@ function renderMicroMachineStatus(data) {
     ? data.modulation_results
     : [];
   modulationResults.forEach(function(result) {
+    announceAcceptedTacticalPlan(
+      Object.assign(
+        {
+          blackboard_scope_id: microMachineScopeId(data)
+        },
+        result || {}
+      ),
+      "status"
+    );
     maybeAppendMicroMachineAsyncCompletion(result);
   });
+  announceAcceptedTacticalPlan(data, "status");
   renderOperationConsole(data);
   renderBattlefieldControlOverview(data);
   if (microMachineStatusIsStaleForActiveCommand(data)) {
@@ -18929,58 +19584,65 @@ function setupVoiceInput() {
   recognition.onstart = function () {
     isRecording = true;
     voiceButton.classList.add("recording");
-    appendVoiceRecordingBubble();
-  };
-  recognition.onend = function () {
-    isRecording = false;
-    voiceButton.classList.remove("recording");
-    var session = activeVoiceSession;
-    if (!session || session.error || session.submitted) { return; }
-    var fallbackText = String(
-      session.finalText || session.interimText || ""
-    ).trim();
-    if (!fallbackText) {
-      failVoiceSession(session, t("voiceNoResult"));
-      return;
-    }
-    submitVoiceSession(session, fallbackText);
-  };
-  recognition.onerror = function () {
-    setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
-    if (activeVoiceSession) {
-      failVoiceSession(activeVoiceSession, t("voiceTranscriptUnavailable"));
-    }
-  };
-  recognition.onresult = function (event) {
-    var session = activeVoiceSession;
-    if (!session || session.error) { return; }
-    for (var i = 0; i < event.results.length; i += 1) {
-      session.segments[i] = {
-        text: String(event.results[i][0].transcript || ""),
-        final: event.results[i].isFinal === true
-      };
-    }
-    var finalParts = [];
-    var interimParts = [];
-    session.segments.forEach(function(segment) {
-      if (!segment || !segment.text) { return; }
-      if (segment.final) {
-        finalParts.push(segment.text);
-      } else {
-        interimParts.push(segment.text);
+    var session = appendVoiceRecordingBubble();
+    recognition.onend = function () {
+      isRecording = false;
+      voiceButton.classList.remove("recording");
+      if (!session || session.error || session.submitted) { return; }
+      clearVoiceFinalizationTimer(session);
+      session.state = "finalizing";
+      renderVoiceSession(session);
+      session.finalizationTimerId = window.setTimeout(function () {
+        session.finalizationTimerId = null;
+        if (session.error || session.submitted) { return; }
+        var fallbackText = String(
+          session.finalText || session.interimText || ""
+        ).trim();
+        if (!fallbackText) {
+          failVoiceSession(session, t("voiceNoResult"));
+          return;
+        }
+        submitVoiceSession(session, fallbackText);
+      }, VOICE_FINALIZATION_GRACE_MS);
+    };
+    recognition.onerror = function () {
+      isRecording = false;
+      voiceButton.classList.remove("recording");
+      clearVoiceFinalizationTimer(session);
+      setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
+      failVoiceSession(session, t("voiceTranscriptUnavailable"));
+    };
+    recognition.onresult = function (event) {
+      if (!session || session.error || session.submitted) { return; }
+      for (var i = 0; i < event.results.length; i += 1) {
+        session.segments[i] = {
+          text: String(event.results[i][0].transcript || ""),
+          final: event.results[i].isFinal === true
+        };
       }
-    });
-    session.finalText = finalParts.join(" ").trim();
-    session.interimText = interimParts.join(" ").trim();
-    var visibleText = String(
-      session.finalText || session.interimText || ""
-    ).trim();
-    document.getElementById("command-input").value = visibleText;
-    renderVoiceSession(session);
-    var finalResult = event.results[event.results.length - 1];
-    if (finalResult && finalResult.isFinal && session.finalText) {
-      submitVoiceSession(session, session.finalText);
-    }
+      var finalParts = [];
+      var interimParts = [];
+      session.segments.forEach(function(segment) {
+        if (!segment || !segment.text) { return; }
+        if (segment.final) {
+          finalParts.push(segment.text);
+        } else {
+          interimParts.push(segment.text);
+        }
+      });
+      session.finalText = finalParts.join(" ").trim();
+      session.interimText = interimParts.join(" ").trim();
+      var visibleText = String(
+        session.finalText || session.interimText || ""
+      ).trim();
+      document.getElementById("command-input").value = visibleText;
+      renderVoiceSession(session);
+      var finalResult = event.results[event.results.length - 1];
+      if (finalResult && finalResult.isFinal && session.finalText) {
+        clearVoiceFinalizationTimer(session);
+        submitVoiceSession(session, session.finalText);
+      }
+    };
   };
   voiceButton.addEventListener("click", function () {
     if (isRecording) {
@@ -19001,6 +19663,7 @@ function submitVoiceSession(session, text) {
     failVoiceSession(session, t("voiceNoResult"));
     return "";
   }
+  clearVoiceFinalizationTimer(session);
   session.submitted = true;
   session.state = "finalizing";
   session.finalText = normalizedText;

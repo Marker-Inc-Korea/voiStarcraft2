@@ -768,10 +768,21 @@ production/prerequisite
 
 - partial/final transcript와 pending/result를 같은 voice session node에서 갱신
 - final/onend 순서와 무관한 exactly-once command submission
+- `onend`가 interim transcript를 조기 제출하지 않도록 짧은 finalization grace를
+  두고, 늦은 final result가 도착하면 같은 session에서 즉시 확정
+- 동시에 대기 중인 음성 명령도 각각 독립된 DOM/pending identity를 유지하며
+  서로의 transcript나 결과를 덮어쓰지 않음
 - transcript failure의 동일 node visual fallback
 - exact operation ID/generation, 편성, task, target, route, lifetime 계획 readback
+- 기본 async publish 경로에서도 후속 authoritative status/modulation result에서
+  structured plan을 읽어 plan readback 생성
 - `published/compiled = 계획 확인`과 assignment/submission/movement 문구 분리
+- 부분 편성은 완료된 `병력 배정`이 아니라 caption-only `부분 편성`으로 표시
 - P0/P1/P2/P3 scheduler, cooldown, dedupe, interruption, P2 progression compaction
+- plan과 lifecycle이 같은 `scope + operation_id + generation` key를 사용해
+  오래된 plan audio가 이동/교전 callout 뒤에 재생되지 않음
+- 긴급 후퇴, 본진 공격, 중요 ability 실패, 핵심 병력 감소는 요청값이 아니라
+  identity-matched runtime projection, family evidence, ownership delta에서만 생성
 - snapshot hydration, stale generation/frame/requested-generation, old replay 억제
 - mute/TTS unavailable에서도 caption과 command execution 유지
 - 한국어/영어와 명시적 중국어 영어 fallback, mobile, reduced-motion,

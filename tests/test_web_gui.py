@@ -7067,6 +7067,432 @@ class SessionLoopBridgeTest(unittest.TestCase):
             [event["summary"] for event in result["operation_events"]],
         )
 
+    def test_operation_timeline_emits_authoritative_safety_transitions(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-authoritative-safety-transitions"
+
+        baseline = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=200,
+            owner_count=4,
+            required_count=4,
+        )
+        operation = baseline["operations"][0]
+        operation["update"] = {
+            "update_id": operation["update_id"],
+            "vector": {
+                "operation_id": "safety-alpha",
+                "generation": 2,
+                "command_layer": "emergency",
+                "emergency": {
+                    "force_retreat": True,
+                    "cancel_attacks": True,
+                },
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "tactical_nuke",
+                },
+            },
+        }
+        operation["family_evidence"] = [
+            {
+                "update_id": operation["update_id"],
+                "operation_id": "safety-alpha",
+                "generation": 2,
+                "family": "ghost",
+                "action": "ability:tactical_nuke",
+                "required_effect": "ability_state_or_effect",
+                "attempt_generation": 1,
+                "attempted_count": 1,
+                "attempted_frame": 199,
+                "submitted_count": 0,
+                "effect_count": 0,
+                "blocker_manager": "CombatCommander",
+                "blocker": "no_valid_nuke_target",
+                "stage": "blocked",
+            }
+        ]
+        operation["intervention"]["command_execution"].update(
+            {
+                "state": "failed",
+                "failed": True,
+                "blocker_manager": "CombatCommander",
+                "blocker_reason": "no_valid_nuke_target",
+            }
+        )
+
+        initial = reducer.observe(
+            baseline,
+            blackboard_scope_id=scope_id,
+        )
+        initial_kinds = {
+            event["kind"] for event in initial["operation_events"]
+        }
+        self.assertIn("critical_ability_failure", initial_kinds)
+        self.assertNotIn("emergency_retreat", initial_kinds)
+        self.assertNotIn("force_loss", initial_kinds)
+        self.assertNotIn("base_under_attack", initial_kinds)
+
+        retreat = deepcopy(baseline)
+        retreat["operations"][0]["telemetry_frame"] = 201
+        retreat_operation = retreat["operations"][0]
+        retreat_projection = retreat_operation["battlefield_operation"]
+        retreat_projection["identity"]["game_frame"] = 201
+        retreat_projection["operation_completion"].update(
+            {
+                "movement_observed": True,
+                "frame": 201,
+            }
+        )
+        retreat_operation["operation_convergence"].update(
+            {
+                "status": "BLOCKED",
+                "blocker": "emergency_retreat_preempted",
+            }
+        )
+        retreat_operation["squad_order"] = "retreat"
+        retreat_projection["operation_launch_policy"]["safety_evidence"][
+            "emergency_preemption"
+        ] = "active"
+        retreat["battlefield_overview"]["identity"]["game_frame"] = 201
+        retreat_result = reducer.observe(
+            retreat,
+            blackboard_scope_id=scope_id,
+        )
+        retreat_kinds = [
+            event["kind"]
+            for event in retreat_result["operations"][0][
+                "semantic_timeline"
+            ]
+        ]
+        self.assertEqual(1, retreat_kinds.count("emergency_retreat"))
+
+        force_loss = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=202,
+            owner_count=2,
+            required_count=4,
+        )
+        force_loss["operations"][0]["update"] = deepcopy(
+            baseline["operations"][0]["update"]
+        )
+        force_loss["operations"][0]["family_evidence"] = deepcopy(
+            baseline["operations"][0]["family_evidence"]
+        )
+        force_loss_result = reducer.observe(
+            force_loss,
+            blackboard_scope_id=scope_id,
+        )
+        force_loss_events = [
+            event
+            for event in force_loss_result["operation_events"]
+            if event["kind"] == "force_loss"
+        ]
+        self.assertEqual(1, len(force_loss_events))
+        self.assertEqual(2, force_loss_events[0]["owner_count"])
+        self.assertEqual(4, force_loss_events[0]["required_count"])
+
+        persistent_loss = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=203,
+            owner_count=2,
+            required_count=4,
+        )
+        persistent_loss_result = reducer.observe(
+            persistent_loss,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            1,
+            sum(
+                event["kind"] == "force_loss"
+                for event in persistent_loss_result["operation_events"]
+            ),
+        )
+
+        recovered = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=204,
+            owner_count=4,
+            required_count=4,
+        )
+        reducer.observe(recovered, blackboard_scope_id=scope_id)
+        second_loss = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=205,
+            owner_count=1,
+            required_count=4,
+        )
+        second_loss_result = reducer.observe(
+            second_loss,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            2,
+            sum(
+                event["kind"] == "force_loss"
+                for event in second_loss_result["operation_events"]
+            ),
+        )
+
+        clear_base = deepcopy(second_loss)
+        clear_base["operations"][0]["telemetry_frame"] = 206
+        clear_base["operations"][0]["battlefield_operation"]["identity"][
+            "game_frame"
+        ] = 206
+        clear_base["battlefield_overview"]["identity"]["game_frame"] = 206
+        clear_readiness = clear_base["battlefield_overview"]["bases"][0][
+            "base_readiness"
+        ]
+        clear_readiness.update(
+            {
+                "readiness_state": "ready",
+                "ground_threat": 0.0,
+                "air_threat": 0.0,
+                "observed_enemy_strength": 0.0,
+                "last_evidence_frame": 206,
+            }
+        )
+        reducer.observe(clear_base, blackboard_scope_id=scope_id)
+
+        threatened_base = deepcopy(clear_base)
+        threatened_base["operations"][0]["telemetry_frame"] = 207
+        threatened_base["operations"][0]["battlefield_operation"]["identity"][
+            "game_frame"
+        ] = 207
+        threatened_base["battlefield_overview"]["identity"]["game_frame"] = 207
+        readiness = threatened_base["battlefield_overview"]["bases"][0][
+            "base_readiness"
+        ]
+        readiness.update(
+            {
+                "readiness_state": "unsafe",
+                "reason": "visible_ground_attack",
+                "ground_threat": 3.0,
+                "observed_enemy_strength": 3.0,
+                "last_evidence_frame": 207,
+                "evidence_class": "visible_enemy_units",
+            }
+        )
+        threatened_projection = threatened_base["operations"][0][
+            "battlefield_operation"
+        ]
+        threatened_projection["operation_launch_policy"].update(
+            {
+                "decision": "blocked",
+                "blocker": "base_protected_minimum_not_met",
+            }
+        )
+        threatened_projection["operation_launch_policy"][
+            "safety_evidence"
+        ]["protected_defense_minimum_respected"] = False
+        threatened_result = reducer.observe(
+            threatened_base,
+            blackboard_scope_id=scope_id,
+        )
+        base_events = [
+            event
+            for event in threatened_result["operation_events"]
+            if event["kind"] == "base_under_attack"
+        ]
+        self.assertEqual(1, len(base_events))
+        self.assertEqual("safety-alpha", base_events[0]["operation_id"])
+        self.assertEqual("visible_ground_attack", base_events[0]["summary"])
+
+        same_threat = deepcopy(threatened_base)
+        same_threat["operations"][0]["telemetry_frame"] = 208
+        same_threat["operations"][0]["battlefield_operation"]["identity"][
+            "game_frame"
+        ] = 208
+        same_threat["battlefield_overview"]["identity"]["game_frame"] = 208
+        same_threat["battlefield_overview"]["bases"][0]["base_readiness"][
+            "last_evidence_frame"
+        ] = 208
+        same_threat_result = reducer.observe(
+            same_threat,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            1,
+            sum(
+                event["kind"] == "base_under_attack"
+                for event in same_threat_result["operation_events"]
+            ),
+        )
+
+    def test_operation_timeline_safety_transitions_rearm_after_clear(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-safety-transition-rearm"
+
+        def emergency_payload(frame, *, active):
+            payload = semantic_operation_payload(
+                operation_id="rearm-alpha",
+                generation=2,
+                frame=frame,
+            )
+            operation = payload["operations"][0]
+            projection = operation["battlefield_operation"]
+            if active:
+                operation["operation_convergence"].update(
+                    {
+                        "status": "BLOCKED",
+                        "blocker": "emergency_retreat_preempted",
+                    }
+                )
+                operation["squad_order"] = "retreat"
+                projection["operation_launch_policy"]["safety_evidence"][
+                    "emergency_preemption"
+                ] = "active"
+            return payload
+
+        reducer.observe(
+            emergency_payload(400, active=False),
+            blackboard_scope_id=scope_id,
+        )
+        first = reducer.observe(
+            emergency_payload(401, active=True),
+            blackboard_scope_id=scope_id,
+        )
+        reducer.observe(
+            emergency_payload(402, active=False),
+            blackboard_scope_id=scope_id,
+        )
+        second = reducer.observe(
+            emergency_payload(403, active=True),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            1,
+            sum(
+                event["kind"] == "emergency_retreat"
+                for event in first["operation_events"]
+            ),
+        )
+        self.assertEqual(
+            2,
+            sum(
+                event["kind"] == "emergency_retreat"
+                for event in second["operation_events"]
+            ),
+        )
+
+    def test_operation_timeline_force_loss_excludes_transfer_and_terminal_drop(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-force-loss-exclusions"
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="loss-alpha",
+                generation=3,
+                frame=500,
+                owner_count=4,
+                required_count=4,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        transferred = reducer.observe(
+            semantic_operation_payload(
+                operation_id="loss-alpha",
+                generation=3,
+                frame=501,
+                owner_count=2,
+                required_count=4,
+                operation_edit={
+                    "action": "transfer_out",
+                    "resolution": "transferred",
+                    "transferred_out_count": 2,
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertNotIn(
+            "force_loss",
+            [event["kind"] for event in transferred["operation_events"]],
+        )
+
+        terminal_reducer = web_gui._OperationSemanticTimelineReducer()
+        terminal_reducer.observe(
+            semantic_operation_payload(
+                operation_id="terminal-loss",
+                generation=1,
+                frame=600,
+                owner_count=4,
+                required_count=4,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        terminal = terminal_reducer.observe(
+            semantic_operation_payload(
+                operation_id="terminal-loss",
+                generation=1,
+                frame=601,
+                owner_count=0,
+                required_count=4,
+                terminal=True,
+                disposition="completed",
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertNotIn(
+            "force_loss",
+            [event["kind"] for event in terminal["operation_events"]],
+        )
+
+    def test_operation_timeline_rejects_mismatched_critical_ability_evidence(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            operation_id="ability-alpha",
+            generation=3,
+            frame=300,
+            execution_state="failed",
+            blocker="ability_failed",
+        )
+        operation = payload["operations"][0]
+        operation["update"] = {
+            "update_id": operation["update_id"],
+            "vector": {
+                "operation_id": "ability-alpha",
+                "generation": 3,
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "yamato",
+                },
+            },
+        }
+        operation["family_evidence"] = [
+            {
+                "update_id": operation["update_id"],
+                "operation_id": "ability-alpha",
+                "generation": 2,
+                "action": "ability:yamato",
+                "required_effect": "ability_state_or_effect",
+                "attempt_generation": 1,
+                "attempted_count": 1,
+                "attempted_frame": 299,
+                "effect_count": 0,
+                "blocker_manager": "CombatCommander",
+                "blocker": "ability_failed",
+                "stage": "blocked",
+            }
+        ]
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-ability-generation-mismatch",
+        )
+
+        self.assertNotIn(
+            "critical_ability_failure",
+            [event["kind"] for event in result["operation_events"]],
+        )
+
     def test_operation_timeline_non_authoritative_empty_snapshot_preserves_registry(
         self,
     ):
@@ -15623,6 +16049,8 @@ const assert = require("assert");
 
   var finalResult = [{ transcript: "마린 두 기로 정찰하고 네 기로 우회 공격해" }];
   finalResult.isFinal = true;
+  voiceRecognition.onend();
+  assert.strictEqual(requests.length, voiceRequestStart);
   voiceRecognition.onresult({
     resultIndex: 0,
     results: [finalResult]
@@ -15630,8 +16058,12 @@ const assert = require("assert");
   assert.strictEqual(requests.length, voiceRequestStart + 1);
   assert.strictEqual(activeVoiceSession.node, firstVoiceNode);
   assert.strictEqual(firstVoiceSession.submitted, true);
-  assert.strictEqual(pendingAggregateNode, firstVoiceNode);
+  assert.strictEqual(pendingAggregateNode, null);
   assert.strictEqual(document.getElementById(pendingAggregateId), null);
+  assert.strictEqual(
+    firstVoiceNode.querySelectorAll(".message-pending").length,
+    1
+  );
   voiceRecognition.onend();
   assert.strictEqual(requests.length, voiceRequestStart + 1);
 
@@ -15725,6 +16157,83 @@ const assert = require("assert");
   assert.strictEqual(errorVoiceNode.parentNode, logBox);
   assert(errorVoiceNode.textContent.includes("transcript"));
 
+  // Concurrent voice commands retain separate pending/result DOM identities.
+  var concurrentRequestStart = requests.length;
+  voiceRecognition.start();
+  var concurrentFirstSession = activeVoiceSession;
+  var concurrentFirstNode = concurrentFirstSession.node;
+  var concurrentFirstResult = [{ transcript: "첫 번째 정찰 작전" }];
+  concurrentFirstResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [concurrentFirstResult]
+  });
+  voiceRecognition.start();
+  var concurrentSecondSession = activeVoiceSession;
+  var concurrentSecondNode = concurrentSecondSession.node;
+  var concurrentSecondResult = [{ transcript: "두 번째 방어 작전" }];
+  concurrentSecondResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [concurrentSecondResult]
+  });
+  assert.strictEqual(requests.length, concurrentRequestStart + 2);
+  assert.notStrictEqual(concurrentFirstNode, concurrentSecondNode);
+  assert(concurrentFirstNode.textContent.includes("첫 번째 정찰 작전"));
+  assert(!concurrentFirstNode.textContent.includes("두 번째 방어 작전"));
+  assert(concurrentSecondNode.textContent.includes("두 번째 방어 작전"));
+  assert(!concurrentSecondNode.textContent.includes("첫 번째 정찰 작전"));
+  requests[concurrentRequestStart + 1].deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "concurrent-voice-second",
+    compile_result: {
+      status: "compiled",
+      update_id: "concurrent-voice-second",
+      assistant_message: "두 번째 작전 계획 확인"
+    },
+    update: { update_id: "concurrent-voice-second" }
+  }, SERVER_SCOPE_A)));
+  requests[concurrentRequestStart].deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "concurrent-voice-first",
+    compile_result: {
+      status: "compiled",
+      update_id: "concurrent-voice-first",
+      assistant_message: "첫 번째 작전 계획 확인"
+    },
+    update: { update_id: "concurrent-voice-first" }
+  }, SERVER_SCOPE_A)));
+  await flushPromises();
+  await flushPromises();
+  assert(concurrentFirstNode.textContent.includes("첫 번째 작전 계획 확인"));
+  assert(!concurrentFirstNode.textContent.includes("두 번째 작전 계획 확인"));
+  assert(concurrentSecondNode.textContent.includes("두 번째 작전 계획 확인"));
+  assert(!concurrentSecondNode.textContent.includes("첫 번째 작전 계획 확인"));
+
+  voiceRecognition.start();
+  var scopeResetSession = activeVoiceSession;
+  var scopeResetResult = [{ transcript: "scope 전환 전 대기 명령" }];
+  scopeResetResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [scopeResetResult]
+  });
+  assert(Object.keys(voiceSessionsByPendingId).length > 0);
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio-next";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio-next");
+  assert.strictEqual(Object.keys(voiceSessionsByPendingId).length, 0);
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(
+    scopeResetSession.node.querySelectorAll(".message-pending").length,
+    0
+  );
+
   // Scheduler priority, interruption, compaction and dedupe are deterministic.
   cancelTacticalRadioSpeechAndQueue();
   tacticalRadio.dedupe = {};
@@ -15807,6 +16316,94 @@ const assert = require("assert");
     "engaged compact"
   );
   assert.strictEqual(timeoutDelays[timeoutDelays.length - 1], 3500);
+
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.lastSpokenAt[2] = fakeNowMs;
+  var productionPlan = serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "production-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "production-plan-update",
+      vector: {
+        operations: [
+          {
+            operation_id: "production-plan-alpha",
+            generation: 4,
+            composition_requirements: [
+              { unit_type: "TERRAN_MARINE", count: 4 }
+            ],
+            tactical_task: { task_type: "pressure_with_main_army" },
+            route_intent: { route_type: "direct", target_intent: "enemy_main" }
+          }
+        ]
+      }
+    }
+  }, SERVER_SCOPE_A);
+  announceAcceptedTacticalPlan(productionPlan, "status");
+  var canonicalPlanKey = [
+    SERVER_SCOPE_A,
+    "production-plan-alpha",
+    4
+  ].join("|");
+  assert(
+    tacticalRadio.queue.some(function(item) {
+      return item.operationKey === canonicalPlanKey &&
+        item.progressionRank === 0;
+    })
+  );
+  var productionRecord = {
+    operationGeneration: 4
+  };
+  announceOperationLifecycleEvent(
+    { update_id: "production-plan-update", created_at_unix_ms: fakeNowMs },
+    {
+      operation_id: "production-plan-alpha",
+      generation: 4,
+      requested_generation: 4,
+      update_id: "production-plan-update",
+      kind: "movement_observed",
+      game_frame: 810,
+      summary: "movement observed"
+    },
+    SERVER_SCOPE_A,
+    productionRecord
+  );
+  assert(
+    !tacticalRadio.queue.some(function(item) {
+      return item.operationKey === canonicalPlanKey &&
+        item.progressionRank === 0;
+    })
+  );
+
+  var partialCaptionCount = tacticalRadio.captions.length;
+  announceOperationLifecycleEvent(
+    { update_id: "production-plan-update", created_at_unix_ms: fakeNowMs },
+    {
+      operation_id: "production-plan-alpha",
+      generation: 4,
+      requested_generation: 4,
+      update_id: "production-plan-update",
+      kind: "partially_assigned",
+      game_frame: 811,
+      owner_count: 2,
+      required_count: 4,
+      summary: "2/4 units assigned"
+    },
+    SERVER_SCOPE_A,
+    productionRecord
+  );
+  assert.strictEqual(tacticalRadio.captions.length, partialCaptionCount + 1);
+  assert(
+    tacticalRadio.captions[tacticalRadio.captions.length - 1]
+      .caption.includes("부분 편성")
+  );
+  assert.strictEqual(
+    tacticalRadio.captions[tacticalRadio.captions.length - 1].priority,
+    3
+  );
 
   // Snapshot hydration seeds high-water state without replaying old audio.
   cancelTacticalRadioSpeechAndQueue();

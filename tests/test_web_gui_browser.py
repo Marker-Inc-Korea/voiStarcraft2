@@ -103,25 +103,36 @@ def _browser_fixture_page() -> str:
           "flank_right"
         )
       ];
+      window.setTimeout(function () {
+        safeRenderMicroMachineStatus({
+          ok: true,
+          accepted: true,
+          status: "published",
+          update_id: "browser-voice-plan",
+          blackboard_scope_id: "browser-voice-scope",
+          compile_result: {
+            status: "compiled",
+            update_id: "browser-voice-plan",
+            blackboard_scope_id: "browser-voice-scope",
+            vector: {
+              goal: "parallel browser voice operation",
+              operations: operations.map(function (item) {
+                return item.update.vector;
+              })
+            }
+          },
+          operations: operations
+        });
+      }, 10);
       return response({
         ok: true,
         accepted: true,
-        async_publish: false,
-        status: "published",
+        queued: true,
+        async_publish: true,
+        status: "queued",
         update_id: "browser-voice-plan",
         blackboard_scope_id: "browser-voice-scope",
-        compile_result: {
-          status: "compiled",
-          update_id: "browser-voice-plan",
-          blackboard_scope_id: "browser-voice-scope",
-          vector: {
-            goal: "parallel browser voice operation",
-            operations: operations.map(function (item) {
-              return item.update.vector;
-            })
-          }
-        },
-        operations: operations
+        consumption_status: "pending_compile"
       }, 202);
     }
     if (route === "/api/llm") {
@@ -252,6 +263,7 @@ def _browser_fixture_page() -> str:
     });
     var interimSharedNode = activeVoiceSession.node === stableNode &&
       stableNode.textContent.indexOf("마린 두 기로") !== -1;
+    recognition.onend();
     recognition.onresult({
       resultIndex: 0,
       results: [
@@ -261,7 +273,6 @@ def _browser_fixture_page() -> str:
         )
       ]
     });
-    recognition.onend();
 
     window.setTimeout(function () {
       var captions = document.getElementById(
