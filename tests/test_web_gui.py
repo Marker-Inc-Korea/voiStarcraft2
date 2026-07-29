@@ -11018,9 +11018,14 @@ class FakeSpeechRecognition {
     this.onresult = null;
     this.deferStart = false;
     this.pendingStart = false;
+    this.startCalls = 0;
     recognitionInstances.push(this);
   }
   start() {
+    this.startCalls += 1;
+    if (this.pendingStart) {
+      throw new Error("InvalidStateError");
+    }
     if (this.deferStart) {
       this.pendingStart = true;
       return;
@@ -16384,17 +16389,34 @@ const assert = require("assert");
   var voiceSessionBeforeDelayedStart = activeVoiceSession;
   nodes["voice-button"].dispatchEvent({ type: "click" });
   assert.strictEqual(voiceRecognition.pendingStart, true);
+  assert.strictEqual(voiceRecognition.startCalls, 1);
+  var delayedVoiceRequest = pendingVoiceRecognitionRequest;
   nodes["micromachine-blackboard-dir"].value =
     "/tmp/voi-mm-voice-radio-delayed-next";
   synchronizeMicroMachineBlackboardDirectory(
     "/tmp/voi-mm-voice-radio-delayed-next"
   );
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(
+    pendingVoiceRecognitionRequest,
+    delayedVoiceRequest,
+    "a replacement scope cannot overwrite an unresolved browser start"
+  );
+  assert.strictEqual(voiceRecognition.startCalls, 1);
   voiceRecognition.fireStart();
   assert.strictEqual(voiceSessionSeq, delayedVoiceSessionSeq);
   assert.strictEqual(activeVoiceSession, voiceSessionBeforeDelayedStart);
+  assert.strictEqual(pendingVoiceRecognitionRequest, null);
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
   assert.strictEqual(requests.length, voiceRequestStart);
   voiceRecognition.deferStart = false;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(voiceRecognition.startCalls, 2);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
+  assert.strictEqual(
+    activeVoiceSession.contextGeneration,
+    microMachineBlackboardContextGeneration
+  );
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
 
@@ -16946,6 +16968,100 @@ const assert = require("assert");
       [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
     ],
     700
+  );
+
+  // A new update cannot relabel an older full-registry operation as a plan.
+  var priorRegistryOperation = operationResult(
+    "prior-registry-operation",
+    "prior-registry-update",
+    "prior registry operation",
+    "scouting",
+    701,
+    "action_issued",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  priorRegistryOperation.update.vector = {
+    operation_id: "prior-registry-operation",
+    generation: 1,
+    composition_requirements: [
+      { unit_type: "TERRAN_MARINE", count: 1 }
+    ],
+    tactical_task: { task_type: "scout_with_units" },
+    target_intent: { target_type: "enemy_main" },
+    route_intent: { route_type: "direct" },
+    lifetime: { mode: "until_completed" }
+  };
+  var currentRegistryOperation = operationResult(
+    "current-registry-operation",
+    "current-registry-update",
+    "current registry operation",
+    "attack",
+    702,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    1
+  );
+  currentRegistryOperation.update.vector = {
+    operation_id: "current-registry-operation",
+    generation: 1,
+    composition_requirements: [
+      { unit_type: "TERRAN_MARINE", count: 4 }
+    ],
+    tactical_task: { task_type: "pressure_with_main_army" },
+    target_intent: { target_type: "enemy_natural" },
+    route_intent: { route_type: "flank_right" },
+    lifetime: { mode: "until_completed" }
+  };
+  var captionsBeforeCurrentRegistryPlan = tacticalRadio.captions.length;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "current-registry-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "current-registry-update",
+      vector: currentRegistryOperation.update.vector
+    },
+    operations: [priorRegistryOperation, currentRegistryOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "current-registry-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "current-registry-update",
+          vector: currentRegistryOperation.update.vector
+        },
+        operations: [currentRegistryOperation]
+      }
+    ]
+  }, SERVER_SCOPE_A));
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeCurrentRegistryPlan + 1
+  );
+  assert(
+    tacticalRadio.captions[tacticalRadio.captions.length - 1]
+      .caption.includes("current-registry-operation#1")
+  );
+  assert(
+    !tacticalRadio.captions[tacticalRadio.captions.length - 1]
+      .caption.includes("prior-registry-operation#1")
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      [
+        SERVER_SCOPE_A,
+        "current-registry-update",
+        "prior-registry-operation",
+        1
+      ].join("|")
+    ],
+    undefined
   );
 
   // Exact-generation lifecycle events remain distinct; stale variants are silent.

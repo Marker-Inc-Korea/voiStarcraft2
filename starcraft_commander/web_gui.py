@@ -12209,13 +12209,39 @@ function structuredOperationVector(operation, parentData) {
   return rootVector;
 }
 
+function structuredOperationUpdateId(operation) {
+  if (!operation || typeof operation !== "object") { return ""; }
+  var update = operation.update || {};
+  var compileResult = operation.compile_result || {};
+  var battlefieldOperation = operation.battlefield_operation || {};
+  var identity = battlefieldOperation.identity || {};
+  return String(
+    operation.update_id ||
+    update.update_id ||
+    compileResult.update_id ||
+    identity.update_id ||
+    ""
+  );
+}
+
 function structuredOperationsForReadback(data) {
   if (!data || typeof data !== "object") { return []; }
-  var operations = Array.isArray(data.operations)
-    ? data.operations.slice()
-    : [];
   var compileResult = data.compile_result || {};
+  var registryOperations = Array.isArray(data.operations);
+  var operations = registryOperations ? data.operations.slice() : [];
   var rootVector = compileResult.vector || {};
+  var rootUpdateId = String(
+    data.update_id ||
+    compileResult.update_id ||
+    ""
+  );
+  if (registryOperations) {
+    operations = rootUpdateId
+      ? operations.filter(function(operation) {
+          return structuredOperationUpdateId(operation) === rootUpdateId;
+        })
+      : [];
+  }
   if (!operations.length) {
     var rawOperations = rootVector.operations;
     if (Array.isArray(rawOperations)) {
@@ -12392,6 +12418,7 @@ function announceAcceptedTacticalPlan(data, source) {
     compileResult.update_id ||
     ""
   );
+  if (!updateId) { return false; }
   var announced = false;
   var extraOperationCount = Math.max(
     0,
@@ -12471,6 +12498,7 @@ function seedAcceptedTacticalPlanAnnouncements(data) {
     compileResult.update_id ||
     ""
   );
+  if (!updateId) { return; }
   operations.forEach(function(operation) {
     tacticalRadio.planAnnouncements[
       [
@@ -19891,6 +19919,9 @@ function setupVoiceInput() {
       recognition.stop();
       return;
     }
+    if (pendingVoiceRecognitionRequest) {
+      return;
+    }
     if (
       activeVoiceSession &&
       !activeVoiceSession.submitted &&
@@ -19907,7 +19938,21 @@ function setupVoiceInput() {
       contextGeneration: microMachineBlackboardContextGeneration,
       blackboardDirectory: currentEventBlackboardDirectory()
     };
-    recognition.start();
+    var requestedRecognition = pendingVoiceRecognitionRequest;
+    try {
+      recognition.start();
+    } catch (error) {
+      if (pendingVoiceRecognitionRequest === requestedRecognition) {
+        pendingVoiceRecognitionRequest = null;
+      }
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      setLlmStatus(
+        "failed",
+        "llmFailedLabel",
+        error && error.message ? error.message : t("voiceNoResult")
+      );
+    }
   });
 }
 
