@@ -7480,7 +7480,21 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 "blocker_manager": "CombatCommander",
                 "blocker": "ability_failed",
                 "stage": "blocked",
-            }
+            },
+            {
+                "update_id": operation["update_id"],
+                "operation_id": "ability-alpha",
+                "generation": 3,
+                "action": "ability:stimpack",
+                "required_effect": "ability_state_or_effect",
+                "attempt_generation": 2,
+                "attempted_count": 1,
+                "attempted_frame": 300,
+                "effect_count": 0,
+                "blocker_manager": "CombatCommander",
+                "blocker": "ability_failed",
+                "stage": "blocked",
+            },
         ]
 
         result = reducer.observe(
@@ -16033,8 +16047,12 @@ const assert = require("assert");
   setupVoiceInput();
   assert.strictEqual(recognitionInstances.length, 1);
   var voiceRecognition = recognitionInstances[0];
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "음성 입력");
   var voiceRequestStart = requests.length;
   voiceRecognition.start();
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "녹음 중지");
   var firstVoiceSession = activeVoiceSession;
   var firstVoiceNode = firstVoiceSession.node;
   var interimResult = [{ transcript: "마린 두 기로" }];
@@ -16050,6 +16068,8 @@ const assert = require("assert");
   var finalResult = [{ transcript: "마린 두 기로 정찰하고 네 기로 우회 공격해" }];
   finalResult.isFinal = true;
   voiceRecognition.onend();
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "음성 입력");
   assert.strictEqual(requests.length, voiceRequestStart);
   voiceRecognition.onresult({
     resultIndex: 0,
@@ -16149,9 +16169,11 @@ const assert = require("assert");
   // Recognition errors remain on the same node and never submit.
   var errorRequestStart = requests.length;
   voiceRecognition.start();
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
   var errorVoiceSession = activeVoiceSession;
   var errorVoiceNode = errorVoiceSession.node;
   voiceRecognition.onerror({ error: "no-speech" });
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
   voiceRecognition.onend();
   assert.strictEqual(requests.length, errorRequestStart);
   assert.strictEqual(errorVoiceNode.parentNode, logBox);
@@ -16232,6 +16254,46 @@ const assert = require("assert");
   assert.strictEqual(
     scopeResetSession.node.querySelectorAll(".message-pending").length,
     0
+  );
+
+  // An unbound finalizing session cannot cross a blackboard scope boundary.
+  var staleVoiceRequestStart = requests.length;
+  voiceRecognition.start();
+  var staleFinalizingSession = activeVoiceSession;
+  var staleVoiceSessionSeq = voiceSessionSeq;
+  var staleInterimResult = [{ transcript: "이전 scope의 임시 정찰 명령" }];
+  staleInterimResult.isFinal = false;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [staleInterimResult]
+  });
+  voiceRecognition.onend();
+  var staleFinalizationTimerIndex = timeoutCallbacks.length - 1;
+  voiceRecognition.start();
+  assert.strictEqual(
+    voiceSessionSeq,
+    staleVoiceSessionSeq,
+    "a new recording must not replace a session during finalization grace"
+  );
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-voice-radio-third";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-voice-radio-third"
+  );
+  assert.strictEqual(staleFinalizingSession.invalidated, true);
+  assert.strictEqual(activeVoiceSession, null);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  var staleFinalResult = [{ transcript: "늦게 도착한 이전 scope 명령" }];
+  staleFinalResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [staleFinalResult]
+  });
+  timeoutCallbacks[staleFinalizationTimerIndex]();
+  assert.strictEqual(
+    requests.length,
+    staleVoiceRequestStart,
+    "late result and finalization fallback must not submit into the new scope"
   );
 
   // Scheduler priority, interruption, compaction and dedupe are deterministic.
@@ -16408,6 +16470,9 @@ const assert = require("assert");
   // Snapshot hydration seeds high-water state without replaying old audio.
   cancelTacticalRadioSpeechAndQueue();
   tacticalRadio.dedupe = {};
+  tacticalRadio.captions = [];
+  tacticalRadio.planAnnouncements = {};
+  renderTacticalRadioCaptions();
   spokenUtterances.length = 0;
   var hydrationOperation = operationResult(
     "hydrated-operation",
@@ -16419,14 +16484,67 @@ const assert = require("assert");
     actionStages("attack").slice(0, 6),
     2
   );
+  var hydrationPlanOperation = operationResult(
+    "hydrated-plan-operation",
+    "hydrated-plan-update",
+    "hydrated plan operation",
+    "scouting",
+    699,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    5
+  );
+  hydrationPlanOperation.update.vector = {
+    operation_id: "hydrated-plan-operation",
+    generation: 5,
+    composition_requirements: [
+      { unit_type: "TERRAN_VIKINGFIGHTER", count: 2 }
+    ],
+    tactical_task: { task_type: "scout_with_units" },
+    route_intent: {
+      route_type: "flank_left",
+      target_intent: "enemy_natural"
+    },
+    lifetime: { mode: "until_completed" }
+  };
+  var hydrationStatus = serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    operations: [hydrationOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "hydrated-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "hydrated-plan-update",
+          vector: hydrationPlanOperation.update.vector
+        },
+        operations: [hydrationPlanOperation]
+      }
+    ]
+  }, SERVER_SCOPE_A);
   applyEventSnapshot({
-    micromachine_status: serverResult({
-      status: "published",
-      operation_registry_authoritative: true,
-      operations: [hydrationOperation]
-    }, SERVER_SCOPE_A)
+    micromachine_status: hydrationStatus
   });
   assert.strictEqual(spokenUtterances.length, 0);
+  assert.strictEqual(tacticalRadio.captions.length, 0);
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      [
+        SERVER_SCOPE_A,
+        "hydrated-plan-update",
+        "hydrated-plan-operation",
+        5
+      ].join("|")
+    ],
+    true
+  );
+  renderMicroMachineStatus(hydrationStatus);
+  assert.strictEqual(spokenUtterances.length, 0);
+  assert.strictEqual(tacticalRadio.captions.length, 0);
   assert.strictEqual(
     tacticalRadio.frameHighWater[
       [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
@@ -16639,6 +16757,10 @@ const assert = require("assert");
             'id="tactical-radio-captions"',
             'aria-live="off"',
             'data-i18n-aria-label="tacticalRadioCaptionsLabel"',
+            'id="voice-button"\n'
+            '              title="음성 입력"\n'
+            '              aria-label="음성 입력"\n'
+            '              aria-pressed="false"',
             'data-i18n-title="voiceInputLabel"',
             "@media (prefers-reduced-motion: reduce)",
             "@media (forced-colors: active)",

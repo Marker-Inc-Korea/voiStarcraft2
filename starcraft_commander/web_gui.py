@@ -5721,6 +5721,9 @@ class _OperationSemanticTimelineReducer:
         )
         tactical_task = _mapping_child(vector, "tactical_task")
         ability = str(tactical_task.get("ability", "") or "").strip()
+        expected_action = ability.lower()
+        if expected_action and not expected_action.startswith("ability:"):
+            expected_action = f"ability:{expected_action}"
         task_type = str(
             tactical_task.get("task_type", "") or ""
         ).strip().lower()
@@ -5760,7 +5763,7 @@ class _OperationSemanticTimelineReducer:
                 or _int_or_none(row.get("generation")) != generation
             ):
                 continue
-            action = str(row.get("action", "") or "").lower()
+            action = str(row.get("action", "") or "").strip().lower()
             blocker = str(row.get("blocker", "") or "").strip()
             blocker_manager = str(
                 row.get("blocker_manager", "") or ""
@@ -5786,7 +5789,7 @@ class _OperationSemanticTimelineReducer:
             )
             stage = str(row.get("stage", "") or "").lower()
             if (
-                not action.startswith("ability:")
+                action != expected_action
                 or required_effect != "ability_state_or_effect"
                 or stage != "blocked"
                 or attempted_count <= 0
@@ -9991,6 +9994,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       <button type="button" id="voice-button"
               title="음성 입력"
               aria-label="음성 입력"
+              aria-pressed="false"
               data-i18n-title="voiceInputLabel"
               data-i18n-aria-label="voiceInputLabel">◉</button>
       <button type="submit" id="send-button" data-i18n="send">전송</button>
@@ -10540,6 +10544,7 @@ var I18N = {
     voiceFinalizing: "음성 확정 중",
     voiceTranscriptUnavailable: "음성 transcript를 사용할 수 없습니다.",
     voiceInputLabel: "음성 입력",
+    voiceStopLabel: "녹음 중지",
     voiceUnsupported: "이 브라우저는 음성 인식을 지원하지 않습니다.",
     voiceNoResult: "음성이 인식되지 않았습니다.",
     tacticalRadioTitle: "전술 무전",
@@ -10752,6 +10757,7 @@ var I18N = {
     voiceFinalizing: "Finalizing speech",
     voiceTranscriptUnavailable: "Voice transcript unavailable.",
     voiceInputLabel: "Voice input",
+    voiceStopLabel: "Stop recording",
     voiceUnsupported: "This browser does not support speech recognition.",
     voiceNoResult: "No speech was recognized.",
     tacticalRadioTitle: "Tactical Radio",
@@ -10964,6 +10970,7 @@ var I18N = {
     voiceFinalizing: "Finalizing speech",
     voiceTranscriptUnavailable: "Voice transcript unavailable.",
     voiceInputLabel: "语音输入",
+    voiceStopLabel: "停止录音",
     voiceUnsupported: "此浏览器不支持语音识别。",
     voiceNoResult: "未识别到语音。",
     tacticalRadioTitle: "Tactical Radio",
@@ -11162,6 +11169,7 @@ function applyLanguage(lang) {
   renderChatTrimNote();
   renderTacticalRadioState();
   renderTacticalRadioCaptions();
+  setVoiceButtonRecordingState(isRecording);
   if (
     activeVoiceSession &&
     (
@@ -11542,14 +11550,23 @@ function clearPendingMicroMachinePlan() {
   ).map(function(pendingId) {
     return voiceSessionsByPendingId[pendingId];
   }).filter(Boolean);
+  if (
+    activeVoiceSession &&
+    (
+      activeVoiceSession.state === "listening" ||
+      activeVoiceSession.state === "finalizing" ||
+      activeVoiceSession.state === "pending"
+    ) &&
+    pendingVoiceSessions.indexOf(activeVoiceSession) < 0
+  ) {
+    pendingVoiceSessions.push(activeVoiceSession);
+  }
   pendingVoiceSessions.forEach(function(session) {
-    clearVoiceFinalizationTimer(session);
     if (session.pendingId) {
       removePendingById(session.pendingId);
     }
-    renderVoiceSessionTerminal(
+    invalidateVoiceSession(
       session,
-      "blocked",
       commandUiText(
         "MicroMachine 전장 링크가 전환되어 이전 음성 명령 추적을 종료했습니다.",
         "The MicroMachine battlefield link changed, so the previous voice order is no longer tracked.",
@@ -11557,6 +11574,17 @@ function clearPendingMicroMachinePlan() {
       )
     );
   });
+  if (isRecording) {
+    isRecording = false;
+    setVoiceButtonRecordingState(false);
+    if (recognition) {
+      if (typeof recognition.abort === "function") {
+        recognition.abort();
+      } else if (typeof recognition.stop === "function") {
+        recognition.stop();
+      }
+    }
+  }
   Object.keys(pendingNodes).forEach(function (key) {
     delete pendingNodes[key];
   });
@@ -11587,6 +11615,8 @@ function appendVoiceRecordingBubble() {
     submitted: false,
     pendingId: "",
     error: false,
+    invalidated: false,
+    contextGeneration: microMachineBlackboardContextGeneration,
     finalizationTimerId: null,
     node: entry
   };
@@ -11698,6 +11728,30 @@ function clearVoiceFinalizationTimer(session) {
   if (session) { session.finalizationTimerId = null; }
 }
 
+function voiceSessionContextIsCurrent(session) {
+  return Boolean(
+    session &&
+    session.invalidated !== true &&
+    session.contextGeneration === microMachineBlackboardContextGeneration
+  );
+}
+
+function setVoiceButtonRecordingState(recording) {
+  var voiceButton = document.getElementById("voice-button");
+  if (!voiceButton) { return; }
+  var active = recording === true;
+  voiceButton.classList.toggle("recording", active);
+  voiceButton.setAttribute("aria-pressed", active ? "true" : "false");
+  voiceButton.setAttribute(
+    "aria-label",
+    t(active ? "voiceStopLabel" : "voiceInputLabel")
+  );
+  voiceButton.setAttribute(
+    "title",
+    t(active ? "voiceStopLabel" : "voiceInputLabel")
+  );
+}
+
 function removeVoiceRecordingBubble() {
   if (activeVoiceSession && activeVoiceSession.node) {
     clearVoiceFinalizationTimer(activeVoiceSession);
@@ -11797,6 +11851,24 @@ function failVoiceSession(session, message) {
     "blocked",
     message || t("voiceTranscriptUnavailable")
   );
+}
+
+function invalidateVoiceSession(session, message) {
+  if (!session || session.invalidated) { return; }
+  clearVoiceFinalizationTimer(session);
+  session.invalidated = true;
+  session.error = true;
+  if (session.pendingId) {
+    removePendingById(session.pendingId);
+  }
+  renderVoiceSessionTerminal(
+    session,
+    "blocked",
+    message || t("voiceTranscriptUnavailable")
+  );
+  if (activeVoiceSession === session) {
+    activeVoiceSession = null;
+  }
 }
 
 function tacticalRadioNow() {
@@ -12335,6 +12407,42 @@ function announceAcceptedTacticalPlan(data, source) {
   return announced;
 }
 
+function seedAcceptedTacticalPlanAnnouncements(data) {
+  if (!data || typeof data !== "object") { return; }
+  if (data.accepted === false || data.ok === false) { return; }
+  var compileResult = data.compile_result || {};
+  var status = String(data.status || compileResult.status || "").toLowerCase();
+  if (
+    status &&
+    ["published", "compiled", "accepted", "pending"].indexOf(status) < 0
+  ) {
+    return;
+  }
+  var operations = structuredOperationsForReadback(data);
+  if (!operations.length) { return; }
+  var scopeId = String(
+    data.blackboard_scope_id ||
+    compileResult.blackboard_scope_id ||
+    ""
+  );
+  ensureTacticalRadioScope(scopeId);
+  var updateId = String(
+    data.update_id ||
+    compileResult.update_id ||
+    ""
+  );
+  operations.forEach(function(operation) {
+    tacticalRadio.planAnnouncements[
+      [
+        scopeId,
+        updateId,
+        operation.operationId,
+        operation.generation
+      ].join("|")
+    ] = true;
+  });
+}
+
 function normalizedTacticalReason(payload) {
   var technical = payload && payload.technical || {};
   return String(
@@ -12470,6 +12578,19 @@ function announceOperationLifecycleEvent(envelope, payload, scopeId, record) {
 
 function hydrateTacticalRadioState(data) {
   if (!data || typeof data !== "object") { return; }
+  seedAcceptedTacticalPlanAnnouncements(data);
+  if (Array.isArray(data.modulation_results)) {
+    data.modulation_results.forEach(function(result) {
+      seedAcceptedTacticalPlanAnnouncements(
+        Object.assign(
+          {
+            blackboard_scope_id: microMachineScopeId(data)
+          },
+          result || {}
+        )
+      );
+    });
+  }
   var operations = commandOperationPayloads(data);
   var scopeId = microMachineScopeId(data);
   if (!scopeId && operations.length) {
@@ -12714,8 +12835,11 @@ function applyEventSnapshot(payload) {
     commandEventFailedSources.state = true;
   }
   if (payload.micromachine_status) {
-    safeRenderMicroMachineStatus(payload.micromachine_status);
     hydrateTacticalRadioState(payload.micromachine_status);
+    safeRenderMicroMachineStatus(
+      payload.micromachine_status,
+      { suppressPlanAnnouncements: true }
+    );
     if (payload.micromachine_status.status === "source_error") {
       commandEventFailedSources.micromachine_status = true;
     }
@@ -18013,7 +18137,8 @@ function microMachineStatusIsStaleForActiveCommand(data) {
   );
 }
 
-function renderMicroMachineStatus(data) {
+function renderMicroMachineStatus(data, options) {
+  options = options || {};
   var node = document.getElementById("micromachine-status");
   if (!node) { return; }
   if (!data || data.enabled === false) {
@@ -18044,18 +18169,22 @@ function renderMicroMachineStatus(data) {
     ? data.modulation_results
     : [];
   modulationResults.forEach(function(result) {
-    announceAcceptedTacticalPlan(
-      Object.assign(
-        {
-          blackboard_scope_id: microMachineScopeId(data)
-        },
-        result || {}
-      ),
-      "status"
-    );
+    if (!options.suppressPlanAnnouncements) {
+      announceAcceptedTacticalPlan(
+        Object.assign(
+          {
+            blackboard_scope_id: microMachineScopeId(data)
+          },
+          result || {}
+        ),
+        "status"
+      );
+    }
     maybeAppendMicroMachineAsyncCompletion(result);
   });
-  announceAcceptedTacticalPlan(data, "status");
+  if (!options.suppressPlanAnnouncements) {
+    announceAcceptedTacticalPlan(data, "status");
+  }
   renderOperationConsole(data);
   renderBattlefieldControlOverview(data);
   if (microMachineStatusIsStaleForActiveCommand(data)) {
@@ -18101,9 +18230,9 @@ function renderMicroMachineStatus(data) {
   maybeAppendMicroMachineAsyncCompletion(data);
 }
 
-function safeRenderMicroMachineStatus(data) {
+function safeRenderMicroMachineStatus(data, options) {
   try {
-    renderMicroMachineStatus(data);
+    renderMicroMachineStatus(data, options);
   } catch (error) {
     var node = document.getElementById("micromachine-status");
     if (node) {
@@ -19571,6 +19700,7 @@ function submitCommanderText(text, options) {
 function setupVoiceInput() {
   var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   var voiceButton = document.getElementById("voice-button");
+  setVoiceButtonRecordingState(false);
   if (!SpeechRecognition) {
     voiceButton.addEventListener("click", function () {
       setLlmStatus("failed", "llmFailedLabel", t("voiceUnsupported"));
@@ -19582,19 +19712,44 @@ function setupVoiceInput() {
   recognition.interimResults = true;
   recognition.continuous = false;
   recognition.onstart = function () {
+    if (
+      activeVoiceSession &&
+      !activeVoiceSession.submitted &&
+      !activeVoiceSession.error &&
+      activeVoiceSession.state === "finalizing" &&
+      voiceSessionContextIsCurrent(activeVoiceSession)
+    ) {
+      if (typeof recognition.stop === "function") {
+        recognition.stop();
+      }
+      return;
+    }
     isRecording = true;
-    voiceButton.classList.add("recording");
+    setVoiceButtonRecordingState(true);
     var session = appendVoiceRecordingBubble();
     recognition.onend = function () {
       isRecording = false;
-      voiceButton.classList.remove("recording");
-      if (!session || session.error || session.submitted) { return; }
+      setVoiceButtonRecordingState(false);
+      if (
+        !session ||
+        session.error ||
+        session.submitted ||
+        !voiceSessionContextIsCurrent(session)
+      ) {
+        return;
+      }
       clearVoiceFinalizationTimer(session);
       session.state = "finalizing";
       renderVoiceSession(session);
       session.finalizationTimerId = window.setTimeout(function () {
         session.finalizationTimerId = null;
-        if (session.error || session.submitted) { return; }
+        if (
+          session.error ||
+          session.submitted ||
+          !voiceSessionContextIsCurrent(session)
+        ) {
+          return;
+        }
         var fallbackText = String(
           session.finalText || session.interimText || ""
         ).trim();
@@ -19607,13 +19762,21 @@ function setupVoiceInput() {
     };
     recognition.onerror = function () {
       isRecording = false;
-      voiceButton.classList.remove("recording");
+      setVoiceButtonRecordingState(false);
       clearVoiceFinalizationTimer(session);
+      if (!voiceSessionContextIsCurrent(session)) { return; }
       setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
       failVoiceSession(session, t("voiceTranscriptUnavailable"));
     };
     recognition.onresult = function (event) {
-      if (!session || session.error || session.submitted) { return; }
+      if (
+        !session ||
+        session.error ||
+        session.submitted ||
+        !voiceSessionContextIsCurrent(session)
+      ) {
+        return;
+      }
       for (var i = 0; i < event.results.length; i += 1) {
         session.segments[i] = {
           text: String(event.results[i][0].transcript || ""),
@@ -19649,6 +19812,15 @@ function setupVoiceInput() {
       recognition.stop();
       return;
     }
+    if (
+      activeVoiceSession &&
+      !activeVoiceSession.submitted &&
+      !activeVoiceSession.error &&
+      activeVoiceSession.state === "finalizing" &&
+      voiceSessionContextIsCurrent(activeVoiceSession)
+    ) {
+      return;
+    }
     recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
     recognition.start();
   });
@@ -19657,6 +19829,17 @@ function setupVoiceInput() {
 function submitVoiceSession(session, text) {
   if (!session || session.submitted || session.error) {
     return session ? session.pendingId : "";
+  }
+  if (!voiceSessionContextIsCurrent(session)) {
+    invalidateVoiceSession(
+      session,
+      commandUiText(
+        "MicroMachine 전장 링크가 전환되어 이 음성 명령을 제출하지 않았습니다.",
+        "The MicroMachine battlefield link changed, so this voice order was not submitted.",
+        "MicroMachine battlefield link changed; this voice order was not submitted."
+      )
+    );
+    return "";
   }
   var normalizedText = String(text || "").trim();
   if (!normalizedText) {
