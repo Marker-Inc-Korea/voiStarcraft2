@@ -7639,6 +7639,50 @@ class SessionLoopBridgeTest(unittest.TestCase):
                     }.isdisjoint(kinds),
                 )
 
+    def test_operation_timeline_never_emits_completed_for_negative_terminal_states(
+        self,
+    ):
+        for index, (terminal_state, disposition) in enumerate(
+            (
+                ("failed", "blocked"),
+                ("cancelled", "superseded"),
+                ("expired", "expired"),
+                ("superseded", "superseded"),
+            )
+        ):
+            with self.subTest(terminal_state=terminal_state):
+                payload = semantic_operation_payload(
+                    operation_id=f"negative-{terminal_state}",
+                    frame=500 + index,
+                    terminal=True,
+                    disposition=disposition,
+                )
+                projection = payload["operations"][0][
+                    "battlefield_operation"
+                ]
+                projection["operation_lifetime"]["completion_state"] = (
+                    terminal_state
+                )
+                projection["operation_lifetime"]["completion_reason"] = (
+                    f"canonical_{terminal_state}"
+                )
+                projection["operation_completion"]["state"] = terminal_state
+                projection["operation_completion"]["reason"] = (
+                    f"canonical_{terminal_state}"
+                )
+
+                result = web_gui._OperationSemanticTimelineReducer().observe(
+                    payload,
+                    blackboard_scope_id=(
+                        f"negative-terminal-{terminal_state}"
+                    ),
+                )
+                kinds = [
+                    event["kind"] for event in result["operation_events"]
+                ]
+
+                self.assertNotIn("completed", kinds)
+
     def test_operation_timeline_requires_matching_projection_identity_for_observation(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         payload = semantic_operation_payload(
@@ -14837,6 +14881,47 @@ const assert = require("assert");
   );
   asyncParallelActive.battlefield_operation.identity.session_epoch =
     1800000000000;
+  var asyncParallelUnprojected = operationResult(
+    "async-parallel-unprojected",
+    asyncParallelUpdateId,
+    "병렬 공격 projection 대기",
+    "attack",
+    15,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  delete asyncParallelUnprojected.battlefield_operation;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: asyncParallelUpdateId
+    },
+    update: {
+      update_id: asyncParallelUpdateId,
+      vector: { goal: asyncParallelCommand }
+    },
+    intervention: {
+      latest_update_id: asyncParallelUpdateId,
+      telemetry_frame: 15,
+      command_execution:
+        asyncParallelSuccess.intervention.command_execution
+    },
+    operations: [asyncParallelSuccess, asyncParallelUnprojected]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, asyncParallelUpdateId),
+    "a sibling without canonical projection must keep the combined command pending"
+  );
+
   renderMicroMachineStatus(serverResult({
     ok: true,
     accepted: true,
@@ -14927,6 +15012,76 @@ const assert = require("assert");
     "partially_executed"
   );
   assert(!asyncParallelEntry.textContent.includes("async_parallel_failure"));
+
+  var allSuccessUpdateId = "async-parallel-all-success";
+  var allSuccessCommand = "정찰과 공격을 모두 완료";
+  rememberServerPending(
+    allSuccessCommand,
+    allSuccessUpdateId,
+    OPERATION_SCOPE
+  );
+  var allSuccessScout = operationResult(
+    "all-success-scout",
+    allSuccessUpdateId,
+    "병렬 정찰 완료",
+    "scouting",
+    20,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  var allSuccessAttack = operationResult(
+    "all-success-attack",
+    allSuccessUpdateId,
+    "병렬 공격 완료",
+    "attack",
+    20,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  allSuccessScout.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  allSuccessAttack.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: allSuccessUpdateId
+    },
+    update: {
+      update_id: allSuccessUpdateId,
+      vector: { goal: allSuccessCommand }
+    },
+    intervention: {
+      latest_update_id: allSuccessUpdateId,
+      telemetry_frame: 20,
+      command_execution:
+        allSuccessScout.intervention.command_execution
+    },
+    operations: [allSuccessScout, allSuccessAttack]
+  }, OPERATION_SCOPE));
+  assert(!hasPending(OPERATION_SCOPE, allSuccessUpdateId));
+  var allSuccessEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(allSuccessCommand);
+    }
+  );
+  assert(allSuccessEntry);
+  assert.strictEqual(
+    allSuccessEntry.querySelector(".message-bot").getAttribute("data-status"),
+    "executed"
+  );
+  assert(allSuccessEntry.textContent.includes("병렬 작전 완료 확인"));
+  assert(allSuccessEntry.textContent.includes("2개 작전"));
 
   focusOperationRecord(sharedFailureRecord);
   renderMicroMachineIntervention(sharedParallelStatus);

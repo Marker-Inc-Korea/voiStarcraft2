@@ -5857,14 +5857,22 @@ class _OperationSemanticTimelineReducer:
                     {**common, "completion": dict(completion)},
                 )
             )
+        completion_state = str(
+            completion.get("state", "") or ""
+        ).lower()
+        lifetime_state = str(
+            lifetime.get("completion_state", "") or ""
+        ).lower()
+        if completion_state in {"success", "succeeded"}:
+            completion_state = "completed"
+        if lifetime_state in {"success", "succeeded"}:
+            lifetime_state = "completed"
         authoritative_completed = bool(
             canonical_completion_identity
             and completion.get("terminal") is True
-            and (
-                lifetime.get("completed") is True
-                or str(completion.get("state", "") or "").lower()
-                in {"completed", "succeeded", "success"}
-            )
+            and lifetime.get("completed") is True
+            and completion_state == "completed"
+            and lifetime_state in {"", "completed"}
         )
         if authoritative_completed:
             candidates.append(
@@ -16956,24 +16964,31 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     var executionState = updateId === executionUpdateId
       ? String(execution.state || "").toLowerCase()
       : "";
-    var operationCandidates = commandOperationPayloads(data)
+    var operationsForUpdate = (
+      Array.isArray(data.operations) ? data.operations : []
+    ).filter(function(operation) {
+      return (
+        operation &&
+        typeof operation === "object" &&
+        operationPayloadUpdateId(operation) === updateId
+      );
+    });
+    var operationCandidates = operationsForUpdate
       .filter(function(operation) {
-        return (
-          operationPayloadUpdateId(operation) === updateId &&
-          Boolean(operation.battlefield_operation)
-        );
+        return Boolean(operation.battlefield_operation);
       })
       .map(function(operation) {
         return commandOperationData(operation, data);
       });
     var allCanonicalOperationsTerminal = Boolean(
-      operationCandidates.length &&
+      operationsForUpdate.length &&
+      operationCandidates.length === operationsForUpdate.length &&
       operationCandidates.every(function(candidate) {
         return commandConsoleStageModel(candidate).terminal;
       })
     );
     var terminalExecution = Boolean(
-      !operationCandidates.length &&
+      !operationsForUpdate.length &&
       terminalExecutionStates[executionState]
     );
     if (
@@ -17021,6 +17036,11 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
         narrationData,
         operationCandidates[0]
       );
+    } else if (operationCandidates.length > 1) {
+      narrationData = Object.assign({}, narrationData, {
+        command_console_operation_aggregate:
+          canonicalOperationAggregateOutcome(operationCandidates)
+      });
     }
     narrationData = commandConsoleDataForCanonicalOperation(
       narrationData,
@@ -17055,6 +17075,41 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
   expirePendingMicroMachineAsync();
 }
 
+function canonicalOperationAggregateOutcome(operationCandidates) {
+  var candidates = Array.isArray(operationCandidates)
+    ? operationCandidates
+    : [];
+  var aggregate = {
+    total: candidates.length,
+    executed: 0,
+    blocked: 0,
+    cancelled: 0,
+    status: "partially_executed"
+  };
+  candidates.forEach(function(candidate) {
+    var model = commandConsoleStageModel(candidate || {});
+    if (model.effectObserved || model.canonicalCompletionVerified) {
+      aggregate.executed += 1;
+      return;
+    }
+    if (model.cancelled || model.superseded) {
+      aggregate.cancelled += 1;
+      return;
+    }
+    if (model.blocked) {
+      aggregate.blocked += 1;
+    }
+  });
+  if (aggregate.total > 0 && aggregate.executed === aggregate.total) {
+    aggregate.status = "executed";
+  } else if (aggregate.total > 0 && aggregate.blocked === aggregate.total) {
+    aggregate.status = "blocked";
+  } else if (aggregate.total > 0 && aggregate.cancelled === aggregate.total) {
+    aggregate.status = "clarification";
+  }
+  return aggregate;
+}
+
 function microMachineAssistantMessage(compileResult, vector) {
   var message = compileResult && compileResult.assistant_message;
   if (typeof message === "string" && message.trim()) {
@@ -17070,7 +17125,17 @@ function microMachineAssistantMessage(compileResult, vector) {
 function microMachineChatOutcomeStatus(data, requestedStatus) {
   var model = commandConsoleStageModel(data || {});
   var compileResult = (data && data.compile_result) || {};
+  var aggregate = data && data.command_console_operation_aggregate;
   var accepted = data && data.accepted !== false && data.ok !== false;
+  if (
+    aggregate &&
+    Number(aggregate.total || 0) > 1 &&
+    ["executed", "partially_executed", "blocked", "clarification"].indexOf(
+      String(aggregate.status || "")
+    ) >= 0
+  ) {
+    return String(aggregate.status);
+  }
   if (model.cancelled || model.superseded) {
     return "clarification";
   }
@@ -17118,6 +17183,7 @@ function microMachineChatNarration(data) {
   var assistantMessage = microMachineAssistantMessage(compileResult, vector);
   var execution = intervention.command_execution || {};
   var model = commandConsoleStageModel(scopedData);
+  var aggregate = scopedData.command_console_operation_aggregate || {};
   var parts = [];
   if (assistantMessage) { parts.push(assistantMessage); }
   if (scopedData.status === "queued") {
@@ -17134,6 +17200,38 @@ function microMachineChatNarration(data) {
     ));
     if (compileResult.refusal_reason) { parts.push(compileResult.refusal_reason); }
     if (compileResult.clarification_prompt) { parts.push(compileResult.clarification_prompt); }
+  } else if (Number(aggregate.total || 0) > 1) {
+    if (aggregate.status === "executed") {
+      parts.push(commandUiText(
+        "병렬 작전 완료 확인: " + aggregate.total + "개 작전의 실행 결과를 확인했습니다.",
+        "Parallel operations verified: confirmed execution outcomes for " + aggregate.total + " operations.",
+        "并行作战已确认：已确认 " + aggregate.total + " 个作战的执行结果。"
+      ));
+    } else if (aggregate.status === "blocked") {
+      parts.push(commandUiText(
+        "병렬 작전 차단: " + aggregate.total + "개 작전이 실행 조건을 충족하지 못했습니다.",
+        "Parallel operations blocked: all " + aggregate.total + " operations failed their execution conditions.",
+        "并行作战受阻：" + aggregate.total + " 个作战均未满足执行条件。"
+      ));
+    } else if (aggregate.status === "clarification") {
+      parts.push(commandUiText(
+        "병렬 작전 종료: " + aggregate.total + "개 작전이 취소되거나 새 명령으로 교체됐습니다.",
+        "Parallel operations ended: all " + aggregate.total + " operations were cancelled or superseded.",
+        "并行作战已结束：" + aggregate.total + " 个作战均已取消或替换。"
+      ));
+    } else {
+      parts.push(commandUiText(
+        "병렬 작전 종료: 전체 " + aggregate.total + "개 중 실행 확인 " +
+          aggregate.executed + "개, 차단 " + aggregate.blocked + "개, 취소·교체 " +
+          aggregate.cancelled + "개입니다.",
+        "Parallel operations ended: " + aggregate.executed + " verified, " +
+          aggregate.blocked + " blocked, and " + aggregate.cancelled +
+          " cancelled or superseded out of " + aggregate.total + ".",
+        "并行作战已结束：共 " + aggregate.total + " 个，已确认 " +
+          aggregate.executed + " 个，受阻 " + aggregate.blocked +
+          " 个，取消或替换 " + aggregate.cancelled + " 个。"
+      ));
+    }
   } else if (model.cancelled) {
     parts.push(
       commandConsoleTerminalCleanupVerified(model)
