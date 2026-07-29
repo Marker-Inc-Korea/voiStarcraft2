@@ -1160,20 +1160,37 @@ def _operation_requested_family_contracts(
     }
 
 
+def operation_requires_specific_family_ability_evidence(
+    operation: Mapping[str, object],
+) -> bool:
+    """Return whether the operation explicitly requires a named ability."""
+
+    return any(
+        set(contract.get("ability_policies", ()))
+        - _GENERIC_TERRAN_ABILITY_POLICIES
+        for contracts in _operation_requested_family_contracts(
+            operation
+        ).values()
+        for contract in contracts
+    )
+
+
 def _operation_family_ability_action_matches_request(
     action: str,
     ability_policies: set[str],
 ) -> bool:
     if not action.startswith("ability:") or not ability_policies:
         return False
-    normalized_action = action.upper()
+    ability_action = action.partition(":")[2].strip().upper()
+    if not ability_action:
+        return False
     specific_policies = (
         ability_policies - _GENERIC_TERRAN_ABILITY_POLICIES
     )
     if not specific_policies:
         return bool(ability_policies & _GENERIC_TERRAN_ABILITY_POLICIES)
     return any(
-        marker in normalized_action
+        ability_action == marker.upper()
         for policy in specific_policies
         for marker in _TERRAN_ABILITY_ACTION_MARKERS.get(policy, ())
     )

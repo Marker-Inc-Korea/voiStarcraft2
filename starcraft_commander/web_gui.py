@@ -64,6 +64,7 @@ from starcraft_commander.micromachine_command_execution import (
     TRANSIENT_OPERATION_BLOCK_REASONS,
     classify_micromachine_command_execution,
     classify_micromachine_operation_executions,
+    operation_requires_specific_family_ability_evidence,
 )
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
@@ -1945,8 +1946,17 @@ def _micromachine_operation_status_payload(
     fallback_execution = intervention.get("command_execution")
     if not isinstance(fallback_execution, Mapping):
         fallback_execution = {}
+    operation_requires_ability_evidence = (
+        operation_requires_specific_family_ability_evidence(
+            operation_vector
+        )
+    )
     if (
-        current_family_evidence
+        operation_telemetry is not None
+        and (
+            current_family_evidence
+            or operation_requires_ability_evidence
+        )
         and operation_telemetry_document.get("_pending_only") is not True
     ):
         strict_operation_execution = _micromachine_strict_operation_execution(
@@ -1955,7 +1965,12 @@ def _micromachine_operation_status_payload(
             operation_generation=active_operation_generation,
             operation_telemetry_document=operation_telemetry_document,
         )
-        if strict_operation_execution:
+        if (
+            strict_operation_execution
+            and _micromachine_execution_has_active_family_contract(
+                strict_operation_execution
+            )
+        ):
             fallback_execution = strict_operation_execution
     command_execution = _micromachine_operation_command_execution(
         update_id=update_id,
@@ -2229,6 +2244,24 @@ _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN: Final[re.Pattern[str]] = re.compil
         |(?:[a-z][a-z0-9_]*_)?unit_tags
         |[a-z][a-z0-9_]*_units_tags
         |[a-z][a-z0-9_]*_owner_tags
+        |(?:[a-z][a-z0-9_]*_)?
+            (?:
+                assigned
+                |attempted
+                |submitted
+                |effect
+                |requested
+                |selected
+                |target
+                |source
+                |matching
+                |duplicate
+                |conflict
+                |caster
+                |passenger
+                |transport
+                |worker
+            )_tags
         |owner_tags
         |unassigned_tags
         |transferable_tags
@@ -2254,12 +2287,35 @@ def _redact_micromachine_internal_unit_tag_text(value: str) -> str:
 
 def _micromachine_internal_unit_tag_key(key: object) -> bool:
     normalized = str(key or "").strip().lower()
+    identity_tag_aliases = {
+        "assigned",
+        "attempted",
+        "submitted",
+        "effect",
+        "requested",
+        "selected",
+        "target",
+        "source",
+        "matching",
+        "duplicate",
+        "conflict",
+        "caster",
+        "passenger",
+        "transport",
+        "worker",
+    }
+    tag_prefix_tokens = set(
+        normalized.removesuffix("_tags").split("_")
+        if normalized.endswith("_tags")
+        else ()
+    )
     return (
         normalized in {"tag", "unit_tags"}
         or normalized.endswith("_tag")
         or normalized.endswith("_unit_tags")
         or normalized.endswith("_units_tags")
         or normalized.endswith("_owner_tags")
+        or bool(tag_prefix_tokens & identity_tag_aliases)
         or normalized
         in {
             "owner_tags",

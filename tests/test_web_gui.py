@@ -3346,6 +3346,51 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertNotEqual("effect_observed", movement_only["state"])
         self.assertFalse(movement_only["completed"])
 
+        operation_telemetry["family_evidence"] = []
+        missing_family_payload = (
+            web_gui._micromachine_operation_status_payload(
+                operation_update,
+                operation_id=operation_id,
+                operation_count=1,
+                active=True,
+                telemetry={
+                    "frame": 160,
+                    "active_modulation_ids": [update_id],
+                    "managers": {
+                        "OperationDirector": {
+                            "policy_update_id": update_id,
+                            "operations": [operation_telemetry],
+                        }
+                    },
+                },
+                telemetry_archive=(),
+                blackboard_dir="",
+                result_item={},
+                compile_result={},
+            )
+        )
+        missing_family_execution = missing_family_payload[
+            "intervention"
+        ]["command_execution"]
+        missing_family_stages = {
+            stage["name"]: stage
+            for stage in missing_family_execution["stages"]
+        }
+        self.assertTrue(
+            web_gui._micromachine_execution_has_active_family_contract(
+                missing_family_execution
+            )
+        )
+        self.assertFalse(
+            missing_family_stages["effect_observed"]["ok"],
+            missing_family_execution,
+        )
+        self.assertNotEqual(
+            "effect_observed",
+            missing_family_execution["state"],
+        )
+
+        operation_telemetry["family_evidence"] = [family_row]
         family_row.update(
             {
                 "action": "ability:MORPH_SIEGEMODE",
@@ -3359,6 +3404,31 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         }
         self.assertTrue(ability_stages["effect_observed"]["ok"])
         self.assertEqual("effect_observed", ability_confirmed["state"])
+
+    def test_public_runtime_payload_redacts_unit_tag_aliases(self):
+        payload = web_gui._public_runtime_launcher_payload(
+            {
+                "assigned_tags": [7001, 7002],
+                "selected_worker_tags": [8001],
+                "last_line": (
+                    "assigned_tags=[7001,7002] "
+                    "selected_worker_tags=[8001]"
+                ),
+                "strategic_tags": ["pressure", "flank"],
+            }
+        )
+
+        self.assertNotIn("assigned_tags", payload)
+        self.assertNotIn("selected_worker_tags", payload)
+        self.assertEqual(["pressure", "flank"], payload["strategic_tags"])
+        self.assertNotIn("7001", payload["last_line"])
+        self.assertNotIn("8001", payload["last_line"])
+        self.assertEqual(
+            2,
+            payload["last_line"].count(
+                "[internal unit identity]: [redacted]"
+            ),
+        )
 
     def test_micromachine_operation_root_update_id_is_fail_closed(self):
         update_id = "parallel-current-update"

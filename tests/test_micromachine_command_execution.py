@@ -1544,6 +1544,20 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         self.assertTrue(accepted_lifecycle["action_ok"])
         self.assertTrue(accepted_lifecycle["effect_ok"])
 
+        evidence["action"] = "ability:NOT_MORPH_SIEGEMODE_FAKE"
+        substring_collision = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+        substring_lifecycle = {
+            stage.name: stage for stage in substring_collision.stages
+        }["effect_observed"].evidence["family_lifecycle"]
+        self.assertEqual([], substring_lifecycle["evidence"])
+        self.assertFalse(substring_lifecycle["assignment_ok"])
+        self.assertFalse(substring_lifecycle["action_ok"])
+        self.assertFalse(substring_lifecycle["effect_ok"])
+
         evidence["action"] = "ability:BEHAVIOR_CLOAKON"
         rejected = classify_micromachine_operation_executions(
             latest_update=update,
