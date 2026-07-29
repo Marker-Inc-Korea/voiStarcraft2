@@ -327,6 +327,147 @@ def attached_runtime_telemetry(document, runtime_instance_id):
     return payload
 
 
+def semantic_operation_payload(
+    *,
+    operation_id="flank-alpha",
+    generation=1,
+    requested_generation=None,
+    frame=100,
+    session_epoch=1700000000000,
+    execution_state="action_issued",
+    owner_count=4,
+    required_count=4,
+    blocker="",
+    launch_decision="launch",
+    movement=False,
+    engagement=False,
+    target_reached=False,
+    terminal=False,
+    standing=False,
+    disposition="active",
+    operation_edit=None,
+):
+    """Return one reducer-ready canonical operation status fixture."""
+
+    requested = (
+        generation
+        if requested_generation is None
+        else requested_generation
+    )
+    update_id = f"update-{operation_id}-{requested}"
+    overview = deepcopy(
+        battlefield_projection_telemetry(
+            update_id=f"battlefield-{session_epoch}",
+            frame=frame,
+            generation=max(1, generation),
+            session_epoch=session_epoch,
+        )["battlefield_overview"]
+    )
+    projection = overview["operation_ownership"][0]
+    projection["identity"].update(
+        {
+            "update_id": update_id,
+            "scope": f"operation:{operation_id}",
+            "operation_id": operation_id,
+            "generation": generation,
+            "stage": "completed" if terminal else execution_state,
+            "game_frame": frame,
+        }
+    )
+    projection["operation_id"] = operation_id
+    projection["generation"] = generation
+    projection["operation_ownership"]["owner_count"] = owner_count
+    projection["operation_ownership"]["owner_tags"] = list(
+        range(1000, 1000 + owner_count)
+    )
+    projection["operation_launch_policy"].update(
+        {
+            "min_units": required_count,
+            "max_units": required_count,
+            "launch_count": owner_count,
+            "missing_count": max(0, required_count - owner_count),
+            "decision": launch_decision,
+            "blocker": blocker,
+        }
+    )
+    projection["operation_lifetime"].update(
+        {
+            "standing": standing,
+            "completed": terminal,
+            "completion_state": "completed" if terminal else "active",
+            "completion_reason": "target_reached" if terminal else "",
+            "completed_frame": frame if terminal else 0,
+        }
+    )
+    projection["operation_completion"].update(
+        {
+            "movement_observed": movement,
+            "engagement_observed": engagement,
+            "target_reached": target_reached,
+            "terminal": terminal,
+            "state": "completed" if terminal else "active",
+            "reason": "target_reached" if terminal else "",
+            "frame": frame if terminal else 0,
+            "generation": generation,
+        }
+    )
+    stages = [
+        {"name": "parsed", "ok": True},
+        {"name": "consumed_by_manager", "ok": True},
+    ]
+    if owner_count:
+        stages.append({"name": "queued_or_assigned", "ok": True})
+    if execution_state in {
+        "action_issued",
+        "effect_observed",
+        "moving",
+        "engaged",
+        "completed",
+    }:
+        stages.extend(
+            [
+                {"name": "order_issued", "ok": True},
+                {"name": "action_issued", "ok": True},
+            ]
+        )
+    operation = {
+        "operation_id": operation_id,
+        "operation_generation": generation,
+        "requested_operation_generation": requested,
+        "update_id": update_id,
+        "command_text": f"operate {operation_id}",
+        "mission": "attack",
+        "transport_status": "published",
+        "consumption_status": "consumed",
+        "telemetry_frame": frame,
+        "disposition": disposition,
+        "compile_result": {"status": "compiled", "update_id": update_id},
+        "operation_convergence": {
+            "target_count": required_count,
+            "represented_count": owner_count,
+            "missing_count": max(0, required_count - owner_count),
+            "blocker": blocker,
+        },
+        "operation_edit": dict(operation_edit or {}),
+        "intervention": {
+            "command_execution": {
+                "command_id": update_id,
+                "state": execution_state,
+                "operation_id": operation_id,
+                "operation_generation": generation,
+                "blocker_reason": blocker,
+                "stages": stages,
+            }
+        },
+        "battlefield_operation": projection,
+    }
+    return {
+        "blackboard_scope_id": "scope-semantic-test",
+        "battlefield_overview": overview,
+        "operations": [operation],
+    }
+
+
 def contains_hangul(text):
     """Return whether the text contains at least one Hangul syllable."""
 
@@ -867,6 +1008,361 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("history", payload)
         self.assertIn("micromachine_status", payload)
         self.assertTrue(payload["state"]["available"])
+
+    def test_operation_event_snapshot_hydration_does_not_consume_live_watermark(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        scope_id = "scope-operation-events"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "scout-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-scout-alpha",
+            "kind": "assigned",
+            "game_frame": 100,
+            "summary": "assigned",
+            "technical": {},
+        }
+        status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+
+        handler._publish_new_operation_events(
+            status,
+            blackboard_dir="/tmp/operation-events",
+            publish=False,
+        )
+        self.assertEqual(
+            [],
+            [
+                event
+                for event in self.server._http.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "submitted",
+            "game_frame": 101,
+            "summary": "submitted",
+        }
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second],
+            },
+            blackboard_dir="/tmp/operation-events",
+            publish=True,
+        )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+        ]
+        self.assertEqual(2, len(operation_events))
+        self.assertEqual(
+            ["assigned", "submitted"],
+            [event["payload"]["kind"] for event in operation_events],
+        )
+        self.assertEqual("update-scout-alpha", operation_events[1]["update_id"])
+        self.assertEqual(1, operation_events[1]["generation"])
+        self.assertEqual(101, operation_events[1]["game_frame"])
+
+    def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
+        original = self.bridge.micromachine_status
+        self.server._http.publish_event(
+            "state",
+            {"available": True, "marker": "snapshot-race-baseline"},
+        )
+        status_entered = threading.Event()
+        status_release = threading.Event()
+        publisher_started = threading.Event()
+
+        def blocking_status(*, blackboard_dir=""):
+            status_entered.set()
+            if not status_release.wait(2):
+                raise TimeoutError("test did not release snapshot status")
+            return original(blackboard_dir=blackboard_dir)
+
+        self.bridge.micromachine_status = blocking_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status",
+            original,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            response_future = pool.submit(self.get_sse)
+            self.assertTrue(
+                status_entered.wait(1),
+                "authoritative snapshot did not enter MicroMachine status",
+            )
+
+            def publish_during_source_cut():
+                publisher_started.set()
+                return self.server._http.publish_event(
+                    "command_received",
+                    {
+                        "command_text": "snapshot-race-command",
+                        "status": "received",
+                    },
+                    operation_id="snapshot-race-command",
+                    generation=1,
+                )
+
+            publisher_future = pool.submit(publish_during_source_cut)
+            self.assertTrue(publisher_started.wait(1))
+            time.sleep(0.1)
+            self.assertTrue(
+                publisher_future.done(),
+                "slow snapshot source reads blocked real-time publication",
+            )
+            published = publisher_future.result(timeout=3)
+            status_release.set()
+            stream = response_future.result(timeout=3)
+
+        events = self.parse_sse_events(stream)
+        snapshot = events[0]
+        self.assertEqual("snapshot", snapshot["event"])
+        snapshot_cursor = snapshot["data"]["event_seq"]
+        self.assertGreater(published["event_seq"], snapshot_cursor)
+        self.assertIn(
+            "snapshot-race-command",
+            [
+                event["data"]["payload"].get("command_text")
+                for event in events
+                if event["event"] == "command_received"
+            ],
+        )
+
+    def test_sse_snapshot_restarts_when_concurrent_events_roll_past_retention(self):
+        original = self.bridge.micromachine_status
+        self.server._http.event_journal = web_gui._WebEventJournal(
+            retention=2
+        )
+        baseline = self.server._http.publish_event(
+            "state",
+            {"available": True, "marker": "rollover-baseline"},
+        )
+        status_entered = threading.Event()
+        status_release = threading.Event()
+
+        def blocking_status(*, blackboard_dir=""):
+            status_entered.set()
+            if not status_release.wait(2):
+                raise TimeoutError("test did not release snapshot status")
+            return original(blackboard_dir=blackboard_dir)
+
+        self.bridge.micromachine_status = blocking_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status",
+            original,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            response_future = pool.submit(self.get_sse)
+            self.assertTrue(status_entered.wait(1))
+            for index in range(3):
+                self.server._http.publish_event(
+                    "command_received",
+                    {
+                        "command_text": f"rollover-command-{index}",
+                        "status": "received",
+                    },
+                    operation_id=f"rollover-command-{index}",
+                    generation=1,
+                )
+            self.assertGreater(
+                self.server._http.event_journal.oldest_seq,
+                baseline["event_seq"] + 1,
+            )
+            status_release.set()
+            stream = response_future.result(timeout=3)
+
+        snapshots = [
+            event
+            for event in self.parse_sse_events(stream)
+            if event["event"] == "snapshot"
+        ]
+        self.assertGreaterEqual(len(snapshots), 2)
+        self.assertEqual(
+            self.server._http.event_journal.latest_seq,
+            snapshots[-1]["data"]["event_seq"],
+        )
+
+    def test_slow_event_source_read_does_not_hold_publication_lock(self):
+        original = self.bridge.state_snapshot
+        state_entered = threading.Event()
+        state_release = threading.Event()
+
+        def blocking_state():
+            state_entered.set()
+            if not state_release.wait(2):
+                raise TimeoutError("test did not release state snapshot")
+            return original()
+
+        self.bridge.state_snapshot = blocking_state
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "state_snapshot",
+            original,
+        )
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            refresh_future = pool.submit(
+                handler._refresh_event_sources,
+                "/tmp/slow-source",
+            )
+            self.assertTrue(state_entered.wait(1))
+            publish_future = pool.submit(
+                self.server._http.publish_event,
+                "command_received",
+                {"command_text": "latency-critical-command"},
+            )
+            published = publish_future.result(timeout=1)
+            self.assertGreater(published["event_seq"], 0)
+            state_release.set()
+            refresh_future.result(timeout=3)
+
+    def test_concurrent_source_refresh_cannot_publish_older_snapshot_last(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        scope_id = "scope-refresh-high-water"
+        older = semantic_operation_payload(
+            generation=1,
+            frame=100,
+            session_epoch=1700000000000,
+        )
+        newer = semantic_operation_payload(
+            generation=2,
+            frame=200,
+            session_epoch=1700000000000,
+        )
+        for status in (older, newer):
+            status["blackboard_scope_id"] = scope_id
+            status["operation_events"] = []
+            status["operation_registry_authoritative"] = True
+
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        call_lock = threading.Lock()
+        call_count = 0
+
+        def raced_status(_blackboard_dir):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+                call_number = call_count
+            if call_number == 1:
+                first_entered.set()
+                if not release_first.wait(2):
+                    raise TimeoutError("test did not release older refresh")
+                return deepcopy(older)
+            return deepcopy(newer)
+
+        handler._micromachine_status_payload = raced_status
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            older_future = pool.submit(
+                handler._refresh_event_sources,
+                "/tmp/source-refresh-high-water",
+            )
+            self.assertTrue(first_entered.wait(1))
+            newer_future = pool.submit(
+                handler._refresh_event_sources,
+                "/tmp/source-refresh-high-water",
+            )
+            newer_future.result(timeout=3)
+            release_first.set()
+            older_future.result(timeout=3)
+
+        published = [
+            event["payload"]
+            for event in self.server._http.event_journal.events_after(0)
+            if event["event_type"] == "micromachine_status"
+            and event["payload"].get("blackboard_scope_id") == scope_id
+        ]
+        self.assertEqual(1, len(published))
+        self.assertEqual(
+            2,
+            published[0]["battlefield_overview"]["identity"][
+                "generation"
+            ],
+        )
+        self.assertEqual(
+            ("1700000000000", 2, 200),
+            self.server._http._observed_payload_identities[
+                f"micromachine:{scope_id}"
+            ],
+        )
+
+    def test_operation_event_scope_cursor_and_caches_are_lru_bounded(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        http_server = self.server._http
+        retention = http_server._OPERATION_EVENT_SCOPE_RETENTION
+
+        for index in range(retention + 3):
+            scope_id = f"operation-scope-{index}"
+            http_server._observed_payload_hashes[
+                f"micromachine:{scope_id}"
+            ] = f"digest-{index}"
+            source_key = f"micromachine_status:{scope_id}"
+            http_server._observed_payload_hashes[
+                f"source:{source_key}"
+            ] = f"source-digest-{index}"
+            http_server._failed_event_sources.add(source_key)
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [
+                        {
+                            "timeline_seq": index + 1,
+                            "operation_id": f"operation-{index}",
+                            "generation": 1,
+                            "kind": "assigned",
+                        }
+                    ],
+                },
+                blackboard_dir=f"/tmp/{scope_id}",
+                publish=True,
+            )
+
+        self.assertLessEqual(
+            len(http_server._observed_operation_event_seq),
+            retention,
+        )
+        self.assertLessEqual(
+            len(http_server._observed_operation_scope_order),
+            retention,
+        )
+        evicted_scope = "operation-scope-0"
+        self.assertNotIn(
+            evicted_scope,
+            http_server._observed_operation_event_seq,
+        )
+        self.assertNotIn(
+            f"micromachine:{evicted_scope}",
+            http_server._observed_payload_hashes,
+        )
+        self.assertNotIn(
+            f"source:micromachine_status:{evicted_scope}",
+            http_server._observed_payload_hashes,
+        )
+        self.assertNotIn(
+            f"micromachine_status:{evicted_scope}",
+            http_server._failed_event_sources,
+        )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
         original = self.bridge.micromachine_status
@@ -1551,6 +2047,55 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             overview["identity"]["update_id"],
         )
 
+    def test_battlefield_projection_attachment_requires_exact_update_identity(self):
+        overview = deepcopy(
+            battlefield_projection_telemetry()["battlefield_overview"]
+        )
+        first = overview["operation_ownership"][0]
+        first["identity"].update(
+            {
+                "update_id": "update-a",
+                "operation_id": "shared-operation",
+                "generation": 3,
+            }
+        )
+        first["operation_id"] = "shared-operation"
+        first["generation"] = 3
+        second = deepcopy(first)
+        second["identity"]["update_id"] = "update-b"
+        overview["operation_ownership"] = [first, second]
+
+        attached = web_gui._attach_battlefield_operation_projections(
+            [
+                {
+                    "update_id": "update-a",
+                    "operation_id": "shared-operation",
+                    "operation_generation": 3,
+                },
+                {
+                    "update_id": "update-b",
+                    "operation_id": "shared-operation",
+                    "operation_generation": 3,
+                },
+                {
+                    "update_id": "update-c",
+                    "operation_id": "shared-operation",
+                    "operation_generation": 3,
+                },
+            ],
+            overview,
+        )
+
+        self.assertEqual(
+            "update-a",
+            attached[0]["battlefield_operation"]["identity"]["update_id"],
+        )
+        self.assertEqual(
+            "update-b",
+            attached[1]["battlefield_operation"]["identity"]["update_id"],
+        )
+        self.assertIsNone(attached[2]["battlefield_operation"])
+
     def test_real_filesystem_status_preserves_battlefield_overview(self):
         from starcraft_commander.micromachine_runtime import (
             MicroMachineFilesystemBlackboard,
@@ -2050,14 +2595,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(document["intervention"]["applied"])
             self.assertFalse(document["intervention"]["policy_active"])
             self.assertTrue(document["telemetry_stale_or_detached"])
+            self.assertFalse(document["operation_registry_authoritative"])
 
     def test_detached_projection_cannot_poison_attached_runtime_cursor(self):
         current = {
             "telemetry": battlefield_projection_telemetry(
-                update_id="detached-old",
-                frame=900,
-                generation=9,
-                session_epoch=1700000000200,
+                update_id="attached-initial",
+                frame=320,
+                generation=1,
+                session_epoch=1700000000100,
             )
         }
 
@@ -2121,22 +2667,41 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             launcher = Launcher()
+            launcher.attached = True
             self.server._http.micromachine_launcher = launcher
             with mock.patch(
                 "starcraft_commander.micromachine_runtime."
                 "MicroMachineFilesystemBlackboard",
                 Backend,
             ):
+                initial = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+                self.assertEqual(
+                    1700000000100,
+                    initial["battlefield_overview"]["identity"][
+                        "session_epoch"
+                    ],
+                )
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="detached-same-epoch-ahead",
+                    frame=900,
+                    generation=9,
+                    session_epoch=1700000000100,
+                )
+                launcher.attached = False
                 detached = self.get_json(
                     "/api/micromachine/status?blackboard_dir=" + directory
                 )
                 self.assertIsNone(detached["battlefield_overview"])
                 self.assertTrue(detached["telemetry_stale_or_detached"])
+                self.assertFalse(detached["operation_registry_authoritative"])
 
                 current["telemetry"] = battlefield_projection_telemetry(
-                    update_id="attached-current",
-                    frame=320,
-                    generation=1,
+                    update_id="attached-resumed",
+                    frame=321,
+                    generation=2,
                     session_epoch=1700000000100,
                 )
                 launcher.attached = True
@@ -2151,6 +2716,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual(
                 1700000000100,
                 attached["battlefield_projection_identity"]["session_epoch"],
+            )
+            self.assertEqual(
+                1700000000100,
+                attached["battlefield_overview"]["identity"][
+                    "session_epoch"
+                ],
             )
 
     def test_attached_status_consumes_validated_telemetry_snapshot_after_file_replace(
@@ -3624,6 +4195,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
         self.assertEqual(2, len(payload["operations"]))
+        self.assertTrue(payload["operation_registry_authoritative"])
         operations = {
             operation["operation_id"]: operation
             for operation in payload["operations"]
@@ -4378,6 +4950,89 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 }
             },
         )
+
+    def test_micromachine_operation_rejects_foreign_result_execution(self):
+        payload = web_gui._micromachine_operation_status_payload(
+            {
+                "update_id": "new-update",
+                "issued_at_frame": 100,
+                "vector": {
+                    "operation_id": "new-operation",
+                    "generation": 1,
+                    "goal": "new operation waits for its own evidence",
+                },
+            },
+            operation_id="new-operation",
+            operation_count=1,
+            active=False,
+            telemetry=None,
+            telemetry_archive=(),
+            blackboard_dir="",
+            result_item={
+                "status": "completed",
+                "command_text": "stale completed result",
+                "intervention": {
+                    "command_execution": {
+                        "command_id": "old-update",
+                        "operation_id": "old-operation",
+                        "operation_generation": 7,
+                        "state": "completed",
+                        "completed": True,
+                        "failed": False,
+                        "expired": False,
+                        "stages": [
+                            {"name": "action_issued", "ok": True},
+                            {"name": "effect_observed", "ok": True},
+                        ],
+                    }
+                },
+            },
+            compile_result={
+                "status": "compiled",
+                "update_id": "new-update",
+            },
+        )
+
+        execution = payload["intervention"]["command_execution"]
+        self.assertEqual("new-update", execution["command_id"])
+        self.assertEqual("new-operation", execution["operation_id"])
+        self.assertEqual(1, execution["operation_generation"])
+        self.assertEqual("published", execution["state"])
+        self.assertFalse(execution["completed"])
+        self.assertFalse(execution["failed"])
+        self.assertEqual([], execution["stages"])
+        self.assertEqual("pending", payload["disposition"])
+
+    def test_micromachine_operation_order_only_is_not_action_submission(self):
+        execution = web_gui._micromachine_operation_command_execution(
+            update_id="order-only-update",
+            operation_id="order-only-operation",
+            operation_generation=1,
+            operation_telemetry={
+                "operation_id": "order-only-operation",
+                "generation": 1,
+                "received_frame": 100,
+                "assigned_frame": 110,
+                "assigned_count": 4,
+                "submitted_frame": 120,
+                "order_issued": True,
+                "action_issued": False,
+                "last_action_frame": 0,
+                "last_action": "",
+                "completed": False,
+            },
+            fallback={},
+        )
+
+        stages = {
+            stage["name"]: stage
+            for stage in execution["stages"]
+        }
+        self.assertEqual("order_issued", execution["state"])
+        self.assertIn("order_issued", stages)
+        self.assertNotIn("action_issued", stages)
+        self.assertFalse(execution["completed"])
+        self.assertFalse(execution["failed"])
 
     def test_micromachine_operation_ability_requires_matching_family_effect(self):
         update_id = "siege-ability-operation"
@@ -6318,6 +6973,1221 @@ class SessionLoopBridgeTest(unittest.TestCase):
             json.dumps(first, ensure_ascii=False),
         )
 
+    def test_operation_timeline_dedupes_unchanged_snapshots_and_boolean_transitions(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            movement=True,
+            engagement=True,
+            target_reached=True,
+        )
+
+        first = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-semantic-test",
+        )
+        second = reducer.observe(
+            deepcopy(payload),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        self.assertEqual(
+            first["operation_event_latest_seq"],
+            second["operation_event_latest_seq"],
+        )
+        kinds = [
+            event["kind"]
+            for event in second["operations"][0]["semantic_timeline"]
+        ]
+        for kind in (
+            "received",
+            "planned",
+            "assigned",
+            "submitted",
+            "movement_observed",
+            "engagement_observed",
+            "target_reached",
+        ):
+            self.assertEqual(kinds.count(kind), 1, kind)
+        self.assertNotIn("completed", kinds)
+
+    def test_operation_timeline_requires_action_stage_for_submission(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            execution_state="action_issued",
+        )
+        payload["operations"][0]["intervention"]["command_execution"][
+            "stages"
+        ] = [
+            stage
+            for stage in payload["operations"][0]["intervention"][
+                "command_execution"
+            ]["stages"]
+            if stage["name"] != "action_issued"
+        ]
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-action-stage-required",
+        )
+
+        self.assertNotIn(
+            "submitted",
+            [event["kind"] for event in result["operation_events"]],
+        )
+
+    def test_operation_timeline_requires_matching_execution_identity_for_submission(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            operation_id="alpha-operation",
+            generation=2,
+            execution_state="action_issued",
+        )
+        execution = payload["operations"][0]["intervention"][
+            "command_execution"
+        ]
+        execution.update(
+            {
+                "command_id": "update-beta-operation-1",
+                "operation_id": "beta-operation",
+                "operation_generation": 1,
+            }
+        )
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-execution-identity-required",
+        )
+
+        kinds = [event["kind"] for event in result["operation_events"]]
+        self.assertNotIn("submitted", kinds)
+        self.assertNotIn(
+            "Matching-generation SC2 action submitted.",
+            [event["summary"] for event in result["operation_events"]],
+        )
+
+    def test_operation_timeline_non_authoritative_empty_snapshot_preserves_registry(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-detached-registry"
+        attached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            frame=200,
+        )
+        attached["operation_registry_authoritative"] = True
+        accepted = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(1, len(reducer._accepted_operations))
+
+        detached = reducer.observe(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_registry_authoritative": False,
+                "operations": [],
+            },
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(accepted["operations"], detached["operations"])
+        self.assertEqual(1, len(reducer._accepted_operations))
+
+        reducer.observe(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_registry_authoritative": True,
+                "battlefield_overview": attached["battlefield_overview"],
+                "operations": [],
+            },
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(0, len(reducer._accepted_operations))
+
+    def test_operation_timeline_non_authoritative_same_epoch_cannot_advance_state(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-detached-same-epoch"
+        session_epoch = 1700000000000
+        attached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=1,
+            frame=200,
+            session_epoch=session_epoch,
+        )
+        attached["operation_registry_authoritative"] = True
+        accepted = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+
+        detached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=9,
+            frame=900,
+            session_epoch=session_epoch,
+            movement=True,
+        )
+        detached["operation_registry_authoritative"] = False
+        restored = reducer.observe(
+            detached,
+            blackboard_scope_id=scope_id,
+        )
+
+        family_key = (
+            scope_id,
+            str(session_epoch),
+            "recon-alpha",
+        )
+        self.assertEqual(accepted["operations"], restored["operations"])
+        self.assertEqual(1, reducer._generation_high_water[family_key])
+        self.assertEqual(200, reducer._family_last_frame[family_key])
+
+        resumed = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=2,
+            frame=201,
+            session_epoch=session_epoch,
+            movement=True,
+        )
+        resumed["operation_registry_authoritative"] = True
+        resumed_result = reducer.observe(
+            resumed,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            2,
+            resumed_result["operations"][0][
+                "operation_generation"
+            ],
+        )
+        self.assertEqual(
+            201,
+            resumed_result["operations"][0]["telemetry_frame"],
+        )
+        self.assertEqual(2, reducer._generation_high_water[family_key])
+        self.assertEqual(201, reducer._family_last_frame[family_key])
+
+    def test_operation_timeline_non_authoritative_snapshot_cannot_establish_state(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-detached-without-authority"
+        session_epoch = 1700000000000
+        detached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=9,
+            frame=900,
+            session_epoch=session_epoch,
+            movement=True,
+        )
+        detached["operation_registry_authoritative"] = False
+
+        detached_result = reducer.observe(
+            detached,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual("", reducer._scope_epochs.get(scope_id, ""))
+        self.assertEqual({}, reducer._generation_high_water)
+        self.assertEqual({}, reducer._family_last_frame)
+        self.assertEqual({}, reducer._accepted_operations)
+        self.assertEqual([], detached_result["operation_events"])
+        self.assertEqual(
+            [],
+            detached_result["operations"][0]["semantic_timeline"],
+        )
+
+        attached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=1,
+            frame=100,
+            session_epoch=session_epoch,
+        )
+        attached["operation_registry_authoritative"] = True
+        attached_result = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            1,
+            attached_result["operations"][0][
+                "operation_generation"
+            ],
+        )
+        self.assertEqual(
+            100,
+            attached_result["operations"][0]["telemetry_frame"],
+        )
+
+    def test_operation_timeline_non_authoritative_epoch_cannot_replace_current_epoch(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-detached-foreign-epoch"
+        current_epoch = 1700000000000
+        attached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            frame=200,
+            session_epoch=current_epoch,
+        )
+        attached["operation_registry_authoritative"] = True
+        accepted = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+
+        detached = semantic_operation_payload(
+            operation_id="foreign-operation",
+            frame=1,
+            session_epoch=current_epoch + 1,
+        )
+        detached["operation_registry_authoritative"] = False
+        detached["operations"] = []
+        restored = reducer.observe(
+            detached,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(str(current_epoch), reducer._scope_epochs[scope_id])
+        self.assertEqual(accepted["operations"], restored["operations"])
+        self.assertEqual(
+            accepted["battlefield_overview"],
+            restored["battlefield_overview"],
+        )
+        self.assertNotIn(
+            str(current_epoch),
+            reducer._retired_scope_epochs.get(scope_id, ()),
+        )
+
+        resumed = semantic_operation_payload(
+            operation_id="recon-alpha",
+            frame=201,
+            session_epoch=current_epoch,
+            movement=True,
+        )
+        resumed["operation_registry_authoritative"] = True
+        resumed_result = reducer.observe(
+            resumed,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(201, resumed_result["operations"][0]["telemetry_frame"])
+        self.assertEqual(str(current_epoch), reducer._scope_epochs[scope_id])
+
+    def test_operation_timeline_uses_top_level_projection_identity_for_epoch_guard(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-top-level-projection-epoch"
+        current_epoch = 1700000000000
+        attached = semantic_operation_payload(
+            operation_id="alpha-operation",
+            frame=200,
+            session_epoch=current_epoch,
+        )
+        attached["operation_registry_authoritative"] = True
+        accepted = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+
+        foreign = semantic_operation_payload(
+            operation_id="beta-operation",
+            frame=1,
+            session_epoch=current_epoch + 1,
+        )
+        foreign["operation_registry_authoritative"] = False
+        foreign["battlefield_projection_identity"] = {
+            "session_epoch": current_epoch + 1,
+            "generation": 1,
+            "game_frame": 1,
+        }
+        foreign["battlefield_overview"] = None
+        foreign["operations"][0]["battlefield_operation"] = None
+        restored = reducer.observe(
+            foreign,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(accepted["operations"], restored["operations"])
+        self.assertEqual(str(current_epoch), reducer._scope_epochs[scope_id])
+        self.assertNotIn(
+            "beta-operation",
+            {
+                operation["operation_id"]
+                for operation in restored["operations"]
+            },
+        )
+
+    def test_operation_timeline_rejects_generation_frame_and_same_frame_conflicts(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-semantic-test"
+        current = semantic_operation_payload(generation=2, frame=200)
+        current["operations"][0]["command_text"] = "accepted command"
+        accepted = reducer.observe(
+            current,
+            blackboard_scope_id=scope_id,
+        )
+        baseline_seq = accepted["operation_event_latest_seq"]
+        accepted_overview = deepcopy(accepted["battlefield_overview"])
+        accepted_summary = deepcopy(accepted["operation_summary"])
+
+        lower_generation = semantic_operation_payload(
+            generation=1,
+            frame=300,
+            movement=True,
+            terminal=True,
+        )
+        regressing_frame = semantic_operation_payload(
+            generation=2,
+            frame=199,
+            movement=True,
+            terminal=True,
+        )
+        conflicting_same_frame = semantic_operation_payload(
+            generation=2,
+            frame=200,
+            movement=True,
+            terminal=True,
+        )
+        conflicting_same_frame["operations"][0][
+            "command_text"
+        ] = "rejected same-frame command"
+        for stale in (
+            lower_generation,
+            regressing_frame,
+            conflicting_same_frame,
+        ):
+            stale["battlefield_overview"]["eligible_combat_count"] = 999
+            stale["operation_summary"] = {
+                "total": 999,
+                "active": 0,
+                "scouting": 0,
+                "attacking": 0,
+                "blocked": 0,
+                "completed": 999,
+            }
+            result = reducer.observe(
+                stale,
+                blackboard_scope_id=scope_id,
+            )
+            self.assertEqual(
+                baseline_seq,
+                result["operation_event_latest_seq"],
+            )
+            self.assertNotIn(
+                "completed",
+                [
+                    event["kind"]
+                    for event in result["operation_events"]
+                ],
+            )
+            self.assertEqual(
+                "accepted command",
+                result["operations"][0]["command_text"],
+            )
+            self.assertFalse(
+                result["operations"][0]["battlefield_operation"][
+                    "operation_completion"
+                ]["terminal"]
+            )
+            self.assertEqual(
+                accepted_overview,
+                result["battlefield_overview"],
+            )
+            self.assertEqual(
+                accepted_summary,
+                result["operation_summary"],
+            )
+            self.assertEqual(
+                accepted_overview,
+                reducer._scope_battlefield_overviews[scope_id],
+            )
+
+        advanced = reducer.observe(
+            semantic_operation_payload(
+                generation=2,
+                frame=201,
+                movement=True,
+                terminal=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertIn(
+            "completed",
+            [event["kind"] for event in advanced["operation_events"]],
+        )
+
+    def test_operation_timeline_session_epoch_resets_generation_and_retained_state(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        first = reducer.observe(
+            semantic_operation_payload(
+                generation=3,
+                frame=300,
+                session_epoch=111,
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        reset = reducer.observe(
+            semantic_operation_payload(
+                generation=1,
+                frame=10,
+                session_epoch=222,
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        self.assertGreater(
+            reset["operation_event_latest_seq"],
+            first["operation_event_latest_seq"],
+        )
+        self.assertTrue(reset["operation_events"])
+        self.assertEqual(
+            {"222"},
+            {
+                event["session_epoch"]
+                for event in reset["operation_events"]
+            },
+        )
+        self.assertEqual(
+            "222",
+            reducer._scope_epochs["scope-semantic-test"],
+        )
+        self.assertTrue(
+            any(key[1] == "222" for key in reducer._states),
+        )
+        self.assertLessEqual(
+            len(reducer._states),
+            reducer._GLOBAL_OPERATION_RETENTION,
+        )
+
+    def test_conflicting_new_epoch_snapshot_does_not_reset_accepted_scope(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-atomic-new-epoch"
+        current = reducer.observe(
+            semantic_operation_payload(
+                frame=300,
+                session_epoch=111,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        conflicting = semantic_operation_payload(
+            frame=10,
+            session_epoch=222,
+        )
+        duplicate = deepcopy(conflicting["operations"][0])
+        duplicate["command_text"] = "same-frame conflicting command"
+        duplicate["battlefield_operation"]["operation_completion"].update(
+            {
+                "terminal": True,
+                "state": "completed",
+                "reason": "conflicting_terminal_state",
+                "frame": 10,
+            }
+        )
+        conflicting["operations"].append(duplicate)
+
+        rejected = reducer.observe(
+            conflicting,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual("111", reducer._scope_epochs[scope_id])
+        self.assertEqual(
+            current["battlefield_overview"],
+            rejected["battlefield_overview"],
+        )
+        self.assertEqual(
+            current["operations"],
+            rejected["operations"],
+        )
+        self.assertEqual(
+            current["operation_event_latest_seq"],
+            rejected["operation_event_latest_seq"],
+        )
+
+    def test_operation_timeline_rejects_delayed_retired_session_epoch(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-retired-session"
+        reducer.observe(
+            semantic_operation_payload(
+                frame=111,
+                session_epoch=111,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        current = reducer.observe(
+            semantic_operation_payload(
+                frame=10,
+                session_epoch=222,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        current_seq = current["operation_event_latest_seq"]
+
+        delayed = reducer.observe(
+            semantic_operation_payload(
+                frame=999,
+                session_epoch=111,
+                movement=True,
+                engagement=True,
+                target_reached=True,
+                terminal=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(current_seq, delayed["operation_event_latest_seq"])
+        self.assertEqual(
+            222,
+            delayed["battlefield_overview"]["identity"]["session_epoch"],
+        )
+        self.assertEqual(
+            10,
+            delayed["operations"][0]["telemetry_frame"],
+        )
+        self.assertNotIn(
+            "completed",
+            [event["kind"] for event in delayed["operation_events"]],
+        )
+
+    def test_operation_timeline_standing_operation_is_not_completed_by_activity(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        result = reducer.observe(
+            semantic_operation_payload(
+                standing=True,
+                movement=True,
+                engagement=True,
+                target_reached=True,
+                terminal=False,
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        kinds = [
+            event["kind"]
+            for event in result["operations"][0]["semantic_timeline"]
+        ]
+        self.assertIn("movement_observed", kinds)
+        self.assertIn("engagement_observed", kinds)
+        self.assertIn("target_reached", kinds)
+        self.assertNotIn("completed", kinds)
+
+    def test_operation_timeline_requires_matching_canonical_completion_projection(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        cases = []
+
+        missing_projection = semantic_operation_payload(
+            execution_state="completed",
+            terminal=True,
+        )
+        missing_projection["operations"][0].pop(
+            "battlefield_operation",
+            None,
+        )
+        cases.append(missing_projection)
+
+        mismatched_id = semantic_operation_payload(
+            execution_state="completed",
+            terminal=True,
+        )
+        mismatched_id["operations"][0]["battlefield_operation"][
+            "operation_id"
+        ] = "different-operation"
+        cases.append(mismatched_id)
+
+        mismatched_generation = semantic_operation_payload(
+            execution_state="completed",
+            terminal=True,
+        )
+        mismatched_generation["operations"][0]["battlefield_operation"][
+            "generation"
+        ] = 99
+        cases.append(mismatched_generation)
+
+        mismatched_update = semantic_operation_payload(
+            execution_state="completed",
+            terminal=True,
+        )
+        mismatched_update["operations"][0]["battlefield_operation"][
+            "identity"
+        ]["update_id"] = "different-update"
+        cases.append(mismatched_update)
+
+        for index, payload in enumerate(cases):
+            with self.subTest(index=index):
+                result = reducer.observe(
+                    payload,
+                    blackboard_scope_id=f"canonical-completion-{index}",
+                )
+                kinds = [
+                    event["kind"]
+                    for event in result["operation_events"]
+                ]
+                self.assertTrue(
+                    {
+                        "movement_observed",
+                        "engagement_observed",
+                        "target_reached",
+                        "completed",
+                    }.isdisjoint(kinds),
+                )
+
+    def test_operation_timeline_never_emits_completed_for_negative_terminal_states(
+        self,
+    ):
+        for index, (terminal_state, disposition) in enumerate(
+            (
+                ("failed", "blocked"),
+                ("cancelled", "superseded"),
+                ("expired", "expired"),
+                ("superseded", "superseded"),
+            )
+        ):
+            with self.subTest(terminal_state=terminal_state):
+                payload = semantic_operation_payload(
+                    operation_id=f"negative-{terminal_state}",
+                    frame=500 + index,
+                    terminal=True,
+                    disposition=disposition,
+                )
+                projection = payload["operations"][0][
+                    "battlefield_operation"
+                ]
+                projection["operation_lifetime"]["completion_state"] = (
+                    terminal_state
+                )
+                projection["operation_lifetime"]["completion_reason"] = (
+                    f"canonical_{terminal_state}"
+                )
+                projection["operation_completion"]["state"] = terminal_state
+                projection["operation_completion"]["reason"] = (
+                    f"canonical_{terminal_state}"
+                )
+
+                result = web_gui._OperationSemanticTimelineReducer().observe(
+                    payload,
+                    blackboard_scope_id=(
+                        f"negative-terminal-{terminal_state}"
+                    ),
+                )
+                kinds = [
+                    event["kind"] for event in result["operation_events"]
+                ]
+
+                self.assertNotIn("completed", kinds)
+
+    def test_operation_timeline_requires_matching_projection_identity_for_observation(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            movement=True,
+            engagement=True,
+            target_reached=True,
+            terminal=True,
+        )
+        payload["operations"][0]["battlefield_operation"]["identity"][
+            "operation_id"
+        ] = "different-operation"
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="canonical-identity-mismatch",
+        )
+
+        kinds = [event["kind"] for event in result["operation_events"]]
+        self.assertTrue(
+            {
+                "movement_observed",
+                "engagement_observed",
+                "target_reached",
+                "completed",
+            }.isdisjoint(kinds),
+        )
+
+    def test_operation_timeline_rejects_stale_accepted_and_transfer_edits(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-requested-generation"
+        latest = reducer.observe(
+            semantic_operation_payload(
+                requested_generation=4,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "applied",
+                    "transferred_in_count": 2,
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        baseline_seq = latest["operation_event_latest_seq"]
+
+        stale = reducer.observe(
+            semantic_operation_payload(
+                requested_generation=3,
+                frame=101,
+                operation_edit={
+                    "action": "transfer",
+                    "resolution": "transferred",
+                    "transferred_in_count": 3,
+                    "transferred_out_count": 1,
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            baseline_seq,
+            stale["operation_event_latest_seq"],
+        )
+        self.assertEqual(
+            4,
+            reducer._requested_generation_high_water[
+                (scope_id, "1700000000000", "flank-alpha")
+            ],
+        )
+        stale_kinds = [
+            event["kind"]
+            for event in stale["operations"][0]["semantic_timeline"]
+        ]
+        self.assertNotIn("ownership_released", stale_kinds)
+        self.assertEqual(
+            latest["operations"][0]["operation_edit"],
+            stale["operations"][0]["operation_edit"],
+        )
+
+    def test_operation_timeline_preserves_new_execution_owner_for_stale_intent(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-stale-intent-new-execution"
+        reducer.observe(
+            semantic_operation_payload(
+                generation=1,
+                requested_generation=4,
+                frame=100,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "latest_intent_blocker",
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        incoming = semantic_operation_payload(
+            generation=2,
+            requested_generation=3,
+            frame=101,
+            execution_state="completed",
+            movement=True,
+            engagement=True,
+            target_reached=True,
+            terminal=True,
+            operation_edit={
+                "action": "reinforce",
+                "resolution": "blocked",
+                "blocker": "stale_intent_blocker",
+            },
+        )
+        incoming_operation = incoming["operations"][0]
+        execution_owner_update_id = incoming_operation["update_id"]
+        result = reducer.observe(
+            incoming,
+            blackboard_scope_id=scope_id,
+        )
+
+        operation = result["operations"][0]
+        self.assertEqual(4, operation["requested_operation_generation"])
+        self.assertEqual(
+            "update-flank-alpha-4",
+            operation["update_id"],
+        )
+        self.assertEqual(
+            execution_owner_update_id,
+            operation[
+                "operation_console_execution_owner_update_id"
+            ],
+        )
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["battlefield_operation"]["identity"]["update_id"],
+        )
+        self.assertIn(
+            "completed",
+            [event["kind"] for event in operation["semantic_timeline"]],
+        )
+
+    def test_rejected_snapshot_does_not_poison_requested_generation_high_water(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-requested-generation-poison"
+        reducer.observe(
+            semantic_operation_payload(
+                requested_generation=4,
+                frame=100,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        rejected = semantic_operation_payload(
+            requested_generation=99,
+            frame=100,
+            terminal=True,
+        )
+        reducer.observe(
+            rejected,
+            blackboard_scope_id=scope_id,
+        )
+        family_key = (
+            scope_id,
+            "1700000000000",
+            "flank-alpha",
+        )
+        self.assertEqual(
+            4,
+            reducer._requested_generation_high_water[family_key],
+        )
+
+        accepted = reducer.observe(
+            semantic_operation_payload(
+                requested_generation=5,
+                frame=101,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            5,
+            reducer._requested_generation_high_water[family_key],
+        )
+        self.assertEqual(
+            5,
+            accepted["operations"][0][
+                "requested_operation_generation"
+            ],
+        )
+
+    def test_operation_timeline_milestones_do_not_reemit_after_token_eviction(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-permanent-milestones"
+        reducer.observe(
+            semantic_operation_payload(movement=True),
+            blackboard_scope_id=scope_id,
+        )
+        for frame in range(
+            101,
+            101 + reducer._PER_OPERATION_TOKEN_RETENTION + 8,
+        ):
+            reducer.observe(
+                semantic_operation_payload(
+                    frame=frame,
+                    blocker=f"dynamic-wait-{frame}",
+                    launch_decision="wait",
+                    movement=True,
+                ),
+                blackboard_scope_id=scope_id,
+            )
+
+        result = reducer.observe(
+            semantic_operation_payload(
+                frame=200,
+                movement=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        events = result["operation_events"]
+        for kind in (
+            "received",
+            "planned",
+            "assigned",
+            "submitted",
+            "movement_observed",
+        ):
+            self.assertEqual(
+                1,
+                sum(event["kind"] == kind for event in events),
+                kind,
+            )
+        state = next(iter(reducer._states.values()))
+        self.assertLessEqual(
+            len(state["milestones"]),
+            len(reducer._PERMANENT_MILESTONE_KINDS),
+        )
+
+    def test_operation_timeline_supports_concurrent_operations_and_bounded_retention(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        attack = semantic_operation_payload(
+            operation_id="attack-alpha",
+            movement=True,
+        )
+        scout = semantic_operation_payload(
+            operation_id="scout-bravo",
+            owner_count=1,
+            required_count=1,
+            movement=True,
+        )
+        concurrent = deepcopy(attack)
+        concurrent["operations"].extend(scout["operations"])
+        concurrent["battlefield_overview"]["operation_ownership"].extend(
+            scout["battlefield_overview"]["operation_ownership"]
+        )
+
+        result = reducer.observe(
+            concurrent,
+            blackboard_scope_id="scope-semantic-test",
+        )
+        self.assertEqual(
+            {"attack-alpha", "scout-bravo"},
+            {
+                event["operation_id"]
+                for event in result["operation_events"]
+            },
+        )
+
+        for frame in range(101, 150):
+            result = reducer.observe(
+                semantic_operation_payload(
+                    operation_id="attack-alpha",
+                    frame=frame,
+                    blocker=f"wait-{frame}",
+                    launch_decision="wait",
+                ),
+                blackboard_scope_id="scope-semantic-test",
+            )
+        attack_timeline = result["operations"][0]["semantic_timeline"]
+        self.assertLessEqual(
+            len(attack_timeline),
+            reducer._PER_OPERATION_RETENTION,
+        )
+
+        for generation in range(2, 90):
+            result = reducer.observe(
+                semantic_operation_payload(
+                    operation_id="retention-operation",
+                    generation=generation,
+                    frame=200 + generation,
+                    blocker=f"generation-wait-{generation}",
+                    launch_decision="wait",
+                ),
+                blackboard_scope_id="scope-semantic-test",
+            )
+        self.assertEqual(
+            reducer._PER_SCOPE_RETENTION,
+            len(result["operation_events"]),
+        )
+        self.assertLessEqual(
+            len(reducer._states),
+            reducer._PER_SCOPE_OPERATION_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._generation_high_water),
+            reducer._PER_SCOPE_OPERATION_RETENTION,
+        )
+        self.assertTrue(
+            all(
+                len(state["tokens"])
+                <= reducer._PER_OPERATION_TOKEN_RETENTION
+                for state in reducer._states.values()
+            )
+        )
+
+    def test_authoritative_registry_above_active_retention_does_not_reemit(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-authoritative-retention-plus-one"
+        payload = semantic_operation_payload(
+            operation_id="operation-0",
+            frame=100,
+        )
+        payload["operations"] = []
+        payload["battlefield_overview"]["operation_ownership"] = []
+        for index in range(
+            reducer._PER_SCOPE_OPERATION_RETENTION + 1
+        ):
+            operation_payload = semantic_operation_payload(
+                operation_id=f"operation-{index}",
+                frame=100 + index,
+            )
+            payload["operations"].extend(
+                operation_payload["operations"]
+            )
+            payload["battlefield_overview"][
+                "operation_ownership"
+            ].extend(
+                operation_payload["battlefield_overview"][
+                    "operation_ownership"
+                ]
+            )
+        payload["operation_registry_authoritative"] = True
+
+        first = reducer.observe(
+            payload,
+            blackboard_scope_id=scope_id,
+        )
+        second = reducer.observe(
+            deepcopy(payload),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            reducer._PER_SCOPE_OPERATION_RETENTION + 1,
+            len(first["operations"]),
+        )
+        self.assertEqual(
+            first["operation_event_latest_seq"],
+            second["operation_event_latest_seq"],
+        )
+        self.assertEqual(
+            first["operation_events"],
+            second["operation_events"],
+        )
+        self.assertLessEqual(
+            len(reducer._accepted_operations),
+            reducer._PER_SCOPE_OPERATION_RETENTION,
+        )
+        self.assertGreater(
+            len(reducer._generation_high_water),
+            reducer._PER_SCOPE_OPERATION_RETENTION,
+        )
+
+    def test_operation_timeline_bounds_scope_and_operation_state(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        for scope_number in range(reducer._SCOPE_RETENTION + 3):
+            scope_id = f"scope-{scope_number}"
+            for operation_number in range(
+                reducer._PER_SCOPE_OPERATION_RETENTION + 3
+            ):
+                reducer.observe(
+                    semantic_operation_payload(
+                        operation_id=f"operation-{operation_number}",
+                        frame=100 + operation_number,
+                        session_epoch=scope_number + 1,
+                    ),
+                    blackboard_scope_id=scope_id,
+                )
+
+        self.assertLessEqual(
+            len(reducer._scope_order),
+            reducer._SCOPE_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._scope_events),
+            reducer._SCOPE_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._scope_epochs),
+            reducer._SCOPE_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._scope_families),
+            reducer._SCOPE_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._states),
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._generation_high_water),
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._family_order),
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._scope_epoch_history),
+            reducer._SCOPE_EPOCH_HISTORY_RETENTION,
+        )
+
+    def test_operation_timeline_scope_lru_revisit_emits_only_new_transition(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        original_scope = "scope-lru-original"
+        first = reducer.observe(
+            semantic_operation_payload(frame=100),
+            blackboard_scope_id=original_scope,
+        )
+        first_kinds = {
+            event["kind"] for event in first["operation_events"]
+        }
+        self.assertIn("submitted", first_kinds)
+
+        for index in range(reducer._SCOPE_RETENTION):
+            reducer.observe(
+                semantic_operation_payload(
+                    operation_id=f"other-operation-{index}",
+                    frame=200 + index,
+                    session_epoch=2000 + index,
+                ),
+                blackboard_scope_id=f"scope-lru-other-{index}",
+            )
+        self.assertNotIn(original_scope, reducer._scope_epochs)
+
+        replayed = reducer.observe(
+            semantic_operation_payload(frame=100),
+            blackboard_scope_id=original_scope,
+        )
+        self.assertEqual([], replayed["operation_events"])
+
+        advanced = reducer.observe(
+            semantic_operation_payload(
+                frame=101,
+                movement=True,
+            ),
+            blackboard_scope_id=original_scope,
+        )
+        self.assertEqual(
+            ["movement_observed"],
+            [event["kind"] for event in advanced["operation_events"]],
+        )
+
+    def test_operation_timeline_emits_edit_and_ownership_identity(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        result = reducer.observe(
+            semantic_operation_payload(
+                generation=1,
+                requested_generation=2,
+                operation_edit={
+                    "action": "transfer",
+                    "resolution": "transferred",
+                    "transferred_in_count": 2,
+                    "transferred_out_count": 1,
+                },
+            ),
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        events = result["operations"][0]["semantic_timeline"]
+        kinds = {event["kind"] for event in events}
+        self.assertTrue(
+            {
+                "edit_applied",
+                "ownership_transferred",
+                "ownership_released",
+            }.issubset(kinds)
+        )
+        edit_event = next(
+            event for event in events if event["kind"] == "edit_applied"
+        )
+        self.assertEqual(1, edit_event["generation"])
+        self.assertEqual(2, edit_event["requested_generation"])
+        self.assertEqual("update-flank-alpha-2", edit_event["update_id"])
+
+    def test_operation_timeline_ignores_generation_zero_transport_records(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(generation=1)
+        payload["operations"][0]["operation_generation"] = 0
+        payload["operations"][0]["battlefield_operation"]["generation"] = 0
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-semantic-test",
+        )
+
+        self.assertEqual([], result["operation_events"])
+        self.assertEqual(
+            [],
+            result["operations"][0]["semantic_timeline"],
+        )
+
     def test_constructor_rejects_invalid_seams(self):
         session, _bot = build_dry_run_session()
         cases = (
@@ -7655,6 +9525,9 @@ class FakeElement {
   }
 
   appendChild(child) {
+    if (child.parentNode) {
+      child.parentNode.removeChild(child);
+    }
     child.parentNode = this;
     this.children.push(child);
     return child;
@@ -7819,7 +9692,25 @@ function renderAdviceBriefing(events) {
         self.assertIn("animation: star-parallax-near 42s linear infinite", page)
         self.assertIn("@media (prefers-reduced-motion: reduce)", page)
         self.assertIn(
-            ".star-depth { animation: none; transform: none; will-change: auto; }",
+            "animation: none !important;\n"
+            "      transform: none;\n"
+            "      will-change: auto;",
+            page,
+        )
+        self.assertIn(
+            ".message-pending .narration::after {\n"
+            "      animation: none !important;\n"
+            '      content: "..." !important;',
+            page,
+        )
+        self.assertIn(
+            ".typing-indicator span, .voice-wave span {\n"
+            "      animation: none !important;",
+            page,
+        )
+        self.assertIn(
+            ".active-command-console::after {\n"
+            "      transition: none !important;",
             page,
         )
         self.assertIn("transform: translate3d", page)
@@ -7883,6 +9774,9 @@ class FakeElement {
   }
 
   appendChild(child) {
+    if (child.parentNode) {
+      child.parentNode.removeChild(child);
+    }
     child.parentNode = this;
     this.children.push(child);
     return child;
@@ -8158,6 +10052,14 @@ class FakeElement {
   removeChild(child) {
     var index = this.children.indexOf(child);
     if (index >= 0) {
+      var active = document.activeElement;
+      while (active) {
+        if (active === child) {
+          document.activeElement = null;
+          break;
+        }
+        active = active.parentNode;
+      }
       this.children.splice(index, 1);
       child.parentNode = null;
     }
@@ -8180,7 +10082,9 @@ class FakeElement {
     }
   }
 
-  focus() {}
+  focus() {
+    document.activeElement = this;
+  }
 
   setSelectionRange() {}
 
@@ -8230,12 +10134,16 @@ class FakeElement {
 
   set textContent(value) {
     this._textContent = String(value);
-    this.children = [];
+    this.children.slice().forEach(function(child) {
+      this.removeChild(child);
+    }, this);
   }
 
   set innerHTML(value) {
     this._textContent = "";
-    this.children = [];
+    this.children.slice().forEach(function(child) {
+      this.removeChild(child);
+    }, this);
   }
 
   get innerHTML() {
@@ -8345,8 +10253,10 @@ var nodes = {
   "micromachine-log-snippets": element("micromachine-log-snippets", "ul"),
   "micromachine-raw-evidence": element("micromachine-raw-evidence", "pre"),
   "operation-console": element("operation-console", "section"),
-  "operation-list": element("operation-list", "div"),
-  "operation-summary": element("operation-summary", "span"),
+      "operation-list": element("operation-list", "div"),
+      "operation-summary": element("operation-summary", "span"),
+      "operation-timeline": element("operation-timeline", "ol"),
+      "operation-timeline-selection": element("operation-timeline-selection", "span"),
   "active-command-console": element("active-command-console", "section"),
   "command-console-title": element("command-console-title", "h2"),
   "command-console-state": element("command-console-state", "span"),
@@ -8367,9 +10277,14 @@ var nodes = {
   "battlefield-link-badge": element("battlefield-link-badge", "span"),
   "battlefield-command-state": element("battlefield-command-state"),
   "battlefield-frame": element("battlefield-frame"),
-  "battlefield-force": element("battlefield-force"),
-  "battlefield-posture": element("battlefield-posture"),
-  "battlefield-control-summary": element("battlefield-control-summary")
+      "battlefield-force": element("battlefield-force"),
+      "battlefield-posture": element("battlefield-posture"),
+      "battlefield-unassigned": element("battlefield-unassigned"),
+      "battlefield-readiness": element("battlefield-readiness"),
+      "battlefield-transfer": element("battlefield-transfer"),
+      "battlefield-integrity": element("battlefield-integrity"),
+      "battlefield-production-waits": element("battlefield-production-waits"),
+      "battlefield-control-summary": element("battlefield-control-summary")
 };
 nodes["log"] = logBox;
 nodes["llm-model-select"].value = "gpt-test";
@@ -8389,6 +10304,7 @@ var commandModeRadios = [
 ];
 
 var document = {
+  activeElement: null,
   documentElement: new FakeElement("html"),
   createElement: function (tagName) { return new FakeElement(tagName); },
   createTextNode: function (text) { return new FakeText(text); },
@@ -8587,6 +10503,50 @@ const assert = require("assert");
       }
     ];
   }
+  var orderOnlyData = {
+    status: "published",
+    intervention: {
+      command_execution: {
+        state: "order_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages().slice(0, 5)
+      }
+    }
+  };
+  var orderOnlyModel = commandConsoleStageModel(orderOnlyData);
+  assert.strictEqual(orderOnlyModel.assignmentReady, true);
+  assert.strictEqual(orderOnlyModel.actionIssued, false);
+  assert.strictEqual(orderOnlyModel.done.execute, false);
+  assert(
+    commandConsoleActualAction(orderOnlyModel).includes(
+      "구체적인 이동·공격·생산 명령 대기"
+    )
+  );
+  assert.strictEqual(
+    operationRecordLane({
+      data: orderOnlyData,
+      disposition: "active",
+      terminal: false
+    }),
+    "planning"
+  );
+  var stateOnlyActionData = JSON.parse(JSON.stringify(orderOnlyData));
+  stateOnlyActionData.intervention.command_execution.state =
+    "action_issued";
+  var stateOnlyActionModel = commandConsoleStageModel(
+    stateOnlyActionData
+  );
+  assert.strictEqual(stateOnlyActionModel.actionIssued, false);
+  assert.strictEqual(
+    operationRecordLane({
+      data: stateOnlyActionData,
+      disposition: "active",
+      terminal: false
+    }),
+    "planning"
+  );
   pollState();
   await flushPromises();
   assert.strictEqual(requests.length, 0);
@@ -8852,7 +10812,11 @@ const assert = require("assert");
       }
     }
   }));
-  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert.strictEqual(
+    nodes["command-console-state"].textContent,
+    "실행 확인",
+    "canonical chat should use its exact operation completion"
+  );
   assert(nodes["active-command-console"].className.includes("command-console-verified"));
   assert(nodes["command-stage-interpret"].className.includes("stage-verified"));
   assert(nodes["command-stage-assign"].className.includes("stage-verified"));
@@ -9305,7 +11269,11 @@ const assert = require("assert");
     }
   }));
   assert(!hasPending(SERVER_SCOPE_A, "async-timeout"));
-  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert.strictEqual(
+    nodes["command-console-state"].textContent,
+    "실행 확인",
+    "focused same-update success must not lose canonical completion"
+  );
   assert(nodes["command-console-verification"].textContent.includes("late effect observed"));
   assert.strictEqual(
     logBox.querySelectorAll(".log-entry").filter(function (entry) {
@@ -10035,7 +12003,7 @@ const assert = require("assert");
   assert(commandConsoleClassName(cancelledModel).includes("command-console-superseded"));
   assert(commandConsoleVerification(cancelledData, cancelledModel).includes("작전 취소"));
   assert(!commandConsoleVerification(cancelledData, cancelledModel).includes("cleanup stop must not become mission effect"));
-  updateMicroMachineBadge(cancelledData.intervention, cancelledData.status);
+  updateMicroMachineBadge(cancelledData);
   assert.strictEqual(nodes["micromachine-applied-badge"].textContent, "작전 취소");
   assert(nodes["micromachine-applied-badge"].className.includes("micro-badge-cancelled"));
   assert(!nodes["micromachine-applied-badge"].className.includes("micro-badge-applied"));
@@ -10127,6 +12095,11 @@ const assert = require("assert");
   );
   assert(
     commandConsoleClassName(cancellationPendingCleanupModel).includes(
+      "command-console-waiting"
+    )
+  );
+  assert(
+    !commandConsoleClassName(cancellationPendingCleanupModel).includes(
       "command-console-executing"
     )
   );
@@ -10135,10 +12108,7 @@ const assert = require("assert");
       "command-console-superseded"
     )
   );
-  updateMicroMachineBadge(
-    cancellationPendingCleanupData.intervention,
-    cancellationPendingCleanupData.status
-  );
+  updateMicroMachineBadge(cancellationPendingCleanupData);
   assert.strictEqual(
     nodes["micromachine-applied-badge"].textContent,
     "취소 정리 확인 중"
@@ -10844,6 +12814,9 @@ const assert = require("assert");
     generation
   ) {
     generation = generation || 1;
+    var terminal = state === "completed";
+    var submitted = state === "action_issued" || terminal;
+    var requestedCount = mission === "scouting" ? 1 : 4;
     return {
       operation_id: operationId,
       operation_generation: generation,
@@ -10854,6 +12827,87 @@ const assert = require("assert");
       consumption_status: "consumed",
       telemetry_frame: frame,
       disposition: "active",
+      operation_convergence: {
+        target_count: requestedCount,
+        represented_count: requestedCount,
+        missing_count: 0,
+        blocker: "",
+        requirements: []
+      },
+      battlefield_operation: {
+        identity: {
+          update_id: updateId,
+          scope: "operation:" + operationId,
+          session_epoch: 1700000000000,
+          operation_id: operationId,
+          generation: generation,
+          stage: terminal ? "completed" : (submitted ? "submitted" : "assigned"),
+          game_frame: frame
+        },
+        operation_id: operationId,
+        generation: generation,
+        operation_route: {
+          requested_route_type: mission === "scouting" ? "direct" : "flank_right",
+          applied_route_type: mission === "scouting" ? "direct" : "flank_right",
+          location_intent: "enemy_natural",
+          target_type: "enemy_expansion",
+          resolved_target_label: "enemy natural",
+          target_x: 120,
+          target_y: 44,
+          target_evidence: "observed_enemy_structure"
+        },
+        operation_lifetime: {
+          mode: "until_completed",
+          completion_state: terminal ? "completed" : "active",
+          completion_conditions: ["target_reached", "cancelled_by_user"],
+          duration_seconds: 300,
+          issued_at_frame: 200,
+          deadline_frame: 4700,
+          standing: false,
+          completed: terminal,
+          completion_reason: terminal ? "target_reached" : "",
+          completed_frame: terminal ? frame : 0
+        },
+        operation_ownership: {
+          owner_count: requestedCount,
+          integrity_status: "valid"
+        },
+        operation_launch_policy: {
+          min_units: requestedCount,
+          max_units: requestedCount,
+          allow_partial_requested: false,
+          strict_scope: true,
+          partial_launch_allowed: false,
+          partial_launch_safe: false,
+          launch_count: requestedCount,
+          missing_count: 0,
+          decision: "launch",
+          blocker: "",
+          recommended_choices: [],
+          safety_evidence: {}
+        },
+        operation_completion: {
+          movement_observed: submitted,
+          engagement_observed: terminal,
+          target_reached: terminal,
+          terminal: terminal,
+          state: terminal ? "completed" : "active",
+          reason: terminal ? "target_reached" : "",
+          frame: terminal ? frame : 0,
+          generation: generation
+        }
+      },
+      semantic_timeline: [
+        {
+          timeline_seq: frame,
+          operation_id: operationId,
+          generation: generation,
+          kind: submitted ? "submitted" : "assigned",
+          game_frame: frame,
+          summary: submitted ? "SC2 action submitted" : "Force assigned",
+          technical: { state: state }
+        }
+      ],
       update: {
         update_id: updateId,
         vector: { goal: commandText, operation_id: operationId }
@@ -10881,6 +12935,45 @@ const assert = require("assert");
     stages[5].evidence.last_actual_command = action;
     return stages;
   }
+
+  var foreignExecutionOperation = operationResult(
+    "new-operation",
+    "new-update",
+    "새 작전은 자기 실행 증거를 기다림",
+    "attack",
+    205,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    1
+  );
+  foreignExecutionOperation.intervention.command_execution = {
+    command_id: "old-update",
+    operation_id: "old-operation",
+    operation_generation: 7,
+    state: "completed",
+    completed: true,
+    failed: false,
+    expired: false,
+    stages: actionStages(
+      "attack",
+      "foreign operation effect must not be reused"
+    )
+  };
+  var sanitizedForeignOperation = commandOperationData(
+    foreignExecutionOperation,
+    serverResult({}, OPERATION_SCOPE)
+  );
+  var sanitizedForeignModel = commandConsoleStageModel(
+    sanitizedForeignOperation
+  );
+  assert.deepStrictEqual(
+    sanitizedForeignOperation.intervention.command_execution,
+    {}
+  );
+  assert.strictEqual(sanitizedForeignOperation.operation_generation, 1);
+  assert.strictEqual(sanitizedForeignModel.actionIssued, false);
+  assert.strictEqual(sanitizedForeignModel.effectObserved, false);
+  assert.strictEqual(sanitizedForeignModel.terminal, false);
 
   var pendingA = beginOperationRecord("마린 1기 정찰", "parallel-pending-a");
   var pendingB = beginOperationRecord("마린 4기 공격", "parallel-pending-b");
@@ -10933,6 +13026,21 @@ const assert = require("assert");
   assert(assaultRecord);
   assert.strictEqual(Object.keys(operationRecords).length, 2);
   assert.strictEqual(nodes["operation-list"].querySelectorAll(".operation-card").length, 2);
+  assert.strictEqual(reconRecord.node.parentNode.id, "operation-lane-executing");
+  assert.strictEqual(assaultRecord.node.parentNode.id, "operation-lane-planning");
+  assert(reconRecord.node.textContent.includes("recon-alpha#1"));
+  assert(reconRecord.node.textContent.includes("direct → direct"));
+  assert(reconRecord.node.textContent.includes("until_completed"));
+  assert(reconRecord.node.textContent.includes("실제 소유 1"));
+  assert(reconRecord.node.textContent.includes("이동"));
+  assert.strictEqual(
+    nodes["operation-timeline-selection"].textContent,
+    "recon-alpha#1"
+  );
+  assert.strictEqual(
+    nodes["operation-timeline"].querySelectorAll(".operation-timeline-item").length,
+    1
+  );
   assert(reconRecord.node.textContent.includes("move"));
   assert(!assaultRecord.node.textContent.includes("move"));
   assert(reconRecord.node.className.includes("command-console-executing"));
@@ -10943,6 +13051,141 @@ const assert = require("assert");
   assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,
     "유닛 편성 완료"
+  );
+  var reconNodeBeforeDetachedSnapshot = reconRecord.node;
+  renderOperationConsole(serverResult({
+    status: "idle",
+    runtime_attached: false,
+    telemetry_stale_or_detached: true,
+    operation_registry_authoritative: false,
+    operations: []
+  }, OPERATION_SCOPE));
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(
+    operationRecords[reconKey].node,
+    reconNodeBeforeDetachedSnapshot
+  );
+  var operationEpochBeforeForeignDetached =
+    operationConsoleSessionEpoch;
+  var operationCountBeforeForeignDetached =
+    Object.keys(operationRecords).length;
+  var activeConsoleEpochBeforeForeignDetached =
+    activeCommandConsoleRecord.sessionEpoch;
+  var activeConsoleUpdateBeforeForeignDetached =
+    activeCommandConsoleRecord.updateId;
+  reconRecord.node.querySelectorAll("button")[1].focus();
+  var foreignDetachedSnapshot = serverResult({
+    status: "idle",
+    runtime_attached: false,
+    telemetry_stale_or_detached: true,
+    operation_registry_authoritative: false,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: []
+  }, OPERATION_SCOPE);
+  assert.strictEqual(renderOperationConsole(foreignDetachedSnapshot), false);
+  renderActiveCommandConsole(foreignDetachedSnapshot, true);
+  renderMicroMachineStatus(foreignDetachedSnapshot);
+  assert.strictEqual(
+    operationConsoleSessionEpoch,
+    operationEpochBeforeForeignDetached
+  );
+  assert.strictEqual(
+    Object.keys(operationRecords).length,
+    operationCountBeforeForeignDetached
+  );
+  assert.strictEqual(operationRecords[reconKey].node, reconRecord.node);
+  assert.strictEqual(
+    activeCommandConsoleRecord.sessionEpoch,
+    activeConsoleEpochBeforeForeignDetached
+  );
+  assert.strictEqual(
+    activeCommandConsoleRecord.updateId,
+    activeConsoleUpdateBeforeForeignDetached
+  );
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-action"),
+    "revise"
+  );
+  var foreignUnprojectedOperation = operationResult(
+    "foreign-beta",
+    "foreign-beta-update",
+    "분리된 다른 게임 작전",
+    "attack",
+    1,
+    "action_issued",
+    actionStages("attack").slice(0, 6)
+  );
+  foreignUnprojectedOperation.battlefield_operation = null;
+  var foreignProjectionIdentitySnapshot = serverResult({
+    status: "published",
+    operation_registry_authoritative: false,
+    battlefield_projection_identity: {
+      session_epoch: 1800000000000,
+      generation: 1,
+      game_frame: 1
+    },
+    battlefield_overview: null,
+    operations: [foreignUnprojectedOperation]
+  }, OPERATION_SCOPE);
+  assert.strictEqual(
+    renderOperationConsole(foreignProjectionIdentitySnapshot),
+    false
+  );
+  renderMicroMachineStatus(foreignProjectionIdentitySnapshot);
+  assert.strictEqual(
+    operationConsoleSessionEpoch,
+    operationEpochBeforeForeignDetached
+  );
+  assert.strictEqual(
+    Object.keys(operationRecords).length,
+    operationCountBeforeForeignDetached
+  );
+  assert.strictEqual(
+    operationRecords[
+      operationRecordKey(OPERATION_SCOPE, "foreign-beta")
+    ],
+    undefined
+  );
+  var sameEpochDetachedOperation = operationResult(
+    "recon-alpha",
+    "detached-same-epoch-update",
+    "분리된 같은 게임의 앞선 세대",
+    "scouting",
+    900,
+    "completed",
+    actionStages("move").slice(0, 6),
+    9
+  );
+  var sameEpochDetachedSnapshot = serverResult({
+    status: "published",
+    operation_registry_authoritative: false,
+    battlefield_projection_identity: {
+      session_epoch: operationEpochBeforeForeignDetached,
+      generation: 9,
+      game_frame: 900
+    },
+    operations: [sameEpochDetachedOperation]
+  }, OPERATION_SCOPE);
+  assert.strictEqual(
+    renderOperationConsole(sameEpochDetachedSnapshot),
+    false
+  );
+  renderActiveCommandConsole(sameEpochDetachedSnapshot, true);
+  renderMicroMachineStatus(sameEpochDetachedSnapshot);
+  assert.strictEqual(
+    operationRecords[reconKey].operationGeneration,
+    1
+  );
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 300);
+  assert.strictEqual(
+    activeCommandConsoleRecord.sessionEpoch,
+    activeConsoleEpochBeforeForeignDetached
+  );
+  assert.strictEqual(
+    activeCommandConsoleRecord.updateId,
+    activeConsoleUpdateBeforeForeignDetached
   );
 
   [reconRecord, assaultRecord].forEach(function(record) {
@@ -10978,6 +13221,7 @@ const assert = require("assert");
   );
 
   // A stale response may not regress one card or contaminate the other card.
+  assaultRecord.node.querySelectorAll("button")[1].focus();
   renderOperationConsole(serverResult({
     status: "published",
     operations: [
@@ -11009,6 +13253,100 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.telemetryFrame, 320);
   assert(assaultRecord.node.textContent.includes("attack"));
   assert(!assaultRecord.node.textContent.includes("move"));
+  assert.strictEqual(assaultRecord.node.parentNode.id, "operation-lane-executing");
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-action"),
+    "revise"
+  );
+
+  // Keyed rerenders preserve the focused standard action and timeline
+  // disclosure state while semantic events arrive immediately over SSE.
+  reconRecord.node.querySelectorAll("button")[1].focus();
+  var focusedReconUpdate = operationResult(
+    "recon-alpha",
+    "parallel-update-a",
+    "마린 1기 정찰",
+    "scouting",
+    301,
+    "action_issued",
+    actionStages("move").slice(0, 6)
+  );
+  focusedReconUpdate.semantic_timeline = [
+    {
+      timeline_seq: 300,
+      operation_id: "recon-alpha",
+      generation: 1,
+      kind: "submitted",
+      game_frame: 300,
+      summary: "SC2 action submitted",
+      technical: { state: "action_issued" }
+    },
+    {
+      timeline_seq: 301,
+      operation_id: "recon-alpha",
+      generation: 1,
+      kind: "movement_observed",
+      game_frame: 301,
+      summary: "movement observed",
+      technical: { movement_observed: true }
+    }
+  ];
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [focusedReconUpdate]
+  }, OPERATION_SCOPE));
+  reconRecord = operationRecords[reconKey];
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-action"),
+    "revise"
+  );
+  var firstTimelineItem = nodes["operation-timeline"]
+    .querySelectorAll(".operation-timeline-item")[0];
+  var firstTimelineDetails = firstTimelineItem.querySelector("details");
+  firstTimelineDetails.open = true;
+  firstTimelineDetails.querySelector("summary").focus();
+  var operationEventSeq = lastEventSeq + 1;
+  var immediateOperationEvent = {
+    type: "operation_event",
+    lastEventId: String(operationEventSeq),
+    data: JSON.stringify({
+      event_type: "operation_event",
+      event_seq: operationEventSeq,
+      blackboard_scope_id: OPERATION_SCOPE,
+      operation_id: "recon-alpha",
+      generation: 1,
+      payload: {
+        timeline_seq: 302,
+        blackboard_scope_id: OPERATION_SCOPE,
+        session_epoch: "1700000000000",
+        operation_id: "recon-alpha",
+        generation: 1,
+        kind: "engagement_observed",
+        game_frame: 302,
+        summary: "engagement observed",
+        technical: { engagement_observed: true }
+      }
+    })
+  };
+  applyServerEvent(immediateOperationEvent);
+  assert.strictEqual(
+    nodes["operation-timeline"]
+      .querySelectorAll(".operation-timeline-item").length,
+    3
+  );
+  assert.strictEqual(
+    nodes["operation-timeline"]
+      .querySelectorAll(".operation-timeline-item")[0]
+      .querySelector("details").open,
+    true
+  );
+  assert.strictEqual(document.activeElement.tagName, "SUMMARY");
+  applyServerEvent(immediateOperationEvent);
+  assert.strictEqual(
+    nodes["operation-timeline"]
+      .querySelectorAll(".operation-timeline-item").length,
+    3
+  );
 
   // All-Terran evidence extends the existing Operation card and four-stage
   // rail instead of creating a separate family dashboard.
@@ -11064,7 +13402,14 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(Object.keys(operationRecords).length, 2);
-  assert.strictEqual(nodes["operation-list"].children.length, 2);
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-lane").length,
+    4
+  );
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-card").length,
+    2
+  );
   assert.strictEqual(assaultRecord.node.querySelectorAll(".operation-stage").length, 4);
   assert.strictEqual(assaultRecord.node.querySelectorAll("button").length, 5);
   assert(assaultRecord.node.textContent.includes("유닛 실행"));
@@ -11124,6 +13469,213 @@ const assert = require("assert");
     )
   );
 
+  // The overview consumes only the canonical battlefield projection. A
+  // representative manager snapshot cannot change ownership/readiness totals.
+  var authoritativeOverview = {
+    schema_version: 2,
+    authority: "micromachine_cpp",
+    identity: { game_frame: 327 },
+    eligible_combat_count: 11,
+    explicit_operation_owned_count: 6,
+    autonomous_owned_count: 3,
+    unassigned_count: 2,
+    duplicate_owner_count: 0,
+    operation_ownership: [],
+    bases: [
+      {
+        base_id: "main",
+        semantic_anchor: "self_main",
+        base_readiness: {
+          readiness_state: "ready",
+          reason: "protected_minimum_satisfied",
+          protected_minimum: [
+            { family: "marine", count: 2 }
+          ]
+        }
+      }
+    ],
+    transfer_availability: {
+      entries: [
+        {
+          source_owner_id: "assault-bravo",
+          source_owner_count: 4,
+          transferable_count: 2,
+          transfer_safe: true,
+          atomic_runtime_blocker: ""
+        }
+      ]
+    }
+  };
+  renderBattlefieldControlOverview({
+    battlefield_overview: authoritativeOverview,
+    intervention: {
+      manager_snapshot: {
+        CombatCommander: { combat_unit_count: 999 },
+        ScoutManager: { scout_unit_count: 999 }
+      }
+    }
+  });
+  assert.strictEqual(nodes["battlefield-force"].textContent, "11");
+  assert(nodes["battlefield-posture"].textContent.includes("명시 6"));
+  assert(nodes["battlefield-posture"].textContent.includes("자율 3"));
+  assert.strictEqual(nodes["battlefield-unassigned"].textContent, "2");
+  assert(nodes["battlefield-readiness"].textContent.includes("self_main"));
+  assert(nodes["battlefield-readiness"].textContent.includes("marine 2"));
+  assert(nodes["battlefield-transfer"].textContent.includes("2/4"));
+  assert(!nodes["battlefield-control-summary"].textContent.includes("999"));
+
+  // Contextual resolution controls are separate from the five standard card
+  // actions and fail closed until canonical runtime safety says they are safe.
+  var unsafeResolutionAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "부분 출동 안전성 확인",
+    "attack",
+    327,
+    "action_issued",
+    actionStages("attack").slice(0, 6)
+  );
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .recommended_choices = ["launch_partial", "wait_for_full_force"];
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .partial_launch_allowed = true;
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .partial_launch_safe = false;
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .decision = "wait";
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .missing_count = 1;
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .launch_count = 3;
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .blocker = "protected_minimum_not_respected";
+  renderOperationConsole(serverResult({
+    status: "published",
+    battlefield_overview: {
+      authority: "micromachine_cpp",
+      transfer_availability: {
+        atomic_revalidation_required: true,
+        entries: [
+          {
+            source_owner_id: "assault-bravo",
+            transferable_count: 2,
+            transfer_safe: false,
+            atomic_runtime_blocker: "protected_minimum_not_respected",
+            recommended_resolution_choices: [
+              "transfer_two_units",
+              "raw_tag_123_frame_script"
+            ],
+            safety_evidence: {
+              protected_minimum_respected: false,
+              atomic_revalidation_required: true
+            },
+            atomic_revalidation_inputs: {
+              atomic_revalidation_ready: false,
+              source_active: true,
+              ownership_integrity: true
+            }
+          }
+        ]
+      }
+    },
+    operations: [unsafeResolutionAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  var standardActions = assaultRecord.node.querySelector(
+    ".operation-card-actions"
+  ).querySelectorAll("button");
+  assert.strictEqual(standardActions.length, 5);
+  var unsafeResolutionButtons = assaultRecord.node.querySelector(
+    ".operation-resolution-actions"
+  ).querySelectorAll("button");
+  var unsafePartialButton = unsafeResolutionButtons.find(function(button) {
+    return button.getAttribute("data-operation-resolution") === "launch_partial";
+  });
+  var safeWaitButton = unsafeResolutionButtons.find(function(button) {
+    return button.getAttribute("data-operation-resolution") === "wait_for_full_force";
+  });
+  var unsafeTransferButton = unsafeResolutionButtons.find(function(button) {
+    return button.getAttribute("data-operation-resolution") === "transfer_two_units";
+  });
+  assert.strictEqual(unsafeResolutionButtons.length, 3);
+  assert.strictEqual(unsafePartialButton.getAttribute("aria-disabled"), "true");
+  assert.strictEqual(safeWaitButton.getAttribute("aria-disabled"), "false");
+  assert.strictEqual(unsafeTransferButton.getAttribute("aria-disabled"), "true");
+  assert(
+    unsafePartialButton.getAttribute("aria-describedby")
+  );
+  assert(
+    assaultRecord.node.querySelector(".operation-resolution-reason")
+      .textContent.includes("protected_minimum_not_respected")
+  );
+  assert(!assaultRecord.node.textContent.includes("raw_tag_123_frame_script"));
+  var unsafeRequestCount = requests.length;
+  unsafePartialButton.dispatchEvent({
+    type: "click",
+    preventDefault: function() {}
+  });
+  assert.strictEqual(requests.length, unsafeRequestCount);
+  unsafeTransferButton.focus();
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-resolution"),
+    "transfer_two_units"
+  );
+
+  var safeResolutionAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "부분 출동 안전성 확인",
+    "attack",
+    328,
+    "action_issued",
+    actionStages("attack").slice(0, 6)
+  );
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .recommended_choices = ["launch_partial"];
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .partial_launch_allowed = true;
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .partial_launch_safe = true;
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .safety_evidence = {
+      protected_defense_minimum_respected: true,
+      source_operation_minimum_respected: true
+    };
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .decision = "launch";
+  renderOperationConsole(serverResult({
+    status: "published",
+    battlefield_overview: {
+      transfer_availability: { entries: [] }
+    },
+    operations: [safeResolutionAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  var safePartialButton = assaultRecord.node.querySelector(
+    ".operation-resolution-actions"
+  ).querySelectorAll("button").find(function(button) {
+    return button.getAttribute("data-operation-resolution") === "launch_partial";
+  });
+  assert.strictEqual(safePartialButton.getAttribute("aria-disabled"), "false");
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-action"),
+    "view"
+  );
+  assert(operationNodeContains(assaultRecord.node, document.activeElement));
+  assert(
+    operationNodeContains(
+      assaultRecord.node.parentNode,
+      document.activeElement
+    )
+  );
+  var safeResolutionText = operationResolutionCommand(
+    "launch_partial",
+    assaultRecord
+  );
+  assert(safeResolutionText.includes("assault-bravo"));
+  assert(safeResolutionText.includes("권위 안전 판정을 통과한"));
+  assert(!safeResolutionText.includes("launch_partial"));
+
   // A newer generation edits the existing card instead of creating a duplicate.
   var editedAssault = operationResult(
     "assault-bravo",
@@ -11157,6 +13709,33 @@ const assert = require("assert");
   assert(assaultRecord.node.textContent.includes("reinforce"));
   assert(assaultRecord.node.textContent.includes("MARINE ×4 → MARINE ×6"));
   assert(assaultRecord.node.textContent.includes("explicit_ability_owner_protected"));
+  var assaultTimelineLength = assaultRecord.data.semantic_timeline.length;
+  applyServerEvent({
+    type: "operation_event",
+    lastEventId: String(lastEventSeq + 1),
+    data: JSON.stringify({
+      event_type: "operation_event",
+      event_seq: lastEventSeq + 1,
+      blackboard_scope_id: OPERATION_SCOPE,
+      operation_id: "assault-bravo",
+      generation: 1,
+      payload: {
+        timeline_seq: 999,
+        blackboard_scope_id: OPERATION_SCOPE,
+        session_epoch: "1700000000000",
+        operation_id: "assault-bravo",
+        generation: 1,
+        kind: "submitted",
+        game_frame: 329,
+        summary: "stale generation event",
+        technical: {}
+      }
+    })
+  });
+  assert.strictEqual(
+    assaultRecord.data.semantic_timeline.length,
+    assaultTimelineLength
+  );
   var editControls = assaultRecord.node.querySelectorAll("button");
   editControls[2].dispatchEvent({ type: "click" });
   assert(nodes["command-input"].value.includes("assault-bravo"));
@@ -11232,6 +13811,33 @@ const assert = require("assert");
       "stale_active_edit_must_not_replace_latest"
     )
   );
+
+  var staleAcceptedEdit = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit-stale-accepted",
+    "오래된 승인 공격조 변경",
+    "attack",
+    332,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    2
+  );
+  staleAcceptedEdit.requested_operation_generation = 3;
+  staleAcceptedEdit.operation_edit = {
+    action: "transfer",
+    resolution: "transferred",
+    transferred_in_count: 2,
+    transferred_out_count: 1
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleAcceptedEdit]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+  assert(!assaultRecord.node.textContent.includes("오래된 승인 공격조 변경"));
 
   // A delayed lower requested generation may carry a newer active generation.
   // Accept its execution telemetry without replacing the newest rejected edit.
@@ -11348,6 +13954,10 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.operationGeneration, 3);
   assert.strictEqual(assaultRecord.disposition, "active");
   assert.strictEqual(
+    assaultRecord.node.parentNode.id,
+    "operation-lane-waiting"
+  );
+  assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,
     "취소 정리 확인 중"
   );
@@ -11386,26 +13996,203 @@ const assert = require("assert");
   assert(assaultRecord.node.textContent.includes("중지 명령 없이"));
 
   // Terminal evidence is sticky even if a newer non-terminal payload arrives.
+  var canonicalReconCompletion = operationResult(
+    "recon-alpha",
+    "parallel-update-a",
+    "마린 1기 정찰",
+    "scouting",
+    400,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  canonicalReconCompletion.battlefield_operation.operation_lifetime.completed =
+    true;
+  canonicalReconCompletion.battlefield_operation.operation_lifetime
+    .completion_state = "completed";
+  canonicalReconCompletion.battlefield_operation.operation_completion.terminal =
+    true;
+  canonicalReconCompletion.battlefield_operation.operation_completion.state =
+    "completed";
+  canonicalReconCompletion.battlefield_operation.operation_completion.reason =
+    "recon_waypoint_reached";
   renderOperationConsole(serverResult({
     status: "published",
-    operations: [
-      operationResult(
-        "recon-alpha",
-        "parallel-update-a",
-        "마린 1기 정찰",
-        "scouting",
-        400,
-        "completed",
-        actionStages("move", "recon waypoint reached")
-      )
-    ]
+    operations: [canonicalReconCompletion]
   }, OPERATION_SCOPE));
   assert.strictEqual(operationRecords[reconKey].terminal, true);
   assert.strictEqual(operationRecords[reconKey].telemetryFrame, 400);
   assert.strictEqual(
+    operationRecords[reconKey].node.parentNode.id,
+    "operation-lane-completed"
+  );
+  assert.strictEqual(
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"
   );
+  var canonicalReconModel = commandConsoleStageModel(
+    operationRecords[reconKey].data
+  );
+  assert.strictEqual(canonicalReconModel.canonicalCompletion, true);
+  assert.strictEqual(canonicalReconModel.canonicalCompletionVerified, true);
+  assert.strictEqual(canonicalReconModel.blocked, false);
+  assert.strictEqual(canonicalReconModel.terminal, true);
+  assert.strictEqual(canonicalReconModel.done.verify, true);
+  assert(
+    commandConsoleVerification(
+      operationRecords[reconKey].data,
+      canonicalReconModel
+    ).includes("권위 완료 조건 확인")
+  );
+  var mismatchedCanonicalUpdate = operationResult(
+    "mismatched-canonical-update",
+    "current-canonical-update",
+    "다른 update의 완료 투영은 사용하지 않음",
+    "scouting",
+    400,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  mismatchedCanonicalUpdate.battlefield_operation.identity.update_id =
+    "older-canonical-update";
+  var mismatchedCanonicalUpdateModel = commandConsoleStageModel(
+    mismatchedCanonicalUpdate
+  );
+  assert.strictEqual(
+    operationCanonicalProjectionMatches(mismatchedCanonicalUpdate),
+    false
+  );
+  assert.strictEqual(
+    mismatchedCanonicalUpdateModel.canonicalCompletion,
+    false
+  );
+  assert.strictEqual(
+    mismatchedCanonicalUpdateModel.canonicalCompletionVerified,
+    false
+  );
+  assert.strictEqual(mismatchedCanonicalUpdateModel.blocked, true);
+
+  [
+    ["failed", "blocked", true, false, false],
+    ["expired", "expired", true, false, false],
+    ["superseded", "superseded", false, false, true],
+    ["cancelled", "active", false, true, false]
+  ].forEach(function(definition, index) {
+    var canonicalState = definition[0];
+    var expectedDisposition = definition[1];
+    var expectedBlocked = definition[2];
+    var expectedCancelled = definition[3];
+    var expectedSuperseded = definition[4];
+    var negativeCanonical = operationResult(
+      "negative-canonical-" + canonicalState,
+      "negative-canonical-update-" + canonicalState,
+      "canonical " + canonicalState + " is not success",
+      "scouting",
+      401 + index,
+      "completed",
+      actionStages("move").slice(0, 6)
+    );
+    negativeCanonical.intervention.command_execution = {};
+    negativeCanonical.battlefield_operation.operation_lifetime
+      .completion_state = canonicalState;
+    negativeCanonical.battlefield_operation.operation_lifetime
+      .completion_reason = "canonical_" + canonicalState;
+    negativeCanonical.battlefield_operation.operation_completion.state =
+      canonicalState;
+    negativeCanonical.battlefield_operation.operation_completion.reason =
+      "canonical_" + canonicalState;
+    var negativeModel = commandConsoleStageModel(negativeCanonical);
+    assert.strictEqual(negativeModel.canonicalState, canonicalState);
+    assert.strictEqual(negativeModel.canonicalCompletion, false);
+    assert.strictEqual(negativeModel.canonicalCompletionVerified, false);
+    assert.strictEqual(negativeModel.blocked, expectedBlocked);
+    assert.strictEqual(negativeModel.cancelled, expectedCancelled);
+    assert.strictEqual(negativeModel.superseded, expectedSuperseded);
+    assert.strictEqual(
+      operationRecordDisposition(negativeModel, negativeCanonical),
+      expectedDisposition
+    );
+  });
+
+  var explicitlyFailedCanonicalCompletion = operationResult(
+    "failed-canonical",
+    "failed-canonical-update",
+    "명시적 실패는 완료로 덮지 않음",
+    "scouting",
+    401,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  explicitlyFailedCanonicalCompletion.intervention.command_execution.failed =
+    true;
+  explicitlyFailedCanonicalCompletion.intervention.command_execution
+    .blocker_reason = "explicit_runtime_failure";
+  var explicitlyFailedCanonicalModel = commandConsoleStageModel(
+    explicitlyFailedCanonicalCompletion
+  );
+  assert.strictEqual(explicitlyFailedCanonicalModel.blocked, true);
+  assert.strictEqual(
+    explicitlyFailedCanonicalModel.canonicalCompletion,
+    true
+  );
+  assert.strictEqual(
+    explicitlyFailedCanonicalModel.canonicalCompletionVerified,
+    false
+  );
+  assert.strictEqual(explicitlyFailedCanonicalModel.terminal, true);
+  assert.strictEqual(explicitlyFailedCanonicalModel.done.verify, false);
+  assert.strictEqual(
+    operationRecordDisposition(
+      explicitlyFailedCanonicalModel,
+      explicitlyFailedCanonicalCompletion
+    ),
+    "blocked"
+  );
+
+  var successfulAliasCompletion = operationResult(
+    "successful-alias",
+    "successful-alias-update",
+    "success alias is canonical completion",
+    "scouting",
+    402,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  successfulAliasCompletion.battlefield_operation.operation_lifetime
+    .completion_state = "completed";
+  successfulAliasCompletion.battlefield_operation.operation_completion.state =
+    "success";
+  var successfulAliasModel = commandConsoleStageModel(
+    successfulAliasCompletion
+  );
+  assert.strictEqual(successfulAliasModel.canonicalState, "completed");
+  assert.strictEqual(successfulAliasModel.canonicalCompletionVerified, true);
+
+  var cancelledAliasCompletion = operationResult(
+    "cancelled-alias",
+    "cancelled-alias-update",
+    "canceled alias is canonical cancellation",
+    "scouting",
+    403,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  cancelledAliasCompletion.intervention.command_execution = {};
+  cancelledAliasCompletion.battlefield_operation.operation_lifetime
+    .completion_state = "cancelled";
+  cancelledAliasCompletion.battlefield_operation.operation_completion.state =
+    "canceled";
+  var cancelledAliasModel = commandConsoleStageModel(
+    cancelledAliasCompletion
+  );
+  assert.strictEqual(cancelledAliasModel.canonicalState, "cancelled");
+  assert.strictEqual(cancelledAliasModel.canonicalCompletionVerified, false);
+  assert.strictEqual(cancelledAliasModel.cancelled, true);
+
+  operationRecords[reconKey].node
+    .querySelectorAll(".operation-stage")
+    .forEach(function(stage) {
+      assert(stage.className.includes("stage-done"));
+    });
 
   // A rejected higher-generation edit augments the terminal card without
   // replacing its verified execution state or creating another card.
@@ -11526,6 +14313,15 @@ const assert = require("assert");
   assert.strictEqual(operationRecords[reconKey].updateId, "parallel-update-a-edit");
   assert.strictEqual(operationRecords[reconKey].text, "정찰대를 마린 2기로 증원");
   assert.strictEqual(
+    operationRecords[reconKey].data
+      .operation_console_execution_owner_update_id,
+    "parallel-update-a-stale-new-active"
+  );
+  assert.strictEqual(
+    operationRecords[reconKey].data.battlefield_operation.identity.update_id,
+    "parallel-update-a-stale-new-active"
+  );
+  assert.strictEqual(
     operationRecords[reconKey].data.intervention.command_execution
       .operation_generation,
     2
@@ -11562,6 +14358,12 @@ const assert = require("assert");
       .operation_generation,
     2
   );
+  assert.strictEqual(
+    operationCanonicalProjectionMatches(
+      activeCommandConsoleRecord.data
+    ),
+    true
+  );
   assert(nodes["command-console-action"].textContent.includes("move"));
   assert(
     nodes["command-console-verification"].textContent.includes(
@@ -11588,6 +14390,1168 @@ const assert = require("assert");
   assert.strictEqual(
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"
+  );
+
+  // A new authoritative game epoch replaces the old terminal registry even
+  // when scope, operation ID, and generation are reused. Reported/execution
+  // completion without a matching canonical projection remains non-terminal.
+  var restartedRecon = operationResult(
+    "recon-alpha",
+    "restart-update-a",
+    "새 게임 정찰",
+    "scouting",
+    10,
+    "completed",
+    actionStages("move", "reported completion only"),
+    1
+  );
+  restartedRecon.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  restartedRecon.battlefield_operation.operation_id =
+    "mismatched-canonical-operation";
+  var restartedSnapshot = serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: [restartedRecon]
+  }, OPERATION_SCOPE);
+  renderMicroMachineStatus(restartedSnapshot);
+  reconKey = operationRecordKey(OPERATION_SCOPE, "recon-alpha");
+  assert.strictEqual(operationConsoleSessionEpoch, "1800000000000");
+  assert.strictEqual(Object.keys(operationRecords).length, 1);
+  assert.strictEqual(
+    activeCommandConsoleRecord.sessionEpoch,
+    "1800000000000"
+  );
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "restart-update-a");
+  assert.strictEqual(activeCommandConsoleRecord.telemetryFrame, 10);
+  assert.strictEqual(
+    activeCommandConsoleRecord.data.intervention.command_execution.command_id,
+    "restart-update-a"
+  );
+  assert.strictEqual(
+    nodes["command-console-title"].textContent,
+    "새 게임 정찰"
+  );
+  assert.strictEqual(operationRecords[reconKey].terminal, false);
+  assert.notStrictEqual(
+    operationRecords[reconKey].node.parentNode.id,
+    "operation-lane-completed"
+  );
+  assert(
+    !operationRecords[reconKey].node
+      .querySelector(".operation-card-state").textContent.includes("실행 확인")
+  );
+
+  var restartedReconNode = operationRecords[reconKey].node;
+  var delayedRetiredEpoch = operationResult(
+    "recon-alpha",
+    "delayed-retired-update",
+    "이전 게임에서 늦게 도착한 정찰",
+    "scouting",
+    999,
+    "completed",
+    actionStages("move", "stale completion"),
+    1
+  );
+  assert.strictEqual(
+    renderOperationConsole(serverResult({
+      status: "published",
+      operation_registry_authoritative: true,
+      battlefield_overview: {
+        identity: { session_epoch: 1700000000000 }
+      },
+      operations: [delayedRetiredEpoch]
+    }, OPERATION_SCOPE)),
+    false
+  );
+  assert.strictEqual(operationConsoleSessionEpoch, "1800000000000");
+  assert.strictEqual(operationRecords[reconKey].node, restartedReconNode);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 10);
+  assert.strictEqual(operationRecords[reconKey].text, "새 게임 정찰");
+
+  // Authoritative snapshots remove absent server operations, preserve only a
+  // bounded unacknowledged local pending card, then expire it.
+  var localPending = beginOperationRecord(
+    "로컬 승인 대기",
+    "local-unacknowledged"
+  );
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: [restartedRecon]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  localPending.createdAt =
+    Date.now() - OPERATION_PENDING_RECORD_TIMEOUT_MS - 1;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: [restartedRecon]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(Object.keys(operationRecords).length, 1);
+
+  var authoritativeEmptySnapshot = serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: [],
+    compile_result: {
+      status: "compiled",
+      update_id: "must-not-become-an-operation"
+    },
+    update: {
+      update_id: "must-not-become-an-operation",
+      vector: { goal: "top-level transport result" }
+    },
+    intervention: {
+      latest_update_id: "must-not-become-an-operation",
+      telemetry_frame: 11,
+      command_execution: {
+        command_id: "must-not-become-an-operation",
+        state: "action_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: actionStages("move").slice(0, 6)
+      }
+    }
+  }, OPERATION_SCOPE);
+  assert.strictEqual(commandOperationPayloads(authoritativeEmptySnapshot).length, 0);
+  assert.strictEqual(renderOperationConsole(authoritativeEmptySnapshot), false);
+  assert.strictEqual(Object.keys(operationRecords).length, 0);
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-card").length,
+    0
+  );
+
+  var canonicalChatCommand = "권위 완료 채팅 검증";
+  var canonicalChatUpdateId = "canonical-chat-update";
+  var canonicalChatOperation = operationResult(
+    "canonical-chat",
+    canonicalChatUpdateId,
+    canonicalChatCommand,
+    "scouting",
+    12,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  canonicalChatOperation.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  canonicalChatOperation.battlefield_operation.operation_completion.reason =
+    "recon_waypoint_reached";
+  var unrelatedFailedOperation = operationResult(
+    "unrelated-failed",
+    "unrelated-failed-update",
+    "다른 실패 작전",
+    "attack",
+    13,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  unrelatedFailedOperation.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  unrelatedFailedOperation.intervention.command_execution.failed = true;
+  unrelatedFailedOperation.intervention.command_execution.blocker_reason =
+    "must_not_leak_into_canonical_chat";
+  var canonicalChatPendingId = rememberServerPending(
+    canonicalChatCommand,
+    canonicalChatUpdateId,
+    OPERATION_SCOPE
+  );
+  bindActiveCommandConsoleUpdate(
+    canonicalChatCommand,
+    canonicalChatPendingId,
+    OPERATION_SCOPE,
+    canonicalChatUpdateId
+  );
+  var canonicalChatStatus = serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: canonicalChatUpdateId,
+      assistant_message: "정찰 waypoint 완료를 확인했습니다."
+    },
+    update: {
+      update_id: canonicalChatUpdateId,
+      vector: { goal: canonicalChatCommand }
+    },
+    intervention: {
+      latest_update_id: canonicalChatUpdateId,
+      telemetry_frame: 12,
+      command_execution:
+        canonicalChatOperation.intervention.command_execution
+    },
+    operations: [
+      unrelatedFailedOperation,
+      canonicalChatOperation
+    ]
+  }, OPERATION_SCOPE);
+  renderMicroMachineStatus(canonicalChatStatus);
+  assert(!hasPending(OPERATION_SCOPE, canonicalChatUpdateId));
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert(
+    nodes["active-command-console"].className.includes(
+      "command-console-verified"
+    )
+  );
+  assert(
+    !nodes["active-command-console"].className.includes(
+      "command-console-blocked"
+    )
+  );
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "권위 완료 조건 확인"
+    )
+  );
+  assert(
+    !nodes["command-console-verification"].textContent.includes(
+      "must_not_leak_into_canonical_chat"
+    )
+  );
+  assert(
+    nodes["command-console-announcement"].textContent.includes("실행 확인")
+  );
+  assert(
+    !nodes["command-console-announcement"].textContent.includes("실행 실패")
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].className,
+    "micro-badge micro-badge-applied"
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "작전 완료 확인"
+  );
+  var canonicalChatEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(canonicalChatCommand);
+    }
+  );
+  assert(canonicalChatEntry);
+  assert.strictEqual(
+    canonicalChatEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "executed"
+  );
+  assert(canonicalChatEntry.textContent.includes("권위 완료 조건"));
+  assert(!canonicalChatEntry.textContent.includes("실행 실패"));
+
+  appendMicroMachineChatResult(
+    "generic canonical completion",
+    Object.assign({}, canonicalChatStatus, {
+      chat_outcome_status: "executed",
+      command_console_skip_render: true
+    }),
+    ""
+  );
+  var genericCanonicalEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes("generic canonical completion");
+    }
+  );
+  assert(genericCanonicalEntry);
+  assert.strictEqual(
+    genericCanonicalEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "executed"
+  );
+
+  var sharedParallelUpdateId = "shared-parallel-update";
+  var sharedParallelSuccess = operationResult(
+    "shared-parallel-success",
+    sharedParallelUpdateId,
+    "같은 명령의 정찰 성공",
+    "scouting",
+    13,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  sharedParallelSuccess.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  sharedParallelSuccess.battlefield_operation.operation_completion.reason =
+    "shared_parallel_success";
+  var sharedParallelFailure = operationResult(
+    "shared-parallel-failure",
+    sharedParallelUpdateId,
+    "같은 명령의 공격 실패",
+    "attack",
+    14,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  sharedParallelFailure.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  sharedParallelFailure.intervention.command_execution = {};
+  sharedParallelFailure.battlefield_operation.operation_lifetime
+    .completion_state = "failed";
+  sharedParallelFailure.battlefield_operation.operation_lifetime
+    .completion_reason = "shared_parallel_failure";
+  sharedParallelFailure.battlefield_operation.operation_completion.state =
+    "failed";
+  sharedParallelFailure.battlefield_operation.operation_completion.reason =
+    "shared_parallel_failure";
+  var sharedParallelStatus = serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: sharedParallelUpdateId
+    },
+    update: {
+      update_id: sharedParallelUpdateId,
+      vector: { goal: "병렬 정찰과 공격" }
+    },
+    intervention: {
+      latest_update_id: sharedParallelUpdateId,
+      telemetry_frame: 14,
+      command_execution:
+        sharedParallelSuccess.intervention.command_execution
+    },
+    operations: [sharedParallelSuccess, sharedParallelFailure]
+  }, OPERATION_SCOPE);
+  renderOperationConsole(sharedParallelStatus);
+  var sharedSuccessRecord = operationRecords[
+    operationRecordKey(OPERATION_SCOPE, "shared-parallel-success")
+  ];
+  var sharedFailureRecord = operationRecords[
+    operationRecordKey(OPERATION_SCOPE, "shared-parallel-failure")
+  ];
+  assert(sharedSuccessRecord);
+  assert(sharedFailureRecord);
+
+  var ambiguousParallelData = commandConsoleDataForCanonicalOperation(
+    commandConsoleDataForUpdate(
+      sharedParallelStatus,
+      sharedParallelUpdateId
+    ),
+    sharedParallelUpdateId
+  );
+  assert.strictEqual(ambiguousParallelData.battlefield_operation, null);
+  assert.deepStrictEqual(
+    ambiguousParallelData.intervention.command_execution,
+    {}
+  );
+  var ambiguousParallelModel = commandConsoleStageModel(
+    ambiguousParallelData
+  );
+  assert.strictEqual(ambiguousParallelModel.canonicalCompletion, false);
+  assert.strictEqual(ambiguousParallelModel.blocked, false);
+  assert.strictEqual(ambiguousParallelModel.effectObserved, false);
+
+  focusOperationRecord(sharedSuccessRecord);
+  renderMicroMachineIntervention(sharedParallelStatus);
+  assert.strictEqual(
+    activeCommandConsoleRecord.operationId,
+    "shared-parallel-success"
+  );
+  assert.strictEqual(activeCommandConsoleRecord.operationGeneration, 1);
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "권위 완료 조건 확인"
+    )
+  );
+  assert(
+    !nodes["command-console-verification"].textContent.includes(
+      "shared_parallel_failure"
+    )
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "작전 완료 확인"
+  );
+
+  var selectedParallelSuccess = commandConsoleDataForCanonicalOperation(
+    commandConsoleDataForUpdate(
+      sharedParallelStatus,
+      sharedParallelUpdateId
+    ),
+    sharedParallelUpdateId,
+    "shared-parallel-success",
+    1
+  );
+  appendMicroMachineChatResult(
+    "selected same-update operation",
+    Object.assign({}, selectedParallelSuccess, {
+      command_console_skip_render: true
+    }),
+    ""
+  );
+  var selectedParallelEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes("selected same-update operation");
+    }
+  );
+  assert(selectedParallelEntry);
+  assert.strictEqual(
+    selectedParallelEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "executed"
+  );
+  assert(!selectedParallelEntry.textContent.includes("shared_parallel_failure"));
+
+  appendMicroMachineChatResult(
+    "ambiguous same-update operation",
+    Object.assign({}, sharedParallelStatus, {
+      command_console_skip_render: true
+    }),
+    ""
+  );
+  var ambiguousParallelEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes("ambiguous same-update operation");
+    }
+  );
+  assert(ambiguousParallelEntry);
+  assert.strictEqual(
+    ambiguousParallelEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "partially_executed"
+  );
+  assert(!ambiguousParallelEntry.textContent.includes("shared_parallel_success"));
+  assert(!ambiguousParallelEntry.textContent.includes("shared_parallel_failure"));
+
+  var asyncParallelUpdateId = "async-parallel-update";
+  var asyncParallelCommand = "정찰과 공격을 병렬 수행";
+  var asyncParallelPendingId = rememberServerPending(
+    asyncParallelCommand,
+    asyncParallelUpdateId,
+    OPERATION_SCOPE
+  );
+  bindActiveCommandConsoleUpdate(
+    asyncParallelCommand,
+    asyncParallelPendingId,
+    OPERATION_SCOPE,
+    asyncParallelUpdateId
+  );
+  var asyncParallelSuccess = operationResult(
+    "async-parallel-success",
+    asyncParallelUpdateId,
+    "병렬 정찰 성공",
+    "scouting",
+    15,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  asyncParallelSuccess.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  var asyncParallelActive = operationResult(
+    "async-parallel-active",
+    asyncParallelUpdateId,
+    "병렬 공격 진행 중",
+    "attack",
+    15,
+    "action_issued",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  asyncParallelActive.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  var asyncParallelUnprojected = operationResult(
+    "async-parallel-unprojected",
+    asyncParallelUpdateId,
+    "병렬 공격 projection 대기",
+    "attack",
+    15,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  delete asyncParallelUnprojected.battlefield_operation;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: asyncParallelUpdateId
+    },
+    update: {
+      update_id: asyncParallelUpdateId,
+      vector: { goal: asyncParallelCommand }
+    },
+    intervention: {
+      latest_update_id: asyncParallelUpdateId,
+      telemetry_frame: 15,
+      command_execution:
+        asyncParallelSuccess.intervention.command_execution
+    },
+    operations: [asyncParallelSuccess, asyncParallelUnprojected]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, asyncParallelUpdateId),
+    "a sibling without canonical projection must keep the combined command pending"
+  );
+
+  var legacyOperationUpdateId = "legacy-operation-update";
+  var legacyOperationCommand = "legacy operation 완료";
+  rememberServerPending(
+    legacyOperationCommand,
+    legacyOperationUpdateId,
+    OPERATION_SCOPE
+  );
+  var legacyOperation = operationResult(
+    "legacy-operation",
+    legacyOperationUpdateId,
+    legacyOperationCommand,
+    "attack",
+    15,
+    "completed",
+    actionStages("attack"),
+    1
+  );
+  delete legacyOperation.battlefield_operation;
+  var foreignLegacyExecution = Object.assign(
+    {},
+    legacyOperation.intervention.command_execution,
+    {
+      operation_id: "foreign-operation",
+      operation_generation: 99
+    }
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: legacyOperationUpdateId
+    },
+    update: {
+      update_id: legacyOperationUpdateId,
+      vector: { goal: legacyOperationCommand }
+    },
+    intervention: {
+      latest_update_id: legacyOperationUpdateId,
+      telemetry_frame: 15,
+      command_execution: foreignLegacyExecution
+    },
+    operations: [legacyOperation]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, legacyOperationUpdateId),
+    "foreign operation identity must not finish a legacy operation"
+  );
+  var legacySibling = operationResult(
+    "legacy-operation-sibling",
+    legacyOperationUpdateId,
+    "legacy sibling 완료",
+    "scouting",
+    15,
+    "completed",
+    actionStages("move"),
+    1
+  );
+  delete legacySibling.battlefield_operation;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: legacyOperationUpdateId
+    },
+    update: {
+      update_id: legacyOperationUpdateId,
+      vector: { goal: legacyOperationCommand }
+    },
+    intervention: {
+      latest_update_id: legacyOperationUpdateId,
+      telemetry_frame: 15,
+      command_execution:
+        legacyOperation.intervention.command_execution
+    },
+    operations: [legacyOperation, legacySibling]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, legacyOperationUpdateId),
+    "distinct noncanonical siblings must not collapse into one terminal execution"
+  );
+  var legacyNoEffectExecution = Object.assign(
+    {},
+    legacyOperation.intervention.command_execution,
+    {
+      state: "effect_observed",
+      completed: false,
+      stages: actionStages("attack").slice(0, 6)
+    }
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: legacyOperationUpdateId
+    },
+    update: {
+      update_id: legacyOperationUpdateId,
+      vector: { goal: legacyOperationCommand }
+    },
+    intervention: {
+      latest_update_id: legacyOperationUpdateId,
+      telemetry_frame: 15,
+      command_execution: legacyNoEffectExecution
+    },
+    operations: [legacyOperation]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, legacyOperationUpdateId),
+    "effect_observed state without matching effect evidence must stay pending"
+  );
+  var legacyEffectExecution = Object.assign(
+    {},
+    legacyOperation.intervention.command_execution,
+    {
+      state: "effect_observed",
+      completed: false
+    }
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: legacyOperationUpdateId
+    },
+    update: {
+      update_id: legacyOperationUpdateId,
+      vector: { goal: legacyOperationCommand }
+    },
+    intervention: {
+      latest_update_id: legacyOperationUpdateId,
+      telemetry_frame: 16,
+      command_execution: legacyEffectExecution
+    },
+    operations: [legacyOperation]
+  }, OPERATION_SCOPE));
+  assert(!hasPending(OPERATION_SCOPE, legacyOperationUpdateId));
+  var legacyOperationEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(legacyOperationCommand);
+    }
+  );
+  assert(legacyOperationEntry);
+  assert.strictEqual(
+    legacyOperationEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "executed"
+  );
+
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: asyncParallelUpdateId
+    },
+    update: {
+      update_id: asyncParallelUpdateId,
+      vector: { goal: asyncParallelCommand }
+    },
+    intervention: {
+      latest_update_id: asyncParallelUpdateId,
+      telemetry_frame: 15,
+      command_execution:
+        asyncParallelSuccess.intervention.command_execution
+    },
+    operations: [asyncParallelSuccess, asyncParallelActive]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, asyncParallelUpdateId),
+    "one terminal sibling must not finish the whole parallel command"
+  );
+
+  var asyncParallelFailure = operationResult(
+    "async-parallel-active",
+    asyncParallelUpdateId,
+    "병렬 공격 실패",
+    "attack",
+    16,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  asyncParallelFailure.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  asyncParallelFailure.intervention.command_execution = {};
+  asyncParallelFailure.battlefield_operation.operation_lifetime
+    .completion_state = "failed";
+  asyncParallelFailure.battlefield_operation.operation_lifetime
+    .completion_reason = "async_parallel_failure";
+  asyncParallelFailure.battlefield_operation.operation_completion.state =
+    "failed";
+  asyncParallelFailure.battlefield_operation.operation_completion.reason =
+    "async_parallel_failure";
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: asyncParallelUpdateId
+    },
+    update: {
+      update_id: asyncParallelUpdateId,
+      vector: { goal: asyncParallelCommand }
+    },
+    intervention: {
+      latest_update_id: asyncParallelUpdateId,
+      telemetry_frame: 16,
+      command_execution:
+        asyncParallelSuccess.intervention.command_execution
+    },
+    operations: [asyncParallelSuccess, asyncParallelFailure]
+  }, OPERATION_SCOPE));
+  assert(!hasPending(OPERATION_SCOPE, asyncParallelUpdateId));
+  var asyncParallelEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(asyncParallelCommand);
+    }
+  );
+  assert(asyncParallelEntry);
+  assert.strictEqual(
+    asyncParallelEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "partially_executed"
+  );
+  assert(!asyncParallelEntry.textContent.includes("async_parallel_failure"));
+
+  var allSuccessUpdateId = "async-parallel-all-success";
+  var allSuccessCommand = "정찰과 공격을 모두 완료";
+  rememberServerPending(
+    allSuccessCommand,
+    allSuccessUpdateId,
+    OPERATION_SCOPE
+  );
+  var allSuccessScout = operationResult(
+    "all-success-scout",
+    allSuccessUpdateId,
+    "병렬 정찰 완료",
+    "scouting",
+    20,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  var allSuccessAttack = operationResult(
+    "all-success-attack",
+    allSuccessUpdateId,
+    "병렬 공격 완료",
+    "attack",
+    20,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  allSuccessScout.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  allSuccessAttack.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: allSuccessUpdateId
+    },
+    update: {
+      update_id: allSuccessUpdateId,
+      vector: { goal: allSuccessCommand }
+    },
+    intervention: {
+      latest_update_id: allSuccessUpdateId,
+      telemetry_frame: 20,
+      command_execution:
+        allSuccessScout.intervention.command_execution
+    },
+    operations: [allSuccessScout, allSuccessAttack]
+  }, OPERATION_SCOPE));
+  assert(!hasPending(OPERATION_SCOPE, allSuccessUpdateId));
+  var allSuccessEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(allSuccessCommand);
+    }
+  );
+  assert(allSuccessEntry);
+  assert.strictEqual(
+    allSuccessEntry.querySelector(".message-bot").getAttribute("data-status"),
+    "executed"
+  );
+  assert(allSuccessEntry.textContent.includes("병렬 작전 완료 확인"));
+  assert(allSuccessEntry.textContent.includes("2개 작전"));
+
+  focusOperationRecord(sharedFailureRecord);
+  renderMicroMachineIntervention(sharedParallelStatus);
+  assert.strictEqual(
+    activeCommandConsoleRecord.operationId,
+    "shared-parallel-failure"
+  );
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "shared_parallel_failure"
+    )
+  );
+  assert(
+    !nodes["command-console-verification"].textContent.includes(
+      "shared_parallel_success"
+    )
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "실행 실패"
+  );
+
+  var failedCanonicalCommand = "명시적 실패 우선 검증";
+  var failedCanonicalUpdateId = "failed-canonical-ui-update";
+  var failedCanonicalOperation = operationResult(
+    "failed-canonical-ui",
+    failedCanonicalUpdateId,
+    failedCanonicalCommand,
+    "scouting",
+    14,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  failedCanonicalOperation.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  failedCanonicalOperation.intervention.command_execution = {};
+  failedCanonicalOperation.battlefield_operation.operation_lifetime
+    .completion_state = "failed";
+  failedCanonicalOperation.battlefield_operation.operation_lifetime
+    .completion_reason = "explicit_runtime_failure";
+  failedCanonicalOperation.battlefield_operation.operation_completion.state =
+    "failed";
+  failedCanonicalOperation.battlefield_operation.operation_completion.reason =
+    "explicit_runtime_failure";
+  var failedCanonicalPendingId = rememberServerPending(
+    failedCanonicalCommand,
+    failedCanonicalUpdateId,
+    OPERATION_SCOPE
+  );
+  bindActiveCommandConsoleUpdate(
+    failedCanonicalCommand,
+    failedCanonicalPendingId,
+    OPERATION_SCOPE,
+    failedCanonicalUpdateId
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: failedCanonicalUpdateId
+    },
+    update: {
+      update_id: failedCanonicalUpdateId,
+      vector: { goal: failedCanonicalCommand }
+    },
+    intervention: {
+      latest_update_id: failedCanonicalUpdateId,
+      telemetry_frame: 14,
+      command_execution:
+        failedCanonicalOperation.intervention.command_execution
+    },
+    operations: [failedCanonicalOperation]
+  }, OPERATION_SCOPE));
+  assert(!hasPending(OPERATION_SCOPE, failedCanonicalUpdateId));
+  var failedCanonicalKey = operationRecordKey(
+    OPERATION_SCOPE,
+    "failed-canonical-ui"
+  );
+  var failedCanonicalRecord = operationRecords[failedCanonicalKey];
+  assert(failedCanonicalRecord);
+  assert.strictEqual(failedCanonicalRecord.disposition, "blocked");
+  assert.strictEqual(failedCanonicalRecord.terminal, true);
+  assert.strictEqual(
+    failedCanonicalRecord.node.parentNode.id,
+    "operation-lane-waiting"
+  );
+  assert.strictEqual(
+    failedCanonicalRecord.node.querySelector(
+      ".operation-card-state"
+    ).textContent,
+    "실행 실패"
+  );
+  assert(
+    failedCanonicalRecord.node.className.includes("command-console-blocked")
+  );
+  assert(
+    !failedCanonicalRecord.node.className.includes(
+      "command-console-verified"
+    )
+  );
+  var failedCanonicalStateNode = failedCanonicalRecord.node.querySelector(
+    ".operation-card-state"
+  );
+  assert.strictEqual(failedCanonicalStateNode.getAttribute("role"), "status");
+  assert.strictEqual(
+    failedCanonicalStateNode.getAttribute("aria-live"),
+    "polite"
+  );
+  assert.strictEqual(
+    failedCanonicalStateNode.getAttribute("aria-atomic"),
+    "true"
+  );
+  var failedCanonicalStages = failedCanonicalRecord.node.querySelectorAll(
+    ".operation-stage"
+  );
+  assert.strictEqual(failedCanonicalStages.length, 4);
+  assert.deepStrictEqual(
+    failedCanonicalStages.map(function(stage) {
+      return stage.textContent;
+    }),
+    ["해석", "배정", "제출", "관측"]
+  );
+  failedCanonicalStages.slice(0, 3).forEach(function(stage) {
+    assert(stage.className.includes("stage-done"));
+  });
+  assert(failedCanonicalStages[3].className.includes("stage-blocked"));
+  assert(!failedCanonicalStages[3].className.includes("stage-done"));
+  failedCanonicalStages.forEach(function(stage) {
+    assert.strictEqual(stage.getAttribute("role"), "listitem");
+    assert.strictEqual(stage.getAttribute("aria-current"), "false");
+    assert(!stage.className.includes("stage-verified"));
+  });
+  var failedCanonicalActions = failedCanonicalRecord.node
+    .querySelector(".operation-card-actions")
+    .querySelectorAll("button");
+  assert.strictEqual(failedCanonicalActions.length, 5);
+  assert.deepStrictEqual(
+    failedCanonicalActions.map(function(action) {
+      return action.getAttribute("data-operation-action");
+    }),
+    ["view", "revise", "reinforce", "retarget", "cancel"]
+  );
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(
+    nodes["active-command-console"].className.includes(
+      "command-console-blocked"
+    )
+  );
+  assert(
+    !nodes["active-command-console"].className.includes(
+      "command-console-verified"
+    )
+  );
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "explicit_runtime_failure"
+    )
+  );
+  assert(
+    !nodes["command-console-verification"].textContent.includes(
+      "권위 완료 조건 확인"
+    )
+  );
+  assert(nodes["command-stage-verify"].className.includes("stage-blocked"));
+  assert.strictEqual(
+    nodes["command-stage-verify"].getAttribute("aria-current"),
+    "false"
+  );
+  assert(
+    nodes["command-stage-verify"].getAttribute("aria-label").includes("차단")
+  );
+  assert(
+    nodes["command-console-announcement"].textContent.includes("실행 실패")
+  );
+  assert(
+    nodes["command-console-announcement"].textContent.includes(
+      "explicit_runtime_failure"
+    )
+  );
+  assert(
+    !nodes["command-console-announcement"].textContent.includes(
+      "권위 완료 조건 확인"
+    )
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].className,
+    "micro-badge micro-badge-blocked"
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "실행 실패"
+  );
+  var failedCanonicalEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(failedCanonicalCommand);
+    }
+  );
+  assert(failedCanonicalEntry);
+  assert.strictEqual(
+    failedCanonicalEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "blocked"
+  );
+  assert(failedCanonicalEntry.textContent.includes("실행 실패"));
+  assert(failedCanonicalEntry.textContent.includes("explicit_runtime_failure"));
+  assert(!failedCanonicalEntry.textContent.includes("권위 완료 조건"));
+  assert(!failedCanonicalEntry.textContent.includes("실행 확인"));
+
+  var manyActiveOperations = [];
+  for (var operationIndex = 0; operationIndex < 30; operationIndex += 1) {
+    var boundedOperation = operationResult(
+      "bounded-" + operationIndex,
+      "bounded-update-" + operationIndex,
+      "bounded operation " + operationIndex,
+      "attack",
+      20 + operationIndex,
+      "action_issued",
+      actionStages("attack").slice(0, 6),
+      1
+    );
+    boundedOperation.battlefield_operation.identity.session_epoch =
+      1800000000000;
+    manyActiveOperations.push(boundedOperation);
+  }
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: manyActiveOperations
+  }, OPERATION_SCOPE));
+  assert.strictEqual(OPERATION_RECORD_MAXIMUM, 24);
+  assert.strictEqual(
+    Object.keys(operationRecords).length,
+    24
+  );
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-card").length,
+    24
+  );
+  var expectedNewestBoundedIds = [];
+  for (var boundedIndex = 6; boundedIndex < 30; boundedIndex += 1) {
+    expectedNewestBoundedIds.push("bounded-" + boundedIndex);
+  }
+  assert.deepStrictEqual(
+    operationRecordOrder.map(function(key) {
+      return operationRecords[key].operationId;
+    }),
+    expectedNewestBoundedIds
+  );
+  var stableBoundedKeys = Object.keys(operationRecords).sort();
+  var stableBoundedNodes = {};
+  stableBoundedKeys.forEach(function(key) {
+    stableBoundedNodes[key] = operationRecords[key].node;
+  });
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: manyActiveOperations.slice().reverse()
+  }, OPERATION_SCOPE));
+  assert.deepStrictEqual(
+    Object.keys(operationRecords).sort(),
+    stableBoundedKeys
+  );
+  stableBoundedKeys.forEach(function(key) {
+    assert.strictEqual(operationRecords[key].node, stableBoundedNodes[key]);
+  });
+
+  var boundedPending = beginOperationRecord(
+    "최신 작전과 함께 보존할 로컬 pending",
+    "bounded-local-pending"
+  );
+  assert.strictEqual(Object.keys(operationRecords).length, 24);
+  assert(operationRecords[boundedPending.key]);
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: manyActiveOperations.slice().reverse()
+  }, OPERATION_SCOPE));
+  var expectedNewestWithPending = [];
+  for (var pendingBoundedIndex = 7; pendingBoundedIndex < 30; pendingBoundedIndex += 1) {
+    expectedNewestWithPending.push("bounded-" + pendingBoundedIndex);
+  }
+  assert.strictEqual(Object.keys(operationRecords).length, 24);
+  assert(operationRecords[boundedPending.key]);
+  assert.deepStrictEqual(
+    operationRecordOrder.filter(function(key) {
+      return key !== boundedPending.key;
+    }).map(function(key) {
+      return operationRecords[key].operationId;
+    }),
+    expectedNewestWithPending
   );
 
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-operation-cards-next";
@@ -11641,10 +15605,35 @@ const assert = require("assert");
             page,
         )
         self.assertIn('<div id="log" aria-live="off" role="log"></div>', page)
+        self.assertIn(
+            'id="operation-timeline"\n'
+            '            class="operation-timeline"\n'
+            '            role="log"\n'
+            '            aria-live="off"',
+            page,
+        )
         self.assertIn('<div id="micromachine-status" aria-live="off">', page)
         self.assertNotIn('botMessage.setAttribute("role", "status")', page)
         self.assertNotIn('botMessage.setAttribute("aria-live", "polite")', page)
         self.assertEqual(page.count('class="command-stage" role="listitem"'), 4)
+        self.assertEqual(page.count('data-operation-lane="'), 4)
+        for lane in ("planning", "executing", "completed", "waiting"):
+            self.assertIn(f'id="operation-lane-{lane}"', page)
+        for action in ("view", "revise", "reinforce", "retarget", "cancel"):
+            self.assertIn(f'"{action}"', page)
+        self.assertIn('className = "operation-resolution-actions"', page)
+        self.assertIn('"operation_event",', page)
+        self.assertIn(
+            'button.setAttribute(\n'
+            '      "aria-disabled",\n'
+            '      choice.safe === true ? "false" : "true"\n'
+            "    );",
+            page,
+        )
+        self.assertIn('reason.className = "operation-resolution-reason"', page)
+        self.assertIn('button.setAttribute("aria-describedby", reason.id)', page)
+        self.assertIn('"data-operation-card-fingerprint"', page)
+        self.assertIn('"data-operation-timeline-fingerprint"', page)
         self.assertIn(
             ".command-stage.stage-done {\n"
             "    color: #7dd3fc;",

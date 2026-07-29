@@ -1,6 +1,6 @@
 # Battlefield Command UX Design
 
-> 최종 수정: 2026-07-28  
+> 최종 수정: 2026-07-29
 > 목적: 사용자가 채팅 옆의 봇을 구경하는 것이 아니라, 실제 전장의 병력을
 > 나누고 명령하고 결과를 확인한다는 감각을 제공한다.
 
@@ -59,6 +59,7 @@ flowchart LR
 | 인게임 작전 HUD | **Implemented** | 작전 ID, 병력, 목표, 이동, 교전, blocker 증거를 게임 안에 표시한다. |
 | 웹 상태 전송 | **Implemented: SSE primary** | `/api/events`가 state, history, MicroMachine lifecycle을 push하며 1000ms polling은 연결 장애 때만 fallback으로 동작한다. |
 | SSE 이벤트 스트리밍 | **Implemented** | append-only journal, 전역 `event_seq`, heartbeat, `Last-Event-ID` replay, snapshot 재동기화를 지원한다. |
+| 전장 상황 cockpit | **Implemented: pre-live** | 기존 Operation card를 planning/executing/completed/waiting 네 lane으로 이동시키고, canonical ownership/readiness와 operation timeline을 표시한다. 실제 SC2 화면 체감은 사용자 live QA가 최종 gate다. |
 | 음성 입력과 녹음 waveform | **Implemented** | 브라우저 SpeechRecognition 결과가 일반 명령 경로로 들어간다. |
 | 전술 radio TTS/readback | **Proposed** | 짧은 편성 확인, 차단, 교전 시작을 음성으로 알려주는 기능은 아직 완성되지 않았다. |
 | 명시적 병력 이관/편집 UX | **Implemented: pre-live** | resize, reinforce, retarget, transfer, cancel을 typed operation edit로 처리하고 기존 카드에서 전후 편성·counterpart·해결 결과를 표시한다. 실제 SC2 이관 이동은 live QA가 최종 gate다. |
@@ -522,6 +523,101 @@ feedback은 구현 완료로 표시하면 안 된다.
 14:21:12 assault-bravo Marine 4 배정 후 출동
 ```
 
+현재 구현은 기존 Battlefield Commander 카드와 시각 언어를 유지한 채 다음
+네 lane으로 같은 DOM card를 이동시킨다.
+
+| Lane | 의미 |
+| --- | --- |
+| `해석/편성` (`planning`) | 수신, 해석, publish, consume, assign 단계지만 matching-generation SC2 submission은 아직 없다. |
+| `실행 중` (`executing`) | matching-generation SC2 action이 제출됐고 authoritative terminal 상태는 아니다. |
+| `관측 완료` (`completed`) | canonical completion projection이 terminal completion을 확인했다. |
+| `대기/차단` (`waiting`) | 병력/선행조건 대기, blocker, 실패, 만료, 취소, supersede 상태다. |
+
+각 card는 기존 다섯 동작 `view / revise / reinforce / retarget / cancel`을
+유지한다. backend가 안전성 근거와 `recommended_choices`를 제공할 때만 별도
+resolution 영역을 표시하며, protected minimum이나 transfer 안전 조건을
+통과하지 못한 선택은 이유와 함께 disabled 상태로 남는다.
+
+`view`는 `blackboard_scope_id + operation_id + generation` 단위 timeline을
+선택한다. timeline은 반복 snapshot을 그대로 나열하지 않고 `received`,
+`planned`, `assigned`, `waiting`, `submitted`, movement/engagement/target,
+completion, edit, ownership 사건으로 축약한다. stale generation, regressing
+frame, 같은 frame의 상충 snapshot은 최신 상태를 되돌리지 못하며 snapshot
+hydration은 과거 사건을 새 live 사건처럼 재생하지 않는다.
+
+### 11.5 Authority and Session Invariants
+
+Cockpit은 표시 편의를 위해 성공이나 종료를 추론하지 않는다. 다음 조건은
+구현 계약이며 하나라도 맞지 않으면 fail closed한다.
+
+1. `completed` lane과 `실행 확인`은 같은 `operation_id`와 generation을 가진
+   canonical `battlefield_operation.operation_completion`이 terminal이고,
+   completion generation도 일치할 때만 사용한다.
+2. manager의 `execution.completed`, 문자열 `completed`, 이동/교전 관측만으로
+   terminal completion을 만들지 않는다. 이 경우 카드는 `효과 관측` 또는
+   실행 중 상태에 남는다.
+3. 같은 blackboard scope라도 canonical `session_epoch`가 바뀌면 이전 게임의
+   operation registry, terminal 상태, timeline selection을 전부 초기화한다.
+4. 완전한 MicroMachine status snapshot만
+   `operation_registry_authoritative=true`를 가진다. 이 snapshot에서 사라진
+   server operation은 제거한다. 단, 서버가 아직 승인하지 않은 로컬 pending
+   card는 최대 120초만 보존한다.
+5. 브라우저 registry는 terminal 여부와 무관하게 최근 24개 operation으로
+   제한한다. 서버 reducer의 active projection registry는 scope별 64개로
+   제한하되 generation/frame/milestone dedupe history는 별도의 bounded LRU로
+   보존한다. 따라서 authoritative snapshot이 65개 이상이어도 동일 snapshot
+   재생이 과거 milestone을 다시 live event로 방출하지 않는다.
+6. snapshot은 느린 bridge/filesystem 조회 전에 journal cursor를 원자적으로
+   캡처한다. source 조회 중에는 global publication lock을 잡지 않으며, 그
+   사이 publish된 event는 cut보다 큰 sequence로 즉시 journal에 들어간다.
+   snapshot 뒤 atomic replay가 retention rollover를 감지하면 새 snapshot
+   cut을 잡아 재동기화한다. 동시에 시작된 두 source refresh는
+   session/generation/frame high-water를 publication lock 안에서 비교하여
+   늦게 끝난 과거 read가 최신 payload를 덮지 못한다. snapshot hydration
+   자체는 기존 subscriber의 live-event watermark를 소비하지 않는다.
+7. `received`, `planned`, `assigned`, `submitted`, movement, engagement,
+   target-reached, completed milestone은 rolling token eviction 뒤에도 같은
+   operation generation에서 다시 방출하지 않는다. scope LRU에서 빠졌다가
+   돌아온 snapshot도 보존된 operation high-water보다 새 transition만 live
+   event로 방출한다.
+8. `order_issued`는 Squad order가 만들어졌다는 뜻일 뿐 실제 SC2 제출이
+   아니다. `제출` 단계와 executing lane은 matching-generation
+   `action_issued`가 있어야만 활성화한다. movement/engagement/target/completed
+   milestone은 canonical projection identity와 completion generation이 모두
+   일치해야 한다.
+9. 취소 요청은 matching-generation `release_stop` 또는
+   `release_no_owned_units` cleanup 증거가 오기 전까지 waiting lane에 둔다.
+   cleanup이 확인된 뒤에만 terminal cancellation로 표시한다.
+10. 하나의 source snapshot 안에서 operation generation/frame/fingerprint가
+    하나라도 regress 또는 conflict하면 snapshot 전체를 거부한다. incoming
+    operation, `battlefield_overview`, `operation_summary`를 섞지 않고 이전에
+    승인된 세 값을 원자적으로 복원한다.
+
+### 11.6 Safe Resolution and Rendering Continuity
+
+상황별 해결 버튼은 LLM이나 telemetry가 보낸 임의 문자열을 명령으로
+실행하지 않는다. frontend의 고정 allowlist는 다음 네 개뿐이다.
+
+```text
+launch_partial
+wait_for_full_force
+transfer_available_units
+transfer_two_units
+```
+
+버튼 command text도 operation ID를 검증한 고정 template로만 만든다. raw
+unit tag, frame script, 알 수 없는 recommendation은 무시한다. canonical
+identity, protected minimum, source operation minimum, ownership integrity,
+atomic runtime revalidation 입력이 불완전하면 버튼은 focus 가능한
+`aria-disabled=true` 상태로 남고, 차단 reason을 화면과
+`aria-describedby`에 함께 제공한다.
+
+operation card는 `scope + operation_id` keyed DOM node를 lane 사이에서
+이동시킨다. fingerprint가 같으면 다시 만들지 않으며, 내용 갱신과 lane
+reparent 뒤에도 현재 standard/resolution button focus와 timeline
+`<details>` disclosure 상태를 복원한다. 빠르게 도착하는 SSE event가 키보드
+사용자의 위치나 기술 증거 펼침 상태를 불필요하게 초기화하면 회귀다.
+
 ## 12. In-Game HUD Contract
 
 웹을 보지 않아도 게임 안에서 다음을 확인할 수 있어야 한다.
@@ -613,6 +709,35 @@ production/prerequisite
 - stale generation과 늦은 telemetry의 UI 역행 차단
 - ownership handoff, stale action cleanup, transferred count runtime telemetry
 - clean build와 자동 테스트 완료 후 실제 SC2 이동 관측은 수동 live QA gate
+
+### Completed: Situational Cockpit and Operation Timeline
+
+- 기존 Battlefield Commander visual language와 command dock 유지
+- 정확히 네 단계 `해석 / 배정 / 제출 / 관측`과 다섯 card action 유지
+- planning/executing/completed/waiting 네 lane과 card DOM identity 유지
+- operation ID/generation, route, lifetime, requested/represented/owned force,
+  launch decision, actual SC2 command, canonical observation, blocker 표시
+- top-level canonical `battlefield_overview` 기반 ownership/readiness/transfer
+  표시, 대표 manager snapshot에 의한 overview 오염 차단
+- scope/session epoch/operation/generation 단위 semantic timeline
+- generation/frame regression, same-frame conflict, duplicate transition 차단
+- snapshot/replay source cut, subscriber watermark 격리, 과거 operation event
+  hydration 억제
+- 느린 source read 중 non-blocking publication과 retention rollover resnapshot
+- operation/overview/summary 원자 승인과 concurrent source high-water 차단
+- retired session epoch 역행 차단과 scope LRU 재방문 event high-water 유지
+- active registry cap과 milestone dedupe history 분리, 65-operation replay 차단
+- `order_issued`와 실제 `action_issued` 분리, 취소 cleanup 전 waiting 유지
+- exact operation/generation canonical completion만 완료 lane으로 승격
+- authoritative membership reconciliation, 120초 pending expiry, 24-card bound
+- contextual resolution choice의 protected-minimum/transfer 안전성 fail-closed
+- 고정 resolution allowlist, 검증된 command template, visible disabled reason
+- keyed/fingerprinted rerender와 lane 이동 뒤 keyboard focus, timeline
+  disclosure 보존
+- Python/Node DOM contract와 실제 Chrome 150에서 desktop `1440x1100`,
+  mobile `390x844`, keyboard focus, contextual-control focus fallback,
+  reduced-motion, forced-colors, accessibility role 회귀 검증
+- 실제 게임에서 카드와 유닛 행동의 체감 일치는 사용자 live QA가 최종 gate
 
 ### P1: Voice Tactical Loop
 
