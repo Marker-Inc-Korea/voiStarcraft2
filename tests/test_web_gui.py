@@ -1008,7 +1008,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("micromachine_status", payload)
         self.assertTrue(payload["state"]["available"])
 
-    def test_operation_event_snapshot_hydration_does_not_republish_old_events(self):
+    def test_operation_event_snapshot_hydration_does_not_consume_live_watermark(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
         scope_id = "scope-operation-events"
@@ -1062,17 +1062,24 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             for event in self.server._http.event_journal.events_after(0)
             if event["event_type"] == "operation_event"
         ]
-        self.assertEqual(1, len(operation_events))
-        self.assertEqual("submitted", operation_events[0]["payload"]["kind"])
-        self.assertEqual("update-scout-alpha", operation_events[0]["update_id"])
-        self.assertEqual(1, operation_events[0]["generation"])
-        self.assertEqual(101, operation_events[0]["game_frame"])
+        self.assertEqual(2, len(operation_events))
+        self.assertEqual(
+            ["assigned", "submitted"],
+            [event["payload"]["kind"] for event in operation_events],
+        )
+        self.assertEqual("update-scout-alpha", operation_events[1]["update_id"])
+        self.assertEqual(1, operation_events[1]["generation"])
+        self.assertEqual(101, operation_events[1]["game_frame"])
 
-    def test_sse_snapshot_holds_source_cut_until_authoritative_payload_is_captured(self):
+    def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
         original = self.bridge.micromachine_status
+        self.server._http.publish_event(
+            "state",
+            {"available": True, "marker": "snapshot-race-baseline"},
+        )
         status_entered = threading.Event()
         status_release = threading.Event()
-        contender_acquired = threading.Event()
+        publisher_started = threading.Event()
 
         def blocking_status(*, blackboard_dir=""):
             status_entered.set()
@@ -1095,23 +1102,265 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "authoritative snapshot did not enter MicroMachine status",
             )
 
-            def contend_for_source_cut():
-                with self.server._http._event_source_lock:
-                    contender_acquired.set()
+            def publish_during_source_cut():
+                publisher_started.set()
+                return self.server._http.publish_event(
+                    "command_received",
+                    {
+                        "command_text": "snapshot-race-command",
+                        "status": "received",
+                    },
+                    operation_id="snapshot-race-command",
+                    generation=1,
+                )
 
-            contender_future = pool.submit(contend_for_source_cut)
-            self.assertFalse(
-                contender_acquired.wait(0.1),
-                "source refresh entered during the authoritative snapshot cut",
+            publisher_future = pool.submit(publish_during_source_cut)
+            self.assertTrue(publisher_started.wait(1))
+            time.sleep(0.1)
+            self.assertTrue(
+                publisher_future.done(),
+                "slow snapshot source reads blocked real-time publication",
+            )
+            published = publisher_future.result(timeout=3)
+            status_release.set()
+            stream = response_future.result(timeout=3)
+
+        events = self.parse_sse_events(stream)
+        snapshot = events[0]
+        self.assertEqual("snapshot", snapshot["event"])
+        snapshot_cursor = snapshot["data"]["event_seq"]
+        self.assertGreater(published["event_seq"], snapshot_cursor)
+        self.assertIn(
+            "snapshot-race-command",
+            [
+                event["data"]["payload"].get("command_text")
+                for event in events
+                if event["event"] == "command_received"
+            ],
+        )
+
+    def test_sse_snapshot_restarts_when_concurrent_events_roll_past_retention(self):
+        original = self.bridge.micromachine_status
+        self.server._http.event_journal = web_gui._WebEventJournal(
+            retention=2
+        )
+        baseline = self.server._http.publish_event(
+            "state",
+            {"available": True, "marker": "rollover-baseline"},
+        )
+        status_entered = threading.Event()
+        status_release = threading.Event()
+
+        def blocking_status(*, blackboard_dir=""):
+            status_entered.set()
+            if not status_release.wait(2):
+                raise TimeoutError("test did not release snapshot status")
+            return original(blackboard_dir=blackboard_dir)
+
+        self.bridge.micromachine_status = blocking_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status",
+            original,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            response_future = pool.submit(self.get_sse)
+            self.assertTrue(status_entered.wait(1))
+            for index in range(3):
+                self.server._http.publish_event(
+                    "command_received",
+                    {
+                        "command_text": f"rollover-command-{index}",
+                        "status": "received",
+                    },
+                    operation_id=f"rollover-command-{index}",
+                    generation=1,
+                )
+            self.assertGreater(
+                self.server._http.event_journal.oldest_seq,
+                baseline["event_seq"] + 1,
             )
             status_release.set()
             stream = response_future.result(timeout=3)
-            contender_future.result(timeout=3)
 
-        self.assertTrue(contender_acquired.is_set())
+        snapshots = [
+            event
+            for event in self.parse_sse_events(stream)
+            if event["event"] == "snapshot"
+        ]
+        self.assertGreaterEqual(len(snapshots), 2)
         self.assertEqual(
-            "snapshot",
-            self.parse_sse_events(stream)[0]["event"],
+            self.server._http.event_journal.latest_seq,
+            snapshots[-1]["data"]["event_seq"],
+        )
+
+    def test_slow_event_source_read_does_not_hold_publication_lock(self):
+        original = self.bridge.state_snapshot
+        state_entered = threading.Event()
+        state_release = threading.Event()
+
+        def blocking_state():
+            state_entered.set()
+            if not state_release.wait(2):
+                raise TimeoutError("test did not release state snapshot")
+            return original()
+
+        self.bridge.state_snapshot = blocking_state
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "state_snapshot",
+            original,
+        )
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            refresh_future = pool.submit(
+                handler._refresh_event_sources,
+                "/tmp/slow-source",
+            )
+            self.assertTrue(state_entered.wait(1))
+            publish_future = pool.submit(
+                self.server._http.publish_event,
+                "command_received",
+                {"command_text": "latency-critical-command"},
+            )
+            published = publish_future.result(timeout=1)
+            self.assertGreater(published["event_seq"], 0)
+            state_release.set()
+            refresh_future.result(timeout=3)
+
+    def test_concurrent_source_refresh_cannot_publish_older_snapshot_last(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        scope_id = "scope-refresh-high-water"
+        older = semantic_operation_payload(
+            generation=1,
+            frame=100,
+            session_epoch=1700000000000,
+        )
+        newer = semantic_operation_payload(
+            generation=2,
+            frame=200,
+            session_epoch=1700000000000,
+        )
+        for status in (older, newer):
+            status["blackboard_scope_id"] = scope_id
+            status["operation_events"] = []
+            status["operation_registry_authoritative"] = True
+
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        call_lock = threading.Lock()
+        call_count = 0
+
+        def raced_status(_blackboard_dir):
+            nonlocal call_count
+            with call_lock:
+                call_count += 1
+                call_number = call_count
+            if call_number == 1:
+                first_entered.set()
+                if not release_first.wait(2):
+                    raise TimeoutError("test did not release older refresh")
+                return deepcopy(older)
+            return deepcopy(newer)
+
+        handler._micromachine_status_payload = raced_status
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            older_future = pool.submit(
+                handler._refresh_event_sources,
+                "/tmp/source-refresh-high-water",
+            )
+            self.assertTrue(first_entered.wait(1))
+            newer_future = pool.submit(
+                handler._refresh_event_sources,
+                "/tmp/source-refresh-high-water",
+            )
+            newer_future.result(timeout=3)
+            release_first.set()
+            older_future.result(timeout=3)
+
+        published = [
+            event["payload"]
+            for event in self.server._http.event_journal.events_after(0)
+            if event["event_type"] == "micromachine_status"
+            and event["payload"].get("blackboard_scope_id") == scope_id
+        ]
+        self.assertEqual(1, len(published))
+        self.assertEqual(
+            2,
+            published[0]["battlefield_overview"]["identity"][
+                "generation"
+            ],
+        )
+        self.assertEqual(
+            ("1700000000000", 2, 200),
+            self.server._http._observed_payload_identities[
+                f"micromachine:{scope_id}"
+            ],
+        )
+
+    def test_operation_event_scope_cursor_and_caches_are_lru_bounded(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        http_server = self.server._http
+        retention = http_server._OPERATION_EVENT_SCOPE_RETENTION
+
+        for index in range(retention + 3):
+            scope_id = f"operation-scope-{index}"
+            http_server._observed_payload_hashes[
+                f"micromachine:{scope_id}"
+            ] = f"digest-{index}"
+            source_key = f"micromachine_status:{scope_id}"
+            http_server._observed_payload_hashes[
+                f"source:{source_key}"
+            ] = f"source-digest-{index}"
+            http_server._failed_event_sources.add(source_key)
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [
+                        {
+                            "timeline_seq": index + 1,
+                            "operation_id": f"operation-{index}",
+                            "generation": 1,
+                            "kind": "assigned",
+                        }
+                    ],
+                },
+                blackboard_dir=f"/tmp/{scope_id}",
+                publish=True,
+            )
+
+        self.assertLessEqual(
+            len(http_server._observed_operation_event_seq),
+            retention,
+        )
+        self.assertLessEqual(
+            len(http_server._observed_operation_scope_order),
+            retention,
+        )
+        evicted_scope = "operation-scope-0"
+        self.assertNotIn(
+            evicted_scope,
+            http_server._observed_operation_event_seq,
+        )
+        self.assertNotIn(
+            f"micromachine:{evicted_scope}",
+            http_server._observed_payload_hashes,
+        )
+        self.assertNotIn(
+            f"source:micromachine_status:{evicted_scope}",
+            http_server._observed_payload_hashes,
+        )
+        self.assertNotIn(
+            f"micromachine_status:{evicted_scope}",
+            http_server._failed_event_sources,
         )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
@@ -4625,6 +4874,37 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             },
         )
 
+    def test_micromachine_operation_order_only_is_not_action_submission(self):
+        execution = web_gui._micromachine_operation_command_execution(
+            update_id="order-only-update",
+            operation_id="order-only-operation",
+            operation_generation=1,
+            operation_telemetry={
+                "operation_id": "order-only-operation",
+                "generation": 1,
+                "received_frame": 100,
+                "assigned_frame": 110,
+                "assigned_count": 4,
+                "submitted_frame": 120,
+                "order_issued": True,
+                "action_issued": False,
+                "last_action_frame": 0,
+                "last_action": "",
+                "completed": False,
+            },
+            fallback={},
+        )
+
+        stages = {
+            stage["name"]: stage
+            for stage in execution["stages"]
+        }
+        self.assertEqual("order_issued", execution["state"])
+        self.assertIn("order_issued", stages)
+        self.assertNotIn("action_issued", stages)
+        self.assertFalse(execution["completed"])
+        self.assertFalse(execution["failed"])
+
     def test_micromachine_operation_ability_requires_matching_family_effect(self):
         update_id = "siege-ability-operation"
         operation_id = "siege-alpha"
@@ -6601,14 +6881,43 @@ class SessionLoopBridgeTest(unittest.TestCase):
             self.assertEqual(kinds.count(kind), 1, kind)
         self.assertNotIn("completed", kinds)
 
+    def test_operation_timeline_requires_action_stage_for_submission(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            execution_state="action_issued",
+        )
+        payload["operations"][0]["intervention"]["command_execution"][
+            "stages"
+        ] = [
+            stage
+            for stage in payload["operations"][0]["intervention"][
+                "command_execution"
+            ]["stages"]
+            if stage["name"] != "action_issued"
+        ]
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-action-stage-required",
+        )
+
+        self.assertNotIn(
+            "submitted",
+            [event["kind"] for event in result["operation_events"]],
+        )
+
     def test_operation_timeline_rejects_generation_frame_and_same_frame_conflicts(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-semantic-test"
         current = semantic_operation_payload(generation=2, frame=200)
+        current["operations"][0]["command_text"] = "accepted command"
         accepted = reducer.observe(
             current,
-            blackboard_scope_id="scope-semantic-test",
+            blackboard_scope_id=scope_id,
         )
         baseline_seq = accepted["operation_event_latest_seq"]
+        accepted_overview = deepcopy(accepted["battlefield_overview"])
+        accepted_summary = deepcopy(accepted["operation_summary"])
 
         lower_generation = semantic_operation_payload(
             generation=1,
@@ -6628,14 +6937,26 @@ class SessionLoopBridgeTest(unittest.TestCase):
             movement=True,
             terminal=True,
         )
+        conflicting_same_frame["operations"][0][
+            "command_text"
+        ] = "rejected same-frame command"
         for stale in (
             lower_generation,
             regressing_frame,
             conflicting_same_frame,
         ):
+            stale["battlefield_overview"]["eligible_combat_count"] = 999
+            stale["operation_summary"] = {
+                "total": 999,
+                "active": 0,
+                "scouting": 0,
+                "attacking": 0,
+                "blocked": 0,
+                "completed": 999,
+            }
             result = reducer.observe(
                 stale,
-                blackboard_scope_id="scope-semantic-test",
+                blackboard_scope_id=scope_id,
             )
             self.assertEqual(
                 baseline_seq,
@@ -6648,6 +6969,27 @@ class SessionLoopBridgeTest(unittest.TestCase):
                     for event in result["operation_events"]
                 ],
             )
+            self.assertEqual(
+                "accepted command",
+                result["operations"][0]["command_text"],
+            )
+            self.assertFalse(
+                result["operations"][0]["battlefield_operation"][
+                    "operation_completion"
+                ]["terminal"]
+            )
+            self.assertEqual(
+                accepted_overview,
+                result["battlefield_overview"],
+            )
+            self.assertEqual(
+                accepted_summary,
+                result["operation_summary"],
+            )
+            self.assertEqual(
+                accepted_overview,
+                reducer._scope_battlefield_overviews[scope_id],
+            )
 
         advanced = reducer.observe(
             semantic_operation_payload(
@@ -6656,7 +6998,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 movement=True,
                 terminal=True,
             ),
-            blackboard_scope_id="scope-semantic-test",
+            blackboard_scope_id=scope_id,
         )
         self.assertIn(
             "completed",
@@ -6695,8 +7037,106 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 for event in reset["operation_events"]
             },
         )
+        self.assertEqual(
+            "222",
+            reducer._scope_epochs["scope-semantic-test"],
+        )
         self.assertTrue(
-            all(key[1] == "222" for key in reducer._states),
+            any(key[1] == "222" for key in reducer._states),
+        )
+        self.assertLessEqual(
+            len(reducer._states),
+            reducer._GLOBAL_OPERATION_RETENTION,
+        )
+
+    def test_conflicting_new_epoch_snapshot_does_not_reset_accepted_scope(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-atomic-new-epoch"
+        current = reducer.observe(
+            semantic_operation_payload(
+                frame=300,
+                session_epoch=111,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        conflicting = semantic_operation_payload(
+            frame=10,
+            session_epoch=222,
+        )
+        duplicate = deepcopy(conflicting["operations"][0])
+        duplicate["command_text"] = "same-frame conflicting command"
+        duplicate["battlefield_operation"]["operation_completion"].update(
+            {
+                "terminal": True,
+                "state": "completed",
+                "reason": "conflicting_terminal_state",
+                "frame": 10,
+            }
+        )
+        conflicting["operations"].append(duplicate)
+
+        rejected = reducer.observe(
+            conflicting,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual("111", reducer._scope_epochs[scope_id])
+        self.assertEqual(
+            current["battlefield_overview"],
+            rejected["battlefield_overview"],
+        )
+        self.assertEqual(
+            current["operations"],
+            rejected["operations"],
+        )
+        self.assertEqual(
+            current["operation_event_latest_seq"],
+            rejected["operation_event_latest_seq"],
+        )
+
+    def test_operation_timeline_rejects_delayed_retired_session_epoch(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-retired-session"
+        reducer.observe(
+            semantic_operation_payload(
+                frame=111,
+                session_epoch=111,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        current = reducer.observe(
+            semantic_operation_payload(
+                frame=10,
+                session_epoch=222,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        current_seq = current["operation_event_latest_seq"]
+
+        delayed = reducer.observe(
+            semantic_operation_payload(
+                frame=999,
+                session_epoch=111,
+                movement=True,
+                engagement=True,
+                target_reached=True,
+                terminal=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(current_seq, delayed["operation_event_latest_seq"])
+        self.assertEqual(
+            222,
+            delayed["battlefield_overview"]["identity"]["session_epoch"],
+        )
+        self.assertEqual(
+            10,
+            delayed["operations"][0]["telemetry_frame"],
+        )
+        self.assertNotIn(
+            "completed",
+            [event["kind"] for event in delayed["operation_events"]],
         )
 
     def test_operation_timeline_standing_operation_is_not_completed_by_activity(self):
@@ -6720,6 +7160,228 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertIn("engagement_observed", kinds)
         self.assertIn("target_reached", kinds)
         self.assertNotIn("completed", kinds)
+
+    def test_operation_timeline_requires_matching_canonical_completion_projection(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        cases = []
+
+        missing_projection = semantic_operation_payload(
+            execution_state="completed",
+            terminal=True,
+        )
+        missing_projection["operations"][0].pop(
+            "battlefield_operation",
+            None,
+        )
+        cases.append(missing_projection)
+
+        mismatched_id = semantic_operation_payload(
+            execution_state="completed",
+            terminal=True,
+        )
+        mismatched_id["operations"][0]["battlefield_operation"][
+            "operation_id"
+        ] = "different-operation"
+        cases.append(mismatched_id)
+
+        mismatched_generation = semantic_operation_payload(
+            execution_state="completed",
+            terminal=True,
+        )
+        mismatched_generation["operations"][0]["battlefield_operation"][
+            "generation"
+        ] = 99
+        cases.append(mismatched_generation)
+
+        for index, payload in enumerate(cases):
+            with self.subTest(index=index):
+                result = reducer.observe(
+                    payload,
+                    blackboard_scope_id=f"canonical-completion-{index}",
+                )
+                kinds = [
+                    event["kind"]
+                    for event in result["operation_events"]
+                ]
+                self.assertTrue(
+                    {
+                        "movement_observed",
+                        "engagement_observed",
+                        "target_reached",
+                        "completed",
+                    }.isdisjoint(kinds),
+                )
+
+    def test_operation_timeline_requires_matching_projection_identity_for_observation(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            movement=True,
+            engagement=True,
+            target_reached=True,
+            terminal=True,
+        )
+        payload["operations"][0]["battlefield_operation"]["identity"][
+            "operation_id"
+        ] = "different-operation"
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="canonical-identity-mismatch",
+        )
+
+        kinds = [event["kind"] for event in result["operation_events"]]
+        self.assertTrue(
+            {
+                "movement_observed",
+                "engagement_observed",
+                "target_reached",
+                "completed",
+            }.isdisjoint(kinds),
+        )
+
+    def test_operation_timeline_rejects_stale_accepted_and_transfer_edits(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-requested-generation"
+        latest = reducer.observe(
+            semantic_operation_payload(
+                requested_generation=4,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "applied",
+                    "transferred_in_count": 2,
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        baseline_seq = latest["operation_event_latest_seq"]
+
+        stale = reducer.observe(
+            semantic_operation_payload(
+                requested_generation=3,
+                frame=101,
+                operation_edit={
+                    "action": "transfer",
+                    "resolution": "transferred",
+                    "transferred_in_count": 3,
+                    "transferred_out_count": 1,
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            baseline_seq,
+            stale["operation_event_latest_seq"],
+        )
+        self.assertEqual(
+            4,
+            reducer._requested_generation_high_water[
+                (scope_id, "1700000000000", "flank-alpha")
+            ],
+        )
+        stale_kinds = [
+            event["kind"]
+            for event in stale["operations"][0]["semantic_timeline"]
+        ]
+        self.assertNotIn("ownership_released", stale_kinds)
+        self.assertEqual(
+            latest["operations"][0]["operation_edit"],
+            stale["operations"][0]["operation_edit"],
+        )
+
+    def test_rejected_snapshot_does_not_poison_requested_generation_high_water(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-requested-generation-poison"
+        reducer.observe(
+            semantic_operation_payload(
+                requested_generation=4,
+                frame=100,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        rejected = semantic_operation_payload(
+            requested_generation=99,
+            frame=100,
+            terminal=True,
+        )
+        reducer.observe(
+            rejected,
+            blackboard_scope_id=scope_id,
+        )
+        family_key = (
+            scope_id,
+            "1700000000000",
+            "flank-alpha",
+        )
+        self.assertEqual(
+            4,
+            reducer._requested_generation_high_water[family_key],
+        )
+
+        accepted = reducer.observe(
+            semantic_operation_payload(
+                requested_generation=5,
+                frame=101,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            5,
+            reducer._requested_generation_high_water[family_key],
+        )
+        self.assertEqual(
+            5,
+            accepted["operations"][0][
+                "requested_operation_generation"
+            ],
+        )
+
+    def test_operation_timeline_milestones_do_not_reemit_after_token_eviction(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-permanent-milestones"
+        reducer.observe(
+            semantic_operation_payload(movement=True),
+            blackboard_scope_id=scope_id,
+        )
+        for frame in range(
+            101,
+            101 + reducer._PER_OPERATION_TOKEN_RETENTION + 8,
+        ):
+            reducer.observe(
+                semantic_operation_payload(
+                    frame=frame,
+                    blocker=f"dynamic-wait-{frame}",
+                    launch_decision="wait",
+                    movement=True,
+                ),
+                blackboard_scope_id=scope_id,
+            )
+
+        result = reducer.observe(
+            semantic_operation_payload(
+                frame=200,
+                movement=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        events = result["operation_events"]
+        for kind in (
+            "received",
+            "planned",
+            "assigned",
+            "submitted",
+            "movement_observed",
+        ):
+            self.assertEqual(
+                1,
+                sum(event["kind"] == kind for event in events),
+                kind,
+            )
+        state = next(iter(reducer._states.values()))
+        self.assertLessEqual(
+            len(state["milestones"]),
+            len(reducer._PERMANENT_MILESTONE_KINDS),
+        )
 
     def test_operation_timeline_supports_concurrent_operations_and_bounded_retention(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
@@ -6798,6 +7460,64 @@ class SessionLoopBridgeTest(unittest.TestCase):
             )
         )
 
+    def test_authoritative_registry_above_active_retention_does_not_reemit(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-authoritative-retention-plus-one"
+        payload = semantic_operation_payload(
+            operation_id="operation-0",
+            frame=100,
+        )
+        payload["operations"] = []
+        payload["battlefield_overview"]["operation_ownership"] = []
+        for index in range(
+            reducer._PER_SCOPE_OPERATION_RETENTION + 1
+        ):
+            operation_payload = semantic_operation_payload(
+                operation_id=f"operation-{index}",
+                frame=100 + index,
+            )
+            payload["operations"].extend(
+                operation_payload["operations"]
+            )
+            payload["battlefield_overview"][
+                "operation_ownership"
+            ].extend(
+                operation_payload["battlefield_overview"][
+                    "operation_ownership"
+                ]
+            )
+        payload["operation_registry_authoritative"] = True
+
+        first = reducer.observe(
+            payload,
+            blackboard_scope_id=scope_id,
+        )
+        second = reducer.observe(
+            deepcopy(payload),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            reducer._PER_SCOPE_OPERATION_RETENTION + 1,
+            len(first["operations"]),
+        )
+        self.assertEqual(
+            first["operation_event_latest_seq"],
+            second["operation_event_latest_seq"],
+        )
+        self.assertEqual(
+            first["operation_events"],
+            second["operation_events"],
+        )
+        self.assertLessEqual(
+            len(reducer._accepted_operations),
+            reducer._PER_SCOPE_OPERATION_RETENTION,
+        )
+        self.assertGreater(
+            len(reducer._generation_high_water),
+            reducer._PER_SCOPE_OPERATION_RETENTION,
+        )
+
     def test_operation_timeline_bounds_scope_and_operation_state(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         for scope_number in range(reducer._SCOPE_RETENTION + 3):
@@ -6832,17 +7552,60 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
         self.assertLessEqual(
             len(reducer._states),
-            (
-                reducer._SCOPE_RETENTION
-                * reducer._PER_SCOPE_OPERATION_RETENTION
-            ),
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
         )
         self.assertLessEqual(
             len(reducer._generation_high_water),
-            (
-                reducer._SCOPE_RETENTION
-                * reducer._PER_SCOPE_OPERATION_RETENTION
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._family_order),
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        )
+        self.assertLessEqual(
+            len(reducer._scope_epoch_history),
+            reducer._SCOPE_EPOCH_HISTORY_RETENTION,
+        )
+
+    def test_operation_timeline_scope_lru_revisit_emits_only_new_transition(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        original_scope = "scope-lru-original"
+        first = reducer.observe(
+            semantic_operation_payload(frame=100),
+            blackboard_scope_id=original_scope,
+        )
+        first_kinds = {
+            event["kind"] for event in first["operation_events"]
+        }
+        self.assertIn("submitted", first_kinds)
+
+        for index in range(reducer._SCOPE_RETENTION):
+            reducer.observe(
+                semantic_operation_payload(
+                    operation_id=f"other-operation-{index}",
+                    frame=200 + index,
+                    session_epoch=2000 + index,
+                ),
+                blackboard_scope_id=f"scope-lru-other-{index}",
+            )
+        self.assertNotIn(original_scope, reducer._scope_epochs)
+
+        replayed = reducer.observe(
+            semantic_operation_payload(frame=100),
+            blackboard_scope_id=original_scope,
+        )
+        self.assertEqual([], replayed["operation_events"])
+
+        advanced = reducer.observe(
+            semantic_operation_payload(
+                frame=101,
+                movement=True,
             ),
+            blackboard_scope_id=original_scope,
+        )
+        self.assertEqual(
+            ["movement_observed"],
+            [event["kind"] for event in advanced["operation_events"]],
         )
 
     def test_operation_timeline_emits_edit_and_ownership_identity(self):
@@ -8231,6 +8994,9 @@ class FakeElement {
   }
 
   appendChild(child) {
+    if (child.parentNode) {
+      child.parentNode.removeChild(child);
+    }
     child.parentNode = this;
     this.children.push(child);
     return child;
@@ -8395,7 +9161,25 @@ function renderAdviceBriefing(events) {
         self.assertIn("animation: star-parallax-near 42s linear infinite", page)
         self.assertIn("@media (prefers-reduced-motion: reduce)", page)
         self.assertIn(
-            ".star-depth { animation: none; transform: none; will-change: auto; }",
+            "animation: none !important;\n"
+            "      transform: none;\n"
+            "      will-change: auto;",
+            page,
+        )
+        self.assertIn(
+            ".message-pending .narration::after {\n"
+            "      animation: none !important;\n"
+            '      content: "..." !important;',
+            page,
+        )
+        self.assertIn(
+            ".typing-indicator span, .voice-wave span {\n"
+            "      animation: none !important;",
+            page,
+        )
+        self.assertIn(
+            ".active-command-console::after {\n"
+            "      transition: none !important;",
             page,
         )
         self.assertIn("transform: translate3d", page)
@@ -8459,6 +9243,9 @@ class FakeElement {
   }
 
   appendChild(child) {
+    if (child.parentNode) {
+      child.parentNode.removeChild(child);
+    }
     child.parentNode = this;
     this.children.push(child);
     return child;
@@ -8734,6 +9521,14 @@ class FakeElement {
   removeChild(child) {
     var index = this.children.indexOf(child);
     if (index >= 0) {
+      var active = document.activeElement;
+      while (active) {
+        if (active === child) {
+          document.activeElement = null;
+          break;
+        }
+        active = active.parentNode;
+      }
       this.children.splice(index, 1);
       child.parentNode = null;
     }
@@ -8756,7 +9551,9 @@ class FakeElement {
     }
   }
 
-  focus() {}
+  focus() {
+    document.activeElement = this;
+  }
 
   setSelectionRange() {}
 
@@ -8806,12 +9603,16 @@ class FakeElement {
 
   set textContent(value) {
     this._textContent = String(value);
-    this.children = [];
+    this.children.slice().forEach(function(child) {
+      this.removeChild(child);
+    }, this);
   }
 
   set innerHTML(value) {
     this._textContent = "";
-    this.children = [];
+    this.children.slice().forEach(function(child) {
+      this.removeChild(child);
+    }, this);
   }
 
   get innerHTML() {
@@ -8972,6 +9773,7 @@ var commandModeRadios = [
 ];
 
 var document = {
+  activeElement: null,
   documentElement: new FakeElement("html"),
   createElement: function (tagName) { return new FakeElement(tagName); },
   createTextNode: function (text) { return new FakeText(text); },
@@ -9170,6 +9972,50 @@ const assert = require("assert");
       }
     ];
   }
+  var orderOnlyData = {
+    status: "published",
+    intervention: {
+      command_execution: {
+        state: "order_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: observedExecutionStages().slice(0, 5)
+      }
+    }
+  };
+  var orderOnlyModel = commandConsoleStageModel(orderOnlyData);
+  assert.strictEqual(orderOnlyModel.assignmentReady, true);
+  assert.strictEqual(orderOnlyModel.actionIssued, false);
+  assert.strictEqual(orderOnlyModel.done.execute, false);
+  assert(
+    commandConsoleActualAction(orderOnlyModel).includes(
+      "구체적인 이동·공격·생산 명령 대기"
+    )
+  );
+  assert.strictEqual(
+    operationRecordLane({
+      data: orderOnlyData,
+      disposition: "active",
+      terminal: false
+    }),
+    "planning"
+  );
+  var stateOnlyActionData = JSON.parse(JSON.stringify(orderOnlyData));
+  stateOnlyActionData.intervention.command_execution.state =
+    "action_issued";
+  var stateOnlyActionModel = commandConsoleStageModel(
+    stateOnlyActionData
+  );
+  assert.strictEqual(stateOnlyActionModel.actionIssued, false);
+  assert.strictEqual(
+    operationRecordLane({
+      data: stateOnlyActionData,
+      disposition: "active",
+      terminal: false
+    }),
+    "planning"
+  );
   pollState();
   await flushPromises();
   assert.strictEqual(requests.length, 0);
@@ -10710,6 +11556,11 @@ const assert = require("assert");
   );
   assert(
     commandConsoleClassName(cancellationPendingCleanupModel).includes(
+      "command-console-waiting"
+    )
+  );
+  assert(
+    !commandConsoleClassName(cancellationPendingCleanupModel).includes(
       "command-console-executing"
     )
   );
@@ -11660,6 +12511,7 @@ const assert = require("assert");
   );
 
   // A stale response may not regress one card or contaminate the other card.
+  assaultRecord.node.querySelectorAll("button")[1].focus();
   renderOperationConsole(serverResult({
     status: "published",
     operations: [
@@ -11692,6 +12544,99 @@ const assert = require("assert");
   assert(assaultRecord.node.textContent.includes("attack"));
   assert(!assaultRecord.node.textContent.includes("move"));
   assert.strictEqual(assaultRecord.node.parentNode.id, "operation-lane-executing");
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-action"),
+    "revise"
+  );
+
+  // Keyed rerenders preserve the focused standard action and timeline
+  // disclosure state while semantic events arrive immediately over SSE.
+  reconRecord.node.querySelectorAll("button")[1].focus();
+  var focusedReconUpdate = operationResult(
+    "recon-alpha",
+    "parallel-update-a",
+    "마린 1기 정찰",
+    "scouting",
+    301,
+    "action_issued",
+    actionStages("move").slice(0, 6)
+  );
+  focusedReconUpdate.semantic_timeline = [
+    {
+      timeline_seq: 300,
+      operation_id: "recon-alpha",
+      generation: 1,
+      kind: "submitted",
+      game_frame: 300,
+      summary: "SC2 action submitted",
+      technical: { state: "action_issued" }
+    },
+    {
+      timeline_seq: 301,
+      operation_id: "recon-alpha",
+      generation: 1,
+      kind: "movement_observed",
+      game_frame: 301,
+      summary: "movement observed",
+      technical: { movement_observed: true }
+    }
+  ];
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [focusedReconUpdate]
+  }, OPERATION_SCOPE));
+  reconRecord = operationRecords[reconKey];
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-action"),
+    "revise"
+  );
+  var firstTimelineItem = nodes["operation-timeline"]
+    .querySelectorAll(".operation-timeline-item")[0];
+  var firstTimelineDetails = firstTimelineItem.querySelector("details");
+  firstTimelineDetails.open = true;
+  firstTimelineDetails.querySelector("summary").focus();
+  var operationEventSeq = lastEventSeq + 1;
+  var immediateOperationEvent = {
+    type: "operation_event",
+    lastEventId: String(operationEventSeq),
+    data: JSON.stringify({
+      event_type: "operation_event",
+      event_seq: operationEventSeq,
+      blackboard_scope_id: OPERATION_SCOPE,
+      operation_id: "recon-alpha",
+      generation: 1,
+      payload: {
+        timeline_seq: 302,
+        blackboard_scope_id: OPERATION_SCOPE,
+        session_epoch: "1700000000000",
+        operation_id: "recon-alpha",
+        generation: 1,
+        kind: "engagement_observed",
+        game_frame: 302,
+        summary: "engagement observed",
+        technical: { engagement_observed: true }
+      }
+    })
+  };
+  applyServerEvent(immediateOperationEvent);
+  assert.strictEqual(
+    nodes["operation-timeline"]
+      .querySelectorAll(".operation-timeline-item").length,
+    3
+  );
+  assert.strictEqual(
+    nodes["operation-timeline"]
+      .querySelectorAll(".operation-timeline-item")[0]
+      .querySelector("details").open,
+    true
+  );
+  assert.strictEqual(document.activeElement.tagName, "SUMMARY");
+  applyServerEvent(immediateOperationEvent);
+  assert.strictEqual(
+    nodes["operation-timeline"]
+      .querySelectorAll(".operation-timeline-item").length,
+    3
+  );
 
   // All-Terran evidence extends the existing Operation card and four-stage
   // rail instead of creating a separate family dashboard.
@@ -11889,17 +12834,36 @@ const assert = require("assert");
   unsafeResolutionAssault.battlefield_operation.operation_launch_policy
     .decision = "wait";
   unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .missing_count = 1;
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
+    .launch_count = 3;
+  unsafeResolutionAssault.battlefield_operation.operation_launch_policy
     .blocker = "protected_minimum_not_respected";
   renderOperationConsole(serverResult({
     status: "published",
     battlefield_overview: {
+      authority: "micromachine_cpp",
       transfer_availability: {
+        atomic_revalidation_required: true,
         entries: [
           {
             source_owner_id: "assault-bravo",
+            transferable_count: 2,
             transfer_safe: false,
             atomic_runtime_blocker: "protected_minimum_not_respected",
-            recommended_resolution_choices: ["transfer_two_units"]
+            recommended_resolution_choices: [
+              "transfer_two_units",
+              "raw_tag_123_frame_script"
+            ],
+            safety_evidence: {
+              protected_minimum_respected: false,
+              atomic_revalidation_required: true
+            },
+            atomic_revalidation_inputs: {
+              atomic_revalidation_ready: false,
+              source_active: true,
+              ownership_integrity: true
+            }
           }
         ]
       }
@@ -11915,21 +12879,36 @@ const assert = require("assert");
     ".operation-resolution-actions"
   ).querySelectorAll("button");
   var unsafePartialButton = unsafeResolutionButtons.find(function(button) {
-    return button.textContent === "launch_partial";
+    return button.getAttribute("data-operation-resolution") === "launch_partial";
   });
   var safeWaitButton = unsafeResolutionButtons.find(function(button) {
-    return button.textContent === "wait_for_full_force";
+    return button.getAttribute("data-operation-resolution") === "wait_for_full_force";
   });
   var unsafeTransferButton = unsafeResolutionButtons.find(function(button) {
-    return button.textContent === "transfer_two_units";
+    return button.getAttribute("data-operation-resolution") === "transfer_two_units";
   });
-  assert.strictEqual(unsafePartialButton.disabled, true);
-  assert.strictEqual(safeWaitButton.disabled, false);
-  assert.strictEqual(unsafeTransferButton.disabled, true);
+  assert.strictEqual(unsafeResolutionButtons.length, 3);
+  assert.strictEqual(unsafePartialButton.getAttribute("aria-disabled"), "true");
+  assert.strictEqual(safeWaitButton.getAttribute("aria-disabled"), "false");
+  assert.strictEqual(unsafeTransferButton.getAttribute("aria-disabled"), "true");
   assert(
-    unsafePartialButton.getAttribute("aria-description").includes(
-      "protected_minimum_not_respected"
-    )
+    unsafePartialButton.getAttribute("aria-describedby")
+  );
+  assert(
+    assaultRecord.node.querySelector(".operation-resolution-reason")
+      .textContent.includes("protected_minimum_not_respected")
+  );
+  assert(!assaultRecord.node.textContent.includes("raw_tag_123_frame_script"));
+  var unsafeRequestCount = requests.length;
+  unsafePartialButton.dispatchEvent({
+    type: "click",
+    preventDefault: function() {}
+  });
+  assert.strictEqual(requests.length, unsafeRequestCount);
+  unsafeTransferButton.focus();
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-resolution"),
+    "transfer_two_units"
   );
 
   var safeResolutionAssault = operationResult(
@@ -11948,6 +12927,11 @@ const assert = require("assert");
   safeResolutionAssault.battlefield_operation.operation_launch_policy
     .partial_launch_safe = true;
   safeResolutionAssault.battlefield_operation.operation_launch_policy
+    .safety_evidence = {
+      protected_defense_minimum_respected: true,
+      source_operation_minimum_respected: true
+    };
+  safeResolutionAssault.battlefield_operation.operation_launch_policy
     .decision = "launch";
   renderOperationConsole(serverResult({
     status: "published",
@@ -11960,9 +12944,27 @@ const assert = require("assert");
   var safePartialButton = assaultRecord.node.querySelector(
     ".operation-resolution-actions"
   ).querySelectorAll("button").find(function(button) {
-    return button.textContent === "launch_partial";
+    return button.getAttribute("data-operation-resolution") === "launch_partial";
   });
-  assert.strictEqual(safePartialButton.disabled, false);
+  assert.strictEqual(safePartialButton.getAttribute("aria-disabled"), "false");
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-action"),
+    "view"
+  );
+  assert(operationNodeContains(assaultRecord.node, document.activeElement));
+  assert(
+    operationNodeContains(
+      assaultRecord.node.parentNode,
+      document.activeElement
+    )
+  );
+  var safeResolutionText = operationResolutionCommand(
+    "launch_partial",
+    assaultRecord
+  );
+  assert(safeResolutionText.includes("assault-bravo"));
+  assert(safeResolutionText.includes("권위 안전 판정을 통과한"));
+  assert(!safeResolutionText.includes("launch_partial"));
 
   // A newer generation edits the existing card instead of creating a duplicate.
   var editedAssault = operationResult(
@@ -11997,6 +12999,33 @@ const assert = require("assert");
   assert(assaultRecord.node.textContent.includes("reinforce"));
   assert(assaultRecord.node.textContent.includes("MARINE ×4 → MARINE ×6"));
   assert(assaultRecord.node.textContent.includes("explicit_ability_owner_protected"));
+  var assaultTimelineLength = assaultRecord.data.semantic_timeline.length;
+  applyServerEvent({
+    type: "operation_event",
+    lastEventId: String(lastEventSeq + 1),
+    data: JSON.stringify({
+      event_type: "operation_event",
+      event_seq: lastEventSeq + 1,
+      blackboard_scope_id: OPERATION_SCOPE,
+      operation_id: "assault-bravo",
+      generation: 1,
+      payload: {
+        timeline_seq: 999,
+        blackboard_scope_id: OPERATION_SCOPE,
+        session_epoch: "1700000000000",
+        operation_id: "assault-bravo",
+        generation: 1,
+        kind: "submitted",
+        game_frame: 329,
+        summary: "stale generation event",
+        technical: {}
+      }
+    })
+  });
+  assert.strictEqual(
+    assaultRecord.data.semantic_timeline.length,
+    assaultTimelineLength
+  );
   var editControls = assaultRecord.node.querySelectorAll("button");
   editControls[2].dispatchEvent({ type: "click" });
   assert(nodes["command-input"].value.includes("assault-bravo"));
@@ -12072,6 +13101,33 @@ const assert = require("assert");
       "stale_active_edit_must_not_replace_latest"
     )
   );
+
+  var staleAcceptedEdit = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit-stale-accepted",
+    "오래된 승인 공격조 변경",
+    "attack",
+    332,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    2
+  );
+  staleAcceptedEdit.requested_operation_generation = 3;
+  staleAcceptedEdit.operation_edit = {
+    action: "transfer",
+    resolution: "transferred",
+    transferred_in_count: 2,
+    transferred_out_count: 1
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleAcceptedEdit]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+  assert(!assaultRecord.node.textContent.includes("오래된 승인 공격조 변경"));
 
   // A delayed lower requested generation may carry a newer active generation.
   // Accept its execution telemetry without replacing the newest rejected edit.
@@ -12187,6 +13243,10 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.terminal, false);
   assert.strictEqual(assaultRecord.operationGeneration, 3);
   assert.strictEqual(assaultRecord.disposition, "active");
+  assert.strictEqual(
+    assaultRecord.node.parentNode.id,
+    "operation-lane-waiting"
+  );
   assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,
     "취소 정리 확인 중"
@@ -12449,6 +13509,242 @@ const assert = require("assert");
     "실행 확인"
   );
 
+  // A new authoritative game epoch replaces the old terminal registry even
+  // when scope, operation ID, and generation are reused. Reported/execution
+  // completion without a matching canonical projection remains non-terminal.
+  var restartedRecon = operationResult(
+    "recon-alpha",
+    "restart-update-a",
+    "새 게임 정찰",
+    "scouting",
+    10,
+    "completed",
+    actionStages("move", "reported completion only"),
+    1
+  );
+  restartedRecon.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  restartedRecon.battlefield_operation.operation_id =
+    "mismatched-canonical-operation";
+  var restartedSnapshot = serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: [restartedRecon]
+  }, OPERATION_SCOPE);
+  renderMicroMachineStatus(restartedSnapshot);
+  reconKey = operationRecordKey(OPERATION_SCOPE, "recon-alpha");
+  assert.strictEqual(operationConsoleSessionEpoch, "1800000000000");
+  assert.strictEqual(Object.keys(operationRecords).length, 1);
+  assert.strictEqual(
+    activeCommandConsoleRecord.sessionEpoch,
+    "1800000000000"
+  );
+  assert.strictEqual(activeCommandConsoleRecord.updateId, "restart-update-a");
+  assert.strictEqual(activeCommandConsoleRecord.telemetryFrame, 10);
+  assert.strictEqual(
+    activeCommandConsoleRecord.data.intervention.command_execution.command_id,
+    "restart-update-a"
+  );
+  assert.strictEqual(
+    nodes["command-console-title"].textContent,
+    "새 게임 정찰"
+  );
+  assert.strictEqual(operationRecords[reconKey].terminal, false);
+  assert.notStrictEqual(
+    operationRecords[reconKey].node.parentNode.id,
+    "operation-lane-completed"
+  );
+  assert(
+    !operationRecords[reconKey].node
+      .querySelector(".operation-card-state").textContent.includes("실행 확인")
+  );
+
+  var restartedReconNode = operationRecords[reconKey].node;
+  var delayedRetiredEpoch = operationResult(
+    "recon-alpha",
+    "delayed-retired-update",
+    "이전 게임에서 늦게 도착한 정찰",
+    "scouting",
+    999,
+    "completed",
+    actionStages("move", "stale completion"),
+    1
+  );
+  assert.strictEqual(
+    renderOperationConsole(serverResult({
+      status: "published",
+      operation_registry_authoritative: true,
+      battlefield_overview: {
+        identity: { session_epoch: 1700000000000 }
+      },
+      operations: [delayedRetiredEpoch]
+    }, OPERATION_SCOPE)),
+    false
+  );
+  assert.strictEqual(operationConsoleSessionEpoch, "1800000000000");
+  assert.strictEqual(operationRecords[reconKey].node, restartedReconNode);
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 10);
+  assert.strictEqual(operationRecords[reconKey].text, "새 게임 정찰");
+
+  // Authoritative snapshots remove absent server operations, preserve only a
+  // bounded unacknowledged local pending card, then expire it.
+  var localPending = beginOperationRecord(
+    "로컬 승인 대기",
+    "local-unacknowledged"
+  );
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: [restartedRecon]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  localPending.createdAt =
+    Date.now() - OPERATION_PENDING_RECORD_TIMEOUT_MS - 1;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: [restartedRecon]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(Object.keys(operationRecords).length, 1);
+
+  var authoritativeEmptySnapshot = serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: [],
+    compile_result: {
+      status: "compiled",
+      update_id: "must-not-become-an-operation"
+    },
+    update: {
+      update_id: "must-not-become-an-operation",
+      vector: { goal: "top-level transport result" }
+    },
+    intervention: {
+      latest_update_id: "must-not-become-an-operation",
+      telemetry_frame: 11,
+      command_execution: {
+        command_id: "must-not-become-an-operation",
+        state: "action_issued",
+        completed: false,
+        failed: false,
+        expired: false,
+        stages: actionStages("move").slice(0, 6)
+      }
+    }
+  }, OPERATION_SCOPE);
+  assert.strictEqual(commandOperationPayloads(authoritativeEmptySnapshot).length, 0);
+  assert.strictEqual(renderOperationConsole(authoritativeEmptySnapshot), false);
+  assert.strictEqual(Object.keys(operationRecords).length, 0);
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-card").length,
+    0
+  );
+
+  var manyActiveOperations = [];
+  for (var operationIndex = 0; operationIndex < 30; operationIndex += 1) {
+    var boundedOperation = operationResult(
+      "bounded-" + operationIndex,
+      "bounded-update-" + operationIndex,
+      "bounded operation " + operationIndex,
+      "attack",
+      20 + operationIndex,
+      "action_issued",
+      actionStages("attack").slice(0, 6),
+      1
+    );
+    boundedOperation.battlefield_operation.identity.session_epoch =
+      1800000000000;
+    manyActiveOperations.push(boundedOperation);
+  }
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: manyActiveOperations
+  }, OPERATION_SCOPE));
+  assert.strictEqual(OPERATION_RECORD_MAXIMUM, 24);
+  assert.strictEqual(
+    Object.keys(operationRecords).length,
+    24
+  );
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-card").length,
+    24
+  );
+  var expectedNewestBoundedIds = [];
+  for (var boundedIndex = 6; boundedIndex < 30; boundedIndex += 1) {
+    expectedNewestBoundedIds.push("bounded-" + boundedIndex);
+  }
+  assert.deepStrictEqual(
+    operationRecordOrder.map(function(key) {
+      return operationRecords[key].operationId;
+    }),
+    expectedNewestBoundedIds
+  );
+  var stableBoundedKeys = Object.keys(operationRecords).sort();
+  var stableBoundedNodes = {};
+  stableBoundedKeys.forEach(function(key) {
+    stableBoundedNodes[key] = operationRecords[key].node;
+  });
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: manyActiveOperations.slice().reverse()
+  }, OPERATION_SCOPE));
+  assert.deepStrictEqual(
+    Object.keys(operationRecords).sort(),
+    stableBoundedKeys
+  );
+  stableBoundedKeys.forEach(function(key) {
+    assert.strictEqual(operationRecords[key].node, stableBoundedNodes[key]);
+  });
+
+  var boundedPending = beginOperationRecord(
+    "최신 작전과 함께 보존할 로컬 pending",
+    "bounded-local-pending"
+  );
+  assert.strictEqual(Object.keys(operationRecords).length, 24);
+  assert(operationRecords[boundedPending.key]);
+  renderOperationConsole(serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: manyActiveOperations.slice().reverse()
+  }, OPERATION_SCOPE));
+  var expectedNewestWithPending = [];
+  for (var pendingBoundedIndex = 7; pendingBoundedIndex < 30; pendingBoundedIndex += 1) {
+    expectedNewestWithPending.push("bounded-" + pendingBoundedIndex);
+  }
+  assert.strictEqual(Object.keys(operationRecords).length, 24);
+  assert(operationRecords[boundedPending.key]);
+  assert.deepStrictEqual(
+    operationRecordOrder.filter(function(key) {
+      return key !== boundedPending.key;
+    }).map(function(key) {
+      return operationRecords[key].operationId;
+    }),
+    expectedNewestWithPending
+  );
+
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-operation-cards-next";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-operation-cards-next");
   assert.strictEqual(Object.keys(operationRecords).length, 0);
@@ -12517,6 +13813,18 @@ const assert = require("assert");
         for action in ("view", "revise", "reinforce", "retarget", "cancel"):
             self.assertIn(f'"{action}"', page)
         self.assertIn('className = "operation-resolution-actions"', page)
+        self.assertIn('"operation_event",', page)
+        self.assertIn(
+            'button.setAttribute(\n'
+            '      "aria-disabled",\n'
+            '      choice.safe === true ? "false" : "true"\n'
+            "    );",
+            page,
+        )
+        self.assertIn('reason.className = "operation-resolution-reason"', page)
+        self.assertIn('button.setAttribute("aria-describedby", reason.id)', page)
+        self.assertIn('"data-operation-card-fingerprint"', page)
+        self.assertIn('"data-operation-timeline-fingerprint"', page)
         self.assertIn(
             ".command-stage.stage-done {\n"
             "    color: #7dd3fc;",

@@ -204,13 +204,17 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 
 ## Latest Qualification
 
-Production evidence collected on July 27, 2026:
+The current cockpit pre-live regression was refreshed on July 29, 2026.
+The latest clean patched-build and live SC2 evidence below was collected on
+July 27, 2026:
 
 | Gate | Result |
 | --- | --- |
-| Python suite | Python 3.10, 3.11, and 3.12 each passed `1904 tests, 5357 subtests` in isolated `dev + llm` environments |
+| Current Python suite | `2152 passed, 6363 subtests passed` in the local `dev + llm` environment |
+| Historical cross-version baseline | Python 3.10, 3.11, and 3.12 each passed `1904 tests, 5357 subtests` on July 27, 2026 |
 | MicroMachine integration kit | `105 passed, 2091 subtests passed` |
-| Web operation UX | `131 passed, 261 subtests passed`, including truthful zero-owner cancellation cleanup |
+| Current web operation UX | `193 passed, 296 subtests passed`, including non-blocking SSE publication, replay rollover recovery, atomic operation/overview snapshot acceptance, concurrent source high-water rejection, retention-plus-one milestone deduplication, truthful `order_issued` versus `action_issued`, cancellation cleanup waiting, stable 24-card reconciliation, lane-move focus, and accessibility motion fallbacks |
+| Actual Chrome cockpit QA | Chrome 150 passed at desktop `1440x1100` and mobile `390x844`: four lanes, five standard actions per card, no duplicate IDs or horizontal overflow, stable card/focus continuity, contextual-control focus fallback, reduced-motion progress/typing/voice fallbacks, forced-colors, and accessibility roles |
 | Clean patched build | Build identity schema `56`, `ok=true`, identity `sha256:bdb1a8fbbf4ae8449ae8604e54f3a59fcd7e0a077755f17dc521ff225ccfbe0b`, embedded build-input identity `sha256:123adec4894c856c68df71d5f69e08072c8747e72b617b883de6fecccb638410`, binary SHA-256 `4413cec7eae52c04de31d0586ce42e42509dbf673f81d0c100538a715082f9a3` |
 | Fresh live smoke | Difficulty `10`, run ID `20260727T143156Z-27690-3244`, single attempt, final accepted frame `5250`, exit code `0` |
 | Tech-gas opening | A required Refinery was queued and promoted at frame `1527`; the first Barracks issued an actual SC2 command at `1561`, the Refinery issued its build command at `2616` and was observed building at `2689`, the second Barracks issued an actual command at `2655`, the Refinery completed at `3118`, and `3` live gas workers were observed by frame `3463` |
