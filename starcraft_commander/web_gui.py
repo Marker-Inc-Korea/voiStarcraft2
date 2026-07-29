@@ -6198,7 +6198,7 @@ class _OperationSemanticTimelineReducer:
             _OperationSemanticTimelineReducer._critical_ability_failure(
                 operation,
                 execution,
-                update_id=update_id,
+                update_id=execution_owner_update_id,
                 operation_id=operation_id,
                 generation=generation,
             )
@@ -6215,6 +6215,7 @@ class _OperationSemanticTimelineReducer:
                     f"{ability} failed: {reason}",
                     {
                         **common,
+                        "update_id": execution_owner_update_id,
                         "ability": ability,
                         "attempt_generation": attempt_generation,
                         "blocker": reason,
@@ -6271,7 +6272,8 @@ class _OperationSemanticTimelineReducer:
             raw_owner_loss - transferred_out_delta,
         )
         if (
-            previous_owner_count is not None
+            projection_matches_operation
+            and previous_owner_count is not None
             and previous_minimum > 0
             and previous_owner_count >= previous_minimum
             and owner_count < required_count
@@ -6781,38 +6783,37 @@ class _OperationSemanticTimelineReducer:
                         battlefield_operation,
                     )
                 )
-                state["last_owner_count"] = owner_count
-                state["last_required_count"] = required_count
-                state["last_transferred_out_count"] = max(
-                    0,
-                    _int_or_none(
-                        _mapping_child(
-                            operation,
-                            "operation_edit",
-                        ).get("transferred_out_count")
-                    )
-                    or 0,
-                )
                 projection_matches_operation = (
                     self._projection_matches_operation(
                         operation,
                         battlefield_operation,
                     )
                 )
-                state["emergency_retreat_active"] = bool(
-                    projection_matches_operation
-                    and self._emergency_retreat_active(
-                        operation,
-                        battlefield_operation,
+                if projection_matches_operation:
+                    state["last_owner_count"] = owner_count
+                    state["last_required_count"] = required_count
+                    state["last_transferred_out_count"] = max(
+                        0,
+                        _int_or_none(
+                            _mapping_child(
+                                operation,
+                                "operation_edit",
+                            ).get("transferred_out_count")
+                        )
+                        or 0,
                     )
-                )
-                state["base_attack_active"] = bool(
-                    projection_matches_operation
-                    and self._base_attack_active(
-                        battlefield_operation,
-                        base_threats,
+                    state["emergency_retreat_active"] = bool(
+                        self._emergency_retreat_active(
+                            operation,
+                            battlefield_operation,
+                        )
                     )
-                )
+                    state["base_attack_active"] = bool(
+                        self._base_attack_active(
+                            battlefield_operation,
+                            base_threats,
+                        )
+                    )
                 operation["semantic_timeline"] = [
                     dict(event) for event in state["events"]
                 ]
@@ -10251,6 +10252,7 @@ var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
+var commandEventAwaitingInitialSnapshot = false;
 var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var logBox = document.getElementById("log");
@@ -10354,6 +10356,8 @@ var briefingAdviceToggleEnabled = false;
 var recognition = null;
 var isRecording = false;
 var voiceSessionSeq = 0;
+var voiceRecognitionRequestSeq = 0;
+var pendingVoiceRecognitionRequest = null;
 var activeVoiceSession = null;
 var voiceSessionsByPendingId = {};
 var tacticalRadio = {
@@ -11364,9 +11368,7 @@ function appendLog(ev) {
   if (ev && typeof ev.seq === "number") {
     recentEvents.push(ev);
     compactRecentEventsIfNeeded();
-    if (!removePendingForCommand(ev.command_text || "")) {
-      removeOldestPendingCommand();
-    }
+    removePendingForCommand(ev.command_text || "");
   }
   if (matchedVoiceSession) {
     renderVoiceSessionTerminal(
@@ -12241,6 +12243,7 @@ function structuredOperationsForReadback(data) {
     var vector = structuredOperationVector(operation, data);
     var tacticalTask = vector.tactical_task || {};
     var route = vector.route_intent || {};
+    var targetIntent = vector.target_intent || {};
     var lifetime = vector.lifetime || {};
     var operationId = String(
       operation.operation_id ||
@@ -12285,6 +12288,7 @@ function structuredOperationsForReadback(data) {
         "operation"
       ),
       target: String(
+        targetIntent.target_type ||
         route.target_intent ||
         route.location_intent ||
         route.target ||
@@ -12293,16 +12297,52 @@ function structuredOperationsForReadback(data) {
         "-"
       ),
       route: String(route.route_type || route.type || "direct"),
-      lifetime: String(
-        lifetime.mode ||
-        (
-          vector.ttl_seconds || data.ttl_seconds
-            ? "ttl=" + String(vector.ttl_seconds || data.ttl_seconds) + "s"
-            : "until_completed"
-        )
+      lifetime: structuredOperationLifetimeReadback(
+        lifetime,
+        vector,
+        data
       )
     };
   }).filter(Boolean);
+}
+
+function structuredOperationLifetimeReadback(lifetime, vector, data) {
+  var normalizedLifetime = (
+    lifetime && typeof lifetime === "object"
+      ? lifetime
+      : {}
+  );
+  var parts = [];
+  var mode = String(
+    normalizedLifetime.mode ||
+    (
+      vector.ttl_seconds || data.ttl_seconds
+        ? "ttl=" + String(vector.ttl_seconds || data.ttl_seconds) + "s"
+        : "until_completed"
+    )
+  );
+  parts.push(mode);
+  if (
+    Array.isArray(normalizedLifetime.completion_conditions) &&
+    normalizedLifetime.completion_conditions.length
+  ) {
+    parts.push(
+      "conditions=" +
+      normalizedLifetime.completion_conditions.join(", ")
+    );
+  }
+  if (normalizedLifetime.completion_state) {
+    parts.push("state=" + String(normalizedLifetime.completion_state));
+  }
+  var reason = String(
+    normalizedLifetime.reason ||
+    normalizedLifetime.completion_reason ||
+    ""
+  );
+  if (reason) {
+    parts.push("reason=" + reason);
+  }
+  return parts.join(" · ");
 }
 
 function tacticalRequirementSummary(requirements) {
@@ -12844,6 +12884,7 @@ function applyEventSnapshot(payload) {
       commandEventFailedSources.micromachine_status = true;
     }
   }
+  commandEventAwaitingInitialSnapshot = false;
 }
 
 function serverEventMatchesCurrentBlackboard(envelope, payload) {
@@ -13047,6 +13088,7 @@ function scheduleEventReconnect() {
 
 function connectEventChannel() {
   if (typeof window.EventSource !== "function") {
+    commandEventAwaitingInitialSnapshot = false;
     startPollingFallback();
     return;
   }
@@ -13054,6 +13096,7 @@ function connectEventChannel() {
     commandEventSource.close();
     commandEventSource = null;
   }
+  commandEventAwaitingInitialSnapshot = true;
   startPollingFallback();
   var source = new window.EventSource(eventSourceUrl());
   commandEventSource = source;
@@ -18320,6 +18363,7 @@ function pollMicroMachineStatus() {
   microMachinePollRequestSeq += 1;
   var requestSeq = microMachinePollRequestSeq;
   var contextGeneration = microMachineBlackboardContextGeneration;
+  var hydrateOnly = commandEventAwaitingInitialSnapshot;
   microMachinePollInFlight = true;
   microMachinePollActiveRequestSeq = requestSeq;
   microMachinePollAbortController = typeof AbortController !== "undefined"
@@ -18364,7 +18408,13 @@ function pollMicroMachineStatus() {
         requestSeq >= microMachinePollAppliedSeq
       ) {
         microMachinePollAppliedSeq = requestSeq;
-        renderMicroMachineStatus(data);
+        if (hydrateOnly) {
+          hydrateTacticalRadioState(data);
+        }
+        safeRenderMicroMachineStatus(
+          data,
+          hydrateOnly ? { suppressPlanAnnouncements: true } : undefined
+        );
       }
       finishMicroMachinePoll(requestSeq);
     })
@@ -19642,6 +19692,9 @@ function submitCommanderText(text, options) {
     synchronizeMicroMachineBlackboardDirectory(
       optionalMicroMachineField("micromachine-blackboard-dir")
     );
+    if (voiceSession && !voiceSessionContextIsCurrent(voiceSession)) {
+      return "";
+    }
     var pendingId = appendMicroMachinePendingPlan(
       normalizedText,
       voiceSession
@@ -19712,6 +19765,32 @@ function setupVoiceInput() {
   recognition.interimResults = true;
   recognition.continuous = false;
   recognition.onstart = function () {
+    var startRequest = pendingVoiceRecognitionRequest || {
+      requestId: voiceRecognitionRequestSeq,
+      contextGeneration: microMachineBlackboardContextGeneration,
+      blackboardDirectory: currentEventBlackboardDirectory()
+    };
+    pendingVoiceRecognitionRequest = null;
+    if (
+      startRequest.requestId !== voiceRecognitionRequestSeq ||
+      startRequest.contextGeneration !==
+        microMachineBlackboardContextGeneration ||
+      startRequest.blackboardDirectory !==
+        currentEventBlackboardDirectory()
+    ) {
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      recognition.onend = function () {
+        isRecording = false;
+        setVoiceButtonRecordingState(false);
+      };
+      if (typeof recognition.abort === "function") {
+        recognition.abort();
+      } else if (typeof recognition.stop === "function") {
+        recognition.stop();
+      }
+      return;
+    }
     if (
       activeVoiceSession &&
       !activeVoiceSession.submitted &&
@@ -19822,6 +19901,12 @@ function setupVoiceInput() {
       return;
     }
     recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+    voiceRecognitionRequestSeq += 1;
+    pendingVoiceRecognitionRequest = {
+      requestId: voiceRecognitionRequestSeq,
+      contextGeneration: microMachineBlackboardContextGeneration,
+      blackboardDirectory: currentEventBlackboardDirectory()
+    };
     recognition.start();
   });
 }
@@ -20499,7 +20584,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             self._publish_new_operation_events(
                 micromachine_status,
                 blackboard_dir=blackboard_dir,
-                publish=True,
+                publish=False,
             )
         snapshot_event = {
             "event_seq": snapshot_cursor,
@@ -20725,8 +20810,6 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 and not isinstance(raw_events, (str, bytes, bytearray))
                 else []
             )
-            if not publish:
-                return
             observed = int(
                 server._observed_operation_event_seq.get(scope_id, 0)  # type: ignore[attr-defined]
             )
@@ -20745,22 +20828,25 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if timeline_seq <= observed:
                     continue
                 latest = max(latest, timeline_seq)
-                server.publish_event(  # type: ignore[attr-defined]
-                    "operation_event",
-                    event,
-                    update_id=str(event.get("update_id", "") or ""),
-                    operation_id=str(event.get("operation_id", "") or ""),
-                    generation=max(
-                        0,
-                        _web_event_int(event.get("generation"), 0),
-                    ),
-                    game_frame=_web_event_int(
-                        event.get("game_frame"),
-                        -1,
-                    ),
-                    blackboard_dir=blackboard_dir,
-                    blackboard_scope_id=scope_id,
-                )
+                if publish:
+                    server.publish_event(  # type: ignore[attr-defined]
+                        "operation_event",
+                        event,
+                        update_id=str(event.get("update_id", "") or ""),
+                        operation_id=str(
+                            event.get("operation_id", "") or ""
+                        ),
+                        generation=max(
+                            0,
+                            _web_event_int(event.get("generation"), 0),
+                        ),
+                        game_frame=_web_event_int(
+                            event.get("game_frame"),
+                            -1,
+                        ),
+                        blackboard_dir=blackboard_dir,
+                        blackboard_scope_id=scope_id,
+                    )
             server._observed_operation_event_seq[scope_id] = latest  # type: ignore[attr-defined]
 
     def _state_payload(self) -> dict[str, object]:

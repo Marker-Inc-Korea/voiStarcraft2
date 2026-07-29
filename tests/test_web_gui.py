@@ -1009,7 +1009,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("micromachine_status", payload)
         self.assertTrue(payload["state"]["available"])
 
-    def test_operation_event_snapshot_hydration_does_not_consume_live_watermark(self):
+    def test_operation_event_snapshot_hydration_advances_live_watermark(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
         scope_id = "scope-operation-events"
@@ -1033,6 +1033,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             status,
             blackboard_dir="/tmp/operation-events",
             publish=False,
+        )
+        self.assertEqual(
+            1,
+            self.server._http._observed_operation_event_seq[scope_id],
         )
         self.assertEqual(
             [],
@@ -1063,14 +1067,90 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             for event in self.server._http.event_journal.events_after(0)
             if event["event_type"] == "operation_event"
         ]
-        self.assertEqual(2, len(operation_events))
+        self.assertEqual(1, len(operation_events))
         self.assertEqual(
-            ["assigned", "submitted"],
+            ["submitted"],
             [event["payload"]["kind"] for event in operation_events],
         )
-        self.assertEqual("update-scout-alpha", operation_events[1]["update_id"])
-        self.assertEqual(1, operation_events[1]["generation"])
-        self.assertEqual(101, operation_events[1]["game_frame"])
+        self.assertEqual("update-scout-alpha", operation_events[0]["update_id"])
+        self.assertEqual(1, operation_events[0]["generation"])
+        self.assertEqual(101, operation_events[0]["game_frame"])
+
+    def test_authoritative_sse_snapshot_observes_embedded_lifecycle_without_replay(
+        self,
+    ):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        scope_id = "scope-snapshot-lifecycle-high-water"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "snapshot-alpha",
+            "generation": 2,
+            "requested_generation": 2,
+            "update_id": "update-snapshot-alpha",
+            "kind": "movement_observed",
+            "game_frame": 200,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        handler._authoritative_event_snapshot = lambda _directory: {
+            "state": {"available": True},
+            "history": {"events": [], "latest": 0},
+            "micromachine_status": status,
+        }
+        written = []
+        handler._write_sse_event = written.append
+
+        cursor = handler._write_authoritative_sse_snapshot(
+            self.server._http.event_journal,
+            "/tmp/snapshot-lifecycle",
+            scope_id,
+        )
+
+        self.assertEqual(self.server._http.event_journal.latest_seq, cursor)
+        self.assertEqual("snapshot", written[0]["event_type"])
+        self.assertEqual(
+            1,
+            self.server._http._observed_operation_event_seq[scope_id],
+        )
+        self.assertEqual(
+            [],
+            [
+                event
+                for event in self.server._http.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 201,
+            "summary": "engagement observed",
+        }
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second],
+            },
+            blackboard_dir="/tmp/snapshot-lifecycle",
+            publish=True,
+        )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual(
+            "engagement_observed",
+            operation_events[0]["payload"]["kind"],
+        )
 
     def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
         original = self.bridge.micromachine_status
@@ -8234,6 +8314,46 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
         incoming_operation = incoming["operations"][0]
         execution_owner_update_id = incoming_operation["update_id"]
+        incoming_operation["update"] = {
+            "update_id": execution_owner_update_id,
+            "vector": {
+                "operation_id": "flank-alpha",
+                "generation": 2,
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "tactical_nuke",
+                },
+            },
+        }
+        incoming_operation["family_evidence"] = [
+            {
+                "update_id": execution_owner_update_id,
+                "operation_id": "flank-alpha",
+                "generation": 2,
+                "family": "ghost",
+                "action": "ability:tactical_nuke",
+                "required_effect": "ability_state_or_effect",
+                "attempt_generation": 1,
+                "attempted_count": 1,
+                "attempted_frame": 100,
+                "submitted_count": 0,
+                "effect_count": 0,
+                "blocker_manager": "CombatCommander",
+                "blocker": "no_valid_nuke_target",
+                "stage": "blocked",
+            }
+        ]
+        incoming_execution = incoming_operation["intervention"][
+            "command_execution"
+        ]
+        incoming_execution.update(
+            {
+                "state": "failed",
+                "failed": True,
+                "blocker_manager": "CombatCommander",
+                "blocker_reason": "no_valid_nuke_target",
+            }
+        )
         result = reducer.observe(
             incoming,
             blackboard_scope_id=scope_id,
@@ -8259,6 +8379,103 @@ class SessionLoopBridgeTest(unittest.TestCase):
             "completed",
             [event["kind"] for event in operation["semantic_timeline"]],
         )
+        critical_failures = [
+            event
+            for event in operation["semantic_timeline"]
+            if event["kind"] == "critical_ability_failure"
+        ]
+        self.assertEqual(1, len(critical_failures))
+        self.assertEqual(
+            execution_owner_update_id,
+            critical_failures[0]["update_id"],
+        )
+
+        wrong_owner_reducer = web_gui._OperationSemanticTimelineReducer()
+        wrong_owner_reducer.observe(
+            semantic_operation_payload(
+                generation=1,
+                requested_generation=4,
+                frame=100,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "latest_intent_blocker",
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        wrong_owner = deepcopy(incoming)
+        wrong_owner["operations"][0]["family_evidence"][0]["update_id"] = (
+            "update-flank-alpha-4"
+        )
+        wrong_owner_result = wrong_owner_reducer.observe(
+            wrong_owner,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertNotIn(
+            "critical_ability_failure",
+            [
+                event["kind"]
+                for event in wrong_owner_result["operation_events"]
+            ],
+        )
+
+    def test_operation_timeline_force_loss_requires_matching_projection_identity(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-force-loss-projection-identity"
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="identity-alpha",
+                generation=2,
+                frame=200,
+                owner_count=4,
+                required_count=4,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        mismatched = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            frame=201,
+            owner_count=2,
+            required_count=4,
+        )
+        projection = mismatched["operations"][0]["battlefield_operation"]
+        projection["identity"]["update_id"] = "stale-projection-update"
+
+        result = reducer.observe(
+            mismatched,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertNotIn(
+            "force_loss",
+            [event["kind"] for event in result["operation_events"]],
+        )
+        canonical = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            frame=202,
+            owner_count=2,
+            required_count=4,
+        )
+        canonical_result = reducer.observe(
+            canonical,
+            blackboard_scope_id=scope_id,
+        )
+        force_losses = [
+            event
+            for event in canonical_result["operation_events"]
+            if event["kind"] == "force_loss"
+        ]
+        self.assertEqual(1, len(force_losses))
+        self.assertEqual(
+            4,
+            force_losses[0]["technical"]["previous_owner_count"],
+        )
+        self.assertEqual(2, force_losses[0]["owner_count"])
 
     def test_rejected_snapshot_does_not_poison_requested_generation_high_water(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
@@ -10799,12 +11016,25 @@ class FakeSpeechRecognition {
     this.onend = null;
     this.onerror = null;
     this.onresult = null;
+    this.deferStart = false;
+    this.pendingStart = false;
     recognitionInstances.push(this);
   }
   start() {
+    if (this.deferStart) {
+      this.pendingStart = true;
+      return;
+    }
+    if (this.onstart) { this.onstart(); }
+  }
+  fireStart() {
+    this.pendingStart = false;
     if (this.onstart) { this.onstart(); }
   }
   stop() {
+    if (this.onend) { this.onend(); }
+  }
+  abort() {
     if (this.onend) { this.onend(); }
   }
 }
@@ -13051,6 +13281,63 @@ const assert = require("assert");
   await flushPromises();
   assert(nodes["micromachine-status"].textContent.includes("queued poll recovered"));
   assert.strictEqual(microMachinePollInFlight, false);
+
+  // A fallback status response that wins the initial SSE race hydrates silently.
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.captions = [];
+  tacticalRadio.dedupe = {};
+  tacticalRadio.planAnnouncements = {};
+  renderTacticalRadioCaptions();
+  commandEventAwaitingInitialSnapshot = true;
+  var initialHydrationPollStart = requests.length;
+  pollMicroMachineStatus();
+  var initialHydrationPoll = requests[initialHydrationPollStart];
+  var initialHydrationStatus = serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "historical-initial-plan",
+    compile_result: {
+      status: "compiled",
+      update_id: "historical-initial-plan",
+      vector: {
+        operations: [
+          {
+            operation_id: "historical-initial-operation",
+            generation: 3,
+            composition_requirements: [
+              { unit_type: "TERRAN_MARINE", count: 2 }
+            ],
+            tactical_task: { task_type: "scout_with_units" },
+            target_intent: { target_type: "enemy_main" },
+            route_intent: { route_type: "direct" },
+            lifetime: {
+              mode: "until_completed",
+              completion_conditions: ["enemy_observed"]
+            }
+          }
+        ]
+      }
+    }
+  }, SERVER_SCOPE_A);
+  initialHydrationPoll.deferred.resolve(response(200, initialHydrationStatus));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(tacticalRadio.captions.length, 0);
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      [
+        SERVER_SCOPE_A,
+        "historical-initial-plan",
+        "historical-initial-operation",
+        3
+      ].join("|")
+    ],
+    true
+  );
+  commandEventAwaitingInitialSnapshot = false;
+  renderMicroMachineStatus(initialHydrationStatus);
+  assert.strictEqual(tacticalRadio.captions.length, 0);
 
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-submit-scope-a";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-submit-scope-a");
@@ -16041,6 +16328,46 @@ const assert = require("assert");
     expectedNewestWithPending
   );
 
+  // Unrelated legacy history cannot consume a pending voice command.
+  var legacyVoiceSession = appendVoiceRecordingBubble();
+  legacyVoiceSession.finalText = "pending legacy voice order";
+  legacyVoiceSession.submitted = true;
+  var legacyVoicePendingId = appendPendingCommand(
+    legacyVoiceSession.finalText,
+    legacyVoiceSession
+  );
+  var pendingBeforeUnrelatedHistory = pendingCommandCount();
+  appendLog({
+    seq: 50001,
+    command_text: "unrelated legacy history",
+    status: "read_only",
+    narration: "unrelated history response"
+  });
+  assert.strictEqual(
+    pendingCommandCount(),
+    pendingBeforeUnrelatedHistory,
+    "unrelated history must not consume the oldest pending voice node"
+  );
+  assert.strictEqual(
+    voiceSessionForPendingId(legacyVoicePendingId),
+    legacyVoiceSession
+  );
+  assert.strictEqual(
+    legacyVoiceSession.node.querySelectorAll(".message-pending").length,
+    1
+  );
+  appendLog({
+    seq: 50002,
+    command_text: legacyVoiceSession.finalText,
+    status: "read_only",
+    narration: "matching history response"
+  });
+  assert.strictEqual(pendingCommandCount(), pendingBeforeUnrelatedHistory - 1);
+  assert.strictEqual(
+    legacyVoiceSession.node.querySelectorAll(".message-pending").length,
+    0
+  );
+
   // Voice keeps one DOM identity from interim transcript through pending/result.
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
@@ -16050,6 +16377,27 @@ const assert = require("assert");
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "음성 입력");
   var voiceRequestStart = requests.length;
+
+  // A delayed browser onstart cannot create a session in a replacement scope.
+  voiceRecognition.deferStart = true;
+  var delayedVoiceSessionSeq = voiceSessionSeq;
+  var voiceSessionBeforeDelayedStart = activeVoiceSession;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(voiceRecognition.pendingStart, true);
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-voice-radio-delayed-next";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-voice-radio-delayed-next"
+  );
+  voiceRecognition.fireStart();
+  assert.strictEqual(voiceSessionSeq, delayedVoiceSessionSeq);
+  assert.strictEqual(activeVoiceSession, voiceSessionBeforeDelayedStart);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert.strictEqual(requests.length, voiceRequestStart);
+  voiceRecognition.deferStart = false;
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
+
   voiceRecognition.start();
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "녹음 중지");
@@ -16133,6 +16481,33 @@ const assert = require("assert");
     },
     lifetime: { mode: "until_completed" }
   };
+  voiceReconOperation.update.vector.target_intent = {
+    target_type: "enemy_main"
+  };
+  voiceReconOperation.update.vector.route_intent.target_intent =
+    "stale_route_target";
+  voiceReconOperation.update.vector.lifetime = {
+    mode: "until_completed",
+    completion_conditions: ["enemy_observed", "target_reached"],
+    completion_state: "active",
+    reason: "until_enemy_main_is_confirmed"
+  };
+  var canonicalVoiceReadback = structuredOperationsForReadback({
+    accepted: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      vector: {
+        operations: [voiceReconOperation.update.vector]
+      }
+    }
+  })[0];
+  assert.strictEqual(canonicalVoiceReadback.target, "enemy_main");
+  assert.strictEqual(
+    canonicalVoiceReadback.lifetime,
+    "until_completed · conditions=enemy_observed, target_reached" +
+      " · state=active · reason=until_enemy_main_is_confirmed"
+  );
   requests[voiceRequestStart].deferred.resolve(response(202, serverResult({
     ok: true,
     accepted: true,
@@ -16295,6 +16670,27 @@ const assert = require("assert");
     staleVoiceRequestStart,
     "late result and finalization fallback must not submit into the new scope"
   );
+
+  // A scope change discovered inside submitCommanderText fails closed.
+  var submitScopeVoiceRequestStart = requests.length;
+  voiceRecognition.start();
+  var submitScopeVoiceSession = activeVoiceSession;
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-voice-radio-submit-next";
+  var submitScopeFinalResult = [{
+    transcript: "새 scope로 넘어가면 제출하면 안 되는 음성 명령"
+  }];
+  submitScopeFinalResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [submitScopeFinalResult]
+  });
+  assert.strictEqual(submitScopeVoiceSession.invalidated, true);
+  assert.strictEqual(
+    submitScopeVoiceSession.node.querySelectorAll(".message-pending").length,
+    0
+  );
+  assert.strictEqual(requests.length, submitScopeVoiceRequestStart);
 
   // Scheduler priority, interruption, compaction and dedupe are deterministic.
   cancelTacticalRadioSpeechAndQueue();
@@ -17098,6 +17494,7 @@ var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
+var commandEventAwaitingInitialSnapshot = false;
 var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var microMachinePollQueued = false;
@@ -17118,7 +17515,9 @@ function pollState() { pollCounts.state += 1; }
 function pollMicroMachineStatus() { pollCounts.micromachine += 1; }
 function appendLog(payload) { appendedHistory.push(payload); }
 function renderState() {}
-function safeRenderMicroMachineStatus(payload) { renderedStatuses.push(payload); }
+function safeRenderMicroMachineStatus(payload, options) {
+  renderedStatuses.push({ payload: payload, options: options || {} });
+}
 function commandUiText(ko) { return ko; }
 function beginOperationRecord(text, pendingId) {
   operationRecords[pendingId] = {
@@ -17166,8 +17565,10 @@ const sourceA = FakeEventSource.instances[0];
 assert(sourceA.url.includes("blackboard_dir=%2Ftmp%2Fboard-a"));
 assert(!sourceA.url.includes("after="));
 assert.strictEqual(fallbackPollingIntervals.length, 3);
+assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
 sourceA.onopen();
 assert.strictEqual(fallbackPollingIntervals.length, 0);
+assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
 
 sourceA.emit("snapshot", {
   event_seq: 5,
@@ -17184,6 +17585,8 @@ sourceA.emit("snapshot", {
 });
 assert.strictEqual(lastEventSeq, 5);
 assert.strictEqual(renderedStatuses.length, 1);
+assert.strictEqual(renderedStatuses[0].options.suppressPlanAnnouncements, true);
+assert.strictEqual(commandEventAwaitingInitialSnapshot, false);
 
 lastEventSeq = 999;
 sourceA.emit("snapshot", {
@@ -17315,6 +17718,7 @@ assert(sourceA.closed);
 assert(sourceB.url.includes("blackboard_dir=%2Ftmp%2Fboard-b"));
 assert(!sourceB.url.includes("after="));
 assert.strictEqual(lastEventSeq, 0);
+assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
 sourceA.emit("snapshot", {
   event_seq: 100,
   event_type: "snapshot",
