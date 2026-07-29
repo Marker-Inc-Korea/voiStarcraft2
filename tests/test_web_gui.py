@@ -2229,6 +2229,203 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         self.assertEqual(320, document["telemetry_frame"])
 
+    def test_attached_status_without_validated_bridge_consumer_fails_closed(
+        self,
+    ):
+        runtime_instance_id = "f" * 32
+        telemetry = attached_runtime_telemetry(
+            battlefield_projection_telemetry(
+                update_id="validated-source",
+                frame=320,
+            ),
+            runtime_instance_id,
+        )
+
+        class LegacyBridge:
+            status_calls = 0
+
+            def micromachine_status(self, *, blackboard_dir=""):
+                self.status_calls += 1
+                return web_gui._micromachine_status_payload(
+                    {"active_updates": []},
+                    telemetry=attached_runtime_telemetry(
+                        battlefield_projection_telemetry(
+                            update_id="legacy-reread",
+                            frame=640,
+                        ),
+                        runtime_instance_id,
+                    ),
+                    blackboard_dir=blackboard_dir,
+                )
+
+        class Launcher:
+            def validated_snapshot(self, blackboard_dir=""):
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata={
+                        "status": "connected",
+                        "runtime_instance_id": runtime_instance_id,
+                        "runtime_attached": True,
+                        "telemetry_present": True,
+                        "telemetry_current_for_process": True,
+                        "telemetry_stale_or_detached": False,
+                        "telemetry_frame": 320,
+                        "blackboard_dir": blackboard_dir,
+                    },
+                    telemetry_document=telemetry,
+                )
+
+        legacy_bridge = LegacyBridge()
+        self.server._http.micromachine_launcher = Launcher()
+        with mock.patch.object(
+            self.server._http,
+            "bridge",
+            legacy_bridge,
+        ):
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=/tmp/legacy-bridge"
+            )
+
+        self.assertEqual(0, legacy_bridge.status_calls)
+        self.assertIsNone(document["battlefield_overview"])
+        self.assertFalse(document["telemetry_current_for_process"])
+        self.assertTrue(document["telemetry_stale_or_detached"])
+        self.assertIn("validated telemetry snapshot", document["error"])
+
+    def test_attached_status_rejects_unbound_archive_family_evidence(self):
+        from starcraft_commander.micromachine_bridge import (
+            MicroMachineTelemetry,
+        )
+
+        update_id = "runtime-bound-archive"
+        operation_id = "marine-recon"
+        runtime_instance_id = "a" * 32
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "expires_at_frame": 2_000,
+                    "manager_bias_domains": ["scouting", "squad"],
+                    "vector": {
+                        "goal": "마린 한 기로 정찰",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "goal": "마린 한 기로 정찰",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "duration_seconds": 120,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 300},
+        }
+        delivered = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": 1,
+            "family": "marine",
+            "unit_type": "TERRAN_MARINE",
+            "role": "scout",
+            "action": "move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 2,
+            "attempted_count": 1,
+            "attempted_frame": 210,
+            "submitted_count": 1,
+            "submitted_frame": 220,
+            "effect_kind": "movement",
+            "effect_count": 1,
+            "effect_frame": 230,
+            "blocker_manager": "",
+            "blocker": "",
+        }
+        unbound_archive = MicroMachineTelemetry.from_mapping(
+            {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 240,
+                "managers": {
+                    "OperationDirector": {
+                        "policy_update_id": update_id,
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "status": "MOVING",
+                                "received_frame": 205,
+                            }
+                        ],
+                        "pending_family_effects": [delivered],
+                    }
+                },
+                "active_modulation_ids": [update_id],
+                "runtime_instance_id": "",
+            }
+        )
+        latest = attached_runtime_telemetry(
+            {
+                "frame": 300,
+                "active_modulation_ids": [update_id],
+                "managers": {
+                    "OperationDirector": {
+                        "policy_update_id": update_id,
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "status": "MOVING",
+                                "received_frame": 205,
+                                "assigned_frame": 215,
+                                "assigned_count": 1,
+                                "submitted_frame": 220,
+                            }
+                        ],
+                        "pending_family_effects": [],
+                    }
+                },
+            },
+            runtime_instance_id,
+        )
+
+        class Backend:
+            def __init__(self, _root):
+                pass
+
+            def read_recent_telemetry_archive(self, **_kwargs):
+                return (unbound_archive,)
+
+            def read_latest_update(self, **_kwargs):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = SessionLoopBridge(session=self.session)
+            with (
+                mock.patch(
+                    "starcraft_commander.micromachine_runtime."
+                    "MicroMachineFilesystemBlackboard",
+                    Backend,
+                ),
+                mock.patch(
+                    "starcraft_commander.policy_observability."
+                    "build_policy_modulation_dashboard_snapshot",
+                    return_value=SimpleNamespace(
+                        to_dict=lambda: dashboard,
+                    ),
+                ),
+            ):
+                payload = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id=runtime_instance_id,
+                    telemetry_document=latest,
+                )
+
+        self.assertEqual(1, len(payload["operations"]))
+        self.assertEqual([], payload["operations"][0]["family_evidence"])
+
     def test_micromachine_runtime_gate_redacts_runtime_identity_text(self):
         cases = (
             (

@@ -6156,7 +6156,7 @@ class SessionLoopBridge:
             telemetry_archive = tuple(
                 entry
                 for entry in telemetry_archive
-                if entry.runtime_instance_id in {"", runtime_instance_id}
+                if entry.runtime_instance_id == runtime_instance_id
                 and entry.frame <= telemetry.frame
             )
         frame = telemetry.frame if telemetry is not None else 0
@@ -15128,6 +15128,19 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     telemetry_document=validated_telemetry_document,
                 )
             )
+        elif runtime_instance_id:
+            runtime_snapshot = dict(runtime_snapshot)
+            runtime_snapshot["telemetry_current_for_process"] = False
+            runtime_snapshot["telemetry_stale_or_detached"] = True
+            payload = {
+                "enabled": True,
+                "blackboard_dir": blackboard_dir,
+                "status": "source_error",
+                "error": (
+                    "Attached MicroMachine runtime status requires a bridge "
+                    "that consumes the launcher-validated telemetry snapshot."
+                ),
+            }
         else:
             payload = dict(status_fn(blackboard_dir=blackboard_dir))
         return _micromachine_status_with_runtime_gate(
