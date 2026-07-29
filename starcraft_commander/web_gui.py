@@ -2233,51 +2233,20 @@ def _public_runtime_launcher_payload(
 
 
 _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"""(?ix)
+    r"""(?imx)
     ['"]?
     (?:
-        [a-z][a-z0-9_]*_tag
-        |[a-z][a-z0-9_]*_tags
-        |(?:[a-z][a-z0-9_]*_)?unit_tags
-        |[a-z][a-z0-9_]*_units_tags
-        |[a-z][a-z0-9_]*_owner_tags
-        |(?:[a-z][a-z0-9_]*_)?
-            (?:
-                assigned
-                |attempted
-                |submitted
-                |effect
-                |requested
-                |selected
-                |target
-                |source
-                |matching
-                |duplicate
-                |conflict
-                |caster
-                |passenger
-                |transport
-                |worker
-            )_tags
-        |owner_tags
-        |unassigned_tags
-        |transferable_tags
+        tag
+        |tags
+        |[a-z][a-z0-9_]*_tags?
     )
     ['"]?
     \s*[:=]\s*
-    (?:
-        \[[^\]\r\n]*\]
-        |\([^\)\r\n]*\)
-        |\{[^\}\r\n]*\}
-        |<[^>\r\n]*>
-        |[-+]?\d+
-            (?:
-                (?:\s*[,;|]\s*|\s+)
-                [-+]?\d+
-            )*
-        |'[^'\r\n]*'
-        |"[^"\r\n]*"
-        |[\[\(\{<][^\r\n]*
+    [^\r\n]*?
+    (?=
+        \s+['"]?[a-z][a-z0-9_]*['"]?\s*[:=]
+        |[\r\n]
+        |$
     )
     """
 )

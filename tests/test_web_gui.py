@@ -3484,6 +3484,21 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "csv_line": "commanded_tags=7101,7102 action=attack",
                 "spaced_line": "source_tags=7401 7402 action=move",
                 "unclosed_line": "target_tags=[7501,7502",
+                "container_comma_line": (
+                    "actor_tags=[7601,7602],7603 action=attack"
+                ),
+                "container_semicolon_line": (
+                    "actor_tags=(7701,7702);7703 action=attack"
+                ),
+                "container_pipe_line": (
+                    "actor_tags={7801,7802}|7803 action=attack"
+                ),
+                "container_space_line": (
+                    "actor_tags=<7901,7902> 7903 action=attack"
+                ),
+                "empty_container_line": (
+                    "actor_tags=[] 7951 action=attack"
+                ),
                 "strategic_tags": ["pressure", "flank"],
             }
         )
@@ -3508,6 +3523,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "csv_line": ("7101", "7102"),
             "spaced_line": ("7401", "7402"),
             "unclosed_line": ("7501", "7502"),
+            "container_comma_line": ("7601", "7602", "7603"),
+            "container_semicolon_line": ("7701", "7702", "7703"),
+            "container_pipe_line": ("7801", "7802", "7803"),
+            "container_space_line": ("7901", "7902", "7903"),
+            "empty_container_line": ("7951",),
         }.items():
             self.assertIn(
                 "[internal unit identity]: [redacted]",
