@@ -241,6 +241,11 @@ OPERATION_EDIT_REVIEW_CLOSURE_PATCH_FILE = (
     / "patches"
     / "0061-operation-edit-review-closure.patch"
 )
+ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0068-all-terran-harass-capability-evidence.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -965,14 +970,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 68)),
+            list(range(1, 69)),
         )
-        self.assertEqual(len(set(manifest_paths)), 67)
+        self.assertEqual(len(set(manifest_paths)), 68)
         self.assertEqual(
             manifest_paths[-1],
             (
                 "patches/"
-                "0067-runtime-convergence-defense-placement-information.patch"
+                "0068-all-terran-harass-capability-evidence.patch"
             ),
         )
         self.assertTrue(
@@ -1013,6 +1018,207 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             extracted_build_apply_paths.append(variable_paths[variable])
 
         self.assertEqual(manifest_paths, extracted_build_apply_paths)
+
+    def test_all_terran_harass_patch_has_cpp_execution_and_evidence_contract(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH_FILE
+        )
+
+        for source_path in (
+            "--- a/src/CombatCommander.cpp",
+            "--- a/src/GameCommander.cpp",
+            "--- a/src/ProductionManager.cpp",
+            "--- /dev/null",
+            "+++ b/src/voi_family_effect_lifecycle.hpp",
+            "+++ b/tests/family_effect_lifecycle_test.cpp",
+        ):
+            with self.subTest(source_path=source_path):
+                self.assertIn(source_path, patch)
+        for contract in (
+            "harass_with_units",
+            "voiCanonicalOperationTaskType",
+            'if (taskType == "harass_with_units") return "harass"',
+            "SquadOrderTypes::Harass",
+            "HarassOrderRadius",
+            'taskType == "harass_with_units"',
+            "voiTerranOperationFamily",
+            "voiMergeAttemptGenerationWatermarks",
+            "replacement.familyAttemptGenerationByKey",
+            "existing.familyAttemptGenerationByKey",
+            "requested.familyAttemptGenerationByKey",
+            "key.unitType = delivery.unitType",
+            "key.requiredEffect = delivery.snapshot.requiredEffect",
+            "left.unitType == right.unitType",
+            "left.snapshot.requiredEffect",
+            "voiCanonicalTerranFamilyForUnitType(",
+            "voiSquadOrderName",
+            "attemptedUnitTags",
+            "voiRemoveUnitFromOtherFamilyEvidence",
+            "voiFindSubmittedOperationFamilyEvidence",
+            "voiFamilyEffectTelemetryLifecycleIsValid",
+            'return unitType + "|" + role + "|" + action;',
+            "matchingEvidence",
+            '\\"squad_order\\"',
+            '\\"family_evidence\\"',
+            '\\"update_id\\"',
+            '\\"operation_id\\"',
+            '\\"generation\\"',
+            '\\"action\\"',
+            '\\"required_effect\\"',
+            '\\"attempt_generation\\"',
+            '\\"attempted_count\\"',
+            '\\"attempted_unit_tags\\"',
+            '\\"attempted_frame\\"',
+            '\\"submitted_count\\"',
+            '\\"submitted_unit_tags\\"',
+            '\\"submitted_frame\\"',
+            '\\"effect_kind\\"',
+            '\\"effect_count\\"',
+            '\\"effect_unit_tags\\"',
+            '\\"effect_frame\\"',
+            '\\"coalesced_observation_count\\"',
+            '\\"latest_effect_frame\\"',
+            '\\"maximum_effect_count\\"',
+            '\\"blocker_manager\\"',
+            '\\"blocker\\"',
+            '<< " order="',
+            '<< " action="',
+            '<< " effect="',
+            'card << " force="',
+            "VoiFamilyEffectTelemetryLatch",
+            "VoiFamilyEffectTelemetryDeliveryQueue",
+            "VoiFamilyEffectTelemetryAttemptKey",
+            "acknowledgedAttemptWatermarks",
+            "acknowledgedPolicyUpdateId",
+            "voiEnqueueFamilyEffectTelemetryDelivery",
+            "voiLatchFamilyEffectForTelemetry",
+            "voiSelectFamilyEffectForTelemetry",
+            "voiFamilyEffectHasMatchingSubmission",
+            "voiFamilyEffectHasMatchingObservation",
+            "voiFamilyAbilityEffectHasMatchingObservation",
+            "voiFamilyAbilityEffectHasMatchingUnitObservation",
+            "voiCanonicalTerranFamilyForUnitType",
+            "voiNextMonotonicAttemptGeneration",
+            "voiAcknowledgeFamilyEffectTelemetry",
+            "voiAcknowledgeFamilyEffectTelemetryDeliveries",
+            "voiWriteAuthoritativeTelemetryFile",
+            "acknowledgeVoiFamilyEffects",
+            '\\"pending_family_effects\\"',
+            "familyEvidence.policyUpdateId",
+            "familyEvidence.submittedPositions[unit->tag]",
+            "delivery.family = evidence.family",
+            "left.family == right.family",
+            "familyAttemptGenerationByKey",
+            "operation.requirementSnapshots",
+            "serializedSnapshot.policyUpdateId",
+            "authoritativeTelemetryWritten",
+            "telemetry.close()",
+            "observe A -> Plan B -> submit B -> telemetry still emits A",
+            "A persistent state cannot relatch",
+            "local latch keeps the oldest unacknowledged",
+            "newer policy cannot inherit or acknowledge",
+            "Submission identity must precede effect observation",
+            "Same-family unit B cannot claim unit A",
+            "Same-family unit B already in the ability state cannot prove unit A",
+            "Persistent state observations coalesce",
+            "raw morph type stays distinct",
+            "Bounded diagnostic history cannot reopen",
+            "submitted\n+\t\t\t\t\t!= evidence->submittedPositions.end()",
+            "immutable delivery queue preserves effects",
+            "Retarget can discard family state",
+            "Failed writes retain both local and immutable",
+            "successful authoritative write acknowledges serialized",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, patch)
+
+        family_aliases = {
+            "marine": ("TERRAN_MARINE",),
+            "marauder": ("TERRAN_MARAUDER",),
+            "reaper": ("TERRAN_REAPER",),
+            "ghost": ("TERRAN_GHOST",),
+            "hellion_hellbat": (
+                "TERRAN_HELLION",
+                "TERRAN_HELLIONTANK",
+            ),
+            "widow_mine": (
+                "TERRAN_WIDOWMINE",
+                "TERRAN_WIDOWMINEBURROWED",
+            ),
+            "cyclone": ("TERRAN_CYCLONE",),
+            "siege_tank": (
+                "TERRAN_SIEGETANK",
+                "TERRAN_SIEGETANKSIEGED",
+            ),
+            "thor": ("TERRAN_THOR", "TERRAN_THORAP"),
+            "medivac": ("TERRAN_MEDIVAC",),
+            "raven": ("TERRAN_RAVEN",),
+            "viking": (
+                "TERRAN_VIKINGFIGHTER",
+                "TERRAN_VIKINGASSAULT",
+            ),
+            "banshee": ("TERRAN_BANSHEE",),
+            "liberator": (
+                "TERRAN_LIBERATOR",
+                "TERRAN_LIBERATORAG",
+            ),
+            "battlecruiser": ("TERRAN_BATTLECRUISER",),
+        }
+        for family, unit_types in family_aliases.items():
+            with self.subTest(family=family):
+                self.assertIn(f'return "{family}"', patch)
+                for unit_type in unit_types:
+                    self.assertIn(f'unitType == "{unit_type}"', patch)
+
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": (
+                    "patches/"
+                    "0068-all-terran-harass-capability-evidence.patch"
+                ),
+                "order": 68,
+            },
+            {
+                "path": manifest["patch_bundle"][-1]["path"],
+                "order": manifest["patch_bundle"][-1]["order"],
+            },
+        )
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = (
+            "ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH_FILE"
+        )
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0068-all-terran-harass-capability-evidence.patch"',
+            build_script,
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${'
+            f'{patch_variable}'
+            '}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            f'"${{{patch_variable}}}"'
+        )
+        self.assertLess(patch_check, patch_apply)
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
 
     def test_operation_production_ownership_restore_proof_closes_runtime_gap(
         self,
@@ -4836,8 +5042,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "local_map.map_data",
             "ProductionManager::putImportantBuildOrderItemsInQueue()",
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
-            "patches/0067-runtime-convergence-defense-placement-information.patch",
-            "through `0067`",
+            "patches/0068-all-terran-harass-capability-evidence.patch",
+            "through `0068`",
         )
         for term in required_terms:
             with self.subTest(term=term):

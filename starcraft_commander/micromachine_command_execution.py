@@ -19,6 +19,13 @@ from starcraft_commander.micromachine_tactical_evidence import (
     MicroMachineTacticalEvidence,
     explicit_ability_terminal_is_valid,
 )
+from starcraft_commander.micromachine_terran_capabilities import (
+    TERRAN_OPERATION_TASKS,
+    TERRAN_UNIT_FAMILY_BY_TOKEN,
+    TRANSIENT_PRODUCTION_BLOCKERS,
+    canonical_terran_unit_family,
+    operation_family_evidence,
+)
 
 
 COMMAND_EXECUTION_STAGES: Final[tuple[str, ...]] = (
@@ -70,11 +77,17 @@ ACTUAL_PRODUCTION_ITEM_ALIASES: Final[Mapping[str, str]] = {
     "TERRAN_GHOST": "Ghost",
     "TERRAN_NUKE": "Nuke",
     "TERRAN_HELLION": "Hellion",
+    "TERRAN_HELLIONTANK": "Hellion",
+    "TERRAN_WIDOWMINE": "WidowMine",
+    "TERRAN_WIDOWMINEBURROWED": "WidowMine",
     "TERRAN_CYCLONE": "Cyclone",
     "TERRAN_THOR": "Thor",
     "TERRAN_SIEGETANK": "SiegeTank",
     "TERRAN_MEDIVAC": "Medivac",
     "TERRAN_VIKINGFIGHTER": "Viking",
+    "TERRAN_VIKINGASSAULT": "Viking",
+    "TERRAN_LIBERATOR": "Liberator",
+    "TERRAN_LIBERATORAG": "Liberator",
     "TERRAN_BANSHEE": "Banshee",
     "TERRAN_RAVEN": "Raven",
     "TERRAN_BATTLECRUISER": "Battlecruiser",
@@ -100,6 +113,7 @@ PRODUCTION_PREREQUISITE_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
         "Ghost",
         "GhostAcademy",
         "Hellion",
+        "WidowMine",
         "Marauder",
         "Medivac",
         "Raven",
@@ -110,6 +124,7 @@ PRODUCTION_PREREQUISITE_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
         "StarportTechLab",
         "Thor",
         "Viking",
+        "Liberator",
         "Nuke",
     }
 )
@@ -124,6 +139,45 @@ TACTICAL_NUKE_CONFIRMATION_EFFECTS: Final[frozenset[str]] = frozenset(
         "payload_consumed:terran_nuke",
     }
 )
+
+_GENERIC_TERRAN_ABILITY_POLICIES: Final[frozenset[str]] = frozenset(
+    {"if_available", "high_value_target", "escape", "commit"}
+)
+_TERRAN_ABILITY_ACTION_MARKERS: Final[Mapping[str, tuple[str, ...]]] = {
+    "stimpack": ("EFFECT_STIM",),
+    "marine_stimpack": ("EFFECT_STIM_MARINE",),
+    "marauder_stimpack": ("EFFECT_STIM_MARAUDER",),
+    "kd8_charge": ("EFFECT_KD8CHARGE",),
+    "emp": ("EFFECT_EMP",),
+    "snipe": ("EFFECT_GHOSTSNIPE",),
+    "ghost_cloak": ("BEHAVIOR_CLOAKON_GHOST",),
+    "ghost_decloak": ("BEHAVIOR_CLOAKOFF_GHOST",),
+    "tactical_nuke": ("EFFECT_NUKECALLDOWN",),
+    "widow_mine_burrow": ("BURROWDOWN_WIDOWMINE",),
+    "widow_mine_unburrow": ("BURROWUP_WIDOWMINE",),
+    "lock_on": ("EFFECT_LOCKON",),
+    "siege_mode": ("MORPH_SIEGEMODE",),
+    "unsiege": ("MORPH_UNSIEGE",),
+    "hellbat_mode": ("MORPH_HELLBAT", "MORPH_HELLIONTANK"),
+    "hellion_mode": ("MORPH_HELLION",),
+    "thor_high_impact_mode": ("MORPH_THORHIGHIMPACTMODE",),
+    "thor_explosive_mode": ("MORPH_THOREXPLOSIVEMODE",),
+    "medivac_afterburners": ("EFFECT_MEDIVACIGNITEAFTERBURNERS",),
+    "medivac_heal": ("EFFECT_HEAL",),
+    "medivac_load": ("LOAD_MEDIVAC",),
+    "medivac_unload_all": ("UNLOADALLAT_MEDIVAC",),
+    "viking_fighter_mode": ("MORPH_VIKINGFIGHTERMODE",),
+    "viking_assault_mode": ("MORPH_VIKINGASSAULTMODE",),
+    "liberator_defender_mode": ("MORPH_LIBERATORAGMODE",),
+    "liberator_fighter_mode": ("MORPH_LIBERATORAAMODE",),
+    "banshee_cloak": ("BEHAVIOR_CLOAKON",),
+    "banshee_decloak": ("BEHAVIOR_CLOAKOFF",),
+    "auto_turret": ("EFFECT_AUTOTURRET",),
+    "interference_matrix": ("EFFECT_INTERFERENCEMATRIX", "3747"),
+    "anti_armor_missile": ("EFFECT_ANTIARMORMISSILE", "3753"),
+    "yamato": ("EFFECT_YAMATOGUN",),
+    "tactical_jump": ("EFFECT_TACTICALJUMP",),
+}
 
 BIO_SUPPORT_EFFECT_ITEMS: Final[frozenset[str]] = frozenset(
     {"BarracksTechLab", "BarracksReactor", "Marauder", "Reaper", "Medivac"}
@@ -181,6 +235,7 @@ TRANSIENT_OPERATION_BLOCK_REASONS: Final[frozenset[str]] = frozenset(
         "no_available_units",
         "insufficient_units",
         "emergency_retreat_preempted",
+        *TRANSIENT_PRODUCTION_BLOCKERS,
     }
 )
 EXPIRY_OPERATION_REASONS: Final[frozenset[str]] = frozenset(
@@ -192,6 +247,12 @@ EXPIRY_OPERATION_REASONS: Final[frozenset[str]] = frozenset(
 HARD_OPERATION_STATUSES: Final[frozenset[str]] = frozenset(
     {"failed", "rejected", "superseded"}
 )
+OPERATION_TASK_ROUTING: Final[Mapping[str, tuple[str, str]]] = {
+    "scout_with_units": ("scout", "scout"),
+    "pressure_with_main_army": ("attack", "attack"),
+    "defend_with_units": ("defend", "defend"),
+    "harass_with_units": ("harass", "harass"),
+}
 
 
 @dataclass(frozen=True)
@@ -569,9 +630,22 @@ def _classify_operation_execution(
         else {}
     )
     task_type = str(task.get("task_type", "") or "")
+    routing = _operation_routing_evidence(
+        task_type=task_type,
+        telemetry_payload=telemetry_payload,
+    )
+    routing_accepted = bool(routing["accepted"])
+    routing_mismatch = bool(routing["mismatches"])
+    family_lifecycle = _operation_family_lifecycle(
+        command_id=command_id,
+        operation_id=operation_id,
+        operation_generation=operation_generation,
+        operation=operation,
+        telemetry_payload=telemetry_payload,
+    )
     displacement_threshold = 8.0 if task_type == "scout_with_units" else 12.0
     movement_observed = max_home_distance >= displacement_threshold
-    effect_observed = bool(
+    operation_effect_observed = bool(
         action_frame > 0
         and (
             movement_observed
@@ -586,14 +660,78 @@ def _classify_operation_execution(
         and telemetry_generation == operation_generation
     )
     parsed = bool(command_id and operation_id and operation)
+    reduced = bool(parsed and task_type in OPERATION_TASK_ROUTING)
     consumed = bool(generation_matches and received_frame > 0)
-    assigned = bool(
+    operation_assigned = bool(
         generation_matches
         and assigned_frame > 0
         and assigned_count > 0
     )
-    submitted = bool(generation_matches and submitted_frame > 0)
-    action_issued = bool(generation_matches and action_frame > 0)
+    operation_submitted = bool(
+        generation_matches and submitted_frame > 0
+    )
+    operation_action_issued = bool(
+        generation_matches and action_frame > 0
+    )
+    assigned = bool(
+        operation_assigned
+        and (
+            not family_lifecycle["active"]
+            or family_lifecycle["assignment_ok"]
+        )
+    )
+    submitted = bool(
+        operation_submitted
+        and routing_accepted
+        and (
+            not family_lifecycle["active"]
+            or family_lifecycle["order_ok"]
+        )
+    )
+    action_issued = bool(
+        operation_action_issued
+        and (
+            not family_lifecycle["active"]
+            or family_lifecycle["action_ok"]
+        )
+    )
+    effect_observed = bool(
+        operation_effect_observed
+        and (
+            not family_lifecycle["active"]
+            or family_lifecycle["effect_ok"]
+        )
+    )
+    assignment_manager, assignment_reason = _operation_family_stage_feedback(
+        family_lifecycle,
+        stage="assignment",
+        default_manager="OperationDirector",
+        default_reason="No operation-scoped unit assignment is reported.",
+    )
+    order_manager, order_reason = _operation_family_stage_feedback(
+        family_lifecycle,
+        stage="order",
+        default_manager="OperationDirector",
+        default_reason="No accepted operation-scoped order submission is reported.",
+    )
+    action_manager, action_reason = _operation_family_stage_feedback(
+        family_lifecycle,
+        stage="action",
+        default_manager="SC2 API",
+        default_reason="No accepted SC2 action is reported for this operation.",
+    )
+    effect_manager, effect_reason = _operation_family_stage_feedback(
+        family_lifecycle,
+        stage="effect",
+        default_manager="OperationDirector",
+        default_reason="No operation-scoped movement or engagement effect is observed.",
+    )
+    if routing_mismatch:
+        order_manager = "OperationDirector"
+        order_reason = (
+            "Operation routing telemetry does not match the requested task: "
+            + "; ".join(str(item) for item in routing["mismatches"])
+        )
     stages = (
         MicroMachineCommandStage(
             "parsed",
@@ -610,15 +748,18 @@ def _classify_operation_execution(
         ),
         MicroMachineCommandStage(
             "reduced",
-            parsed,
+            reduced,
             "OperationRegistry",
             "Operation retained its independent task, force, route, and target."
-            if parsed
-            else "Operation could not be reduced.",
+            if reduced
+            else (
+                f"Unsupported operation task type: {task_type or '<missing>'}."
+            ),
             issued_at_frame,
             {
                 "task_type": task_type,
                 "operation_generation": operation_generation,
+                "supported_task_types": list(TERRAN_OPERATION_TASKS),
             },
         ),
         MicroMachineCommandStage(
@@ -647,67 +788,84 @@ def _classify_operation_execution(
         MicroMachineCommandStage(
             "queued_or_assigned",
             assigned and not conflicting_tags,
-            "OperationDirector",
+            assignment_manager,
             (
                 "Operation owns a unique unit set."
                 if assigned and not conflicting_tags
                 else (
                     "A unit tag is owned by more than one operation."
                     if conflicting_tags
-                    else "No operation-scoped unit assignment is reported."
+                    else assignment_reason
                 )
             ),
-            assigned_frame,
+            max(
+                assigned_frame,
+                _int_value(family_lifecycle["assignment_frame"]),
+            ),
             {
                 "assigned_count": assigned_count,
                 "assigned_unit_tags": list(assigned_tags),
                 "ownership_conflicts": list(conflicting_tags),
+                "family_lifecycle": dict(family_lifecycle),
             },
         ),
         MicroMachineCommandStage(
             "order_issued",
             submitted,
-            "OperationDirector",
+            order_manager,
             "The operation submitted a concrete squad order."
             if submitted
-            else "No accepted operation-scoped order submission is reported.",
-            submitted_frame,
+            else order_reason,
+            max(
+                submitted_frame,
+                _int_value(family_lifecycle["order_frame"]),
+            ),
             {
                 "last_action": last_action,
                 "terminal_cleanup_action": terminal_cleanup_action,
                 "terminal_cleanup_action_frame": terminal_cleanup_action_frame,
+                "routing": dict(routing),
+                "family_lifecycle": dict(family_lifecycle),
             },
         ),
         MicroMachineCommandStage(
             "action_issued",
             action_issued,
-            "SC2 API",
+            action_manager,
             "The SC2 action path accepted an operation-scoped command."
             if action_issued
-            else "No accepted SC2 action is reported for this operation.",
-            action_frame,
+            else action_reason,
+            max(
+                action_frame,
+                _int_value(family_lifecycle["action_frame"]),
+            ),
             {
                 "submitted_frame": submitted_frame,
                 "last_action_frame": action_frame,
                 "last_action": last_action,
                 "terminal_cleanup_action": terminal_cleanup_action,
                 "terminal_cleanup_action_frame": terminal_cleanup_action_frame,
+                "family_lifecycle": dict(family_lifecycle),
             },
         ),
         MicroMachineCommandStage(
             "effect_observed",
             effect_observed,
-            "OperationDirector",
+            effect_manager,
             "Movement, engagement, or completion was observed for this operation."
             if effect_observed
-            else "No operation-scoped movement or engagement effect is observed.",
-            action_frame,
+            else effect_reason,
+            max(
+                action_frame,
+                _int_value(family_lifecycle["effect_frame"]),
+            ),
             {
                 "max_home_distance": max_home_distance,
                 "engaged": engaged,
                 "status": status,
                 "terminal_cleanup_action": terminal_cleanup_action,
                 "terminal_cleanup_action_frame": terminal_cleanup_action_frame,
+                "family_lifecycle": dict(family_lifecycle),
             },
         ),
     )
@@ -722,9 +880,28 @@ def _classify_operation_execution(
             )
         )
     )
-    failed = hard_blocked or bool(conflicting_tags)
+    family_hard_blocked = bool(
+        family_lifecycle["hard_blocked"]
+        and not terminal_cancelled
+        and not expiry_signal
+        and not transient_blocked
+    )
+    family_transient_blocked = bool(
+        family_lifecycle["transient_blocked"]
+        and not terminal_cancelled
+        and not expiry_signal
+    )
+    failed = (
+        hard_blocked
+        or routing_mismatch
+        or family_hard_blocked
+        or bool(conflicting_tags)
+    )
     completed = bool(
         terminal_completed
+        and assigned
+        and submitted
+        and action_issued
         and effect_observed
         and not terminal_cancelled
         and not failed
@@ -742,6 +919,21 @@ def _classify_operation_execution(
         blocker_reason = str(
             telemetry_payload.get("blocked_reason", "")
             or "Operation was cancelled."
+        )
+    elif routing_mismatch:
+        blocker_manager = "OperationDirector"
+        blocker_reason = (
+            "Operation routing mismatch: "
+            + "; ".join(str(item) for item in routing["mismatches"])
+        )
+    elif family_hard_blocked:
+        blocker_manager = str(
+            family_lifecycle["blocker_manager"]
+            or "OperationDirector"
+        )
+        blocker_reason = str(
+            family_lifecycle["blocker_reason"]
+            or "A requested Terran family is blocked."
         )
     elif hard_blocked:
         blocker_manager = "OperationDirector"
@@ -761,6 +953,15 @@ def _classify_operation_execution(
             telemetry_payload.get("blocked_reason", "")
             or "Operation is waiting for a transient prerequisite."
         )
+    elif family_transient_blocked:
+        blocker_manager = str(
+            family_lifecycle["blocker_manager"]
+            or "OperationDirector"
+        )
+        blocker_reason = str(
+            family_lifecycle["blocker_reason"]
+            or "A requested Terran family is waiting for a prerequisite."
+        )
     elif first_blocker is not None:
         blocker_manager = first_blocker.manager
         blocker_reason = first_blocker.reason
@@ -772,10 +973,14 @@ def _classify_operation_execution(
     elif completed:
         state = "completed"
     elif failed:
-        state = status or "failed"
+        state = (
+            status
+            if status in HARD_OPERATION_STATUSES or status == "blocked"
+            else "failed"
+        )
     elif expired:
         state = "expired"
-    elif transient_blocked:
+    elif transient_blocked or family_transient_blocked:
         state = "blocked"
     elif effect_observed:
         state = "engaged" if engaged or status == "engaged" else "moving"
@@ -805,6 +1010,504 @@ def _classify_operation_execution(
     )
 
 
+def _operation_routing_evidence(
+    *,
+    task_type: str,
+    telemetry_payload: Mapping[str, object],
+) -> dict[str, object]:
+    expected = OPERATION_TASK_ROUTING.get(task_type)
+    expected_task_type = expected[0] if expected is not None else ""
+    expected_squad_order = expected[1] if expected is not None else ""
+    reported_requested_task_type = str(
+        telemetry_payload.get("requested_task_type", "") or ""
+    ).strip()
+    reported_task_type = str(
+        telemetry_payload.get("task_type", "") or ""
+    ).strip().lower()
+    reported_squad_order = str(
+        telemetry_payload.get("squad_order", "") or ""
+    ).strip().lower()
+    mismatches: list[str] = []
+    if expected is None:
+        mismatches.append(
+            f"unsupported requested task_type={task_type or '<missing>'}"
+        )
+    if (
+        reported_requested_task_type
+        and reported_requested_task_type != task_type
+    ):
+        mismatches.append(
+            "requested_task_type="
+            f"{reported_requested_task_type} expected={task_type}"
+        )
+    if reported_task_type and reported_task_type != expected_task_type:
+        mismatches.append(
+            f"task_type={reported_task_type} expected={expected_task_type}"
+        )
+    if (
+        reported_squad_order
+        and reported_squad_order != expected_squad_order
+    ):
+        mismatches.append(
+            "squad_order="
+            f"{reported_squad_order} expected={expected_squad_order}"
+        )
+    return {
+        "requested_task_type": task_type,
+        "expected_task_type": expected_task_type,
+        "expected_squad_order": expected_squad_order,
+        "reported_requested_task_type": reported_requested_task_type,
+        "reported_task_type": reported_task_type,
+        "reported_squad_order": reported_squad_order,
+        "telemetry_contract_reported": bool(
+            reported_requested_task_type
+            or reported_task_type
+            or reported_squad_order
+        ),
+        "accepted": expected is not None and not mismatches,
+        "mismatches": mismatches,
+    }
+
+
+def _canonical_requested_terran_unit_type(value: object) -> str:
+    token = str(value or "").strip().upper()
+    if token and not token.startswith("TERRAN_") and "_" not in token:
+        token = f"TERRAN_{token}"
+    return token if token in TERRAN_UNIT_FAMILY_BY_TOKEN else ""
+
+
+def _operation_requested_family_contracts(
+    operation: Mapping[str, object],
+) -> dict[str, tuple[dict[str, object], ...]]:
+    requested: dict[str, list[dict[str, object]]] = {}
+
+    def find_contract(
+        family: str,
+        unit_type: str,
+        role: str,
+    ) -> dict[str, object] | None:
+        for contract in requested.get(family, ()):
+            if contract["unit_type"] != unit_type:
+                continue
+            contract_role = str(contract["role"])
+            if contract_role == role or not contract_role or not role:
+                return contract
+        return None
+
+    def add(
+        item: Mapping[str, object],
+        *,
+        add_count: bool,
+    ) -> None:
+        family = canonical_terran_unit_family(item.get("unit_type"))
+        if not family:
+            return
+        unit_type = _canonical_requested_terran_unit_type(
+            item.get("unit_type")
+        )
+        if not unit_type:
+            return
+        role = str(item.get("role", "") or "").strip()
+        contract = find_contract(family, unit_type, role)
+        if contract is None:
+            contract = {
+                "family": family,
+                "unit_type": unit_type,
+                "role": role,
+                "count": 0,
+                "ability_policies": set(),
+            }
+            requested.setdefault(family, []).append(contract)
+        elif role and not contract["role"]:
+            contract["role"] = role
+        if add_count:
+            contract["count"] = int(contract["count"]) + max(
+                1,
+                _int_value(item.get("count")),
+            )
+        elif int(contract["count"]) <= 0:
+            contract["count"] = 1
+        ability_policy = str(item.get("ability_policy", "") or "").strip()
+        if ability_policy and ability_policy != "never":
+            policies = contract["ability_policies"]
+            if isinstance(policies, set):
+                policies.add(ability_policy)
+
+    for item in _mapping_sequence(operation.get("composition_requirements")):
+        add(item, add_count=True)
+    for item in _mapping_sequence(operation.get("unit_roles")):
+        add(item, add_count=False)
+    for parent_name in ("tactical_task", "scope"):
+        parent = operation.get(parent_name)
+        if not isinstance(parent, Mapping):
+            continue
+        ability_policy = str(parent.get("ability", "") or "").strip()
+        for unit_type in _sequence_value(parent.get("unit_classes")):
+            add(
+                {
+                    "unit_type": unit_type,
+                    "ability_policy": ability_policy,
+                },
+                add_count=False,
+            )
+    for contracts in requested.values():
+        allow_family_forms = len(contracts) == 1
+        for contract in contracts:
+            contract["allow_family_forms"] = allow_family_forms
+    return {
+        family: tuple(dict(contract) for contract in contracts)
+        for family, contracts in requested.items()
+    }
+
+
+def operation_requires_specific_family_ability_evidence(
+    operation: Mapping[str, object],
+) -> bool:
+    """Return whether the operation explicitly requires a named ability."""
+
+    return any(
+        set(contract.get("ability_policies", ()))
+        - _GENERIC_TERRAN_ABILITY_POLICIES
+        for contracts in _operation_requested_family_contracts(
+            operation
+        ).values()
+        for contract in contracts
+    )
+
+
+def _operation_family_ability_action_matches_request(
+    action: str,
+    ability_policies: set[str],
+) -> bool:
+    if not action.startswith("ability:") or not ability_policies:
+        return False
+    ability_action = action.partition(":")[2].strip().upper()
+    if not ability_action:
+        return False
+    specific_policies = (
+        ability_policies - _GENERIC_TERRAN_ABILITY_POLICIES
+    )
+    if not specific_policies:
+        return bool(ability_policies & _GENERIC_TERRAN_ABILITY_POLICIES)
+    return any(
+        ability_action == marker.upper()
+        for policy in specific_policies
+        for marker in _TERRAN_ABILITY_ACTION_MARKERS.get(policy, ())
+    )
+
+
+def _operation_family_evidence_matches_request(
+    row: Mapping[str, object],
+    *,
+    contract: Mapping[str, object],
+    expected_squad_order: str,
+) -> bool:
+    expected_family = str(contract.get("family", "") or "")
+    expected_unit_type = str(contract.get("unit_type", "") or "")
+    row_unit_type = _canonical_requested_terran_unit_type(
+        row.get("unit_type")
+    )
+    if (
+        not row_unit_type
+        or canonical_terran_unit_family(row_unit_type) != expected_family
+        or (
+            row_unit_type != expected_unit_type
+            and not bool(contract.get("allow_family_forms"))
+        )
+    ):
+        return False
+    expected_role = str(contract.get("role", "") or "").strip()
+    row_role = str(row.get("role", "") or "").strip()
+    if expected_role and row_role != expected_role:
+        return False
+    action = str(row.get("action", "") or "").strip().lower()
+    required_effect = str(
+        row.get("required_effect", "") or ""
+    ).strip()
+    ability_policies = contract.get("ability_policies", set())
+    normalized_policies = (
+        ability_policies if isinstance(ability_policies, set) else set()
+    )
+    specific_policies = (
+        normalized_policies - _GENERIC_TERRAN_ABILITY_POLICIES
+    )
+    if required_effect == "movement_or_engagement":
+        if specific_policies:
+            return False
+        allowed_actions = {
+            "move",
+            "attack_move",
+            "attack_unit",
+            "right_click",
+        }
+        if expected_squad_order:
+            allowed_actions.add(f"squad_order:{expected_squad_order}")
+        return action in allowed_actions
+    if required_effect != "ability_state_or_effect":
+        return False
+    return _operation_family_ability_action_matches_request(
+        action,
+        normalized_policies,
+    )
+
+
+def _operation_family_contract_label(
+    contract: Mapping[str, object],
+    *,
+    family_contract_count: int,
+) -> str:
+    family = str(contract.get("family", "") or "")
+    if family_contract_count <= 1:
+        return family
+    unit_type = str(contract.get("unit_type", "") or "")
+    role = str(contract.get("role", "") or "")
+    return ":".join(value for value in (family, unit_type, role) if value)
+
+
+def _operation_family_lifecycle(
+    *,
+    command_id: str,
+    operation_id: str,
+    operation_generation: int,
+    operation: Mapping[str, object],
+    telemetry_payload: Mapping[str, object],
+) -> dict[str, object]:
+    rows = tuple(
+        operation_family_evidence(
+            telemetry_payload,
+            expected_update_id=command_id,
+            expected_operation_id=operation_id,
+            expected_generation=operation_generation,
+        )
+    )
+    family_contracts = _operation_requested_family_contracts(operation)
+    required_families = tuple(family_contracts)
+    if not required_families and rows:
+        required_families = tuple(
+            dict.fromkeys(str(row.get("family", "") or "") for row in rows)
+        )
+    required_set = set(required_families)
+    required_contracts = tuple(
+        contract
+        for family in required_families
+        for contract in family_contracts.get(family, ())
+    )
+    tactical_task = operation.get("tactical_task")
+    task_type = (
+        str(tactical_task.get("task_type", "") or "")
+        if isinstance(tactical_task, Mapping)
+        else ""
+    )
+    expected_route = OPERATION_TASK_ROUTING.get(task_type)
+    expected_squad_order = expected_route[1] if expected_route else ""
+    relevant_rows = tuple(
+        dict(row)
+        for row in rows
+        if (
+            not required_set
+            or (
+                str(row.get("family", "") or "") in required_set
+                and any(
+                    _operation_family_evidence_matches_request(
+                        row,
+                        contract=contract,
+                        expected_squad_order=expected_squad_order,
+                    )
+                    for contract in family_contracts.get(
+                        str(row.get("family", "") or ""),
+                        (),
+                    )
+                )
+            )
+        )
+    )
+    active = bool(required_contracts)
+    rows_by_contract = {
+        index: tuple(
+            row
+            for row in relevant_rows
+            if _operation_family_evidence_matches_request(
+                row,
+                contract=contract,
+                expected_squad_order=expected_squad_order,
+            )
+        )
+        for index, contract in enumerate(required_contracts)
+    }
+    stage_fields = {
+        "assignment": "assigned",
+        "order": "attempted_count",
+        "action": "submitted_count",
+        "effect": "effect_count",
+    }
+    stage_unit_tag_fields = {
+        "order": "attempted_unit_tags",
+        "action": "submitted_unit_tags",
+        "effect": "effect_unit_tags",
+    }
+    stage_results: dict[str, bool] = {}
+    stage_missing: dict[str, list[str]] = {}
+    stage_pending: dict[str, list[str]] = {}
+    for stage_name, field_name in stage_fields.items():
+        missing: list[str] = []
+        pending: list[str] = []
+        for index, contract in enumerate(required_contracts):
+            family = str(contract.get("family", "") or "")
+            label = _operation_family_contract_label(
+                contract,
+                family_contract_count=len(
+                    family_contracts.get(family, ())
+                ),
+            )
+            contract_rows = rows_by_contract.get(index, ())
+            if not contract_rows:
+                missing.append(label)
+                continue
+            required_count = max(
+                1,
+                _int_value(contract.get("count")),
+            )
+            row_counts = tuple(
+                max(0, _int_value(row.get(field_name)))
+                for row in contract_rows
+            )
+            unit_tag_field = stage_unit_tag_fields.get(stage_name)
+            rows_have_unit_identity = bool(
+                unit_tag_field
+                and all(unit_tag_field in row for row in contract_rows)
+            )
+            if rows_have_unit_identity and unit_tag_field is not None:
+                unit_tags = {
+                    tag
+                    for row in contract_rows
+                    for tag in _positive_unit_tags(row.get(unit_tag_field))
+                }
+                observed_count = min(required_count, len(unit_tags))
+            else:
+                observed_count = max(row_counts, default=0)
+            satisfied = observed_count >= required_count
+            if not satisfied:
+                pending.append(label)
+        stage_results[stage_name] = bool(
+            not active or (not missing and not pending)
+        )
+        stage_missing[stage_name] = missing
+        stage_pending[stage_name] = pending
+    blocked_rows = tuple(
+        row
+        for row in relevant_rows
+        if str(row.get("stage", "") or "") == "blocked"
+    )
+    transient_blocked_rows = tuple(
+        row
+        for row in relevant_rows
+        if row.get("blocker")
+        and str(row.get("stage", "") or "") != "blocked"
+    )
+    blocker_row = (
+        blocked_rows[0]
+        if blocked_rows
+        else (
+            transient_blocked_rows[0]
+            if transient_blocked_rows
+            else {}
+        )
+    )
+    return {
+        "active": active,
+        "required_families": list(required_families),
+        "evidence": list(relevant_rows),
+        "assignment_ok": stage_results["assignment"],
+        "order_ok": stage_results["order"],
+        "action_ok": stage_results["action"],
+        "effect_ok": stage_results["effect"],
+        "missing_assignment_families": stage_missing["assignment"],
+        "pending_assignment_families": stage_pending["assignment"],
+        "missing_order_families": stage_missing["order"],
+        "pending_order_families": stage_pending["order"],
+        "missing_action_families": stage_missing["action"],
+        "pending_action_families": stage_pending["action"],
+        "missing_effect_families": stage_missing["effect"],
+        "pending_effect_families": stage_pending["effect"],
+        "assignment_frame": 0,
+        "order_frame": max(
+            (_int_value(row.get("attempted_frame")) for row in relevant_rows),
+            default=0,
+        ),
+        "action_frame": max(
+            (_int_value(row.get("submitted_frame")) for row in relevant_rows),
+            default=0,
+        ),
+        "effect_frame": max(
+            (_int_value(row.get("effect_frame")) for row in relevant_rows),
+            default=0,
+        ),
+        "hard_blocked": bool(blocked_rows),
+        "transient_blocked": bool(transient_blocked_rows),
+        "blocker_manager": str(
+            blocker_row.get("blocker_manager", "") or ""
+        ),
+        "blocker_reason": str(blocker_row.get("blocker", "") or ""),
+    }
+
+
+def _operation_family_stage_feedback(
+    lifecycle: Mapping[str, object],
+    *,
+    stage: str,
+    default_manager: str,
+    default_reason: str,
+) -> tuple[str, str]:
+    if not lifecycle.get("active") or lifecycle.get(f"{stage}_ok"):
+        return default_manager, default_reason
+    missing = [
+        str(item)
+        for item in _sequence_value(
+            lifecycle.get(f"missing_{stage}_families")
+        )
+    ]
+    pending = [
+        str(item)
+        for item in _sequence_value(
+            lifecycle.get(f"pending_{stage}_families")
+        )
+    ]
+    blocked_families = set((*missing, *pending))
+    rows = _mapping_sequence(lifecycle.get("evidence"))
+    blocker_row = next(
+        (
+            row
+            for row in rows
+            if str(row.get("family", "") or "") in blocked_families
+            and row.get("blocker")
+        ),
+        None,
+    )
+    if blocker_row is not None:
+        return (
+            str(blocker_row.get("blocker_manager", "") or default_manager),
+            (
+                f"{blocker_row.get('family')} family blocked at {stage}: "
+                f"{blocker_row.get('blocker')}"
+            ),
+        )
+    if missing:
+        return (
+            "OperationDirector",
+            (
+                f"No current family evidence exists for {stage}: "
+                + ",".join(missing)
+            ),
+        )
+    return (
+        default_manager,
+        (
+            f"Terran family evidence has not reached {stage}: "
+            + ",".join(pending)
+        ),
+    )
+
+
 def _aggregate_operation_payloads(
     telemetry_entries: Sequence[Mapping[str, object]],
     *,
@@ -824,9 +1527,40 @@ def _aggregate_operation_payloads(
         if not isinstance(director, Mapping):
             continue
         policy_update_id = str(director.get("policy_update_id", "") or "")
-        if not policy_update_id or policy_update_id != command_id:
+        director_matches_command = policy_update_id == command_id
+        pending_by_operation: dict[
+            tuple[str, int],
+            list[Mapping[str, object]],
+        ] = {}
+        for pending in _mapping_sequence(
+            director.get("pending_family_effects")
+        ):
+            pending_operation_id = str(
+                pending.get("operation_id", "") or ""
+            )
+            pending_generation = _int_value(pending.get("generation"))
+            pending_update_id = str(
+                pending.get("update_id", "") or ""
+            )
+            if (
+                pending_update_id != command_id
+                or not pending_operation_id
+                or pending_generation <= 0
+            ):
+                continue
+            pending_by_operation.setdefault(
+                (pending_operation_id, pending_generation),
+                [],
+            ).append(pending)
+        if not director_matches_command and not pending_by_operation:
             continue
-        for payload in _mapping_sequence(director.get("operations")):
+        merged_operation_keys: set[tuple[str, int]] = set()
+        current_operations = (
+            _mapping_sequence(director.get("operations"))
+            if director_matches_command
+            else ()
+        )
+        for payload in current_operations:
             operation_id = str(payload.get("operation_id", "") or "")
             active_generation = max(
                 1,
@@ -941,7 +1675,31 @@ def _aggregate_operation_payloads(
                     ("last_action", ""),
                 ):
                     normalized_payload[key] = value
+                normalized_payload["family_evidence"] = []
             previous = aggregate.get(operation_key, {})
+            if not rejected_edit:
+                normalized_payload["_snapshot_frame"] = (
+                    payload_snapshot_frame
+                )
+                normalized_payload["pending_family_effects"] = list(
+                    pending_by_operation.get(operation_key, ())
+                )
+                merged_family_evidence = _merge_operation_family_evidence(
+                    previous_payload=previous,
+                    current_payload=normalized_payload,
+                    command_id=command_id,
+                    operation_id=operation_id,
+                    operation_generation=generation,
+                    issued_at_frame=issued_at_frame,
+                    deadline_frame=deadline_frame,
+                    snapshot_frame=payload_snapshot_frame,
+                )
+                if merged_family_evidence is not None:
+                    normalized_payload["family_evidence"] = (
+                        merged_family_evidence
+                    )
+            normalized_payload.pop("pending_family_effects", None)
+            normalized_payload.pop("_snapshot_frame", None)
             current_assigned_tags = tuple(
                 _int_value(tag)
                 for tag in _sequence_value(
@@ -1055,7 +1813,243 @@ def _aggregate_operation_payloads(
                 )
             aggregate[operation_key] = normalized_payload
             latest_snapshot_frames[operation_key] = payload_snapshot_frame
+            merged_operation_keys.add(operation_key)
+        for operation_key, pending_rows in pending_by_operation.items():
+            if operation_key in merged_operation_keys:
+                continue
+            epoch = operation_epochs.get(operation_key)
+            if epoch is None or snapshot_frame <= 0:
+                continue
+            operation_id, generation = operation_key
+            issued_at_frame, deadline_frame = epoch
+            previous = aggregate.get(operation_key, {})
+            pending_payload = {
+                "operation_id": operation_id,
+                "generation": generation,
+                "family_evidence": [],
+                "pending_family_effects": list(pending_rows),
+                "_snapshot_frame": snapshot_frame,
+            }
+            merged_family_evidence = _merge_operation_family_evidence(
+                previous_payload=previous,
+                current_payload=pending_payload,
+                command_id=command_id,
+                operation_id=operation_id,
+                operation_generation=generation,
+                issued_at_frame=issued_at_frame,
+                deadline_frame=deadline_frame,
+                snapshot_frame=snapshot_frame,
+            )
+            if not merged_family_evidence:
+                continue
+            normalized_pending_payload = dict(previous)
+            normalized_pending_payload.setdefault(
+                "operation_id",
+                operation_id,
+            )
+            normalized_pending_payload["generation"] = generation
+            normalized_pending_payload["family_evidence"] = (
+                merged_family_evidence
+            )
+            aggregate[operation_key] = normalized_pending_payload
+            latest_snapshot_frames[operation_key] = max(
+                latest_snapshot_frames.get(operation_key, -1),
+                snapshot_frame,
+            )
     return aggregate
+
+
+def _merge_operation_family_evidence(
+    *,
+    previous_payload: Mapping[str, object],
+    current_payload: Mapping[str, object],
+    command_id: str,
+    operation_id: str,
+    operation_generation: int,
+    issued_at_frame: int,
+    deadline_frame: int,
+    snapshot_frame: int,
+) -> list[dict[str, object]] | None:
+    current_explicit = current_payload.get("family_evidence")
+    current_has_contract = isinstance(current_explicit, Sequence) and not isinstance(
+        current_explicit,
+        (str, bytes, bytearray),
+    )
+    previous_explicit = previous_payload.get("family_evidence")
+    previous_has_contract = isinstance(
+        previous_explicit,
+        Sequence,
+    ) and not isinstance(previous_explicit, (str, bytes, bytearray))
+    if not current_has_contract:
+        if not previous_has_contract:
+            return None
+        return [
+            dict(row)
+            for row in operation_family_evidence(
+                previous_payload,
+                expected_update_id=command_id,
+                expected_operation_id=operation_id,
+                expected_generation=operation_generation,
+            )
+        ]
+    current_rows = tuple(
+        _sanitize_operation_family_evidence_row(
+            row,
+            issued_at_frame=issued_at_frame,
+            deadline_frame=deadline_frame,
+            snapshot_frame=snapshot_frame,
+        )
+        for row in operation_family_evidence(
+            current_payload,
+            expected_update_id=command_id,
+            expected_operation_id=operation_id,
+            expected_generation=operation_generation,
+            issued_at_frame=issued_at_frame,
+            deadline_frame=deadline_frame,
+            snapshot_frame=snapshot_frame,
+        )
+    )
+    previous_rows = tuple(
+        operation_family_evidence(
+            previous_payload,
+            expected_update_id=command_id,
+            expected_operation_id=operation_id,
+            expected_generation=operation_generation,
+        )
+    )
+    if not current_rows:
+        return [dict(row) for row in previous_rows]
+    merged_by_key: dict[tuple[str, str, str], dict[str, object]] = {
+        _operation_family_evidence_key(row): dict(row)
+        for row in previous_rows
+    }
+    key_order = list(merged_by_key)
+    for current_row in current_rows:
+        key = _operation_family_evidence_key(current_row)
+        previous_row = merged_by_key.get(key)
+        if previous_row is None:
+            key_order.append(key)
+            merged_by_key[key] = dict(current_row)
+            continue
+        current_attempt = _int_value(
+            current_row.get("attempt_generation")
+        )
+        previous_attempt = _int_value(
+            previous_row.get("attempt_generation")
+        )
+        if current_attempt < previous_attempt:
+            continue
+        if current_attempt > previous_attempt:
+            merged_by_key[key] = dict(current_row)
+            continue
+        merged_by_key[key] = _merge_same_family_action_attempt(
+            previous_row,
+            current_row,
+        )
+    return [merged_by_key[key] for key in key_order]
+
+
+def _sanitize_operation_family_evidence_row(
+    row: Mapping[str, object],
+    *,
+    issued_at_frame: int,
+    deadline_frame: int,
+    snapshot_frame: int,
+) -> dict[str, object]:
+    sanitized = dict(row)
+    for frame_key, count_key in (
+        ("attempted_frame", "attempted_count"),
+        ("submitted_frame", "submitted_count"),
+        ("effect_frame", "effect_count"),
+    ):
+        frame = _current_operation_evidence_frame(
+            row.get(frame_key),
+            issued_at_frame=issued_at_frame,
+            deadline_frame=deadline_frame,
+            snapshot_frame=snapshot_frame,
+        )
+        sanitized[frame_key] = frame
+        if frame <= 0:
+            sanitized[count_key] = 0
+    if _int_value(sanitized.get("effect_frame")) <= 0:
+        sanitized["effect_kind"] = ""
+    return sanitized
+
+
+def _operation_family_evidence_key(
+    row: Mapping[str, object],
+) -> tuple[str, str, str, str, str]:
+    return (
+        str(row.get("family", "") or ""),
+        _canonical_requested_terran_unit_type(row.get("unit_type")),
+        str(row.get("role", "") or ""),
+        str(row.get("action", "") or ""),
+        str(row.get("required_effect", "") or ""),
+    )
+
+
+def _merge_same_family_action_attempt(
+    previous: Mapping[str, object],
+    current: Mapping[str, object],
+) -> dict[str, object]:
+    merged = dict(current)
+    merged["assigned"] = max(
+        _int_value(previous.get("assigned")),
+        _int_value(current.get("assigned")),
+    )
+    merged["represented"] = max(
+        _int_value(previous.get("represented")),
+        _int_value(current.get("represented")),
+    )
+    for frame_key, count_key in (
+        ("attempted_frame", "attempted_count"),
+        ("submitted_frame", "submitted_count"),
+        ("effect_frame", "effect_count"),
+    ):
+        previous_frame = _int_value(previous.get(frame_key))
+        current_frame = _int_value(current.get(frame_key))
+        merged[frame_key] = max(previous_frame, current_frame)
+        merged[count_key] = max(
+            _int_value(previous.get(count_key)),
+            _int_value(current.get(count_key)),
+        )
+    for unit_tag_key, count_key in (
+        ("attempted_unit_tags", "attempted_count"),
+        ("submitted_unit_tags", "submitted_count"),
+        ("effect_unit_tags", "effect_count"),
+    ):
+        if unit_tag_key not in previous or unit_tag_key not in current:
+            merged.pop(unit_tag_key, None)
+            continue
+        merged_tags = sorted(
+            {
+                *_positive_unit_tags(previous.get(unit_tag_key)),
+                *_positive_unit_tags(current.get(unit_tag_key)),
+            }
+        )
+        merged[unit_tag_key] = merged_tags
+        merged[count_key] = len(merged_tags)
+    if _int_value(current.get("effect_frame")) <= 0:
+        merged["effect_kind"] = str(
+            previous.get("effect_kind", "") or ""
+        )
+    return merged
+
+
+def _positive_unit_tags(value: object) -> tuple[int, ...]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return ()
+    tags: list[int] = []
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        tag = _int_value(item)
+        if tag > 0 and tag not in tags:
+            tags.append(tag)
+    return tuple(tags)
 
 
 def _operation_issued_at_frame(

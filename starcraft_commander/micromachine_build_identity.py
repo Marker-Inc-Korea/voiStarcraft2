@@ -15,7 +15,7 @@ from typing import Final
 
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 63
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 68
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = (
     "bin/BotConfig.txt",
 )
@@ -508,6 +508,13 @@ DEFAULT_MICROMACHINE_RUNTIME_CONVERGENCE_DEFENSE_PLACEMENT_INFORMATION_PATCH: Fi
     / "patches"
     / "0067-runtime-convergence-defense-placement-information.patch"
 )
+DEFAULT_MICROMACHINE_ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0068-all-terran-harass-capability-evidence.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -732,6 +739,9 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_runtime_convergence_defense_placement_information_patch: Path = (
         DEFAULT_MICROMACHINE_RUNTIME_CONVERGENCE_DEFENSE_PLACEMENT_INFORMATION_PATCH
+    )
+    micromachine_all_terran_harass_capability_evidence_patch: Path = (
+        DEFAULT_MICROMACHINE_ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -1139,6 +1149,11 @@ def build_micromachine_build_identity(
                 config.micromachine_runtime_convergence_defense_placement_information_patch
             )
         ),
+        "micromachine_all_terran_harass_capability_evidence_patch_sha256": (
+            _sha256_file(
+                config.micromachine_all_terran_harass_capability_evidence_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1475,6 +1490,9 @@ def build_micromachine_build_identity(
             ),
             "micromachine_runtime_convergence_defense_placement_information_patch": str(
                 config.micromachine_runtime_convergence_defense_placement_information_patch
+            ),
+            "micromachine_all_terran_harass_capability_evidence_patch": str(
+                config.micromachine_all_terran_harass_capability_evidence_patch
             ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
@@ -2102,6 +2120,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_RUNTIME_CONVERGENCE_DEFENSE_PLACEMENT_INFORMATION_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-all-terran-harass-capability-evidence-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2343,6 +2367,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             micromachine_runtime_convergence_defense_placement_information_patch=Path(
                 args.micromachine_runtime_convergence_defense_placement_information_patch
+            ),
+            micromachine_all_terran_harass_capability_evidence_patch=Path(
+                args.micromachine_all_terran_harass_capability_evidence_patch
             ),
             s2client_patch=Path(args.s2client_patch),
             hook_manifest=Path(args.hook_manifest),

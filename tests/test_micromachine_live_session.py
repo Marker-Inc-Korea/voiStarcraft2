@@ -29,6 +29,9 @@ from starcraft_commander.micromachine_runtime import (
     MicroMachineFilesystemBlackboard,
     MicroMachineInMemoryBlackboard,
 )
+from starcraft_commander.micromachine_terran_capabilities import (
+    TERRAN_UNIT_FAMILY_BY_NAME,
+)
 from starcraft_commander.policy_modulation import PolicyOverrideLevel
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileStatus,
@@ -67,6 +70,65 @@ class EventuallyReadableTelemetryBlackboard(MicroMachineInMemoryBlackboard):
         if self.read_count == 1:
             return None
         return MicroMachineTelemetry(frame=321)
+
+
+TERRAN_LIVE_LANGUAGE_CASES = (
+    ("marine", "마린", "TERRAN_MARINE", "frontline"),
+    ("marauder", "불곰", "TERRAN_MARAUDER", "frontline"),
+    ("reaper", "사신", "TERRAN_REAPER", "worker_harass"),
+    ("ghost", "유령", "TERRAN_GHOST", "spellcaster"),
+    ("hellion_hellbat", "화염차", "TERRAN_HELLION", "worker_harass"),
+    ("widow_mine", "땅거미지뢰", "TERRAN_WIDOWMINE", "ambush"),
+    ("cyclone", "사이클론", "TERRAN_CYCLONE", "kite"),
+    ("siege_tank", "공성전차", "TERRAN_SIEGETANK", "siege_support"),
+    ("thor", "토르", "TERRAN_THOR", "anti_air"),
+    ("medivac", "의료선", "TERRAN_MEDIVAC", "support"),
+    ("raven", "밤까마귀", "TERRAN_RAVEN", "support"),
+    ("viking", "바이킹", "TERRAN_VIKINGFIGHTER", "anti_air"),
+    ("banshee", "밴시", "TERRAN_BANSHEE", "worker_harass"),
+    ("liberator", "해방선", "TERRAN_LIBERATOR", "zone_control"),
+    (
+        "battlecruiser",
+        "전투순양함",
+        "TERRAN_BATTLECRUISER",
+        "capital_ship",
+    ),
+)
+
+TERRAN_LIVE_OPERATION_CASES = (
+    (
+        "적 본진 정찰해",
+        "scout_with_units",
+        "scout",
+        "enemy_main",
+        "enemy_main",
+        "scouting",
+    ),
+    (
+        "적 본진 공격해",
+        "pressure_with_main_army",
+        "main",
+        "enemy_main",
+        "enemy_main",
+        "tactical",
+    ),
+    (
+        "적 일꾼 견제해",
+        "harass_with_units",
+        "harass",
+        "enemy_mineral_line",
+        "worker_line",
+        "tactical",
+    ),
+    (
+        "본진 수비해",
+        "defend_with_units",
+        "defense",
+        "home",
+        "army",
+        "tactical",
+    ),
+)
 
 
 class MicroMachineLiveTextSessionTest(unittest.TestCase):
@@ -2781,6 +2843,206 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                     vector.composition_requirements[0].unit_type,
                 )
                 self.assertEqual(1, vector.composition_requirements[0].count)
+
+    def test_keyword_provider_lowers_all_15_terran_families_for_every_operation(
+        self,
+    ) -> None:
+        for (
+            family,
+            alias,
+            expected_unit_type,
+            expected_role,
+        ) in TERRAN_LIVE_LANGUAGE_CASES:
+            for (
+                operation_text,
+                expected_task_type,
+                expected_army_group,
+                expected_location,
+                expected_target,
+                expected_category,
+            ) in TERRAN_LIVE_OPERATION_CASES:
+                with self.subTest(
+                    family=family,
+                    task_type=expected_task_type,
+                ):
+                    result = MicroMachineLiveTextSession(
+                        MicroMachineInMemoryBlackboard(),
+                        KeywordPolicyModulationProvider(),
+                    ).submit_text(
+                        f"{alias} 2기로 {operation_text}",
+                        current_frame=100,
+                    )
+
+                    self.assertTrue(result.ok, result.to_dict())
+                    assert result.update is not None
+                    vector = result.update.vector
+                    self.assertEqual(
+                        expected_task_type,
+                        vector.tactical_task.task_type,
+                    )
+                    self.assertEqual(
+                        expected_army_group,
+                        vector.scope.army_group,
+                    )
+                    self.assertEqual(
+                        expected_location,
+                        vector.scope.location_intent,
+                    )
+                    self.assertEqual(
+                        expected_location,
+                        vector.tactical_task.location_intent,
+                    )
+                    self.assertEqual(
+                        expected_target,
+                        vector.target_intent.target_type,
+                    )
+                    self.assertEqual(
+                        (expected_unit_type,),
+                        vector.tactical_task.unit_classes,
+                    )
+                    self.assertEqual(
+                        expected_unit_type,
+                        vector.composition_requirements[0].unit_type,
+                    )
+                    self.assertEqual(
+                        expected_role,
+                        vector.composition_requirements[0].role,
+                    )
+                    self.assertEqual(2, vector.composition_requirements[0].count)
+                    self.assertEqual(
+                        expected_role,
+                        vector.unit_roles[0].role,
+                    )
+                    production_targets = set(
+                        vector.tactical_task.production_targets
+                    )
+                    self.assertIn(expected_unit_type, production_targets)
+                    self.assertTrue(
+                        set(
+                            TERRAN_UNIT_FAMILY_BY_NAME[
+                                family
+                            ].prerequisites
+                        )
+                        <= production_targets
+                    )
+                    self.assertEqual(
+                        expected_category,
+                        result.command_queue["category"],
+                    )
+
+    def test_keyword_provider_preserves_explicit_hellbat_staging_and_mode(
+        self,
+    ) -> None:
+        hellbat = MicroMachineLiveTextSession(
+            MicroMachineInMemoryBlackboard(),
+            KeywordPolicyModulationProvider(),
+        ).submit_text(
+            "화염기갑병 2기로 적 일꾼 견제해",
+            current_frame=100,
+        )
+        hellion = MicroMachineLiveTextSession(
+            MicroMachineInMemoryBlackboard(),
+            KeywordPolicyModulationProvider(),
+        ).submit_text(
+            "화염차 2기로 적 일꾼 견제해",
+            current_frame=100,
+        )
+
+        self.assertTrue(hellbat.ok, hellbat.to_dict())
+        self.assertTrue(hellion.ok, hellion.to_dict())
+        assert hellbat.update is not None
+        assert hellion.update is not None
+        hellbat_vector = hellbat.update.vector
+        hellion_vector = hellion.update.vector
+        self.assertEqual(
+            "TERRAN_HELLION",
+            hellbat_vector.composition_requirements[0].unit_type,
+        )
+        self.assertEqual(
+            "hellbat_mode",
+            hellbat_vector.unit_roles[0].ability_policy,
+        )
+        self.assertTrue(
+            {
+                "TERRAN_FACTORY",
+                "TERRAN_ARMORY",
+                "TERRAN_HELLION",
+            }
+            <= set(hellbat_vector.tactical_task.production_targets)
+        )
+        self.assertIn(
+            "requested_form:TERRAN_HELLIONTANK",
+            hellbat_vector.tags,
+        )
+        self.assertIn(
+            "mode_prerequisite:hellbat_mode",
+            hellbat_vector.tags,
+        )
+        self.assertNotIn(
+            "TERRAN_ARMORY",
+            hellion_vector.tactical_task.production_targets,
+        )
+        self.assertNotEqual(
+            "hellbat_mode",
+            hellion_vector.unit_roles[0].ability_policy,
+        )
+
+    def test_live_session_keeps_llm_provider_output_ahead_of_smoke_lowering(
+        self,
+    ) -> None:
+        result = MicroMachineLiveTextSession(
+            MicroMachineInMemoryBlackboard(),
+            StaticJsonPolicyModulationProvider(
+                {
+                    "source": "llm",
+                    "goal": "LLM-selected Raven reconnaissance",
+                    "scope": {
+                        "army_group": "scout",
+                        "unit_classes": ["TERRAN_RAVEN"],
+                        "location_intent": "enemy_main",
+                        "min_units": 1,
+                        "max_units": 1,
+                    },
+                    "tactical_task": {
+                        "task_type": "scout_with_units",
+                        "unit_classes": ["TERRAN_RAVEN"],
+                        "production_targets": [
+                            "TERRAN_FACTORY",
+                            "TERRAN_STARPORT",
+                            "STARPORT_TECHLAB",
+                            "TERRAN_RAVEN",
+                        ],
+                        "location_intent": "enemy_main",
+                        "min_units": 1,
+                        "max_units": 1,
+                        "allow_partial": False,
+                    },
+                    "composition_requirements": [
+                        {
+                            "unit_type": "TERRAN_RAVEN",
+                            "count": 1,
+                            "role": "support",
+                        }
+                    ],
+                }
+            ),
+        ).submit_text(
+            "화염기갑병으로 적 본진 정찰해",
+            current_frame=100,
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        vector = result.update.vector
+        self.assertEqual("llm", vector.source.value)
+        self.assertEqual(
+            ("TERRAN_RAVEN",),
+            vector.tactical_task.unit_classes,
+        )
+        self.assertNotIn(
+            "requested_form:TERRAN_HELLIONTANK",
+            vector.tags,
+        )
 
     def test_keyword_provider_maps_flank_route_attack_to_flank_bias(self) -> None:
         backend = MicroMachineInMemoryBlackboard()

@@ -13,8 +13,9 @@ import json
 import os
 import re
 import uuid
-from copy import deepcopy
+from collections import deque
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
@@ -63,6 +64,8 @@ LATEST_UPDATE_KV_NAME: Final[str] = "latest_modulation.kv"
 UPDATE_ARCHIVE_JSONL_NAME: Final[str] = "modulation_updates.jsonl"
 LATEST_TELEMETRY_JSON_NAME: Final[str] = "latest_telemetry.json"
 TELEMETRY_ARCHIVE_JSONL_NAME: Final[str] = "telemetry.jsonl"
+MICROMACHINE_TELEMETRY_ARCHIVE_READ_LIMIT: Final[int] = 128
+MICROMACHINE_TELEMETRY_ARCHIVE_READ_BYTES: Final[int] = 8 * 1024 * 1024
 MICROMACHINE_STRATEGY_PROFILE_VERSION: Final[int] = 1
 MICROMACHINE_STRATEGY_PROFILE_KEYS: Final[tuple[str, ...]] = (
     "marine_rush",
@@ -1339,6 +1342,59 @@ class MicroMachineFilesystemBlackboard:
             _read_json_mapping(self.paths.latest_telemetry_json)
         )
 
+    def read_recent_telemetry_archive(
+        self,
+        *,
+        limit: int = MICROMACHINE_TELEMETRY_ARCHIVE_READ_LIMIT,
+        max_bytes: int = MICROMACHINE_TELEMETRY_ARCHIVE_READ_BYTES,
+        pending_family_effects_only: bool = False,
+    ) -> tuple[MicroMachineTelemetry, ...]:
+        """Return a count- and I/O-bounded tail of valid telemetry."""
+
+        if type(limit) is bool or not isinstance(limit, int):
+            raise TypeError("limit must be an integer.")
+        if type(max_bytes) is bool or not isinstance(max_bytes, int):
+            raise TypeError("max_bytes must be an integer.")
+        if limit <= 0:
+            return ()
+        if max_bytes <= 0:
+            return ()
+        if not self.paths.telemetry_archive_jsonl.exists():
+            return ()
+        snapshots: deque[MicroMachineTelemetry] = deque(maxlen=limit)
+        with self.paths.telemetry_archive_jsonl.open(
+            "rb",
+        ) as handle:
+            file_size = self.paths.telemetry_archive_jsonl.stat().st_size
+            start_offset = max(0, file_size - max_bytes)
+            handle.seek(start_offset)
+            if start_offset > 0:
+                handle.readline()
+            while handle.tell() < file_size:
+                raw_line = handle.readline()
+                if not raw_line:
+                    break
+                raw = raw_line.strip()
+                if not raw:
+                    continue
+                try:
+                    payload = json.loads(raw)
+                    if not isinstance(payload, Mapping):
+                        continue
+                    reject_raw_policy_control_keys(payload)
+                    telemetry = MicroMachineTelemetry.from_mapping(payload)
+                    if (
+                        pending_family_effects_only
+                        and not _telemetry_has_pending_family_effects(
+                            telemetry
+                        )
+                    ):
+                        continue
+                    snapshots.append(telemetry)
+                except (TypeError, ValueError, UnicodeDecodeError):
+                    continue
+        return tuple(snapshots)
+
     def dashboard_snapshot(
         self,
         *,
@@ -1745,6 +1801,20 @@ def _coerce_telemetry(
 
 def _clone_telemetry(telemetry: MicroMachineTelemetry) -> MicroMachineTelemetry:
     return _coerce_telemetry(telemetry)
+
+
+def _telemetry_has_pending_family_effects(
+    telemetry: MicroMachineTelemetry,
+) -> bool:
+    director = telemetry.managers.get("OperationDirector")
+    if not isinstance(director, Mapping):
+        return False
+    pending = director.get("pending_family_effects")
+    return bool(
+        isinstance(pending, Sequence)
+        and not isinstance(pending, (str, bytes, bytearray))
+        and any(isinstance(item, Mapping) for item in pending)
+    )
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

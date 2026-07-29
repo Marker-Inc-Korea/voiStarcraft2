@@ -27,6 +27,9 @@ from urllib.parse import quote
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
 )
+from starcraft_commander.micromachine_terran_capabilities import (
+    TERRAN_UNIT_FAMILIES,
+)
 from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.llm_interpreter import LocalLLMControl
@@ -1336,6 +1339,47 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(document["intervention"]["policy_active"])
             self.assertTrue(document["telemetry_stale_or_detached"])
 
+    def test_micromachine_runtime_gate_redacts_runtime_identity_text(self):
+        cases = (
+            (
+                "attached",
+                {
+                    "status": "running",
+                    "runtime_attached": True,
+                    "telemetry_current_for_process": True,
+                    "last_line": "actor_tag=7001 action=attack",
+                    "error": "target_unit_tags=[8001, 8002]",
+                },
+            ),
+            (
+                "detached",
+                {
+                    "status": "running",
+                    "runtime_attached": False,
+                    "telemetry_current_for_process": False,
+                    "telemetry_present": True,
+                    "last_line": "actor_tag=7001 action=attack",
+                    "error": "target_unit_tags=[8001, 8002]",
+                },
+            ),
+        )
+
+        for label, runtime_snapshot in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                document = web_gui._micromachine_status_with_runtime_gate(
+                    {"status": "idle"},
+                    runtime_snapshot=runtime_snapshot,
+                    blackboard_dir=directory,
+                )
+                serialized = json.dumps(document, sort_keys=True)
+
+                self.assertNotIn("actor_tag", serialized)
+                self.assertNotIn("target_unit_tags", serialized)
+                self.assertNotIn("7001", serialized)
+                self.assertNotIn("8001", serialized)
+                self.assertNotIn("8002", serialized)
+                self.assertIn("action=attack", document["last_line"])
+
     def test_micromachine_status_scopes_latest_compile_result_to_active_update(self):
         with tempfile.TemporaryDirectory() as directory:
             self.post_micromachine_modulation(
@@ -2536,6 +2580,464 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             json.dumps(payload["operations"], ensure_ascii=False),
         )
 
+    def test_micromachine_status_exposes_current_all_terran_family_evidence(
+        self,
+    ):
+        update_id = "all-terran-harass-update"
+        operation_id = "mixed-harass"
+        generation = 2
+        family_rows = []
+        for index, family in enumerate(TERRAN_UNIT_FAMILIES):
+            effect_observed = family.family == "reaper"
+            blocked = family.family == "banshee"
+            family_rows.append(
+                {
+                    "update_id": update_id,
+                    "operation_id": operation_id,
+                    "generation": generation,
+                    "family": family.family,
+                    "unit_type": family.unit_types[0],
+                    "role": family.default_role,
+                    "assigned": 0 if blocked else 1,
+                    "represented": 0 if blocked else 1,
+                    "action": f"ability:{family.abilities[0]}",
+                    "required_effect": "ability_state_or_effect",
+                    "attempt_generation": index + 1,
+                    "attempted_count": 0 if blocked else 1,
+                    "attempted_frame": 0 if blocked else 215 + index,
+                    "attempted_unit_tags": (
+                        [] if blocked else [1000 + index]
+                    ),
+                    "submitted_count": 0 if blocked else 1,
+                    "submitted_frame": 0 if blocked else 230 + index,
+                    "submitted_unit_tags": (
+                        [] if blocked else [1000 + index]
+                    ),
+                    "effect_kind": (
+                        "ability_state" if effect_observed else ""
+                    ),
+                    "effect_count": 1 if effect_observed else 0,
+                    "effect_frame": 260 if effect_observed else 0,
+                    "effect_unit_tags": (
+                        [1000 + index] if effect_observed else []
+                    ),
+                    "blocker_manager": (
+                        "ProductionManager" if blocked else ""
+                    ),
+                    "blocker": (
+                        "missing_starport_techlab" if blocked else ""
+                    ),
+                }
+            )
+        current_tank = next(
+            row for row in family_rows if row["family"] == "siege_tank"
+        )
+        stale_rows = [
+            {**current_tank, "update_id": "stale-update"},
+            {**current_tank, "operation_id": "stale-operation"},
+            {**current_tank, "generation": 1},
+            {**current_tank, "action": ""},
+        ]
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "manager_bias_domains": ["combat", "squad"],
+                    "vector": {
+                        "goal": "15-family mixed harass",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": generation,
+                                "goal": "가용 테란 병력으로 적 일꾼을 견제",
+                                "tactical_task": {
+                                    "task_type": "harass_with_units",
+                                    "location_intent": "enemy_mineral_line",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 300},
+        }
+        telemetry_document = {
+            "frame": 300,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "update_id": update_id,
+                            "operation_id": operation_id,
+                            "generation": generation,
+                            "status": "MOVING",
+                            "received_frame": 205,
+                            "assigned_frame": 210,
+                            "submitted_frame": 220,
+                            "last_action_frame": 240,
+                            "movement_frame": 250,
+                            "assigned_count": 14,
+                            "assigned_unit_tags": list(range(2001, 2015)),
+                            "actor_tag": 2015,
+                            "commanded_unit_tag": 2016,
+                            "scout_last_commanded_unit_tag": 2017,
+                            "max_home_distance": 24.0,
+                            "last_action": "AttackMove",
+                            "squad_order": "harass",
+                            "family_evidence": family_rows + stale_rows,
+                        }
+                    ],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=300,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            blackboard_dir="/tmp/all-terran-family-evidence",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "가용 테란 병력으로 적 일꾼을 견제해",
+            },
+        )
+
+        self.assertEqual(1, len(payload["operations"]))
+        operation = payload["operations"][0]
+        self.assertEqual(operation_id, operation["operation_id"])
+        self.assertEqual(generation, operation["operation_generation"])
+        self.assertEqual("harass", operation["squad_order"])
+        evidence = operation["family_evidence"]
+        self.assertEqual(15, len(evidence))
+        self.assertEqual(
+            {family.family for family in TERRAN_UNIT_FAMILIES},
+            {row["family"] for row in evidence},
+        )
+        for row in evidence:
+            with self.subTest(family=row["family"]):
+                self.assertEqual(update_id, row["update_id"])
+                self.assertEqual(operation_id, row["operation_id"])
+                self.assertEqual(generation, row["generation"])
+                self.assertTrue(row["action"])
+                self.assertGreater(row["attempt_generation"], 0)
+                self.assertNotIn("attempted_unit_tags", row)
+                self.assertNotIn("submitted_unit_tags", row)
+                self.assertNotIn("effect_unit_tags", row)
+        public_payload_json = json.dumps(payload, ensure_ascii=False)
+        for internal_key in (
+            "assigned_unit_tags",
+            "actor_tag",
+            "commanded_unit_tag",
+            "scout_last_commanded_unit_tag",
+            "attempted_unit_tags",
+            "submitted_unit_tags",
+            "effect_unit_tags",
+        ):
+            self.assertNotIn(internal_key, public_payload_json)
+        execution_telemetry = operation["intervention"][
+            "command_execution"
+        ]["telemetry"]
+        self.assertNotIn("assigned_unit_tags", execution_telemetry)
+        for row in execution_telemetry["family_evidence"]:
+            self.assertNotIn("attempted_unit_tags", row)
+            self.assertNotIn("submitted_unit_tags", row)
+            self.assertNotIn("effect_unit_tags", row)
+        tactical_evidence_json = json.dumps(
+            operation["intervention"]["tactical_evidence"],
+            ensure_ascii=False,
+        )
+        self.assertNotIn("scout_last_commanded_unit_tag", tactical_evidence_json)
+        self.assertNotIn("2017", tactical_evidence_json)
+        by_family = {row["family"]: row for row in evidence}
+        self.assertEqual("effect", by_family["reaper"]["stage"])
+        self.assertEqual("blocked", by_family["banshee"]["stage"])
+        self.assertEqual(
+            "missing_starport_techlab",
+            by_family["banshee"]["blocker"],
+        )
+        self.assertEqual("executed", by_family["siege_tank"]["stage"])
+        self.assertFalse(by_family["siege_tank"]["effect"])
+
+    def test_micromachine_status_exposes_removed_operation_pending_effect(
+        self,
+    ):
+        update_id = "retargeted-harass-update"
+        operation_id = "reaper-harass"
+        generation = 2
+        delivered = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": generation,
+            "family": "reaper",
+            "unit_type": "TERRAN_REAPER",
+            "role": "worker_harass",
+            "action": "attack_move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 3,
+            "attempted_count": 1,
+            "attempted_frame": 210,
+            "submitted_count": 1,
+            "submitted_frame": 220,
+            "effect_kind": "movement",
+            "effect_count": 1,
+            "effect_frame": 230,
+            "blocker_manager": "",
+            "blocker": "",
+        }
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "expires_at_frame": 2_000,
+                    "manager_bias_domains": ["combat", "squad"],
+                    "vector": {
+                        "goal": "리퍼 견제 목표를 변경",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": generation,
+                                "goal": "리퍼로 적 일꾼 견제",
+                                "composition_requirements": [
+                                    {
+                                        "unit_type": "TERRAN_REAPER",
+                                        "count": 1,
+                                        "role": "worker_harass",
+                                    }
+                                ],
+                                "tactical_task": {
+                                    "task_type": "harass_with_units",
+                                    "duration_seconds": 120,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 300},
+        }
+        telemetry_document = {
+            "frame": 300,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "replacement-update",
+                    "operations": [
+                        {
+                            "operation_id": operation_id,
+                            "generation": generation,
+                            "status": "COMPLETED",
+                            "completed": True,
+                            "assigned_count": 9,
+                            "assigned_unit_tags": list(range(1, 10)),
+                            "submitted_frame": 240,
+                            "last_action_frame": 250,
+                            "last_action": "replacement-operation",
+                        }
+                    ],
+                    "pending_family_effects": [
+                        delivered,
+                        {**delivered, "update_id": "other-update"},
+                        {**delivered, "operation_id": "other-operation"},
+                        {**delivered, "generation": 1},
+                        {
+                            **delivered,
+                            "attempted_frame": 199,
+                            "submitted_frame": 200,
+                            "effect_frame": 201,
+                        },
+                        {**delivered, "effect_frame": 301},
+                        {**delivered, "family": "unrelated-family"},
+                        {**delivered, "action": ""},
+                    ],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=300,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            blackboard_dir="/tmp/removed-operation-family-effect",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "리퍼 견제 목표를 변경해",
+            },
+        )
+
+        self.assertEqual(1, len(payload["operations"]))
+        operation = payload["operations"][0]
+        self.assertTrue(operation["telemetry_current"])
+        self.assertEqual(generation, operation["operation_generation"])
+        self.assertEqual(1, len(operation["family_evidence"]))
+        evidence = operation["family_evidence"][0]
+        self.assertEqual(update_id, evidence["update_id"])
+        self.assertEqual(operation_id, evidence["operation_id"])
+        self.assertEqual(generation, evidence["generation"])
+        self.assertEqual("effect", evidence["stage"])
+        self.assertTrue(evidence["effect"])
+        self.assertEqual(0, evidence["assigned"])
+        self.assertEqual(0, evidence["represented"])
+        execution = operation["intervention"]["command_execution"]
+        self.assertEqual("published", execution["state"])
+        self.assertFalse(execution["completed"])
+        self.assertEqual(
+            set(),
+            {
+                stage["name"]
+                for stage in execution["stages"]
+                if stage["name"]
+                in {
+                    "queued_or_assigned",
+                    "order_issued",
+                    "action_issued",
+                    "effect_observed",
+                }
+            },
+        )
+
+    def test_micromachine_status_preserves_acknowledged_effect_from_archive(
+        self,
+    ):
+        update_id = "acknowledged-effect-update"
+        operation_id = "marine-recon"
+        delivered = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": 1,
+            "family": "marine",
+            "unit_type": "TERRAN_MARINE",
+            "role": "scout",
+            "action": "move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 2,
+            "attempted_count": 1,
+            "attempted_frame": 210,
+            "submitted_count": 1,
+            "submitted_frame": 220,
+            "effect_kind": "movement",
+            "effect_count": 1,
+            "effect_frame": 230,
+            "blocker_manager": "",
+            "blocker": "",
+        }
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "expires_at_frame": 2_000,
+                    "manager_bias_domains": ["scouting", "squad"],
+                    "vector": {
+                        "goal": "마린 한 기로 정찰",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "goal": "마린 한 기로 정찰",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "duration_seconds": 120,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 300},
+        }
+        archived_telemetry = {
+            "frame": 240,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": operation_id,
+                            "generation": 1,
+                            "status": "MOVING",
+                            "received_frame": 205,
+                        }
+                    ],
+                    "pending_family_effects": [
+                        delivered,
+                        {**delivered, "update_id": "wrong-update"},
+                        {**delivered, "generation": 2},
+                        {
+                            **delivered,
+                            "attempted_frame": 199,
+                            "submitted_frame": 200,
+                            "effect_frame": 201,
+                        },
+                        {**delivered, "effect_frame": 241},
+                    ],
+                }
+            },
+        }
+        latest_telemetry_document = {
+            "frame": 300,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": operation_id,
+                            "generation": 1,
+                            "status": "MOVING",
+                            "received_frame": 205,
+                            "assigned_frame": 215,
+                            "assigned_count": 1,
+                            "submitted_frame": 220,
+                        }
+                    ],
+                    "pending_family_effects": [],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=300,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: latest_telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            telemetry_archive=(archived_telemetry,),
+            blackboard_dir="/tmp/acknowledged-family-effect",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "마린 한 기로 정찰해",
+            },
+        )
+
+        operation = payload["operations"][0]
+        self.assertTrue(operation["telemetry_current"])
+        self.assertEqual(1, len(operation["family_evidence"]))
+        evidence = operation["family_evidence"][0]
+        self.assertEqual(update_id, evidence["update_id"])
+        self.assertEqual(operation_id, evidence["operation_id"])
+        self.assertEqual(1, evidence["generation"])
+        self.assertEqual("move", evidence["action"])
+        self.assertEqual("effect", evidence["stage"])
+        self.assertEqual(230, evidence["effect_frame"])
+
     def test_rejected_higher_generation_edit_uses_active_generation_telemetry(self):
         update_id = "rejected-operation-edit"
         dashboard = {
@@ -2595,6 +3097,48 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "edit_blocker": "destination_priority_not_higher",
                         }
                     ],
+                    "pending_family_effects": [
+                        {
+                            "update_id": update_id,
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "scout",
+                            "action": "move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 2,
+                            "attempted_count": 1,
+                            "attempted_frame": 130,
+                            "submitted_count": 1,
+                            "submitted_frame": 140,
+                            "effect_kind": "movement",
+                            "effect_count": 1,
+                            "effect_frame": 150,
+                            "blocker_manager": "",
+                            "blocker": "",
+                        },
+                        {
+                            "update_id": update_id,
+                            "operation_id": "recon-alpha",
+                            "generation": 2,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "scout",
+                            "action": "attack_move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 3,
+                            "attempted_count": 1,
+                            "attempted_frame": 170,
+                            "submitted_count": 1,
+                            "submitted_frame": 180,
+                            "effect_kind": "engagement",
+                            "effect_count": 1,
+                            "effect_frame": 190,
+                            "blocker_manager": "",
+                            "blocker": "",
+                        },
+                    ],
                 }
             },
         }
@@ -2635,6 +3179,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("order_issued", successful_stages)
         self.assertIn("action_issued", successful_stages)
         self.assertIn("effect_observed", successful_stages)
+        self.assertEqual(1, len(operation["family_evidence"]))
+        self.assertEqual(1, operation["family_evidence"][0]["generation"])
+        self.assertEqual("effect", operation["family_evidence"][0]["stage"])
 
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
         execution = web_gui._micromachine_operation_command_execution(
@@ -2685,6 +3232,309 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 }
             },
         )
+
+    def test_micromachine_operation_ability_requires_matching_family_effect(self):
+        update_id = "siege-ability-operation"
+        operation_id = "siege-alpha"
+        operation_update = {
+            "update_id": update_id,
+            "issued_at_frame": 100,
+            "vector": {
+                "operation_id": operation_id,
+                "generation": 1,
+                "composition_requirements": [
+                    {
+                        "unit_type": "TERRAN_SIEGETANK",
+                        "count": 1,
+                        "role": "siege_support",
+                    }
+                ],
+                "unit_roles": [
+                    {
+                        "unit_type": "TERRAN_SIEGETANK",
+                        "role": "siege_support",
+                        "ability_policy": "siege_mode",
+                    }
+                ],
+                "tactical_task": {
+                    "task_type": "pressure_with_main_army",
+                    "unit_classes": ["TERRAN_SIEGETANK"],
+                },
+            },
+        }
+        family_row = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": 1,
+            "family": "siege_tank",
+            "unit_type": "TERRAN_SIEGETANK",
+            "role": "siege_support",
+            "assigned": 1,
+            "represented": 1,
+            "action": "attack_move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 1,
+            "attempted_count": 1,
+            "attempted_frame": 130,
+            "attempted_unit_tags": [7001],
+            "submitted_count": 1,
+            "submitted_frame": 140,
+            "submitted_unit_tags": [7001],
+            "effect_kind": "engagement",
+            "effect_count": 1,
+            "effect_frame": 150,
+            "effect_unit_tags": [7001],
+            "blocker_manager": "",
+            "blocker": "",
+        }
+        operation_telemetry = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": 1,
+            "requested_task_type": "pressure_with_main_army",
+            "task_type": "attack",
+            "squad_order": "attack",
+            "status": "MOVING",
+            "received_frame": 110,
+            "assigned_frame": 120,
+            "submitted_frame": 140,
+            "last_action_frame": 145,
+            "assigned_unit_tags": [7001],
+            "assigned_count": 1,
+            "max_home_distance": 24.0,
+            "engaged": True,
+            "family_evidence": [family_row],
+        }
+
+        def execution_for_current_row():
+            telemetry_document = {
+                "frame": 160,
+                "active_modulation_ids": [update_id],
+                "managers": {
+                    "OperationDirector": {
+                        "policy_update_id": update_id,
+                        "operations": [operation_telemetry],
+                    }
+                },
+            }
+            strict = web_gui._micromachine_strict_operation_execution(
+                operation_update,
+                operation_id=operation_id,
+                operation_generation=1,
+                operation_telemetry_document=telemetry_document,
+            )
+            return web_gui._micromachine_operation_command_execution(
+                update_id=update_id,
+                operation_id=operation_id,
+                operation_generation=1,
+                operation_telemetry=operation_telemetry,
+                fallback=strict,
+            )
+
+        movement_only = execution_for_current_row()
+        movement_stages = {
+            stage["name"]: stage for stage in movement_only["stages"]
+        }
+        self.assertTrue(
+            web_gui._micromachine_execution_has_active_family_contract(
+                movement_only
+            )
+        )
+        self.assertNotIn("effect_observed", {
+            name for name, stage in movement_stages.items() if stage["ok"]
+        })
+        self.assertNotEqual("effect_observed", movement_only["state"])
+        self.assertFalse(movement_only["completed"])
+
+        operation_telemetry["family_evidence"] = []
+        missing_family_payload = (
+            web_gui._micromachine_operation_status_payload(
+                operation_update,
+                operation_id=operation_id,
+                operation_count=1,
+                active=True,
+                telemetry={
+                    "frame": 160,
+                    "active_modulation_ids": [update_id],
+                    "managers": {
+                        "OperationDirector": {
+                            "policy_update_id": update_id,
+                            "operations": [operation_telemetry],
+                        }
+                    },
+                },
+                telemetry_archive=(),
+                blackboard_dir="",
+                result_item={},
+                compile_result={},
+            )
+        )
+        missing_family_execution = missing_family_payload[
+            "intervention"
+        ]["command_execution"]
+        missing_family_stages = {
+            stage["name"]: stage
+            for stage in missing_family_execution["stages"]
+        }
+        self.assertTrue(
+            web_gui._micromachine_execution_has_active_family_contract(
+                missing_family_execution
+            )
+        )
+        self.assertFalse(
+            missing_family_stages["effect_observed"]["ok"],
+            missing_family_execution,
+        )
+        self.assertNotEqual(
+            "effect_observed",
+            missing_family_execution["state"],
+        )
+
+        legacy_only_payload = (
+            web_gui._micromachine_operation_status_payload(
+                operation_update,
+                operation_id=operation_id,
+                operation_count=1,
+                active=True,
+                telemetry={
+                    "frame": 160,
+                    "active_modulation_ids": [update_id],
+                    "managers": {
+                        "GameCommander": {"update_id": update_id},
+                        "CombatCommander": {
+                            "policy_update_id": update_id,
+                            "main_attack_actual_command_issued_count": 1,
+                            "main_attack_last_action_frame": 145,
+                            "main_attack_last_issued_action": "attack_move",
+                            "main_attack_max_home_distance": 24.0,
+                        },
+                        "UnitRoleTask": {
+                            "task_update_id": update_id,
+                            "unit_type": "TERRAN_SIEGETANK",
+                            "role": "siege_support",
+                            "ability_policy": "siege_mode",
+                            "status": "executed",
+                            "attempted_count": 1,
+                            "executed_count": 1,
+                            "last_action_frame": 145,
+                            "issued_action": "attack_move",
+                            "max_home_distance": 24.0,
+                        },
+                    },
+                },
+                telemetry_archive=(),
+                blackboard_dir="",
+                result_item={},
+                compile_result={},
+            )
+        )
+        legacy_only_execution = legacy_only_payload[
+            "intervention"
+        ]["command_execution"]
+        legacy_only_stages = {
+            stage["name"]: stage
+            for stage in legacy_only_execution["stages"]
+        }
+        self.assertTrue(
+            web_gui._micromachine_execution_has_active_family_contract(
+                legacy_only_execution
+            )
+        )
+        self.assertFalse(
+            legacy_only_stages["effect_observed"]["ok"],
+            legacy_only_execution,
+        )
+        self.assertNotEqual(
+            "effect_observed",
+            legacy_only_execution["state"],
+        )
+
+        operation_telemetry["family_evidence"] = [family_row]
+        family_row.update(
+            {
+                "action": "ability:MORPH_SIEGEMODE",
+                "required_effect": "ability_state_or_effect",
+                "effect_kind": "ability_state",
+            }
+        )
+        ability_confirmed = execution_for_current_row()
+        ability_stages = {
+            stage["name"]: stage for stage in ability_confirmed["stages"]
+        }
+        self.assertTrue(ability_stages["effect_observed"]["ok"])
+        self.assertEqual("effect_observed", ability_confirmed["state"])
+
+    def test_public_runtime_payload_redacts_unit_tag_aliases(self):
+        payload = web_gui._public_runtime_launcher_payload(
+            {
+                "assigned_tags": [7001, 7002],
+                "selected_worker_tags": [8001],
+                "commanded_tags": [8101],
+                "actor_tags": [8201],
+                "owned_tags": [8301],
+                "last_line": (
+                    "assigned_tags=[7001,7002] "
+                    "selected_worker_tags=[8001] "
+                    "commanded_tags=[8101] "
+                    "actor_tags=[8201] "
+                    "owned_tags=[8301]"
+                ),
+                "tuple_line": "actor_tags=(7201, 7202)",
+                "set_line": "owned_tags={7301,7302}",
+                "csv_line": "commanded_tags=7101,7102 action=attack",
+                "spaced_line": "source_tags=7401 7402 action=move",
+                "unclosed_line": "target_tags=[7501,7502",
+                "container_comma_line": (
+                    "actor_tags=[7601,7602],7603 action=attack"
+                ),
+                "container_semicolon_line": (
+                    "actor_tags=(7701,7702);7703 action=attack"
+                ),
+                "container_pipe_line": (
+                    "actor_tags={7801,7802}|7803 action=attack"
+                ),
+                "container_space_line": (
+                    "actor_tags=<7901,7902> 7903 action=attack"
+                ),
+                "empty_container_line": (
+                    "actor_tags=[] 7951 action=attack"
+                ),
+                "strategic_tags": ["pressure", "flank"],
+            }
+        )
+
+        self.assertNotIn("assigned_tags", payload)
+        self.assertNotIn("selected_worker_tags", payload)
+        self.assertNotIn("commanded_tags", payload)
+        self.assertNotIn("actor_tags", payload)
+        self.assertNotIn("owned_tags", payload)
+        self.assertEqual(["pressure", "flank"], payload["strategic_tags"])
+        for raw_tag in ("7001", "8001", "8101", "8201", "8301"):
+            self.assertNotIn(raw_tag, payload["last_line"])
+        self.assertEqual(
+            5,
+            payload["last_line"].count(
+                "[internal unit identity]: [redacted]"
+            ),
+        )
+        for line_name, raw_tags in {
+            "tuple_line": ("7201", "7202"),
+            "set_line": ("7301", "7302"),
+            "csv_line": ("7101", "7102"),
+            "spaced_line": ("7401", "7402"),
+            "unclosed_line": ("7501", "7502"),
+            "container_comma_line": ("7601", "7602", "7603"),
+            "container_semicolon_line": ("7701", "7702", "7703"),
+            "container_pipe_line": ("7801", "7802", "7803"),
+            "container_space_line": ("7901", "7902", "7903"),
+            "empty_container_line": ("7951",),
+        }.items():
+            self.assertIn(
+                "[internal unit identity]: [redacted]",
+                payload[line_name],
+            )
+            for raw_tag in raw_tags:
+                self.assertNotIn(raw_tag, payload[line_name])
 
     def test_micromachine_operation_root_update_id_is_fail_closed(self):
         update_id = "parallel-current-update"
@@ -3330,6 +4180,116 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         document = json.loads(payload.decode("utf-8"))
         self.assertEqual(document["status"], "connected")
         self.assertEqual(document["telemetry_frame"], 42)
+
+    def test_runtime_endpoints_strip_internal_unit_identity(self):
+        def launcher_payload(status):
+            return {
+                "enabled": True,
+                "status": status,
+                "last_line": "actor_tag=7001 action=attack",
+                "error": "target_unit_tags=[8001, 8002]",
+                "nested": {"commanded_unit_tag": 9001},
+                "tags": ["public-strategy-tag"],
+            }
+
+        class FakeLegacyLauncher:
+            def configure(self, provider, api_key, model=""):
+                return None
+
+            def snapshot(self):
+                return launcher_payload("connected")
+
+            def start(self):
+                return launcher_payload("starting")
+
+        class FakeMicroMachineLauncher:
+            def snapshot(self, blackboard_dir=""):
+                return {
+                    **launcher_payload("connected"),
+                    "blackboard_dir": blackboard_dir,
+                }
+
+            def start(self, blackboard_dir="", enemy_difficulty=7):
+                return {
+                    **launcher_payload("starting"),
+                    "blackboard_dir": blackboard_dir,
+                    "enemy_difficulty": enemy_difficulty,
+                }
+
+        self.server._http.live_launcher = FakeLegacyLauncher()
+        self.server._http.micromachine_launcher = FakeMicroMachineLauncher()
+        self.server._http.auto_launch_live = True
+        requests = (
+            ("GET", "/api/live/status", None),
+            ("GET", "/api/runtime/status?mode=legacy_commander", None),
+            (
+                "POST",
+                "/api/runtime/start",
+                {"mode": "legacy_commander"},
+            ),
+            (
+                "GET",
+                "/api/runtime/status?mode=micromachine&blackboard_dir=/tmp/mm",
+                None,
+            ),
+            (
+                "POST",
+                "/api/runtime/start",
+                {
+                    "mode": "micromachine",
+                    "blackboard_dir": "/tmp/mm",
+                    "enemy_difficulty": 7,
+                },
+            ),
+            (
+                "POST",
+                "/api/llm",
+                {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "api_key": "unit-test-sensitive",
+                },
+            ),
+        )
+
+        for method, path, document in requests:
+            with self.subTest(method=method, path=path):
+                body = (
+                    json.dumps(document).encode("utf-8")
+                    if document is not None
+                    else None
+                )
+                status, content_type, payload = self.request(
+                    method,
+                    path,
+                    body=body,
+                    headers=(
+                        {"Content-Type": "application/json"}
+                        if body is not None
+                        else None
+                    ),
+                )
+                self.assertIn(
+                    HTTPStatus(status),
+                    {HTTPStatus.OK, HTTPStatus.ACCEPTED},
+                )
+                self.assertIn("application/json", content_type)
+                response = json.loads(payload.decode("utf-8"))
+                serialized = json.dumps(response, sort_keys=True)
+                runtime_payload = response.get("live_start", response)
+
+                self.assertNotIn("actor_tag", serialized)
+                self.assertNotIn("target_unit_tags", serialized)
+                self.assertNotIn("commanded_unit_tag", serialized)
+                self.assertNotIn("7001", serialized)
+                self.assertNotIn("8001", serialized)
+                self.assertNotIn("8002", serialized)
+                self.assertNotIn("9001", serialized)
+                self.assertEqual(
+                    ["public-strategy-tag"],
+                    runtime_payload["tags"],
+                )
+                self.assertIn("action=attack", runtime_payload["last_line"])
 
     def test_runtime_start_rejects_invalid_micromachine_enemy_difficulty(self):
         for difficulty in (0, 11, 7.5, True, "7"):
@@ -4229,44 +5189,46 @@ class SessionLoopBridgeTest(unittest.TestCase):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session, llm_control=control)
         bridge.start()
-        self.addCleanup(bridge.stop)
 
         with tempfile.TemporaryDirectory() as directory:
-            bridge.submit_micromachine_modulation_background(
-                "긴급 후퇴",
-                blackboard_dir=directory,
-                current_frame=10,
-                update_id="blocked-emergency",
-            )
-            bridge.submit_micromachine_modulation_background(
-                "공격 취소하고 즉시 복귀",
-                blackboard_dir=directory,
-                current_frame=11,
-                update_id="replacement-emergency",
-            )
+            try:
+                bridge.submit_micromachine_modulation_background(
+                    "긴급 후퇴",
+                    blackboard_dir=directory,
+                    current_frame=10,
+                    update_id="blocked-emergency",
+                )
+                bridge.submit_micromachine_modulation_background(
+                    "공격 취소하고 즉시 복귀",
+                    blackboard_dir=directory,
+                    current_frame=11,
+                    update_id="replacement-emergency",
+                )
 
-            deadline = time.monotonic() + 3
-            latest = {}
-            while time.monotonic() < deadline:
-                path = os.path.join(directory, "latest_modulation.json")
-                if os.path.isfile(path):
-                    with open(path, encoding="utf-8") as handle:
-                        latest = json.load(handle)
-                    if latest.get("update_id") == "replacement-emergency":
-                        break
-                time.sleep(0.02)
+                deadline = time.monotonic() + 3
+                latest = {}
+                while time.monotonic() < deadline:
+                    path = os.path.join(directory, "latest_modulation.json")
+                    if os.path.isfile(path):
+                        with open(path, encoding="utf-8") as handle:
+                            latest = json.load(handle)
+                        if latest.get("update_id") == "replacement-emergency":
+                            break
+                    time.sleep(0.02)
 
-            self.assertEqual("replacement-emergency", latest.get("update_id"))
-            self.assertEqual(0, control._call_count)
-            archive_path = os.path.join(directory, "modulation_updates.jsonl")
-            with open(archive_path, encoding="utf-8") as handle:
-                archive_ids = [
-                    json.loads(line)["update_id"]
-                    for line in handle
-                    if line.strip()
-                ]
-            self.assertEqual("replacement-emergency", archive_ids[-1])
-            self.assertLessEqual(len(archive_ids), 2)
+                self.assertEqual("replacement-emergency", latest.get("update_id"))
+                self.assertEqual(0, control._call_count)
+                archive_path = os.path.join(directory, "modulation_updates.jsonl")
+                with open(archive_path, encoding="utf-8") as handle:
+                    archive_ids = [
+                        json.loads(line)["update_id"]
+                        for line in handle
+                        if line.strip()
+                    ]
+                self.assertEqual("replacement-emergency", archive_ids[-1])
+                self.assertLessEqual(len(archive_ids), 2)
+            finally:
+                bridge.stop()
 
     def test_micromachine_emergency_cancellation_is_scoped_to_blackboard(self):
         started = threading.Event()
@@ -4280,59 +5242,71 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ),
         )
         bridge.start()
-        self.addCleanup(bridge.stop)
 
         with (
             tempfile.TemporaryDirectory() as blackboard_a,
             tempfile.TemporaryDirectory() as blackboard_b,
         ):
-            bridge.submit_micromachine_modulation_background(
-                "탱크로 수비해",
-                blackboard_dir=blackboard_b,
-                current_frame=10,
-                update_id="blackboard-b-normal",
-            )
-            self.assertTrue(started.wait(1))
-            bridge.submit_micromachine_modulation_background(
-                "긴급 즉시 후퇴",
-                blackboard_dir=blackboard_a,
-                provider_output={
-                    "goal": "긴급 즉시 후퇴",
-                    "override_level": "emergency",
-                    "command_layer": "emergency",
-                    "ttl_seconds": 45,
-                    "emergency": {
-                        "cancel_attacks": True,
-                        "force_retreat": True,
+            try:
+                bridge.submit_micromachine_modulation_background(
+                    "탱크로 수비해",
+                    blackboard_dir=blackboard_b,
+                    current_frame=10,
+                    update_id="blackboard-b-normal",
+                )
+                self.assertTrue(started.wait(1))
+                bridge.submit_micromachine_modulation_background(
+                    "긴급 즉시 후퇴",
+                    blackboard_dir=blackboard_a,
+                    provider_output={
+                        "goal": "긴급 즉시 후퇴",
+                        "override_level": "emergency",
+                        "command_layer": "emergency",
+                        "ttl_seconds": 45,
+                        "emergency": {
+                            "cancel_attacks": True,
+                            "force_retreat": True,
+                        },
                     },
-                },
-                current_frame=11,
-                update_id="blackboard-a-emergency",
-            )
+                    current_frame=11,
+                    update_id="blackboard-a-emergency",
+                )
 
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                path = os.path.join(blackboard_a, "latest_modulation.json")
-                if os.path.isfile(path):
-                    break
-                time.sleep(0.02)
-            with bridge._micromachine_request_lock:
-                normal_request = bridge._micromachine_requests[
-                    "blackboard-b-normal"
-                ]
-                self.assertFalse(normal_request.cancel_event.is_set())
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    path = os.path.join(
+                        blackboard_a,
+                        "latest_modulation.json",
+                    )
+                    if os.path.isfile(path):
+                        break
+                    time.sleep(0.02)
+                with bridge._micromachine_request_lock:
+                    normal_request = bridge._micromachine_requests[
+                        "blackboard-b-normal"
+                    ]
+                    self.assertFalse(normal_request.cancel_event.is_set())
 
-            release.set()
-            deadline = time.monotonic() + 2
-            latest_b = {}
-            while time.monotonic() < deadline:
-                path = os.path.join(blackboard_b, "latest_modulation.json")
-                if os.path.isfile(path):
-                    with open(path, encoding="utf-8") as handle:
-                        latest_b = json.load(handle)
-                    break
-                time.sleep(0.02)
-            self.assertEqual("blackboard-b-normal", latest_b.get("update_id"))
+                release.set()
+                deadline = time.monotonic() + 2
+                latest_b = {}
+                while time.monotonic() < deadline:
+                    path = os.path.join(
+                        blackboard_b,
+                        "latest_modulation.json",
+                    )
+                    if os.path.isfile(path):
+                        with open(path, encoding="utf-8") as handle:
+                            latest_b = json.load(handle)
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(
+                    "blackboard-b-normal",
+                    latest_b.get("update_id"),
+                )
+            finally:
+                release.set()
+                bridge.stop()
 
     def test_micromachine_emergency_classifier_ignores_negated_commands(self):
         for command in (
@@ -4614,6 +5588,17 @@ class SessionLoopBridgeTest(unittest.TestCase):
                     "status": "publish_failed",
                     "compile_result": compile_result,
                     "update": None,
+                    "runtime_debug": {
+                        "actor_tag": 9000 + index,
+                        "assigned_unit_tags": [9100 + index],
+                        "family_evidence": [
+                            {
+                                "attempted_unit_tags": [9200 + index],
+                                "submitted_unit_tags": [9200 + index],
+                                "effect_unit_tags": [9200 + index],
+                            }
+                        ],
+                    },
                 }
                 web_gui._write_micromachine_compile_result(
                     directory,
@@ -4636,6 +5621,15 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 for item in status["modulation_results"]
             ],
         )
+        serialized = json.dumps(status, ensure_ascii=False)
+        for internal_key in (
+            "actor_tag",
+            "assigned_unit_tags",
+            "attempted_unit_tags",
+            "submitted_unit_tags",
+            "effect_unit_tags",
+        ):
+            self.assertNotIn(internal_key, serialized)
 
     def test_micromachine_recent_command_retains_operation_edit_context(self):
         operation = {
@@ -8455,9 +9449,19 @@ const assert = require("assert");
   [reconRecord, assaultRecord].forEach(function(record) {
     var statusNode = record.node.querySelector(".operation-card-state");
     var controls = record.node.querySelectorAll("button");
+    var rail = record.node.querySelectorAll(".operation-stage");
     assert.strictEqual(statusNode.getAttribute("role"), "status");
     assert.strictEqual(record.node.getAttribute("role"), "listitem");
     assert(record.node.getAttribute("aria-labelledby"));
+    assert.strictEqual(rail.length, 4);
+    assert.deepStrictEqual(
+      rail.map(function(stage) { return stage.textContent; }),
+      ["해석", "배정", "제출", "관측"]
+    );
+    rail.forEach(function(stage) {
+      assert.strictEqual(stage.getAttribute("role"), "listitem");
+      assert(["step", "false"].includes(stage.getAttribute("aria-current")));
+    });
     assert.strictEqual(controls.length, 5);
     assert.deepStrictEqual(
       controls.map(function(control) {
@@ -8506,6 +9510,120 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.telemetryFrame, 320);
   assert(assaultRecord.node.textContent.includes("attack"));
   assert(!assaultRecord.node.textContent.includes("move"));
+
+  // All-Terran evidence extends the existing Operation card and four-stage
+  // rail instead of creating a separate family dashboard.
+  var allTerranFamilies = [
+    ["marine", "Marine", "frontline", "marine_stimpack"],
+    ["marauder", "Marauder", "frontline", "marauder_stimpack"],
+    ["reaper", "Reaper", "worker_harass", "kd8_charge"],
+    ["ghost", "Ghost", "spellcaster", "emp"],
+    ["hellion_hellbat", "Hellion/Hellbat", "worker_harass", "hellbat_mode"],
+    ["widow_mine", "Widow Mine", "ambush", "widow_mine_burrow"],
+    ["cyclone", "Cyclone", "kite", "lock_on"],
+    ["siege_tank", "Siege Tank", "siege_support", "siege_mode"],
+    ["thor", "Thor", "anti_air", "thor_high_impact_mode"],
+    ["medivac", "Medivac", "support", "medivac_heal"],
+    ["raven", "Raven", "support", "auto_turret"],
+    ["viking", "Viking", "anti_air", "viking_fighter_mode"],
+    ["banshee", "Banshee", "worker_harass", "banshee_cloak"],
+    ["liberator", "Liberator", "zone_control", "liberator_defender_mode"],
+    ["battlecruiser", "Battlecruiser", "capital_ship", "yamato"]
+  ];
+  var currentFamilyEvidence = allTerranFamilies.map(function(definition, index) {
+    var isTank = definition[0] === "siege_tank";
+    var isBlocked = definition[0] === "banshee";
+    return {
+      family: definition[0],
+      display_name: definition[1],
+      role: definition[2],
+      assigned: isBlocked ? 0 : 1,
+      represented: isBlocked ? 0 : 1,
+      action: definition[3],
+      attempt_generation: index + 1,
+      attempted: !isBlocked,
+      executed: !isBlocked,
+      effect: isTank,
+      stage: isBlocked ? "blocked" : (isTank ? "effect" : "executed"),
+      blocker: isBlocked ? "missing_starport_techlab" : ""
+    };
+  });
+  var allTerranAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "테란 혼성 견제",
+    "harass",
+    325,
+    "action_issued",
+    actionStages("harass").slice(0, 6)
+  );
+  allTerranAssault.squad_order = "harass";
+  allTerranAssault.family_evidence = currentFamilyEvidence;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [allTerranAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(nodes["operation-list"].children.length, 2);
+  assert.strictEqual(assaultRecord.node.querySelectorAll(".operation-stage").length, 4);
+  assert.strictEqual(assaultRecord.node.querySelectorAll("button").length, 5);
+  assert(assaultRecord.node.textContent.includes("유닛 실행"));
+  assert(assaultRecord.node.textContent.includes("Squad 오더"));
+  assert(assaultRecord.node.textContent.includes("harass"));
+  allTerranFamilies.forEach(function(definition) {
+    assert(
+      assaultRecord.node.textContent.includes(definition[1]),
+      "missing family evidence in Operation card: " + definition[1]
+    );
+  });
+  assert(assaultRecord.node.textContent.includes("missing_starport_techlab"));
+  assert.strictEqual(
+    assaultRecord.data.family_evidence.find(function(item) {
+      return item.family === "siege_tank";
+    }).attempt_generation,
+    8
+  );
+
+  // A later envelope carrying an older family/action attempt may advance the
+  // operation frame, but it cannot overwrite the newer family evidence row.
+  var staleFamilyEvidence = currentFamilyEvidence.map(function(item) {
+    if (item.family !== "siege_tank") { return Object.assign({}, item); }
+    return Object.assign({}, item, {
+      attempt_generation: 7,
+      effect: false,
+      stage: "blocked",
+      blocker: "stale_family_attempt_must_not_replace_latest"
+    });
+  });
+  var staleFamilyAssault = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "테란 혼성 견제",
+    "harass",
+    326,
+    "action_issued",
+    actionStages("harass").slice(0, 6)
+  );
+  staleFamilyAssault.squad_order = "harass";
+  staleFamilyAssault.family_evidence = staleFamilyEvidence;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleFamilyAssault]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.telemetryFrame, 326);
+  var retainedTankEvidence = assaultRecord.data.family_evidence.find(
+    function(item) { return item.family === "siege_tank"; }
+  );
+  assert.strictEqual(retainedTankEvidence.attempt_generation, 8);
+  assert.strictEqual(retainedTankEvidence.stage, "effect");
+  assert.strictEqual(retainedTankEvidence.blocker, "");
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "stale_family_attempt_must_not_replace_latest"
+    )
+  );
 
   // A newer generation edits the existing card instead of creating a duplicate.
   var editedAssault = operationResult(

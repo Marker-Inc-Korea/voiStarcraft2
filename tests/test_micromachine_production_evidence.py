@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from starcraft_commander.micromachine_production_evidence import (
+    canonical_actual_production_item,
     expected_production_pairs,
     find_causal_production_evidence,
 )
@@ -61,6 +62,111 @@ def _production_entry(
 
 
 class CausalProductionEvidenceTest(unittest.TestCase):
+    def test_canonicalizes_all_terran_families_and_prerequisites(self) -> None:
+        aliases = {
+            "Marine": ("TERRAN_MARINE",),
+            "Marauder": ("TERRAN_MARAUDER",),
+            "Reaper": ("TERRAN_REAPER",),
+            "Ghost": ("TERRAN_GHOST",),
+            "Hellion": ("TERRAN_HELLION", "TERRAN_HELLIONTANK"),
+            "WidowMine": (
+                "TERRAN_WIDOWMINE",
+                "TERRAN_WIDOWMINEBURROWED",
+            ),
+            "Cyclone": ("TERRAN_CYCLONE",),
+            "SiegeTank": (
+                "TERRAN_SIEGETANK",
+                "TERRAN_SIEGETANKSIEGED",
+            ),
+            "Thor": ("TERRAN_THOR", "TERRAN_THORAP"),
+            "Medivac": ("TERRAN_MEDIVAC",),
+            "Raven": ("TERRAN_RAVEN",),
+            "Viking": (
+                "TERRAN_VIKINGFIGHTER",
+                "TERRAN_VIKINGASSAULT",
+            ),
+            "Banshee": ("TERRAN_BANSHEE",),
+            "Liberator": (
+                "TERRAN_LIBERATOR",
+                "TERRAN_LIBERATORAG",
+            ),
+            "Battlecruiser": ("TERRAN_BATTLECRUISER",),
+            "Barracks": ("TERRAN_BARRACKS",),
+            "BarracksTechLab": (
+                "TERRAN_BARRACKSTECHLAB",
+                "BARRACKS_TECHLAB",
+            ),
+            "GhostAcademy": ("TERRAN_GHOSTACADEMY",),
+            "Factory": ("TERRAN_FACTORY",),
+            "FactoryTechLab": (
+                "TERRAN_FACTORYTECHLAB",
+                "FACTORY_TECHLAB",
+            ),
+            "Armory": ("TERRAN_ARMORY",),
+            "Starport": ("TERRAN_STARPORT",),
+            "StarportTechLab": (
+                "TERRAN_STARPORTTECHLAB",
+                "STARPORT_TECHLAB",
+            ),
+            "FusionCore": ("TERRAN_FUSIONCORE",),
+        }
+
+        for canonical, raw_aliases in aliases.items():
+            with self.subTest(canonical=canonical, alias=canonical):
+                self.assertEqual(
+                    canonical,
+                    canonical_actual_production_item(canonical),
+                )
+            for raw_alias in raw_aliases:
+                with self.subTest(
+                    canonical=canonical,
+                    alias=raw_alias,
+                ):
+                    self.assertEqual(
+                        canonical,
+                        canonical_actual_production_item(raw_alias),
+                    )
+
+    def test_all_terran_raw_aliases_match_causal_actual_commands(self) -> None:
+        raw_actual_items = {
+            "TERRAN_GHOST": "Ghost",
+            "TERRAN_HELLIONTANK": "Hellion",
+            "TERRAN_WIDOWMINEBURROWED": "WidowMine",
+            "TERRAN_SIEGETANKSIEGED": "SiegeTank",
+            "TERRAN_THORAP": "Thor",
+            "TERRAN_VIKINGASSAULT": "Viking",
+            "TERRAN_LIBERATORAG": "Liberator",
+            "TERRAN_BANSHEE": "Banshee",
+            "TERRAN_RAVEN": "Raven",
+            "TERRAN_BATTLECRUISER": "Battlecruiser",
+            "TERRAN_GHOSTACADEMY": "GhostAcademy",
+            "TERRAN_ARMORY": "Armory",
+            "TERRAN_STARPORTTECHLAB": "StarportTechLab",
+            "TERRAN_FUSIONCORE": "FusionCore",
+        }
+
+        for raw_item, canonical_item in raw_actual_items.items():
+            with self.subTest(raw_item=raw_item):
+                evidence = find_causal_production_evidence(
+                    (
+                        _production_entry(
+                            doctrine="all_terran_contract",
+                            action="exact_item",
+                            doctrine_item=canonical_item,
+                            actual_item=raw_item,
+                        ),
+                    ),
+                    expected_doctrine="all_terran_contract",
+                    expected_update_id="production-update",
+                    expected_pairs={("exact_item", canonical_item)},
+                )
+
+                self.assertTrue(evidence.matched)
+                self.assertIn(
+                    canonical_item,
+                    evidence.observed_actual_items,
+                )
+
     def test_matches_exact_bio_facility_barracks_command(self) -> None:
         evidence = find_causal_production_evidence(
             (_production_entry(),),

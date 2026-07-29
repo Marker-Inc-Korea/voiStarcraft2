@@ -593,6 +593,14 @@ _TACTICAL_TASK_TYPE_ALIASES = {
     "main_attack": "pressure_with_main_army",
     "main_army_pressure": "pressure_with_main_army",
     "pressure_with_main_army": "pressure_with_main_army",
+    "harass": "harass_with_units",
+    "harassment": "harass_with_units",
+    "worker_harass": "harass_with_units",
+    "worker_line_harass": "harass_with_units",
+    "harass_with_units": "harass_with_units",
+    "defend": "defend_with_units",
+    "defense": "defend_with_units",
+    "defend_with_units": "defend_with_units",
     "sustain": "sustain_production",
     "sustain_production": "sustain_production",
     "continuous_production": "sustain_production",
@@ -863,6 +871,9 @@ _LOCATION_INTENT_ALIASES = {
     "enemy_base": "enemy_main",
     "enemy_start": "enemy_main",
     "enemy_main": "enemy_main",
+    "enemy_mineral_line": "enemy_mineral_line",
+    "worker_line": "enemy_mineral_line",
+    "mineral_line": "enemy_mineral_line",
     "enemy_natural": "enemy_natural",
     "enemy_third": "enemy_third",
     "third": "third",
@@ -981,6 +992,7 @@ _TACTICAL_SCOPE_LOCATION_INTENTS = {
     "home",
     "natural",
     "enemy_main",
+    "enemy_mineral_line",
     "enemy_natural",
     "enemy_third",
     "third",
@@ -1858,7 +1870,12 @@ def _normalize_micromachine_composition_and_roles(
         if isinstance(tactical_task, Mapping)
         else ""
     )
-    if task_type in {"pressure_with_main_army", "scout_with_units"}:
+    if task_type in {
+        "pressure_with_main_army",
+        "scout_with_units",
+        "defend_with_units",
+        "harass_with_units",
+    }:
         for key in merged_roles:
             unit_type, role = key
             existing = merged_requirements.get(key)
@@ -2470,6 +2487,53 @@ def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> N
         _set_float_at_least(squad, "reinforce_bias", 0.25)
         if location == "enemy_natural":
             _set_float_at_least(squad, "contain_bias", 0.35)
+        return
+
+    if task_type == "harass_with_units":
+        scope = _ensure_micromachine_domain_dict(payload, "scope")
+        location = _first_non_empty_text(
+            tactical_task.get("location_intent"),
+            scope.get("location_intent"),
+            "enemy_mineral_line",
+        )
+        tactical_task["location_intent"] = location
+        _set_if_empty(scope, "location_intent", location)
+        _set_if_empty(scope, "army_group", "harass")
+        _copy_or_default_unit_classes(
+            scope,
+            tactical_task,
+            default=("TERRAN_REAPER", "TERRAN_HELLION", "TERRAN_BANSHEE"),
+        )
+        _set_if_zero_or_empty(scope, "min_units", 1)
+        _set_if_zero_or_empty(tactical_task, "min_units", 1)
+        exact_composition_units = _micromachine_exact_composition_unit_count(payload)
+        if exact_composition_units > 0:
+            scope["min_units"] = max(
+                int(scope.get("min_units", 0) or 0),
+                exact_composition_units,
+            )
+            scope["max_units"] = max(
+                int(scope.get("max_units", 0) or 0),
+                exact_composition_units,
+            )
+            scope["allow_partial_scope"] = False
+            tactical_task["min_units"] = max(
+                int(tactical_task.get("min_units", 0) or 0),
+                exact_composition_units,
+            )
+            tactical_task["max_units"] = max(
+                int(tactical_task.get("max_units", 0) or 0),
+                exact_composition_units,
+            )
+            tactical_task["allow_partial"] = False
+        _set_if_zero_or_empty(tactical_task, "duration_seconds", 240)
+        _set_if_zero_or_empty(tactical_task, "priority", 0.85)
+        combat = _ensure_micromachine_domain_dict(payload, "combat")
+        squad = _ensure_micromachine_domain_dict(payload, "squad")
+        _set_float_at_least(combat, "harassment_bias", 0.75)
+        _set_float_at_least(combat, "preserve_army_bias", 0.35)
+        _set_float_at_least(squad, "harassment_bias", 0.75)
+        _set_float_at_least(squad, "split_army_bias", 0.45)
         return
 
     if task_type == "expand_or_land_command_center":

@@ -53,17 +53,25 @@ from typing import Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 from weakref import WeakValueDictionary
 
-from starcraft_commander.micromachine_bridge import require_micromachine_update_id
+from starcraft_commander.micromachine_bridge import (
+    MICROMACHINE_GAME_LOOPS_PER_SECOND,
+    require_micromachine_update_id,
+)
 from starcraft_commander.micromachine_command_execution import (
     EXPIRY_OPERATION_REASONS,
     HARD_OPERATION_BLOCK_REASONS,
     HARD_OPERATION_STATUSES,
     TRANSIENT_OPERATION_BLOCK_REASONS,
     classify_micromachine_command_execution,
+    classify_micromachine_operation_executions,
+    operation_requires_specific_family_ability_evidence,
 )
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
     normalize_tactical_effect_tags,
+)
+from starcraft_commander.micromachine_terran_capabilities import (
+    operation_family_evidence,
 )
 from starcraft_commander.policy_modulation import (
     POLICY_MODULATION_TTL_MAX_SECONDS,
@@ -1073,6 +1081,12 @@ def _micromachine_operation_director_entries(
         if isinstance(operation_director, Mapping)
         else ""
     ).strip()
+    snapshot_frame = (
+        int(telemetry_document.get("frame"))
+        if type(telemetry_document.get("frame")) is int
+        and int(telemetry_document.get("frame")) > 0
+        else 0
+    )
     entries: dict[tuple[str, int], dict[str, object]] = {}
     if isinstance(raw_operations, Mapping):
         iterator = raw_operations.items()
@@ -1101,9 +1115,54 @@ def _micromachine_operation_director_entries(
         entry["operation_id"] = operation_id
         entry["generation"] = generation
         entry["_director_policy_update_id"] = director_update_id
+        entry["_snapshot_frame"] = snapshot_frame
         if director_update_id:
             entry.setdefault("policy_update_id", director_update_id)
         entries[(operation_id, generation)] = entry
+    raw_pending = (
+        operation_director.get("pending_family_effects")
+        if isinstance(operation_director, Mapping)
+        else None
+    )
+    for pending in (
+        raw_pending
+        if isinstance(raw_pending, Sequence)
+        and not isinstance(raw_pending, (str, bytes, bytearray))
+        else ()
+    ):
+        if not isinstance(pending, Mapping):
+            continue
+        operation_id = str(pending.get("operation_id", "") or "").strip()
+        generation = (
+            int(pending.get("generation"))
+            if type(pending.get("generation")) is int
+            and int(pending.get("generation")) > 0
+            else 0
+        )
+        if not operation_id or generation <= 0:
+            continue
+        operation_key = (operation_id, generation)
+        entry = entries.setdefault(
+            operation_key,
+            {
+                "operation_id": operation_id,
+                "generation": generation,
+                "_director_policy_update_id": director_update_id,
+                "_snapshot_frame": snapshot_frame,
+                "_pending_only": True,
+            },
+        )
+        queued = entry.get("pending_family_effects")
+        pending_rows = (
+            list(queued)
+            if isinstance(queued, Sequence)
+            and not isinstance(queued, (str, bytes, bytearray))
+            else []
+        )
+        pending_rows.append(dict(pending))
+        entry["pending_family_effects"] = pending_rows
+        if director_update_id:
+            entry.setdefault("policy_update_id", director_update_id)
     return entries
 
 
@@ -1114,9 +1173,6 @@ def _micromachine_operation_entry_for_request(
     operation_id: str,
     operation_generation: int,
 ) -> dict[str, object] | None:
-    exact = entries.get((operation_id, operation_generation))
-    if exact is not None:
-        return dict(exact)
     for (candidate_id, _active_generation), candidate in entries.items():
         if (
             candidate_id == operation_id
@@ -1132,6 +1188,9 @@ def _micromachine_operation_entry_for_request(
             active["requested_generation"] = operation_generation
             active["edit_rejected"] = True
             return active
+    exact = entries.get((operation_id, operation_generation))
+    if exact is not None:
+        return dict(exact)
     return None
 
 
@@ -1141,6 +1200,8 @@ def _micromachine_operation_telemetry_document(
     update_id: str,
     operation_id: str,
     operation_generation: int = 1,
+    issued_at_frame: int = 0,
+    deadline_frame: int = 0,
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     """Return only OperationDirector evidence owned by one operation."""
 
@@ -1155,20 +1216,88 @@ def _micromachine_operation_telemetry_document(
     director_update_id = str(
         entry.get("_director_policy_update_id", "") or ""
     ).strip()
-    entry_update_ids = {
-        str(entry.get(key, "") or "").strip()
-        for key in ("update_id", "policy_update_id", "active_update_id")
-        if str(entry.get(key, "") or "").strip()
-    }
-    if (
-        not update_id
-        or director_update_id != update_id
-        or any(entry_update_id != update_id for entry_update_id in entry_update_ids)
-    ):
+    if not update_id:
         return {}, None
-    scoped_entry = dict(entry)
+    director_matches_update = director_update_id == update_id
+    if director_matches_update:
+        entry_update_ids = {
+            str(entry.get(key, "") or "").strip()
+            for key in ("update_id", "policy_update_id", "active_update_id")
+            if str(entry.get(key, "") or "").strip()
+        }
+        if any(
+            entry_update_id != update_id
+            for entry_update_id in entry_update_ids
+        ):
+            return {}, None
+        scoped_entry = dict(entry)
+    else:
+        raw_entry_pending = entry.get("pending_family_effects")
+        pending_candidates = (
+            raw_entry_pending
+            if isinstance(raw_entry_pending, Sequence)
+            and not isinstance(
+                raw_entry_pending,
+                (str, bytes, bytearray),
+            )
+            else ()
+        )
+        matching_pending = [
+            dict(row)
+            for row in pending_candidates
+            if isinstance(row, Mapping)
+            if str(row.get("update_id", "") or "").strip() == update_id
+            and str(row.get("operation_id", "") or "").strip()
+            == operation_id
+            and type(row.get("generation")) is int
+            and int(row.get("generation")) == operation_generation
+        ]
+        if not matching_pending:
+            return {}, None
+        scoped_entry = {
+            "operation_id": operation_id,
+            "generation": operation_generation,
+            "pending_family_effects": matching_pending,
+            "_snapshot_frame": entry.get("_snapshot_frame", 0),
+            "_pending_only": True,
+        }
     scoped_entry.pop("_director_policy_update_id", None)
+    pending_only = scoped_entry.pop("_pending_only", False) is True
     scoped_entry.setdefault("operation_id", operation_id)
+    evidence_generation = operation_generation
+    if (
+        scoped_entry.get("edit_rejected") is True
+        and type(scoped_entry.get("active_generation")) is int
+        and int(scoped_entry.get("active_generation")) > 0
+    ):
+        evidence_generation = int(scoped_entry["active_generation"])
+        active_received_frame = scoped_entry.get("received_frame")
+        if (
+            type(active_received_frame) is int
+            and int(active_received_frame) > 0
+        ):
+            issued_at_frame = int(active_received_frame)
+        deadline_frame = 0
+    snapshot_frame = (
+        int(scoped_entry.get("_snapshot_frame"))
+        if type(scoped_entry.get("_snapshot_frame")) is int
+        else 0
+    )
+    family_evidence = operation_family_evidence(
+        scoped_entry,
+        expected_update_id=update_id,
+        expected_operation_id=operation_id,
+        expected_generation=evidence_generation,
+        issued_at_frame=max(0, issued_at_frame),
+        deadline_frame=max(0, deadline_frame),
+        snapshot_frame=snapshot_frame,
+    )
+    if pending_only and not family_evidence:
+        return {}, None
+    if family_evidence or "family_evidence" in scoped_entry:
+        scoped_entry["family_evidence"] = list(family_evidence)
+    scoped_entry.pop("pending_family_effects", None)
+    scoped_entry.pop("_snapshot_frame", None)
     frame = scoped_entry.get("telemetry_frame", telemetry_document.get("frame"))
     active_ids = _string_list(
         telemetry_document.get("active_modulation_ids", ())
@@ -1180,6 +1309,7 @@ def _micromachine_operation_telemetry_document(
             "frame": frame,
             "active_modulation_ids": active_ids,
             "managers": {"OperationDirector": scoped_entry},
+            "_pending_only": pending_only,
         },
         scoped_entry,
     )
@@ -1274,6 +1404,63 @@ def _micromachine_execution_stage_ok(
     )
 
 
+def _micromachine_execution_has_active_family_contract(
+    execution: Mapping[str, object],
+) -> bool:
+    stages = execution.get("stages")
+    if not isinstance(stages, Sequence) or isinstance(
+        stages,
+        (str, bytes, bytearray),
+    ):
+        return False
+    return any(
+        isinstance(stage, Mapping)
+        and isinstance(stage.get("evidence"), Mapping)
+        and isinstance(stage["evidence"].get("family_lifecycle"), Mapping)
+        and stage["evidence"]["family_lifecycle"].get("active") is True
+        for stage in stages
+    )
+
+
+def _micromachine_strict_operation_execution(
+    operation_update: Mapping[str, object],
+    *,
+    operation_id: str,
+    operation_generation: int,
+    operation_telemetry_document: Mapping[str, object],
+) -> dict[str, object]:
+    operation = dict(_mapping_child(operation_update, "vector"))
+    operation["operation_id"] = operation_id
+    operation["generation"] = operation_generation
+    classifier_update = dict(operation_update)
+    classifier_update["vector"] = {"operations": [operation]}
+    latest_frame = operation_telemetry_document.get("frame")
+    reports = classify_micromachine_operation_executions(
+        latest_update=classifier_update,
+        latest_telemetry=operation_telemetry_document,
+        latest_frame=(
+            int(latest_frame)
+            if type(latest_frame) is int and latest_frame > 0
+            else 0
+        ),
+    )
+    if len(reports) != 1:
+        return {}
+    report = reports[0]
+    if (
+        report.operation_id != operation_id
+        or report.operation_generation != operation_generation
+    ):
+        return {}
+    result = report.to_dict()
+    if (
+        str(result.get("state", "") or "") in {"moving", "engaged"}
+        and _micromachine_execution_stage_ok(result, "effect_observed")
+    ):
+        result["state"] = "effect_observed"
+    return result
+
+
 def _micromachine_operation_command_execution(
     *,
     update_id: str,
@@ -1293,6 +1480,24 @@ def _micromachine_operation_command_execution(
         operation_id=operation_id,
         operation_generation=operation_generation,
     )
+    if (
+        str(fallback.get("command_id", "") or "") == update_id
+        and str(fallback.get("operation_id", "") or "") == operation_id
+        and fallback.get("operation_generation") == operation_generation
+        and _micromachine_execution_has_active_family_contract(fallback)
+    ):
+        result = dict(fallback)
+        state = str(result.get("state", "") or "").lower()
+        result["superseded"] = state in {
+            "superseded",
+            "replaced",
+            "cancelled",
+            "canceled",
+        }
+        result["terminal_cleanup"] = terminal_cleanup
+        result["telemetry"] = dict(operation_telemetry)
+        return result
+
     received, received_evidence = _micromachine_operation_signal(
         operation_telemetry,
         "received",
@@ -1565,6 +1770,7 @@ def _micromachine_operation_status_payload(
     operation_count: int,
     active: bool,
     telemetry: object | None,
+    telemetry_archive: Sequence[object],
     blackboard_dir: str,
     result_item: Mapping[str, object] | None,
     compile_result: Mapping[str, object] | None,
@@ -1578,12 +1784,20 @@ def _micromachine_operation_status_payload(
         else 1
     )
     telemetry_document = _telemetry_to_mapping(telemetry)
+    issued_at_frame, deadline_frame = (
+        _micromachine_operation_evidence_window(
+            operation_update,
+            operation_vector,
+        )
+    )
     operation_telemetry_document, operation_telemetry = (
         _micromachine_operation_telemetry_document(
             telemetry_document,
             update_id=update_id,
             operation_id=operation_id,
             operation_generation=operation_generation,
+            issued_at_frame=issued_at_frame,
+            deadline_frame=deadline_frame,
         )
     )
     active_operation_generation = operation_generation
@@ -1596,6 +1810,92 @@ def _micromachine_operation_status_payload(
         active_operation_generation = int(
             operation_telemetry["active_generation"]
         )
+    current_family_evidence = (
+        list(
+            operation_family_evidence(
+                operation_telemetry,
+                expected_update_id=update_id,
+                expected_operation_id=operation_id,
+                expected_generation=active_operation_generation,
+            )
+        )
+        if operation_telemetry is not None
+        else []
+    )
+    archived_family_evidence: list[dict[str, object]] = []
+    archived_effect_frame = 0
+    for archived_telemetry in telemetry_archive:
+        archived_document = _telemetry_to_mapping(archived_telemetry)
+        if not archived_document:
+            continue
+        _, archived_operation = _micromachine_operation_telemetry_document(
+            archived_document,
+            update_id=update_id,
+            operation_id=operation_id,
+            operation_generation=operation_generation,
+            issued_at_frame=issued_at_frame,
+            deadline_frame=deadline_frame,
+        )
+        if archived_operation is None:
+            continue
+        for row in operation_family_evidence(
+            archived_operation,
+            expected_update_id=update_id,
+            expected_operation_id=operation_id,
+            expected_generation=active_operation_generation,
+        ):
+            if row.get("effect") is not True:
+                continue
+            archived_family_evidence.append(row)
+            effect_frame = row.get("effect_frame")
+            if type(effect_frame) is int:
+                archived_effect_frame = max(
+                    archived_effect_frame,
+                    effect_frame,
+                )
+    aggregate_family_evidence = list(
+        operation_family_evidence(
+            {
+                "family_evidence": [
+                    *current_family_evidence,
+                    *archived_family_evidence,
+                ]
+            },
+            expected_update_id=update_id,
+            expected_operation_id=operation_id,
+            expected_generation=active_operation_generation,
+        )
+    )
+    if aggregate_family_evidence:
+        if operation_telemetry is None:
+            operation_telemetry = {
+                "operation_id": operation_id,
+                "generation": active_operation_generation,
+                "family_evidence": aggregate_family_evidence,
+            }
+            telemetry_active_ids = _string_list(
+                telemetry_document.get("active_modulation_ids", ())
+            )
+            if update_id and update_id not in telemetry_active_ids:
+                telemetry_active_ids.append(update_id)
+            operation_telemetry_document = {
+                "frame": archived_effect_frame,
+                "active_modulation_ids": telemetry_active_ids,
+                "managers": {
+                    "OperationDirector": dict(operation_telemetry)
+                },
+            }
+        else:
+            operation_telemetry = dict(operation_telemetry)
+            operation_telemetry["family_evidence"] = (
+                aggregate_family_evidence
+            )
+            operation_telemetry_document = dict(
+                operation_telemetry_document
+            )
+            operation_telemetry_document["managers"] = {
+                "OperationDirector": dict(operation_telemetry)
+            }
     consumption_status = _micromachine_consumption_status(
         operation_update if active else None,
         telemetry,
@@ -1646,6 +1946,28 @@ def _micromachine_operation_status_payload(
     fallback_execution = intervention.get("command_execution")
     if not isinstance(fallback_execution, Mapping):
         fallback_execution = {}
+    operation_requires_ability_evidence = (
+        operation_requires_specific_family_ability_evidence(
+            operation_vector
+        )
+    )
+    if (
+        current_family_evidence
+        or operation_requires_ability_evidence
+    ) and operation_telemetry_document.get("_pending_only") is not True:
+        strict_operation_execution = _micromachine_strict_operation_execution(
+            operation_update,
+            operation_id=operation_id,
+            operation_generation=active_operation_generation,
+            operation_telemetry_document=operation_telemetry_document,
+        )
+        if (
+            strict_operation_execution
+            and _micromachine_execution_has_active_family_contract(
+                strict_operation_execution
+            )
+        ):
+            fallback_execution = strict_operation_execution
     command_execution = _micromachine_operation_command_execution(
         update_id=update_id,
         operation_id=operation_id,
@@ -1823,7 +2145,10 @@ def _micromachine_operation_status_payload(
         ),
         "requirements": normalized_requirement_progress,
     }
-    return {
+    family_evidence = _public_operation_family_evidence(
+        aggregate_family_evidence
+    )
+    payload = {
         "operation_key": operation_key,
         "operation_id": operation_id,
         "operation_generation": active_operation_generation,
@@ -1852,13 +2177,165 @@ def _micromachine_operation_status_payload(
         "disposition": disposition,
         "operation_edit": operation_edit,
         "operation_convergence": operation_convergence,
+        "squad_order": str(
+            operation_telemetry.get("squad_order", "")
+            if isinstance(operation_telemetry, Mapping)
+            else ""
+        ),
+        "family_evidence": family_evidence,
     }
+    public_payload = _public_micromachine_runtime_payload(payload)
+    return (
+        dict(public_payload)
+        if isinstance(public_payload, Mapping)
+        else {}
+    )
+
+
+def _public_operation_family_evidence(
+    rows: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    public_rows: list[dict[str, object]] = []
+    for row in rows:
+        public_row = _public_micromachine_runtime_payload(row)
+        if isinstance(public_row, Mapping):
+            public_rows.append(dict(public_row))
+    return public_rows
+
+
+def _public_micromachine_runtime_payload(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            key: _public_micromachine_runtime_payload(item)
+            for key, item in value.items()
+            if not _micromachine_internal_unit_tag_key(key)
+        }
+    if isinstance(value, list):
+        return [
+            _public_micromachine_runtime_payload(item)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _public_micromachine_runtime_payload(item)
+            for item in value
+        )
+    if isinstance(value, str):
+        return _redact_micromachine_internal_unit_tag_text(value)
+    return value
+
+
+def _public_runtime_launcher_payload(
+    value: Mapping[str, object],
+) -> dict[str, object]:
+    public_payload = _public_micromachine_runtime_payload(value)
+    return dict(public_payload) if isinstance(public_payload, Mapping) else {}
+
+
+_MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"""(?imx)
+    ['"]?
+    (?:
+        tag
+        |tags
+        |[a-z][a-z0-9_]*_tags?
+    )
+    ['"]?
+    \s*[:=]\s*
+    [^\r\n]*?
+    (?=
+        \s+['"]?[a-z][a-z0-9_]*['"]?\s*[:=]
+        |[\r\n]
+        |$
+    )
+    """
+)
+
+_MICROMACHINE_PUBLIC_SEMANTIC_TAG_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "tags",
+        "strategic_tags",
+        "tech_path_tags",
+        "expected_tags",
+        "expected_profile_tags",
+    }
+)
+
+
+def _redact_micromachine_internal_unit_tag_text(value: str) -> str:
+    return _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN.sub(
+        "[internal unit identity]: [redacted]",
+        value,
+    )
+
+
+def _micromachine_internal_unit_tag_key(key: object) -> bool:
+    normalized = str(key or "").strip().lower()
+    return (
+        normalized in {"tag", "unit_tags"}
+        or normalized.endswith("_tag")
+        or normalized.endswith("_unit_tags")
+        or normalized.endswith("_units_tags")
+        or normalized.endswith("_owner_tags")
+        or (
+            normalized.endswith("_tags")
+            and normalized
+            not in _MICROMACHINE_PUBLIC_SEMANTIC_TAG_KEYS
+        )
+        or normalized
+        in {
+            "owner_tags",
+            "unassigned_tags",
+            "transferable_tags",
+        }
+    )
+
+
+def _micromachine_operation_evidence_window(
+    operation_update: Mapping[str, object],
+    operation_vector: Mapping[str, object],
+) -> tuple[int, int]:
+    issued_at_frame = (
+        int(operation_vector.get("issued_at_frame"))
+        if type(operation_vector.get("issued_at_frame")) is int
+        else (
+            int(operation_update.get("issued_at_frame"))
+            if type(operation_update.get("issued_at_frame")) is int
+            else 0
+        )
+    )
+    issued_at_frame = max(0, issued_at_frame)
+    lifetime = _mapping_child(operation_vector, "lifetime")
+    lifetime_mode = str(lifetime.get("mode", "") or "").strip().lower()
+    if lifetime_mode in {"standing_order", "until_cancelled"}:
+        return issued_at_frame, 0
+    for source in (operation_vector, lifetime, operation_update):
+        for field_name in ("deadline_frame", "expires_at_frame"):
+            value = source.get(field_name)
+            if type(value) is int and int(value) > issued_at_frame:
+                return issued_at_frame, int(value)
+    tactical_task = _mapping_child(operation_vector, "tactical_task")
+    scope = _mapping_child(operation_vector, "scope")
+    duration_seconds = 0
+    for source in (tactical_task, scope):
+        value = source.get("duration_seconds")
+        if type(value) is int and int(value) > 0:
+            duration_seconds = int(value)
+            break
+    if duration_seconds <= 0:
+        return issued_at_frame, 0
+    return (
+        issued_at_frame,
+        issued_at_frame
+        + duration_seconds * MICROMACHINE_GAME_LOOPS_PER_SECOND,
+    )
 
 
 def _micromachine_operations_payload(
     dashboard: Mapping[str, object],
     *,
     telemetry: object | None,
+    telemetry_archive: Sequence[object] = (),
     blackboard_dir: str,
     compile_result: object | None,
     result_stream: Sequence[Mapping[str, object]],
@@ -1930,6 +2407,7 @@ def _micromachine_operations_payload(
                     operation_count=len(expanded),
                     active=True,
                     telemetry=telemetry,
+                    telemetry_archive=telemetry_archive,
                     blackboard_dir=blackboard_dir,
                     result_item=result_item,
                     compile_result=scoped_compile,
@@ -1978,6 +2456,7 @@ def _micromachine_operations_payload(
                     operation_count=len(expanded),
                     active=result_is_active,
                     telemetry=telemetry,
+                    telemetry_archive=telemetry_archive,
                     blackboard_dir=blackboard_dir,
                     result_item=result_item,
                     compile_result=scoped_compile,
@@ -2018,6 +2497,7 @@ def _micromachine_status_payload(
     dashboard: Mapping[str, object],
     *,
     telemetry: object | None = None,
+    telemetry_archive: Sequence[object] = (),
     blackboard_dir: str = "",
     compile_result: object | None = None,
     result_stream: Sequence[Mapping[str, object]] = (),
@@ -2067,6 +2547,7 @@ def _micromachine_status_payload(
     operations = _micromachine_operations_payload(
         dashboard,
         telemetry=telemetry,
+        telemetry_archive=telemetry_archive,
         blackboard_dir=blackboard_dir,
         compile_result=compile_result,
         result_stream=result_stream,
@@ -2085,7 +2566,7 @@ def _micromachine_status_payload(
         consumption_status = str(
             representative.get("consumption_status", consumption_status) or ""
         )
-    return {
+    payload = {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
         "update": dict(latest) if latest is not None else None,
@@ -2103,6 +2584,12 @@ def _micromachine_status_payload(
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
     }
+    public_payload = _public_micromachine_runtime_payload(payload)
+    return (
+        dict(public_payload)
+        if isinstance(public_payload, Mapping)
+        else {}
+    )
 
 
 def _micromachine_status_with_runtime_gate(
@@ -2115,7 +2602,8 @@ def _micromachine_status_with_runtime_gate(
 
     result = dict(payload)
     if not isinstance(runtime_snapshot, Mapping):
-        return result
+        public_result = _public_micromachine_runtime_payload(result)
+        return dict(public_result) if isinstance(public_result, Mapping) else {}
 
     runtime_status = str(runtime_snapshot.get("status", "") or "")
     for key in (
@@ -2135,7 +2623,8 @@ def _micromachine_status_with_runtime_gate(
     telemetry_is_current = runtime_snapshot.get("telemetry_current_for_process") is True
     runtime_attached = runtime_snapshot.get("runtime_attached") is True
     if runtime_attached and telemetry_is_current:
-        return result
+        public_result = _public_micromachine_runtime_payload(result)
+        return dict(public_result) if isinstance(public_result, Mapping) else {}
 
     dashboard = result.get("dashboard", {})
     if not isinstance(dashboard, Mapping):
@@ -2178,7 +2667,8 @@ def _micromachine_status_with_runtime_gate(
             intervention_payload = dict(intervention)
             intervention_payload["applied"] = False
             result["intervention"] = intervention_payload
-    return result
+    public_result = _public_micromachine_runtime_payload(result)
+    return dict(public_result) if isinstance(public_result, Mapping) else {}
 
 
 def _micromachine_compile_result_for_update(
@@ -2322,8 +2812,16 @@ def _micromachine_intervention_summary(
         if evidence_can_be_current
         else ""
     )
+    public_evidence_telemetry = _public_micromachine_runtime_payload(
+        evidence_telemetry
+    )
+    if not isinstance(public_evidence_telemetry, Mapping):
+        public_evidence_telemetry = {
+            "frame": telemetry_frame,
+            "managers": {},
+        }
     tactical_evidence = classify_micromachine_tactical_evidence(
-        latest_telemetry=evidence_telemetry,
+        latest_telemetry=public_evidence_telemetry,
         telemetry_archive=(),
         log_text=tactical_log_text,
         expected_effects=_micromachine_expected_tactical_effects(vector),
@@ -2340,10 +2838,10 @@ def _micromachine_intervention_summary(
         target_frame=0,
     ).to_dict()
     tactical_evidence_payload = tactical_evidence.to_dict()
-    dashboard_managers = evidence_telemetry.get("managers", {})
+    dashboard_managers = public_evidence_telemetry.get("managers", {})
     if not isinstance(dashboard_managers, Mapping):
         dashboard_managers = {}
-    return {
+    payload = {
         "applied": consumption_status == "consumed",
         "policy_active": policy_active,
         "latest_update_id": update_id,
@@ -2380,6 +2878,12 @@ def _micromachine_intervention_summary(
         "refusal_reason": refusal_reason,
         "log_snippets": [dict(item) for item in log_snippets],
     }
+    public_payload = _public_micromachine_runtime_payload(payload)
+    return (
+        dict(public_payload)
+        if isinstance(public_payload, Mapping)
+        else {}
+    )
 
 
 def _provider_output_is_terminal(output: Mapping[str, object]) -> bool:
@@ -5033,6 +5537,9 @@ class SessionLoopBridge:
         root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
         backend = MicroMachineFilesystemBlackboard(root)
         telemetry = backend.read_latest_telemetry()
+        telemetry_archive = backend.read_recent_telemetry_archive(
+            pending_family_effects_only=True,
+        )
         frame = telemetry.frame if telemetry is not None else 0
         snapshot = backend.dashboard_snapshot(
             current_frame=frame,
@@ -5060,14 +5567,19 @@ class SessionLoopBridge:
             **_micromachine_status_payload(
                 snapshot.to_dict(),
                 telemetry=telemetry,
+                telemetry_archive=telemetry_archive,
                 blackboard_dir=root,
                 compile_result=compile_result,
                 result_stream=compile_result_stream,
             ),
         }
         payload["modulation_results"] = compile_result_stream
-        self._update_micromachine_recent_lifecycle(root, payload)
-        return payload
+        public_payload = _public_micromachine_runtime_payload(payload)
+        if not isinstance(public_payload, Mapping):
+            return {}
+        result = dict(public_payload)
+        self._update_micromachine_recent_lifecycle(root, result)
+        return result
 
     def _run_loop(self) -> None:
         """Daemon thread body: run a private asyncio loop draining commands."""
@@ -10344,11 +10856,20 @@ function commandOperationData(operation, parentData) {
     operation_mission: String(operation.mission || "operation"),
     operation_edit: operation.operation_edit || {},
     operation_convergence: operation.operation_convergence || {},
+    squad_order: String(operation.squad_order || ""),
+    family_evidence: Array.isArray(operation.family_evidence)
+      ? operation.family_evidence
+      : [],
     telemetry_current: operation.telemetry_current === true
   };
 }
 
 function operationRecordDisposition(model, data) {
+  var reported = String(
+    data && data.operation_disposition || ""
+  ).toLowerCase();
+  var execution = model && model.execution || {};
+  var executionState = String(execution.state || "").toLowerCase();
   if (model.cancelled) {
     return commandConsoleTerminalCleanupVerified(model)
       ? "superseded"
@@ -10356,10 +10877,28 @@ function operationRecordDisposition(model, data) {
   }
   if (model.superseded) { return "superseded"; }
   if (model.blocked) {
-    return data.operation_disposition === "expired" ? "expired" : "blocked";
+    return reported === "expired" ? "expired" : "blocked";
   }
-  if (model.effectObserved) { return "completed"; }
-  return String(data.operation_disposition || "active");
+  if (
+    reported === "completed" ||
+    (
+      model.effectObserved &&
+      (execution.completed === true || executionState === "completed")
+    )
+  ) {
+    return "completed";
+  }
+  return reported || "active";
+}
+
+function operationRecordTerminal(model, data) {
+  var disposition = operationRecordDisposition(model, data);
+  return Boolean(
+    disposition === "completed" ||
+    disposition === "blocked" ||
+    disposition === "expired" ||
+    disposition === "superseded"
+  );
 }
 
 function resetOperationConsoleRegistry() {
@@ -10480,6 +11019,67 @@ function operationRecordForCandidate(key, updateId) {
     return false;
   });
   return match;
+}
+
+function operationFamilyEvidenceKey(item) {
+  return [
+    String(item && item.family || ""),
+    String(item && item.role || ""),
+    String(item && item.action || "")
+  ].join("|");
+}
+
+function operationFamilyEvidenceRank(item) {
+  var stageRank = {
+    waiting: 0,
+    represented: 1,
+    assigned: 2,
+    attempted: 3,
+    executed: 4,
+    effect: 5,
+    blocked: 6
+  };
+  return [
+    Number(item && item.attempt_generation || 0),
+    Number(item && item.effect_frame || 0),
+    Number(item && item.submitted_frame || 0),
+    Number(item && item.attempted_frame || 0),
+    Number(item && item.effect_count || 0),
+    Number(item && item.submitted_count || 0),
+    Number(item && item.attempted_count || 0),
+    Number(stageRank[String(item && item.stage || "waiting")] || 0)
+  ];
+}
+
+function operationFamilyEvidenceRankCompare(left, right) {
+  var leftRank = operationFamilyEvidenceRank(left);
+  var rightRank = operationFamilyEvidenceRank(right);
+  for (var index = 0; index < leftRank.length; index += 1) {
+    if (leftRank[index] !== rightRank[index]) {
+      return leftRank[index] - rightRank[index];
+    }
+  }
+  return 0;
+}
+
+function mergeOperationFamilyEvidence(previous, incoming) {
+  var merged = {};
+  var order = [];
+  function absorb(item) {
+    if (!item || typeof item !== "object") { return; }
+    var key = operationFamilyEvidenceKey(item);
+    if (!Object.prototype.hasOwnProperty.call(merged, key)) {
+      order.push(key);
+      merged[key] = item;
+      return;
+    }
+    if (operationFamilyEvidenceRankCompare(item, merged[key]) >= 0) {
+      merged[key] = item;
+    }
+  }
+  (Array.isArray(previous) ? previous : []).forEach(absorb);
+  (Array.isArray(incoming) ? incoming : []).forEach(absorb);
+  return order.map(function(key) { return merged[key]; });
 }
 
 function reconcileOperationRecord(operation, parentData) {
@@ -10642,6 +11242,15 @@ function reconcileOperationRecord(operation, parentData) {
     record.text ||
     operationId
   );
+  if (
+    record.data &&
+    operationGeneration === record.operationGeneration
+  ) {
+    data.family_evidence = mergeOperationFamilyEvidence(
+      record.data.family_evidence,
+      data.family_evidence
+    );
+  }
   record.data = data;
   record.stageRank = Math.max(record.stageRank, stageRank);
   record.telemetryFrame = Math.max(record.telemetryFrame, telemetryFrame);
@@ -10650,9 +11259,10 @@ function reconcileOperationRecord(operation, parentData) {
     record.requestedOperationGeneration || 0,
     requestedOperationGeneration
   );
+  var operationTerminal = operationRecordTerminal(model, data);
   record.terminal = rejectedEditRefresh
-    ? Boolean(record.terminal || model.terminal)
-    : model.terminal;
+    ? Boolean(record.terminal || operationTerminal)
+    : operationTerminal;
   record.disposition = operationRecordDisposition(model, data);
   return record;
 }
@@ -10839,6 +11449,50 @@ function operationConvergenceSummary(data) {
   return "";
 }
 
+function operationFamilyEvidenceSummary(data) {
+  var evidence = data && Array.isArray(data.family_evidence)
+    ? data.family_evidence
+    : [];
+  if (!evidence.length) { return ""; }
+  var stageLabels = {
+    waiting: commandUiText("대기", "waiting", "等待"),
+    represented: commandUiText("생산 반영", "represented", "已纳入生产"),
+    assigned: commandUiText("배정", "assigned", "已分配"),
+    attempted: commandUiText("명령 시도", "attempted", "已尝试命令"),
+    executed: commandUiText("SC2 제출", "SC2 submitted", "已提交 SC2"),
+    effect: commandUiText("효과 관측", "effect observed", "已观察效果"),
+    blocked: commandUiText("차단", "blocked", "受阻")
+  };
+  return evidence.map(function(item) {
+    var name = String(
+      item && (item.display_name || item.family || item.unit_type) || ""
+    ).replace(/^TERRAN_/, "");
+    var role = String(item && item.role || "");
+    var assigned = Number(item && item.assigned || 0);
+    var represented = Number(item && item.represented || 0);
+    var stage = String(item && item.stage || "waiting");
+    var action = String(item && item.action || "");
+    var effectKind = String(item && item.effect_kind || "");
+    var effectCount = Number(item && item.effect_count || 0);
+    var attemptedCount = Number(item && item.attempted_count || 0);
+    var submittedCount = Number(item && item.submitted_count || 0);
+    var blocker = String(item && item.blocker || "");
+    var text = name;
+    if (role) { text += "/" + role; }
+    text += " " + assigned + "/" + represented;
+    text += " · " + (stageLabels[stage] || stage);
+    if (action) { text += " · " + action; }
+    if (attemptedCount > 0) { text += " · try " + attemptedCount; }
+    if (submittedCount > 0) { text += " · SC2 " + submittedCount; }
+    if (effectKind) {
+      text += " · " + effectKind;
+      if (effectCount > 0) { text += " " + effectCount; }
+    }
+    if (blocker) { text += " · " + blocker; }
+    return text;
+  }).join(" | ");
+}
+
 function prefillOperationEdit(record, action) {
   var input = document.getElementById("command-input");
   if (!input) { return; }
@@ -10980,6 +11634,21 @@ function renderOperationCard(record) {
       commandUiText("병력 수렴", "Force convergence", "兵力收敛"),
       operationConvergenceSummary(data),
       "operation-card-verification"
+    );
+  }
+  if (operationFamilyEvidenceSummary(data)) {
+    operationAppendDetail(
+      details,
+      commandUiText("유닛 실행", "Unit execution", "单位执行"),
+      operationFamilyEvidenceSummary(data),
+      "operation-card-verification"
+    );
+  }
+  if (data.squad_order) {
+    operationAppendDetail(
+      details,
+      commandUiText("Squad 오더", "Squad order", "编队命令"),
+      String(data.squad_order)
     );
   }
   if (operationEditSummary(data)) {
@@ -13870,7 +14539,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             launcher.configure(provider, api_key, model)
         if bool(getattr(self.server, "auto_launch_live", False)):  # type: ignore[attr-defined]
             if launcher is not None:
-                response["live_start"] = launcher.start()
+                response["live_start"] = _public_runtime_launcher_payload(
+                    launcher.start()
+                )
         self._send_json(HTTPStatus.OK, response)
 
     def _handle_live_status(self) -> None:
@@ -13881,7 +14552,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"enabled": False, "status": "disabled", "url": "", "error": ""},
             )
             return
-        self._send_json(HTTPStatus.OK, launcher.snapshot())
+        self._send_json(
+            HTTPStatus.OK,
+            _public_runtime_launcher_payload(launcher.snapshot()),
+        )
 
     def _handle_runtime_status(self) -> None:
         params = parse_qs(urlsplit(self.path).query)
@@ -13902,7 +14576,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 return
             payload = dict(launcher.snapshot())
             payload["mode"] = mode
-            self._send_json(HTTPStatus.OK, payload)
+            self._send_json(
+                HTTPStatus.OK,
+                _public_runtime_launcher_payload(payload),
+            )
             return
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
         if launcher is None:
@@ -13920,7 +14597,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         try:
             self._send_json(
                 HTTPStatus.OK,
-                launcher.snapshot(blackboard_dir=blackboard_dir),
+                _public_runtime_launcher_payload(
+                    launcher.snapshot(blackboard_dir=blackboard_dir)
+                ),
             )
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
@@ -13970,7 +14649,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if payload.get("status") == "blocked"
                 else HTTPStatus.ACCEPTED
             )
-            self._send_json(status, payload)
+            self._send_json(
+                status,
+                _public_runtime_launcher_payload(payload),
+            )
             return
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
         if launcher is None:
@@ -14015,7 +14697,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             if payload.get("status") == "blocked"
             else HTTPStatus.ACCEPTED
         )
-        self._send_json(status, payload)
+        self._send_json(
+            status,
+            _public_runtime_launcher_payload(payload),
+        )
 
     def _handle_micromachine_status(self) -> None:
         params = parse_qs(urlsplit(self.path).query)

@@ -87,6 +87,7 @@ MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
         "scout_with_units",
         "pressure_with_main_army",
         "defend_with_units",
+        "harass_with_units",
         "sustain_production",
         "tech_transition",
         "expand_or_land_command_center",
@@ -1048,6 +1049,7 @@ class TacticalScopeModulation:
                     "home",
                     "natural",
                     "enemy_main",
+                    "enemy_mineral_line",
                     "enemy_natural",
                     "enemy_third",
                     "third",
@@ -1230,6 +1232,7 @@ class TacticalTaskModulation:
                     "home",
                     "natural",
                     "enemy_main",
+                    "enemy_mineral_line",
                     "enemy_natural",
                     "enemy_third",
                     "third",
@@ -2246,6 +2249,8 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
     if vector.tactical_task.task_type in {
         "scout_with_units",
         "pressure_with_main_army",
+        "defend_with_units",
+        "harass_with_units",
     }:
         return CommandLayer.OPERATION
     if vector.tactical_task.task_type in {
@@ -2279,7 +2284,12 @@ def _infer_tactical_operation_layer(
     task_type = operation.tactical_task.task_type
     if task_type == "execute_ability":
         return CommandLayer.MICRO
-    if task_type in {"scout_with_units", "pressure_with_main_army"}:
+    if task_type in {
+        "scout_with_units",
+        "pressure_with_main_army",
+        "defend_with_units",
+        "harass_with_units",
+    }:
         return CommandLayer.OPERATION
     if task_type in {
         "sustain_production",
