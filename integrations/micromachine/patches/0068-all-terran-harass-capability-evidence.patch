@@ -1304,10 +1304,10 @@ index 4bbb024..3791f54 100644
  }
 diff --git a/src/voi_family_effect_lifecycle.hpp b/src/voi_family_effect_lifecycle.hpp
 new file mode 100644
-index 0000000..8dc6751
+index 0000000..2c0481c
 --- /dev/null
 +++ b/src/voi_family_effect_lifecycle.hpp
-@@ -0,0 +1,496 @@
+@@ -0,0 +1,525 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -1442,10 +1442,12 @@ index 0000000..8dc6751
 +{
 +	std::string operationId;
 +	std::string family;
++	std::string unitType;
 +	std::string role;
 +	std::string policyUpdateId;
 +	std::uint64_t operationGeneration = 0;
 +	std::string action;
++	std::string requiredEffect;
 +	std::string effectKind;
 +
 +	bool operator<(
@@ -1454,18 +1456,22 @@ index 0000000..8dc6751
 +		return std::tie(
 +			operationId,
 +			family,
++			unitType,
 +			role,
 +			policyUpdateId,
 +			operationGeneration,
 +			action,
++			requiredEffect,
 +			effectKind)
 +			< std::tie(
 +				other.operationId,
 +				other.family,
++				other.unitType,
 +				other.role,
 +				other.policyUpdateId,
 +				other.operationGeneration,
 +				other.action,
++				other.requiredEffect,
 +				other.effectKind);
 +	}
 +};
@@ -1486,12 +1492,14 @@ index 0000000..8dc6751
 +	VoiFamilyEffectTelemetryAttemptKey key;
 +	key.operationId = delivery.operationId;
 +	key.family = delivery.family;
++	key.unitType = delivery.unitType;
 +	key.role = delivery.role;
 +	key.policyUpdateId =
 +		delivery.snapshot.policyUpdateId;
 +	key.operationGeneration =
 +		delivery.snapshot.operationGeneration;
 +	key.action = delivery.snapshot.action;
++	key.requiredEffect = delivery.snapshot.requiredEffect;
 +	key.effectKind = delivery.snapshot.effectKind;
 +	return key;
 +}
@@ -1502,12 +1510,15 @@ index 0000000..8dc6751
 +{
 +	return left.operationId == right.operationId
 +		&& left.family == right.family
++		&& left.unitType == right.unitType
 +		&& left.role == right.role
 +		&& left.snapshot.policyUpdateId
 +			== right.snapshot.policyUpdateId
 +		&& left.snapshot.operationGeneration
 +			== right.snapshot.operationGeneration
 +		&& left.snapshot.action == right.snapshot.action
++		&& left.snapshot.requiredEffect
++			== right.snapshot.requiredEffect
 +		&& left.snapshot.attemptGeneration
 +			== right.snapshot.attemptGeneration
 +		&& left.snapshot.effectKind
@@ -1518,16 +1529,34 @@ index 0000000..8dc6751
 +	const VoiFamilyEffectTelemetryDelivery & delivery,
 +	VoiFamilyEffectTelemetryDeliveryQueue & queue)
 +{
++	const bool abilityAction =
++		delivery.snapshot.action.find("ability:") == 0;
++	const bool movementContract =
++		delivery.snapshot.requiredEffect
++			== "movement_or_engagement"
++		&& (delivery.snapshot.effectKind == "movement"
++			|| delivery.snapshot.effectKind == "engagement")
++		&& !abilityAction;
++	const bool abilityContract =
++		delivery.snapshot.requiredEffect
++			== "ability_state_or_effect"
++		&& delivery.snapshot.effectKind == "ability_state"
++		&& abilityAction;
 +	if (delivery.operationId.empty()
 +		|| delivery.family.empty()
 +		|| delivery.unitType.empty()
++		|| delivery.family
++			!= voiCanonicalTerranFamilyForUnitType(
++				delivery.unitType)
 +		|| delivery.snapshot.policyUpdateId.empty()
 +		|| delivery.snapshot.operationGeneration == 0
 +		|| delivery.snapshot.action.empty()
++		|| delivery.snapshot.requiredEffect.empty()
 +		|| delivery.snapshot.attemptGeneration == 0
 +		|| delivery.snapshot.effectKind.empty()
 +		|| delivery.snapshot.effectCount == 0
-+		|| delivery.snapshot.effectFrame == 0)
++		|| delivery.snapshot.effectFrame == 0
++		|| !(movementContract || abilityContract))
 +	{
 +		return false;
 +	}
@@ -1828,10 +1857,10 @@ index e0a09df..526cc7d 100644
 +)
 diff --git a/tests/family_effect_lifecycle_test.cpp b/tests/family_effect_lifecycle_test.cpp
 new file mode 100644
-index 0000000..d9c1844
+index 0000000..77ff92d
 --- /dev/null
 +++ b/tests/family_effect_lifecycle_test.cpp
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,605 @@
 +#include "voi_family_effect_lifecycle.hpp"
 +
 +#include <cassert>
@@ -2015,6 +2044,13 @@ index 0000000..d9c1844
 +		.latestEffectFrame == 102);
 +	assert(deliveryQueue.pending.front()
 +		.maximumEffectCount == 1);
++	VoiFamilyEffectTelemetryDeliveryQueue rolelessQueue;
++	auto rolelessDelivery = siegeDelivery;
++	rolelessDelivery.role.clear();
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		rolelessDelivery,
++		rolelessQueue));
++	assert(rolelessQueue.pending.size() == 1);
 +	generationLatch = VoiFamilyEffectTelemetryLatch();
 +	assert(!generationLatch.pending);
 +	assert(deliveryQueue.pending.size() == 1);
@@ -2171,9 +2207,7 @@ index 0000000..d9c1844
 +		assert(!voiEnqueueFamilyEffectTelemetryDelivery(
 +			delivery(
 +				"operation-alpha",
-+				frame % 2 == 0
-+					? "TERRAN_SIEGETANKSIEGED"
-+					: "TERRAN_SIEGETANK",
++				"TERRAN_SIEGETANK",
 +				"siege",
 +				repeatedSnapshot),
 +			persistentQueue));
@@ -2189,6 +2223,12 @@ index 0000000..d9c1844
 +		.maximumEffectCount == 2);
 +	assert(persistentQueue.pending.front()
 +		.unitType == "TERRAN_SIEGETANK");
++	auto morphedDelivery = siegeDelivery;
++	morphedDelivery.unitType = "TERRAN_SIEGETANKSIEGED";
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		morphedDelivery,
++		persistentQueue));
++	assert(persistentQueue.pending.size() == 2);
 +	assert(voiCanonicalTerranFamilyForUnitType(
 +		"TERRAN_SIEGETANK")
 +		== voiCanonicalTerranFamilyForUnitType(
@@ -2236,26 +2276,64 @@ index 0000000..d9c1844
 +	assert(voiEnqueueFamilyEffectTelemetryDelivery(
 +		siegeDelivery,
 +		identityQueue));
-+	for (int dimension = 0; dimension < 7; ++dimension)
++	for (int dimension = 0; dimension < 9; ++dimension)
 +	{
 +		auto distinct = siegeDelivery;
-+		if (dimension == 0) distinct.family = "viking";
-+		if (dimension == 1) distinct.role = "frontline";
++		if (dimension == 0)
++			distinct.operationId = "operation-bravo";
++		if (dimension == 1)
++		{
++			distinct.family = "marine";
++			distinct.unitType = "TERRAN_MARINE";
++		}
 +		if (dimension == 2)
-+			distinct.snapshot.policyUpdateId = "update-z";
++			distinct.unitType = "TERRAN_SIEGETANKSIEGED";
 +		if (dimension == 3)
-+			distinct.snapshot.operationGeneration = 99;
++			distinct.role = "frontline";
 +		if (dimension == 4)
-+			distinct.snapshot.action = "ability:UNSIEGE";
++			distinct.snapshot.policyUpdateId = "update-z";
 +		if (dimension == 5)
-+			distinct.snapshot.attemptGeneration = 99;
++			distinct.snapshot.operationGeneration = 99;
 +		if (dimension == 6)
++			distinct.snapshot.action = "ability:UNSIEGE";
++		if (dimension == 7)
++			distinct.snapshot.attemptGeneration = 99;
++		if (dimension == 8)
++		{
++			distinct.snapshot.action = "attack_move";
++			distinct.snapshot.requiredEffect =
++				"movement_or_engagement";
 +			distinct.snapshot.effectKind = "movement";
++		}
 +		assert(voiEnqueueFamilyEffectTelemetryDelivery(
 +			distinct,
 +			identityQueue));
 +	}
-+	assert(identityQueue.pending.size() == 8);
++	assert(identityQueue.pending.size() == 10);
++
++	// Malformed family/unit and action/effect contracts fail closed.
++	VoiFamilyEffectTelemetryDeliveryQueue invalidQueue;
++	auto wrongFamily = siegeDelivery;
++	wrongFamily.family = "marine";
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		wrongFamily,
++		invalidQueue));
++	auto wrongMovementEffect = siegeDelivery;
++	wrongMovementEffect.snapshot.action = "attack_move";
++	wrongMovementEffect.snapshot.requiredEffect =
++		"movement_or_engagement";
++	wrongMovementEffect.snapshot.effectKind = "ability_state";
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		wrongMovementEffect,
++		invalidQueue));
++	auto wrongAbilityAction = siegeDelivery;
++	wrongAbilityAction.snapshot.action = "attack_move";
++	wrongAbilityAction.snapshot.requiredEffect =
++		"ability_state_or_effect";
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		wrongAbilityAction,
++		invalidQueue));
++	assert(invalidQueue.pending.empty());
 +
 +	// Failed writes retain both local and immutable delivery evidence.
 +	VoiFamilyEffectTelemetryLatch writeFailureLatch;
@@ -2274,7 +2352,7 @@ index 0000000..d9c1844
 +		assert(!voiEnqueueFamilyEffectTelemetryDelivery(
 +			delivery(
 +				"operation-alpha",
-+				"TERRAN_SIEGETANKSIEGED",
++				"TERRAN_SIEGETANK",
 +				"siege",
 +				repeatedSnapshot),
 +			writeFailureQueue));

@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 from starcraft_commander.micromachine_command_execution import (
@@ -341,6 +342,13 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
                     {
                         "operation_id": "recon-alpha",
                         "generation": 2,
+                        "composition_requirements": [
+                            {
+                                "unit_type": "TERRAN_MARINE",
+                                "count": 1,
+                                "role": "frontline",
+                            }
+                        ],
                         "tactical_task": {
                             "task_type": "scout_with_units",
                             "duration_seconds": 120,
@@ -354,6 +362,26 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
             "managers": {
                 "OperationDirector": {
                     "policy_update_id": "rejected-edit",
+                    "pending_family_effects": [
+                        {
+                            "update_id": "rejected-edit",
+                            "operation_id": "recon-alpha",
+                            "generation": 2,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "frontline",
+                            "action": "attack_move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 2,
+                            "attempted_count": 1,
+                            "attempted_frame": 226,
+                            "submitted_count": 1,
+                            "submitted_frame": 227,
+                            "effect_kind": "movement",
+                            "effect_count": 1,
+                            "effect_frame": 228,
+                        }
+                    ],
                     "operations": [
                         {
                             "operation_id": "recon-alpha",
@@ -426,6 +454,15 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         self.assertFalse(stages["order_issued"].ok)
         self.assertFalse(stages["action_issued"].ok)
         self.assertFalse(stages["effect_observed"].ok)
+        lifecycle = stages["effect_observed"].evidence[
+            "family_lifecycle"
+        ]
+        self.assertTrue(lifecycle["active"])
+        self.assertEqual([], lifecycle["evidence"])
+        self.assertFalse(lifecycle["assignment_ok"])
+        self.assertFalse(lifecycle["order_ok"])
+        self.assertFalse(lifecycle["action_ok"])
+        self.assertFalse(lifecycle["effect_ok"])
 
     def test_operation_evidence_requires_exact_command_identity(self) -> None:
         update = {
@@ -1427,6 +1464,272 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
                         [capability.family],
                         lifecycle["pending_effect_families"],
                     )
+
+    def test_family_lifecycle_rejects_wrong_unit_role_and_action(self) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="marine",
+            unit_type="TERRAN_MARINE",
+            role="frontline",
+        )
+        operation = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]
+        wrong = operation["family_evidence"][0]
+        wrong["unit_type"] = "TERRAN_MARAUDER"
+        wrong["role"] = "wrong-role"
+        wrong["action"] = "dance"
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+
+        stages = {stage.name: stage for stage in report.stages}
+        lifecycle = stages["effect_observed"].evidence[
+            "family_lifecycle"
+        ]
+        self.assertFalse(report.completed, report.to_dict())
+        self.assertEqual([], lifecycle["evidence"])
+        self.assertEqual(
+            ["marine"],
+            lifecycle["missing_assignment_families"],
+        )
+        self.assertFalse(lifecycle["assignment_ok"])
+        self.assertFalse(lifecycle["order_ok"])
+        self.assertFalse(lifecycle["action_ok"])
+        self.assertFalse(lifecycle["effect_ok"])
+
+    def test_family_lifecycle_accepts_only_requested_ability_action(self) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="siege_tank",
+            unit_type="TERRAN_SIEGETANK",
+            role="siege_support",
+        )
+        operation = update["vector"]["operations"][0]
+        operation["unit_roles"] = [
+            {
+                "unit_type": "TERRAN_SIEGETANK",
+                "role": "siege_support",
+                "ability_policy": "siege_mode",
+            }
+        ]
+        evidence = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]["family_evidence"][0]
+        evidence.update(
+            {
+                "action": "ability:MORPH_SIEGEMODE",
+                "required_effect": "ability_state_or_effect",
+                "effect_kind": "ability_state",
+            }
+        )
+
+        accepted = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+        accepted_lifecycle = {
+            stage.name: stage for stage in accepted.stages
+        }["effect_observed"].evidence["family_lifecycle"]
+        self.assertTrue(accepted_lifecycle["assignment_ok"])
+        self.assertTrue(accepted_lifecycle["order_ok"])
+        self.assertTrue(accepted_lifecycle["action_ok"])
+        self.assertTrue(accepted_lifecycle["effect_ok"])
+
+        evidence["action"] = "ability:BEHAVIOR_CLOAKON"
+        rejected = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+        rejected_lifecycle = {
+            stage.name: stage for stage in rejected.stages
+        }["effect_observed"].evidence["family_lifecycle"]
+        self.assertEqual([], rejected_lifecycle["evidence"])
+        self.assertFalse(rejected_lifecycle["assignment_ok"])
+        self.assertFalse(rejected_lifecycle["effect_ok"])
+
+    def test_family_lifecycle_requires_exact_count_and_type_role_pair(
+        self,
+    ) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="viking",
+            unit_type="TERRAN_VIKINGFIGHTER",
+            role="anti_air",
+        )
+        operation = update["vector"]["operations"][0]
+        operation["composition_requirements"] = [
+            {
+                "unit_type": "TERRAN_VIKINGFIGHTER",
+                "count": 4,
+                "role": "anti_air",
+            },
+            {
+                "unit_type": "TERRAN_VIKINGASSAULT",
+                "count": 2,
+                "role": "frontline",
+            },
+        ]
+        evidence = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]["family_evidence"][0]
+        evidence.update(
+            {
+                "assigned": 1,
+                "attempted_count": 1,
+                "submitted_count": 1,
+                "effect_count": 1,
+                "unit_type": "TERRAN_VIKINGASSAULT",
+                "role": "anti_air",
+            }
+        )
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+        lifecycle = {
+            stage.name: stage for stage in report.stages
+        }["effect_observed"].evidence["family_lifecycle"]
+        self.assertEqual([], lifecycle["evidence"])
+        self.assertEqual(2, len(lifecycle["missing_assignment_families"]))
+        self.assertFalse(lifecycle["assignment_ok"])
+        self.assertFalse(lifecycle["effect_ok"])
+
+    def test_specific_ability_policy_is_not_weakened_by_generic_policy(
+        self,
+    ) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="siege_tank",
+            unit_type="TERRAN_SIEGETANK",
+            role="siege_support",
+        )
+        operation = update["vector"]["operations"][0]
+        operation["unit_roles"] = [
+            {
+                "unit_type": "TERRAN_SIEGETANK",
+                "role": "siege_support",
+                "ability_policy": "if_available",
+            },
+            {
+                "unit_type": "TERRAN_SIEGETANK",
+                "role": "siege_support",
+                "ability_policy": "siege_mode",
+            },
+        ]
+        evidence = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]["family_evidence"][0]
+        evidence.update(
+            {
+                "action": "ability:BEHAVIOR_CLOAKON",
+                "required_effect": "ability_state_or_effect",
+                "effect_kind": "ability_state",
+            }
+        )
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+        lifecycle = {
+            stage.name: stage for stage in report.stages
+        }["effect_observed"].evidence["family_lifecycle"]
+        self.assertEqual([], lifecycle["evidence"])
+        self.assertFalse(lifecycle["effect_ok"])
+
+    def test_transformed_family_form_preserves_requested_operation_effect(
+        self,
+    ) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="siege_tank",
+            unit_type="TERRAN_SIEGETANK",
+            role="siege_support",
+        )
+        evidence = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]["family_evidence"][0]
+        evidence["unit_type"] = "TERRAN_SIEGETANKSIEGED"
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+        lifecycle = {
+            stage.name: stage for stage in report.stages
+        }["effect_observed"].evidence["family_lifecycle"]
+        self.assertTrue(lifecycle["assignment_ok"])
+        self.assertTrue(lifecycle["effect_ok"])
+
+    def test_family_evidence_merge_keeps_unit_and_effect_contract_identity(
+        self,
+    ) -> None:
+        update, current_telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="siege_tank",
+            unit_type="TERRAN_SIEGETANK",
+            role="siege_support",
+            effect=False,
+        )
+        stale_telemetry = copy.deepcopy(current_telemetry)
+        stale_telemetry["frame"] = 170
+        stale_evidence = stale_telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]["family_evidence"][0]
+        stale_evidence.update(
+            {
+                "unit_type": "TERRAN_SIEGETANKSIEGED",
+                "effect_kind": "movement",
+                "effect_count": 1,
+                "effect_frame": 160,
+            }
+        )
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            telemetry_archive=(stale_telemetry,),
+            latest_telemetry=current_telemetry,
+            latest_frame=180,
+        )[0]
+        lifecycle = {
+            stage.name: stage for stage in report.stages
+        }["effect_observed"].evidence["family_lifecycle"]
+        self.assertEqual(2, len(lifecycle["evidence"]))
+        current = next(
+            row
+            for row in lifecycle["evidence"]
+            if row["unit_type"] == "TERRAN_SIEGETANK"
+        )
+        transformed = next(
+            row
+            for row in lifecycle["evidence"]
+            if row["unit_type"] == "TERRAN_SIEGETANKSIEGED"
+        )
+        self.assertEqual(0, current["effect_count"])
+        self.assertEqual(1, transformed["effect_count"])
+        self.assertTrue(lifecycle["effect_ok"])
 
     def test_family_lifecycle_keeps_assignment_order_action_effect_distinct(
         self,

@@ -928,15 +928,17 @@ def _coalesce_family_evidence(
     items: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, object], ...]:
     latest_by_action: dict[
-        tuple[str, str, str],
+        tuple[str, str, str, str, str],
         dict[str, object],
     ] = {}
-    action_order: list[tuple[str, str, str]] = []
+    action_order: list[tuple[str, str, str, str, str]] = []
     for item in items:
         key = (
             str(item.get("family", "") or ""),
+            str(item.get("unit_type", "") or ""),
             str(item.get("role", "") or ""),
             str(item.get("action", "") or ""),
+            str(item.get("required_effect", "") or ""),
         )
         current = latest_by_action.get(key)
         if current is None:
