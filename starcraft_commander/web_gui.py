@@ -1420,6 +1420,30 @@ def _micromachine_execution_stage_ok(
     )
 
 
+def _micromachine_operation_execution_matches(
+    execution: Mapping[str, object],
+    *,
+    update_id: str,
+    operation_id: str,
+    operation_generation: int,
+) -> bool:
+    execution_generation = _int_or_none(
+        execution.get("operation_generation")
+    )
+    if execution_generation is None:
+        execution_generation = _int_or_none(execution.get("generation"))
+    return bool(
+        update_id
+        and operation_id
+        and operation_generation > 0
+        and str(execution.get("command_id", "") or "").strip()
+        == update_id
+        and str(execution.get("operation_id", "") or "").strip()
+        == operation_id
+        and execution_generation == operation_generation
+    )
+
+
 def _micromachine_execution_has_active_family_contract(
     execution: Mapping[str, object],
 ) -> bool:
@@ -1484,8 +1508,30 @@ def _micromachine_operation_command_execution(
     operation_generation: int,
     operation_telemetry: Mapping[str, object],
     fallback: Mapping[str, object],
+    strict_identity: bool = True,
 ) -> dict[str, object]:
     if not operation_telemetry:
+        if strict_identity and not _micromachine_operation_execution_matches(
+            fallback,
+            update_id=update_id,
+            operation_id=operation_id,
+            operation_generation=operation_generation,
+        ):
+            return {
+                "command_id": update_id,
+                "operation_id": operation_id,
+                "operation_generation": operation_generation,
+                "state": "published",
+                "completed": False,
+                "failed": False,
+                "expired": False,
+                "superseded": False,
+                "blocker_manager": "",
+                "blocker_reason": "",
+                "stages": [],
+                "terminal_cleanup": {},
+                "telemetry": {},
+            }
         result = dict(fallback)
         result.setdefault("operation_id", operation_id)
         result.setdefault("operation_generation", operation_generation)
@@ -1829,6 +1875,11 @@ def _micromachine_operation_status_payload(
         and int(operation_vector.get("generation")) > 0
         else 1
     )
+    explicit_operation_identity = bool(
+        str(operation_vector.get("operation_id", "") or "").strip()
+        and type(operation_vector.get("generation")) is int
+        and int(operation_vector["generation"]) > 0
+    )
     telemetry_document = _telemetry_to_mapping(telemetry)
     issued_at_frame, deadline_frame = (
         _micromachine_operation_evidence_window(
@@ -1982,12 +2033,18 @@ def _micromachine_operation_status_payload(
         and isinstance(result_intervention, Mapping)
     ):
         result_execution = result_intervention.get("command_execution")
-        result_operation_id = (
-            str(result_execution.get("operation_id", "") or "").strip()
-            if isinstance(result_execution, Mapping)
-            else ""
-        )
-        if operation_count == 1 or result_operation_id == operation_id:
+        if (
+            isinstance(result_execution, Mapping)
+            and (
+                not explicit_operation_identity
+                or _micromachine_operation_execution_matches(
+                    result_execution,
+                    update_id=update_id,
+                    operation_id=operation_id,
+                    operation_generation=active_operation_generation,
+                )
+            )
+        ):
             intervention = dict(result_intervention)
     fallback_execution = intervention.get("command_execution")
     if not isinstance(fallback_execution, Mapping):
@@ -2020,6 +2077,7 @@ def _micromachine_operation_status_payload(
         operation_generation=active_operation_generation,
         operation_telemetry=operation_telemetry or {},
         fallback=fallback_execution,
+        strict_identity=explicit_operation_identity,
     )
     intervention = dict(intervention)
     intervention["command_execution"] = command_execution
@@ -3035,13 +3093,30 @@ def _micromachine_status_payload(
         consumption_status = str(
             representative.get("consumption_status", consumption_status) or ""
         )
+    telemetry_document = _telemetry_to_mapping(telemetry)
+    telemetry_managers = telemetry_document.get("managers")
+    telemetry_active_ids = telemetry_document.get(
+        "active_modulation_ids"
+    )
+    operation_registry_authoritative = bool(
+        type(telemetry_document.get("frame")) is int
+        and int(telemetry_document["frame"]) >= 0
+        and isinstance(telemetry_managers, Mapping)
+        and isinstance(telemetry_active_ids, Sequence)
+        and not isinstance(
+            telemetry_active_ids,
+            (str, bytes, bytearray),
+        )
+    )
     payload = {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
         "update": dict(latest) if latest is not None else None,
         "intervention": intervention,
         "operations": operations,
-        "operation_registry_authoritative": True,
+        "operation_registry_authoritative": (
+            operation_registry_authoritative
+        ),
         "operation_summary": _micromachine_operation_summary(operations),
         "compile_result": dict(compile_result) if isinstance(compile_result, Mapping) else None,
         "latest_request": latest_request,
@@ -3126,6 +3201,7 @@ def _micromachine_status_with_runtime_gate(
         ),
     )
     result.update(rebuilt)
+    result["operation_registry_authoritative"] = False
     if source_status == "source_error":
         result["status"] = source_status
     result["runtime_status"] = runtime_status
@@ -5539,9 +5615,24 @@ class _OperationSemanticTimelineReducer:
         consumption_status = str(
             operation.get("consumption_status", "") or ""
         ).lower()
+        update_id = str(operation.get("update_id", "") or "")
         compile_result = _mapping_child(operation, "compile_result")
         intervention = _mapping_child(operation, "intervention")
         execution = _mapping_child(intervention, "command_execution")
+        execution_owner_update_id = str(
+            operation.get(
+                "operation_console_execution_owner_update_id",
+                "",
+            )
+            or update_id
+        )
+        if not _micromachine_operation_execution_matches(
+            execution,
+            update_id=execution_owner_update_id,
+            operation_id=operation_id,
+            operation_generation=generation,
+        ):
+            execution = {}
         execution_state = str(execution.get("state", "") or "").lower()
         convergence = _mapping_child(operation, "operation_convergence")
         edit = _mapping_child(operation, "operation_edit")
@@ -5586,7 +5677,6 @@ class _OperationSemanticTimelineReducer:
             )
             or generation,
         )
-        update_id = str(operation.get("update_id", "") or "")
         launch_decision = str(launch.get("decision", "") or "").lower()
         blocker = str(
             launch.get("blocker")
@@ -13056,11 +13146,49 @@ function commandOperationPayloads(data) {
   return payloads;
 }
 
+function operationExecutionMatchesPayload(
+  operation,
+  execution,
+  operationId,
+  updateId,
+  operationGeneration
+) {
+  if (!execution || typeof execution !== "object") { return false; }
+  var executionGeneration = Number(
+    execution.operation_generation || execution.generation || 0
+  );
+  return Boolean(
+    operationId &&
+    updateId &&
+    Number.isFinite(operationGeneration) &&
+    operationGeneration > 0 &&
+    String(execution.command_id || "") === updateId &&
+    String(execution.operation_id || "") === operationId &&
+    Number.isFinite(executionGeneration) &&
+    executionGeneration === operationGeneration
+  );
+}
+
 function commandOperationData(operation, parentData) {
   var operationId = operationPayloadOperationId(operation);
   var updateId = operationPayloadUpdateId(operation);
   var scopeId = operationPayloadScopeId(operation, parentData);
+  var operationGeneration = Number(operation.operation_generation || 0);
   var intervention = Object.assign({}, operation.intervention || {});
+  var execution = intervention.command_execution || {};
+  if (
+    operationGeneration > 0 &&
+    Object.keys(execution).length &&
+    !operationExecutionMatchesPayload(
+      operation,
+      execution,
+      operationId,
+      updateId,
+      operationGeneration
+    )
+  ) {
+    intervention.command_execution = {};
+  }
   if (
     (intervention.telemetry_frame === null ||
       intervention.telemetry_frame === undefined ||
@@ -13097,11 +13225,16 @@ function commandOperationData(operation, parentData) {
     blackboard_scope_id: scopeId,
     operation_id: operationId,
     operation_key: operationRecordKey(scopeId, operationId),
-    operation_generation: Number(operation.operation_generation || 0),
+    operation_generation: operationGeneration,
     requested_operation_generation: Number(
       operation.requested_operation_generation ||
       operation.operation_generation ||
       0
+    ),
+    operation_console_execution_owner_update_id: String(
+      operation.operation_console_execution_owner_update_id ||
+      updateId ||
+      ""
     ),
     operation_disposition: disposition,
     operation_mission: String(operation.mission || "operation"),

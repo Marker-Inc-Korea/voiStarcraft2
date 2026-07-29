@@ -451,6 +451,7 @@ def semantic_operation_payload(
         "operation_edit": dict(operation_edit or {}),
         "intervention": {
             "command_execution": {
+                "command_id": update_id,
                 "state": execution_state,
                 "operation_id": operation_id,
                 "operation_generation": generation,
@@ -2545,6 +2546,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(document["intervention"]["applied"])
             self.assertFalse(document["intervention"]["policy_active"])
             self.assertTrue(document["telemetry_stale_or_detached"])
+            self.assertFalse(document["operation_registry_authoritative"])
 
     def test_detached_projection_cannot_poison_attached_runtime_cursor(self):
         current = {
@@ -4119,6 +4121,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
         self.assertEqual(2, len(payload["operations"]))
+        self.assertTrue(payload["operation_registry_authoritative"])
         operations = {
             operation["operation_id"]: operation
             for operation in payload["operations"]
@@ -4873,6 +4876,58 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 }
             },
         )
+
+    def test_micromachine_operation_rejects_foreign_result_execution(self):
+        payload = web_gui._micromachine_operation_status_payload(
+            {
+                "update_id": "new-update",
+                "issued_at_frame": 100,
+                "vector": {
+                    "operation_id": "new-operation",
+                    "generation": 1,
+                    "goal": "new operation waits for its own evidence",
+                },
+            },
+            operation_id="new-operation",
+            operation_count=1,
+            active=False,
+            telemetry=None,
+            telemetry_archive=(),
+            blackboard_dir="",
+            result_item={
+                "status": "completed",
+                "command_text": "stale completed result",
+                "intervention": {
+                    "command_execution": {
+                        "command_id": "old-update",
+                        "operation_id": "old-operation",
+                        "operation_generation": 7,
+                        "state": "completed",
+                        "completed": True,
+                        "failed": False,
+                        "expired": False,
+                        "stages": [
+                            {"name": "action_issued", "ok": True},
+                            {"name": "effect_observed", "ok": True},
+                        ],
+                    }
+                },
+            },
+            compile_result={
+                "status": "compiled",
+                "update_id": "new-update",
+            },
+        )
+
+        execution = payload["intervention"]["command_execution"]
+        self.assertEqual("new-update", execution["command_id"])
+        self.assertEqual("new-operation", execution["operation_id"])
+        self.assertEqual(1, execution["operation_generation"])
+        self.assertEqual("published", execution["state"])
+        self.assertFalse(execution["completed"])
+        self.assertFalse(execution["failed"])
+        self.assertEqual([], execution["stages"])
+        self.assertEqual("pending", payload["disposition"])
 
     def test_micromachine_operation_order_only_is_not_action_submission(self):
         execution = web_gui._micromachine_operation_command_execution(
@@ -6905,6 +6960,74 @@ class SessionLoopBridgeTest(unittest.TestCase):
             "submitted",
             [event["kind"] for event in result["operation_events"]],
         )
+
+    def test_operation_timeline_requires_matching_execution_identity_for_submission(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            operation_id="alpha-operation",
+            generation=2,
+            execution_state="action_issued",
+        )
+        execution = payload["operations"][0]["intervention"][
+            "command_execution"
+        ]
+        execution.update(
+            {
+                "command_id": "update-beta-operation-1",
+                "operation_id": "beta-operation",
+                "operation_generation": 1,
+            }
+        )
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-execution-identity-required",
+        )
+
+        kinds = [event["kind"] for event in result["operation_events"]]
+        self.assertNotIn("submitted", kinds)
+        self.assertNotIn(
+            "Matching-generation SC2 action submitted.",
+            [event["summary"] for event in result["operation_events"]],
+        )
+
+    def test_operation_timeline_non_authoritative_empty_snapshot_preserves_registry(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-detached-registry"
+        attached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            frame=200,
+        )
+        attached["operation_registry_authoritative"] = True
+        reducer.observe(attached, blackboard_scope_id=scope_id)
+        self.assertEqual(1, len(reducer._accepted_operations))
+
+        detached = reducer.observe(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_registry_authoritative": False,
+                "operations": [],
+            },
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual([], detached["operations"])
+        self.assertEqual(1, len(reducer._accepted_operations))
+
+        reducer.observe(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_registry_authoritative": True,
+                "battlefield_overview": attached["battlefield_overview"],
+                "operations": [],
+            },
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(0, len(reducer._accepted_operations))
 
     def test_operation_timeline_rejects_generation_frame_and_same_frame_conflicts(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
@@ -12400,6 +12523,45 @@ const assert = require("assert");
     return stages;
   }
 
+  var foreignExecutionOperation = operationResult(
+    "new-operation",
+    "new-update",
+    "새 작전은 자기 실행 증거를 기다림",
+    "attack",
+    205,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    1
+  );
+  foreignExecutionOperation.intervention.command_execution = {
+    command_id: "old-update",
+    operation_id: "old-operation",
+    operation_generation: 7,
+    state: "completed",
+    completed: true,
+    failed: false,
+    expired: false,
+    stages: actionStages(
+      "attack",
+      "foreign operation effect must not be reused"
+    )
+  };
+  var sanitizedForeignOperation = commandOperationData(
+    foreignExecutionOperation,
+    serverResult({}, OPERATION_SCOPE)
+  );
+  var sanitizedForeignModel = commandConsoleStageModel(
+    sanitizedForeignOperation
+  );
+  assert.deepStrictEqual(
+    sanitizedForeignOperation.intervention.command_execution,
+    {}
+  );
+  assert.strictEqual(sanitizedForeignOperation.operation_generation, 1);
+  assert.strictEqual(sanitizedForeignModel.actionIssued, false);
+  assert.strictEqual(sanitizedForeignModel.effectObserved, false);
+  assert.strictEqual(sanitizedForeignModel.terminal, false);
+
   var pendingA = beginOperationRecord("마린 1기 정찰", "parallel-pending-a");
   var pendingB = beginOperationRecord("마린 4기 공격", "parallel-pending-b");
   bindOperationRecordUpdate(
@@ -12476,6 +12638,19 @@ const assert = require("assert");
   assert.strictEqual(
     assaultRecord.node.querySelector(".operation-card-state").textContent,
     "유닛 편성 완료"
+  );
+  var reconNodeBeforeDetachedSnapshot = reconRecord.node;
+  renderOperationConsole(serverResult({
+    status: "idle",
+    runtime_attached: false,
+    telemetry_stale_or_detached: true,
+    operation_registry_authoritative: false,
+    operations: []
+  }, OPERATION_SCOPE));
+  assert.strictEqual(Object.keys(operationRecords).length, 2);
+  assert.strictEqual(
+    operationRecords[reconKey].node,
+    reconNodeBeforeDetachedSnapshot
   );
 
   [reconRecord, assaultRecord].forEach(function(record) {
