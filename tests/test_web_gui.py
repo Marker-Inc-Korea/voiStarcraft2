@@ -14972,6 +14972,75 @@ const assert = require("assert");
     hasPending(OPERATION_SCOPE, legacyOperationUpdateId),
     "foreign operation identity must not finish a legacy operation"
   );
+  var legacySibling = operationResult(
+    "legacy-operation-sibling",
+    legacyOperationUpdateId,
+    "legacy sibling 완료",
+    "scouting",
+    15,
+    "completed",
+    actionStages("move"),
+    1
+  );
+  delete legacySibling.battlefield_operation;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: legacyOperationUpdateId
+    },
+    update: {
+      update_id: legacyOperationUpdateId,
+      vector: { goal: legacyOperationCommand }
+    },
+    intervention: {
+      latest_update_id: legacyOperationUpdateId,
+      telemetry_frame: 15,
+      command_execution:
+        legacyOperation.intervention.command_execution
+    },
+    operations: [legacyOperation, legacySibling]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, legacyOperationUpdateId),
+    "distinct noncanonical siblings must not collapse into one terminal execution"
+  );
+  var legacyNoEffectExecution = Object.assign(
+    {},
+    legacyOperation.intervention.command_execution,
+    {
+      state: "effect_observed",
+      completed: false,
+      stages: actionStages("attack").slice(0, 6)
+    }
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    compile_result: {
+      status: "compiled",
+      update_id: legacyOperationUpdateId
+    },
+    update: {
+      update_id: legacyOperationUpdateId,
+      vector: { goal: legacyOperationCommand }
+    },
+    intervention: {
+      latest_update_id: legacyOperationUpdateId,
+      telemetry_frame: 15,
+      command_execution: legacyNoEffectExecution
+    },
+    operations: [legacyOperation]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, legacyOperationUpdateId),
+    "effect_observed state without matching effect evidence must stay pending"
+  );
   var legacyEffectExecution = Object.assign(
     {},
     legacyOperation.intervention.command_execution,
