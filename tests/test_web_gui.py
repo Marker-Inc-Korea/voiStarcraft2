@@ -2286,10 +2286,66 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
 
         self.assertEqual(0, legacy_bridge.status_calls)
+        self.assertEqual("source_error", document["status"])
         self.assertIsNone(document["battlefield_overview"])
         self.assertFalse(document["telemetry_current_for_process"])
         self.assertTrue(document["telemetry_stale_or_detached"])
         self.assertIn("validated telemetry snapshot", document["error"])
+
+    def test_attached_status_with_missing_validated_document_fails_closed(
+        self,
+    ):
+        runtime_instance_id = "f" * 32
+
+        class LegacyBridge:
+            status_calls = 0
+
+            def micromachine_status(self, *, blackboard_dir=""):
+                self.status_calls += 1
+                return web_gui._micromachine_status_payload(
+                    {"active_updates": []},
+                    telemetry=attached_runtime_telemetry(
+                        battlefield_projection_telemetry(
+                            update_id="missing-snapshot-reread",
+                            frame=640,
+                        ),
+                        runtime_instance_id,
+                    ),
+                    blackboard_dir=blackboard_dir,
+                )
+
+        class Launcher:
+            def validated_snapshot(self, blackboard_dir=""):
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata={
+                        "status": "connected",
+                        "runtime_instance_id": runtime_instance_id,
+                        "runtime_attached": True,
+                        "telemetry_present": True,
+                        "telemetry_current_for_process": True,
+                        "telemetry_stale_or_detached": False,
+                        "telemetry_frame": 320,
+                        "blackboard_dir": blackboard_dir,
+                    },
+                    telemetry_document=None,
+                )
+
+        legacy_bridge = LegacyBridge()
+        self.server._http.micromachine_launcher = Launcher()
+        with mock.patch.object(
+            self.server._http,
+            "bridge",
+            legacy_bridge,
+        ):
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=/tmp/incomplete-snapshot"
+            )
+
+        self.assertEqual(0, legacy_bridge.status_calls)
+        self.assertEqual("source_error", document["status"])
+        self.assertIsNone(document["battlefield_overview"])
+        self.assertFalse(document["telemetry_current_for_process"])
+        self.assertTrue(document["telemetry_stale_or_detached"])
 
     def test_attached_status_rejects_unbound_archive_family_evidence(self):
         from starcraft_commander.micromachine_bridge import (

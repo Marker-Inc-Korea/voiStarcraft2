@@ -2987,6 +2987,7 @@ def _micromachine_status_with_runtime_gate(
     """Attach runtime metadata and fail closed when telemetry is detached."""
 
     result = dict(payload)
+    source_status = str(result.get("status", "") or "")
     if not isinstance(runtime_snapshot, Mapping):
         public_result = _public_micromachine_runtime_payload(result)
         return dict(public_result) if isinstance(public_result, Mapping) else {}
@@ -3028,6 +3029,8 @@ def _micromachine_status_with_runtime_gate(
         ),
     )
     result.update(rebuilt)
+    if source_status == "source_error":
+        result["status"] = source_status
     result["runtime_status"] = runtime_status
     for key in (
         "runtime_attached",
@@ -15105,11 +15108,14 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 runtime_snapshot["telemetry_stale_or_detached"] = (
                     runtime_snapshot.get("telemetry_present") is True
                 )
-        runtime_instance_id = ""
-        if (
+        runtime_claims_current_telemetry = bool(
             isinstance(runtime_snapshot, Mapping)
             and runtime_snapshot.get("runtime_attached") is True
             and runtime_snapshot.get("telemetry_current_for_process") is True
+        )
+        runtime_instance_id = ""
+        if (
+            runtime_claims_current_telemetry
             and isinstance(validated_telemetry_document, Mapping)
         ):
             runtime_instance_id = str(
@@ -15120,7 +15126,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             "micromachine_status_for_runtime",
             None,
         )
-        if runtime_instance_id and callable(runtime_status_fn):
+        if (
+            runtime_claims_current_telemetry
+            and runtime_instance_id
+            and callable(runtime_status_fn)
+        ):
             payload = dict(
                 runtime_status_fn(
                     blackboard_dir=blackboard_dir,
@@ -15128,7 +15138,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     telemetry_document=validated_telemetry_document,
                 )
             )
-        elif runtime_instance_id:
+        elif runtime_claims_current_telemetry:
             runtime_snapshot = dict(runtime_snapshot)
             runtime_snapshot["telemetry_current_for_process"] = False
             runtime_snapshot["telemetry_stale_or_detached"] = True
