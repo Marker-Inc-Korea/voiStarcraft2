@@ -11833,7 +11833,7 @@ const assert = require("assert");
   assert(commandConsoleClassName(cancelledModel).includes("command-console-superseded"));
   assert(commandConsoleVerification(cancelledData, cancelledModel).includes("작전 취소"));
   assert(!commandConsoleVerification(cancelledData, cancelledModel).includes("cleanup stop must not become mission effect"));
-  updateMicroMachineBadge(cancelledData.intervention, cancelledData.status);
+  updateMicroMachineBadge(cancelledData);
   assert.strictEqual(nodes["micromachine-applied-badge"].textContent, "작전 취소");
   assert(nodes["micromachine-applied-badge"].className.includes("micro-badge-cancelled"));
   assert(!nodes["micromachine-applied-badge"].className.includes("micro-badge-applied"));
@@ -11938,10 +11938,7 @@ const assert = require("assert");
       "command-console-superseded"
     )
   );
-  updateMicroMachineBadge(
-    cancellationPendingCleanupData.intervention,
-    cancellationPendingCleanupData.status
-  );
+  updateMicroMachineBadge(cancellationPendingCleanupData);
   assert.strictEqual(
     nodes["micromachine-applied-badge"].textContent,
     "취소 정리 확인 중"
@@ -13866,6 +13863,7 @@ const assert = require("assert");
     operationRecords[reconKey].data
   );
   assert.strictEqual(canonicalReconModel.canonicalCompletion, true);
+  assert.strictEqual(canonicalReconModel.canonicalCompletionVerified, true);
   assert.strictEqual(canonicalReconModel.blocked, false);
   assert.strictEqual(canonicalReconModel.terminal, true);
   assert.strictEqual(canonicalReconModel.done.verify, true);
@@ -13892,6 +13890,16 @@ const assert = require("assert");
     explicitlyFailedCanonicalCompletion
   );
   assert.strictEqual(explicitlyFailedCanonicalModel.blocked, true);
+  assert.strictEqual(
+    explicitlyFailedCanonicalModel.canonicalCompletion,
+    true
+  );
+  assert.strictEqual(
+    explicitlyFailedCanonicalModel.canonicalCompletionVerified,
+    false
+  );
+  assert.strictEqual(explicitlyFailedCanonicalModel.terminal, true);
+  assert.strictEqual(explicitlyFailedCanonicalModel.done.verify, false);
   assert.strictEqual(
     operationRecordDisposition(
       explicitlyFailedCanonicalModel,
@@ -14231,6 +14239,341 @@ const assert = require("assert");
     nodes["operation-list"].querySelectorAll(".operation-card").length,
     0
   );
+
+  var canonicalChatCommand = "권위 완료 채팅 검증";
+  var canonicalChatUpdateId = "canonical-chat-update";
+  var canonicalChatOperation = operationResult(
+    "canonical-chat",
+    canonicalChatUpdateId,
+    canonicalChatCommand,
+    "scouting",
+    12,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  canonicalChatOperation.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  canonicalChatOperation.battlefield_operation.operation_completion.reason =
+    "recon_waypoint_reached";
+  var unrelatedFailedOperation = operationResult(
+    "unrelated-failed",
+    "unrelated-failed-update",
+    "다른 실패 작전",
+    "attack",
+    13,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  unrelatedFailedOperation.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  unrelatedFailedOperation.intervention.command_execution.failed = true;
+  unrelatedFailedOperation.intervention.command_execution.blocker_reason =
+    "must_not_leak_into_canonical_chat";
+  var canonicalChatPendingId = rememberServerPending(
+    canonicalChatCommand,
+    canonicalChatUpdateId,
+    OPERATION_SCOPE
+  );
+  bindActiveCommandConsoleUpdate(
+    canonicalChatCommand,
+    canonicalChatPendingId,
+    OPERATION_SCOPE,
+    canonicalChatUpdateId
+  );
+  var canonicalChatStatus = serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: canonicalChatUpdateId,
+      assistant_message: "정찰 waypoint 완료를 확인했습니다."
+    },
+    update: {
+      update_id: canonicalChatUpdateId,
+      vector: { goal: canonicalChatCommand }
+    },
+    intervention: {
+      latest_update_id: canonicalChatUpdateId,
+      telemetry_frame: 12,
+      command_execution:
+        canonicalChatOperation.intervention.command_execution
+    },
+    operations: [
+      unrelatedFailedOperation,
+      canonicalChatOperation
+    ]
+  }, OPERATION_SCOPE);
+  renderMicroMachineStatus(canonicalChatStatus);
+  assert(!hasPending(OPERATION_SCOPE, canonicalChatUpdateId));
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert(
+    nodes["active-command-console"].className.includes(
+      "command-console-verified"
+    )
+  );
+  assert(
+    !nodes["active-command-console"].className.includes(
+      "command-console-blocked"
+    )
+  );
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "권위 완료 조건 확인"
+    )
+  );
+  assert(
+    !nodes["command-console-verification"].textContent.includes(
+      "must_not_leak_into_canonical_chat"
+    )
+  );
+  assert(
+    nodes["command-console-announcement"].textContent.includes("실행 확인")
+  );
+  assert(
+    !nodes["command-console-announcement"].textContent.includes("실행 실패")
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].className,
+    "micro-badge micro-badge-applied"
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "실행 확인"
+  );
+  var canonicalChatEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(canonicalChatCommand);
+    }
+  );
+  assert(canonicalChatEntry);
+  assert.strictEqual(
+    canonicalChatEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "executed"
+  );
+  assert(canonicalChatEntry.textContent.includes("권위 완료 조건"));
+  assert(!canonicalChatEntry.textContent.includes("실행 실패"));
+
+  appendMicroMachineChatResult(
+    "generic canonical completion",
+    Object.assign({}, canonicalChatStatus, {
+      chat_outcome_status: "executed",
+      command_console_skip_render: true
+    }),
+    ""
+  );
+  var genericCanonicalEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes("generic canonical completion");
+    }
+  );
+  assert(genericCanonicalEntry);
+  assert.strictEqual(
+    genericCanonicalEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "executed"
+  );
+
+  var failedCanonicalCommand = "명시적 실패 우선 검증";
+  var failedCanonicalUpdateId = "failed-canonical-ui-update";
+  var failedCanonicalOperation = operationResult(
+    "failed-canonical-ui",
+    failedCanonicalUpdateId,
+    failedCanonicalCommand,
+    "scouting",
+    14,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  failedCanonicalOperation.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  failedCanonicalOperation.intervention.command_execution.failed = true;
+  failedCanonicalOperation.intervention.command_execution.blocker_manager =
+    "OperationDirector";
+  failedCanonicalOperation.intervention.command_execution.blocker_reason =
+    "explicit_runtime_failure";
+  var failedCanonicalPendingId = rememberServerPending(
+    failedCanonicalCommand,
+    failedCanonicalUpdateId,
+    OPERATION_SCOPE
+  );
+  bindActiveCommandConsoleUpdate(
+    failedCanonicalCommand,
+    failedCanonicalPendingId,
+    OPERATION_SCOPE,
+    failedCanonicalUpdateId
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: failedCanonicalUpdateId
+    },
+    update: {
+      update_id: failedCanonicalUpdateId,
+      vector: { goal: failedCanonicalCommand }
+    },
+    intervention: {
+      latest_update_id: failedCanonicalUpdateId,
+      telemetry_frame: 14,
+      command_execution:
+        failedCanonicalOperation.intervention.command_execution
+    },
+    operations: [failedCanonicalOperation]
+  }, OPERATION_SCOPE));
+  assert(!hasPending(OPERATION_SCOPE, failedCanonicalUpdateId));
+  var failedCanonicalKey = operationRecordKey(
+    OPERATION_SCOPE,
+    "failed-canonical-ui"
+  );
+  var failedCanonicalRecord = operationRecords[failedCanonicalKey];
+  assert(failedCanonicalRecord);
+  assert.strictEqual(failedCanonicalRecord.disposition, "blocked");
+  assert.strictEqual(failedCanonicalRecord.terminal, true);
+  assert.strictEqual(
+    failedCanonicalRecord.node.parentNode.id,
+    "operation-lane-waiting"
+  );
+  assert.strictEqual(
+    failedCanonicalRecord.node.querySelector(
+      ".operation-card-state"
+    ).textContent,
+    "실행 실패"
+  );
+  assert(
+    failedCanonicalRecord.node.className.includes("command-console-blocked")
+  );
+  assert(
+    !failedCanonicalRecord.node.className.includes(
+      "command-console-verified"
+    )
+  );
+  var failedCanonicalStateNode = failedCanonicalRecord.node.querySelector(
+    ".operation-card-state"
+  );
+  assert.strictEqual(failedCanonicalStateNode.getAttribute("role"), "status");
+  assert.strictEqual(
+    failedCanonicalStateNode.getAttribute("aria-live"),
+    "polite"
+  );
+  assert.strictEqual(
+    failedCanonicalStateNode.getAttribute("aria-atomic"),
+    "true"
+  );
+  var failedCanonicalStages = failedCanonicalRecord.node.querySelectorAll(
+    ".operation-stage"
+  );
+  assert.strictEqual(failedCanonicalStages.length, 4);
+  assert.deepStrictEqual(
+    failedCanonicalStages.map(function(stage) {
+      return stage.textContent;
+    }),
+    ["해석", "배정", "제출", "관측"]
+  );
+  failedCanonicalStages.slice(0, 3).forEach(function(stage) {
+    assert(stage.className.includes("stage-done"));
+  });
+  assert(failedCanonicalStages[3].className.includes("stage-blocked"));
+  assert(!failedCanonicalStages[3].className.includes("stage-done"));
+  failedCanonicalStages.forEach(function(stage) {
+    assert.strictEqual(stage.getAttribute("role"), "listitem");
+    assert.strictEqual(stage.getAttribute("aria-current"), "false");
+    assert(!stage.className.includes("stage-verified"));
+  });
+  var failedCanonicalActions = failedCanonicalRecord.node
+    .querySelector(".operation-card-actions")
+    .querySelectorAll("button");
+  assert.strictEqual(failedCanonicalActions.length, 5);
+  assert.deepStrictEqual(
+    failedCanonicalActions.map(function(action) {
+      return action.getAttribute("data-operation-action");
+    }),
+    ["view", "revise", "reinforce", "retarget", "cancel"]
+  );
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(
+    nodes["active-command-console"].className.includes(
+      "command-console-blocked"
+    )
+  );
+  assert(
+    !nodes["active-command-console"].className.includes(
+      "command-console-verified"
+    )
+  );
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "explicit_runtime_failure"
+    )
+  );
+  assert(
+    !nodes["command-console-verification"].textContent.includes(
+      "권위 완료 조건 확인"
+    )
+  );
+  assert(nodes["command-stage-verify"].className.includes("stage-blocked"));
+  assert.strictEqual(
+    nodes["command-stage-verify"].getAttribute("aria-current"),
+    "false"
+  );
+  assert(
+    nodes["command-stage-verify"].getAttribute("aria-label").includes("차단")
+  );
+  assert(
+    nodes["command-console-announcement"].textContent.includes("실행 실패")
+  );
+  assert(
+    nodes["command-console-announcement"].textContent.includes(
+      "explicit_runtime_failure"
+    )
+  );
+  assert(
+    !nodes["command-console-announcement"].textContent.includes(
+      "권위 완료 조건 확인"
+    )
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].className,
+    "micro-badge micro-badge-blocked"
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "실행 실패"
+  );
+  var failedCanonicalEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(failedCanonicalCommand);
+    }
+  );
+  assert(failedCanonicalEntry);
+  assert.strictEqual(
+    failedCanonicalEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "blocked"
+  );
+  assert(failedCanonicalEntry.textContent.includes("실행 실패"));
+  assert(failedCanonicalEntry.textContent.includes("explicit_runtime_failure"));
+  assert(!failedCanonicalEntry.textContent.includes("권위 완료 조건"));
+  assert(!failedCanonicalEntry.textContent.includes("실행 확인"));
 
   var manyActiveOperations = [];
   for (var operationIndex = 0; operationIndex < 30; operationIndex += 1) {

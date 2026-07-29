@@ -12689,6 +12689,12 @@ function commandConsoleStageModel(data) {
       )
     )
   );
+  var canonicalCompletionVerified = Boolean(
+    canonicalCompletion &&
+    !cancelled &&
+    !superseded &&
+    !failed
+  );
   var effectObserved = Boolean(
     observedEffect && !cancelled && !superseded && !failed
   );
@@ -12745,9 +12751,10 @@ function commandConsoleStageModel(data) {
     cancellationCleanupVerified: cancellationCleanupVerified,
     superseded: superseded,
     canonicalCompletion: canonicalCompletion,
+    canonicalCompletionVerified: canonicalCompletionVerified,
     blocked: failed,
     terminal: (
-      canonicalCompletion ||
+      canonicalCompletionVerified ||
       cancellationCleanupVerified ||
       failed ||
       superseded ||
@@ -12758,7 +12765,7 @@ function commandConsoleStageModel(data) {
       interpret: interpreted,
       assign: assignmentReady,
       execute: actionIssued,
-      verify: effectObserved || canonicalCompletion
+      verify: effectObserved || canonicalCompletionVerified
     }
   };
 }
@@ -12986,11 +12993,36 @@ function commandConsoleVerification(data, model) {
       "作战已替换：新命令替代了此作战。"
     );
   }
+  if (model.blocked) {
+    var blockerManager = model.execution.blocker_manager || "TacticalEvidence";
+    var blockerReason = (
+      model.execution.blocker_reason ||
+      compileResult.refusal_reason ||
+      compileResult.clarification_prompt ||
+      intervention.refusal_reason ||
+      ((model.execution.completed === true || model.execution.state === "completed")
+        ? commandUiText(
+          "effect_observed 증거가 없습니다.",
+          "effect_observed evidence is missing.",
+          "缺少 effect_observed 证据。"
+        )
+        : commandUiText(
+          "실제 효과 확인 단계에서 중단되었습니다.",
+          "Execution stopped during effect verification.",
+          "执行在效果确认阶段停止。"
+        ))
+    );
+    return commandUiText(
+      "실행 중단: ",
+      "Execution stopped: ",
+      "执行停止："
+    ) + blockerManager + " · " + blockerReason;
+  }
   if (model.effectObserved) {
     return commandUiText("실제 게임 상태 확인 완료: ", "Observed in live game state: ", "已在实际游戏状态确认：") +
       (parts.length ? parts.join(" · ") : commandUiText("요청 효과 관측", "requested effect observed", "已观察到请求效果"));
   }
-  if (model.canonicalCompletion) {
+  if (model.canonicalCompletionVerified) {
     return commandUiText(
       "MicroMachine 권위 완료 조건 확인: ",
       "MicroMachine canonical completion confirmed: ",
@@ -13017,31 +13049,6 @@ function commandConsoleVerification(data, model) {
       "The web commander received the order. Structured LLM interpretation is starting.",
       "网页指挥官已收到命令，正在开始 LLM 结构化解析。"
     );
-  }
-  if (model.blocked) {
-    var blockerManager = model.execution.blocker_manager || "TacticalEvidence";
-    var blockerReason = (
-      model.execution.blocker_reason ||
-      compileResult.refusal_reason ||
-      compileResult.clarification_prompt ||
-      intervention.refusal_reason ||
-      ((model.execution.completed === true || model.execution.state === "completed")
-        ? commandUiText(
-          "effect_observed 증거가 없습니다.",
-          "effect_observed evidence is missing.",
-          "缺少 effect_observed 证据。"
-        )
-        : commandUiText(
-          "실제 효과 확인 단계에서 중단되었습니다.",
-          "Execution stopped during effect verification.",
-          "执行在效果确认阶段停止。"
-        ))
-    );
-    return commandUiText(
-      "실행 중단: ",
-      "Execution stopped: ",
-      "执行停止："
-    ) + blockerManager + " · " + blockerReason;
   }
   if (model.actionIssued) {
     return commandUiText(
@@ -13087,7 +13094,7 @@ function commandConsoleStateLabel(model) {
   if (model.effectObserved) {
     return commandUiText("실행 확인", "Execution verified", "执行已确认");
   }
-  if (model.canonicalCompletion) {
+  if (model.canonicalCompletionVerified) {
     return commandUiText("실행 확인", "Execution verified", "执行已确认");
   }
   if (model.submissionDelayed) {
@@ -13120,7 +13127,7 @@ function commandConsoleClassName(model) {
   if (model.superseded) { return "active-command-console command-console-superseded"; }
   if (model.blocked) { return "active-command-console command-console-blocked"; }
   if (model.effectObserved) { return "active-command-console command-console-verified"; }
-  if (model.canonicalCompletion) {
+  if (model.canonicalCompletionVerified) {
     return "active-command-console command-console-verified";
   }
   if (model.submissionDelayed) { return "active-command-console command-console-interpreting"; }
@@ -13335,6 +13342,69 @@ function commandOperationData(operation, parentData) {
       : [],
     telemetry_current: operation.telemetry_current === true
   };
+}
+
+function commandConsoleDataForCanonicalOperation(data, updateId) {
+  if (!data || typeof data !== "object" || !updateId) { return data; }
+  var normalizedUpdateId = String(updateId);
+  var candidates = [];
+  commandOperationPayloads(data).forEach(function(operation) {
+    var candidate = commandOperationData(operation, data);
+    if (!candidate.battlefield_operation) { return; }
+    var execution = (candidate.intervention || {}).command_execution || {};
+    var payloadUpdateId = operationPayloadUpdateId(operation);
+    var executionUpdateId = String(execution.command_id || "");
+    var ownerUpdateId = String(
+      candidate.operation_console_execution_owner_update_id || ""
+    );
+    var matchRank = 0;
+    if (payloadUpdateId === normalizedUpdateId) {
+      matchRank = 3;
+    } else if (executionUpdateId === normalizedUpdateId) {
+      matchRank = 2;
+    } else if (ownerUpdateId === normalizedUpdateId) {
+      matchRank = 1;
+    }
+    if (!matchRank) { return; }
+    candidates.push({
+      data: candidate,
+      matchRank: matchRank,
+      generation: Number(candidate.operation_generation || 0),
+      frame: commandConsoleTelemetryFrame(candidate)
+    });
+  });
+  if (!candidates.length) { return data; }
+  candidates.sort(function(left, right) {
+    if (left.matchRank !== right.matchRank) {
+      return right.matchRank - left.matchRank;
+    }
+    if (left.generation !== right.generation) {
+      return right.generation - left.generation;
+    }
+    return right.frame - left.frame;
+  });
+  var operationData = candidates[0].data;
+  var result = Object.assign({}, data, operationData);
+  [
+    "compile_result",
+    "update",
+    "command_queue"
+  ].forEach(function(field) {
+    if (
+      operationData[field] &&
+      typeof operationData[field] === "object" &&
+      !Object.keys(operationData[field]).length
+    ) {
+      result[field] = data[field] || operationData[field];
+    }
+  });
+  if (!operationData.latest_request && data.latest_request) {
+    result.latest_request = data.latest_request;
+  }
+  if (!operationData.command_text && data.command_text) {
+    result.command_text = data.command_text;
+  }
+  return result;
 }
 
 function operationPayloadSessionEpoch(data, operations) {
@@ -14690,6 +14760,9 @@ function renderOperationCard(record) {
     operation_id: record.operationId
   };
   var model = commandConsoleStageModel(data);
+  var canonicalCompletionVerified = Boolean(
+    model.canonicalCompletionVerified
+  );
   var card = record.node || document.createElement("article");
   record.node = card;
   var cardFingerprint = JSON.stringify({
@@ -14739,7 +14812,7 @@ function renderOperationCard(record) {
   state.setAttribute("role", "status");
   state.setAttribute("aria-live", "polite");
   state.setAttribute("aria-atomic", "true");
-  state.textContent = operationCanonicalCompletion(data)
+  state.textContent = canonicalCompletionVerified
     ? commandUiText("실행 확인", "Execution verified", "执行已确认")
     : (
       model.effectObserved
@@ -14761,7 +14834,7 @@ function renderOperationCard(record) {
   ].forEach(function(stageDefinition) {
     var stageName = stageDefinition[0];
     var stage = document.createElement("span");
-    var stageState = operationCanonicalCompletion(data)
+    var stageState = canonicalCompletionVerified
       ? "stage-done"
       : commandConsoleStageState(stageName, model);
     stage.className = "operation-stage " + stageState;
@@ -15343,6 +15416,10 @@ function renderActiveCommandConsole(data, force) {
     data,
     activeCommandConsoleRecord.updateId
   );
+  scopedData = commandConsoleDataForCanonicalOperation(
+    scopedData,
+    activeCommandConsoleRecord.updateId
+  );
   if (activeCommandConsoleRecord.observationTimedOut) {
     scopedData = Object.assign({}, scopedData, {
       command_console_observation_delayed: true
@@ -15794,14 +15871,26 @@ function renderMicroMachineLogSnippets(snippets) {
   });
 }
 
-function updateMicroMachineBadge(intervention, status) {
+function updateMicroMachineBadge(data, updateId) {
   var badge = document.getElementById("micromachine-applied-badge");
   if (!badge) { return; }
-  var execution = (intervention && intervention.command_execution) || {};
-  var model = commandConsoleStageModel({
-    status: status,
-    intervention: intervention || {}
-  });
+  var normalizedUpdateId = String(
+    updateId ||
+    commandConsolePreferredUpdateId(data || {}) ||
+    microMachineUpdateId(data || {}) ||
+    ""
+  );
+  var scopedData = commandConsoleDataForUpdate(
+    data || {},
+    normalizedUpdateId
+  );
+  scopedData = commandConsoleDataForCanonicalOperation(
+    scopedData,
+    normalizedUpdateId
+  );
+  var intervention = scopedData.intervention || {};
+  var status = scopedData.consumption_status || scopedData.status || "";
+  var model = commandConsoleStageModel(scopedData);
   badge.className = "micro-badge micro-badge-pending";
   if (model.cancelled) {
     if (!commandConsoleTerminalCleanupVerified(model)) {
@@ -15821,14 +15910,14 @@ function updateMicroMachineBadge(intervention, status) {
     badge.textContent = commandUiText("작전 교체", "Order superseded", "作战已替换");
     return;
   }
-  if (model.effectObserved) {
-    badge.className = "micro-badge micro-badge-applied";
-    badge.textContent = commandUiText("실행 확인", "Effect verified", "效果已确认");
-    return;
-  }
   if (model.blocked) {
     badge.className = "micro-badge micro-badge-blocked";
     badge.textContent = commandUiText("실행 실패", "Execution blocked", "执行失败");
+    return;
+  }
+  if (model.effectObserved || model.canonicalCompletionVerified) {
+    badge.className = "micro-badge micro-badge-applied";
+    badge.textContent = commandUiText("실행 확인", "Effect verified", "效果已确认");
     return;
   }
   if (model.actionIssued) {
@@ -15875,7 +15964,11 @@ function renderMicroMachineIntervention(data) {
   setMicroMachineText("micromachine-command-execution", formatMicroMachineCommandExecution(intervention.command_execution));
   setMicroMachineText("micromachine-refusal", intervention.refusal_reason);
   renderMicroMachineLogSnippets(intervention.log_snippets);
-  updateMicroMachineBadge(intervention, data && data.consumption_status);
+  updateMicroMachineBadge(
+    data || {},
+    activeCommandConsoleRecord.updateId ||
+      commandConsolePreferredUpdateId(data || {})
+  );
   var raw = document.getElementById("micromachine-raw-evidence");
   if (raw) {
     raw.textContent = JSON.stringify({
@@ -16641,30 +16734,15 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
         )
       });
     }
-    var outcomeStatus = "partially_executed";
-    if (terminalForUpdate) {
-      outcomeStatus = "clarification";
-    } else if (
-      executionState === "completed" &&
-      microMachineExecutionEffectObserved(execution)
-    ) {
-      outcomeStatus = "executed";
-    } else if (executionState === "completed") {
-      outcomeStatus = "blocked";
-    } else if (
-      executionState === "superseded" ||
-      executionState === "cancelled" ||
-      executionState === "canceled"
-    ) {
-      outcomeStatus = "clarification";
-    } else if (
-      executionState === "failed" ||
-      executionState === "expired" ||
-      executionState === "blocked" ||
-      executionState === "rejected"
-    ) {
-      outcomeStatus = "blocked";
-    }
+    narrationData = commandConsoleDataForUpdate(narrationData, updateId);
+    narrationData = commandConsoleDataForCanonicalOperation(
+      narrationData,
+      updateId
+    );
+    var outcomeStatus = microMachineChatOutcomeStatus(
+      narrationData,
+      terminalForUpdate ? "clarification" : ""
+    );
     terminalHandled = true;
     if (updateId === compileUpdateId) {
       resultIdentityHandled = true;
@@ -16700,22 +16778,64 @@ function microMachineAssistantMessage(compileResult, vector) {
   return "";
 }
 
-function microMachineChatNarration(data) {
-  var intervention = (data && data.intervention) || {};
+function microMachineChatOutcomeStatus(data, requestedStatus) {
+  var model = commandConsoleStageModel(data || {});
   var compileResult = (data && data.compile_result) || {};
+  var accepted = data && data.accepted !== false && data.ok !== false;
+  if (model.cancelled || model.superseded) {
+    return "clarification";
+  }
+  if (
+    compileResult.clarification_prompt ||
+    compileResult.status === "clarification_required"
+  ) {
+    return "clarification";
+  }
+  if (model.blocked) {
+    return (
+      compileResult.refusal_reason ||
+      compileResult.status === "refused" ||
+      !accepted
+    ) ? "clarification" : "blocked";
+  }
+  if (model.effectObserved || model.canonicalCompletionVerified) {
+    return "executed";
+  }
+  if (!accepted || requestedStatus === "clarification") {
+    return "clarification";
+  }
+  if (requestedStatus === "blocked") {
+    return "blocked";
+  }
+  return "partially_executed";
+}
+
+function microMachineChatNarration(data) {
+  var narrationUpdateId = commandConsolePreferredUpdateId(data || {}) ||
+    microMachineUpdateId(data || {});
+  var scopedData = commandConsoleDataForUpdate(
+    data || {},
+    narrationUpdateId
+  );
+  scopedData = commandConsoleDataForCanonicalOperation(
+    scopedData,
+    narrationUpdateId
+  );
+  var intervention = scopedData.intervention || {};
+  var compileResult = scopedData.compile_result || {};
   var vector = compileResult.vector || {};
   var assistantMessage = microMachineAssistantMessage(compileResult, vector);
   var execution = intervention.command_execution || {};
-  var model = commandConsoleStageModel(data || {});
+  var model = commandConsoleStageModel(scopedData);
   var parts = [];
   if (assistantMessage) { parts.push(assistantMessage); }
-  if (data && data.status === "queued") {
+  if (scopedData.status === "queued") {
     parts.push(commandUiText(
       "명령을 해석하고 있습니다. 같은 작전 카드에서 다음 단계가 계속 갱신됩니다.",
       "Interpreting the order. The same operation card will keep updating.",
       "正在解析命令，同一张作战卡会持续更新。"
     ));
-  } else if (compileResult.refusal_reason || compileResult.clarification_prompt || data && data.accepted === false) {
+  } else if (compileResult.refusal_reason || compileResult.clarification_prompt || scopedData.accepted === false) {
     parts.push(commandUiText(
       "명령을 실행하지 못했습니다.",
       "The order could not be executed.",
@@ -16751,17 +16871,23 @@ function microMachineChatNarration(data) {
       "Order superseded: a newer order replaced the operation.",
       "作战已替换：新命令替代了原作战。"
     ));
+  } else if (model.blocked) {
+    parts.push(commandUiText(
+      "실행 실패: 실제 효과 확인까지 도달하지 못했습니다.",
+      "Execution blocked: the order did not reach observed effect confirmation.",
+      "执行失败：命令未达到实际效果确认。"
+    ));
   } else if (model.effectObserved) {
     parts.push(commandUiText(
       "실행 확인: 실제 게임 상태에서 명령 효과를 확인했습니다.",
       "Execution verified: the requested effect was observed in the game state.",
       "执行已确认：已在游戏状态中观察到请求效果。"
     ));
-  } else if (model.blocked) {
+  } else if (model.canonicalCompletionVerified) {
     parts.push(commandUiText(
-      "실행 실패: 실제 효과 확인까지 도달하지 못했습니다.",
-      "Execution blocked: the order did not reach observed effect confirmation.",
-      "执行失败：命令未达到实际效果确认。"
+      "실행 확인: MicroMachine 권위 완료 조건으로 작전 완료를 확인했습니다.",
+      "Execution verified: MicroMachine confirmed the operation's canonical completion conditions.",
+      "执行已确认：MicroMachine 已确认作战的权威完成条件。"
     ));
   } else if (model.actionIssued) {
     parts.push(commandUiText(
@@ -16788,11 +16914,11 @@ function microMachineChatNarration(data) {
       "正在把命令送入 MicroMachine 执行路径。"
     ));
   }
-  var goal = commandConsoleGoal(data || {});
+  var goal = commandConsoleGoal(scopedData);
   if (goal) {
     parts.push(commandUiText("작전: ", "Operation: ", "作战：") + goal);
   }
-  var commandQueue = (data && data.command_queue) || intervention.command_queue || compileResult.command_queue || {};
+  var commandQueue = scopedData.command_queue || intervention.command_queue || compileResult.command_queue || {};
   var supersededIds = Array.isArray(commandQueue.superseded_update_ids)
     ? commandQueue.superseded_update_ids
     : [];
@@ -16841,33 +16967,29 @@ function removeMicroMachineChatPending(text, pendingId) {
 }
 
 function appendMicroMachineChatResult(text, data, pendingId) {
-  if (!(data && data.command_console_skip_render)) {
-    renderActiveCommandConsole(data || {});
+  var resultUpdateId = commandConsolePreferredUpdateId(data || {}) ||
+    microMachineUpdateId(data || {});
+  var resultData = commandConsoleDataForUpdate(
+    data || {},
+    resultUpdateId
+  );
+  resultData = commandConsoleDataForCanonicalOperation(
+    resultData,
+    resultUpdateId
+  );
+  if (!resultData.command_console_skip_render) {
+    renderActiveCommandConsole(resultData);
   }
   var removed = removeMicroMachineChatPending(text, pendingId);
   if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
-  var accepted = data && data.accepted !== false && data.ok !== false;
-  var outcomeStatus = data && data.chat_outcome_status;
-  var execution = data && data.intervention && data.intervention.command_execution
-    ? data.intervention.command_execution
-    : {};
-  if (
-    outcomeStatus !== "executed" &&
-    outcomeStatus !== "partially_executed" &&
-    outcomeStatus !== "clarification" &&
-    outcomeStatus !== "blocked"
-  ) {
-    outcomeStatus = accepted && microMachineExecutionEffectObserved(execution)
-      ? "executed"
-      : (accepted ? "partially_executed" : "clarification");
-  }
-  if (outcomeStatus === "executed" && !microMachineExecutionEffectObserved(execution)) {
-    outcomeStatus = "partially_executed";
-  }
+  var outcomeStatus = microMachineChatOutcomeStatus(
+    resultData,
+    resultData.chat_outcome_status
+  );
   appendLog({
     command_text: text,
     status: outcomeStatus,
-    narration: microMachineChatNarration(data || {})
+    narration: microMachineChatNarration(resultData)
   });
   if (!removed) {
     updateAssistantPendingState();
