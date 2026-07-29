@@ -15,8 +15,9 @@ voiStarcraft2의 UX 대목표는 다음 한 문장이다.
 실행 단계, 인게임 HUD와 SSE 기반 실시간 상태 갱신이 있다. 1초 폴링은 SSE
 장애 때만 fallback으로 동작한다. 명시적 resize/reinforce/retarget/transfer는
 같은 작전 카드의 새 generation으로 반영되고, 병력 변화와 충돌 해결 증거를
-표시한다. 전술 음성 readback과 전장 지도 기반 작전 편집은 후속 구현
-대상이다.
+표시한다. push-to-talk 단일 transcript와 Tactical Radio readback/callout도
+기존 command dock 안에 구현되어 있다. 전장 지도 기반 작전 편집과 실제
+SC2 화면·게임 음량을 포함한 최종 live QA는 후속 검증 대상이다.
 
 ## 1. Capability Boundary
 
@@ -60,8 +61,8 @@ flowchart LR
 | 웹 상태 전송 | **Implemented: SSE primary** | `/api/events`가 state, history, MicroMachine lifecycle을 push하며 1000ms polling은 연결 장애 때만 fallback으로 동작한다. |
 | SSE 이벤트 스트리밍 | **Implemented** | append-only journal, 전역 `event_seq`, heartbeat, `Last-Event-ID` replay, snapshot 재동기화를 지원한다. |
 | 전장 상황 cockpit | **Implemented: pre-live** | 기존 Operation card를 planning/executing/completed/waiting 네 lane으로 이동시키고, canonical ownership/readiness와 operation timeline을 표시한다. 실제 SC2 화면 체감은 사용자 live QA가 최종 gate다. |
-| 음성 입력과 녹음 waveform | **Implemented** | 브라우저 SpeechRecognition 결과가 일반 명령 경로로 들어간다. |
-| 전술 radio TTS/readback | **Proposed** | 짧은 편성 확인, 차단, 교전 시작을 음성으로 알려주는 기능은 아직 완성되지 않았다. |
+| 음성 입력과 녹음 waveform | **Implemented: pre-live** | 한 recording session의 partial/final transcript가 같은 DOM node에서 갱신되고 text와 같은 bounded command gateway에 정확히 한 번 제출된다. |
+| 전술 radio TTS/readback | **Implemented: pre-live** | exact operation ID/generation을 포함한 계획 확인과 권위 있는 lifecycle callout을 자막으로 유지하고, 지원 브라우저에서만 우선순위 TTS로 읽는다. 실제 SC2 음량·화면 체감은 live QA가 최종 gate다. |
 | 명시적 병력 이관/편집 UX | **Implemented: pre-live** | resize, reinforce, retarget, transfer, cancel을 typed operation edit로 처리하고 기존 카드에서 전후 편성·counterpart·해결 결과를 표시한다. 실제 SC2 이관 이동은 live QA가 최종 gate다. |
 | 모든 Terran 유닛 live qualification | **Live qualification pending** | 런타임 경로가 있어도 유닛군별 생산부터 HUD까지 동일 수준으로 실전 검증된 것은 아니다. |
 
@@ -443,14 +444,17 @@ flowchart LR
 
 1. 사용자가 누르고 말하는 동안 waveform과 부분 transcript를 같은 말풍선에
    표시한다.
-2. LLM 계획이 확정되면 `"정찰 2, 우회 공격 4로 분리"`처럼 1문장으로
-   readback한다.
-3. 동시에 두 operation 카드가 즉시 나타나고 각 편성 과정을 보여준다.
-4. MicroMachine이 실제 유닛을 배정하면 `"정찰조 2기 배정 완료"`처럼 짧게
+2. final result와 recognition `onend` 순서가 달라도 한 번만 제출하고, 같은
+   말풍선을 pending/result surface로 계속 사용한다.
+3. LLM/compiler 계획이 확정되면 exact operation ID/generation, 편성, task,
+   target, route, lifetime을 `계획 확인`으로 readback한다.
+4. 계획 publish만으로 배정, SC2 제출, 이동을 주장하지 않는다.
+5. 동시에 여러 operation 카드가 나타나고 각 편성 과정을 보여준다.
+6. MicroMachine이 실제 유닛을 배정하면 `"정찰조 2기 배정 완료"`처럼 짧게
    알린다.
-5. 이동, 교전 시작, 중요 blocker, 긴급 종료만 음성 callout한다.
-6. 매 프레임 또는 사소한 상태 변경을 읽지 않는다. 음성이 게임 소리를
-   방해하지 않도록 cooldown과 priority를 둔다.
+7. 이동, 교전 시작, 목표 도달, 중요 blocker, 긴급 종료만 음성 callout한다.
+8. 매 프레임 또는 사소한 상태 변경을 읽지 않는다. 음성이 게임 소리를
+   방해하지 않도록 cooldown, priority, dedupe를 둔다.
 
 권장 audio priority:
 
@@ -461,8 +465,29 @@ flowchart LR
 | P2 | 편성 완료, 이동 시작, 교전 시작, 목표 도달 |
 | P3 | 생산 진행, 일반 상태 변경. 기본은 화면에만 표시 |
 
-현재 구현된 것은 브라우저 음성 인식과 녹음 waveform이다. 전술 TTS/radio
-feedback은 구현 완료로 표시하면 안 된다.
+구현된 radio 계약:
+
+- 한 recording session은
+  `listening -> finalizing -> pending/bound -> completed|failed`로 진행하고
+  DOM/accessibility identity를 유지한다.
+- caption은 항상 남고 TTS unavailable 또는 mute 상태여도 명령 제출과
+  실행 추적은 계속된다.
+- queue는 최대 8개, caption history는 최대 20개다. TTS plan readback은
+  최대 180자와 최대 3개 operation으로 제한한다.
+- P0는 P1/P2 speech를 중단하고 obsolete P2/P3 queue를 제거한다. P1은 P2를
+  중단한다.
+- 같은 operation generation의 P2 progression은
+  `plan < assigned < moving < engaged < reached < completed` 순서에서 최신
+  상태만 남긴다.
+- initial snapshot은 frame high-water만 hydration하고 과거 audio를 만들지
+  않는다. stale generation, requested-generation mismatch, frame regression,
+  오래된 replay callout은 억제한다.
+- blackboard scope가 바뀌면 speech, queue, dedupe, frame high-water,
+  caption history를 초기화한다.
+
+이 구현은 브라우저/Node 계약 수준의 pre-live 완료다. 실제 StarCraft II
+게임 소리와 TTS의 충돌, 브라우저별 음성 품질, 유닛 행동과 callout의 체감
+일치는 사용자 live QA와 최종 release gate에서 검증한다.
 
 ## 11. Web Cockpit Target Layout
 
@@ -739,13 +764,19 @@ production/prerequisite
   reduced-motion, forced-colors, accessibility role 회귀 검증
 - 실제 게임에서 카드와 유닛 행동의 체감 일치는 사용자 live QA가 최종 gate
 
-### P1: Voice Tactical Loop
+### Completed: Voice Tactical Loop
 
-- 부분 transcript를 기존 단일 말풍선에서 갱신
-- 짧은 계획 readback
-- event priority와 audio cooldown
-- P0/P1/P2 이벤트만 선별 TTS
-- 웹 음성과 SC2 게임 음량 충돌 QA
+- partial/final transcript와 pending/result를 같은 voice session node에서 갱신
+- final/onend 순서와 무관한 exactly-once command submission
+- transcript failure의 동일 node visual fallback
+- exact operation ID/generation, 편성, task, target, route, lifetime 계획 readback
+- `published/compiled = 계획 확인`과 assignment/submission/movement 문구 분리
+- P0/P1/P2/P3 scheduler, cooldown, dedupe, interruption, P2 progression compaction
+- snapshot hydration, stale generation/frame/requested-generation, old replay 억제
+- mute/TTS unavailable에서도 caption과 command execution 유지
+- 한국어/영어와 명시적 중국어 영어 fallback, mobile, reduced-motion,
+  forced-colors, ARIA 계약
+- 실제 SC2 게임 음량과 브라우저 음성 체감은 live QA gate
 
 ### P1: Defense Qualification
 

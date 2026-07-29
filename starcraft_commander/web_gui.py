@@ -8272,6 +8272,9 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       animation: none !important;
       transform: none;
     }
+    .tactical-radio-status.is-speaking::before {
+      animation: none !important;
+    }
   }
   @media (prefers-contrast: more) {
     :root {
@@ -8293,11 +8296,12 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .operation-lane, .operation-card-detail, .operation-timeline-panel,
     .operation-timeline-item,
     .active-command-console, .battlefield-control-overview,
-    .command-console-field, .command-stage {
+    .command-console-field, .command-stage, .tactical-radio {
       forced-color-adjust: auto; background: Canvas; color: CanvasText;
       border-color: CanvasText; box-shadow: none; backdrop-filter: none;
     }
-    #send-button, #voice-button, #llm-panel button, .runtime-actions button {
+    #send-button, #voice-button, #tactical-radio-mute,
+    #llm-panel button, .runtime-actions button {
       background: ButtonFace; color: ButtonText; border: 1px solid ButtonText;
     }
   }
@@ -9041,6 +9045,15 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     0%, 100% { transform: scaleY(0.5); opacity: 0.55; }
     50% { transform: scaleY(1.25); opacity: 1; }
   }
+  .voice-transcript {
+    display: block; margin-top: 5px; min-height: 1.35em;
+    color: #03101e; font-weight: 900;
+  }
+  .voice-transcript-interim { opacity: 0.7; }
+  .voice-session-state {
+    display: inline-block; margin-left: 7px; font-size: 0.68rem;
+    font-weight: 900; color: rgba(3, 16, 30, 0.72);
+  }
   .message-meta { display: block; margin-bottom: 5px; color: rgba(255, 255, 255, 0.72); font-size: 0.74rem; font-weight: 800; }
   .message-bot .message-meta { color: var(--muted); }
   .status { display: none; font-weight: 900; margin-right: 7px; white-space: nowrap; }
@@ -9050,7 +9063,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .status-clarification { color: __COLOR_CLARIFICATION__; }
   .status-read_only { color: __COLOR_READ_ONLY__; }
   #command-form {
-    order: 4;
+    order: 5;
     display: flex; gap: 12px; padding: 16px 18px; border-top: 1px solid var(--line);
     background: rgba(7, 13, 34, 0.72);
   }
@@ -9071,6 +9084,65 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   #voice-button.recording {
     color: #061126; background: linear-gradient(135deg, var(--amber), var(--accent));
+  }
+  .tactical-radio {
+    order: 4; margin: 0 18px 12px; padding: 11px 12px;
+    border: 1px solid rgba(77, 238, 234, 0.24); border-radius: 17px;
+    background:
+      linear-gradient(135deg, rgba(4, 14, 31, 0.94), rgba(10, 23, 46, 0.84)),
+      radial-gradient(circle at 100% 0, rgba(77, 238, 234, 0.12), transparent 44%);
+  }
+  .tactical-radio-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+  }
+  .tactical-radio-copy { min-width: 0; }
+  .tactical-radio-title {
+    margin: 0; color: var(--ink); font-size: 0.78rem; font-weight: 900;
+    letter-spacing: 0.03em;
+  }
+  .tactical-radio-status {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 3px;
+    color: var(--muted); font-size: 0.66rem; font-weight: 800;
+  }
+  .tactical-radio-status::before {
+    content: ""; width: 6px; height: 6px; border-radius: 999px;
+    background: var(--accent); box-shadow: 0 0 0 3px rgba(77, 238, 234, 0.1);
+  }
+  .tactical-radio-status.is-speaking::before {
+    animation: tactical-radio-pulse 1s ease-in-out infinite;
+  }
+  .tactical-radio-status.is-muted::before,
+  .tactical-radio-status.is-unavailable::before {
+    background: var(--amber); box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.1);
+  }
+  @keyframes tactical-radio-pulse {
+    0%, 100% { transform: scale(0.8); opacity: 0.58; }
+    50% { transform: scale(1.25); opacity: 1; }
+  }
+  #tactical-radio-mute {
+    flex: 0 0 auto; margin: 0; padding: 7px 9px;
+    border: 1px solid var(--line); border-radius: 10px;
+    color: var(--ink); background: rgba(255, 255, 255, 0.07);
+    font-size: 0.66rem; font-weight: 900; cursor: pointer;
+  }
+  .tactical-radio-captions {
+    display: grid; gap: 5px; max-height: 86px; margin: 9px 0 0;
+    padding: 0; overflow-y: auto; list-style: none;
+    overscroll-behavior: contain;
+  }
+  .tactical-radio-caption {
+    display: grid; grid-template-columns: auto minmax(0, 1fr);
+    gap: 7px; align-items: baseline; padding: 6px 7px;
+    border: 1px solid rgba(136, 169, 255, 0.14); border-radius: 9px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+  .tactical-radio-priority {
+    color: var(--accent); font-size: 0.58rem; font-weight: 900;
+  }
+  .tactical-radio-caption-text {
+    min-width: 0; color: var(--ink); font-size: 0.68rem;
+    line-height: 1.35; font-weight: 800; overflow-wrap: anywhere;
   }
   #send-button:disabled, #command-input:disabled, #voice-button:disabled {
     opacity: 0.55; cursor: not-allowed;
@@ -9130,6 +9202,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .operation-console { margin: 10px 10px 0; padding: 12px; }
     .operation-summary { display: inline-block; margin-top: 9px; }
     .active-command-console { margin: 10px 10px 0; padding: 13px; }
+    .tactical-radio { margin: 0 10px 10px; }
+    .tactical-radio-header { align-items: flex-start; }
     .command-console-actions { display: grid; grid-template-columns: 1fr; }
     .command-console-actions button { width: 100%; }
     .command-console-actions .command-emergency-button { margin-left: 0; }
@@ -9332,10 +9406,42 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       </div>
     </section>
     <div id="log" aria-live="off" role="log"></div>
+    <section id="tactical-radio"
+             class="tactical-radio"
+             aria-labelledby="tactical-radio-title">
+      <div class="tactical-radio-header">
+        <div class="tactical-radio-copy">
+          <h2 id="tactical-radio-title"
+              class="tactical-radio-title"
+              data-i18n="tacticalRadioTitle">전술 무전</h2>
+          <span id="tactical-radio-status"
+                class="tactical-radio-status"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                data-i18n="tacticalRadioReady">음성 준비 · 자막은 항상 표시</span>
+        </div>
+        <button id="tactical-radio-mute"
+                type="button"
+                aria-pressed="false"
+                data-i18n="tacticalRadioMute">음소거</button>
+      </div>
+      <ol id="tactical-radio-captions"
+          class="tactical-radio-captions"
+          role="log"
+          aria-live="off"
+          aria-relevant="additions text"
+          aria-label="전술 무전 자막"
+          data-i18n-aria-label="tacticalRadioCaptionsLabel"></ol>
+    </section>
     <form id="command-form">
       <input id="command-input" type="text" autocomplete="off" autofocus
              placeholder="대화하듯 입력하세요. 예: 보급고 지어 / 음성지원도 되나?">
-      <button type="button" id="voice-button" title="Voice input" aria-label="Voice input">◉</button>
+      <button type="button" id="voice-button"
+              title="음성 입력"
+              aria-label="음성 입력"
+              data-i18n-title="voiceInputLabel"
+              data-i18n-aria-label="voiceInputLabel">◉</button>
       <button type="submit" id="send-button" data-i18n="send">전송</button>
     </form>
   </section>
@@ -9606,6 +9712,28 @@ var MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS = 120000;
 var MICROMACHINE_STATUS_POLL_TIMEOUT_MS = 12000;
 var OPERATION_PENDING_RECORD_TIMEOUT_MS = 120000;
 var OPERATION_RECORD_MAXIMUM = 24;
+var TACTICAL_RADIO_MAX_QUEUE = 8;
+var TACTICAL_RADIO_MAX_CAPTION_HISTORY = 20;
+var TACTICAL_RADIO_MAX_SPEECH_CHARS = 180;
+var TACTICAL_RADIO_MAX_PLAN_OPERATIONS = 3;
+var TACTICAL_RADIO_PRIORITY_INTERVAL_MS = {
+  0: 0,
+  1: 1200,
+  2: 3500,
+  3: 0
+};
+var TACTICAL_RADIO_DEDUPE_TTL_MS = {
+  0: 10000,
+  1: 20000,
+  2: 30000,
+  3: 15000
+};
+var TACTICAL_RADIO_REPLAY_MAX_AGE_MS = {
+  0: 8000,
+  1: 15000,
+  2: 12000,
+  3: 0
+};
 var trimmedChatEvents = 0;
 var recentEvents = [];
 var archivedChatEvents = [];
@@ -9640,6 +9768,7 @@ var compactedContext = {
 var pendingCommandSeq = 0;
 var pendingNodes = {};
 var pendingAggregateId = "pending-aggregate";
+var pendingAggregateNode = null;
 var latestMicroMachinePlanText = "";
 var operationRecords = {};
 var operationRecordOrder = [];
@@ -9668,6 +9797,26 @@ var latestState = null;
 var briefingAdviceToggleEnabled = false;
 var recognition = null;
 var isRecording = false;
+var voiceSessionSeq = 0;
+var activeVoiceSession = null;
+var voiceSessionsByPendingId = {};
+var tacticalRadio = {
+  muted: false,
+  supported: Boolean(
+    window.speechSynthesis &&
+    typeof window.SpeechSynthesisUtterance === "function"
+  ),
+  speaking: false,
+  current: null,
+  queue: [],
+  captions: [],
+  dedupe: {},
+  frameHighWater: {},
+  scopeId: "",
+  speechToken: 0,
+  timerId: null,
+  lastSpokenAt: { 0: 0, 1: 0, 2: 0 }
+};
 var liveGuiUrl = "";
 var COMMAND_MODE_MICROMACHINE = "__COMMAND_MODE_MICROMACHINE__";
 var COMMAND_MODE_LEGACY_COMMANDER = "__COMMAND_MODE_LEGACY_COMMANDER__";
@@ -9835,8 +9984,33 @@ var I18N = {
     assistantWaiting: "LLM 응답을 기다리는 중",
     assistantPendingCount: "대기 중인 응답 {count}개",
     voiceListening: "녹음중",
+    voiceFinalizing: "음성 확정 중",
+    voiceTranscriptUnavailable: "음성 transcript를 사용할 수 없습니다.",
+    voiceInputLabel: "음성 입력",
     voiceUnsupported: "이 브라우저는 음성 인식을 지원하지 않습니다.",
     voiceNoResult: "음성이 인식되지 않았습니다.",
+    tacticalRadioTitle: "전술 무전",
+    tacticalRadioCaptionsLabel: "전술 무전 자막",
+    tacticalRadioReady: "음성 준비 · 자막은 항상 표시",
+    tacticalRadioSpeaking: "전술 무전 재생 중 · 자막 활성",
+    tacticalRadioMuted: "음소거됨 · 자막은 계속 활성",
+    tacticalRadioUnavailable: "이 브라우저는 음성 출력을 지원하지 않음 · 자막 활성",
+    tacticalRadioMute: "음소거",
+    tacticalRadioUnmute: "음성 켜기",
+    tacticalPlanConfirmed: "계획 확인",
+    tacticalOperationIdentity: "작전",
+    tacticalForceAssigned: "병력 배정",
+    tacticalMoving: "이동 시작",
+    tacticalEngaged: "교전 시작",
+    tacticalTargetReached: "목표 도달",
+    tacticalCompleted: "작전 완료",
+    tacticalBlocked: "작전 차단",
+    tacticalRouteUnavailable: "경로 불가",
+    tacticalEmergencyRetreat: "긴급 후퇴 시작",
+    tacticalBaseAttack: "본진 공격 감지",
+    tacticalCriticalAbilityFailure: "중요 능력 사용 실패",
+    tacticalForceLoss: "핵심 병력 손실",
+    tacticalSubmittedCaption: "SC2 명령 제출 확인",
     workerUnit: "기",
     idleLabel: "유휴",
     llmTitle: "LLM 설정",
@@ -10021,8 +10195,33 @@ var I18N = {
     assistantWaiting: "Waiting for LLM response",
     assistantPendingCount: "{count} response(s) pending",
     voiceListening: "Recording",
+    voiceFinalizing: "Finalizing speech",
+    voiceTranscriptUnavailable: "Voice transcript unavailable.",
+    voiceInputLabel: "Voice input",
     voiceUnsupported: "This browser does not support speech recognition.",
     voiceNoResult: "No speech was recognized.",
+    tacticalRadioTitle: "Tactical Radio",
+    tacticalRadioCaptionsLabel: "Tactical radio captions",
+    tacticalRadioReady: "Audio ready · captions always active",
+    tacticalRadioSpeaking: "Tactical radio speaking · captions active",
+    tacticalRadioMuted: "Muted · captions remain active",
+    tacticalRadioUnavailable: "Audio unavailable · captions remain active",
+    tacticalRadioMute: "Mute",
+    tacticalRadioUnmute: "Unmute",
+    tacticalPlanConfirmed: "Plan confirmed",
+    tacticalOperationIdentity: "Operation",
+    tacticalForceAssigned: "Force assigned",
+    tacticalMoving: "Movement started",
+    tacticalEngaged: "Engagement started",
+    tacticalTargetReached: "Target reached",
+    tacticalCompleted: "Operation completed",
+    tacticalBlocked: "Operation blocked",
+    tacticalRouteUnavailable: "Route unavailable",
+    tacticalEmergencyRetreat: "Emergency retreat started",
+    tacticalBaseAttack: "Base under attack",
+    tacticalCriticalAbilityFailure: "Critical ability failed",
+    tacticalForceLoss: "Critical force loss",
+    tacticalSubmittedCaption: "SC2 command submission confirmed",
     workerUnit: "",
     idleLabel: "idle",
     llmTitle: "LLM Settings",
@@ -10207,8 +10406,33 @@ var I18N = {
     assistantWaiting: "正在等待 LLM 响应",
     assistantPendingCount: "等待中的响应 {count} 条",
     voiceListening: "录音中",
+    voiceFinalizing: "Finalizing speech",
+    voiceTranscriptUnavailable: "Voice transcript unavailable.",
+    voiceInputLabel: "语音输入",
     voiceUnsupported: "此浏览器不支持语音识别。",
     voiceNoResult: "未识别到语音。",
+    tacticalRadioTitle: "Tactical Radio",
+    tacticalRadioCaptionsLabel: "Tactical radio captions",
+    tacticalRadioReady: "Audio ready · captions always active",
+    tacticalRadioSpeaking: "Tactical radio speaking · captions active",
+    tacticalRadioMuted: "Muted · captions remain active",
+    tacticalRadioUnavailable: "Audio unavailable · captions remain active",
+    tacticalRadioMute: "Mute",
+    tacticalRadioUnmute: "Unmute",
+    tacticalPlanConfirmed: "Plan confirmed",
+    tacticalOperationIdentity: "Operation",
+    tacticalForceAssigned: "Force assigned",
+    tacticalMoving: "Movement started",
+    tacticalEngaged: "Engagement started",
+    tacticalTargetReached: "Target reached",
+    tacticalCompleted: "Operation completed",
+    tacticalBlocked: "Operation blocked",
+    tacticalRouteUnavailable: "Route unavailable",
+    tacticalEmergencyRetreat: "Emergency retreat started",
+    tacticalBaseAttack: "Base under attack",
+    tacticalCriticalAbilityFailure: "Critical ability failed",
+    tacticalForceLoss: "Critical force loss",
+    tacticalSubmittedCaption: "SC2 command submission confirmed",
     workerUnit: "",
     idleLabel: "空闲",
     llmTitle: "LLM 设置",
@@ -10359,6 +10583,18 @@ function applyLanguage(lang) {
   Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (node) {
     node.textContent = t(node.getAttribute("data-i18n"));
   });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-aria-label]"), function (node) {
+    node.setAttribute(
+      "aria-label",
+      t(node.getAttribute("data-i18n-aria-label"))
+    );
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-title]"), function (node) {
+    node.setAttribute(
+      "title",
+      t(node.getAttribute("data-i18n-title"))
+    );
+  });
   Array.prototype.forEach.call(document.querySelectorAll("[data-lang-button]"), function (button) {
     button.classList.toggle("active", button.getAttribute("data-lang-button") === currentLang);
   });
@@ -10368,6 +10604,17 @@ function applyLanguage(lang) {
   refreshPendingLabels();
   updateAssistantPendingState();
   renderChatTrimNote();
+  renderTacticalRadioState();
+  renderTacticalRadioCaptions();
+  if (
+    activeVoiceSession &&
+    (
+      activeVoiceSession.state === "listening" ||
+      activeVoiceSession.state === "finalizing"
+    )
+  ) {
+    renderVoiceSession(activeVoiceSession);
+  }
   if (latestState) { renderStrategyBriefing(latestState); }
   if (activeCommandConsoleRecord.data) {
     renderActiveCommandConsole(activeCommandConsoleRecord.data, true);
@@ -10495,7 +10742,10 @@ function renderArchivedChatDetails(note) {
 function oldestTrimCandidate() {
   var entries = logBox.querySelectorAll(".log-entry");
   for (var i = 0; i < entries.length; i += 1) {
-    if (entries[i].id !== "voice-recording-entry") {
+    if (
+      entries[i] !== pendingAggregateNode &&
+      (!activeVoiceSession || entries[i] !== activeVoiceSession.node)
+    ) {
       return entries[i];
     }
   }
@@ -10544,12 +10794,24 @@ function renderStartupGuide() {
 }
 
 function appendLog(ev) {
+  var matchedVoiceSession = ev && ev.command_text
+    ? pendingVoiceSessionForCommand(ev.command_text)
+    : null;
   if (ev && typeof ev.seq === "number") {
     recentEvents.push(ev);
     compactRecentEventsIfNeeded();
     if (!removePendingForCommand(ev.command_text || "")) {
       removeOldestPendingCommand();
     }
+  }
+  if (matchedVoiceSession) {
+    renderVoiceSessionTerminal(
+      matchedVoiceSession,
+      String(ev.status || "clarification"),
+      readableCommanderNarration(ev.narration || "")
+    );
+    if (latestState) { renderStrategyBriefing(latestState); }
+    return;
   }
   var entry = document.createElement("div");
   entry.className = "log-entry";
@@ -10624,11 +10886,16 @@ function compactRecentEventsIfNeeded() {
   });
 }
 
-function appendPendingCommand(text) {
+function appendPendingCommand(text, voiceSession) {
   pendingCommandSeq += 1;
   var pendingId = "pending-" + pendingCommandSeq;
   if (!pendingNodes[text]) { pendingNodes[text] = []; }
   pendingNodes[text].push(pendingId);
+  if (voiceSession) {
+    voiceSession.pendingId = pendingId;
+    voiceSession.state = "pending";
+    voiceSessionsByPendingId[pendingId] = voiceSession;
+  }
   renderPendingAggregate(text);
   updateAssistantPendingState();
   logBox.scrollTop = logBox.scrollHeight;
@@ -10645,18 +10912,38 @@ function pendingCommandTexts() {
 }
 
 function renderPendingAggregate(latestText) {
-  var entry = document.getElementById(pendingAggregateId);
   var texts = pendingCommandTexts();
+  var voiceSession = pendingVoiceSessionForPendingTexts();
+  var entry = voiceSession ? voiceSession.node : pendingAggregateNode;
+  if (!entry && !voiceSession) {
+    entry = document.getElementById(pendingAggregateId);
+  }
   if (!texts.length) {
-    if (entry) { entry.remove(); }
+    if (entry && !voiceSessionForNode(entry)) { entry.remove(); }
+    pendingAggregateNode = null;
     return;
   }
   var displayText = latestText || texts[texts.length - 1] || "";
+  if (
+    pendingAggregateNode &&
+    pendingAggregateNode !== entry &&
+    !voiceSessionForNode(pendingAggregateNode)
+  ) {
+    pendingAggregateNode.remove();
+  }
   if (!entry) {
     entry = document.createElement("div");
     entry.className = "log-entry pending-entry";
     entry.id = pendingAggregateId;
     logBox.appendChild(entry);
+  }
+  pendingAggregateNode = entry;
+  if (voiceSession) {
+    voiceSession.state = "pending";
+    entry.className = "log-entry pending-entry voice-session-entry";
+  } else {
+    entry.className = "log-entry pending-entry";
+    entry.id = pendingAggregateId;
   }
   entry.textContent = "";
 
@@ -10668,6 +10955,12 @@ function renderPendingAggregate(latestText) {
   userMeta.textContent = t("userLabel");
   userMessage.appendChild(userMeta);
   appendCompactText(userMessage, displayText, "command-text");
+  if (voiceSession) {
+    var voiceState = document.createElement("span");
+    voiceState.className = "voice-session-state";
+    voiceState.textContent = t("voiceFinalizing");
+    userMessage.appendChild(voiceState);
+  }
   if (texts.length > 1) {
     var aggregateMeta = document.createElement("span");
     aggregateMeta.className = "message-meta";
@@ -10708,40 +11001,855 @@ function clearPendingMicroMachinePlan() {
   updateAssistantPendingState();
 }
 
-function appendMicroMachinePendingPlan(text) {
+function appendMicroMachinePendingPlan(text, voiceSession) {
   latestMicroMachinePlanText = text;
-  var pendingId = appendPendingCommand(text);
+  var pendingId = appendPendingCommand(text, voiceSession);
   beginActiveCommandConsole(text, pendingId);
   return pendingId;
 }
 
 function appendVoiceRecordingBubble() {
-  removeVoiceRecordingBubble();
+  voiceSessionSeq += 1;
   var entry = document.createElement("div");
-  entry.className = "log-entry";
-  entry.id = "voice-recording-entry";
+  entry.className = "log-entry voice-session-entry";
+  entry.id = "voice-session-" + voiceSessionSeq;
+  entry.setAttribute("data-voice-session-id", String(voiceSessionSeq));
+  var session = {
+    sessionId: voiceSessionSeq,
+    state: "listening",
+    segments: [],
+    finalText: "",
+    interimText: "",
+    submitted: false,
+    pendingId: "",
+    error: false,
+    node: entry
+  };
+  activeVoiceSession = session;
+  renderVoiceSession(session);
+  logBox.appendChild(entry);
+  trimChatLog();
+  logBox.scrollTop = logBox.scrollHeight;
+  return session;
+}
+
+function renderVoiceSession(session) {
+  if (!session || !session.node) { return; }
+  var entry = session.node;
+  entry.textContent = "";
   var userMessage = document.createElement("div");
   userMessage.className = "message message-user";
+  userMessage.setAttribute(
+    "data-full-text",
+    session.finalText || session.interimText || ""
+  );
   var meta = document.createElement("span");
   meta.className = "message-meta";
   meta.textContent = t("userLabel");
   userMessage.appendChild(meta);
-  userMessage.appendChild(document.createTextNode(t("voiceListening")));
-  var wave = document.createElement("span");
-  wave.className = "voice-wave";
-  for (var i = 0; i < 5; i += 1) {
-    wave.appendChild(document.createElement("span"));
+  var stateLabel = document.createElement("span");
+  stateLabel.className = "voice-session-state";
+  stateLabel.textContent = session.state === "finalizing"
+    ? t("voiceFinalizing")
+    : t("voiceListening");
+  userMessage.appendChild(stateLabel);
+  if (session.state === "listening") {
+    var wave = document.createElement("span");
+    wave.className = "voice-wave";
+    wave.setAttribute("aria-hidden", "true");
+    for (var i = 0; i < 5; i += 1) {
+      wave.appendChild(document.createElement("span"));
+    }
+    userMessage.appendChild(wave);
   }
-  userMessage.appendChild(wave);
+  var transcriptText = String(
+    session.finalText ||
+    session.interimText ||
+    ""
+  ).trim();
+  if (transcriptText) {
+    var transcript = document.createElement("span");
+    transcript.className = "voice-transcript" +
+      (session.finalText ? "" : " voice-transcript-interim");
+    transcript.textContent = transcriptText;
+    userMessage.appendChild(transcript);
+  }
   entry.appendChild(userMessage);
-  logBox.appendChild(entry);
+}
+
+function removeVoiceRecordingBubble() {
+  if (activeVoiceSession && activeVoiceSession.node) {
+    activeVoiceSession.node.remove();
+  }
+  activeVoiceSession = null;
+}
+
+function voiceSessionForNode(node) {
+  if (!node) { return null; }
+  if (activeVoiceSession && activeVoiceSession.node === node) {
+    return activeVoiceSession;
+  }
+  var match = null;
+  Object.keys(voiceSessionsByPendingId).some(function(pendingId) {
+    var session = voiceSessionsByPendingId[pendingId];
+    if (session && session.node === node) {
+      match = session;
+      return true;
+    }
+    return false;
+  });
+  return match;
+}
+
+function voiceSessionForPendingId(pendingId) {
+  return pendingId ? voiceSessionsByPendingId[pendingId] || null : null;
+}
+
+function pendingVoiceSessionForCommand(text) {
+  var pendingIds = pendingNodes[text] || [];
+  for (var index = 0; index < pendingIds.length; index += 1) {
+    var session = voiceSessionForPendingId(pendingIds[index]);
+    if (session) { return session; }
+  }
+  return null;
+}
+
+function pendingVoiceSessionForPendingTexts() {
+  var match = null;
+  Object.keys(pendingNodes).some(function(text) {
+    match = pendingVoiceSessionForCommand(text);
+    return Boolean(match);
+  });
+  return match;
+}
+
+function releaseVoicePendingSession(session) {
+  if (!session) { return; }
+  if (session.pendingId) {
+    delete voiceSessionsByPendingId[session.pendingId];
+  }
+  if (pendingAggregateNode === session.node) {
+    pendingAggregateNode = null;
+  }
+}
+
+function renderVoiceSessionTerminal(session, status, narration) {
+  if (!session || !session.node) { return; }
+  session.state = status === "blocked" ? "failed" : "completed";
+  releaseVoicePendingSession(session);
+  var entry = session.node;
+  entry.className = "log-entry voice-session-entry";
+  entry.textContent = "";
+  var userMessage = document.createElement("div");
+  userMessage.className = "message message-user";
+  userMessage.setAttribute("data-full-text", session.finalText || "");
+  var userMeta = document.createElement("span");
+  userMeta.className = "message-meta";
+  userMeta.textContent = t("userLabel");
+  userMessage.appendChild(userMeta);
+  appendCompactText(
+    userMessage,
+    session.finalText || session.interimText || t("voiceTranscriptUnavailable"),
+    "command-text"
+  );
+  entry.appendChild(userMessage);
+  var botMessage = document.createElement("div");
+  botMessage.className = "message message-bot";
+  botMessage.setAttribute("data-full-text", narration);
+  botMessage.setAttribute("data-status", status || "clarification");
+  var botMeta = document.createElement("span");
+  botMeta.className = "message-meta";
+  botMeta.textContent = t("commanderLabel");
+  botMessage.appendChild(botMeta);
+  appendCompactText(botMessage, narration, "narration");
+  entry.appendChild(botMessage);
   trimChatLog();
   logBox.scrollTop = logBox.scrollHeight;
 }
 
-function removeVoiceRecordingBubble() {
-  var existing = document.getElementById("voice-recording-entry");
-  if (existing) { existing.remove(); }
+function failVoiceSession(session, message) {
+  if (!session || (session.submitted && session.pendingId)) { return; }
+  session.error = true;
+  session.state = "failed";
+  renderVoiceSessionTerminal(
+    session,
+    "blocked",
+    message || t("voiceTranscriptUnavailable")
+  );
+}
+
+function tacticalRadioNow() {
+  return Date.now();
+}
+
+function tacticalRadioUiState() {
+  if (!tacticalRadio.supported) { return "unavailable"; }
+  if (tacticalRadio.muted) { return "muted"; }
+  if (tacticalRadio.speaking) { return "speaking"; }
+  return "ready";
+}
+
+function renderTacticalRadioState() {
+  var statusNode = document.getElementById("tactical-radio-status");
+  var muteButton = document.getElementById("tactical-radio-mute");
+  var state = tacticalRadioUiState();
+  if (statusNode) {
+    statusNode.className = "tactical-radio-status is-" + state;
+    statusNode.textContent = t(
+      state === "speaking"
+        ? "tacticalRadioSpeaking"
+        : (
+          state === "muted"
+            ? "tacticalRadioMuted"
+            : (
+              state === "unavailable"
+                ? "tacticalRadioUnavailable"
+                : "tacticalRadioReady"
+            )
+        )
+    );
+  }
+  if (muteButton) {
+    muteButton.setAttribute("aria-pressed", tacticalRadio.muted ? "true" : "false");
+    muteButton.textContent = t(
+      tacticalRadio.muted ? "tacticalRadioUnmute" : "tacticalRadioMute"
+    );
+  }
+}
+
+function renderTacticalRadioCaptions() {
+  var list = document.getElementById("tactical-radio-captions");
+  if (!list) { return; }
+  list.textContent = "";
+  tacticalRadio.captions.forEach(function(item) {
+    var row = document.createElement("li");
+    row.className = "tactical-radio-caption";
+    var priority = document.createElement("span");
+    priority.className = "tactical-radio-priority";
+    priority.textContent = "P" + String(item.priority);
+    var text = document.createElement("span");
+    text.className = "tactical-radio-caption-text";
+    text.textContent = item.caption;
+    row.appendChild(priority);
+    row.appendChild(text);
+    list.appendChild(row);
+  });
+  list.scrollTop = list.scrollHeight;
+}
+
+function appendTacticalRadioCaption(callout) {
+  tacticalRadio.captions.push({
+    priority: callout.priority,
+    caption: callout.caption,
+    createdAt: callout.createdAt
+  });
+  tacticalRadio.captions = tacticalRadio.captions.slice(
+    -TACTICAL_RADIO_MAX_CAPTION_HISTORY
+  );
+  renderTacticalRadioCaptions();
+}
+
+function clearTacticalRadioTimer() {
+  if (tacticalRadio.timerId !== null && window.clearTimeout) {
+    window.clearTimeout(tacticalRadio.timerId);
+  }
+  tacticalRadio.timerId = null;
+}
+
+function interruptTacticalRadioSpeech() {
+  clearTacticalRadioTimer();
+  tacticalRadio.speechToken += 1;
+  tacticalRadio.speaking = false;
+  tacticalRadio.current = null;
+  if (
+    tacticalRadio.supported &&
+    window.speechSynthesis &&
+    typeof window.speechSynthesis.cancel === "function"
+  ) {
+    window.speechSynthesis.cancel();
+  }
+  renderTacticalRadioState();
+}
+
+function cancelTacticalRadioSpeechAndQueue() {
+  tacticalRadio.queue = [];
+  interruptTacticalRadioSpeech();
+}
+
+function resetTacticalRadio(scopeId) {
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.scopeId = String(scopeId || "");
+  tacticalRadio.dedupe = {};
+  tacticalRadio.frameHighWater = {};
+  tacticalRadio.captions = [];
+  tacticalRadio.lastSpokenAt = { 0: 0, 1: 0, 2: 0 };
+  renderTacticalRadioCaptions();
+  renderTacticalRadioState();
+}
+
+function ensureTacticalRadioScope(scopeId) {
+  var normalized = String(scopeId || "");
+  if (!normalized) { return true; }
+  if (!tacticalRadio.scopeId) {
+    tacticalRadio.scopeId = normalized;
+    return true;
+  }
+  if (tacticalRadio.scopeId !== normalized) {
+    resetTacticalRadio(normalized);
+  }
+  return true;
+}
+
+function tacticalRadioDedupeExpired(now) {
+  Object.keys(tacticalRadio.dedupe).forEach(function(key) {
+    if (Number(tacticalRadio.dedupe[key] || 0) <= now) {
+      delete tacticalRadio.dedupe[key];
+    }
+  });
+}
+
+function tacticalRadioSpeechText(text) {
+  var normalized = String(text || "").replace(/\\s+/g, " ").trim();
+  if (normalized.length <= TACTICAL_RADIO_MAX_SPEECH_CHARS) {
+    return normalized;
+  }
+  return normalized.slice(0, TACTICAL_RADIO_MAX_SPEECH_CHARS - 1).trim() + "…";
+}
+
+function tacticalRadioQueueSort(left, right) {
+  if (left.priority !== right.priority) {
+    return left.priority - right.priority;
+  }
+  return left.createdAt - right.createdAt;
+}
+
+function compactTacticalRadioQueue(callout) {
+  if (
+    callout.priority !== 2 ||
+    !callout.operationKey ||
+    callout.progressionRank < 0
+  ) {
+    return;
+  }
+  tacticalRadio.queue = tacticalRadio.queue.filter(function(item) {
+    return !(
+      item.priority === 2 &&
+      item.operationKey === callout.operationKey &&
+      item.progressionRank >= 0 &&
+      item.progressionRank <= callout.progressionRank
+    );
+  });
+}
+
+function speakNextTacticalRadioCallout() {
+  clearTacticalRadioTimer();
+  if (
+    tacticalRadio.muted ||
+    !tacticalRadio.supported ||
+    tacticalRadio.speaking ||
+    !tacticalRadio.queue.length
+  ) {
+    renderTacticalRadioState();
+    return;
+  }
+  tacticalRadio.queue.sort(tacticalRadioQueueSort);
+  var callout = tacticalRadio.queue.shift();
+  var now = tacticalRadioNow();
+  var lastSpokenAt = Number(
+    tacticalRadio.lastSpokenAt[callout.priority] || 0
+  );
+  var interval = Number(
+    TACTICAL_RADIO_PRIORITY_INTERVAL_MS[callout.priority] || 0
+  );
+  var delay = Math.max(0, interval - Math.max(0, now - lastSpokenAt));
+  if (delay > 0 && window.setTimeout) {
+    tacticalRadio.queue.unshift(callout);
+    tacticalRadio.timerId = window.setTimeout(
+      speakNextTacticalRadioCallout,
+      delay
+    );
+    return;
+  }
+  var utterance = new window.SpeechSynthesisUtterance(
+    tacticalRadioSpeechText(callout.speech)
+  );
+  utterance.lang = currentLang === "en"
+    ? "en-US"
+    : (currentLang === "zh" ? "en-US" : "ko-KR");
+  var speechToken = tacticalRadio.speechToken + 1;
+  tacticalRadio.speechToken = speechToken;
+  tacticalRadio.current = callout;
+  tacticalRadio.speaking = true;
+  tacticalRadio.lastSpokenAt[callout.priority] = now;
+  function finishSpeech() {
+    if (tacticalRadio.speechToken !== speechToken) { return; }
+    tacticalRadio.speaking = false;
+    tacticalRadio.current = null;
+    renderTacticalRadioState();
+    speakNextTacticalRadioCallout();
+  }
+  utterance.onend = finishSpeech;
+  utterance.onerror = finishSpeech;
+  renderTacticalRadioState();
+  window.speechSynthesis.speak(utterance);
+}
+
+function queueTacticalRadioCallout(callout) {
+  if (!callout || !callout.caption) { return false; }
+  var now = tacticalRadioNow();
+  callout.priority = Math.max(0, Math.min(3, Number(callout.priority || 0)));
+  callout.createdAt = Number(callout.createdAt || now);
+  callout.progressionRank = Number.isFinite(callout.progressionRank)
+    ? callout.progressionRank
+    : -1;
+  var maximumAge = Number(
+    TACTICAL_RADIO_REPLAY_MAX_AGE_MS[callout.priority] || 0
+  );
+  if (
+    callout.fromReplay === true &&
+    maximumAge > 0 &&
+    now - callout.createdAt > maximumAge
+  ) {
+    return false;
+  }
+  tacticalRadioDedupeExpired(now);
+  var dedupeKey = String(
+    callout.dedupeKey ||
+    [callout.priority, callout.caption].join("|")
+  );
+  if (Number(tacticalRadio.dedupe[dedupeKey] || 0) > now) {
+    return false;
+  }
+  tacticalRadio.dedupe[dedupeKey] = now +
+    Number(TACTICAL_RADIO_DEDUPE_TTL_MS[callout.priority] || 0);
+  appendTacticalRadioCaption(callout);
+  if (
+    callout.priority === 3 ||
+    tacticalRadio.muted ||
+    !tacticalRadio.supported ||
+    !callout.speech
+  ) {
+    renderTacticalRadioState();
+    return true;
+  }
+  compactTacticalRadioQueue(callout);
+  if (callout.priority === 0) {
+    tacticalRadio.queue = tacticalRadio.queue.filter(function(item) {
+      return item.priority < 2;
+    });
+    if (
+      tacticalRadio.current &&
+      tacticalRadio.current.priority >= 1
+    ) {
+      interruptTacticalRadioSpeech();
+    }
+  } else if (callout.priority === 1) {
+    if (
+      tacticalRadio.current &&
+      tacticalRadio.current.priority === 2
+    ) {
+      interruptTacticalRadioSpeech();
+    }
+  }
+  tacticalRadio.queue.push(callout);
+  tacticalRadio.queue.sort(tacticalRadioQueueSort);
+  if (tacticalRadio.queue.length > TACTICAL_RADIO_MAX_QUEUE) {
+    tacticalRadio.queue = tacticalRadio.queue.slice(
+      0,
+      TACTICAL_RADIO_MAX_QUEUE
+    );
+  }
+  speakNextTacticalRadioCallout();
+  return true;
+}
+
+function tacticalRadioSetMuted(muted) {
+  tacticalRadio.muted = Boolean(muted);
+  if (tacticalRadio.muted) {
+    cancelTacticalRadioSpeechAndQueue();
+  }
+  renderTacticalRadioState();
+}
+
+function structuredOperationVector(operation, parentData) {
+  var update = operation && operation.update || {};
+  var vector = update.vector && typeof update.vector === "object"
+    ? update.vector
+    : {};
+  if (Object.keys(vector).length) { return vector; }
+  var compileResult = operation && operation.compile_result ||
+    parentData && parentData.compile_result || {};
+  var rootVector = compileResult.vector &&
+    typeof compileResult.vector === "object"
+    ? compileResult.vector
+    : {};
+  var operationId = String(
+    operation && operation.operation_id ||
+    operation && operation.operationId ||
+    ""
+  );
+  var rawOperations = rootVector.operations;
+  if (Array.isArray(rawOperations)) {
+    for (var index = 0; index < rawOperations.length; index += 1) {
+      var candidate = rawOperations[index];
+      if (
+        candidate &&
+        typeof candidate === "object" &&
+        String(candidate.operation_id || "") === operationId
+      ) {
+        return candidate.vector && typeof candidate.vector === "object"
+          ? Object.assign({}, candidate, candidate.vector)
+          : candidate;
+      }
+    }
+  } else if (
+    rawOperations &&
+    typeof rawOperations === "object" &&
+    rawOperations[operationId] &&
+    typeof rawOperations[operationId] === "object"
+  ) {
+    return rawOperations[operationId];
+  }
+  return rootVector;
+}
+
+function structuredOperationsForReadback(data) {
+  if (!data || typeof data !== "object") { return []; }
+  var operations = Array.isArray(data.operations)
+    ? data.operations.slice()
+    : [];
+  var compileResult = data.compile_result || {};
+  var rootVector = compileResult.vector || {};
+  if (!operations.length) {
+    var rawOperations = rootVector.operations;
+    if (Array.isArray(rawOperations)) {
+      operations = rawOperations.slice();
+    } else if (rawOperations && typeof rawOperations === "object") {
+      operations = Object.keys(rawOperations).map(function(operationId) {
+        return Object.assign(
+          { operation_id: operationId },
+          rawOperations[operationId]
+        );
+      });
+    } else if (rootVector.operation_id || data.operation_id) {
+      operations = [{
+        operation_id: rootVector.operation_id || data.operation_id,
+        operation_generation: (
+          rootVector.generation ||
+          data.operation_generation ||
+          1
+        ),
+        update: { vector: rootVector }
+      }];
+    }
+  }
+  return operations.map(function(operation) {
+    var vector = structuredOperationVector(operation, data);
+    var tacticalTask = vector.tactical_task || {};
+    var route = vector.route_intent || {};
+    var lifetime = vector.lifetime || {};
+    var operationId = String(
+      operation.operation_id ||
+      vector.operation_id ||
+      tacticalTask.task_id ||
+      ""
+    );
+    var generation = Number(
+      operation.operation_generation ||
+      operation.generation ||
+      vector.generation ||
+      data.operation_generation ||
+      1
+    );
+    if (!operationId || generation <= 0) { return null; }
+    var requirements = Array.isArray(vector.composition_requirements)
+      ? vector.composition_requirements
+      : [];
+    if (!requirements.length) {
+      var unitClasses = Array.isArray(tacticalTask.unit_classes)
+        ? tacticalTask.unit_classes
+        : [];
+      requirements = unitClasses.map(function(unitType) {
+        return {
+          unit_type: unitType,
+          count: Number(
+            tacticalTask.min_units ||
+            tacticalTask.max_units ||
+            1
+          )
+        };
+      });
+    }
+    return {
+      operationId: operationId,
+      generation: generation,
+      requirements: requirements,
+      task: String(
+        tacticalTask.task_type ||
+        operation.mission ||
+        vector.goal ||
+        "operation"
+      ),
+      target: String(
+        route.target_intent ||
+        route.location_intent ||
+        route.target ||
+        tacticalTask.location_intent ||
+        (vector.scope || {}).location_intent ||
+        "-"
+      ),
+      route: String(route.route_type || route.type || "direct"),
+      lifetime: String(
+        lifetime.mode ||
+        (
+          vector.ttl_seconds || data.ttl_seconds
+            ? "ttl=" + String(vector.ttl_seconds || data.ttl_seconds) + "s"
+            : "until_completed"
+        )
+      )
+    };
+  }).filter(Boolean);
+}
+
+function tacticalRequirementSummary(requirements) {
+  if (!Array.isArray(requirements) || !requirements.length) {
+    return commandUiText("편성 자동", "adaptive force", "adaptive force");
+  }
+  return requirements.map(function(requirement) {
+    var unitType = String(
+      requirement && (
+        requirement.unit_type ||
+        requirement.unit_class ||
+        requirement.family
+      ) || "unit"
+    ).replace(/^TERRAN_/, "");
+    var count = Number(
+      requirement && (
+        requirement.count ||
+        requirement.min_count ||
+        requirement.min_units
+      ) || 1
+    );
+    return unitType + " ×" + count;
+  }).join(", ");
+}
+
+function announceAcceptedTacticalPlan(data, source) {
+  if (!data || typeof data !== "object") { return false; }
+  if (data.accepted === false || data.ok === false) { return false; }
+  var compileResult = data.compile_result || {};
+  var status = String(data.status || compileResult.status || "").toLowerCase();
+  if (
+    status &&
+    ["published", "compiled", "accepted", "pending"].indexOf(status) < 0
+  ) {
+    return false;
+  }
+  var operations = structuredOperationsForReadback(data);
+  if (!operations.length) { return false; }
+  var scopeId = String(
+    data.blackboard_scope_id ||
+    compileResult.blackboard_scope_id ||
+    ""
+  );
+  ensureTacticalRadioScope(scopeId);
+  var allDetails = operations.map(function(operation) {
+    return t("tacticalOperationIdentity") + " " +
+      operation.operationId + "#" + operation.generation + " · " +
+      tacticalRequirementSummary(operation.requirements) + " · " +
+      operation.task + " · " + operation.target + " · " +
+      operation.route + " · " + operation.lifetime;
+  });
+  var speechDetails = allDetails.slice(
+    0,
+    TACTICAL_RADIO_MAX_PLAN_OPERATIONS
+  );
+  if (operations.length > TACTICAL_RADIO_MAX_PLAN_OPERATIONS) {
+    speechDetails.push(
+      commandUiText(
+        "추가 " + (operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS) + "개 작전",
+        (operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS) + " more operations",
+        (operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS) + " more operations"
+      )
+    );
+  }
+  var identity = operations.map(function(operation) {
+    return operation.operationId + "#" + operation.generation;
+  }).join(",");
+  return queueTacticalRadioCallout({
+    priority: 2,
+    caption: t("tacticalPlanConfirmed") + " · " + allDetails.join(" | "),
+    speech: t("tacticalPlanConfirmed") + ". " + speechDetails.join(". "),
+    dedupeKey: [
+      scopeId,
+      String(data.update_id || compileResult.update_id || ""),
+      identity,
+      "plan"
+    ].join("|"),
+    operationKey: identity,
+    progressionRank: 0,
+    createdAt: tacticalRadioNow(),
+    source: source || "submission"
+  });
+}
+
+function normalizedTacticalReason(payload) {
+  var technical = payload && payload.technical || {};
+  return String(
+    payload && payload.summary ||
+    payload && payload.blocker ||
+    technical.blocker ||
+    technical.reason ||
+    ""
+  ).trim().toLowerCase().replace(/\\s+/g, " ");
+}
+
+function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
+  var kind = String(payload && payload.kind || "").toLowerCase();
+  var operationId = String(payload && payload.operation_id || "");
+  var generation = Number(payload && payload.generation || 0);
+  var requestedGeneration = Number(
+    payload && payload.requested_generation || generation
+  );
+  if (
+    !operationId ||
+    generation <= 0 ||
+    requestedGeneration !== generation ||
+    !record ||
+    Number(record.operationGeneration || 0) !== generation
+  ) {
+    return null;
+  }
+  var frame = Number(payload.game_frame);
+  var operationKey = [
+    scopeId,
+    operationId,
+    generation
+  ].join("|");
+  var frameHighWater = Number(
+    tacticalRadio.frameHighWater[operationKey] || -1
+  );
+  if (
+    Number.isFinite(frame) &&
+    frame >= 0 &&
+    frameHighWater >= 0 &&
+    frame < frameHighWater
+  ) {
+    return null;
+  }
+  if (Number.isFinite(frame) && frame >= 0) {
+    tacticalRadio.frameHighWater[operationKey] = Math.max(
+      frameHighWater,
+      frame
+    );
+  }
+  var reason = normalizedTacticalReason(payload);
+  var priority = 3;
+  var label = "";
+  var progressionRank = -1;
+  if (kind === "assigned" || kind === "partially_assigned") {
+    priority = 2;
+    label = t("tacticalForceAssigned");
+    progressionRank = 1;
+  } else if (kind === "movement_observed" || kind === "moving") {
+    priority = 2;
+    label = t("tacticalMoving");
+    progressionRank = 2;
+  } else if (kind === "engagement_observed" || kind === "engaged") {
+    priority = 2;
+    label = t("tacticalEngaged");
+    progressionRank = 3;
+  } else if (kind === "target_reached" || kind === "reached") {
+    priority = 2;
+    label = t("tacticalTargetReached");
+    progressionRank = 4;
+  } else if (kind === "completed") {
+    priority = 2;
+    label = t("tacticalCompleted");
+    progressionRank = 5;
+  } else if (kind === "blocked" || kind === "waiting") {
+    priority = 1;
+    label = /route|path|경로/.test(reason)
+      ? t("tacticalRouteUnavailable")
+      : t("tacticalBlocked");
+  } else if (kind === "emergency_retreat") {
+    priority = 0;
+    label = t("tacticalEmergencyRetreat");
+  } else if (kind === "base_under_attack") {
+    priority = 0;
+    label = t("tacticalBaseAttack");
+  } else if (kind === "critical_ability_failure") {
+    priority = 0;
+    label = t("tacticalCriticalAbilityFailure");
+  } else if (kind === "force_loss") {
+    priority = 1;
+    label = t("tacticalForceLoss");
+  } else if (kind === "submitted") {
+    priority = 3;
+    label = t("tacticalSubmittedCaption");
+  } else {
+    return null;
+  }
+  var identity = operationId + "#" + generation;
+  var detail = reason && reason !== kind ? " · " + reason : "";
+  return {
+    priority: priority,
+    caption: label + " · " + identity + detail,
+    speech: priority < 3 ? label + ". " + identity + detail : "",
+    dedupeKey: [
+      scopeId,
+      String(payload.update_id || envelope.update_id || ""),
+      operationId,
+      generation,
+      requestedGeneration,
+      kind,
+      reason
+    ].join("|"),
+    operationKey: operationKey,
+    progressionRank: progressionRank,
+    createdAt: Number(envelope.created_at_unix_ms || tacticalRadioNow()),
+    fromReplay: true
+  };
+}
+
+function announceOperationLifecycleEvent(envelope, payload, scopeId, record) {
+  ensureTacticalRadioScope(scopeId);
+  var callout = tacticalLifecycleCallout(
+    envelope,
+    payload,
+    scopeId,
+    record
+  );
+  return callout ? queueTacticalRadioCallout(callout) : false;
+}
+
+function hydrateTacticalRadioState(data) {
+  if (!data || typeof data !== "object") { return; }
+  var operations = commandOperationPayloads(data);
+  var scopeId = microMachineScopeId(data);
+  if (!scopeId && operations.length) {
+    scopeId = operationPayloadScopeId(operations[0], data);
+  }
+  ensureTacticalRadioScope(scopeId);
+  operations.forEach(function(operation) {
+    var operationId = operationPayloadOperationId(operation);
+    var generation = Number(operation.operation_generation || 0);
+    if (!operationId || generation <= 0) { return; }
+    var key = [scopeId, operationId, generation].join("|");
+    var frame = commandConsoleTelemetryFrame(
+      commandOperationData(operation, data)
+    );
+    var timeline = Array.isArray(operation.semantic_timeline)
+      ? operation.semantic_timeline
+      : [];
+    timeline.forEach(function(event) {
+      frame = Math.max(frame, Number(event.game_frame || -1));
+    });
+    tacticalRadio.frameHighWater[key] = Math.max(
+      Number(tacticalRadio.frameHighWater[key] || -1),
+      frame
+    );
+  });
 }
 
 function removePendingForCommand(text) {
@@ -10962,6 +12070,7 @@ function applyEventSnapshot(payload) {
   }
   if (payload.micromachine_status) {
     safeRenderMicroMachineStatus(payload.micromachine_status);
+    hydrateTacticalRadioState(payload.micromachine_status);
     if (payload.micromachine_status.status === "source_error") {
       commandEventFailedSources.micromachine_status = true;
     }
@@ -11088,6 +12197,7 @@ function applyOperationSemanticEvent(envelope, payload) {
     )
   });
   renderOperationRecords();
+  announceOperationLifecycleEvent(envelope, payload, scopeId, record);
 }
 
 function applyServerEvent(event) {
@@ -11150,6 +12260,8 @@ function applyServerEvent(event) {
     if (serverEventMatchesCurrentBlackboard(envelope, payload)) {
       if (eventType === "micromachine_status") {
         markEventSourceRecovered("micromachine_status");
+      } else {
+        announceAcceptedTacticalPlan(payload, "event");
       }
       safeRenderMicroMachineStatus(payload);
     }
@@ -16381,6 +17493,7 @@ function synchronizeMicroMachineBlackboardDirectory(directory) {
   latestMicroMachinePlanText = "";
   clearPendingMicroMachinePlan();
   resetActiveCommandConsole();
+  resetTacticalRadio("");
   renderMicroMachineIntervention({});
   var statusNode = document.getElementById("micromachine-status");
   if (statusNode) {
@@ -17406,6 +18519,7 @@ function removeMicroMachineChatPending(text, pendingId) {
 }
 
 function appendMicroMachineChatResult(text, data, pendingId) {
+  var voiceSession = voiceSessionForPendingId(pendingId);
   var resultUpdateId = commandConsolePreferredUpdateId(data || {}) ||
     microMachineUpdateId(data || {});
   var resultData = commandConsoleDataForUpdate(
@@ -17427,25 +18541,36 @@ function appendMicroMachineChatResult(text, data, pendingId) {
     resultData,
     resultData.chat_outcome_status
   );
-  appendLog({
-    command_text: text,
-    status: outcomeStatus,
-    narration: microMachineChatNarration(resultData)
-  });
+  var narration = microMachineChatNarration(resultData);
+  if (voiceSession) {
+    renderVoiceSessionTerminal(voiceSession, outcomeStatus, narration);
+  } else {
+    appendLog({
+      command_text: text,
+      status: outcomeStatus,
+      narration: narration
+    });
+  }
   if (!removed) {
     updateAssistantPendingState();
   }
 }
 
 function appendMicroMachineChatFailure(text, error, pendingId) {
+  var voiceSession = voiceSessionForPendingId(pendingId);
   renderActiveCommandFailure(text, error, pendingId);
   var removed = removeMicroMachineChatPending(text, pendingId);
   if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
-  appendLog({
-    command_text: text,
-    status: "blocked",
-    narration: t("microMachineChatFailed") + ": " + error.message
-  });
+  var narration = t("microMachineChatFailed") + ": " + error.message;
+  if (voiceSession) {
+    renderVoiceSessionTerminal(voiceSession, "blocked", narration);
+  } else {
+    appendLog({
+      command_text: text,
+      status: "blocked",
+      narration: narration
+    });
+  }
   if (!removed) {
     updateAssistantPendingState();
   }
@@ -17640,6 +18765,7 @@ function submitMicroMachineModulation(payload, options) {
           responseOwnsActiveConsole
         );
       }
+      announceAcceptedTacticalPlan(data, "direct");
       if (options.appendChat && !(data && data.async_publish)) {
         safelyAppendMicroMachineChatResult(
           payload.text || "",
@@ -17717,18 +18843,26 @@ if (microMachineForm) {
   });
 }
 
-document.getElementById("command-form").addEventListener("submit", function (event) {
-  event.preventDefault();
-  var input = document.getElementById("command-input");
-  var text = input.value.trim();
-  if (!text) { return; }
+function submitCommanderText(text, options) {
+  options = options || {};
+  var input = options.input || document.getElementById("command-input");
+  var normalizedText = String(text || "").trim();
+  var voiceSession = options.voiceSession || null;
+  if (!normalizedText) { return ""; }
+  if (voiceSession) {
+    voiceSession.finalText = normalizedText;
+    voiceSession.interimText = "";
+  }
   setCommandMode(selectedCommandMode());
   if (isMicroMachineCommandMode()) {
     synchronizeMicroMachineBlackboardDirectory(
       optionalMicroMachineField("micromachine-blackboard-dir")
     );
-    var pendingId = appendMicroMachinePendingPlan(text);
-    var microPayload = buildMicroMachineModulationPayload(text);
+    var pendingId = appendMicroMachinePendingPlan(
+      normalizedText,
+      voiceSession
+    );
+    var microPayload = buildMicroMachineModulationPayload(normalizedText);
     submitMicroMachineModulation(
       microPayload,
       {
@@ -17737,22 +18871,154 @@ document.getElementById("command-form").addEventListener("submit", function (eve
         timeoutMs: MICROMACHINE_CHAT_TIMEOUT_MS
       }
     ).catch(function () {});
-    input.value = "";
-    input.focus();
-    return;
+    if (input) {
+      input.value = "";
+      if (!options.preserveFocus && typeof input.focus === "function") {
+        input.focus();
+      }
+    }
+    return pendingId;
   }
   if (!llmConfigured) {
     setLlmStatus("missing", "llmRequiredLabel", t("commandRejected"));
-    return;
+    if (voiceSession) {
+      failVoiceSession(voiceSession, t("commandRejected"));
+    }
+    return "";
   }
-  appendPendingCommand(text);
+  var legacyPendingId = appendPendingCommand(normalizedText, voiceSession);
   fetch("/api/command" + authQuery, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: text })
-  }).then(function () { pollHistory(); }).catch(function () { removePendingForCommand(text); });
-  input.value = "";
-  input.focus();
+    body: JSON.stringify({ text: normalizedText })
+  }).then(function () {
+    pollHistory();
+  }).catch(function (error) {
+    var failedVoiceSession = voiceSessionForPendingId(legacyPendingId);
+    removePendingById(legacyPendingId);
+    if (failedVoiceSession) {
+      renderVoiceSessionTerminal(
+        failedVoiceSession,
+        "blocked",
+        error && error.message ? error.message : t("voiceTranscriptUnavailable")
+      );
+    }
+  });
+  if (input) {
+    input.value = "";
+    if (!options.preserveFocus && typeof input.focus === "function") {
+      input.focus();
+    }
+  }
+  return legacyPendingId;
+}
+
+function setupVoiceInput() {
+  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var voiceButton = document.getElementById("voice-button");
+  if (!SpeechRecognition) {
+    voiceButton.addEventListener("click", function () {
+      setLlmStatus("failed", "llmFailedLabel", t("voiceUnsupported"));
+    });
+    return;
+  }
+  recognition = new SpeechRecognition();
+  recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  recognition.onstart = function () {
+    isRecording = true;
+    voiceButton.classList.add("recording");
+    appendVoiceRecordingBubble();
+  };
+  recognition.onend = function () {
+    isRecording = false;
+    voiceButton.classList.remove("recording");
+    var session = activeVoiceSession;
+    if (!session || session.error || session.submitted) { return; }
+    var fallbackText = String(
+      session.finalText || session.interimText || ""
+    ).trim();
+    if (!fallbackText) {
+      failVoiceSession(session, t("voiceNoResult"));
+      return;
+    }
+    submitVoiceSession(session, fallbackText);
+  };
+  recognition.onerror = function () {
+    setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
+    if (activeVoiceSession) {
+      failVoiceSession(activeVoiceSession, t("voiceTranscriptUnavailable"));
+    }
+  };
+  recognition.onresult = function (event) {
+    var session = activeVoiceSession;
+    if (!session || session.error) { return; }
+    for (var i = 0; i < event.results.length; i += 1) {
+      session.segments[i] = {
+        text: String(event.results[i][0].transcript || ""),
+        final: event.results[i].isFinal === true
+      };
+    }
+    var finalParts = [];
+    var interimParts = [];
+    session.segments.forEach(function(segment) {
+      if (!segment || !segment.text) { return; }
+      if (segment.final) {
+        finalParts.push(segment.text);
+      } else {
+        interimParts.push(segment.text);
+      }
+    });
+    session.finalText = finalParts.join(" ").trim();
+    session.interimText = interimParts.join(" ").trim();
+    var visibleText = String(
+      session.finalText || session.interimText || ""
+    ).trim();
+    document.getElementById("command-input").value = visibleText;
+    renderVoiceSession(session);
+    var finalResult = event.results[event.results.length - 1];
+    if (finalResult && finalResult.isFinal && session.finalText) {
+      submitVoiceSession(session, session.finalText);
+    }
+  };
+  voiceButton.addEventListener("click", function () {
+    if (isRecording) {
+      recognition.stop();
+      return;
+    }
+    recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+    recognition.start();
+  });
+}
+
+function submitVoiceSession(session, text) {
+  if (!session || session.submitted || session.error) {
+    return session ? session.pendingId : "";
+  }
+  var normalizedText = String(text || "").trim();
+  if (!normalizedText) {
+    failVoiceSession(session, t("voiceNoResult"));
+    return "";
+  }
+  session.submitted = true;
+  session.state = "finalizing";
+  session.finalText = normalizedText;
+  session.interimText = "";
+  renderVoiceSession(session);
+  return submitCommanderText(normalizedText, {
+    input: document.getElementById("command-input"),
+    voiceSession: session,
+    preserveFocus: true
+  });
+}
+
+document.getElementById("command-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var input = document.getElementById("command-input");
+  var text = input.value.trim();
+  if (!text) { return; }
+  submitCommanderText(text, { input: input });
 });
 
 Array.prototype.forEach.call(document.querySelectorAll("[data-command]"), function (button) {
@@ -17764,11 +19030,7 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-command]"), functi
 });
 
 function submitCommanderControlOrder(text) {
-  var input = document.getElementById("command-input");
-  var form = document.getElementById("command-form");
-  if (!input || !form) { return; }
-  input.value = text;
-  form.dispatchEvent(new Event("submit", { cancelable: true }));
+  submitCommanderText(text);
 }
 
 var commandRefreshButton = document.getElementById("command-refresh-button");
@@ -17905,50 +19167,10 @@ document.getElementById("runtime-refresh-button").addEventListener("click", func
   refreshLiveConnectionFlow();
 });
 
-function setupVoiceInput() {
-  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var voiceButton = document.getElementById("voice-button");
-  if (!SpeechRecognition) {
-    voiceButton.addEventListener("click", function () {
-      setLlmStatus("failed", "llmFailedLabel", t("voiceUnsupported"));
-    });
-    return;
-  }
-  recognition = new SpeechRecognition();
-  recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
-  recognition.interimResults = true;
-  recognition.continuous = false;
-  recognition.onstart = function () {
-    isRecording = true;
-    voiceButton.classList.add("recording");
-    appendVoiceRecordingBubble();
-  };
-  recognition.onend = function () {
-    isRecording = false;
-    voiceButton.classList.remove("recording");
-    removeVoiceRecordingBubble();
-  };
-  recognition.onerror = function () {
-    setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
-  };
-  recognition.onresult = function (event) {
-    var transcript = "";
-    for (var i = event.resultIndex; i < event.results.length; i += 1) {
-      transcript += event.results[i][0].transcript;
-    }
-    document.getElementById("command-input").value = transcript.trim();
-    if (event.results[event.results.length - 1].isFinal) {
-      removeVoiceRecordingBubble();
-      document.getElementById("command-form").dispatchEvent(new Event("submit", { cancelable: true }));
-    }
-  };
-  voiceButton.addEventListener("click", function () {
-    if (isRecording) {
-      recognition.stop();
-      return;
-    }
-    recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
-    recognition.start();
+var tacticalRadioMuteButton = document.getElementById("tactical-radio-mute");
+if (tacticalRadioMuteButton) {
+  tacticalRadioMuteButton.addEventListener("click", function () {
+    tacticalRadioSetMuted(!tacticalRadio.muted);
   });
 }
 
@@ -17956,6 +19178,7 @@ applyLanguage("ko");
 setLlmStatus("checking", "llmCheckingLabel", t("llmChecking"));
 renderModelSelect(selectedProviderValue(), "");
 setupVoiceInput();
+renderTacticalRadioState();
 pollLlmSettings();
 refreshLiveConnectionFlow();
 connectEventChannel();

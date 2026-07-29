@@ -194,7 +194,8 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 | Comprehensive all-Terran live qualification | Pending family-by-family evidence beyond the currently qualified Marine/Tank and selected support paths. |
 | Web operation UX | Per-operation cards, isolated telemetry, monotonic lifecycle updates, and truthful published/executing distinction. |
 | In-game HUD | Patched MicroMachine overlay for operation identity, force, route, target, assignment, action, movement, engagement, and blockers. |
-| Voice input | Implemented behind optional `[voice]` dependencies. |
+| Voice input | Browser push-to-talk keeps partial/final text in one session node and submits exactly once through the same bounded command gateway. CLI microphone transcription remains behind optional `[voice]` dependencies. |
+| Tactical radio | Implemented pre-live with exact operation ID/generation plan readback, authoritative lifecycle captions, priority TTS, interruption, cooldown, dedupe, mute, and replay/stale-event suppression. Actual SC2 audio/gameplay feel remains a manual live-QA gate. |
 | LLM command interpreter | Required for legacy python-sc2 live commands and production MicroMachine free-form text modulation. OpenAI/GPT is the default; Anthropic is still supported. |
 | Web GUI | Implemented as a localhost-first stdlib server with token-protected network mode. Default chat/voice mode is MicroMachine; legacy commander is explicit opt-in. |
 | Event memory | Implemented and used by state reports and GUI history. |
@@ -372,7 +373,13 @@ python3 -m starcraft_commander.web_gui --dry-run --port 0
 ```
 
 In that page, the **Commander Chat** and browser voice button are the unified
-input surface. Select **MicroMachine policy cockpit** or
+input surface. One push-to-talk session keeps interim text, final text, pending
+state, and the final result in one stable command surface and submits the
+command exactly once. The Tactical Radio panel always retains captions and,
+when browser TTS is available and unmuted, reads structured plan confirmation
+and selected authoritative assignment/movement/engagement/blocker events. A
+plan confirmation never claims that units moved; movement is announced only
+after matching-generation runtime evidence. Select **MicroMachine policy cockpit** or
 **Legacy python-sc2 commander**, then use **선택 모드 실행** to start the selected
 runtime from the same cockpit. In MicroMachine mode this calls
 `POST /api/runtime/start` and launches

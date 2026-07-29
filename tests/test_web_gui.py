@@ -9932,7 +9932,8 @@ for (let index = 0; index < MAX_CHAT_EVENTS - 1; index += 1) {
     narration: "이전 응답 " + index
   });
 }
-appendVoiceRecordingBubble();
+var recordingSession = appendVoiceRecordingBubble();
+var recordingNode = recordingSession.node;
 assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
 appendPendingCommand("상황 보고해줘");
 assert.strictEqual(pendingCommandCount(), 1);
@@ -9942,13 +9943,13 @@ assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
 assert.strictEqual(logBox.querySelectorAll(".typing-indicator").length, 1);
 assert.strictEqual(logBox.querySelector(".message-pending").getAttribute("role"), null);
 assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
-assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(recordingNode.parentNode, logBox);
 assert.strictEqual(logBox.querySelector(".voice-wave").querySelectorAll("span").length, 5);
 appendPendingCommand("상황 보고해줘");
 assert.strictEqual(pendingCommandCount(), 2);
 assert(pendingStatus.textContent.includes("대기 중인 응답 2개"));
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
-assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(recordingNode.parentNode, logBox);
 appendLog({
   seq: MAX_CHAT_EVENTS + 1,
   command_text: "상황 보고해줘",
@@ -9959,7 +9960,7 @@ assert.strictEqual(pendingCommandCount(), 1);
 assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
 assert(pendingStatus.textContent.includes("LLM 응답을 기다리는 중"));
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
-assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(recordingNode.parentNode, logBox);
 appendLog({
   seq: MAX_CHAT_EVENTS + 2,
   command_text: "상황 보고해줘",
@@ -9970,9 +9971,9 @@ assert.strictEqual(pendingCommandCount(), 0);
 assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
 assert.strictEqual(pendingStatus.textContent, "");
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
-assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(recordingNode.parentNode, logBox);
 removeVoiceRecordingBubble();
-assert.strictEqual(document.getElementById("voice-recording-entry"), null);
+assert.strictEqual(recordingNode.parentNode, null);
 assert(logBox.textContent.includes("현재 상태를 요약했습니다."));
 assert(logBox.textContent.includes("두 번째 응답입니다."));
 """
@@ -10198,6 +10199,9 @@ function element(id, tagName) {
 var logBox = element("log");
 var nodes = {
   "assistant-pending-status": element("assistant-pending-status", "p"),
+  "tactical-radio-status": element("tactical-radio-status", "span"),
+  "tactical-radio-mute": element("tactical-radio-mute", "button"),
+  "tactical-radio-captions": element("tactical-radio-captions", "ol"),
   "command-form": element("command-form", "form"),
   "command-input": element("command-input", "input"),
   "send-button": element("send-button", "button"),
@@ -10342,18 +10346,61 @@ var document = {
   }
 };
 var timeoutCallbacks = [];
+var timeoutDelays = [];
+var fakeNowMs = 1700000000000;
+Date.now = function () { return fakeNowMs; };
+var recognitionInstances = [];
+class FakeSpeechRecognition {
+  constructor() {
+    this.lang = "";
+    this.interimResults = false;
+    this.continuous = false;
+    this.onstart = null;
+    this.onend = null;
+    this.onerror = null;
+    this.onresult = null;
+    recognitionInstances.push(this);
+  }
+  start() {
+    if (this.onstart) { this.onstart(); }
+  }
+  stop() {
+    if (this.onend) { this.onend(); }
+  }
+}
+class FakeSpeechSynthesisUtterance {
+  constructor(text) {
+    this.text = text;
+    this.lang = "";
+    this.onend = null;
+    this.onerror = null;
+  }
+}
+var spokenUtterances = [];
+var speechCancelCount = 0;
+var speechSynthesis = {
+  speak: function (utterance) {
+    spokenUtterances.push(utterance);
+  },
+  cancel: function () {
+    speechCancelCount += 1;
+  }
+};
 var window = {
   location: { search: "" },
-  setTimeout: function (callback) {
+  setTimeout: function (callback, delay) {
     timeoutCallbacks.push(callback);
+    timeoutDelays.push(Number(delay || 0));
     return timeoutCallbacks.length - 1;
   },
   clearTimeout: function (id) {
     timeoutCallbacks[id] = function () {};
   },
   open: function () {},
-  SpeechRecognition: null,
-  webkitSpeechRecognition: null
+  SpeechRecognition: FakeSpeechRecognition,
+  webkitSpeechRecognition: null,
+  SpeechSynthesisUtterance: FakeSpeechSynthesisUtterance,
+  speechSynthesis: speechSynthesis
 };
     var console = {
       warn: function () {},
@@ -15554,6 +15601,346 @@ const assert = require("assert");
     expectedNewestWithPending
   );
 
+  // Voice keeps one DOM identity from interim transcript through pending/result.
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
+  setupVoiceInput();
+  assert.strictEqual(recognitionInstances.length, 1);
+  var voiceRecognition = recognitionInstances[0];
+  var voiceRequestStart = requests.length;
+  voiceRecognition.start();
+  var firstVoiceSession = activeVoiceSession;
+  var firstVoiceNode = firstVoiceSession.node;
+  var interimResult = [{ transcript: "마린 두 기로" }];
+  interimResult.isFinal = false;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [interimResult]
+  });
+  assert.strictEqual(activeVoiceSession.node, firstVoiceNode);
+  assert(firstVoiceNode.textContent.includes("마린 두 기로"));
+  assert.strictEqual(requests.length, voiceRequestStart);
+
+  var finalResult = [{ transcript: "마린 두 기로 정찰하고 네 기로 우회 공격해" }];
+  finalResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [finalResult]
+  });
+  assert.strictEqual(requests.length, voiceRequestStart + 1);
+  assert.strictEqual(activeVoiceSession.node, firstVoiceNode);
+  assert.strictEqual(firstVoiceSession.submitted, true);
+  assert.strictEqual(pendingAggregateNode, firstVoiceNode);
+  assert.strictEqual(document.getElementById(pendingAggregateId), null);
+  voiceRecognition.onend();
+  assert.strictEqual(requests.length, voiceRequestStart + 1);
+
+  var voiceReconOperation = operationResult(
+    "voice-recon",
+    "voice-plan-update",
+    "마린 두 기로 정찰",
+    "scouting",
+    610,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    3
+  );
+  voiceReconOperation.update.vector = {
+    operation_id: "voice-recon",
+    generation: 3,
+    composition_requirements: [
+      { unit_type: "TERRAN_MARINE", count: 2 }
+    ],
+    tactical_task: { task_type: "scout_with_units" },
+    route_intent: {
+      route_type: "direct",
+      target_intent: "enemy_main"
+    },
+    lifetime: { mode: "until_completed" }
+  };
+  var voiceAssaultOperation = operationResult(
+    "voice-assault",
+    "voice-plan-update",
+    "마린 네 기로 우회 공격",
+    "attack",
+    611,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    7
+  );
+  voiceAssaultOperation.update.vector = {
+    operation_id: "voice-assault",
+    generation: 7,
+    composition_requirements: [
+      { unit_type: "TERRAN_MARINE", count: 4 }
+    ],
+    tactical_task: { task_type: "pressure_with_main_army" },
+    route_intent: {
+      route_type: "flank_right",
+      target_intent: "enemy_natural"
+    },
+    lifetime: { mode: "until_completed" }
+  };
+  requests[voiceRequestStart].deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "voice-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "voice-plan-update",
+      command_text: "마린 두 기로 정찰하고 네 기로 우회 공격해",
+      vector: {
+        goal: "parallel voice operation",
+        operations: [
+          voiceReconOperation.update.vector,
+          voiceAssaultOperation.update.vector
+        ]
+      }
+    },
+    operations: [voiceReconOperation, voiceAssaultOperation]
+  }, SERVER_SCOPE_A)));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(firstVoiceNode.parentNode, logBox);
+  assert(firstVoiceNode.textContent.includes("마린 두 기로 정찰하고"));
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
+  assert(nodes["tactical-radio-captions"].textContent.includes("voice-recon#3"));
+  assert(nodes["tactical-radio-captions"].textContent.includes("voice-assault#7"));
+  assert(nodes["tactical-radio-captions"].textContent.includes("계획 확인"));
+  assert(!nodes["tactical-radio-captions"].textContent.includes("이동 시작"));
+  assert(spokenUtterances.length >= 1);
+  assert(spokenUtterances[spokenUtterances.length - 1].text.length <= 180);
+
+  // Recognition errors remain on the same node and never submit.
+  var errorRequestStart = requests.length;
+  voiceRecognition.start();
+  var errorVoiceSession = activeVoiceSession;
+  var errorVoiceNode = errorVoiceSession.node;
+  voiceRecognition.onerror({ error: "no-speech" });
+  voiceRecognition.onend();
+  assert.strictEqual(requests.length, errorRequestStart);
+  assert.strictEqual(errorVoiceNode.parentNode, logBox);
+  assert(errorVoiceNode.textContent.includes("transcript"));
+
+  // Scheduler priority, interruption, compaction and dedupe are deterministic.
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.dedupe = {};
+  tacticalRadio.lastSpokenAt = { 0: 0, 1: 0, 2: 0 };
+  fakeNowMs += 5000;
+  queueTacticalRadioCallout({
+    priority: 2,
+    caption: "moving alpha",
+    speech: "moving alpha",
+    dedupeKey: "moving-alpha",
+    operationKey: "scope|alpha|1",
+    progressionRank: 2,
+    createdAt: fakeNowMs
+  });
+  assert.strictEqual(tacticalRadio.current.caption, "moving alpha");
+  var cancelsBeforeP1 = speechCancelCount;
+  queueTacticalRadioCallout({
+    priority: 1,
+    caption: "blocked alpha",
+    speech: "blocked alpha",
+    dedupeKey: "blocked-alpha",
+    operationKey: "scope|alpha|1",
+    progressionRank: -1,
+    createdAt: fakeNowMs
+  });
+  assert(speechCancelCount > cancelsBeforeP1);
+  assert.strictEqual(tacticalRadio.current.caption, "blocked alpha");
+  var cancelsBeforeP0 = speechCancelCount;
+  queueTacticalRadioCallout({
+    priority: 0,
+    caption: "emergency retreat",
+    speech: "emergency retreat",
+    dedupeKey: "emergency-retreat",
+    operationKey: "scope|alpha|1",
+    progressionRank: -1,
+    createdAt: fakeNowMs
+  });
+  assert(speechCancelCount > cancelsBeforeP0);
+  assert.strictEqual(tacticalRadio.current.caption, "emergency retreat");
+  var captionsBeforeDuplicate = tacticalRadio.captions.length;
+  assert.strictEqual(queueTacticalRadioCallout({
+    priority: 0,
+    caption: "emergency retreat",
+    speech: "emergency retreat",
+    dedupeKey: "emergency-retreat",
+    createdAt: fakeNowMs
+  }), false);
+  assert.strictEqual(tacticalRadio.captions.length, captionsBeforeDuplicate);
+  tacticalRadio.current && spokenUtterances[spokenUtterances.length - 1].onend();
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.lastSpokenAt[2] = fakeNowMs;
+  queueTacticalRadioCallout({
+    priority: 2,
+    caption: "moving compact",
+    speech: "moving compact",
+    dedupeKey: "moving-compact",
+    operationKey: "scope|compact|1",
+    progressionRank: 2,
+    createdAt: fakeNowMs
+  });
+  queueTacticalRadioCallout({
+    priority: 2,
+    caption: "engaged compact",
+    speech: "engaged compact",
+    dedupeKey: "engaged-compact",
+    operationKey: "scope|compact|1",
+    progressionRank: 3,
+    createdAt: fakeNowMs
+  });
+  assert.strictEqual(
+    tacticalRadio.queue.filter(function(item) {
+      return item.operationKey === "scope|compact|1";
+    }).length,
+    1
+  );
+  assert.strictEqual(
+    tacticalRadio.queue.filter(function(item) {
+      return item.operationKey === "scope|compact|1";
+    })[0].caption,
+    "engaged compact"
+  );
+  assert.strictEqual(timeoutDelays[timeoutDelays.length - 1], 3500);
+
+  // Snapshot hydration seeds high-water state without replaying old audio.
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.dedupe = {};
+  spokenUtterances.length = 0;
+  var hydrationOperation = operationResult(
+    "hydrated-operation",
+    "hydrated-update",
+    "hydrated operation",
+    "attack",
+    700,
+    "action_issued",
+    actionStages("attack").slice(0, 6),
+    2
+  );
+  applyEventSnapshot({
+    micromachine_status: serverResult({
+      status: "published",
+      operation_registry_authoritative: true,
+      operations: [hydrationOperation]
+    }, SERVER_SCOPE_A)
+  });
+  assert.strictEqual(spokenUtterances.length, 0);
+  assert.strictEqual(
+    tacticalRadio.frameHighWater[
+      [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
+    ],
+    700
+  );
+
+  // Exact-generation lifecycle events remain distinct; stale variants are silent.
+  var hydratedRecord = operationRecords[
+    operationRecordKey(SERVER_SCOPE_A, "hydrated-operation")
+  ];
+  assert(hydratedRecord);
+  var captionsBeforeStale = tacticalRadio.captions.length;
+  announceOperationLifecycleEvent(
+    { update_id: "hydrated-update", created_at_unix_ms: fakeNowMs },
+    {
+      operation_id: "hydrated-operation",
+      generation: 1,
+      requested_generation: 1,
+      update_id: "hydrated-update",
+      kind: "movement_observed",
+      game_frame: 701,
+      summary: "stale generation"
+    },
+    SERVER_SCOPE_A,
+    hydratedRecord
+  );
+  announceOperationLifecycleEvent(
+    { update_id: "hydrated-update", created_at_unix_ms: fakeNowMs },
+    {
+      operation_id: "hydrated-operation",
+      generation: 2,
+      requested_generation: 3,
+      update_id: "hydrated-update",
+      kind: "movement_observed",
+      game_frame: 701,
+      summary: "requested generation mismatch"
+    },
+    SERVER_SCOPE_A,
+    hydratedRecord
+  );
+  announceOperationLifecycleEvent(
+    {
+      update_id: "hydrated-update",
+      created_at_unix_ms: fakeNowMs - 20000
+    },
+    {
+      operation_id: "hydrated-operation",
+      generation: 2,
+      requested_generation: 2,
+      update_id: "hydrated-update",
+      kind: "movement_observed",
+      game_frame: 701,
+      summary: "old replay"
+    },
+    SERVER_SCOPE_A,
+    hydratedRecord
+  );
+  assert.strictEqual(tacticalRadio.captions.length, captionsBeforeStale);
+  [
+    ["movement_observed", "Operation movement observed.", "이동 시작", 701],
+    ["engagement_observed", "Operation engagement observed.", "교전 시작", 702],
+    ["target_reached", "Operation target reached.", "목표 도달", 703],
+    ["completed", "Operation completed.", "작전 완료", 704]
+  ].forEach(function(item) {
+    announceOperationLifecycleEvent(
+      { update_id: "hydrated-update", created_at_unix_ms: fakeNowMs },
+      {
+        operation_id: "hydrated-operation",
+        generation: 2,
+        requested_generation: 2,
+        update_id: "hydrated-update",
+        kind: item[0],
+        game_frame: item[3],
+        summary: item[1]
+      },
+      SERVER_SCOPE_A,
+      hydratedRecord
+    );
+    assert(nodes["tactical-radio-captions"].textContent.includes(item[2]));
+  });
+
+  // Muting or unavailable TTS never blocks captions.
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadioSetMuted(true);
+  var mutedCaptionCount = tacticalRadio.captions.length;
+  assert(queueTacticalRadioCallout({
+    priority: 1,
+    caption: "muted caption survives",
+    speech: "must not play",
+    dedupeKey: "muted-caption",
+    createdAt: fakeNowMs
+  }));
+  assert.strictEqual(tacticalRadio.captions.length, mutedCaptionCount + 1);
+  assert(nodes["tactical-radio-status"].textContent.includes("자막"));
+  tacticalRadioSetMuted(false);
+  tacticalRadio.supported = false;
+  var unavailableSpeechCount = spokenUtterances.length;
+  assert(queueTacticalRadioCallout({
+    priority: 1,
+    caption: "unavailable caption survives",
+    speech: "must not play",
+    dedupeKey: "unavailable-caption",
+    createdAt: fakeNowMs
+  }));
+  assert.strictEqual(spokenUtterances.length, unavailableSpeechCount);
+  renderTacticalRadioState();
+  assert(nodes["tactical-radio-status"].textContent.includes("지원하지"));
+  tacticalRadio.supported = true;
+  renderTacticalRadioState();
+
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-operation-cards-next";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-operation-cards-next");
   assert.strictEqual(Object.keys(operationRecords).length, 0);
@@ -15644,6 +16031,23 @@ const assert = require("assert");
             "    color: #7ee7b0;",
             page,
         )
+        for fragment in (
+            'id="tactical-radio"',
+            'aria-labelledby="tactical-radio-title"',
+            'id="tactical-radio-status"',
+            'role="status"',
+            'aria-live="polite"',
+            'id="tactical-radio-mute"',
+            'aria-pressed="false"',
+            'id="tactical-radio-captions"',
+            'aria-live="off"',
+            'data-i18n-aria-label="tacticalRadioCaptionsLabel"',
+            'data-i18n-title="voiceInputLabel"',
+            "@media (prefers-reduced-motion: reduce)",
+            "@media (forced-colors: active)",
+        ):
+            with self.subTest(tactical_radio_contract=fragment):
+                self.assertIn(fragment, page)
 
     def test_chat_panel_is_bounded_and_log_scrolls_internally(self):
         page = render_web_gui_page()
@@ -16035,6 +16439,7 @@ function renderActiveCommandConsole(payload) {
   activeCommandConsoleRecord.data = payload;
   activeCommandConsoleRecord.state = payload.status || activeCommandConsoleRecord.state;
 }
+function hydrateTacticalRadioState() {}
 """
         scenario = r"""
 connectEventChannel();
