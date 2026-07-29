@@ -2988,6 +2988,7 @@ def _micromachine_status_with_runtime_gate(
 
     result = dict(payload)
     source_status = str(result.get("status", "") or "")
+    source_error = str(result.get("error", "") or "")
     if not isinstance(runtime_snapshot, Mapping):
         public_result = _public_micromachine_runtime_payload(result)
         return dict(public_result) if isinstance(public_result, Mapping) else {}
@@ -3004,6 +3005,8 @@ def _micromachine_status_with_runtime_gate(
         "error",
     ):
         if key in runtime_snapshot:
+            if key == "error" and source_status == "source_error" and source_error:
+                continue
             result[key] = runtime_snapshot[key]
     result["runtime_status"] = runtime_status
 
@@ -3043,6 +3046,8 @@ def _micromachine_status_with_runtime_gate(
         "error",
     ):
         if key in runtime_snapshot:
+            if key == "error" and source_status == "source_error" and source_error:
+                continue
             result[key] = runtime_snapshot[key]
     if (
         result.get("update") is not None

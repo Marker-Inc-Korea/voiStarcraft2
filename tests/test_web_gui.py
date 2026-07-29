@@ -2270,6 +2270,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "telemetry_stale_or_detached": False,
                         "telemetry_frame": 320,
                         "blackboard_dir": blackboard_dir,
+                        "error": "",
                     },
                     telemetry_document=telemetry,
                 )
@@ -2326,6 +2327,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "telemetry_stale_or_detached": False,
                         "telemetry_frame": 320,
                         "blackboard_dir": blackboard_dir,
+                        "error": "",
                     },
                     telemetry_document=None,
                 )
@@ -2346,6 +2348,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIsNone(document["battlefield_overview"])
         self.assertFalse(document["telemetry_current_for_process"])
         self.assertTrue(document["telemetry_stale_or_detached"])
+        self.assertIn("validated telemetry snapshot", document["error"])
 
     def test_attached_status_rejects_unbound_archive_family_evidence(self):
         from starcraft_commander.micromachine_bridge import (
