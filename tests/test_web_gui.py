@@ -1339,6 +1339,47 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(document["intervention"]["policy_active"])
             self.assertTrue(document["telemetry_stale_or_detached"])
 
+    def test_micromachine_runtime_gate_redacts_runtime_identity_text(self):
+        cases = (
+            (
+                "attached",
+                {
+                    "status": "running",
+                    "runtime_attached": True,
+                    "telemetry_current_for_process": True,
+                    "last_line": "actor_tag=7001 action=attack",
+                    "error": "target_unit_tags=[8001, 8002]",
+                },
+            ),
+            (
+                "detached",
+                {
+                    "status": "running",
+                    "runtime_attached": False,
+                    "telemetry_current_for_process": False,
+                    "telemetry_present": True,
+                    "last_line": "actor_tag=7001 action=attack",
+                    "error": "target_unit_tags=[8001, 8002]",
+                },
+            ),
+        )
+
+        for label, runtime_snapshot in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                document = web_gui._micromachine_status_with_runtime_gate(
+                    {"status": "idle"},
+                    runtime_snapshot=runtime_snapshot,
+                    blackboard_dir=directory,
+                )
+                serialized = json.dumps(document, sort_keys=True)
+
+                self.assertNotIn("actor_tag", serialized)
+                self.assertNotIn("target_unit_tags", serialized)
+                self.assertNotIn("7001", serialized)
+                self.assertNotIn("8001", serialized)
+                self.assertNotIn("8002", serialized)
+                self.assertIn("action=attack", document["last_line"])
+
     def test_micromachine_status_scopes_latest_compile_result_to_active_update(self):
         with tempfile.TemporaryDirectory() as directory:
             self.post_micromachine_modulation(
@@ -4735,44 +4776,46 @@ class SessionLoopBridgeTest(unittest.TestCase):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session, llm_control=control)
         bridge.start()
-        self.addCleanup(bridge.stop)
 
         with tempfile.TemporaryDirectory() as directory:
-            bridge.submit_micromachine_modulation_background(
-                "긴급 후퇴",
-                blackboard_dir=directory,
-                current_frame=10,
-                update_id="blocked-emergency",
-            )
-            bridge.submit_micromachine_modulation_background(
-                "공격 취소하고 즉시 복귀",
-                blackboard_dir=directory,
-                current_frame=11,
-                update_id="replacement-emergency",
-            )
+            try:
+                bridge.submit_micromachine_modulation_background(
+                    "긴급 후퇴",
+                    blackboard_dir=directory,
+                    current_frame=10,
+                    update_id="blocked-emergency",
+                )
+                bridge.submit_micromachine_modulation_background(
+                    "공격 취소하고 즉시 복귀",
+                    blackboard_dir=directory,
+                    current_frame=11,
+                    update_id="replacement-emergency",
+                )
 
-            deadline = time.monotonic() + 3
-            latest = {}
-            while time.monotonic() < deadline:
-                path = os.path.join(directory, "latest_modulation.json")
-                if os.path.isfile(path):
-                    with open(path, encoding="utf-8") as handle:
-                        latest = json.load(handle)
-                    if latest.get("update_id") == "replacement-emergency":
-                        break
-                time.sleep(0.02)
+                deadline = time.monotonic() + 3
+                latest = {}
+                while time.monotonic() < deadline:
+                    path = os.path.join(directory, "latest_modulation.json")
+                    if os.path.isfile(path):
+                        with open(path, encoding="utf-8") as handle:
+                            latest = json.load(handle)
+                        if latest.get("update_id") == "replacement-emergency":
+                            break
+                    time.sleep(0.02)
 
-            self.assertEqual("replacement-emergency", latest.get("update_id"))
-            self.assertEqual(0, control._call_count)
-            archive_path = os.path.join(directory, "modulation_updates.jsonl")
-            with open(archive_path, encoding="utf-8") as handle:
-                archive_ids = [
-                    json.loads(line)["update_id"]
-                    for line in handle
-                    if line.strip()
-                ]
-            self.assertEqual("replacement-emergency", archive_ids[-1])
-            self.assertLessEqual(len(archive_ids), 2)
+                self.assertEqual("replacement-emergency", latest.get("update_id"))
+                self.assertEqual(0, control._call_count)
+                archive_path = os.path.join(directory, "modulation_updates.jsonl")
+                with open(archive_path, encoding="utf-8") as handle:
+                    archive_ids = [
+                        json.loads(line)["update_id"]
+                        for line in handle
+                        if line.strip()
+                    ]
+                self.assertEqual("replacement-emergency", archive_ids[-1])
+                self.assertLessEqual(len(archive_ids), 2)
+            finally:
+                bridge.stop()
 
     def test_micromachine_emergency_cancellation_is_scoped_to_blackboard(self):
         started = threading.Event()

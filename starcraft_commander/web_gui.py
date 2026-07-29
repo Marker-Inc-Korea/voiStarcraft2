@@ -2484,7 +2484,8 @@ def _micromachine_status_with_runtime_gate(
 
     result = dict(payload)
     if not isinstance(runtime_snapshot, Mapping):
-        return result
+        public_result = _public_micromachine_runtime_payload(result)
+        return dict(public_result) if isinstance(public_result, Mapping) else {}
 
     runtime_status = str(runtime_snapshot.get("status", "") or "")
     for key in (
@@ -2504,7 +2505,8 @@ def _micromachine_status_with_runtime_gate(
     telemetry_is_current = runtime_snapshot.get("telemetry_current_for_process") is True
     runtime_attached = runtime_snapshot.get("runtime_attached") is True
     if runtime_attached and telemetry_is_current:
-        return result
+        public_result = _public_micromachine_runtime_payload(result)
+        return dict(public_result) if isinstance(public_result, Mapping) else {}
 
     dashboard = result.get("dashboard", {})
     if not isinstance(dashboard, Mapping):
@@ -2547,7 +2549,8 @@ def _micromachine_status_with_runtime_gate(
             intervention_payload = dict(intervention)
             intervention_payload["applied"] = False
             result["intervention"] = intervention_payload
-    return result
+    public_result = _public_micromachine_runtime_payload(result)
+    return dict(public_result) if isinstance(public_result, Mapping) else {}
 
 
 def _micromachine_compile_result_for_update(
