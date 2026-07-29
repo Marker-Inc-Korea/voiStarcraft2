@@ -46,6 +46,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,7 +56,15 @@ from weakref import WeakValueDictionary
 
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_GAME_LOOPS_PER_SECOND,
+    MicroMachineBridgeFailureMode,
+    MicroMachineTelemetry,
     require_micromachine_update_id,
+)
+from starcraft_commander.micromachine_battlefield_projection import (
+    BattlefieldProjectionIdentity,
+    BattlefieldProjectionResult,
+    battlefield_overview_fingerprint,
+    select_latest_battlefield_projection,
 )
 from starcraft_commander.micromachine_command_execution import (
     EXPIRY_OPERATION_REASONS,
@@ -2203,13 +2212,290 @@ def _public_operation_family_evidence(
     return public_rows
 
 
+_PUBLIC_BATTLEFIELD_SCALAR: Final[object] = object()
+_PUBLIC_BATTLEFIELD_DROP: Final[object] = object()
+_PUBLIC_BATTLEFIELD_IDENTITY_SCHEMA: Final[Mapping[str, object]] = {
+    "update_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "scope": _PUBLIC_BATTLEFIELD_SCALAR,
+    "session_epoch": _PUBLIC_BATTLEFIELD_SCALAR,
+    "operation_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "stage": _PUBLIC_BATTLEFIELD_SCALAR,
+    "game_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+}
+_PUBLIC_BATTLEFIELD_OPERATION_SCHEMA: Final[Mapping[str, object]] = {
+    "identity": _PUBLIC_BATTLEFIELD_IDENTITY_SCHEMA,
+    "operation_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "operation_route": {
+        "requested_route_type": _PUBLIC_BATTLEFIELD_SCALAR,
+        "applied_route_type": _PUBLIC_BATTLEFIELD_SCALAR,
+        "location_intent": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_type": _PUBLIC_BATTLEFIELD_SCALAR,
+        "resolved_target_label": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_x": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_y": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_evidence": _PUBLIC_BATTLEFIELD_SCALAR,
+    },
+    "operation_lifetime": {
+        "mode": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completion_state": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completion_conditions": (_PUBLIC_BATTLEFIELD_SCALAR,),
+        "duration_seconds": _PUBLIC_BATTLEFIELD_SCALAR,
+        "issued_at_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        "deadline_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        "standing": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completed": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completion_reason": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completed_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+    },
+    "operation_ownership": {
+        "owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+        "integrity_status": _PUBLIC_BATTLEFIELD_SCALAR,
+    },
+    "operation_launch_policy": {
+        "min_units": _PUBLIC_BATTLEFIELD_SCALAR,
+        "max_units": _PUBLIC_BATTLEFIELD_SCALAR,
+        "allow_partial_requested": _PUBLIC_BATTLEFIELD_SCALAR,
+        "strict_scope": _PUBLIC_BATTLEFIELD_SCALAR,
+        "partial_launch_allowed": _PUBLIC_BATTLEFIELD_SCALAR,
+        "partial_launch_safe": _PUBLIC_BATTLEFIELD_SCALAR,
+        "launch_count": _PUBLIC_BATTLEFIELD_SCALAR,
+        "missing_count": _PUBLIC_BATTLEFIELD_SCALAR,
+        "decision": _PUBLIC_BATTLEFIELD_SCALAR,
+        "blocker": _PUBLIC_BATTLEFIELD_SCALAR,
+        "recommended_choices": (_PUBLIC_BATTLEFIELD_SCALAR,),
+        "safety_evidence": {
+            "evaluated_at_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+            "protected_defense_minimum_respected": _PUBLIC_BATTLEFIELD_SCALAR,
+            "source_operation_minimum_respected": _PUBLIC_BATTLEFIELD_SCALAR,
+            "transfer_admission": _PUBLIC_BATTLEFIELD_SCALAR,
+            "emergency_preemption": _PUBLIC_BATTLEFIELD_SCALAR,
+        },
+    },
+    "operation_completion": {
+        "movement_observed": _PUBLIC_BATTLEFIELD_SCALAR,
+        "engagement_observed": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_reached": _PUBLIC_BATTLEFIELD_SCALAR,
+        "terminal": _PUBLIC_BATTLEFIELD_SCALAR,
+        "state": _PUBLIC_BATTLEFIELD_SCALAR,
+        "reason": _PUBLIC_BATTLEFIELD_SCALAR,
+        "frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        "generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    },
+    "operation_transfer_selection": {
+        "present": _PUBLIC_BATTLEFIELD_SCALAR,
+        "edit_resolution": _PUBLIC_BATTLEFIELD_SCALAR,
+        "identity_valid": _PUBLIC_BATTLEFIELD_SCALAR,
+        "blocker": _PUBLIC_BATTLEFIELD_SCALAR,
+        "successful_write_acknowledgement": {
+            "acknowledged": _PUBLIC_BATTLEFIELD_SCALAR,
+            "acknowledged_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        },
+    },
+}
+_PUBLIC_BATTLEFIELD_TRANSFER_INPUT_SCHEMA: Final[Mapping[str, object]] = {
+    "requested": _PUBLIC_BATTLEFIELD_SCALAR,
+    "requested_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "source_owner_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "action": _PUBLIC_BATTLEFIELD_SCALAR,
+    "requested_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_operation_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_action": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "requested_source_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "requested_counterpart_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "edit_resolution": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_present": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_pending": _PUBLIC_BATTLEFIELD_SCALAR,
+    "reciprocal_action": _PUBLIC_BATTLEFIELD_SCALAR,
+    "reciprocal_counterpart": _PUBLIC_BATTLEFIELD_SCALAR,
+    "reciprocal_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "reciprocal_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "source_active": _PUBLIC_BATTLEFIELD_SCALAR,
+    "destination_active": _PUBLIC_BATTLEFIELD_SCALAR,
+    "ownership_integrity": _PUBLIC_BATTLEFIELD_SCALAR,
+    "operation_assignments_match": _PUBLIC_BATTLEFIELD_SCALAR,
+    "squad_assignments_match": _PUBLIC_BATTLEFIELD_SCALAR,
+    "action_assignments_match": _PUBLIC_BATTLEFIELD_SCALAR,
+    "role_assignments_match": _PUBLIC_BATTLEFIELD_SCALAR,
+    "atomic_revalidation_ready": _PUBLIC_BATTLEFIELD_SCALAR,
+}
+_PUBLIC_BATTLEFIELD_SCHEMA: Final[Mapping[str, object]] = {
+    "schema_version": _PUBLIC_BATTLEFIELD_SCALAR,
+    "authority": _PUBLIC_BATTLEFIELD_SCALAR,
+    "identity": _PUBLIC_BATTLEFIELD_IDENTITY_SCHEMA,
+    "eligible_combat_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "explicit_operation_owned_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "autonomous_owned_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "unassigned_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "duplicate_owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "operation_ownership": (_PUBLIC_BATTLEFIELD_OPERATION_SCHEMA,),
+    "autonomous_ownership": (
+        {
+            "owner_id": _PUBLIC_BATTLEFIELD_SCALAR,
+            "owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+            "integrity_status": _PUBLIC_BATTLEFIELD_SCALAR,
+        },
+    ),
+    "bases": (
+        {
+            "base_id": _PUBLIC_BATTLEFIELD_SCALAR,
+            "semantic_anchor": _PUBLIC_BATTLEFIELD_SCALAR,
+            "base_readiness": {
+                "readiness_state": _PUBLIC_BATTLEFIELD_SCALAR,
+                "reason": _PUBLIC_BATTLEFIELD_SCALAR,
+                "ground_threat": _PUBLIC_BATTLEFIELD_SCALAR,
+                "air_threat": _PUBLIC_BATTLEFIELD_SCALAR,
+                "observed_enemy_strength": _PUBLIC_BATTLEFIELD_SCALAR,
+                "last_evidence_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+                "evidence_class": _PUBLIC_BATTLEFIELD_SCALAR,
+                "assigned_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "ground_capable_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "air_capable_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "required_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "required_ground_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "required_air_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "protected_minimum": (
+                    {
+                        "family": _PUBLIC_BATTLEFIELD_SCALAR,
+                        "role": _PUBLIC_BATTLEFIELD_SCALAR,
+                        "count": _PUBLIC_BATTLEFIELD_SCALAR,
+                    },
+                ),
+            },
+        },
+    ),
+    "transfer_availability": {
+        "evaluated_at_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        "atomic_revalidation_required": _PUBLIC_BATTLEFIELD_SCALAR,
+        "entries": (
+            {
+                "source_owner_id": _PUBLIC_BATTLEFIELD_SCALAR,
+                "source_owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "protected_minimum": _PUBLIC_BATTLEFIELD_SCALAR,
+                "transferable_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "transfer_safe": _PUBLIC_BATTLEFIELD_SCALAR,
+                "atomic_runtime_blocker": _PUBLIC_BATTLEFIELD_SCALAR,
+                "recommended_resolution_choices": (
+                    _PUBLIC_BATTLEFIELD_SCALAR,
+                ),
+                "safety_evidence": {
+                    "evaluated_at_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+                    "protected_minimum_respected": _PUBLIC_BATTLEFIELD_SCALAR,
+                    "atomic_revalidation_required": _PUBLIC_BATTLEFIELD_SCALAR,
+                },
+                "atomic_revalidation_inputs": (
+                    _PUBLIC_BATTLEFIELD_TRANSFER_INPUT_SCHEMA
+                ),
+            },
+        ),
+    },
+}
+
+
+def _micromachine_sensitive_public_key(key: object) -> bool:
+    normalized = str(key or "").strip().lower()
+    compact = re.sub(r"[^a-z0-9]", "", normalized)
+    parts = {
+        part for part in re.split(r"[^a-z0-9]+", normalized) if part
+    }
+    if normalized.startswith("private_"):
+        return True
+    if compact in {
+        "apikey",
+        "accesskey",
+        "privatekey",
+        "clientsecret",
+        "authorization",
+        "authtoken",
+        "password",
+        "passwd",
+        "credential",
+        "credentials",
+        "cookie",
+    }:
+        return True
+    return bool(
+        parts
+        & {
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "credential",
+            "credentials",
+        }
+    )
+
+
+def _public_battlefield_projection_value(
+    value: object,
+    schema: object,
+) -> object:
+    if schema is _PUBLIC_BATTLEFIELD_SCALAR:
+        if isinstance(value, str):
+            return _redact_micromachine_internal_unit_tag_text(value)
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return _PUBLIC_BATTLEFIELD_DROP
+    if isinstance(schema, Mapping):
+        if not isinstance(value, Mapping):
+            return _PUBLIC_BATTLEFIELD_DROP
+        projected: dict[str, object] = {}
+        for key, child_schema in schema.items():
+            if key not in value or _micromachine_sensitive_public_key(key):
+                continue
+            child = _public_battlefield_projection_value(
+                value[key],
+                child_schema,
+            )
+            if child is not _PUBLIC_BATTLEFIELD_DROP:
+                projected[key] = child
+        return projected
+    if isinstance(schema, tuple) and len(schema) == 1:
+        if not isinstance(value, (list, tuple)):
+            return _PUBLIC_BATTLEFIELD_DROP
+        projected_items = []
+        for item in value:
+            projected = _public_battlefield_projection_value(item, schema[0])
+            if projected is not _PUBLIC_BATTLEFIELD_DROP:
+                projected_items.append(projected)
+        return projected_items
+    return _PUBLIC_BATTLEFIELD_DROP
+
+
+def _public_battlefield_overview_payload(value: object) -> object:
+    return _public_battlefield_projection_value(
+        value,
+        _PUBLIC_BATTLEFIELD_SCHEMA,
+    )
+
+
 def _public_micromachine_runtime_payload(value: object) -> object:
     if isinstance(value, Mapping):
-        return {
-            key: _public_micromachine_runtime_payload(item)
-            for key, item in value.items()
-            if not _micromachine_internal_unit_tag_key(key)
-        }
+        public_payload: dict[object, object] = {}
+        for key, item in value.items():
+            if _micromachine_sensitive_public_key(key):
+                continue
+            if str(key or "").strip().lower() == "battlefield_overview":
+                if item is None:
+                    public_payload[key] = None
+                    continue
+                overview = _public_battlefield_overview_payload(item)
+                if overview is not _PUBLIC_BATTLEFIELD_DROP:
+                    public_payload[key] = overview
+                continue
+            if _micromachine_internal_unit_tag_key(key):
+                continue
+            if _public_micromachine_semantic_tag_key(key):
+                semantic_tags = _public_micromachine_semantic_tag_value(item)
+                if semantic_tags is _MICROMACHINE_DROP_PUBLIC_FIELD:
+                    continue
+                public_payload[key] = semantic_tags
+                continue
+            public_payload[key] = _public_micromachine_runtime_payload(item)
+        return public_payload
     if isinstance(value, list):
         return [
             _public_micromachine_runtime_payload(item)
@@ -2261,12 +2547,74 @@ _MICROMACHINE_PUBLIC_SEMANTIC_TAG_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 
+_MICROMACHINE_DROP_PUBLIC_FIELD: Final[object] = object()
+_MICROMACHINE_SEMANTIC_TAG_NUMERIC_WRAPPER_PATTERN: Final[re.Pattern[str]] = (
+    re.compile(r"[\s\[\](){}<>,;|]+")
+)
+_MICROMACHINE_SEMANTIC_TAG_RAW_IDENTITY_PATTERN: Final[re.Pattern[str]] = (
+    re.compile(
+        r"""(?ix)
+        (?:^|[^a-z0-9])
+        (?:
+            (?:unit|actor|owner|selected|assigned|commanded|target)
+            (?:[_\s-]*tags?)?
+            |
+            tags?
+        )
+        [_:\s=#-]*\d+
+        |
+        (?<!\d)\d{4,}(?!\d)
+        """
+    )
+)
+
 
 def _redact_micromachine_internal_unit_tag_text(value: str) -> str:
     return _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN.sub(
         "[internal unit identity]: [redacted]",
         value,
     )
+
+
+def _public_micromachine_semantic_tag_key(key: object) -> bool:
+    return str(key or "").strip().lower() in _MICROMACHINE_PUBLIC_SEMANTIC_TAG_KEYS
+
+
+def _micromachine_safe_semantic_tag(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if _redact_micromachine_internal_unit_tag_text(value) != value:
+        return False
+    if _MICROMACHINE_SEMANTIC_TAG_RAW_IDENTITY_PATTERN.search(stripped):
+        return False
+    numeric_identity = _MICROMACHINE_SEMANTIC_TAG_NUMERIC_WRAPPER_PATTERN.sub(
+        "",
+        stripped,
+    )
+    return not numeric_identity.isdigit()
+
+
+def _public_micromachine_semantic_tag_value(value: object) -> object:
+    if isinstance(value, str):
+        return value if _micromachine_safe_semantic_tag(value) else (
+            _MICROMACHINE_DROP_PUBLIC_FIELD
+        )
+    if isinstance(value, list):
+        return [
+            item
+            for item in value
+            if isinstance(item, str)
+            and _micromachine_safe_semantic_tag(item)
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            item
+            for item in value
+            if isinstance(item, str)
+            and _micromachine_safe_semantic_tag(item)
+        )
+    return _MICROMACHINE_DROP_PUBLIC_FIELD
 
 
 def _micromachine_internal_unit_tag_key(key: object) -> bool:
@@ -2501,9 +2849,32 @@ def _micromachine_status_payload(
     blackboard_dir: str = "",
     compile_result: object | None = None,
     result_stream: Sequence[Mapping[str, object]] = (),
+    previous_battlefield_identity: (
+        BattlefieldProjectionIdentity | Mapping[str, object] | None
+    ) = None,
+    previous_battlefield_payload_fingerprint: str = "",
+    battlefield_projection: BattlefieldProjectionResult | None = None,
 ) -> dict[str, object]:
     """Promote latest blackboard state into the same top-level UI contract."""
 
+    latest_telemetry_document = (
+        _telemetry_to_mapping(telemetry)
+        if telemetry is not None
+        else None
+    )
+    if battlefield_projection is None:
+        battlefield_projection = select_latest_battlefield_projection(
+            latest_telemetry=latest_telemetry_document,
+            telemetry_archive=tuple(
+                _telemetry_to_mapping(entry)
+                for entry in telemetry_archive
+            ),
+            expected_scope="battlefield",
+            previous_identity=previous_battlefield_identity,
+            previous_payload_fingerprint=(
+                previous_battlefield_payload_fingerprint
+            ),
+        )
     updates = dashboard.get("active_updates")
     active_updates = updates if isinstance(updates, list) else []
     latest = (
@@ -2583,6 +2954,21 @@ def _micromachine_status_payload(
         "command_queue": command_queue,
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
+        "battlefield_projection": battlefield_projection.to_dict(),
+        "battlefield_overview": (
+            dict(battlefield_projection.battlefield_overview)
+            if battlefield_projection.ok
+            and battlefield_projection.battlefield_overview is not None
+            else None
+        ),
+        "battlefield_projection_identity": (
+            battlefield_projection.identity.to_dict()
+            if battlefield_projection.identity is not None
+            else None
+        ),
+        "battlefield_projection_integrity": dict(
+            battlefield_projection.integrity
+        ),
     }
     public_payload = _public_micromachine_runtime_payload(payload)
     return (
@@ -2601,6 +2987,8 @@ def _micromachine_status_with_runtime_gate(
     """Attach runtime metadata and fail closed when telemetry is detached."""
 
     result = dict(payload)
+    source_status = str(result.get("status", "") or "")
+    source_error = str(result.get("error", "") or "")
     if not isinstance(runtime_snapshot, Mapping):
         public_result = _public_micromachine_runtime_payload(result)
         return dict(public_result) if isinstance(public_result, Mapping) else {}
@@ -2617,6 +3005,8 @@ def _micromachine_status_with_runtime_gate(
         "error",
     ):
         if key in runtime_snapshot:
+            if key == "error" and source_status == "source_error" and source_error:
+                continue
             result[key] = runtime_snapshot[key]
     result["runtime_status"] = runtime_status
 
@@ -2642,6 +3032,8 @@ def _micromachine_status_with_runtime_gate(
         ),
     )
     result.update(rebuilt)
+    if source_status == "source_error":
+        result["status"] = source_status
     result["runtime_status"] = runtime_status
     for key in (
         "runtime_attached",
@@ -2654,6 +3046,8 @@ def _micromachine_status_with_runtime_gate(
         "error",
     ):
         if key in runtime_snapshot:
+            if key == "error" and source_status == "source_error" and source_error:
+                continue
             result[key] = runtime_snapshot[key]
     if (
         result.get("update") is not None
@@ -3658,6 +4052,9 @@ _MICROMACHINE_SYNC_PUBLISH_DEADLINE_SECONDS: Final[float] = 25.0
 _MICROMACHINE_COMPILE_RESULT_FRESH_SECONDS: Final[float] = 300.0
 """How long a failed/clarifying compile result remains current in the dashboard."""
 
+_MICROMACHINE_TELEMETRY_FRESHNESS_NS: Final[int] = 15 * 1_000_000_000
+"""Maximum age of post-launch telemetry accepted as current for the process."""
+
 _MICROMACHINE_COMPILE_RESULT_HISTORY_LIMIT: Final[int] = 64
 """Maximum per-update compile/publish results retained for browser polling."""
 
@@ -4612,6 +5009,68 @@ class _LiveLaunchManager:
                 self._error = self._last_line or "live process exited before GUI URL"
 
 
+@dataclass(frozen=True)
+class _MicroMachineTelemetryFileIdentity:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class _MicroMachineTelemetrySnapshot:
+    document: Mapping[str, object] | None = None
+    file_identity: _MicroMachineTelemetryFileIdentity | None = None
+    frame: int | None = None
+    current_for_process: bool = False
+
+
+@dataclass(frozen=True)
+class _MicroMachineValidatedRuntimeSnapshot:
+    metadata: Mapping[str, object]
+    telemetry_document: Mapping[str, object] | None = None
+    telemetry_file_identity: _MicroMachineTelemetryFileIdentity | None = None
+
+
+def _read_micromachine_telemetry_file(
+    path: str,
+) -> tuple[object | None, _MicroMachineTelemetryFileIdentity] | None:
+    try:
+        with open(path, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            payload = handle.read()
+            after = os.fstat(handle.fileno())
+    except OSError:
+        return None
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if before_identity != after_identity or after.st_size != len(payload):
+        return None
+    identity = _MicroMachineTelemetryFileIdentity(
+        device=after.st_dev,
+        inode=after.st_ino,
+        size=after.st_size,
+        mtime_ns=after.st_mtime_ns,
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        document = None
+    return document, identity
+
+
 class _MicroMachineLaunchManager:
     """Start the patched MicroMachine runtime script and expose cockpit status."""
 
@@ -4623,7 +5082,11 @@ class _MicroMachineLaunchManager:
         self._last_line = ""
         self._blackboard_dir = _default_micromachine_blackboard_dir()
         self._enemy_difficulty = DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY
-        self._launch_wall_time = 0.0
+        self._launch_started_at_ns = 0
+        self._launch_telemetry_baseline: (
+            _MicroMachineTelemetryFileIdentity | None
+        ) = None
+        self._runtime_instance_id = ""
         self._cwd = cwd.strip() or _REPO_ROOT
         candidate_script = script_path.strip()
         if candidate_script and not os.path.isabs(candidate_script):
@@ -4681,6 +5144,10 @@ class _MicroMachineLaunchManager:
             env["SMOKE_ENEMY_DIFFICULTY"] = str(difficulty)
             max_attempts = env.get(_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV, "1")
             env.setdefault("SMOKE_MAX_ATTEMPTS", max_attempts)
+            self._runtime_instance_id = uuid.uuid4().hex
+            env["VOI_MICROMACHINE_RUNTIME_INSTANCE_ID"] = (
+                self._runtime_instance_id
+            )
             argv = [
                 "bash",
                 self._script_path,
@@ -4694,7 +5161,14 @@ class _MicroMachineLaunchManager:
                 max_attempts,
             ]
             try:
-                self._launch_wall_time = time.time()
+                telemetry_path = os.path.realpath(
+                    os.path.join(root, "latest_telemetry.json")
+                )
+                baseline = _read_micromachine_telemetry_file(telemetry_path)
+                self._launch_telemetry_baseline = (
+                    baseline[1] if baseline is not None else None
+                )
+                self._launch_started_at_ns = time.time_ns()
                 self._process = subprocess.Popen(
                     argv,
                     cwd=self._cwd,
@@ -4711,7 +5185,9 @@ class _MicroMachineLaunchManager:
                     normalize_whitespace=True,
                 )
                 self._process = None
-                self._launch_wall_time = 0.0
+                self._launch_started_at_ns = 0
+                self._launch_telemetry_baseline = None
+                self._runtime_instance_id = ""
                 return self._snapshot_unlocked()
             threading.Thread(
                 target=self._read_output,
@@ -4728,8 +5204,31 @@ class _MicroMachineLaunchManager:
         with self._lock:
             if self._process is None or self._process.poll() is not None:
                 self._blackboard_dir = root
-            self._refresh_unlocked()
-            return self._snapshot_unlocked()
+            telemetry = self._refresh_unlocked()
+            return self._snapshot_unlocked(telemetry)
+
+    def validated_snapshot(
+        self,
+        blackboard_dir: str = "",
+    ) -> _MicroMachineValidatedRuntimeSnapshot:
+        """Capture metadata and the exact telemetry document validated with it."""
+
+        root = _clean_blackboard_dir(blackboard_dir, self._blackboard_dir)
+        with self._lock:
+            if self._process is None or self._process.poll() is not None:
+                self._blackboard_dir = root
+            telemetry = self._refresh_unlocked()
+            telemetry_document = (
+                deepcopy(dict(telemetry.document))
+                if telemetry.current_for_process
+                and isinstance(telemetry.document, Mapping)
+                else None
+            )
+            return _MicroMachineValidatedRuntimeSnapshot(
+                metadata=self._snapshot_unlocked(telemetry),
+                telemetry_document=telemetry_document,
+                telemetry_file_identity=telemetry.file_identity,
+            )
 
     def _read_output(self, process: subprocess.Popen[str]) -> None:
         if process.stdout is None:
@@ -4749,7 +5248,7 @@ class _MicroMachineLaunchManager:
                     self._status = "running"
                 if "MicroMachine smoke passed" in clean:
                     self._status = "passed"
-                elif self._latest_telemetry_frame_unlocked() is not None:
+                elif self._latest_telemetry_unlocked().current_for_process:
                     self._status = "connected"
         process.wait()
         with self._lock:
@@ -4762,13 +5261,21 @@ class _MicroMachineLaunchManager:
                 self._status = "failed"
                 self._error = self._last_line or f"process exited {process.returncode}"
 
-    def _refresh_unlocked(self) -> None:
+    def _refresh_unlocked(self) -> _MicroMachineTelemetrySnapshot:
         process = self._process
-        telemetry_frame = self._latest_telemetry_frame_unlocked()
+        telemetry = self._latest_telemetry_unlocked()
         if process is not None and process.poll() is None:
-            if telemetry_frame is not None and self._status in {"starting", "running"}:
+            if (
+                telemetry.current_for_process
+                and self._status in {"starting", "running"}
+            ):
                 self._status = "connected"
-            return
+            elif (
+                not telemetry.current_for_process
+                and self._status == "connected"
+            ):
+                self._status = "running"
+            return telemetry
         if process is not None and process.poll() is not None:
             if process.returncode == 0:
                 self._status = "passed"
@@ -4776,56 +5283,112 @@ class _MicroMachineLaunchManager:
             elif self._status not in {"failed", "passed"}:
                 self._status = "failed"
                 self._error = self._last_line or f"process exited {process.returncode}"
-            return
+            return _MicroMachineTelemetrySnapshot(
+                document=telemetry.document,
+                file_identity=telemetry.file_identity,
+                frame=telemetry.frame,
+            )
+        return telemetry
 
-    def _snapshot_unlocked(self) -> dict[str, object]:
+    def _snapshot_unlocked(
+        self,
+        telemetry: _MicroMachineTelemetrySnapshot | None = None,
+    ) -> dict[str, object]:
         process = self._process
-        telemetry_frame = self._latest_telemetry_frame_unlocked()
+        telemetry_snapshot = (
+            telemetry
+            if telemetry is not None
+            else self._latest_telemetry_unlocked()
+        )
         runtime_attached = process is not None and process.poll() is None
-        telemetry_current_for_process = bool(runtime_attached and telemetry_frame is not None)
+        telemetry_current_for_process = bool(
+            runtime_attached and telemetry_snapshot.current_for_process
+        )
         return {
             "enabled": True,
             "mode": COMMAND_MODE_MICROMACHINE,
             "status": self._status,
             "pid": process.pid if runtime_attached else None,
+            "runtime_instance_id": (
+                self._runtime_instance_id if runtime_attached else ""
+            ),
             "runtime_attached": runtime_attached,
             "blackboard_dir": self._blackboard_dir,
             "enemy_difficulty": self._enemy_difficulty,
             "script_path": self._script_path,
             "last_line": self._last_line,
             "error": self._error,
-            "telemetry_present": telemetry_frame is not None,
+            "telemetry_present": telemetry_snapshot.frame is not None,
             "telemetry_current_for_process": telemetry_current_for_process,
             "telemetry_stale_or_detached": (
-                telemetry_frame is not None and not telemetry_current_for_process
+                telemetry_snapshot.frame is not None
+                and not telemetry_current_for_process
             ),
-            "telemetry_frame": telemetry_frame,
+            "telemetry_frame": telemetry_snapshot.frame,
         }
 
-    def _latest_telemetry_frame_unlocked(self) -> int | None:
+    def _latest_telemetry_unlocked(self) -> _MicroMachineTelemetrySnapshot:
         path = os.path.join(self._blackboard_dir, "latest_telemetry.json")
         root_real = os.path.realpath(self._blackboard_dir)
         path_real = os.path.realpath(path)
         if not path_real.startswith(root_real + os.sep) or not os.path.isfile(path_real):
-            return None
-        try:
-            with open(path_real, encoding="utf-8") as handle:
-                document = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            return None
+            return _MicroMachineTelemetrySnapshot()
+        telemetry_file = _read_micromachine_telemetry_file(path_real)
+        if telemetry_file is None:
+            return _MicroMachineTelemetrySnapshot()
+        document, file_identity = telemetry_file
         if not isinstance(document, Mapping):
-            return None
+            return _MicroMachineTelemetrySnapshot(file_identity=file_identity)
         if document.get("protocol_version") != "voi-mm-bridge/v1":
-            return None
-        process = self._process
-        if process is not None and process.poll() is None and self._launch_wall_time:
-            try:
-                if os.path.getmtime(path_real) + 1.0 < self._launch_wall_time:
-                    return None
-            except OSError:
-                return None
+            return _MicroMachineTelemetrySnapshot(
+                document=document,
+                file_identity=file_identity,
+            )
         frame = document.get("frame")
-        return frame if type(frame) is int else None
+        if type(frame) is not int:
+            return _MicroMachineTelemetrySnapshot(
+                document=document,
+                file_identity=file_identity,
+            )
+        snapshot = _MicroMachineTelemetrySnapshot(
+            document=document,
+            file_identity=file_identity,
+            frame=frame,
+        )
+        process = self._process
+        if (
+            process is not None
+            and process.poll() is None
+            and self._launch_started_at_ns
+        ):
+            if file_identity.mtime_ns <= self._launch_started_at_ns:
+                return _MicroMachineTelemetrySnapshot()
+            if (
+                self._launch_telemetry_baseline is not None
+                and file_identity == self._launch_telemetry_baseline
+            ):
+                return _MicroMachineTelemetrySnapshot()
+            if (
+                document.get("runtime_instance_id")
+                != self._runtime_instance_id
+            ):
+                return snapshot
+            age_ns = time.time_ns() - file_identity.mtime_ns
+            return _MicroMachineTelemetrySnapshot(
+                document=document,
+                file_identity=file_identity,
+                frame=frame,
+                current_for_process=(
+                    0 <= age_ns <= _MICROMACHINE_TELEMETRY_FRESHNESS_NS
+                ),
+            )
+        return snapshot
+
+
+@dataclass(frozen=True)
+class _BattlefieldProjectionCursor:
+    identity: Mapping[str, object]
+    payload_fingerprint: str
 
 
 class SessionLoopBridge:
@@ -4868,6 +5431,10 @@ class SessionLoopBridge:
             str, deque[dict[str, object]]
         ] = {}
         self._micromachine_recent_commands_lock = threading.Lock()
+        self._micromachine_battlefield_identity_lock = threading.Lock()
+        self._micromachine_battlefield_cursors: dict[
+            tuple[str, str], _BattlefieldProjectionCursor
+        ] = {}
         self._lifecycle_lock = threading.Lock()
         self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
         self._micromachine_request_lock = threading.Lock()
@@ -5527,24 +6094,101 @@ class SessionLoopBridge:
         return payload
 
     def micromachine_status(self, *, blackboard_dir: str = "") -> Mapping[str, object]:
+        return self._micromachine_status(
+            blackboard_dir=blackboard_dir,
+            runtime_instance_id="",
+        )
+
+    def micromachine_status_for_runtime(
+        self,
+        *,
+        blackboard_dir: str = "",
+        runtime_instance_id: str,
+        telemetry_document: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        """Build status from the exact telemetry document validated by launcher."""
+
+        instance_id = str(runtime_instance_id or "").strip()
+        if not instance_id:
+            raise ValueError("runtime_instance_id must not be empty.")
+        if not isinstance(telemetry_document, Mapping):
+            raise ValueError("telemetry_document must be a mapping.")
+        telemetry = MicroMachineTelemetry.from_mapping(
+            deepcopy(dict(telemetry_document))
+        )
+        if telemetry.runtime_instance_id != instance_id:
+            raise ValueError(
+                "telemetry_document runtime_instance_id does not match "
+                "the attached runtime."
+            )
+        return self._micromachine_status(
+            blackboard_dir=blackboard_dir,
+            runtime_instance_id=instance_id,
+            validated_runtime_telemetry=telemetry,
+        )
+
+    def _micromachine_status(
+        self,
+        *,
+        blackboard_dir: str,
+        runtime_instance_id: str,
+        validated_runtime_telemetry: MicroMachineTelemetry | None = None,
+    ) -> Mapping[str, object]:
         from starcraft_commander.micromachine_runtime import (
             MicroMachineFilesystemBlackboard,
         )
         from starcraft_commander.policy_observability import (
             PolicyModulationBridgeStatus,
+            build_policy_modulation_dashboard_snapshot,
         )
 
         root = _clean_blackboard_dir(blackboard_dir, self._micromachine_blackboard_dir)
         backend = MicroMachineFilesystemBlackboard(root)
-        telemetry = backend.read_latest_telemetry()
+        telemetry = (
+            validated_runtime_telemetry
+            if runtime_instance_id
+            else backend.read_latest_telemetry()
+        )
         telemetry_archive = backend.read_recent_telemetry_archive(
             pending_family_effects_only=True,
         )
+        if runtime_instance_id:
+            if telemetry is None:
+                raise ValueError(
+                    "validated_runtime_telemetry is required for attached runtime."
+                )
+            if telemetry.runtime_instance_id != runtime_instance_id:
+                raise ValueError(
+                    "validated telemetry does not belong to attached runtime."
+                )
+            telemetry_archive = tuple(
+                entry
+                for entry in telemetry_archive
+                if entry.runtime_instance_id == runtime_instance_id
+                and entry.frame <= telemetry.frame
+            )
         frame = telemetry.frame if telemetry is not None else 0
-        snapshot = backend.dashboard_snapshot(
-            current_frame=frame,
-            bridge_status=PolicyModulationBridgeStatus.CONNECTED,
-        )
+        if runtime_instance_id:
+            updates = ()
+            last_failure = telemetry.last_failure
+            try:
+                update = backend.read_latest_update(current_frame=frame)
+                if update is not None:
+                    updates = (update,)
+            except (OSError, TypeError, ValueError):
+                last_failure = MicroMachineBridgeFailureMode.INVALID_PAYLOAD
+            snapshot = build_policy_modulation_dashboard_snapshot(
+                updates,
+                current_frame=frame,
+                bridge_status=PolicyModulationBridgeStatus.CONNECTED,
+                telemetry=telemetry,
+                last_failure=last_failure,
+            )
+        else:
+            snapshot = backend.dashboard_snapshot(
+                current_frame=frame,
+                bridge_status=PolicyModulationBridgeStatus.CONNECTED,
+            )
         compile_document = _read_micromachine_compile_result(root)
         compile_result = _latest_compile_result_payload(compile_document)
         compile_history = _read_micromachine_compile_result_history(root)
@@ -5560,18 +6204,71 @@ class SessionLoopBridge:
                 else ""
             ),
         )
-        payload = {
-            "enabled": True,
-            "blackboard_dir": root,
-            **result_metadata,
-            **_micromachine_status_payload(
+        with self._micromachine_battlefield_identity_lock:
+            root_key = os.path.realpath(root)
+            identity_key = (root_key, runtime_instance_id)
+            previous_cursor = (
+                self._micromachine_battlefield_cursors.get(identity_key)
+                if runtime_instance_id
+                else None
+            )
+            battlefield_projection = select_latest_battlefield_projection(
+                latest_telemetry=(
+                    _telemetry_to_mapping(telemetry)
+                    if telemetry is not None
+                    else None
+                ),
+                telemetry_archive=(
+                    ()
+                    if runtime_instance_id
+                    else tuple(
+                        _telemetry_to_mapping(entry)
+                        for entry in telemetry_archive
+                    )
+                ),
+                expected_scope="battlefield",
+                previous_identity=(
+                    previous_cursor.identity
+                    if previous_cursor is not None
+                    else None
+                ),
+                previous_payload_fingerprint=(
+                    previous_cursor.payload_fingerprint
+                    if previous_cursor is not None
+                    else ""
+                ),
+            )
+            status_payload = _micromachine_status_payload(
                 snapshot.to_dict(),
                 telemetry=telemetry,
                 telemetry_archive=telemetry_archive,
                 blackboard_dir=root,
                 compile_result=compile_result,
                 result_stream=compile_result_stream,
-            ),
+                battlefield_projection=battlefield_projection,
+            )
+            projection = status_payload.get("battlefield_projection")
+            identity = status_payload.get("battlefield_projection_identity")
+            if (
+                runtime_instance_id
+                and isinstance(projection, Mapping)
+                and projection.get("ok") is True
+                and isinstance(identity, Mapping)
+                and battlefield_projection.battlefield_overview is not None
+            ):
+                self._micromachine_battlefield_cursors[
+                    identity_key
+                ] = _BattlefieldProjectionCursor(
+                    identity=dict(identity),
+                    payload_fingerprint=battlefield_overview_fingerprint(
+                        battlefield_projection.battlefield_overview
+                    ),
+                )
+        payload = {
+            "enabled": True,
+            "blackboard_dir": root,
+            **result_metadata,
+            **status_payload,
         }
         payload["modulation_results"] = compile_result_stream
         public_payload = _public_micromachine_runtime_payload(payload)
@@ -14383,13 +15080,84 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "enabled": False,
                 "error": "MicroMachine modulation bridge is disabled.",
             }
-        payload = dict(status_fn(blackboard_dir=blackboard_dir))
         runtime_snapshot = None
+        validated_telemetry_document = None
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
-        if launcher is not None and callable(getattr(launcher, "snapshot", None)):
+        validated_snapshot_fn = getattr(
+            launcher,
+            "validated_snapshot",
+            None,
+        )
+        if callable(validated_snapshot_fn):
+            validated_snapshot = validated_snapshot_fn(
+                blackboard_dir=blackboard_dir
+            )
+            if isinstance(
+                validated_snapshot,
+                _MicroMachineValidatedRuntimeSnapshot,
+            ):
+                runtime_snapshot = dict(validated_snapshot.metadata)
+                if isinstance(
+                    validated_snapshot.telemetry_document,
+                    Mapping,
+                ):
+                    validated_telemetry_document = deepcopy(
+                        dict(validated_snapshot.telemetry_document)
+                    )
+        elif launcher is not None and callable(getattr(launcher, "snapshot", None)):
             runtime_snapshot = dict(
                 launcher.snapshot(blackboard_dir=blackboard_dir)
             )
+            if runtime_snapshot.get("runtime_attached") is True:
+                runtime_snapshot["telemetry_current_for_process"] = False
+                runtime_snapshot["telemetry_stale_or_detached"] = (
+                    runtime_snapshot.get("telemetry_present") is True
+                )
+        runtime_claims_current_telemetry = bool(
+            isinstance(runtime_snapshot, Mapping)
+            and runtime_snapshot.get("runtime_attached") is True
+            and runtime_snapshot.get("telemetry_current_for_process") is True
+        )
+        runtime_instance_id = ""
+        if (
+            runtime_claims_current_telemetry
+            and isinstance(validated_telemetry_document, Mapping)
+        ):
+            runtime_instance_id = str(
+                runtime_snapshot.get("runtime_instance_id", "") or ""
+            ).strip()
+        runtime_status_fn = getattr(
+            self._bridge,
+            "micromachine_status_for_runtime",
+            None,
+        )
+        if (
+            runtime_claims_current_telemetry
+            and runtime_instance_id
+            and callable(runtime_status_fn)
+        ):
+            payload = dict(
+                runtime_status_fn(
+                    blackboard_dir=blackboard_dir,
+                    runtime_instance_id=runtime_instance_id,
+                    telemetry_document=validated_telemetry_document,
+                )
+            )
+        elif runtime_claims_current_telemetry:
+            runtime_snapshot = dict(runtime_snapshot)
+            runtime_snapshot["telemetry_current_for_process"] = False
+            runtime_snapshot["telemetry_stale_or_detached"] = True
+            payload = {
+                "enabled": True,
+                "blackboard_dir": blackboard_dir,
+                "status": "source_error",
+                "error": (
+                    "Attached MicroMachine runtime status requires a bridge "
+                    "that consumes the launcher-validated telemetry snapshot."
+                ),
+            }
+        else:
+            payload = dict(status_fn(blackboard_dir=blackboard_dir))
         return _micromachine_status_with_runtime_gate(
             payload,
             runtime_snapshot=runtime_snapshot,

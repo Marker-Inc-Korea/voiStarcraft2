@@ -1,0 +1,4992 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 0c92dba16a984af2920700cfd220a5af5da7d059..685cdf2efa7c9795b73e9263986931c3f00a6e2f 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2261,6 +2261,24 @@ std::string voiSquadOrderName(size_t orderType)
+ 	return "none";
+ }
+ 
++std::string voiOperationIdentityStage(
++	const VoiOperationState & operation)
++{
++	const bool movementObserved =
++		operation.status == "MOVING"
++		|| operation.status == "ENGAGED"
++		|| operation.maxHomeDistance >= 1.0f;
++	return operation.completed
++		? "terminal"
++		: (operation.engaged || movementObserved
++			? "effect_observed"
++			: (operation.submissionObserved
++				? "submitted"
++				: (operation.assignedCount > 0
++					? "assigned"
++					: "planned")));
++}
++
+ std::string voiOperationFamilyEvidenceKey(
+ 	const std::string & unitType,
+ 	const std::string & role,
+@@ -2782,6 +2800,774 @@ CombatCommander::CombatCommander(CCBot & bot)
+ {
+ }
+ 
++void CombatCommander::updateVoiBattlefieldProjection()
++{
++	VoiBattlefieldProjectionInput input;
++	input.frame = m_bot.GetGameLoop();
++	if (m_voiBattlefieldSessionEpoch == 0)
++	{
++		m_voiBattlefieldSessionEpoch =
++			voiNextBattlefieldSessionEpoch(0);
++	}
++	input.sessionEpoch = m_voiBattlefieldSessionEpoch;
++	input.generation =
++		++m_voiBattlefieldProjectionGeneration;
++	input.updateId = m_voiOperationPolicyUpdateId.empty()
++		? "micromachine-autonomous"
++		: m_voiOperationPolicyUpdateId;
++	input.ownershipEvidencePresent = true;
++
++	std::map<sc2::Tag, VoiBattlefieldUnitInput> unitsByTag;
++	for (const auto & allyEntry : m_bot.GetAllyUnits())
++	{
++		const Unit & unit = allyEntry.second;
++		VoiBattlefieldUnitInput projected;
++		projected.tag = unit.getTag();
++		projected.alive = unit.isValid() && unit.isAlive();
++		projected.selfOwned =
++			unit.isValid() && unit.getPlayer() == Players::Self;
++		projected.complete =
++			unit.isValid() && unit.isCompleted();
++		if (unit.isValid())
++		{
++			projected.worker = unit.getType().isWorker();
++			projected.structure = unit.getType().isBuilding();
++			projected.temporaryPayload =
++				unit.getType().isSpawnedUnit()
++				|| unit.getAPIUnitType()
++					== sc2::UNIT_TYPEID::TERRAN_KD8CHARGE;
++			projected.combat =
++				unit.getType().isCombatUnit();
++			projected.canAttackGround =
++				unit.canAttackGround();
++			projected.canAttackAir =
++				unit.canAttackAir();
++		}
++		unitsByTag[projected.tag] = projected;
++	}
++	const auto ensureUnit =
++		[&](sc2::Tag tag) -> VoiBattlefieldUnitInput &
++		{
++			auto inserted = unitsByTag.insert(
++				std::make_pair(
++					tag,
++					VoiBattlefieldUnitInput()));
++			inserted.first->second.tag = tag;
++			return inserted.first->second;
++		};
++	const auto operationOwnerKey =
++		[](const std::string & operationId, uint64_t generation)
++		{
++			return std::string("operation:")
++				+ operationId + "#"
++				+ std::to_string(generation);
++		};
++	const auto addExplicitOwner =
++		[&](
++			sc2::Tag tag,
++			const std::string & operationId,
++			uint64_t generation)
++		{
++			if (!operationId.empty() && generation > 0)
++			{
++				ensureUnit(tag).explicitOwners.push_back(
++					operationOwnerKey(
++						operationId,
++						generation));
++			}
++		};
++
++	for (const auto & owner : m_voiOperationUnitOwners)
++	{
++		addExplicitOwner(
++			owner.first,
++			owner.second.first,
++			owner.second.second);
++	}
++	for (const auto & operation : m_voiOperations)
++	{
++		for (const auto tag : operation.assignedUnitTags)
++		{
++			addExplicitOwner(
++				tag,
++				operation.operationId,
++				operation.generation);
++		}
++		for (const auto & role : operation.assignedRoleByTag)
++		{
++			addExplicitOwner(
++				role.first,
++				operation.operationId,
++				operation.generation);
++		}
++	}
++
++	std::map<std::string, std::vector<sc2::Tag>>
++		autonomousTagsByOwner;
++	for (const auto & squadEntry : m_squadData.getSquads())
++	{
++		const std::string & squadName = squadEntry.first;
++		const VoiOperationState * operation =
++			findVoiOperationBySquad(squadName);
++		for (const auto & unit : squadEntry.second.getUnits())
++		{
++			if (operation != nullptr)
++			{
++				addExplicitOwner(
++					unit.getTag(),
++					operation->operationId,
++					operation->generation);
++			}
++			else if (squadName != "Idle")
++			{
++				const std::string ownerId =
++					"squad:" + squadName;
++				ensureUnit(unit.getTag())
++					.autonomousOwners.push_back(ownerId);
++				autonomousTagsByOwner[ownerId].push_back(
++					unit.getTag());
++			}
++		}
++	}
++	for (const auto & actionEntry : unitActions)
++	{
++		if (actionEntry.first != nullptr)
++		{
++			addExplicitOwner(
++				actionEntry.first->tag,
++				actionEntry.second.operationId,
++				actionEntry.second.operationGeneration);
++		}
++	}
++	for (const auto & unitEntry : unitsByTag)
++	{
++		input.units.push_back(unitEntry.second);
++	}
++
++	std::map<std::string, std::size_t>
++		autonomousProtectedMinimum;
++	const auto & occupiedBases =
++		m_bot.Bases().getOccupiedBaseLocations(Players::Self);
++	input.baseEvidencePresent = !occupiedBases.empty();
++	const BaseLocation * selfMain =
++		m_bot.Bases().getPlayerStartingBaseLocation(Players::Self);
++	BaseLocation * selfNatural =
++		m_bot.Bases().getPlayerNat(Players::Self);
++	for (const BaseLocation * base : occupiedBases)
++	{
++		if (base == nullptr)
++		{
++			input.baseEvidencePresent = false;
++			continue;
++		}
++		VoiBattlefieldBaseInput projectedBase;
++		const CCPosition basePosition =
++			Util::GetPosition(base->getDepotTilePosition());
++		std::ostringstream baseId;
++		baseId << "base:" << basePosition.x
++			<< ":" << basePosition.y;
++		projectedBase.baseId = baseId.str();
++		projectedBase.semanticAnchor =
++			base == selfMain
++				? "self_main"
++				: (base == selfNatural
++					? "self_natural"
++					: "self_expansion");
++		projectedBase.occupied = true;
++		projectedBase.readinessEvidencePresent =
++			basePosition != CCPosition()
++			&& m_bot.Map().isValidPosition(basePosition);
++		projectedBase.threatEvidencePresent =
++			projectedBase.readinessEvidencePresent
++			&& m_bot.Map().isVisible(basePosition);
++
++		std::size_t visibleGroundThreatCount = 0;
++		std::size_t visibleAirThreatCount = 0;
++		if (projectedBase.threatEvidencePresent)
++		{
++			for (const auto & enemy : m_bot.GetKnownEnemyUnits())
++			{
++				if (!enemy.isValid()
++					|| !enemy.isAlive()
++					|| !enemy.isVisible()
++					|| enemy.getType().isSpawnedUnit()
++					|| !UnitType::isTargetable(
++						enemy.getAPIUnitType())
++					|| !base->containsUnitApproximative(
++						enemy,
++						BaseDefenseOrderRadius))
++				{
++					continue;
++				}
++				if (!enemy.getType().isCombatUnit()
++					&& !enemy.getType().isWorker()
++					&& !enemy.getType().isAttackingBuilding())
++				{
++					continue;
++				}
++				if (enemy.isFlying())
++				{
++					++visibleAirThreatCount;
++				}
++				else
++				{
++					++visibleGroundThreatCount;
++				}
++			}
++			projectedBase.threatFrame = input.frame;
++			projectedBase.evidenceClass =
++				"current_base_visibility";
++			projectedBase.threatEvidence =
++				visibleGroundThreatCount
++						+ visibleAirThreatCount > 0
++					? "visible_enemy_units"
++					: "visible_base_no_enemy";
++		}
++		else
++		{
++			projectedBase.evidenceClass =
++				"missing_base_visibility";
++			projectedBase.threatEvidence =
++				"base_visibility_missing";
++		}
++		projectedBase.groundThreat =
++			static_cast<float>(visibleGroundThreatCount);
++		projectedBase.airThreat =
++			static_cast<float>(visibleAirThreatCount);
++		projectedBase.observedEnemyStrength =
++			projectedBase.groundThreat
++			+ projectedBase.airThreat;
++		projectedBase.threatened =
++			projectedBase.observedEnemyStrength > 0.0f;
++		projectedBase.requiredDefenderCount =
++			visibleGroundThreatCount + visibleAirThreatCount;
++		projectedBase.requiredGroundDefenderCount =
++			visibleGroundThreatCount;
++		projectedBase.requiredAirDefenderCount =
++			visibleAirThreatCount;
++		projectedBase.protectedMinimum =
++			projectedBase.requiredDefenderCount;
++
++		std::ostringstream defenseSquadName;
++		defenseSquadName << "Base Defense "
++			<< basePosition.x << " " << basePosition.y;
++		if (m_squadData.squadExists(
++			defenseSquadName.str()))
++		{
++			for (const auto & defender :
++				m_squadData.getSquad(
++					defenseSquadName.str()).getUnits())
++			{
++				projectedBase.defenderTags.push_back(
++					defender.getTag());
++			}
++		}
++		autonomousProtectedMinimum[
++			"squad:" + defenseSquadName.str()] =
++				projectedBase.protectedMinimum;
++		input.bases.push_back(projectedBase);
++	}
++
++	const auto assignedTagSet =
++		[](const VoiOperationState & operation)
++		{
++			return std::set<sc2::Tag>(
++				operation.assignedUnitTags.begin(),
++				operation.assignedUnitTags.end());
++		};
++	const auto isActiveOperation =
++		[&](const VoiOperationState & operation)
++		{
++			return !operation.completed
++				&& operation.status != "BLOCKED"
++				&& operation.status != "CANCELLED"
++				&& operation.status != "EXPIRED"
++				&& operation.status != "FAILED"
++				&& operation.status != "SUPERSEDED"
++				&& !operation.squadName.empty()
++				&& m_squadData.squadExists(
++					operation.squadName);
++		};
++	const auto operationAssignmentsMatch =
++		[&](const VoiOperationState & operation)
++		{
++			const std::set<sc2::Tag> tags =
++				assignedTagSet(operation);
++			if (tags.size()
++					!= operation.assignedUnitTags.size()
++				|| static_cast<int>(tags.size())
++					!= operation.assignedCount)
++			{
++				return false;
++			}
++			for (const auto tag : tags)
++			{
++				const auto owner =
++					m_voiOperationUnitOwners.find(tag);
++				if (owner == m_voiOperationUnitOwners.end()
++					|| owner->second.first
++						!= operation.operationId
++					|| owner->second.second
++						!= operation.generation)
++				{
++					return false;
++				}
++			}
++			return true;
++		};
++	const auto squadAssignmentsMatch =
++		[&](const VoiOperationState & operation)
++		{
++			if (operation.squadName.empty()
++				|| !m_squadData.squadExists(
++					operation.squadName))
++			{
++				return operation.completed
++					&& operation.assignedUnitTags.empty();
++			}
++			const std::set<sc2::Tag> expected =
++				assignedTagSet(operation);
++			std::set<sc2::Tag> actual;
++			for (const auto & unit :
++				m_squadData.getSquad(
++					operation.squadName).getUnits())
++			{
++				if (!unit.isValid()
++					|| !unit.isAlive()
++					|| !actual.insert(unit.getTag()).second)
++				{
++					return false;
++				}
++			}
++			return actual == expected;
++		};
++	const auto actionAssignmentsMatch =
++		[&](const VoiOperationState & operation)
++		{
++			const std::set<sc2::Tag> expected =
++				assignedTagSet(operation);
++			for (const auto & actionEntry : unitActions)
++			{
++				if (actionEntry.first == nullptr)
++				{
++					continue;
++				}
++				const sc2::Tag tag =
++					actionEntry.first->tag;
++				const UnitAction & action =
++					actionEntry.second;
++				const bool actionHasOwner =
++					!action.operationId.empty()
++					|| action.operationGeneration > 0;
++				const bool expectedTag =
++					expected.find(tag) != expected.end();
++				const bool matchingAction =
++					action.operationId
++						== operation.operationId
++					&& action.operationGeneration
++						== operation.generation;
++				if ((expectedTag && actionHasOwner
++						&& !matchingAction)
++					|| (matchingAction && !expectedTag))
++				{
++					return false;
++				}
++			}
++			return true;
++		};
++	const auto roleAssignmentsMatch =
++		[&](const VoiOperationState & operation)
++		{
++			const std::set<sc2::Tag> expected =
++				assignedTagSet(operation);
++			for (const auto & role :
++				operation.assignedRoleByTag)
++			{
++				if (role.second.empty()
++					|| expected.find(role.first)
++						== expected.end())
++				{
++					return false;
++				}
++			}
++			return true;
++		};
++	const auto latestOperationById =
++		[&](const std::string & operationId)
++			-> const VoiOperationState *
++		{
++			const VoiOperationState * latest = nullptr;
++			for (const auto & candidate : m_voiOperations)
++			{
++				if (candidate.operationId == operationId
++					&& (latest == nullptr
++						|| candidate.generation
++							> latest->generation))
++				{
++					latest = &candidate;
++				}
++			}
++			return latest;
++		};
++
++	const bool emergencyPreemption =
++		m_bot.Commander().getVoiPolicyBool(
++			"emergency.force_retreat",
++			false)
++		|| m_bot.Commander().getVoiPolicyBool(
++			"emergency.cancel_attacks",
++			false);
++	for (const auto & operation : m_voiOperations)
++	{
++		const bool operationSnapshotValid =
++			operationAssignmentsMatch(operation);
++		const bool squadSnapshotValid =
++			squadAssignmentsMatch(operation);
++		const bool actionSnapshotValid =
++			actionAssignmentsMatch(operation);
++		const bool roleSnapshotValid =
++			roleAssignmentsMatch(operation);
++
++		VoiBattlefieldOperationInput projectedOperation;
++		projectedOperation.scope =
++			operation.commandLayer.empty()
++				? "operation"
++				: operation.commandLayer;
++		projectedOperation.operationId =
++			operation.operationId;
++		projectedOperation.generation =
++			operation.generation;
++		projectedOperation.updateId =
++			operation.policyUpdateId;
++		projectedOperation.status = operation.status;
++		projectedOperation.active =
++			isActiveOperation(operation);
++		projectedOperation.ownershipEvidencePresent =
++			!operation.operationId.empty()
++			&& operation.generation > 0
++			&& operationSnapshotValid
++			&& squadSnapshotValid
++			&& actionSnapshotValid
++			&& roleSnapshotValid;
++		projectedOperation.assignedTags =
++			operation.assignedUnitTags;
++		projectedOperation.minimumUnits =
++			static_cast<std::size_t>(
++				std::max(0, operation.minUnits));
++		projectedOperation.maximumUnits =
++			static_cast<std::size_t>(
++				std::max(0, operation.maxUnits));
++		projectedOperation.allowPartial =
++			operation.allowPartial;
++		projectedOperation.strictScope =
++			operation.strictScope;
++		projectedOperation.requestedRouteType =
++			operation.requestedRouteType.empty()
++				? operation.routeType
++				: operation.requestedRouteType;
++		projectedOperation.routeType =
++			operation.routeType;
++		projectedOperation.targetIntent =
++			operation.locationIntent;
++		projectedOperation.targetType =
++			operation.targetType.empty()
++				? operation.taskType
++				: operation.targetType;
++		projectedOperation.resolvedTargetLabel =
++			operation.resolvedTargetLabel.empty()
++				? operation.locationIntent
++				: operation.resolvedTargetLabel;
++		projectedOperation.targetEvidence =
++			operation.targetEvidence;
++		projectedOperation.targetX =
++			operation.targetX;
++		projectedOperation.targetY =
++			operation.targetY;
++		projectedOperation.lifetimeMode =
++			operation.lifetimeMode;
++		projectedOperation.completionConditions =
++			operation.completionConditions;
++		projectedOperation.durationSeconds =
++			static_cast<std::uint64_t>(
++				std::max(0, operation.durationSeconds));
++		projectedOperation.issuedAtFrame =
++			operation.issuedAtFrame;
++		projectedOperation.deadlineFrame =
++			operation.deadlineFrame;
++		projectedOperation.standing =
++			operation.standing;
++		projectedOperation.completed =
++			operation.completed;
++		projectedOperation.completionReason =
++			operation.completionReason;
++		projectedOperation.completionFrame =
++			operation.completionFrame;
++		projectedOperation.movementObserved =
++			operation.status == "MOVING"
++			|| operation.status == "ENGAGED"
++			|| operation.maxHomeDistance >= 1.0f;
++		projectedOperation.engagementObserved =
++			operation.engaged;
++		projectedOperation.targetReached =
++			operation.targetReached;
++		projectedOperation.emergencyPreemption =
++			emergencyPreemption
++				&& operation.commandLayer != "emergency"
++				? "active"
++				: "none";
++		projectedOperation.identityStage =
++			voiOperationIdentityStage(operation);
++		projectedOperation.transferSelectionIdentity =
++			operation.editSelectionIdentity;
++		projectedOperation.transferSelectionAcknowledgement =
++			operation.editSelectionAcknowledgement;
++		projectedOperation.transferSelectionResolution =
++			operation.editResolution;
++
++		const bool transferRequested =
++			operation.editAction == "transfer_in"
++			|| operation.editAction == "transfer_out";
++		const VoiOperationState * counterpart =
++			transferRequested
++				? latestOperationById(
++					operation.editCounterpartOperationId)
++				: nullptr;
++		const VoiOperationState * source =
++			counterpart == nullptr
++				? nullptr
++				: (operation.editAction == "transfer_out"
++					? &operation
++					: counterpart);
++		const VoiOperationState * destination =
++			counterpart == nullptr
++				? nullptr
++				: (operation.editAction == "transfer_in"
++					? &operation
++					: counterpart);
++		if (source != nullptr
++			&& destination != nullptr
++			&& !operation.editSelectionIdentity
++				.selectedUnitTags.empty())
++		{
++			auto & evidence =
++				projectedOperation
++					.transferSelectionRuntimeEvidence;
++			evidence.sourceUpdateId =
++				source->policyUpdateId;
++			evidence.counterpartUpdateId =
++				destination->policyUpdateId;
++			evidence.sourceOperationId =
++				source->operationId;
++			evidence.counterpartOperationId =
++				destination->operationId;
++			evidence.sourceAction = source->editAction;
++			evidence.counterpartAction =
++				destination->editAction;
++			evidence.sourceGeneration =
++				source->generation;
++			evidence.counterpartGeneration =
++				destination->generation;
++			const bool applied =
++				source->editResolution == "applied"
++				&& destination->editResolution == "applied";
++			evidence.requestedSourceGeneration =
++				applied
++					? source->generation
++					: source->editRequestedGeneration;
++			evidence.requestedCounterpartGeneration =
++				applied
++					? destination->generation
++					: destination->editRequestedGeneration;
++			evidence.sourceResolution =
++				source->editResolution;
++			evidence.counterpartResolution =
++				destination->editResolution;
++			evidence.sourceOwnedTags =
++				source->assignedUnitTags;
++			evidence.destinationOwnedTags =
++				destination->assignedUnitTags;
++		}
++		if (transferRequested
++			&& operation.editResolution != "applied")
++		{
++			auto & transfer = projectedOperation.transfer;
++			transfer.requested = true;
++			transfer.admittedSelectionIdentity =
++				operation.editSelectionIdentity;
++			transfer.editResolution =
++				operation.editResolution;
++			transfer.counterpartPresent =
++				counterpart != nullptr;
++			transfer.admissionBlocker =
++				operation.editBlocker;
++			if (source != nullptr && destination != nullptr)
++			{
++				transfer.sourceUpdateId =
++					source->policyUpdateId;
++				transfer.counterpartUpdateId =
++					destination->policyUpdateId;
++				transfer.action = source->editAction;
++				transfer.counterpartAction =
++					destination->editAction;
++				transfer.counterpartOperationId =
++					destination->operationId;
++				transfer.sourceOwnerId =
++					source->operationId;
++				transfer.requestedGeneration =
++					source->generation;
++				transfer.counterpartGeneration =
++					destination->generation;
++				transfer.requestedSourceGeneration =
++					source->editRequestedGeneration;
++				transfer.requestedCounterpartGeneration =
++					destination->editRequestedGeneration;
++				transfer.requestedCount =
++					static_cast<std::size_t>(
++						std::max(
++							0,
++							voiOperationCompositionTotal(
++								source
++									->editUnitSelection)));
++				transfer.sourceOwnerTags =
++					source->assignedUnitTags;
++				const std::set<sc2::Tag> sourceTags =
++					assignedTagSet(*source);
++				for (const auto tag :
++					operation.editSelectionIdentity
++						.selectedUnitTags)
++				{
++					if (sourceTags.find(tag)
++						!= sourceTags.end())
++					{
++						transfer.selectedTags.push_back(tag);
++					}
++				}
++				transfer.counterpartPending =
++					destination->editResolution == "pending";
++				transfer.counterpartCounterpartOperationId =
++					destination
++						->editCounterpartOperationId;
++				transfer.counterpartRequestedGeneration =
++					destination
++						->editRequestedGeneration;
++				transfer.counterpartRequestedCount =
++					static_cast<std::size_t>(
++						std::max(
++							0,
++							voiOperationCompositionTotal(
++								destination
++									->editUnitSelection)));
++				transfer.sourceActive =
++					isActiveOperation(*source);
++				transfer.destinationActive =
++					isActiveOperation(*destination);
++				transfer.sourceMinimum =
++					static_cast<std::size_t>(
++						std::max(0, source->minUnits));
++				transfer.destinationOwnedCount =
++					assignedTagSet(*destination).size();
++				transfer.destinationMaximum =
++					static_cast<std::size_t>(
++						std::max(
++							0,
++							destination->maxUnits));
++				transfer.operationAssignmentsMatch =
++					operationAssignmentsMatch(*source)
++					&& operationAssignmentsMatch(
++						*destination);
++				transfer.squadAssignmentsMatch =
++					squadAssignmentsMatch(*source)
++					&& squadAssignmentsMatch(
++						*destination);
++				transfer.actionAssignmentsMatch =
++					actionAssignmentsMatch(*source)
++					&& actionAssignmentsMatch(
++						*destination);
++				transfer.roleAssignmentsMatch =
++					roleAssignmentsMatch(*source)
++					&& roleAssignmentsMatch(
++						*destination);
++			}
++		}
++		input.operations.push_back(projectedOperation);
++
++		if (isActiveOperation(operation))
++		{
++			VoiBattlefieldTransferInput availability;
++			availability.sourceOwnerId =
++				operation.operationId;
++			availability.sourceOwnerTags =
++				operation.assignedUnitTags;
++			const std::size_t protectedCount =
++				static_cast<std::size_t>(
++					std::max(0, operation.minUnits));
++			if (operation.assignedUnitTags.size()
++				> protectedCount)
++			{
++				availability.selectedTags.assign(
++					operation.assignedUnitTags.begin()
++						+ protectedCount,
++					operation.assignedUnitTags.end());
++			}
++			availability.sourceActive = true;
++			availability.sourceMinimum =
++				static_cast<std::size_t>(
++					std::max(0, operation.minUnits));
++			availability.operationAssignmentsMatch =
++				operationSnapshotValid;
++			availability.squadAssignmentsMatch =
++				squadSnapshotValid;
++			availability.actionAssignmentsMatch =
++				actionSnapshotValid;
++			availability.roleAssignmentsMatch =
++				roleSnapshotValid;
++			input.transferAvailability.push_back(
++				availability);
++		}
++	}
++
++	for (const auto & owner : autonomousTagsByOwner)
++	{
++		if (owner.second.empty())
++		{
++			continue;
++		}
++		VoiBattlefieldTransferInput availability;
++		availability.sourceOwnerId = owner.first;
++		availability.sourceOwnerTags = owner.second;
++		availability.sourceActive = true;
++		const auto protectedMinimum =
++			autonomousProtectedMinimum.find(owner.first);
++		availability.sourceMinimum =
++			protectedMinimum
++					!= autonomousProtectedMinimum.end()
++				? protectedMinimum->second
++				: (owner.first == "squad:NukeOps"
++						|| owner.first
++							== "squad:ScoutDefense"
++					? owner.second.size()
++					: 0);
++		if (owner.second.size()
++			> availability.sourceMinimum)
++		{
++			availability.selectedTags.assign(
++				owner.second.begin()
++					+ availability.sourceMinimum,
++				owner.second.end());
++		}
++		availability.operationAssignmentsMatch = true;
++		availability.squadAssignmentsMatch = true;
++		availability.actionAssignmentsMatch = true;
++		availability.roleAssignmentsMatch = true;
++		availability.admissionBlocker =
++			"autonomous_transfer_requires_operation_admission";
++		input.transferAvailability.push_back(availability);
++	}
++
++	m_voiBattlefieldProjection =
++		voiMakeBattlefieldProjection(input);
++}
++
+ VoiOperationState * CombatCommander::findVoiOperation(
+ 	const std::string & operationId,
+ 	uint64_t generation)
+@@ -2987,6 +3773,8 @@ void CombatCommander::releaseVoiOperation(
+ 	if (terminal)
+ 	{
+ 		operation.completed = true;
++		operation.completionReason = reason;
++		operation.completionFrame = m_bot.GetGameLoop();
+ 		operation.status = "COMPLETED";
+ 	}
+ 	else
+@@ -3339,6 +4127,8 @@ void CombatCommander::observeVoiOperations()
+ 				observedUnits,
+ 				operation.targetPosition,
+ 				completionRadius) >= majority;
++		operation.targetReached =
++			operation.targetReached || targetReached;
+ 		bool objectiveCompleted = false;
+ 		if (!operation.standing
+ 			&& operation.lifetimeMode != "until_cancelled")
+@@ -4302,12 +5092,22 @@ void CombatCommander::updateVoiOperations()
+ 		requested.taskType =
+ 			voiCanonicalOperationTaskType(
+ 				requested.requestedTaskType);
+-		requested.routeType =
+-			m_bot.Commander().getVoiPolicyString(
+-				prefix + ".route_intent.route_type",
++			requested.routeType =
++				m_bot.Commander().getVoiPolicyString(
++					prefix + ".route_intent.route_type",
++				m_bot.Commander().getVoiPolicyString(
++						prefix + ".route_type",
++						"direct"));
++			requested.requestedRouteType =
++				requested.routeType;
++			requested.strictScope =
++				!m_bot.Commander().getVoiPolicyBool(
++					prefix + ".scope.allow_partial_scope",
++					true);
++			requested.targetType =
+ 				m_bot.Commander().getVoiPolicyString(
+-					prefix + ".route_type",
+-					"direct"));
++					prefix + ".target_intent.target_type",
++					"");
+ 		requested.locationIntent =
+ 			m_bot.Commander().getVoiPolicyString(
+ 				prefix
+@@ -4578,13 +5378,17 @@ void CombatCommander::updateVoiOperations()
+ 			requested.taskType,
+ 			requested.locationIntent,
+ 			explicitTarget);
+-		requested.targetEvidence =
++			requested.targetEvidence =
+ 			voiResolveOperationTargetEvidence(
+ 				m_bot,
+ 				requested.taskType,
+ 				requested.locationIntent,
+ 				explicitTarget,
+-				requested.targetPosition);
++					requested.targetPosition);
++			requested.resolvedTargetLabel =
++				requested.locationIntent.empty()
++					? requested.targetType
++					: requested.locationIntent;
+ 		requested.targetX = requested.targetPosition.x;
+ 		requested.targetY = requested.targetPosition.y;
+ 		requested.activeTargetPosition =
+@@ -4639,7 +5443,7 @@ void CombatCommander::updateVoiOperations()
+ 			requestedStatus == "SUPERSEDED"
+ 			|| requestedStatus == "superseded"
+ 			|| requestedCompletionState == "superseded";
+-		if (rawOperationId.empty())
++			if (rawOperationId.empty())
+ 		{
+ 			requested.status = "BLOCKED";
+ 			requested.blockedReason =
+@@ -4663,12 +5467,16 @@ void CombatCommander::updateVoiOperations()
+ 			requested.blockedReason =
+ 				"future_operation_issued_at_frame";
+ 		}
+-		else if (expiredAtAdmission)
+-		{
+-			requested.status = "EXPIRED";
+-			requested.completed = true;
+-			requested.blockedReason =
+-				"operation_deadline_expired_at_admission";
++			else if (expiredAtAdmission)
++			{
++				requested.status = "EXPIRED";
++				requested.completed = true;
++				requested.blockedReason =
++					"operation_deadline_expired_at_admission";
++				requested.completionReason =
++					requested.blockedReason;
++				requested.completionFrame =
++					m_bot.GetGameLoop();
+ 		}
+ 		else if (requested.taskType != "scout"
+ 			&& requested.taskType != "attack"
+@@ -4748,11 +5556,21 @@ void CombatCommander::updateVoiOperations()
+ 			requested.blockedReason =
+ 				"superseded_by_policy";
+ 		}
+-		else if (requestedCompleted)
+-		{
+-			requested.status = "COMPLETED";
+-			requested.completed = true;
+-		}
++			else if (requestedCompleted)
++			{
++				requested.status = "COMPLETED";
++				requested.completed = true;
++			}
++			if (requested.completed
++				&& requested.completionReason.empty())
++			{
++				requested.completionReason =
++					requested.blockedReason.empty()
++						? "completed_by_policy"
++						: requested.blockedReason;
++				requested.completionFrame =
++					m_bot.GetGameLoop();
++			}
+ 
+ 		if (missingIssuedAtFrame
+ 			|| futureIssuedAtFrame
+@@ -4862,8 +5680,10 @@ void CombatCommander::updateVoiOperations()
+ 			}
+ 			return latest;
+ 		};
+-	std::map<std::string, std::vector<sc2::Tag>>
+-		transferSelections;
++	std::map<
++		std::string,
++		VoiOperationTransferSelectionIdentity<sc2::Tag>>
++		transferSelectionIdentities;
+ 	auto transferBlockerBeforeHandoff =
+ 		[&](const VoiOperationState & destination)
+ 		{
+@@ -5168,10 +5988,48 @@ void CombatCommander::updateVoiOperations()
+ 			const std::vector<sc2::Tag> selectionPlan(
+ 				selectedTags.begin(),
+ 				selectedTags.end());
+-			transferSelections[destination.operationId] =
+-				selectionPlan;
+-			transferSelections[sourceExisting->operationId] =
++			VoiOperationTransferSelectionIdentity<sc2::Tag>
++				selectionIdentity;
++			if (sourceRequested->policyUpdateId.empty()
++				|| sourceRequested->policyUpdateId
++					!= destination.policyUpdateId)
++			{
++				return std::string(
++					"transfer_selection_update_mismatch");
++			}
++			selectionIdentity.updateId =
++				sourceRequested->policyUpdateId;
++			selectionIdentity.sourceOperationId =
++				sourceExisting->operationId;
++			selectionIdentity.counterpartOperationId =
++				destinationExisting->operationId;
++			selectionIdentity.sourceAction = "transfer_out";
++			selectionIdentity.counterpartAction = "transfer_in";
++			selectionIdentity.sourceGeneration =
++				sourceExisting->generation;
++			selectionIdentity.counterpartGeneration =
++				destinationExisting->generation;
++			selectionIdentity.requestedSourceGeneration =
++				sourceRequested->generation;
++			selectionIdentity.requestedCounterpartGeneration =
++				destination.generation;
++			selectionIdentity.requestedCount =
++				selectionPlan.size();
++			selectionIdentity.selectedUnitTags =
+ 				selectionPlan;
++			const auto selectionValidation =
++				voiCanonicalizeOperationTransferSelectionIdentity(
++					selectionIdentity);
++			if (!selectionValidation.valid)
++			{
++				return selectionValidation.blocker;
++			}
++			transferSelectionIdentities[
++				destination.operationId] =
++					selectionIdentity;
++			transferSelectionIdentities[
++				sourceExisting->operationId] =
++					selectionIdentity;
+ 			return std::string();
+ 		};
+ 	std::map<std::string, std::string> transferBlockers;
+@@ -5396,6 +6254,12 @@ void CombatCommander::updateVoiOperations()
+ 			existing.requestedTaskType =
+ 				requested.requestedTaskType;
+ 			existing.taskType = requested.taskType;
++			existing.requestedRouteType =
++				requested.requestedRouteType;
++			existing.targetType = requested.targetType;
++			existing.resolvedTargetLabel =
++				requested.resolvedTargetLabel;
++			existing.strictScope = requested.strictScope;
+ 			existing.unitClasses = requested.unitClasses;
+ 			existing.lifetimeMode = requested.lifetimeMode;
+ 			existing.completionConditions =
+@@ -5425,6 +6289,7 @@ void CombatCommander::updateVoiOperations()
+ 			}
+ 			if (newEditEpoch)
+ 			{
++				voiResetOperationTransferSelectionEpoch(existing);
+ 				existing.editAction =
+ 					requested.editAction;
+ 				existing.editCounterpartOperationId =
+@@ -5476,6 +6341,7 @@ void CombatCommander::updateVoiOperations()
+ 				existing,
+ 				[&]()
+ 				{
++			voiResetOperationTransferSelectionEpoch(existing);
+ 			existing.policyUpdateId = policyUpdateId;
+ 			existing.editAction = requested.editAction;
+ 			existing.editCounterpartOperationId =
+@@ -5520,6 +6386,7 @@ void CombatCommander::updateVoiOperations()
+ 				existing,
+ 				[&]()
+ 				{
++			voiResetOperationTransferSelectionEpoch(existing);
+ 			existing.policyUpdateId = policyUpdateId;
+ 			existing.editAction =
+ 				counterpartRequest.editAction == "transfer_in"
+@@ -5587,6 +6454,10 @@ void CombatCommander::updateVoiOperations()
+ 			replacement.maxHomeDistance =
+ 				existing.maxHomeDistance;
+ 			replacement.engaged = existing.engaged;
++			replacement.completed = false;
++			replacement.completionReason.clear();
++			replacement.completionFrame = 0;
++			replacement.targetReached = false;
+ 			replacement.submissionObserved =
+ 				targetChanged
+ 					? false
+@@ -5799,9 +6670,9 @@ void CombatCommander::updateVoiOperations()
+ 		{
+ 			if ((requested->editAction == "transfer_in"
+ 					|| requested->editAction == "transfer_out")
+-				&& transferSelections.find(
++				&& transferSelectionIdentities.find(
+ 					existing.operationId)
+-					== transferSelections.end())
++					== transferSelectionIdentities.end())
+ 			{
+ 				annotateRejectedEdit(
+ 					existing,
+@@ -5984,13 +6855,14 @@ void CombatCommander::updateVoiOperations()
+ 			currentOperationById(
+ 				destinationRequested.operationId);
+ 		const auto plannedSelection =
+-			transferSelections.find(
++			transferSelectionIdentities.find(
+ 				destinationRequested.operationId);
+ 		if (sourceRequested == nullptr
+ 			|| source == nullptr
+ 			|| destination == nullptr
+ 			|| source == destination
+-			|| plannedSelection == transferSelections.end())
++			|| plannedSelection
++				== transferSelectionIdentities.end())
+ 		{
+ 			Util::Log(
+ 				__FUNCTION__,
+@@ -6151,6 +7023,38 @@ void CombatCommander::updateVoiOperations()
+ 				{
+ 					return unit.getTag();
+ 				});
++		VoiOperationTransferSelectionIdentity<sc2::Tag>
++			observedSelection;
++		observedSelection.updateId =
++			plannedSelection->second.updateId;
++		observedSelection.sourceOperationId =
++			source->operationId;
++		observedSelection.counterpartOperationId =
++			destination->operationId;
++		observedSelection.sourceAction = "transfer_out";
++		observedSelection.counterpartAction = "transfer_in";
++		observedSelection.sourceGeneration =
++			source->generation;
++		observedSelection.counterpartGeneration =
++			destination->generation;
++		observedSelection.requestedSourceGeneration =
++			sourceRequested->generation;
++		observedSelection.requestedCounterpartGeneration =
++			destinationRequested.generation;
++		observedSelection.requestedCount =
++			plannedSelection->second.requestedCount;
++		observedSelection.selectedUnitTags =
++			plannedSelection->second.selectedUnitTags;
++		const auto selectionRevalidation =
++			voiRevalidateOperationTransferSelectionIdentity(
++				plannedSelection->second,
++				observedSelection);
++		if (runtimeBlocker.empty()
++			&& !selectionRevalidation.valid)
++		{
++			runtimeBlocker =
++				selectionRevalidation.blocker;
++		}
+ 		const auto transactionPlan =
+ 			voiPlanOperationTransferTransaction(
+ 				m_voiOperationUnitOwners,
+@@ -6159,29 +7063,123 @@ void CombatCommander::updateVoiOperations()
+ 				actionAssignments,
+ 				sourceAssignedRoles,
+ 				destinationAssignedRoles,
+-				plannedSelection->second,
++				plannedSelection->second.selectedUnitTags,
+ 				currentSourceOwner,
+ 				currentDestinationOwner,
+ 				requestedSourceOwner,
+ 				requestedDestinationOwner);
+-		if (runtimeBlocker.empty()
+-			&& !transactionPlan.admitted)
+-		{
+-			runtimeBlocker =
+-				transactionPlan.blocker;
+-		}
+-		if (!runtimeBlocker.empty())
+-		{
+-			annotateRejectedEdit(
+-				*source,
+-				*sourceRequested,
++			if (runtimeBlocker.empty()
++				&& !transactionPlan.admitted)
++			{
++				runtimeBlocker =
++					transactionPlan.blocker;
++			}
++			if (runtimeBlocker.empty())
++				{
++					VoiBattlefieldTransferInput admission;
++					admission.requested = true;
++					admission.sourceUpdateId =
++						sourceRequested->policyUpdateId;
++					admission.counterpartUpdateId =
++						destinationRequested.policyUpdateId;
++					admission.action =
++						sourceRequested->editAction;
++				admission.counterpartOperationId =
++					destination->operationId;
++				admission.sourceOwnerId =
++					source->operationId;
++				admission.requestedGeneration =
++					plannedSelection->second
++						.sourceGeneration;
++				admission.counterpartGeneration =
++					plannedSelection->second
++						.counterpartGeneration;
++				admission.requestedSourceGeneration =
++					plannedSelection->second
++						.requestedSourceGeneration;
++				admission.requestedCounterpartGeneration =
++					plannedSelection->second
++						.requestedCounterpartGeneration;
++				admission.editResolution = "pending";
++				admission.counterpartPresent = true;
++				admission.counterpartPending = true;
++				admission.counterpartAction =
++					destinationRequested.editAction;
++				admission.counterpartCounterpartOperationId =
++					source->operationId;
++				admission.counterpartRequestedGeneration =
++					destinationRequested.generation;
++				admission.counterpartRequestedCount =
++					plannedSelection->second
++						.selectedUnitTags.size();
++				admission.sourceActive = true;
++				admission.destinationActive = true;
++				admission.requestedCount =
++					plannedSelection->second
++						.selectedUnitTags.size();
++				admission.sourceOwnerTags =
++					source->assignedUnitTags;
++				admission.selectedTags =
++					plannedSelection->second
++						.selectedUnitTags;
++				admission.admittedSelectionIdentity =
++					plannedSelection->second;
++				admission.sourceOwnedCount =
++					source->assignedUnitTags.size();
++				admission.sourceMinimum =
++					static_cast<std::size_t>(
++						std::max(0, source->minUnits));
++				admission.destinationOwnedCount =
++					destination->assignedUnitTags.size();
++				admission.destinationMaximum =
++					static_cast<std::size_t>(
++						std::max(0, destinationRequested.maxUnits));
++				admission.operationAssignmentsMatch = true;
++				admission.squadAssignmentsMatch = true;
++				admission.actionAssignmentsMatch = true;
++				admission.roleAssignmentsMatch = true;
++				std::set<std::uint64_t> eligibleTransferTags;
++				eligibleTransferTags.insert(
++					source->assignedUnitTags.begin(),
++					source->assignedUnitTags.end());
++				eligibleTransferTags.insert(
++					destination->assignedUnitTags.begin(),
++					destination->assignedUnitTags.end());
++				const auto battlefieldAdmission =
++					voiProjectBattlefieldTransfer(
++						admission,
++						true,
++						eligibleTransferTags);
++				if (!battlefieldAdmission.atomicRevalidationReady)
++				{
++					runtimeBlocker =
++						battlefieldAdmission.blocker.empty()
++							? "transfer_atomic_revalidation_failed"
++							: battlefieldAdmission.blocker;
++				}
++			}
++			if (!runtimeBlocker.empty())
++			{
++				annotateRejectedEdit(
++					*source,
++					*sourceRequested,
+ 				runtimeBlocker);
+ 			annotateRejectedEdit(
+-				*destination,
+-				destinationRequested,
+-				runtimeBlocker);
+-			continue;
+-		}
++					*destination,
++					destinationRequested,
++					runtimeBlocker);
++				source->editSelectionIdentity =
++					plannedSelection->second;
++				destination->editSelectionIdentity =
++					plannedSelection->second;
++				source->editSelectionAcknowledgement =
++					VoiOperationTransferSelectionAcknowledgement<
++						sc2::Tag>();
++				destination->editSelectionAcknowledgement =
++					VoiOperationTransferSelectionAcknowledgement<
++						sc2::Tag>();
++				continue;
++			}
+ 
+ 		auto mutationEndpoint =
+ 			[](
+@@ -6241,7 +7239,18 @@ void CombatCommander::updateVoiOperations()
+ 				*destination,
+ 				destinationRequested,
+ 				destinationUnits);
+-		for (const auto tag : plannedSelection->second)
++		sourceReplacement.editSelectionIdentity =
++			plannedSelection->second;
++		destinationReplacement.editSelectionIdentity =
++			plannedSelection->second;
++		sourceReplacement.editSelectionAcknowledgement =
++			VoiOperationTransferSelectionAcknowledgement<
++				sc2::Tag>();
++		destinationReplacement.editSelectionAcknowledgement =
++			VoiOperationTransferSelectionAcknowledgement<
++				sc2::Tag>();
++		for (const auto tag :
++			plannedSelection->second.selectedUnitTags)
+ 		{
+ 			std::string restoreSquad = "Backup";
+ 			const auto previous =
+@@ -6275,7 +7284,8 @@ void CombatCommander::updateVoiOperations()
+ 				transactionPlan.destinationTags.size());
+ 		const int transferCount =
+ 			static_cast<int>(
+-				plannedSelection->second.size());
++				plannedSelection->second
++					.selectedUnitTags.size());
+ 		sourceReplacement.transferredOutCount =
+ 			source->transferredOutCount + transferCount;
+ 		destinationReplacement.transferredInCount =
+@@ -7409,6 +8419,42 @@ void CombatCommander::acknowledgeVoiFamilyEffects()
+ 	}
+ 	voiAcknowledgeFamilyEffectTelemetryDeliveries(
+ 		m_voiFamilyEffectTelemetryDeliveries);
++	for (const auto & projected :
++		m_voiBattlefieldProjection.operations)
++	{
++		if (!projected.transferSelection.present
++			|| !projected.transferSelection.identityValid)
++		{
++			continue;
++		}
++		VoiOperationState * operation =
++			findVoiOperation(
++				projected.operationId,
++				projected.generation);
++		if (operation == nullptr)
++		{
++			continue;
++		}
++		VoiOperationTransferSelectionWriteIdentity<sc2::Tag>
++			liveWriteIdentity;
++		liveWriteIdentity.updateId =
++			operation->policyUpdateId;
++		liveWriteIdentity.operationId =
++			operation->operationId;
++		liveWriteIdentity.operationGeneration =
++			operation->generation;
++		liveWriteIdentity.stage =
++			voiOperationIdentityStage(*operation);
++		liveWriteIdentity.gameFrame =
++			m_voiBattlefieldProjection.frame;
++		liveWriteIdentity.selectionIdentity =
++			operation->editSelectionIdentity;
++		voiAcknowledgeOperationTransferSelectionWrite(
++			liveWriteIdentity,
++			projected.transferSelection.writeIdentity,
++			m_voiBattlefieldProjection.frame,
++			operation->editSelectionAcknowledgement);
++	}
+ }
+ 
+ void CombatCommander::bindCurrentVoiExplicitAbilityAttempt(
+@@ -7503,6 +8549,11 @@ void CombatCommander::advanceVoiExplicitAbilityAttempt()
+ 
+ void CombatCommander::onStart()
+ {
++	m_voiBattlefieldSessionEpoch =
++		voiNextBattlefieldSessionEpoch(
++			m_voiBattlefieldSessionEpoch);
++	m_voiBattlefieldProjectionGeneration = 0;
++
+ 	for (auto& ability : m_bot.Observation()->GetAbilityData())
+ 	{
+ 		m_abilityCastingRanges[ability.ability_id] = ability.cast_range;
+@@ -7553,6 +8604,7 @@ void CombatCommander::onStart()
+ 
+ 	//The influence maps are initialised earlier so we can use the blocked tiles influence map to place the turrets
+ 	updateVoiOperations();
++	updateVoiBattlefieldProjection();
+ }
+ 
+ void CombatCommander::updateVoiTacticalNukeSquad()
+@@ -9562,6 +10614,7 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
+ 	m_bot.StartProfiling("0.10.4.6    ExecuteActions");
+ 	ExecuteActions();
+ 	m_bot.StopProfiling("0.10.4.6    ExecuteActions");
++	updateVoiBattlefieldProjection();
+ 	drawCombatInformation();
+ 
+ 	m_bot.StartProfiling("0.10.4.4    lowPriorityCheck");
+@@ -13869,15 +14922,25 @@ void CombatCommander::drawCombatInformation()
+ 
+ void CombatCommander::drawVoiOperationHud()
+ {
+-	if (m_voiOperations.empty())
++	if (m_voiBattlefieldProjection.operations.empty())
+ 	{
+ 		return;
+ 	}
+ 	float screenY = 0.08f;
+ 	for (const auto & operation : m_voiOperations)
+ 	{
++		const auto * battlefieldOperation =
++			voiFindBattlefieldOperationProjection(
++				m_voiBattlefieldProjection,
++				operation.operationId,
++				operation.generation);
++		if (battlefieldOperation == nullptr)
++		{
++			continue;
++		}
+ 		CCColor color = sc2::Colors::White;
+-		if (operation.status == "BLOCKED")
++		if (battlefieldOperation->launchState
++			!= VoiBattlefieldDecisionState::Safe)
+ 		{
+ 			color = sc2::Colors::Red;
+ 		}
+@@ -13885,41 +14948,58 @@ void CombatCommander::drawVoiOperationHud()
+ 		{
+ 			color = sc2::Colors::Red;
+ 		}
+-		else if (operation.status == "COMPLETED")
++		else if (battlefieldOperation->completed)
+ 		{
+ 			color = sc2::Colors::Green;
+ 		}
+-		else if (operation.status == "ENGAGED")
++		else if (battlefieldOperation->engagementObserved)
+ 		{
+ 			color = sc2::Colors::Purple;
+ 		}
+-		else if (operation.status == "MOVING")
++		else if (battlefieldOperation->movementObserved)
+ 		{
+ 			color = sc2::Colors::Teal;
+ 		}
+ 
+ 		std::ostringstream card;
+-		card << "VOI " << operation.operationId
+-			<< "#" << operation.generation
++		card << "VOI " << battlefieldOperation->operationId
++			<< "#" << battlefieldOperation->generation
+ 			<< " " << operation.taskType
+-			<< " [" << operation.status << "]"
+-			<< " units=" << operation.assignedCount
++			<< " [" << battlefieldOperation->status << "]"
++			<< " units=" << battlefieldOperation->assignedCount
+ 			<< " order="
+ 			<< voiSquadOrderName(
+ 				operation.squadOrderType)
+-			<< " route=" << operation.routeType
+-			<< " target=" << operation.locationIntent
+-			<< "(" << operation.targetEvidence << ")"
++			<< " route="
++			<< battlefieldOperation->routeType
++			<< " target="
++			<< battlefieldOperation->resolvedTargetLabel
++			<< "(" << battlefieldOperation->targetEvidence
++			<< ")"
+ 			<< " action="
+ 			<< (operation.submissionObserved
+ 				? "submitted"
+ 				: "pending")
+ 			<< " effect="
+-			<< (operation.status == "MOVING"
+-					|| operation.status == "ENGAGED"
+-					|| operation.status == "COMPLETED"
++			<< (battlefieldOperation->movementObserved
++					|| battlefieldOperation->engagementObserved
++					|| battlefieldOperation->completed
+ 				? "observed"
+ 				: "pending");
++		card << " id="
++			<< battlefieldOperation->updateId
++			<< "/" << battlefieldOperation->identityStage
++			<< "/f" << m_voiBattlefieldProjection.frame
++			<< " launch="
++			<< (battlefieldOperation->launchState
++					== VoiBattlefieldDecisionState::Safe
++				? "launch"
++				: "wait");
++		if (battlefieldOperation->launchState
++			!= VoiBattlefieldDecisionState::Safe)
++		{
++			card << ":" << battlefieldOperation->launchReason;
++		}
+ 		if (!operation.requirementSnapshots.empty())
+ 		{
+ 			card << " force=";
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 73e93a027e71b05a0116afd093f721b8db14c5db..86c5970004e2b0030bdefc9f5fe4495be518b743 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -4,6 +4,7 @@
+ #include "Squad.h"
+ #include "SquadData.h"
+ #include "BaseLocation.h"
++#include "voi_battlefield_projection.hpp"
+ #include "voi_family_effect_lifecycle.hpp"
+ #include "voi_runtime_convergence.hpp"
+ #include <list>  
+@@ -195,7 +196,11 @@ struct VoiOperationState
+ 	float targetX = 0.0f;
+ 	float targetY = 0.0f;
+ 	std::string routeType;
++	std::string requestedRouteType;
+ 	std::string targetEvidence;
++	std::string targetType;
++	std::string resolvedTargetLabel;
++	bool strictScope = false;
+ 	uint32_t receivedFrame = 0;
+ 	uint32_t assignedFrame = 0;
+ 	uint32_t submittedFrame = 0;
+@@ -203,6 +208,9 @@ struct VoiOperationState
+ 	float maxHomeDistance = 0.0f;
+ 	bool engaged = false;
+ 	bool completed = false;
++	std::string completionReason;
++	uint32_t completionFrame = 0;
++	bool targetReached = false;
+ 	bool submissionObserved = false;
+ 	std::string blockedReason;
+ 	std::string lastAction;
+@@ -238,6 +246,10 @@ struct VoiOperationState
+ 	std::string editAction;
+ 	std::string editCounterpartOperationId;
+ 	std::vector<CompositionRequirement> editUnitSelection;
++	VoiOperationTransferSelectionIdentity<sc2::Tag>
++		editSelectionIdentity;
++	VoiOperationTransferSelectionAcknowledgement<sc2::Tag>
++		editSelectionAcknowledgement;
+ 	std::vector<CompositionRequirement> editBeforeComposition;
+ 	std::vector<CompositionRequirement> editAfterComposition;
+ 	bool editExplicitOverride = false;
+@@ -507,6 +519,9 @@ class CombatCommander
+ 		m_voiFamilyEffectTelemetryDeliveries;
+ 	std::map<sc2::Tag, std::pair<std::string, uint64_t>> m_voiOperationUnitOwners;
+ 	std::string m_voiOperationPolicyUpdateId;
++	VoiBattlefieldProjection m_voiBattlefieldProjection;
++	uint64_t m_voiBattlefieldSessionEpoch = 0;
++	uint64_t m_voiBattlefieldProjectionGeneration = 0;
+ 	bool m_workersStacked = false;
+ 	bool m_firstProxyReaperWentThroughNatural = false;
+ 	const sc2::Unit * m_firstProxyReaperToGoThroughNatural = nullptr;
+@@ -562,6 +577,7 @@ class CombatCommander
+ 	void			drawInfluenceMaps();
+ 	void			drawBlockedTiles();
+ 	void			updateVoiOperations();
++	void			updateVoiBattlefieldProjection();
+ 	void			observeVoiOperations();
+ 	void			reconcileVoiOperation(VoiOperationState & operation);
+ 	void			releaseVoiOperation(
+@@ -800,6 +816,16 @@ public:
+ 	int getVoiAssignableUnownedUnitCount(
+ 		const std::string & compositionToken) const;
+ 	std::string getVoiOperationDirectorTelemetryJson() const;
++	const VoiBattlefieldProjection &
++		getVoiBattlefieldProjection() const
++	{
++		return m_voiBattlefieldProjection;
++	}
++	std::string getVoiBattlefieldOverviewTelemetryJson() const
++	{
++		return voiBattlefieldProjectionJson(
++			m_voiBattlefieldProjection);
++	}
+ 	void acknowledgeVoiFamilyEffects();
+ 	SquadData & getSquadData() { return m_squadData; }
+ 	const std::vector<CCTilePosition> & getMainBaseSiegePositions() const { return m_mainBaseSiegePositions; }
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index f068e7f6dd333a8c4e7d2420217891ebd611a214..f3934a0e4781f585d31e3171387a58fdf092e8d5 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -1098,9 +1098,13 @@ void GameCommander::writeVoiTelemetry()
+         << "\"deep_scout_frame_count\":" << m_scoutManager.getDeepVoiScoutFrameCount() << ","
+         << "\"bounded_intervention\":" << (m_voiPolicyActive && (m_voiPolicyBlackboard.getFloat("scouting.scout_priority", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.risk_tolerance", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.scout_cadence_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.scan_priority", 0.0f) != 0.0f || m_voiPolicyBlackboard.getFloat("scouting.hidden_tech_scout_bias", 0.0f) != 0.0f || m_voiPolicyBlackboard.getBool("scouting.require_fresh_enemy_observation", false)) ? "true" : "false") << ","
+         << "\"consumed_axes\":\"scouting.scout_priority,scouting.risk_tolerance,scouting.scout_cadence_bias,scouting.scan_priority,scouting.hidden_tech_scout_bias,scouting.require_fresh_enemy_observation,tactical_task.task_type,tactical_task.unit_classes,tactical_task.location_intent\""
+-        << "}"
+-        << "},"
+-        << "\"active_modulation_ids\":[";
++	        << "}"
++	        << "},"
++	        << "\"battlefield_overview\":"
++	        << m_combatCommander
++	            .getVoiBattlefieldOverviewTelemetryJson()
++	        << ","
++	        << "\"active_modulation_ids\":[";
+     if (m_voiPolicyActive) {
+         payload << "\"" << updateId << "\"";
+     }
+diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..7a5b5d7420183a5d1facb4116e2ca8902e920eb9
+--- /dev/null
++++ b/src/voi_battlefield_projection.hpp
+@@ -0,0 +1,2093 @@
++#pragma once
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <limits>
++#include <map>
++#include <set>
++#include <sstream>
++#include <string>
++#include <vector>
++
++#include "voi_operation_transfer_admission.hpp"
++
++inline std::uint64_t voiNextBattlefieldSessionEpoch(
++	std::uint64_t previous)
++{
++	return previous == std::numeric_limits<std::uint64_t>::max()
++		? previous
++		: previous + 1;
++}
++
++struct VoiBattlefieldUnitInput
++{
++	std::uint64_t tag = 0;
++	bool alive = false;
++	bool selfOwned = true;
++	bool complete = true;
++	bool combat = false;
++	bool canAttackGround = false;
++	bool canAttackAir = false;
++	bool worker = false;
++	bool structure = false;
++	bool temporaryPayload = false;
++	std::vector<std::string> explicitOwners;
++	std::vector<std::string> autonomousOwners;
++};
++
++struct VoiBattlefieldBaseInput
++{
++	std::string baseId;
++	std::string semanticAnchor;
++	bool occupied = false;
++	bool readinessEvidencePresent = false;
++	bool threatEvidencePresent = false;
++	bool threatened = false;
++	std::string threatEvidence;
++	std::string evidenceClass;
++	std::uint64_t threatFrame = 0;
++	float groundThreat = 0.0f;
++	float airThreat = 0.0f;
++	float observedEnemyStrength = 0.0f;
++	std::vector<std::uint64_t> defenderTags;
++	std::size_t requiredDefenderCount = 0;
++	std::size_t requiredGroundDefenderCount = 0;
++	std::size_t requiredAirDefenderCount = 0;
++	std::size_t protectedMinimum = 0;
++	std::string protectedFamily = "eligible_combat";
++	std::string protectedRole = "base_defender";
++};
++
++struct VoiBattlefieldTransferInput
++{
++	bool requested = false;
++	std::string sourceUpdateId;
++	std::string counterpartUpdateId;
++	std::string action;
++	std::string counterpartOperationId;
++	std::string sourceOwnerId;
++	std::uint64_t requestedGeneration = 0;
++	std::uint64_t counterpartGeneration = 0;
++	std::uint64_t requestedSourceGeneration = 0;
++	std::uint64_t requestedCounterpartGeneration = 0;
++	std::string editResolution;
++	bool counterpartPresent = false;
++	bool counterpartPending = false;
++	std::string counterpartAction;
++	std::string counterpartCounterpartOperationId;
++	std::uint64_t counterpartRequestedGeneration = 0;
++	std::size_t counterpartRequestedCount = 0;
++	bool sourceActive = false;
++	bool destinationActive = false;
++	std::size_t requestedCount = 0;
++	std::vector<std::uint64_t> sourceOwnerTags;
++	std::vector<std::uint64_t> selectedTags;
++	VoiOperationTransferSelectionIdentity<std::uint64_t>
++		admittedSelectionIdentity;
++	std::size_t sourceOwnedCount = 0;
++	std::size_t sourceMinimum = 0;
++	std::size_t destinationOwnedCount = 0;
++	std::size_t destinationMaximum = 0;
++	bool operationAssignmentsMatch = false;
++	bool squadAssignmentsMatch = false;
++	bool actionAssignmentsMatch = false;
++	bool roleAssignmentsMatch = false;
++	std::string admissionBlocker;
++};
++
++struct VoiBattlefieldOperationInput
++{
++	std::string scope = "operation";
++	std::string operationId;
++	std::uint64_t generation = 0;
++	std::string updateId;
++	std::string identityStage;
++	std::string status;
++	bool active = false;
++	bool ownershipEvidencePresent = false;
++	std::vector<std::uint64_t> assignedTags;
++	std::size_t minimumUnits = 0;
++	std::size_t maximumUnits = 0;
++	bool allowPartial = false;
++	bool strictScope = false;
++	std::string requestedRouteType;
++	std::string routeType;
++	std::string targetIntent;
++	std::string targetType;
++	std::string resolvedTargetLabel;
++	std::string targetEvidence;
++	float targetX = 0.0f;
++	float targetY = 0.0f;
++	std::string lifetimeMode;
++	std::string completionConditions;
++	std::uint64_t durationSeconds = 0;
++	std::uint64_t issuedAtFrame = 0;
++	std::uint64_t deadlineFrame = 0;
++	bool standing = false;
++	bool completed = false;
++	std::string completionReason;
++	std::uint64_t completionFrame = 0;
++	bool movementObserved = false;
++	bool engagementObserved = false;
++	bool targetReached = false;
++	std::string emergencyPreemption = "none";
++	VoiBattlefieldTransferInput transfer;
++	VoiOperationTransferSelectionIdentity<std::uint64_t>
++		transferSelectionIdentity;
++	VoiOperationTransferSelectionRuntimeEvidence<std::uint64_t>
++		transferSelectionRuntimeEvidence;
++	VoiOperationTransferSelectionAcknowledgement<std::uint64_t>
++		transferSelectionAcknowledgement;
++	std::string transferSelectionResolution;
++};
++
++struct VoiBattlefieldProjectionInput
++{
++	std::uint64_t frame = 0;
++	std::string updateId = "micromachine-autonomous";
++	std::string scope = "battlefield";
++	std::uint64_t sessionEpoch = 1;
++	std::uint64_t generation = 1;
++	std::string stage = "observed";
++	bool ownershipEvidencePresent = false;
++	bool baseEvidencePresent = false;
++	std::vector<VoiBattlefieldUnitInput> units;
++	std::vector<VoiBattlefieldBaseInput> bases;
++	std::vector<VoiBattlefieldOperationInput> operations;
++	std::vector<VoiBattlefieldTransferInput> transferAvailability;
++};
++
++enum class VoiBattlefieldDecisionState
++{
++	Safe,
++	Unsafe,
++	MissingEvidence,
++};
++
++struct VoiBattlefieldBaseProjection
++{
++	std::string baseId;
++	std::string semanticAnchor;
++	bool occupied = false;
++	bool evidencePresent = false;
++	bool threatened = false;
++	std::string threatEvidence;
++	std::string evidenceClass;
++	std::uint64_t threatFrame = 0;
++	float groundThreat = 0.0f;
++	float airThreat = 0.0f;
++	float observedEnemyStrength = 0.0f;
++	std::size_t defenderCount = 0;
++	std::size_t groundCapableDefenderCount = 0;
++	std::size_t airCapableDefenderCount = 0;
++	std::size_t requiredDefenderCount = 0;
++	std::size_t requiredGroundDefenderCount = 0;
++	std::size_t requiredAirDefenderCount = 0;
++	std::size_t protectedMinimum = 0;
++	std::string protectedFamily;
++	std::string protectedRole;
++	bool ready = false;
++	std::string readinessState;
++	std::string readinessReason;
++};
++
++struct VoiBattlefieldTransferProjection
++{
++	bool requested = false;
++	std::string action;
++	std::string counterpartAction;
++	std::string counterpartOperationId;
++	std::string sourceOwnerId;
++	std::uint64_t requestedGeneration = 0;
++	std::uint64_t counterpartGeneration = 0;
++	std::uint64_t requestedSourceGeneration = 0;
++	std::uint64_t requestedCounterpartGeneration = 0;
++	std::size_t requestedCount = 0;
++	std::string editResolution;
++	std::size_t sourceOwnerCount = 0;
++	std::size_t protectedMinimum = 0;
++	std::size_t availableCount = 0;
++	std::vector<std::uint64_t> transferableTags;
++	bool counterpartPresent = false;
++	bool counterpartPending = false;
++	bool reciprocalAction = false;
++	bool reciprocalCounterpart = false;
++	bool reciprocalGeneration = false;
++	bool reciprocalCount = false;
++	bool sourceActive = false;
++	bool destinationActive = false;
++	bool ownershipIntegrity = false;
++	bool operationAssignmentsMatch = false;
++	bool squadAssignmentsMatch = false;
++	bool actionAssignmentsMatch = false;
++	bool roleAssignmentsMatch = false;
++	bool atomicRevalidationReady = false;
++	bool protectedMinimumRespected = false;
++	bool transferSafe = false;
++	std::string blocker;
++};
++
++struct VoiBattlefieldTransferSelectionProjection
++{
++	bool present = false;
++	std::string editResolution;
++	bool identityValid = false;
++	std::string blocker;
++	VoiOperationTransferSelectionIdentity<std::uint64_t> identity;
++	VoiOperationTransferSelectionWriteIdentity<std::uint64_t>
++		writeIdentity;
++	bool telemetryWriteAcknowledged = false;
++	std::uint64_t acknowledgedFrame = 0;
++	VoiOperationTransferSelectionWriteIdentity<std::uint64_t>
++		acknowledgedIdentity;
++};
++
++struct VoiBattlefieldAutonomousOwnerProjection
++{
++	std::string ownerId;
++	std::vector<std::uint64_t> ownerTags;
++	std::size_t ownerCount = 0;
++	bool integrity = false;
++};
++
++struct VoiBattlefieldOperationProjection
++{
++	std::string scope;
++	std::string operationId;
++	std::uint64_t generation = 0;
++	std::string updateId;
++	std::string identityStage;
++	std::string status;
++	bool ownershipEvidencePresent = false;
++	std::vector<std::uint64_t> ownerTags;
++	std::size_t assignedCount = 0;
++	std::size_t minimumUnits = 0;
++	std::size_t maximumUnits = 0;
++	bool allowPartial = false;
++	bool strictScope = false;
++	bool partial = false;
++	VoiBattlefieldDecisionState launchState =
++		VoiBattlefieldDecisionState::MissingEvidence;
++	std::string launchReason;
++	bool partialLaunchAllowed = false;
++	bool partialLaunchSafe = false;
++	bool protectedDefenseMinimumRespected = false;
++	bool sourceOperationMinimumRespected = false;
++	std::string transferAdmission;
++	std::string emergencyPreemption;
++	std::string requestedRouteType;
++	std::string routeType;
++	std::string targetIntent;
++	std::string targetType;
++	std::string resolvedTargetLabel;
++	std::string targetEvidence;
++	float targetX = 0.0f;
++	float targetY = 0.0f;
++	std::string lifetimeMode;
++	std::string completionConditions;
++	std::uint64_t durationSeconds = 0;
++	std::uint64_t issuedAtFrame = 0;
++	std::uint64_t deadlineFrame = 0;
++	bool standing = false;
++	bool completed = false;
++	std::string completionReason;
++	std::uint64_t completionFrame = 0;
++	bool movementObserved = false;
++	bool engagementObserved = false;
++	bool targetReached = false;
++	std::string completionState;
++	VoiBattlefieldTransferProjection transfer;
++	VoiBattlefieldTransferSelectionProjection transferSelection;
++};
++
++struct VoiBattlefieldProjection
++{
++	std::uint64_t frame = 0;
++	std::string updateId;
++	std::string scope;
++	std::uint64_t sessionEpoch = 1;
++	std::uint64_t generation = 1;
++	std::string stage;
++	bool ownershipEvidencePresent = false;
++	bool baseEvidencePresent = false;
++	bool ownershipIntegrity = false;
++	bool failClosed = true;
++	std::size_t eligibleCombatCount = 0;
++	std::size_t explicitOwnedCount = 0;
++	std::size_t autonomousOwnedCount = 0;
++	std::size_t unassignedCount = 0;
++	std::size_t ownerCount = 0;
++	std::size_t uniqueOwnerTagCount = 0;
++	std::size_t duplicateOwnershipCount = 0;
++	std::size_t duplicateUnitInputCount = 0;
++	std::size_t excludedDeadCount = 0;
++	std::size_t excludedNonSelfCount = 0;
++	std::size_t excludedIncompleteCount = 0;
++	std::size_t excludedNonCombatCount = 0;
++	std::size_t excludedWorkerCount = 0;
++	std::size_t excludedStructureCount = 0;
++	std::size_t excludedTemporaryPayloadCount = 0;
++	std::vector<std::uint64_t> eligibleTags;
++	std::vector<std::uint64_t> explicitOwnedTags;
++	std::vector<std::uint64_t> autonomousOwnedTags;
++	std::vector<std::uint64_t> unassignedTags;
++	std::vector<std::uint64_t> duplicateOwnershipTags;
++	std::vector<std::uint64_t> duplicateUnitInputTags;
++	std::vector<std::uint64_t> excludedDeadTags;
++	std::vector<std::uint64_t> excludedNonSelfTags;
++	std::vector<std::uint64_t> excludedIncompleteTags;
++	std::vector<std::uint64_t> excludedNonCombatTags;
++	std::vector<std::uint64_t> excludedWorkerTags;
++	std::vector<std::uint64_t> excludedStructureTags;
++	std::vector<std::uint64_t> excludedTemporaryPayloadTags;
++	std::vector<VoiBattlefieldAutonomousOwnerProjection>
++		autonomousOwners;
++	std::vector<VoiBattlefieldBaseProjection> bases;
++	std::vector<VoiBattlefieldOperationProjection> operations;
++	std::vector<VoiBattlefieldTransferProjection> transfers;
++};
++
++inline std::string voiBattlefieldDecisionStateName(
++	VoiBattlefieldDecisionState state)
++{
++	if (state == VoiBattlefieldDecisionState::Safe)
++	{
++		return "safe";
++	}
++	if (state == VoiBattlefieldDecisionState::Unsafe)
++	{
++		return "unsafe";
++	}
++	return "missing_evidence";
++}
++
++inline std::string voiBattlefieldJsonEscape(const std::string & value)
++{
++	std::ostringstream escaped;
++	for (const char ch : value)
++	{
++		switch (ch)
++		{
++		case '\\':
++		case '"':
++			escaped << '\\' << ch;
++			break;
++		case '\n':
++			escaped << "\\n";
++			break;
++		case '\r':
++			escaped << "\\r";
++			break;
++		case '\t':
++			escaped << "\\t";
++			break;
++		default:
++			escaped << ch;
++			break;
++		}
++	}
++	return escaped.str();
++}
++
++inline bool voiBattlefieldStandingMayComplete(
++	bool standing,
++	const std::string & completionReason)
++{
++	if (!standing)
++	{
++		return true;
++	}
++	static const std::set<std::string> terminalReasons = {
++		"cancelled_by_policy",
++		"cancelled_by_user",
++		"completed_by_policy",
++		"expired_by_policy",
++		"failed_by_policy",
++		"operation_deadline_expired",
++		"superseded_by_policy",
++		"transferred_all_units",
++	};
++	return terminalReasons.find(completionReason)
++		!= terminalReasons.end();
++}
++
++inline std::vector<std::string> voiBattlefieldSplitCommaList(
++	const std::string & value)
++{
++	std::vector<std::string> result;
++	std::string token;
++	for (std::size_t index = 0; index <= value.size(); ++index)
++	{
++		const char ch =
++			index < value.size() ? value[index] : ',';
++		if (ch != ',')
++		{
++			token.push_back(ch);
++			continue;
++		}
++		const std::size_t first = token.find_first_not_of(" \t");
++		const std::size_t last = token.find_last_not_of(" \t");
++		if (first != std::string::npos)
++		{
++			result.push_back(token.substr(first, last - first + 1));
++		}
++		token.clear();
++	}
++	return result;
++}
++
++inline std::string voiBattlefieldCompletionState(
++	const std::string & status,
++	bool completed)
++{
++	if (!completed)
++	{
++		return status == "BLOCKED" ? "blocked" : "active";
++	}
++	if (status == "CANCELLED")
++	{
++		return "cancelled";
++	}
++	if (status == "EXPIRED")
++	{
++		return "expired";
++	}
++	if (status == "SUPERSEDED")
++	{
++		return "superseded";
++	}
++	if (status == "FAILED")
++	{
++		return "failed";
++	}
++	return "completed";
++}
++
++inline std::set<std::uint64_t> voiBattlefieldEligibleTagSet(
++	const VoiBattlefieldProjection & projection)
++{
++	return std::set<std::uint64_t>(
++		projection.eligibleTags.begin(),
++		projection.eligibleTags.end());
++}
++
++inline std::vector<std::uint64_t> voiBattlefieldEligibleUniqueTags(
++	const std::vector<std::uint64_t> & tags,
++	const std::set<std::uint64_t> & eligibleTags)
++{
++	std::set<std::uint64_t> unique;
++	for (const auto tag : tags)
++	{
++		if (eligibleTags.find(tag) != eligibleTags.end())
++		{
++			unique.insert(tag);
++		}
++	}
++	return std::vector<std::uint64_t>(
++		unique.begin(),
++		unique.end());
++}
++
++inline VoiBattlefieldTransferProjection
++voiProjectBattlefieldTransfer(
++	const VoiBattlefieldTransferInput & input,
++	bool ownershipIntegrity,
++	const std::set<std::uint64_t> & eligibleTags)
++{
++	VoiBattlefieldTransferProjection result;
++	result.requested =
++		input.requested && input.editResolution != "applied";
++	result.action = result.requested && !input.action.empty()
++		? input.action
++		: "availability";
++	result.counterpartAction =
++		result.requested ? input.counterpartAction : "";
++	result.editResolution = input.editResolution.empty()
++		? (result.requested ? "pending" : "none")
++		: input.editResolution;
++	if (!result.requested)
++	{
++		result.editResolution =
++			input.editResolution == "applied"
++				? "applied"
++				: "none";
++	}
++	result.counterpartOperationId =
++		result.requested
++			? input.counterpartOperationId
++			: "";
++	result.sourceOwnerId = input.sourceOwnerId;
++	result.requestedGeneration =
++		input.requestedGeneration;
++	result.counterpartGeneration =
++		input.counterpartGeneration;
++	result.requestedSourceGeneration =
++		input.requestedSourceGeneration;
++	result.requestedCounterpartGeneration =
++		input.requestedCounterpartGeneration;
++	result.requestedCount =
++		result.requested ? input.requestedCount : 0;
++	result.counterpartPresent =
++		input.counterpartPresent;
++	result.counterpartPending =
++		input.counterpartPending;
++	result.sourceActive = input.sourceActive;
++	result.destinationActive =
++		result.requested
++			? input.destinationActive
++			: true;
++	result.ownershipIntegrity = ownershipIntegrity;
++	result.operationAssignmentsMatch =
++		input.operationAssignmentsMatch;
++	result.squadAssignmentsMatch =
++		input.squadAssignmentsMatch;
++	result.actionAssignmentsMatch =
++		input.actionAssignmentsMatch;
++	result.roleAssignmentsMatch =
++		input.roleAssignmentsMatch;
++	const std::string expectedCounterpartAction =
++		input.action == "transfer_out"
++			? "transfer_in"
++			: (input.action == "transfer_in"
++				? "transfer_out"
++				: "");
++	result.reciprocalAction =
++		!result.requested
++		|| (!expectedCounterpartAction.empty()
++			&& input.counterpartAction
++				== expectedCounterpartAction);
++	result.reciprocalCounterpart =
++		!result.requested
++		|| input.counterpartCounterpartOperationId
++			== input.sourceOwnerId;
++	result.reciprocalGeneration =
++		!result.requested
++		|| (input.requestedGeneration > 0
++			&& input.counterpartGeneration > 0
++			&& input.requestedSourceGeneration
++				> input.requestedGeneration
++			&& input.requestedCounterpartGeneration
++				> input.counterpartGeneration
++			&& input.counterpartRequestedGeneration
++				== input.requestedCounterpartGeneration);
++	result.reciprocalCount =
++		!result.requested
++		|| input.counterpartRequestedCount
++			== input.requestedCount;
++	const std::vector<std::uint64_t> sourceTags =
++		voiBattlefieldEligibleUniqueTags(
++			input.sourceOwnerTags,
++			eligibleTags);
++	const std::vector<std::uint64_t> selectedTags =
++		voiBattlefieldEligibleUniqueTags(
++			input.selectedTags,
++			eligibleTags);
++	result.sourceOwnerCount = sourceTags.size();
++	result.protectedMinimum = input.sourceMinimum;
++	const std::size_t sourceSurplus =
++		result.sourceOwnerCount > result.protectedMinimum
++			? result.sourceOwnerCount - result.protectedMinimum
++			: 0;
++	const std::size_t destinationCapacity =
++		input.destinationMaximum > input.destinationOwnedCount
++			? input.destinationMaximum
++				- input.destinationOwnedCount
++			: 0;
++	const std::size_t prospectiveAvailableCount = result.requested
++		? selectedTags.size()
++		: std::min(sourceSurplus, selectedTags.size());
++	result.protectedMinimumRespected =
++		result.sourceOwnerCount >= result.protectedMinimum
++		&& prospectiveAvailableCount <= sourceSurplus;
++
++	if (result.requested)
++	{
++		if (input.sourceUpdateId.empty()
++			|| input.sourceUpdateId
++				!= input.counterpartUpdateId)
++		{
++			result.blocker =
++				"transfer_selection_update_mismatch";
++			return result;
++		}
++		VoiOperationTransferSelectionIdentity<std::uint64_t>
++			observedIdentity;
++		observedIdentity.updateId =
++			input.sourceUpdateId;
++		observedIdentity.sourceOperationId =
++			input.sourceOwnerId;
++		observedIdentity.counterpartOperationId =
++			input.counterpartOperationId;
++		observedIdentity.sourceAction = input.action;
++		observedIdentity.counterpartAction =
++			input.counterpartAction;
++		observedIdentity.sourceGeneration =
++			input.requestedGeneration;
++		observedIdentity.counterpartGeneration =
++			input.counterpartGeneration;
++		observedIdentity.requestedSourceGeneration =
++			input.requestedSourceGeneration;
++		observedIdentity.requestedCounterpartGeneration =
++			input.requestedCounterpartGeneration;
++		observedIdentity.requestedCount =
++			input.requestedCount;
++		observedIdentity.selectedUnitTags =
++			input.selectedTags;
++		const auto selectionValidation =
++			voiRevalidateOperationTransferSelectionIdentity(
++				input.admittedSelectionIdentity,
++				observedIdentity);
++		if (!selectionValidation.valid)
++		{
++			result.blocker = selectionValidation.blocker;
++			return result;
++		}
++	}
++
++	if (result.sourceOwnerId.empty())
++	{
++		result.blocker = "transfer_source_owner_missing";
++		return result;
++	}
++	if (!input.sourceActive)
++	{
++		result.blocker = "transfer_source_inactive";
++		return result;
++	}
++	if (!input.admissionBlocker.empty())
++	{
++		result.blocker = input.admissionBlocker;
++		return result;
++	}
++	if (!ownershipIntegrity)
++	{
++		result.blocker = "ownership_integrity_fail_closed";
++		return result;
++	}
++	if (!input.operationAssignmentsMatch
++		|| !input.squadAssignmentsMatch
++		|| !input.actionAssignmentsMatch
++		|| !input.roleAssignmentsMatch)
++	{
++		result.blocker =
++			"transfer_atomic_revalidation_mismatch";
++		return result;
++	}
++	if (!result.protectedMinimumRespected)
++	{
++		result.blocker =
++			"transfer_source_protected_minimum_invalid";
++		return result;
++	}
++	if (result.requested
++		&& (!input.counterpartPresent
++			|| !input.counterpartPending
++			|| !input.destinationActive))
++	{
++		result.blocker = !input.counterpartPresent
++			? "transfer_counterpart_missing"
++			: (!input.counterpartPending
++				? "transfer_counterpart_not_pending"
++				: "transfer_destination_inactive");
++		return result;
++	}
++	if (result.requested
++		&& (!result.reciprocalAction
++			|| !result.reciprocalCounterpart
++			|| !result.reciprocalGeneration
++			|| !result.reciprocalCount))
++	{
++		result.blocker =
++			"transfer_reciprocal_contract_mismatch";
++		return result;
++	}
++	if (result.requested && input.requestedCount == 0)
++	{
++		result.blocker = "transfer_selection_empty";
++		return result;
++	}
++	if (result.requested
++		&& (selectedTags.size() != input.selectedTags.size()
++			|| selectedTags.size() != input.requestedCount))
++	{
++		result.blocker = "transfer_selection_identity_mismatch";
++		return result;
++	}
++	if (std::find_if(
++			selectedTags.begin(),
++			selectedTags.end(),
++			[&](std::uint64_t tag)
++			{
++				return std::find(
++					sourceTags.begin(),
++					sourceTags.end(),
++					tag) == sourceTags.end();
++			}) != selectedTags.end())
++	{
++		result.blocker = "transfer_selection_not_owned_by_source";
++		return result;
++	}
++	if (result.requested
++		&& (selectedTags.size() > sourceSurplus
++			|| selectedTags.size() > destinationCapacity))
++	{
++		result.blocker =
++			"transfer_capacity_or_source_minimum";
++		return result;
++	}
++	if (prospectiveAvailableCount == 0)
++	{
++		result.blocker = "no_transferable_units";
++		return result;
++	}
++	result.availableCount = prospectiveAvailableCount;
++	result.transferableTags.assign(
++		selectedTags.begin(),
++		selectedTags.begin()
++			+ static_cast<std::ptrdiff_t>(
++				prospectiveAvailableCount));
++	result.atomicRevalidationReady = true;
++	result.transferSafe = true;
++	return result;
++}
++
++inline VoiBattlefieldProjection voiMakeBattlefieldProjection(
++	const VoiBattlefieldProjectionInput & input)
++{
++	VoiBattlefieldProjection result;
++	result.frame = input.frame;
++	result.updateId = input.updateId.empty()
++		? "micromachine-autonomous"
++		: input.updateId;
++	result.scope = input.scope.empty()
++		? "battlefield"
++		: input.scope;
++	result.sessionEpoch = std::max<std::uint64_t>(
++		1,
++		input.sessionEpoch);
++	result.generation = std::max<std::uint64_t>(
++		1,
++		input.generation);
++	result.stage = input.stage.empty()
++		? "observed"
++		: input.stage;
++	result.ownershipEvidencePresent =
++		input.ownershipEvidencePresent;
++	result.baseEvidencePresent = input.baseEvidencePresent;
++
++	std::set<std::uint64_t> eligibleTags;
++	std::map<std::uint64_t, std::set<std::string>>
++		explicitOwnersByTag;
++	std::map<std::uint64_t, std::set<std::string>>
++		autonomousOwnersByTag;
++	std::map<std::uint64_t, VoiBattlefieldUnitInput>
++		normalizedUnits;
++	for (const auto & unit : input.units)
++	{
++		const auto existing = normalizedUnits.find(unit.tag);
++		if (existing != normalizedUnits.end())
++		{
++			++result.duplicateUnitInputCount;
++			result.duplicateUnitInputTags.push_back(unit.tag);
++			existing->second.explicitOwners.insert(
++				existing->second.explicitOwners.end(),
++				unit.explicitOwners.begin(),
++				unit.explicitOwners.end());
++			existing->second.autonomousOwners.insert(
++				existing->second.autonomousOwners.end(),
++				unit.autonomousOwners.begin(),
++				unit.autonomousOwners.end());
++			continue;
++		}
++		normalizedUnits[unit.tag] = unit;
++	}
++	for (const auto & unitEntry : normalizedUnits)
++	{
++		const auto & unit = unitEntry.second;
++		if (!unit.alive)
++		{
++			++result.excludedDeadCount;
++			result.excludedDeadTags.push_back(unit.tag);
++			continue;
++		}
++		if (!unit.selfOwned)
++		{
++			++result.excludedNonSelfCount;
++			result.excludedNonSelfTags.push_back(unit.tag);
++			continue;
++		}
++		if (!unit.complete)
++		{
++			++result.excludedIncompleteCount;
++			result.excludedIncompleteTags.push_back(
++				unit.tag);
++			continue;
++		}
++		if (unit.worker)
++		{
++			++result.excludedWorkerCount;
++			result.excludedWorkerTags.push_back(unit.tag);
++			continue;
++		}
++		if (unit.structure)
++		{
++			++result.excludedStructureCount;
++			result.excludedStructureTags.push_back(unit.tag);
++			continue;
++		}
++		if (unit.temporaryPayload)
++		{
++			++result.excludedTemporaryPayloadCount;
++			result.excludedTemporaryPayloadTags.push_back(
++				unit.tag);
++			continue;
++		}
++		if (!unit.combat)
++		{
++			++result.excludedNonCombatCount;
++			result.excludedNonCombatTags.push_back(unit.tag);
++			continue;
++		}
++		if (!eligibleTags.insert(unit.tag).second)
++		{
++			continue;
++		}
++		explicitOwnersByTag[unit.tag].insert(
++			unit.explicitOwners.begin(),
++			unit.explicitOwners.end());
++		autonomousOwnersByTag[unit.tag].insert(
++			unit.autonomousOwners.begin(),
++			unit.autonomousOwners.end());
++	}
++	result.eligibleTags.assign(
++		eligibleTags.begin(),
++		eligibleTags.end());
++	result.eligibleCombatCount = eligibleTags.size();
++	const std::set<std::uint64_t> eligibleTagSet =
++		voiBattlefieldEligibleTagSet(result);
++
++	std::map<std::string, std::set<std::uint64_t>>
++		autonomousTagsByOwner;
++	for (const auto tag : eligibleTags)
++	{
++		for (const auto & owner : autonomousOwnersByTag[tag])
++		{
++			if (!owner.empty())
++			{
++				autonomousTagsByOwner[owner].insert(tag);
++			}
++		}
++	}
++	for (const auto & owner : autonomousTagsByOwner)
++	{
++		VoiBattlefieldAutonomousOwnerProjection projected;
++		projected.ownerId = owner.first;
++		projected.ownerTags.assign(
++			owner.second.begin(),
++			owner.second.end());
++		projected.ownerCount = projected.ownerTags.size();
++		projected.integrity = input.ownershipEvidencePresent;
++		result.autonomousOwnedCount += projected.ownerCount;
++		result.autonomousOwners.push_back(projected);
++		result.autonomousOwnedTags.insert(
++			result.autonomousOwnedTags.end(),
++			projected.ownerTags.begin(),
++			projected.ownerTags.end());
++	}
++	std::sort(
++		result.autonomousOwnedTags.begin(),
++		result.autonomousOwnedTags.end());
++	result.autonomousOwnedTags.erase(
++		std::unique(
++			result.autonomousOwnedTags.begin(),
++			result.autonomousOwnedTags.end()),
++		result.autonomousOwnedTags.end());
++
++	bool allOperationOwnershipEvidencePresent = true;
++	std::map<std::string, std::vector<std::uint64_t>>
++		operationOwnerTags;
++	std::set<std::string> knownOperationOwnerKeys;
++	for (const auto & operation : input.operations)
++	{
++		const std::string ownerKey =
++			"operation:" + operation.operationId + "#"
++			+ std::to_string(operation.generation);
++		knownOperationOwnerKeys.insert(ownerKey);
++		std::vector<std::uint64_t> ownerTags;
++		for (const auto tag :
++			voiBattlefieldEligibleUniqueTags(
++				operation.assignedTags,
++				eligibleTagSet))
++		{
++			const auto owners = explicitOwnersByTag.find(tag);
++			if (owners != explicitOwnersByTag.end()
++				&& owners->second.find(ownerKey)
++					!= owners->second.end())
++			{
++				ownerTags.push_back(tag);
++			}
++		}
++		operationOwnerTags[ownerKey] = ownerTags;
++		result.explicitOwnedCount += ownerTags.size();
++		result.explicitOwnedTags.insert(
++			result.explicitOwnedTags.end(),
++			ownerTags.begin(),
++			ownerTags.end());
++		if (operation.active && !operation.completed)
++		{
++			allOperationOwnershipEvidencePresent =
++				allOperationOwnershipEvidencePresent
++				&& operation.ownershipEvidencePresent;
++		}
++	}
++	bool allExplicitOwnersKnown = true;
++	for (const auto & ownerEntry : explicitOwnersByTag)
++	{
++		for (const auto & owner : ownerEntry.second)
++		{
++			if (!owner.empty()
++				&& knownOperationOwnerKeys.find(owner)
++					== knownOperationOwnerKeys.end())
++			{
++				allExplicitOwnersKnown = false;
++			}
++		}
++	}
++	std::sort(
++		result.explicitOwnedTags.begin(),
++		result.explicitOwnedTags.end());
++	result.explicitOwnedTags.erase(
++		std::unique(
++			result.explicitOwnedTags.begin(),
++			result.explicitOwnedTags.end()),
++		result.explicitOwnedTags.end());
++
++	std::map<std::uint64_t, std::size_t> ownerClaimCount;
++	for (const auto & owner : operationOwnerTags)
++	{
++		for (const auto tag : owner.second)
++		{
++			++ownerClaimCount[tag];
++		}
++	}
++	for (const auto & owner : result.autonomousOwners)
++	{
++		for (const auto tag : owner.ownerTags)
++		{
++			++ownerClaimCount[tag];
++		}
++	}
++	for (const auto tag : eligibleTags)
++	{
++		const auto claims = ownerClaimCount.find(tag);
++		if (claims == ownerClaimCount.end()
++			|| claims->second == 0)
++		{
++			result.unassignedTags.push_back(tag);
++			continue;
++		}
++		if (claims->second > 1)
++		{
++			result.duplicateOwnershipTags.push_back(tag);
++			result.duplicateOwnershipCount +=
++				claims->second - 1;
++		}
++	}
++	result.unassignedCount = result.unassignedTags.size();
++	result.ownerCount = ownerClaimCount.size();
++	result.uniqueOwnerTagCount = ownerClaimCount.size();
++	result.ownershipIntegrity =
++		input.ownershipEvidencePresent
++		&& allOperationOwnershipEvidencePresent
++		&& allExplicitOwnersKnown
++		&& result.duplicateUnitInputCount == 0
++		&& result.duplicateOwnershipCount == 0
++		&& result.eligibleCombatCount
++			== result.explicitOwnedCount
++				+ result.autonomousOwnedCount
++				+ result.unassignedCount;
++	result.failClosed = !result.ownershipIntegrity;
++	for (auto & owner : result.autonomousOwners)
++	{
++		owner.integrity =
++			owner.integrity && result.ownershipIntegrity;
++	}
++
++	bool allOccupiedBasesReady = input.baseEvidencePresent;
++	bool allOccupiedBaseEvidencePresent =
++		input.baseEvidencePresent;
++	for (const auto & base : input.bases)
++	{
++		VoiBattlefieldBaseProjection projected;
++		projected.baseId = base.baseId.empty()
++			? "unknown_base"
++			: base.baseId;
++		projected.semanticAnchor =
++			base.semanticAnchor.empty()
++				? "self_base"
++				: base.semanticAnchor;
++		projected.occupied = base.occupied;
++		projected.evidencePresent =
++			base.readinessEvidencePresent
++			&& base.threatEvidencePresent;
++		projected.threatened = base.threatened;
++		projected.threatEvidence =
++			base.threatEvidence.empty()
++				? "missing_evidence"
++				: base.threatEvidence;
++		projected.evidenceClass =
++			base.evidenceClass.empty()
++				? "missing_evidence"
++				: base.evidenceClass;
++		projected.threatFrame = base.threatFrame;
++		projected.groundThreat =
++			std::max(0.0f, base.groundThreat);
++		projected.airThreat =
++			std::max(0.0f, base.airThreat);
++		projected.observedEnemyStrength =
++			std::max(0.0f, base.observedEnemyStrength);
++		const auto defenderTags =
++			voiBattlefieldEligibleUniqueTags(
++				base.defenderTags,
++				eligibleTagSet);
++		projected.defenderCount = defenderTags.size();
++		for (const auto tag : defenderTags)
++		{
++			const auto defender = normalizedUnits.find(tag);
++			if (defender == normalizedUnits.end())
++			{
++				continue;
++			}
++			if (defender->second.canAttackGround)
++			{
++				++projected.groundCapableDefenderCount;
++			}
++			if (defender->second.canAttackAir)
++			{
++				++projected.airCapableDefenderCount;
++			}
++		}
++		projected.requiredDefenderCount =
++			base.requiredDefenderCount > 0
++				? base.requiredDefenderCount
++				: base.protectedMinimum;
++		projected.requiredGroundDefenderCount =
++			base.requiredGroundDefenderCount;
++		projected.requiredAirDefenderCount =
++			base.requiredAirDefenderCount;
++		projected.protectedMinimum =
++			base.protectedMinimum;
++		projected.protectedFamily =
++			base.protectedFamily.empty()
++				? "eligible_combat"
++				: base.protectedFamily;
++		projected.protectedRole =
++			base.protectedRole.empty()
++				? "base_defender"
++				: base.protectedRole;
++		projected.ready =
++			!base.occupied
++			|| (projected.evidencePresent
++				&& (!projected.threatened
++					|| (projected.defenderCount
++							>= projected.protectedMinimum
++						&& projected.defenderCount
++							>= projected.requiredDefenderCount
++						&& projected.groundCapableDefenderCount
++							>= projected.requiredGroundDefenderCount
++						&& projected.airCapableDefenderCount
++							>= projected.requiredAirDefenderCount)));
++		projected.readinessState =
++			!projected.evidencePresent
++				? "missing_evidence"
++				: (projected.ready ? "ready" : "unsafe");
++		projected.readinessReason =
++			!projected.evidencePresent
++				? "threat_or_readiness_evidence_missing"
++				: (projected.ready
++					? "capability_aware_minimum_satisfied"
++					: (projected.groundCapableDefenderCount
++							< projected.requiredGroundDefenderCount
++						? "ground_capable_defender_minimum_not_met"
++						: (projected.airCapableDefenderCount
++								< projected.requiredAirDefenderCount
++							? "air_capable_defender_minimum_not_met"
++							: "protected_minimum_not_met")));
++		if (base.occupied)
++		{
++			allOccupiedBaseEvidencePresent =
++				allOccupiedBaseEvidencePresent
++				&& projected.evidencePresent;
++			allOccupiedBasesReady =
++				allOccupiedBasesReady
++				&& projected.ready;
++		}
++		result.bases.push_back(projected);
++	}
++
++	std::map<std::string, VoiBattlefieldTransferProjection>
++		transferBySourceOwner;
++	for (const auto & transfer : input.transferAvailability)
++	{
++		const auto projected = voiProjectBattlefieldTransfer(
++			transfer,
++			result.ownershipIntegrity,
++			eligibleTagSet);
++		if (!projected.sourceOwnerId.empty())
++		{
++			transferBySourceOwner[projected.sourceOwnerId] =
++				projected;
++		}
++	}
++	for (const auto & operation : input.operations)
++	{
++		VoiBattlefieldOperationProjection projected;
++		projected.scope = "operation:" + operation.operationId;
++		projected.operationId = operation.operationId;
++		projected.generation = operation.generation;
++		projected.updateId = operation.updateId.empty()
++			? result.updateId
++			: operation.updateId;
++		projected.identityStage =
++			operation.identityStage.empty()
++				? (operation.completed
++					? "terminal"
++					: (operation.engagementObserved
++						|| operation.movementObserved
++							? "effect_observed"
++							: "assigned"))
++				: operation.identityStage;
++		projected.status = operation.status;
++		projected.ownershipEvidencePresent =
++			operation.ownershipEvidencePresent;
++		const std::string ownerKey =
++			"operation:" + operation.operationId + "#"
++			+ std::to_string(operation.generation);
++		projected.ownerTags = operationOwnerTags[ownerKey];
++		projected.assignedCount = projected.ownerTags.size();
++		projected.minimumUnits = operation.minimumUnits;
++		projected.maximumUnits = operation.maximumUnits;
++		projected.allowPartial = operation.allowPartial;
++		projected.strictScope = operation.strictScope;
++		projected.partial =
++			projected.assignedCount > 0
++			&& projected.assignedCount
++				< projected.minimumUnits;
++		projected.requestedRouteType =
++			operation.requestedRouteType.empty()
++				? (operation.routeType.empty()
++					? "direct"
++					: operation.routeType)
++				: operation.requestedRouteType;
++		projected.routeType =
++			operation.routeType.empty()
++				? "direct"
++				: operation.routeType;
++		projected.targetIntent =
++			operation.targetIntent.empty()
++				? "unspecified"
++				: operation.targetIntent;
++		projected.targetType =
++			operation.targetType.empty()
++				? "unknown_target"
++				: operation.targetType;
++		projected.resolvedTargetLabel =
++			operation.resolvedTargetLabel.empty()
++				? projected.targetIntent
++				: operation.resolvedTargetLabel;
++		projected.targetEvidence =
++			operation.targetEvidence.empty()
++				? "missing_evidence"
++				: operation.targetEvidence;
++		projected.targetX = operation.targetX;
++		projected.targetY = operation.targetY;
++		projected.lifetimeMode =
++			operation.lifetimeMode.empty()
++				? "missing_evidence"
++				: operation.lifetimeMode;
++		projected.completionConditions =
++			operation.completionConditions;
++		projected.durationSeconds = operation.durationSeconds;
++		projected.issuedAtFrame = operation.issuedAtFrame;
++		projected.deadlineFrame = operation.deadlineFrame;
++		projected.standing = operation.standing;
++		projected.completed =
++			operation.completed
++			&& voiBattlefieldStandingMayComplete(
++				operation.standing,
++				operation.completionReason);
++		projected.completionReason =
++			projected.completed
++				? operation.completionReason
++				: "";
++		projected.completionFrame =
++			projected.completed
++				? operation.completionFrame
++				: 0;
++		projected.movementObserved =
++			operation.movementObserved;
++		projected.engagementObserved =
++			operation.engagementObserved;
++		projected.targetReached = operation.targetReached;
++		projected.completionState =
++			voiBattlefieldCompletionState(
++				operation.status,
++				projected.completed);
++		projected.transferSelection.identity =
++			operation.transferSelectionIdentity;
++		projected.transferSelection.editResolution =
++			operation.transferSelectionResolution.empty()
++				? operation.transfer.editResolution
++				: operation.transferSelectionResolution;
++		projected.transferSelection.present =
++			!projected.transferSelection.identity
++				.selectedUnitTags.empty();
++		if (projected.transferSelection.present)
++		{
++			const auto identityValidation =
++				voiValidateOperationTransferSelectionRuntimeEvidence(
++					projected.transferSelection.identity,
++					operation
++						.transferSelectionRuntimeEvidence);
++			projected.transferSelection.identityValid =
++				identityValidation.valid;
++			projected.transferSelection.blocker =
++				identityValidation.blocker;
++			projected.transferSelection.writeIdentity.updateId =
++				projected.updateId;
++			projected.transferSelection.writeIdentity.operationId =
++				projected.operationId;
++			projected.transferSelection.writeIdentity
++				.operationGeneration =
++					projected.generation;
++			projected.transferSelection.writeIdentity.stage =
++				projected.identityStage;
++			projected.transferSelection.writeIdentity.gameFrame =
++				input.frame;
++			projected.transferSelection.writeIdentity
++				.selectionIdentity =
++					projected.transferSelection.identity;
++			projected.transferSelection
++				.telemetryWriteAcknowledged =
++					projected.transferSelection.identityValid
++					&& voiOperationTransferSelectionAcknowledgementMatches(
++						projected.transferSelection
++							.writeIdentity,
++						operation
++							.transferSelectionAcknowledgement,
++						input.frame);
++			projected.transferSelection.acknowledgedFrame =
++				projected.transferSelection
++						.telemetryWriteAcknowledged
++					? operation
++						.transferSelectionAcknowledgement
++						.acknowledgedFrame
++					: 0;
++			if (projected.transferSelection
++				.telemetryWriteAcknowledged)
++			{
++					projected.transferSelection
++						.acknowledgedIdentity =
++							operation
++								.transferSelectionAcknowledgement
++							.identity;
++			}
++		}
++		projected.transfer =
++			voiProjectBattlefieldTransfer(
++				operation.transfer,
++				result.ownershipIntegrity,
++				eligibleTagSet);
++		projected.protectedDefenseMinimumRespected =
++			operation.targetType == "defend"
++			|| allOccupiedBasesReady;
++		projected.sourceOperationMinimumRespected =
++			!operation.transfer.requested
++			|| projected.transfer
++				.protectedMinimumRespected;
++		projected.transferAdmission =
++			!operation.transfer.requested
++				? "not_required"
++				: (projected.transfer
++						.atomicRevalidationReady
++					? "accepted"
++					: "blocked");
++		projected.emergencyPreemption =
++			operation.emergencyPreemption.empty()
++				? "none"
++				: operation.emergencyPreemption;
++
++		const bool defendOperation =
++			operation.targetType == "defend";
++		const bool operationEvidencePresent =
++			operation.ownershipEvidencePresent
++			&& !operation.operationId.empty()
++			&& operation.generation > 0
++			&& !operation.targetEvidence.empty()
++			&& operation.targetEvidence
++				!= "missing_evidence"
++			&& !operation.lifetimeMode.empty()
++			&& operation.lifetimeMode
++				!= "missing_evidence";
++		const bool baseEvidenceRequired =
++			!defendOperation;
++		projected.partialLaunchAllowed =
++			!projected.partial
++			|| (operation.allowPartial
++				&& !operation.strictScope
++			&& result.ownershipIntegrity
++			&& projected.protectedDefenseMinimumRespected
++			&& projected.sourceOperationMinimumRespected
++			&& projected.transferAdmission != "blocked"
++			&& projected.emergencyPreemption == "none");
++		projected.partialLaunchSafe =
++			projected.partialLaunchAllowed
++			&& operationEvidencePresent
++			&& result.ownershipIntegrity
++			&& projected.protectedDefenseMinimumRespected
++			&& projected.sourceOperationMinimumRespected
++			&& projected.transferAdmission != "blocked"
++			&& projected.emergencyPreemption == "none"
++			&& (!baseEvidenceRequired
++				|| allOccupiedBaseEvidencePresent);
++
++		if (input.ownershipEvidencePresent
++			&& !result.ownershipIntegrity)
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Unsafe;
++			projected.launchReason =
++				result.duplicateOwnershipCount > 0
++					? "duplicate_ownership_fail_closed"
++					: "ownership_partition_fail_closed";
++		}
++		else if (!input.ownershipEvidencePresent
++			|| !operationEvidencePresent
++			|| (baseEvidenceRequired
++				&& !allOccupiedBaseEvidencePresent))
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::MissingEvidence;
++			projected.launchReason =
++				!input.ownershipEvidencePresent
++					? "ownership_evidence_missing"
++					: (!operationEvidencePresent
++						? "operation_evidence_missing"
++						: "base_readiness_evidence_missing");
++		}
++		else if (!operation.active || projected.completed)
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Unsafe;
++			projected.launchReason =
++				"operation_not_active";
++		}
++		else if (!projected
++			.protectedDefenseMinimumRespected)
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Unsafe;
++			projected.launchReason =
++				"base_protected_minimum_not_met";
++		}
++		else if (projected.assignedCount == 0)
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Unsafe;
++			projected.launchReason =
++				"no_eligible_units_assigned";
++		}
++		else if (projected.minimumUnits
++			> projected.maximumUnits)
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Unsafe;
++			projected.launchReason =
++				"operation_bounds_invalid";
++		}
++		else if (projected.maximumUnits > 0
++			&& projected.assignedCount
++				> projected.maximumUnits)
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Unsafe;
++			projected.launchReason =
++				"operation_maximum_exceeded";
++		}
++		else if (projected.partial
++			&& !projected.partialLaunchSafe)
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Unsafe;
++			projected.launchReason =
++				operation.allowPartial
++					? "partial_launch_unsafe"
++					: "operation_minimum_not_met";
++		}
++		else if (operation.transfer.requested
++			&& !projected.transfer
++				.atomicRevalidationReady)
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Unsafe;
++			projected.launchReason =
++				projected.transfer.blocker;
++		}
++		else
++		{
++			projected.launchState =
++				VoiBattlefieldDecisionState::Safe;
++			projected.launchReason =
++				projected.partial
++					? "partial_launch_safe"
++					: "full_launch_safe";
++		}
++		result.operations.push_back(projected);
++
++		if (!projected.transfer.sourceOwnerId.empty())
++		{
++			const auto existing = transferBySourceOwner.find(
++				projected.transfer.sourceOwnerId);
++			if (existing == transferBySourceOwner.end()
++				|| projected.transfer.requested)
++			{
++				transferBySourceOwner[
++					projected.transfer.sourceOwnerId] =
++						projected.transfer;
++			}
++		}
++	}
++	for (const auto & transfer : transferBySourceOwner)
++	{
++		result.transfers.push_back(transfer.second);
++	}
++	return result;
++}
++
++inline void voiBattlefieldWriteTagArray(
++	std::ostringstream & output,
++	const std::vector<std::uint64_t> & tags)
++{
++	output << "[";
++	for (std::size_t index = 0; index < tags.size(); ++index)
++	{
++		if (index > 0)
++		{
++			output << ",";
++		}
++		output << tags[index];
++	}
++	output << "]";
++}
++
++inline void voiBattlefieldWriteStringArray(
++	std::ostringstream & output,
++	const std::vector<std::string> & values)
++{
++	output << "[";
++	for (std::size_t index = 0; index < values.size(); ++index)
++	{
++		if (index > 0)
++		{
++			output << ",";
++		}
++		output << "\""
++			<< voiBattlefieldJsonEscape(values[index])
++			<< "\"";
++	}
++	output << "]";
++}
++
++inline void voiBattlefieldWriteTransferSelectionIdentity(
++	std::ostringstream & output,
++	const VoiOperationTransferSelectionIdentity<std::uint64_t>
++		& identity)
++{
++	output << "{"
++		<< "\"update_id\":\""
++		<< voiBattlefieldJsonEscape(
++			identity.updateId)
++		<< "\",\"source_owner_id\":\""
++		<< voiBattlefieldJsonEscape(
++			identity.sourceOperationId)
++		<< "\",\"counterpart_operation_id\":\""
++		<< voiBattlefieldJsonEscape(
++			identity.counterpartOperationId)
++		<< "\",\"source_action\":\""
++		<< voiBattlefieldJsonEscape(
++			identity.sourceAction)
++		<< "\",\"counterpart_action\":\""
++		<< voiBattlefieldJsonEscape(
++			identity.counterpartAction)
++		<< "\",\"source_generation\":"
++		<< identity.sourceGeneration
++		<< ",\"counterpart_generation\":"
++		<< identity.counterpartGeneration
++		<< ",\"requested_source_generation\":"
++		<< identity.requestedSourceGeneration
++		<< ",\"requested_counterpart_generation\":"
++		<< identity.requestedCounterpartGeneration
++		<< ",\"requested_count\":"
++		<< identity.requestedCount
++		<< ",\"selected_unit_tags\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		identity.selectedUnitTags);
++	output << "}";
++}
++
++inline void voiBattlefieldWriteTransferSelectionWriteIdentity(
++	std::ostringstream & output,
++	const VoiOperationTransferSelectionWriteIdentity<std::uint64_t>
++		& identity)
++{
++	output << "{"
++		<< "\"update_id\":\""
++		<< voiBattlefieldJsonEscape(identity.updateId)
++		<< "\",\"operation_id\":\""
++		<< voiBattlefieldJsonEscape(identity.operationId)
++		<< "\",\"operation_generation\":"
++		<< identity.operationGeneration
++		<< ",\"stage\":\""
++		<< voiBattlefieldJsonEscape(identity.stage)
++		<< "\",\"game_frame\":"
++		<< identity.gameFrame
++		<< ",\"selection_identity\":";
++	voiBattlefieldWriteTransferSelectionIdentity(
++		output,
++		identity.selectionIdentity);
++	output << "}";
++}
++
++inline std::string voiBattlefieldProjectionJson(
++	const VoiBattlefieldProjection & projection)
++{
++	std::ostringstream output;
++	output << "{"
++		<< "\"schema_version\":2,"
++		<< "\"authority\":\"micromachine_cpp\","
++		<< "\"identity\":{"
++		<< "\"update_id\":\""
++		<< voiBattlefieldJsonEscape(projection.updateId)
++		<< "\",\"scope\":\""
++		<< voiBattlefieldJsonEscape(projection.scope)
++		<< "\",\"session_epoch\":"
++		<< projection.sessionEpoch
++		<< "\",\"generation\":"
++		<< projection.generation
++		<< ",\"stage\":\""
++		<< voiBattlefieldJsonEscape(projection.stage)
++		<< "\",\"game_frame\":"
++		<< projection.frame
++		<< "},\"eligible_combat_count\":"
++		<< projection.eligibleCombatCount
++		<< ",\"explicit_operation_owned_count\":"
++		<< projection.explicitOwnedCount
++		<< ",\"autonomous_owned_count\":"
++		<< projection.autonomousOwnedCount
++		<< ",\"unassigned_count\":"
++		<< projection.unassignedCount
++		<< ",\"duplicate_owner_count\":"
++		<< projection.duplicateOwnershipCount
++		<< ",\"operation_ownership\":[";
++	for (std::size_t index = 0;
++		index < projection.operations.size();
++		++index)
++	{
++		if (index > 0)
++		{
++			output << ",";
++		}
++		const auto & operation = projection.operations[index];
++		const std::size_t missingCount =
++			operation.minimumUnits > operation.assignedCount
++				? operation.minimumUnits
++					- operation.assignedCount
++				: 0;
++		output << "{\"identity\":{"
++			<< "\"update_id\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.updateId)
++			<< "\",\"scope\":\""
++			<< voiBattlefieldJsonEscape(operation.scope)
++			<< "\",\"session_epoch\":"
++			<< projection.sessionEpoch
++			<< "\",\"generation\":"
++			<< operation.generation
++			<< ",\"stage\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.identityStage)
++			<< "\",\"game_frame\":"
++			<< projection.frame
++			<< ",\"operation_id\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.operationId)
++			<< "\"},\"operation_id\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.operationId)
++			<< "\",\"generation\":"
++			<< operation.generation
++			<< ",\"operation_route\":{"
++			<< "\"requested_route_type\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.requestedRouteType)
++			<< "\",\"applied_route_type\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.routeType)
++			<< "\",\"location_intent\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.targetIntent)
++			<< "\",\"target_type\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.targetType)
++			<< "\",\"resolved_target_label\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.resolvedTargetLabel)
++			<< "\",\"target_x\":" << operation.targetX
++			<< ",\"target_y\":" << operation.targetY
++			<< ",\"target_evidence\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.targetEvidence)
++			<< "\"},\"operation_lifetime\":{"
++			<< "\"mode\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.lifetimeMode)
++			<< "\",\"completion_state\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.completionState)
++			<< "\",\"completion_conditions\":";
++		voiBattlefieldWriteStringArray(
++			output,
++			voiBattlefieldSplitCommaList(
++				operation.completionConditions));
++		output << ",\"duration_seconds\":"
++			<< operation.durationSeconds
++			<< ",\"issued_at_frame\":"
++			<< operation.issuedAtFrame
++			<< ",\"deadline_frame\":"
++			<< operation.deadlineFrame
++			<< ",\"standing\":"
++			<< (operation.standing ? "true" : "false")
++			<< ",\"completed\":"
++			<< (operation.completed ? "true" : "false")
++			<< ",\"completion_reason\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.completionReason)
++			<< "\",\"completed_frame\":"
++			<< operation.completionFrame
++			<< "},\"operation_ownership\":{"
++			<< "\"owner_count\":"
++			<< operation.ownerTags.size()
++			<< ",\"owner_tags\":";
++		voiBattlefieldWriteTagArray(
++			output,
++			operation.ownerTags);
++		output << ",\"integrity_status\":\""
++			<< (projection.ownershipIntegrity
++				&& operation.ownershipEvidencePresent
++					? "valid"
++					: "invalid")
++			<< "\"},\"operation_launch_policy\":{"
++			<< "\"min_units\":"
++			<< operation.minimumUnits
++			<< ",\"max_units\":"
++			<< operation.maximumUnits
++			<< ",\"allow_partial_requested\":"
++			<< (operation.allowPartial
++				? "true"
++				: "false")
++			<< ",\"strict_scope\":"
++			<< (operation.strictScope
++				? "true"
++				: "false")
++			<< ",\"partial_launch_allowed\":"
++			<< (operation.partialLaunchAllowed
++				? "true"
++				: "false")
++			<< ",\"partial_launch_safe\":"
++			<< (operation.partialLaunchSafe
++				? "true"
++				: "false")
++			<< ",\"launch_count\":"
++			<< operation.assignedCount
++			<< ",\"missing_count\":"
++			<< missingCount
++			<< ",\"decision\":\""
++				<< (operation.launchState
++						== VoiBattlefieldDecisionState::Safe
++					? "launch"
++					: "wait")
++			<< "\",\"blocker\":\"";
++		if (operation.launchState
++			!= VoiBattlefieldDecisionState::Safe)
++		{
++			output << voiBattlefieldJsonEscape(
++				operation.launchReason);
++		}
++		output << "\",\"recommended_choices\":[],"
++			<< "\"safety_evidence\":{"
++			<< "\"evaluated_at_frame\":"
++			<< projection.frame
++			<< ",\"protected_defense_minimum_respected\":"
++			<< (operation
++					.protectedDefenseMinimumRespected
++				? "true"
++				: "false")
++			<< ",\"source_operation_minimum_respected\":"
++			<< (operation
++					.sourceOperationMinimumRespected
++				? "true"
++				: "false")
++			<< ",\"transfer_admission\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.transferAdmission)
++			<< "\",\"emergency_preemption\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.emergencyPreemption)
++			<< "\"}},\"operation_completion\":{"
++			<< "\"movement_observed\":"
++			<< (operation.movementObserved
++				? "true"
++				: "false")
++			<< ",\"engagement_observed\":"
++			<< (operation.engagementObserved
++				? "true"
++				: "false")
++			<< ",\"target_reached\":"
++			<< (operation.targetReached
++				? "true"
++				: "false")
++			<< ",\"terminal\":"
++			<< (operation.completed ? "true" : "false")
++			<< ",\"state\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.completionState)
++			<< "\",\"reason\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.completionReason)
++			<< "\",\"frame\":"
++			<< operation.completionFrame
++			<< ",\"generation\":"
++			<< operation.generation
++			<< "},\"operation_transfer_selection\":{"
++			<< "\"present\":"
++			<< (operation.transferSelection.present
++				? "true"
++				: "false")
++			<< ",\"edit_resolution\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.transferSelection
++					.editResolution)
++			<< "\",\"identity_valid\":"
++			<< (operation.transferSelection.identityValid
++				? "true"
++				: "false")
++			<< ",\"blocker\":\""
++			<< voiBattlefieldJsonEscape(
++				operation.transferSelection.blocker)
++			<< "\",\"identity\":";
++		voiBattlefieldWriteTransferSelectionIdentity(
++			output,
++			operation.transferSelection.identity);
++		output << ",\"write_identity\":";
++		voiBattlefieldWriteTransferSelectionWriteIdentity(
++			output,
++			operation.transferSelection.writeIdentity);
++		output << ",\"successful_write_acknowledgement\":{"
++			<< "\"acknowledged\":"
++			<< (operation.transferSelection
++					.telemetryWriteAcknowledged
++				? "true"
++				: "false")
++			<< ",\"acknowledged_frame\":"
++			<< operation.transferSelection
++				.acknowledgedFrame
++			<< ",\"identity\":";
++		voiBattlefieldWriteTransferSelectionWriteIdentity(
++			output,
++			operation.transferSelection
++				.acknowledgedIdentity);
++		output << "}}}";
++	}
++	output << "],\"autonomous_ownership\":[";
++	for (std::size_t index = 0;
++		index < projection.autonomousOwners.size();
++		++index)
++	{
++		if (index > 0)
++		{
++			output << ",";
++		}
++		const auto & owner =
++			projection.autonomousOwners[index];
++		output << "{\"owner_id\":\""
++			<< voiBattlefieldJsonEscape(owner.ownerId)
++			<< "\",\"owner_count\":"
++			<< owner.ownerTags.size()
++			<< ",\"owner_tags\":";
++		voiBattlefieldWriteTagArray(
++			output,
++			owner.ownerTags);
++		output << ",\"integrity_status\":\""
++			<< (owner.integrity ? "valid" : "invalid")
++			<< "\"}";
++	}
++	output << "],\"unassigned_unit_tags\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.unassignedTags);
++	output << ",\"bases\":[";
++	for (std::size_t index = 0;
++		index < projection.bases.size();
++		++index)
++	{
++		if (index > 0)
++		{
++			output << ",";
++		}
++		const auto & base = projection.bases[index];
++		output << "{\"base_id\":\""
++			<< voiBattlefieldJsonEscape(base.baseId)
++			<< "\",\"semantic_anchor\":\""
++			<< voiBattlefieldJsonEscape(
++				base.semanticAnchor)
++			<< "\",\"base_readiness\":{"
++			<< "\"readiness_state\":\""
++			<< voiBattlefieldJsonEscape(
++				base.readinessState)
++			<< "\",\"reason\":\""
++			<< voiBattlefieldJsonEscape(
++				base.readinessReason)
++			<< "\",\"ground_threat\":"
++			<< base.groundThreat
++			<< ",\"air_threat\":"
++			<< base.airThreat
++			<< ",\"observed_enemy_strength\":"
++			<< base.observedEnemyStrength
++			<< ",\"last_evidence_frame\":"
++			<< base.threatFrame
++			<< ",\"evidence_class\":\""
++			<< voiBattlefieldJsonEscape(
++				base.evidenceClass)
++			<< "\",\"assigned_defender_count\":"
++			<< base.defenderCount
++			<< ",\"ground_capable_defender_count\":"
++			<< base.groundCapableDefenderCount
++			<< ",\"air_capable_defender_count\":"
++			<< base.airCapableDefenderCount
++			<< ",\"required_defender_count\":"
++			<< base.requiredDefenderCount
++			<< ",\"required_ground_defender_count\":"
++			<< base.requiredGroundDefenderCount
++			<< ",\"required_air_defender_count\":"
++			<< base.requiredAirDefenderCount
++			<< ",\"protected_minimum\":[{"
++			<< "\"family\":\""
++			<< voiBattlefieldJsonEscape(
++				base.protectedFamily)
++			<< "\",\"role\":\""
++			<< voiBattlefieldJsonEscape(
++				base.protectedRole)
++			<< "\",\"count\":"
++			<< base.protectedMinimum
++			<< "}]}}";
++	}
++	output << "],\"transfer_availability\":{"
++		<< "\"evaluated_at_frame\":"
++		<< projection.frame
++		<< ",\"atomic_revalidation_required\":true,"
++		<< "\"entries\":[";
++	for (std::size_t index = 0;
++		index < projection.transfers.size();
++		++index)
++	{
++		if (index > 0)
++		{
++			output << ",";
++		}
++		const auto & transfer = projection.transfers[index];
++		output << "{\"source_owner_id\":\""
++			<< voiBattlefieldJsonEscape(
++				transfer.sourceOwnerId)
++			<< "\",\"source_owner_count\":"
++			<< transfer.sourceOwnerCount
++			<< ",\"protected_minimum\":"
++			<< transfer.protectedMinimum
++			<< ",\"transferable_count\":"
++			<< transfer.transferableTags.size()
++			<< ",\"transferable_unit_tags\":";
++		voiBattlefieldWriteTagArray(
++			output,
++			transfer.transferableTags);
++		output << ",\"transfer_safe\":"
++			<< (transfer.transferSafe
++				? "true"
++				: "false")
++			<< ",\"atomic_runtime_blocker\":\""
++			<< voiBattlefieldJsonEscape(
++				transfer.blocker)
++			<< "\",\"recommended_resolution_choices\":[],"
++			<< "\"safety_evidence\":{"
++			<< "\"evaluated_at_frame\":"
++			<< projection.frame
++			<< ",\"protected_minimum_respected\":"
++			<< (transfer.protectedMinimumRespected
++				? "true"
++				: "false")
++			<< ",\"atomic_revalidation_required\":true},"
++			<< "\"atomic_revalidation_inputs\":{"
++			<< "\"requested\":"
++			<< (transfer.requested ? "true" : "false")
++			<< ",\"selected_unit_tags\":";
++		voiBattlefieldWriteTagArray(
++			output,
++			transfer.transferableTags);
++		output << ",\"source_owner_id\":\""
++			<< voiBattlefieldJsonEscape(
++				transfer.sourceOwnerId)
++			<< "\",\"action\":\""
++			<< voiBattlefieldJsonEscape(transfer.action)
++			<< "\",\"edit_resolution\":\""
++			<< voiBattlefieldJsonEscape(
++				transfer.editResolution)
++			<< "\",\"counterpart_operation_id\":\""
++			<< voiBattlefieldJsonEscape(
++				transfer.counterpartOperationId)
++			<< "\",\"counterpart_action\":\""
++			<< voiBattlefieldJsonEscape(
++				transfer.counterpartAction)
++			<< "\",\"requested_generation\":"
++			<< transfer.requestedGeneration
++			<< ",\"counterpart_generation\":"
++			<< transfer.counterpartGeneration
++			<< ",\"requested_source_generation\":"
++			<< transfer.requestedSourceGeneration
++			<< ",\"requested_counterpart_generation\":"
++			<< transfer.requestedCounterpartGeneration
++			<< ",\"requested_count\":"
++			<< transfer.requestedCount
++			<< ",\"counterpart_present\":"
++			<< (transfer.counterpartPresent
++				? "true"
++				: "false")
++			<< ",\"counterpart_pending\":"
++			<< (transfer.counterpartPending
++				? "true"
++				: "false")
++			<< ",\"reciprocal_action\":"
++			<< (transfer.reciprocalAction
++				? "true"
++				: "false")
++			<< ",\"reciprocal_counterpart\":"
++			<< (transfer.reciprocalCounterpart
++				? "true"
++				: "false")
++			<< ",\"reciprocal_generation\":"
++			<< (transfer.reciprocalGeneration
++				? "true"
++				: "false")
++			<< ",\"reciprocal_count\":"
++			<< (transfer.reciprocalCount
++				? "true"
++				: "false")
++			<< ",\"source_active\":"
++			<< (transfer.sourceActive
++				? "true"
++				: "false")
++			<< ",\"destination_active\":"
++			<< (transfer.destinationActive
++				? "true"
++				: "false")
++			<< ",\"ownership_integrity\":"
++			<< (transfer.ownershipIntegrity
++				? "true"
++				: "false")
++			<< ",\"operation_assignments_match\":"
++			<< (transfer.operationAssignmentsMatch
++				? "true"
++				: "false")
++			<< ",\"squad_assignments_match\":"
++			<< (transfer.squadAssignmentsMatch
++				? "true"
++				: "false")
++			<< ",\"action_assignments_match\":"
++			<< (transfer.actionAssignmentsMatch
++				? "true"
++				: "false")
++			<< ",\"role_assignments_match\":"
++			<< (transfer.roleAssignmentsMatch
++				? "true"
++				: "false")
++			<< ",\"atomic_revalidation_ready\":"
++			<< (transfer.atomicRevalidationReady
++				? "true"
++				: "false")
++			<< "}}";
++	}
++	output << "]},\"ownership_integrity\":\""
++		<< (projection.ownershipIntegrity
++			? "valid"
++			: (projection.ownershipEvidencePresent
++				? "fail_closed"
++				: "missing_evidence"))
++		<< "\",\"owner_count\":"
++		<< projection.ownerCount
++		<< ",\"unique_owner_tag_count\":"
++		<< projection.uniqueOwnerTagCount
++		<< ",\"duplicate_owner_tags\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.duplicateOwnershipTags);
++	output << ",\"excluded_unit_tags\":{\"dead\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.excludedDeadTags);
++	output << ",\"non_self\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.excludedNonSelfTags);
++	output << ",\"incomplete\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.excludedIncompleteTags);
++	output << ",\"worker\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.excludedWorkerTags);
++	output << ",\"structure\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.excludedStructureTags);
++	output << ",\"temporary_payload\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.excludedTemporaryPayloadTags);
++	output << ",\"non_combat\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.excludedNonCombatTags);
++	output << "},\"duplicate_unit_input_tags\":";
++	voiBattlefieldWriteTagArray(
++		output,
++		projection.duplicateUnitInputTags);
++	output << "}";
++	return output.str();
++}
++
++inline const VoiBattlefieldOperationProjection *
++voiFindBattlefieldOperationProjection(
++	const VoiBattlefieldProjection & projection,
++	const std::string & operationId,
++	std::uint64_t generation)
++{
++	for (const auto & operation : projection.operations)
++	{
++		if (operation.operationId == operationId
++			&& operation.generation == generation)
++		{
++			return &operation;
++		}
++	}
++	return nullptr;
++}
+diff --git a/src/voi_operation_transfer_admission.hpp b/src/voi_operation_transfer_admission.hpp
+index 26d1a020da9f174f153c63cf233c37d83bd4863e..719313f55b4d370f08971baf97e2cf6648cc6180 100644
+--- a/src/voi_operation_transfer_admission.hpp
++++ b/src/voi_operation_transfer_admission.hpp
+@@ -37,6 +37,543 @@ struct VoiOperationTransferReference
+ 	std::string editAction;
+ };
+ 
++template <typename Tag>
++struct VoiOperationTransferSelectionIdentity
++{
++	std::string updateId;
++	std::string sourceOperationId;
++	std::string counterpartOperationId;
++	std::string sourceAction;
++	std::string counterpartAction;
++	std::uint64_t sourceGeneration = 0;
++	std::uint64_t counterpartGeneration = 0;
++	std::uint64_t requestedSourceGeneration = 0;
++	std::uint64_t requestedCounterpartGeneration = 0;
++	std::size_t requestedCount = 0;
++	std::vector<Tag> selectedUnitTags;
++};
++
++template <typename Tag>
++struct VoiOperationTransferSelectionRuntimeEvidence
++{
++	std::string sourceUpdateId;
++	std::string counterpartUpdateId;
++	std::string sourceOperationId;
++	std::string counterpartOperationId;
++	std::string sourceAction;
++	std::string counterpartAction;
++	std::uint64_t sourceGeneration = 0;
++	std::uint64_t counterpartGeneration = 0;
++	std::uint64_t requestedSourceGeneration = 0;
++	std::uint64_t requestedCounterpartGeneration = 0;
++	std::string sourceResolution;
++	std::string counterpartResolution;
++	std::vector<Tag> sourceOwnedTags;
++	std::vector<Tag> destinationOwnedTags;
++};
++
++template <typename Tag>
++struct VoiOperationTransferSelectionWriteIdentity
++{
++	std::string updateId;
++	std::string operationId;
++	std::uint64_t operationGeneration = 0;
++	std::string stage;
++	std::uint64_t gameFrame = 0;
++	VoiOperationTransferSelectionIdentity<Tag> selectionIdentity;
++};
++
++struct VoiOperationTransferSelectionValidation
++{
++	bool valid;
++	std::string blocker;
++
++	VoiOperationTransferSelectionValidation(
++		bool isValid = false,
++		const std::string & reason = "")
++		: valid(isValid)
++		, blocker(reason)
++	{
++	}
++};
++
++template <typename Tag>
++struct VoiOperationTransferSelectionAcknowledgement
++{
++	bool acknowledged = false;
++	std::uint64_t acknowledgedFrame = 0;
++	VoiOperationTransferSelectionWriteIdentity<Tag> identity;
++};
++
++template <typename Tag>
++VoiOperationTransferSelectionValidation
++voiCanonicalizeOperationTransferSelectionIdentity(
++	VoiOperationTransferSelectionIdentity<Tag> & identity)
++{
++	if (identity.updateId.empty())
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_update_missing");
++	}
++	if (identity.sourceOperationId.empty())
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_source_missing");
++	}
++	if (identity.counterpartOperationId.empty()
++		|| identity.counterpartOperationId
++			== identity.sourceOperationId)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_counterpart_mismatch");
++	}
++	if (identity.sourceAction != "transfer_out"
++		|| identity.counterpartAction != "transfer_in")
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_action_mismatch");
++	}
++	if (identity.sourceGeneration == 0
++		|| identity.counterpartGeneration == 0
++		|| identity.requestedSourceGeneration
++			<= identity.sourceGeneration
++		|| identity.requestedCounterpartGeneration
++			<= identity.counterpartGeneration)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_generation_mismatch");
++	}
++	if (identity.requestedCount == 0
++		|| identity.selectedUnitTags.empty())
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_empty");
++	}
++	std::sort(
++		identity.selectedUnitTags.begin(),
++		identity.selectedUnitTags.end());
++	for (std::size_t index = 0;
++		index < identity.selectedUnitTags.size();
++		++index)
++	{
++		if (identity.selectedUnitTags[index] == Tag())
++		{
++			return VoiOperationTransferSelectionValidation(
++				false,
++				"transfer_selection_invalid_tag");
++		}
++		if (index > 0
++			&& identity.selectedUnitTags[index - 1]
++				== identity.selectedUnitTags[index])
++		{
++			return VoiOperationTransferSelectionValidation(
++				false,
++				"transfer_selection_duplicate_tag");
++		}
++	}
++	if (identity.requestedCount
++		!= identity.selectedUnitTags.size())
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_count_mismatch");
++	}
++	return VoiOperationTransferSelectionValidation(true, "");
++}
++
++template <typename Tag>
++VoiOperationTransferSelectionValidation
++voiRevalidateOperationTransferSelectionIdentity(
++	const VoiOperationTransferSelectionIdentity<Tag> & admitted,
++	const VoiOperationTransferSelectionIdentity<Tag> & observed)
++{
++	VoiOperationTransferSelectionIdentity<Tag> expected = admitted;
++	VoiOperationTransferSelectionIdentity<Tag> actual = observed;
++	const auto expectedValidation =
++		voiCanonicalizeOperationTransferSelectionIdentity(expected);
++	if (!expectedValidation.valid)
++	{
++		return expectedValidation;
++	}
++	const auto actualValidation =
++		voiCanonicalizeOperationTransferSelectionIdentity(actual);
++	if (!actualValidation.valid)
++	{
++		return actualValidation;
++	}
++	if (expected.updateId != actual.updateId)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_update_mismatch");
++	}
++	if (expected.sourceOperationId != actual.sourceOperationId)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_source_mismatch");
++	}
++	if (expected.counterpartOperationId
++		!= actual.counterpartOperationId)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_counterpart_mismatch");
++	}
++	if (expected.sourceAction != actual.sourceAction
++		|| expected.counterpartAction
++			!= actual.counterpartAction)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_action_mismatch");
++	}
++	if (expected.sourceGeneration
++		!= actual.sourceGeneration)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_source_generation_mismatch");
++	}
++	if (expected.counterpartGeneration
++		!= actual.counterpartGeneration)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_counterpart_generation_mismatch");
++	}
++	if (expected.requestedSourceGeneration
++		!= actual.requestedSourceGeneration)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_requested_source_generation_mismatch");
++	}
++	if (expected.requestedCounterpartGeneration
++		!= actual.requestedCounterpartGeneration)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_requested_counterpart_generation_mismatch");
++	}
++	if (expected.requestedCount != actual.requestedCount)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_count_mismatch");
++	}
++	if (expected.selectedUnitTags != actual.selectedUnitTags)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_tags_mismatch");
++	}
++	return VoiOperationTransferSelectionValidation(true, "");
++}
++
++template <typename Tag>
++VoiOperationTransferSelectionValidation
++voiValidateOperationTransferSelectionRuntimeEvidence(
++	const VoiOperationTransferSelectionIdentity<Tag> & admitted,
++	const VoiOperationTransferSelectionRuntimeEvidence<Tag> & evidence)
++{
++	VoiOperationTransferSelectionIdentity<Tag> expected = admitted;
++	const auto expectedValidation =
++		voiCanonicalizeOperationTransferSelectionIdentity(expected);
++	if (!expectedValidation.valid)
++	{
++		return expectedValidation;
++	}
++	if (evidence.sourceUpdateId != expected.updateId
++		|| evidence.counterpartUpdateId != expected.updateId)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_update_mismatch");
++	}
++	if (evidence.sourceOperationId != expected.sourceOperationId)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_source_mismatch");
++	}
++	if (evidence.counterpartOperationId
++		!= expected.counterpartOperationId)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_counterpart_mismatch");
++	}
++	if (evidence.sourceAction != expected.sourceAction
++		|| evidence.counterpartAction
++			!= expected.counterpartAction)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_action_mismatch");
++	}
++	if (evidence.sourceResolution
++			!= evidence.counterpartResolution
++		|| (evidence.sourceResolution != "pending"
++			&& evidence.sourceResolution != "blocked"
++			&& evidence.sourceResolution != "applied"))
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_resolution_mismatch");
++	}
++	const bool applied =
++		evidence.sourceResolution == "applied";
++	if (evidence.sourceGeneration
++			!= (applied
++				? expected.requestedSourceGeneration
++				: expected.sourceGeneration))
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_source_generation_mismatch");
++	}
++	if (evidence.counterpartGeneration
++			!= (applied
++				? expected.requestedCounterpartGeneration
++				: expected.counterpartGeneration))
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_counterpart_generation_mismatch");
++	}
++	if (evidence.requestedSourceGeneration
++			!= expected.requestedSourceGeneration)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_requested_source_generation_mismatch");
++	}
++	if (evidence.requestedCounterpartGeneration
++			!= expected.requestedCounterpartGeneration)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_requested_counterpart_generation_mismatch");
++	}
++
++	std::set<Tag> sourceOwners(
++		evidence.sourceOwnedTags.begin(),
++		evidence.sourceOwnedTags.end());
++	std::set<Tag> destinationOwners(
++		evidence.destinationOwnedTags.begin(),
++		evidence.destinationOwnedTags.end());
++	if (sourceOwners.size() != evidence.sourceOwnedTags.size()
++		|| destinationOwners.size()
++			!= evidence.destinationOwnedTags.size())
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_owner_identity_mismatch");
++	}
++	for (const auto tag : expected.selectedUnitTags)
++	{
++		const bool sourceOwned =
++			sourceOwners.find(tag) != sourceOwners.end();
++		const bool destinationOwned =
++			destinationOwners.find(tag)
++				!= destinationOwners.end();
++		if (applied
++			? (sourceOwned || !destinationOwned)
++			: (!sourceOwned || destinationOwned))
++		{
++			return VoiOperationTransferSelectionValidation(
++				false,
++				"transfer_selection_runtime_ownership_mismatch");
++		}
++	}
++	return VoiOperationTransferSelectionValidation(true, "");
++}
++
++template <typename Tag>
++VoiOperationTransferSelectionValidation
++voiCanonicalizeOperationTransferSelectionWriteIdentity(
++	VoiOperationTransferSelectionWriteIdentity<Tag> & identity)
++{
++	const auto selectionValidation =
++		voiCanonicalizeOperationTransferSelectionIdentity(
++			identity.selectionIdentity);
++	if (!selectionValidation.valid)
++	{
++		return selectionValidation;
++	}
++	if (identity.updateId.empty()
++		|| identity.updateId
++			!= identity.selectionIdentity.updateId)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_write_update_mismatch");
++	}
++	if (identity.operationId.empty()
++		|| (identity.operationId
++				!= identity.selectionIdentity.sourceOperationId
++			&& identity.operationId
++				!= identity.selectionIdentity
++					.counterpartOperationId))
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_write_operation_mismatch");
++	}
++	if (identity.operationGeneration == 0
++		|| identity.stage.empty()
++		|| identity.gameFrame == 0)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_write_identity_missing");
++	}
++	const bool sourceOperation =
++		identity.operationId
++			== identity.selectionIdentity.sourceOperationId;
++	const std::uint64_t existingGeneration =
++		sourceOperation
++			? identity.selectionIdentity.sourceGeneration
++			: identity.selectionIdentity.counterpartGeneration;
++	const std::uint64_t requestedGeneration =
++		sourceOperation
++			? identity.selectionIdentity.requestedSourceGeneration
++			: identity.selectionIdentity
++				.requestedCounterpartGeneration;
++	if (identity.operationGeneration != existingGeneration
++		&& identity.operationGeneration != requestedGeneration)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_write_generation_mismatch");
++	}
++	return VoiOperationTransferSelectionValidation(true, "");
++}
++
++template <typename Tag>
++VoiOperationTransferSelectionValidation
++voiRevalidateOperationTransferSelectionWriteIdentity(
++	const VoiOperationTransferSelectionWriteIdentity<Tag> & expectedInput,
++	const VoiOperationTransferSelectionWriteIdentity<Tag> & observedInput)
++{
++	auto expected = expectedInput;
++	auto observed = observedInput;
++	const auto expectedValidation =
++		voiCanonicalizeOperationTransferSelectionWriteIdentity(
++			expected);
++	if (!expectedValidation.valid)
++	{
++		return expectedValidation;
++	}
++	const auto observedValidation =
++		voiCanonicalizeOperationTransferSelectionWriteIdentity(
++			observed);
++	if (!observedValidation.valid)
++	{
++		return observedValidation;
++	}
++	const auto selectionValidation =
++		voiRevalidateOperationTransferSelectionIdentity(
++			expected.selectionIdentity,
++			observed.selectionIdentity);
++	if (!selectionValidation.valid)
++	{
++		return selectionValidation;
++	}
++	if (expected.updateId != observed.updateId
++		|| expected.operationId != observed.operationId
++		|| expected.operationGeneration
++			!= observed.operationGeneration
++		|| expected.stage != observed.stage
++		|| expected.gameFrame != observed.gameFrame)
++	{
++		return VoiOperationTransferSelectionValidation(
++			false,
++			"transfer_selection_write_identity_mismatch");
++	}
++	return VoiOperationTransferSelectionValidation(true, "");
++}
++
++template <typename Tag>
++bool voiAcknowledgeOperationTransferSelectionWrite(
++	const VoiOperationTransferSelectionWriteIdentity<Tag> & liveIdentity,
++	const VoiOperationTransferSelectionWriteIdentity<Tag> & writtenIdentity,
++	std::uint64_t writtenFrame,
++	VoiOperationTransferSelectionAcknowledgement<Tag> & acknowledgement)
++{
++	const auto validation =
++		voiRevalidateOperationTransferSelectionWriteIdentity(
++			liveIdentity,
++			writtenIdentity);
++	if (!validation.valid
++		|| writtenFrame == 0
++		|| writtenIdentity.gameFrame != writtenFrame)
++	{
++		return false;
++	}
++	acknowledgement.acknowledged = true;
++	acknowledgement.acknowledgedFrame = writtenFrame;
++	acknowledgement.identity = writtenIdentity;
++	return true;
++}
++
++template <typename Tag>
++bool voiOperationTransferSelectionAcknowledgementMatches(
++	const VoiOperationTransferSelectionWriteIdentity<Tag> & currentContextInput,
++	const VoiOperationTransferSelectionAcknowledgement<Tag> & acknowledgement,
++	std::uint64_t currentFrame)
++{
++	if (!acknowledgement.acknowledged
++		|| acknowledgement.acknowledgedFrame == 0
++		|| acknowledgement.acknowledgedFrame > currentFrame
++		|| acknowledgement.identity.gameFrame
++			!= acknowledgement.acknowledgedFrame)
++	{
++		return false;
++	}
++	auto currentContext = currentContextInput;
++	auto acknowledgedIdentity = acknowledgement.identity;
++	const auto currentValidation =
++		voiCanonicalizeOperationTransferSelectionWriteIdentity(
++			currentContext);
++	const auto acknowledgedValidation =
++		voiCanonicalizeOperationTransferSelectionWriteIdentity(
++			acknowledgedIdentity);
++	if (!currentValidation.valid || !acknowledgedValidation.valid)
++	{
++		return false;
++	}
++	const auto selectionValidation =
++		voiRevalidateOperationTransferSelectionIdentity(
++			currentContext.selectionIdentity,
++			acknowledgedIdentity.selectionIdentity);
++	return selectionValidation.valid
++		&& currentContext.updateId
++			== acknowledgedIdentity.updateId
++		&& currentContext.operationId
++			== acknowledgedIdentity.operationId
++		&& currentContext.operationGeneration
++			== acknowledgedIdentity.operationGeneration
++		&& currentContext.stage
++			== acknowledgedIdentity.stage;
++}
++
++template <typename State>
++void voiResetOperationTransferSelectionEpoch(State & state)
++{
++	state.editSelectionIdentity =
++		decltype(state.editSelectionIdentity)();
++	state.editSelectionAcknowledgement =
++		decltype(state.editSelectionAcknowledgement)();
++}
++
+ template <typename Tag, typename Owner>
+ struct VoiOperationTransferTransactionPlan
+ {
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 526cc7d953991693d4bfb79faf55dbe2a5d40002..93e35d84d94a37a29a93b4f8da06ecb18bda6954 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -39,3 +39,36 @@ add_test(
+     NAME voi_family_effect_lifecycle
+     COMMAND voi_family_effect_lifecycle_test
+ )
++
++add_executable(
++    voi_battlefield_projection_test
++    battlefield_projection_test.cpp
++)
++target_include_directories(
++    voi_battlefield_projection_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++add_test(
++    NAME voi_battlefield_projection
++    COMMAND voi_battlefield_projection_test
++)
++
++add_executable(
++    voi_battlefield_projection_ndebug_test
++    battlefield_projection_test.cpp
++)
++target_compile_definitions(
++    voi_battlefield_projection_ndebug_test
++    PRIVATE
++    NDEBUG
++)
++target_include_directories(
++    voi_battlefield_projection_ndebug_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++add_test(
++    NAME voi_battlefield_projection_ndebug
++    COMMAND voi_battlefield_projection_ndebug_test
++)
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..25aa6d9cf68158caf7a6e6e5d88af24a7cd296b7
+--- /dev/null
++++ b/tests/battlefield_projection_test.cpp
+@@ -0,0 +1,542 @@
++#include "voi_battlefield_projection.hpp"
++
++#include <iostream>
++#include <string>
++#include <vector>
++
++namespace
++{
++int failures = 0;
++
++#define CHECK(condition)                                                     \
++	do                                                                       \
++	{                                                                        \
++		if (!(condition))                                                     \
++		{                                                                    \
++			std::cerr << __FILE__ << ":" << __LINE__                         \
++				<< ": CHECK failed: " #condition << "\n";                    \
++			++failures;                                                       \
++		}                                                                    \
++	} while (false)
++
++VoiBattlefieldUnitInput combatUnit(
++	std::uint64_t tag,
++	bool canAttackGround = true,
++	bool canAttackAir = true)
++{
++	VoiBattlefieldUnitInput unit;
++	unit.tag = tag;
++	unit.alive = true;
++	unit.selfOwned = true;
++	unit.complete = true;
++	unit.combat = true;
++	unit.canAttackGround = canAttackGround;
++	unit.canAttackAir = canAttackAir;
++	return unit;
++}
++
++VoiBattlefieldBaseInput readyBase()
++{
++	VoiBattlefieldBaseInput base;
++	base.baseId = "main";
++	base.semanticAnchor = "self_main";
++	base.occupied = true;
++	base.readinessEvidencePresent = true;
++	base.threatEvidencePresent = true;
++	base.threatened = true;
++	base.threatEvidence = "visible_enemy_units";
++	base.evidenceClass = "current_base_visibility";
++	base.threatFrame = 320;
++	base.groundThreat = 2.0f;
++	base.observedEnemyStrength = 2.0f;
++	base.defenderTags = { 12, 21 };
++	base.requiredDefenderCount = 2;
++	base.requiredGroundDefenderCount = 2;
++	base.protectedMinimum = 2;
++	return base;
++}
++
++VoiBattlefieldOperationInput operation(
++	const std::string & id,
++	std::uint64_t generation,
++	std::vector<std::uint64_t> tags)
++{
++	VoiBattlefieldOperationInput value;
++	value.operationId = id;
++	value.generation = generation;
++	value.updateId = "battlefield-test";
++	value.status = "ASSIGNED";
++	value.active = true;
++	value.ownershipEvidencePresent = true;
++	value.assignedTags = std::move(tags);
++	value.minimumUnits = 2;
++	value.maximumUnits = 4;
++	value.allowPartial = true;
++	value.requestedRouteType = "flank_left";
++	value.routeType = "flank_left";
++	value.targetIntent = "enemy_natural";
++	value.targetType = "enemy_expansion";
++	value.resolvedTargetLabel = "enemy natural";
++	value.targetEvidence = "observed_enemy_structure";
++	value.targetX = 80.0f;
++	value.targetY = 42.0f;
++	value.lifetimeMode = "until_completed";
++	value.completionConditions = "target_reached,cancelled_by_user";
++	value.durationSeconds = 300;
++	value.issuedAtFrame = 220;
++	value.deadlineFrame = 6820;
++	return value;
++}
++
++VoiBattlefieldProjectionInput validInput()
++{
++	VoiBattlefieldProjectionInput input;
++	input.frame = 320;
++	input.updateId = "battlefield-test";
++	input.sessionEpoch = 1700000000000ULL;
++	input.generation = 7;
++	input.ownershipEvidencePresent = true;
++	input.baseEvidencePresent = true;
++
++	auto assault = combatUnit(11);
++	assault.explicitOwners = { "operation:assault-alpha#4" };
++	auto defense = combatUnit(12);
++	defense.explicitOwners = { "operation:defense-bravo#2" };
++	auto autonomous = combatUnit(21);
++	autonomous.autonomousOwners = { "squad:BaseDefense:main" };
++	auto unassigned = combatUnit(31);
++	input.units = { assault, defense, autonomous, unassigned };
++	input.bases = { readyBase() };
++	input.operations = {
++		operation("assault-alpha", 4, { 11 }),
++		operation("defense-bravo", 2, { 12 }),
++	};
++	input.operations[1].targetType = "defend";
++	input.operations[1].minimumUnits = 1;
++
++	VoiBattlefieldTransferInput availability;
++	availability.sourceOwnerId = "assault-alpha";
++	availability.sourceOwnerTags = { 11 };
++	availability.sourceActive = true;
++	availability.sourceMinimum = 0;
++	availability.selectedTags = { 11 };
++	availability.operationAssignmentsMatch = true;
++	availability.squadAssignmentsMatch = true;
++	availability.actionAssignmentsMatch = true;
++	availability.roleAssignmentsMatch = true;
++	input.transferAvailability = { availability };
++	return input;
++}
++}
++
++int main()
++{
++	const auto projection = voiMakeBattlefieldProjection(validInput());
++	CHECK(projection.ownershipIntegrity);
++	CHECK(!projection.failClosed);
++	CHECK(projection.eligibleCombatCount == 4);
++	CHECK(projection.explicitOwnedCount == 2);
++	CHECK(projection.autonomousOwnedCount == 1);
++	CHECK(projection.unassignedCount == 1);
++	CHECK(projection.duplicateOwnershipCount == 0);
++	CHECK(projection.operations.size() == 2);
++	CHECK(voiNextBattlefieldSessionEpoch(0) == 1);
++	CHECK(voiNextBattlefieldSessionEpoch(41) == 42);
++	CHECK(
++		voiNextBattlefieldSessionEpoch(
++			std::numeric_limits<std::uint64_t>::max())
++		== std::numeric_limits<std::uint64_t>::max());
++	CHECK(projection.sessionEpoch == 1700000000000ULL);
++	CHECK(projection.generation == 7);
++	CHECK(
++		projection.operations[0].launchState
++		== VoiBattlefieldDecisionState::Safe);
++	CHECK(projection.operations[0].launchReason == "partial_launch_safe");
++	CHECK(projection.bases[0].ready);
++	CHECK(projection.bases[0].groundCapableDefenderCount == 2);
++	CHECK(projection.bases[0].airCapableDefenderCount == 2);
++	CHECK(projection.transfers.size() == 1);
++	CHECK(projection.transfers[0].transferableTags
++		== std::vector<std::uint64_t>({ 11 }));
++
++	auto exclusions = validInput();
++	auto dead = combatUnit(40);
++	dead.alive = false;
++	auto ally = combatUnit(41);
++	ally.selfOwned = false;
++	auto incomplete = combatUnit(42);
++	incomplete.complete = false;
++	auto worker = combatUnit(43);
++	worker.worker = true;
++	auto structure = combatUnit(44);
++	structure.structure = true;
++	auto payload = combatUnit(45);
++	payload.temporaryPayload = true;
++	auto nonCombat = combatUnit(46);
++	nonCombat.combat = false;
++	exclusions.units.insert(
++		exclusions.units.end(),
++		{ dead, ally, incomplete, worker, structure, payload, nonCombat });
++	const auto exclusionProjection =
++		voiMakeBattlefieldProjection(exclusions);
++	CHECK(exclusionProjection.eligibleCombatCount == 4);
++	CHECK(exclusionProjection.excludedDeadCount == 1);
++	CHECK(exclusionProjection.excludedNonSelfCount == 1);
++	CHECK(exclusionProjection.excludedIncompleteCount == 1);
++	CHECK(exclusionProjection.excludedWorkerCount == 1);
++	CHECK(exclusionProjection.excludedStructureCount == 1);
++	CHECK(exclusionProjection.excludedTemporaryPayloadCount == 1);
++	CHECK(exclusionProjection.excludedNonCombatCount == 1);
++
++	auto duplicateRow = validInput();
++	duplicateRow.units.push_back(duplicateRow.units.front());
++	const auto duplicateRowProjection =
++		voiMakeBattlefieldProjection(duplicateRow);
++	CHECK(!duplicateRowProjection.ownershipIntegrity);
++	CHECK(duplicateRowProjection.duplicateUnitInputCount == 1);
++
++	auto duplicateOwner = validInput();
++	duplicateOwner.units[0].autonomousOwners = {
++		"squad:MainAttack"
++	};
++	const auto duplicateOwnerProjection =
++		voiMakeBattlefieldProjection(duplicateOwner);
++	CHECK(!duplicateOwnerProjection.ownershipIntegrity);
++	CHECK(duplicateOwnerProjection.duplicateOwnershipCount == 1);
++	CHECK(
++		duplicateOwnerProjection.operations[0].launchReason
++		== "duplicate_ownership_fail_closed");
++
++	auto missingBase = validInput();
++	missingBase.bases[0].threatEvidencePresent = false;
++	const auto missingBaseProjection =
++		voiMakeBattlefieldProjection(missingBase);
++	CHECK(
++		missingBaseProjection.operations[0].launchState
++		== VoiBattlefieldDecisionState::MissingEvidence);
++
++	auto unsafeBase = validInput();
++	unsafeBase.bases[0].defenderTags = { 12 };
++	const auto unsafeBaseProjection =
++		voiMakeBattlefieldProjection(unsafeBase);
++	CHECK(!unsafeBaseProjection.bases[0].ready);
++	CHECK(
++		unsafeBaseProjection.operations[0].launchReason
++		== "base_protected_minimum_not_met");
++
++	auto hellionAgainstAir = validInput();
++	hellionAgainstAir.units[1] = combatUnit(12, true, false);
++	hellionAgainstAir.units[2] = combatUnit(21, true, false);
++	hellionAgainstAir.units[1].explicitOwners = {
++		"operation:defense-bravo#2"
++	};
++	hellionAgainstAir.units[2].autonomousOwners = {
++		"squad:BaseDefense:main"
++	};
++	hellionAgainstAir.bases[0].groundThreat = 0.0f;
++	hellionAgainstAir.bases[0].airThreat = 1.0f;
++	hellionAgainstAir.bases[0].observedEnemyStrength = 1.0f;
++	hellionAgainstAir.bases[0].requiredDefenderCount = 1;
++	hellionAgainstAir.bases[0].requiredGroundDefenderCount = 0;
++	hellionAgainstAir.bases[0].requiredAirDefenderCount = 1;
++	hellionAgainstAir.bases[0].protectedMinimum = 1;
++	const auto hellionAgainstAirProjection =
++		voiMakeBattlefieldProjection(hellionAgainstAir);
++	CHECK(!hellionAgainstAirProjection.bases[0].ready);
++	CHECK(
++		hellionAgainstAirProjection.bases[0].readinessReason
++		== "air_capable_defender_minimum_not_met");
++
++	auto vikingAgainstGround = validInput();
++	vikingAgainstGround.units[1] = combatUnit(12, false, true);
++	vikingAgainstGround.units[2] = combatUnit(21, false, true);
++	vikingAgainstGround.units[1].explicitOwners = {
++		"operation:defense-bravo#2"
++	};
++	vikingAgainstGround.units[2].autonomousOwners = {
++		"squad:BaseDefense:main"
++	};
++	const auto vikingAgainstGroundProjection =
++		voiMakeBattlefieldProjection(vikingAgainstGround);
++	CHECK(!vikingAgainstGroundProjection.bases[0].ready);
++	CHECK(
++		vikingAgainstGroundProjection.bases[0].readinessReason
++		== "ground_capable_defender_minimum_not_met");
++
++	auto transfer = validInput();
++	auto & request = transfer.operations[0].transfer;
++	request.requested = true;
++	request.sourceUpdateId = "battlefield-test";
++	request.counterpartUpdateId = "battlefield-test";
++	request.action = "transfer_out";
++	request.counterpartOperationId = "defense-bravo";
++	request.sourceOwnerId = "assault-alpha";
++	request.requestedGeneration = 4;
++	request.counterpartGeneration = 2;
++	request.requestedSourceGeneration = 5;
++	request.requestedCounterpartGeneration = 3;
++	request.editResolution = "pending";
++	request.counterpartPresent = true;
++	request.counterpartPending = true;
++	request.counterpartAction = "transfer_in";
++	request.counterpartCounterpartOperationId = "assault-alpha";
++	request.counterpartRequestedGeneration = 3;
++	request.counterpartRequestedCount = 1;
++	request.sourceActive = true;
++	request.destinationActive = true;
++	request.requestedCount = 1;
++	request.sourceOwnerTags = { 11 };
++	request.selectedTags = { 11 };
++	request.admittedSelectionIdentity.updateId =
++		"battlefield-test";
++	request.admittedSelectionIdentity.sourceOperationId =
++		"assault-alpha";
++	request.admittedSelectionIdentity.counterpartOperationId =
++		"defense-bravo";
++	request.admittedSelectionIdentity.sourceAction =
++		"transfer_out";
++	request.admittedSelectionIdentity.counterpartAction =
++		"transfer_in";
++	request.admittedSelectionIdentity.sourceGeneration = 4;
++	request.admittedSelectionIdentity.counterpartGeneration = 2;
++	request.admittedSelectionIdentity
++		.requestedSourceGeneration = 5;
++	request.admittedSelectionIdentity
++		.requestedCounterpartGeneration = 3;
++	request.admittedSelectionIdentity.requestedCount = 1;
++	request.admittedSelectionIdentity.selectedUnitTags = { 11 };
++	transfer.operations[0].transferSelectionIdentity =
++		request.admittedSelectionIdentity;
++	transfer.operations[0].transferSelectionResolution =
++		"pending";
++	auto & runtimeEvidence =
++		transfer.operations[0]
++			.transferSelectionRuntimeEvidence;
++	runtimeEvidence.sourceUpdateId = "battlefield-test";
++	runtimeEvidence.counterpartUpdateId = "battlefield-test";
++	runtimeEvidence.sourceOperationId = "assault-alpha";
++	runtimeEvidence.counterpartOperationId = "defense-bravo";
++	runtimeEvidence.sourceAction = "transfer_out";
++	runtimeEvidence.counterpartAction = "transfer_in";
++	runtimeEvidence.sourceGeneration = 4;
++	runtimeEvidence.counterpartGeneration = 2;
++	runtimeEvidence.requestedSourceGeneration = 5;
++	runtimeEvidence.requestedCounterpartGeneration = 3;
++	runtimeEvidence.sourceResolution = "pending";
++	runtimeEvidence.counterpartResolution = "pending";
++	runtimeEvidence.sourceOwnedTags = { 11 };
++	runtimeEvidence.destinationOwnedTags = { 12 };
++	request.sourceMinimum = 0;
++	request.destinationOwnedCount = 1;
++	request.destinationMaximum = 4;
++	request.operationAssignmentsMatch = true;
++	request.squadAssignmentsMatch = true;
++	request.actionAssignmentsMatch = true;
++	request.roleAssignmentsMatch = true;
++	const auto transferProjection =
++		voiMakeBattlefieldProjection(transfer);
++	CHECK(transferProjection.operations[0].transfer.transferSafe);
++	CHECK(
++		transferProjection.operations[0]
++			.transfer.atomicRevalidationReady);
++	CHECK(
++		transferProjection.operations[0]
++			.transferSelection.identityValid);
++
++	transfer.operations[0].transfer.selectedTags = { 31 };
++	const auto wrongSelection =
++		voiMakeBattlefieldProjection(transfer);
++	CHECK(!wrongSelection.operations[0].transfer.transferSafe);
++	CHECK(
++		wrongSelection.operations[0].transfer.blocker
++		== "transfer_selection_tags_mismatch");
++	CHECK(
++		wrongSelection.operations[0]
++			.transfer.transferableTags.empty());
++
++	transfer.operations[0].transfer.selectedTags = { 11 };
++	transfer.operations[0].transfer.requestedGeneration = 3;
++	const auto staleSourceGeneration =
++		voiMakeBattlefieldProjection(transfer);
++	CHECK(
++		!staleSourceGeneration.operations[0]
++			.transfer.transferSafe);
++	CHECK(
++		staleSourceGeneration.operations[0]
++			.transfer.blocker
++		== "transfer_selection_source_generation_mismatch");
++	transfer.operations[0].transfer.requestedGeneration = 4;
++
++	auto destinationProjectionInput = transfer;
++	destinationProjectionInput.operations[1]
++		.transferSelectionIdentity =
++			request.admittedSelectionIdentity;
++	destinationProjectionInput.operations[1]
++		.transferSelectionRuntimeEvidence =
++			runtimeEvidence;
++	destinationProjectionInput.operations[1]
++		.transferSelectionResolution = "pending";
++	const auto destinationProjection =
++		voiMakeBattlefieldProjection(
++			destinationProjectionInput);
++	CHECK(
++		destinationProjection.operations[1]
++			.transferSelection.identityValid);
++	CHECK(
++		destinationProjection.operations[1]
++			.transferSelection.writeIdentity.operationId
++		== "defense-bravo");
++	CHECK(
++		destinationProjection.operations[1]
++			.transferSelection.writeIdentity.operationGeneration
++		== 2);
++
++	auto driftedRuntime = transfer;
++	driftedRuntime.operations[0]
++		.transferSelectionRuntimeEvidence
++		.counterpartAction = "transfer_out";
++	const auto driftedRuntimeProjection =
++		voiMakeBattlefieldProjection(driftedRuntime);
++	CHECK(
++		!driftedRuntimeProjection.operations[0]
++			.transferSelection.identityValid);
++	CHECK(
++		driftedRuntimeProjection.operations[0]
++			.transferSelection.blocker
++		== "transfer_selection_action_mismatch");
++
++	auto acknowledgement =
++		VoiOperationTransferSelectionAcknowledgement<
++			std::uint64_t>();
++	const auto writtenIdentity =
++		transferProjection.operations[0]
++			.transferSelection.writeIdentity;
++	CHECK(
++		voiAcknowledgeOperationTransferSelectionWrite(
++			writtenIdentity,
++			writtenIdentity,
++			320,
++			acknowledgement));
++	CHECK(acknowledgement.acknowledged);
++	CHECK(acknowledgement.acknowledgedFrame == 320);
++	transfer.operations[0]
++		.transferSelectionAcknowledgement =
++			acknowledgement;
++	const auto acknowledgedProjection =
++		voiMakeBattlefieldProjection(transfer);
++	CHECK(
++		acknowledgedProjection.operations[0]
++			.transferSelection.telemetryWriteAcknowledged);
++	auto mismatchedAcknowledgement = acknowledgement;
++	mismatchedAcknowledgement.identity
++		.selectionIdentity.selectedUnitTags = { 31 };
++	transfer.operations[0]
++		.transferSelectionAcknowledgement =
++			mismatchedAcknowledgement;
++	const auto rejectedAcknowledgement =
++		voiMakeBattlefieldProjection(transfer);
++	CHECK(
++		!rejectedAcknowledgement.operations[0]
++			.transferSelection.telemetryWriteAcknowledged);
++	auto mismatchedWriteIdentity = writtenIdentity;
++	mismatchedWriteIdentity.stage = "submitted";
++	auto failedWriteAcknowledgement =
++		VoiOperationTransferSelectionAcknowledgement<
++			std::uint64_t>();
++	CHECK(
++		!voiAcknowledgeOperationTransferSelectionWrite(
++			writtenIdentity,
++			mismatchedWriteIdentity,
++			320,
++			failedWriteAcknowledgement));
++	CHECK(!failedWriteAcknowledgement.acknowledged);
++
++	auto appliedTransfer = transfer;
++	appliedTransfer.units[0].explicitOwners = {
++		"operation:defense-bravo#3"
++	};
++	appliedTransfer.units[1].explicitOwners = {
++		"operation:defense-bravo#3"
++	};
++	appliedTransfer.operations[0].generation = 5;
++	appliedTransfer.operations[0].assignedTags.clear();
++	appliedTransfer.operations[0].transfer.editResolution =
++		"applied";
++	appliedTransfer.operations[0]
++		.transferSelectionResolution = "applied";
++	appliedTransfer.operations[0]
++		.transferSelectionRuntimeEvidence
++		.sourceGeneration = 5;
++	appliedTransfer.operations[0]
++		.transferSelectionRuntimeEvidence
++		.counterpartGeneration = 3;
++	appliedTransfer.operations[0]
++		.transferSelectionRuntimeEvidence
++		.sourceResolution = "applied";
++	appliedTransfer.operations[0]
++		.transferSelectionRuntimeEvidence
++		.counterpartResolution = "applied";
++	appliedTransfer.operations[0]
++		.transferSelectionRuntimeEvidence
++		.sourceOwnedTags.clear();
++	appliedTransfer.operations[0]
++		.transferSelectionRuntimeEvidence
++		.destinationOwnedTags = { 11, 12 };
++	appliedTransfer.operations[1].generation = 3;
++	appliedTransfer.operations[1].assignedTags = { 11, 12 };
++	const auto appliedProjection =
++		voiMakeBattlefieldProjection(appliedTransfer);
++	CHECK(
++		appliedProjection.operations[0]
++			.transferSelection.identityValid);
++
++	auto standing = validInput();
++	standing.operations[0].standing = true;
++	standing.operations[0].completed = true;
++	standing.operations[0].completionReason = "movement_observed";
++	standing.operations[0].completionFrame = 333;
++	standing.operations[0].movementObserved = true;
++	const auto standingProjection =
++		voiMakeBattlefieldProjection(standing);
++	CHECK(!standingProjection.operations[0].completed);
++	standing.operations[0].completionReason = "cancelled_by_user";
++	const auto cancelledProjection =
++		voiMakeBattlefieldProjection(standing);
++	CHECK(cancelledProjection.operations[0].completed);
++	CHECK(cancelledProjection.operations[0].completionFrame == 333);
++
++	const std::string json =
++		voiBattlefieldProjectionJson(projection);
++	CHECK(json.find("\"battlefield\"") != std::string::npos);
++	CHECK(json.find("\"schema_version\":2") != std::string::npos);
++	CHECK(
++		json.find("\"session_epoch\":1700000000000")
++		!= std::string::npos);
++	CHECK(
++		json.find("\"ground_capable_defender_count\":2")
++		!= std::string::npos);
++	CHECK(json.find("\"operation_route\"") != std::string::npos);
++	CHECK(json.find("\"operation_launch_policy\"") != std::string::npos);
++	CHECK(json.find("\"operation_completion\"") != std::string::npos);
++	CHECK(json.find("\"transfer_availability\"") != std::string::npos);
++	const std::string transferJson =
++		voiBattlefieldProjectionJson(
++			acknowledgedProjection);
++	CHECK(
++		transferJson.find("\"selected_unit_tags\":[11]")
++		!= std::string::npos);
++	CHECK(
++		transferJson.find(
++			"\"source_owner_id\":\"assault-alpha\"")
++		!= std::string::npos);
++	CHECK(
++		transferJson.find(
++			"\"counterpart_action\":\"transfer_in\"")
++		!= std::string::npos);
++	CHECK(
++		transferJson.find(
++			"\"successful_write_acknowledgement\"")
++		!= std::string::npos);
++
++	return failures == 0 ? 0 : 1;
++}
+diff --git a/tests/operation_transfer_admission_test.cpp b/tests/operation_transfer_admission_test.cpp
+index be728288b31c6adb3b0c3a2176f76e7ea72e5d99..47540a9f3e688317258a029e4ff60e57a2d84795 100644
+--- a/tests/operation_transfer_admission_test.cpp
++++ b/tests/operation_transfer_admission_test.cpp
+@@ -40,10 +40,198 @@ struct TestRole
+ 	std::string abilityPolicy;
+ 	int priority = 0;
+ };
++
++VoiOperationTransferSelectionIdentity<std::uint64_t>
++selectionIdentity()
++{
++	VoiOperationTransferSelectionIdentity<std::uint64_t> identity;
++	identity.updateId = "update-transfer-1";
++	identity.sourceOperationId = "recon-alpha";
++	identity.counterpartOperationId = "assault-bravo";
++	identity.sourceAction = "transfer_out";
++	identity.counterpartAction = "transfer_in";
++	identity.sourceGeneration = 3;
++	identity.counterpartGeneration = 7;
++	identity.requestedSourceGeneration = 4;
++	identity.requestedCounterpartGeneration = 8;
++	identity.requestedCount = 2;
++	identity.selectedUnitTags = { 22, 11 };
++	return identity;
++}
++
++VoiOperationTransferSelectionRuntimeEvidence<std::uint64_t>
++pendingRuntimeEvidence()
++{
++	VoiOperationTransferSelectionRuntimeEvidence<std::uint64_t> evidence;
++	evidence.sourceUpdateId = "update-transfer-1";
++	evidence.counterpartUpdateId = "update-transfer-1";
++	evidence.sourceOperationId = "recon-alpha";
++	evidence.counterpartOperationId = "assault-bravo";
++	evidence.sourceAction = "transfer_out";
++	evidence.counterpartAction = "transfer_in";
++	evidence.sourceGeneration = 3;
++	evidence.counterpartGeneration = 7;
++	evidence.requestedSourceGeneration = 4;
++	evidence.requestedCounterpartGeneration = 8;
++	evidence.sourceResolution = "pending";
++	evidence.counterpartResolution = "pending";
++	evidence.sourceOwnedTags = { 11, 22, 33 };
++	evidence.destinationOwnedTags = { 44 };
++	return evidence;
++}
++
++VoiOperationTransferSelectionWriteIdentity<std::uint64_t>
++selectionWriteIdentity()
++{
++	VoiOperationTransferSelectionWriteIdentity<std::uint64_t> identity;
++	identity.updateId = "update-transfer-1";
++	identity.operationId = "recon-alpha";
++	identity.operationGeneration = 3;
++	identity.stage = "assigned";
++	identity.gameFrame = 320;
++	identity.selectionIdentity = selectionIdentity();
++	return identity;
++}
+ }
+ 
+ int main()
+ {
++	auto canonicalSelection = selectionIdentity();
++	const auto canonicalSelectionValidation =
++		voiCanonicalizeOperationTransferSelectionIdentity(
++			canonicalSelection);
++	assert(canonicalSelectionValidation.valid);
++	assert(
++		canonicalSelection.selectedUnitTags
++		== std::vector<std::uint64_t>({ 11, 22 }));
++
++	auto mismatchedSelectionUpdate = canonicalSelection;
++	mismatchedSelectionUpdate.updateId = "update-transfer-2";
++	const auto mismatchedSelectionUpdateValidation =
++		voiRevalidateOperationTransferSelectionIdentity(
++			canonicalSelection,
++			mismatchedSelectionUpdate);
++	assert(!mismatchedSelectionUpdateValidation.valid);
++	assert(
++		mismatchedSelectionUpdateValidation.blocker
++		== "transfer_selection_update_mismatch");
++
++	const auto pendingEvidence = pendingRuntimeEvidence();
++	const auto pendingEvidenceValidation =
++		voiValidateOperationTransferSelectionRuntimeEvidence(
++			canonicalSelection,
++			pendingEvidence);
++	assert(pendingEvidenceValidation.valid);
++
++	auto appliedEvidence = pendingEvidence;
++	appliedEvidence.sourceGeneration = 4;
++	appliedEvidence.counterpartGeneration = 8;
++	appliedEvidence.sourceResolution = "applied";
++	appliedEvidence.counterpartResolution = "applied";
++	appliedEvidence.sourceOwnedTags = { 33 };
++	appliedEvidence.destinationOwnedTags = { 11, 22, 44 };
++	const auto appliedEvidenceValidation =
++		voiValidateOperationTransferSelectionRuntimeEvidence(
++			canonicalSelection,
++			appliedEvidence);
++	assert(appliedEvidenceValidation.valid);
++
++	auto driftedActionEvidence = pendingEvidence;
++	driftedActionEvidence.counterpartAction = "transfer_out";
++	const auto driftedActionValidation =
++		voiValidateOperationTransferSelectionRuntimeEvidence(
++			canonicalSelection,
++			driftedActionEvidence);
++	assert(!driftedActionValidation.valid);
++	assert(
++		driftedActionValidation.blocker
++		== "transfer_selection_action_mismatch");
++
++	auto driftedGenerationEvidence = pendingEvidence;
++	driftedGenerationEvidence.sourceGeneration = 4;
++	const auto driftedGenerationValidation =
++		voiValidateOperationTransferSelectionRuntimeEvidence(
++			canonicalSelection,
++			driftedGenerationEvidence);
++	assert(!driftedGenerationValidation.valid);
++	assert(
++		driftedGenerationValidation.blocker
++		== "transfer_selection_source_generation_mismatch");
++
++	auto driftedOwnershipEvidence = pendingEvidence;
++	driftedOwnershipEvidence.sourceOwnedTags = { 11, 33 };
++	const auto driftedOwnershipValidation =
++		voiValidateOperationTransferSelectionRuntimeEvidence(
++			canonicalSelection,
++			driftedOwnershipEvidence);
++	assert(!driftedOwnershipValidation.valid);
++	assert(
++		driftedOwnershipValidation.blocker
++		== "transfer_selection_runtime_ownership_mismatch");
++
++	const auto writeIdentity = selectionWriteIdentity();
++	auto writeAcknowledgement =
++		VoiOperationTransferSelectionAcknowledgement<
++			std::uint64_t>();
++	assert(
++		voiAcknowledgeOperationTransferSelectionWrite(
++			writeIdentity,
++			writeIdentity,
++			320,
++			writeAcknowledgement));
++	assert(writeAcknowledgement.acknowledged);
++	assert(
++		voiOperationTransferSelectionAcknowledgementMatches(
++			writeIdentity,
++			writeAcknowledgement,
++			321));
++
++	auto driftedWriteIdentity = writeIdentity;
++	driftedWriteIdentity.stage = "submitted";
++	const auto driftedWriteValidation =
++		voiRevalidateOperationTransferSelectionWriteIdentity(
++			writeIdentity,
++			driftedWriteIdentity);
++	assert(!driftedWriteValidation.valid);
++	assert(
++		driftedWriteValidation.blocker
++		== "transfer_selection_write_identity_mismatch");
++	assert(
++		!voiOperationTransferSelectionAcknowledgementMatches(
++			driftedWriteIdentity,
++			writeAcknowledgement,
++			321));
++	auto failedWriteAcknowledgement =
++		VoiOperationTransferSelectionAcknowledgement<
++			std::uint64_t>();
++	assert(
++		!voiAcknowledgeOperationTransferSelectionWrite(
++			writeIdentity,
++			driftedWriteIdentity,
++			320,
++			failedWriteAcknowledgement));
++	assert(!failedWriteAcknowledgement.acknowledged);
++
++	struct SelectionEpochState
++	{
++		VoiOperationTransferSelectionIdentity<std::uint64_t>
++			editSelectionIdentity;
++		VoiOperationTransferSelectionAcknowledgement<std::uint64_t>
++			editSelectionAcknowledgement;
++	};
++	SelectionEpochState epochState;
++	epochState.editSelectionIdentity = canonicalSelection;
++	epochState.editSelectionAcknowledgement =
++		writeAcknowledgement;
++	voiResetOperationTransferSelectionEpoch(epochState);
++	assert(epochState.editSelectionIdentity.updateId.empty());
++	assert(
++		epochState.editSelectionIdentity
++			.selectedUnitTags.empty());
++	assert(
++		!epochState.editSelectionAcknowledgement
++			.acknowledged);
++
+ 	const auto sourceAdvanced = endpoint(
+ 		"recon-alpha",
+ 		"assault-bravo",

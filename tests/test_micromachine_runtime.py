@@ -456,6 +456,13 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
                     frame=12,
                     managers={"CombatCommander": {"posture": "hold"}},
                     active_modulation_ids=("active",),
+                    battlefield_overview={
+                        "schema_version": 2,
+                        "identity": {
+                            "update_id": "battlefield-active",
+                            "owner_tags": [101, 102],
+                        },
+                    },
                 )
             )
 
@@ -464,10 +471,26 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             self.assertIsNotNone(restored)
             assert restored is not None
             self.assertEqual(("active",), restored.active_modulation_ids)
+            self.assertEqual(
+                {
+                    "schema_version": 2,
+                    "identity": {
+                        "update_id": "battlefield-active",
+                        "owner_tags": [101, 102],
+                    },
+                },
+                restored.battlefield_overview,
+            )
 
             snapshot = blackboard.dashboard_snapshot(current_frame=12).to_dict()
             self.assertEqual(1, snapshot["active_modulation_count"])
             self.assertEqual("MicroMachine", snapshot["telemetry"]["bot_name"])
+            self.assertEqual(
+                "battlefield-active",
+                snapshot["telemetry"]["battlefield_overview"]["identity"][
+                    "update_id"
+                ],
+            )
 
     def test_recent_telemetry_archive_is_bounded_and_skips_invalid_rows(
         self,

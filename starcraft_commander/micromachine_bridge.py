@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
@@ -32,6 +33,11 @@ MICROMACHINE_UPDATE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 )
 """Safe identifier subset shared by JSON telemetry and KV blackboard files."""
+
+MICROMACHINE_RUNTIME_INSTANCE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^[a-f0-9]{32}$"
+)
+"""Launcher-generated runtime identity emitted back by the C++ process."""
 
 
 class MicroMachineBridgeMessageType(str, Enum):
@@ -71,7 +77,9 @@ MICROMACHINE_TELEMETRY_SCHEMA: Final[dict[str, object]] = {
         "race": {"type": "string"},
         "managers": {"type": "object"},
         "active_modulation_ids": {"type": "array", "items": {"type": "string"}},
+        "battlefield_overview": {"type": ["object", "null"]},
         "last_failure": {"type": ["string", "null"]},
+        "runtime_instance_id": {"type": "string"},
     },
 }
 """JSON-schema-like telemetry contract; validated by local dataclasses."""
@@ -146,6 +154,8 @@ class MicroMachineTelemetry:
     active_modulation_ids: tuple[str, ...] = ()
     last_failure: MicroMachineBridgeFailureMode | str | None = None
     protocol_version: str = MICROMACHINE_BRIDGE_PROTOCOL_VERSION
+    battlefield_overview: Mapping[str, object] | None = None
+    runtime_instance_id: str = ""
 
     def __post_init__(self) -> None:
         _require_protocol(self.protocol_version)
@@ -159,10 +169,36 @@ class MicroMachineTelemetry:
             "active_modulation_ids",
             _string_tuple("active_modulation_ids", self.active_modulation_ids),
         )
+        battlefield_overview = self.battlefield_overview
+        if battlefield_overview is not None:
+            if not isinstance(battlefield_overview, Mapping):
+                raise ValueError("battlefield_overview must be a mapping or null.")
+            reject_raw_policy_control_keys(
+                battlefield_overview,
+                path="battlefield_overview",
+            )
+            battlefield_overview = deepcopy(dict(battlefield_overview))
+        object.__setattr__(
+            self,
+            "battlefield_overview",
+            battlefield_overview,
+        )
         failure = self.last_failure
         if failure is not None:
             failure = _coerce_failure_mode(failure)
         object.__setattr__(self, "last_failure", failure)
+        runtime_instance_id = str(self.runtime_instance_id or "").strip()
+        if (
+            runtime_instance_id
+            and MICROMACHINE_RUNTIME_INSTANCE_ID_PATTERN.fullmatch(
+                runtime_instance_id
+            )
+            is None
+        ):
+            raise ValueError(
+                "runtime_instance_id must be a 32-character lowercase hex value."
+            )
+        object.__setattr__(self, "runtime_instance_id", runtime_instance_id)
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> "MicroMachineTelemetry":
@@ -177,7 +213,12 @@ class MicroMachineTelemetry:
                 "active_modulation_ids",
                 mapping.get("active_modulation_ids", ()),
             ),
+            battlefield_overview=_optional_mapping_from_mapping(
+                mapping,
+                "battlefield_overview",
+            ),
             last_failure=mapping.get("last_failure"),
+            runtime_instance_id=str(mapping.get("runtime_instance_id", "") or ""),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -188,7 +229,13 @@ class MicroMachineTelemetry:
             "race": self.race,
             "managers": {key: dict(value) for key, value in self.managers.items()},
             "active_modulation_ids": list(self.active_modulation_ids),
+            "battlefield_overview": (
+                deepcopy(dict(self.battlefield_overview))
+                if self.battlefield_overview is not None
+                else None
+            ),
             "last_failure": self.last_failure.value if self.last_failure else None,
+            "runtime_instance_id": self.runtime_instance_id,
         }
 
 
@@ -568,6 +615,18 @@ def _mapping_from_mapping(
     value = mapping.get(key, default)
     if not isinstance(value, Mapping):
         raise ValueError(f"{key} must be a mapping.")
+    return value
+
+
+def _optional_mapping_from_mapping(
+    mapping: Mapping[str, object],
+    key: str,
+) -> Mapping[str, object] | None:
+    value = mapping.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key} must be a mapping or null.")
     return value
 
 

@@ -8,6 +8,7 @@ hard deadline instead of fixed sleeps.
 
 import contextlib
 import concurrent.futures
+from copy import deepcopy
 import http.client
 import inspect
 import io
@@ -53,6 +54,277 @@ POLL_DEADLINE_SECONDS = 10.0
 POLL_INTERVAL_SECONDS = 0.05
 EXECUTED_FAMILY_STATUSES = frozenset({"executed", "partially_executed"})
 BRIDGE_THREAD_NAME = "voiStarcraft2-web-gui-session-loop"
+
+
+def battlefield_projection_telemetry(
+    *,
+    update_id="battlefield-current",
+    frame=320,
+    generation=7,
+    session_epoch=1700000000000,
+):
+    """Return one complete authoritative battlefield projection fixture."""
+
+    return {
+        "frame": frame,
+        "battlefield_overview": {
+            "schema_version": 2,
+            "authority": "micromachine_cpp",
+            "identity": {
+                "update_id": update_id,
+                "scope": "battlefield",
+                "session_epoch": session_epoch,
+                "generation": generation,
+                "stage": "observed",
+                "game_frame": frame,
+            },
+            "eligible_combat_count": 8,
+            "explicit_operation_owned_count": 4,
+            "autonomous_owned_count": 2,
+            "unassigned_count": 2,
+            "duplicate_owner_count": 0,
+            "operation_ownership": [
+                {
+                    "identity": {
+                        "update_id": "battlefield-operation",
+                        "scope": "operation:flank-alpha",
+                        "session_epoch": session_epoch,
+                        "operation_id": "flank-alpha",
+                        "generation": 3,
+                        "stage": "effect_observed",
+                        "game_frame": frame,
+                    },
+                    "operation_id": "flank-alpha",
+                    "generation": 3,
+                    "operation_route": {
+                        "requested_route_type": "flank_right",
+                        "applied_route_type": "flank_right",
+                        "location_intent": "enemy_natural",
+                        "target_type": "enemy_expansion",
+                        "resolved_target_label": "enemy natural",
+                        "target_x": 120.0,
+                        "target_y": 44.0,
+                        "target_evidence": "observed_enemy_structure",
+                    },
+                    "operation_lifetime": {
+                        "mode": "until_completed",
+                        "completion_state": "active",
+                        "completion_conditions": [
+                            "target_reached",
+                            "cancelled_by_user",
+                        ],
+                        "duration_seconds": 300,
+                        "issued_at_frame": 200,
+                        "deadline_frame": 4700,
+                        "standing": False,
+                        "completed": False,
+                        "completion_reason": "",
+                        "completed_frame": 0,
+                    },
+                    "operation_ownership": {
+                        "owner_count": 4,
+                        "owner_tags": [101, 102, 103, 104],
+                        "integrity_status": "valid",
+                    },
+                    "operation_launch_policy": {
+                        "min_units": 4,
+                        "max_units": 4,
+                        "allow_partial_requested": True,
+                        "strict_scope": False,
+                        "partial_launch_allowed": True,
+                        "partial_launch_safe": True,
+                        "launch_count": 4,
+                        "missing_count": 0,
+                        "decision": "launch",
+                        "blocker": "",
+                        "recommended_choices": [],
+                        "safety_evidence": {
+                            "evaluated_at_frame": frame,
+                            "protected_defense_minimum_respected": True,
+                            "source_operation_minimum_respected": True,
+                            "transfer_admission": "accepted",
+                            "emergency_preemption": "none",
+                        },
+                    },
+                    "operation_completion": {
+                        "movement_observed": True,
+                        "engagement_observed": False,
+                        "target_reached": False,
+                        "terminal": False,
+                        "state": "active",
+                        "reason": "",
+                        "frame": 0,
+                        "generation": 3,
+                    },
+                    "operation_transfer_selection": {
+                        "present": False,
+                        "edit_resolution": "",
+                        "identity_valid": False,
+                        "blocker": "",
+                        "identity": {
+                            "update_id": "",
+                            "source_owner_id": "",
+                            "counterpart_operation_id": "",
+                            "source_action": "",
+                            "counterpart_action": "",
+                            "source_generation": 0,
+                            "counterpart_generation": 0,
+                            "requested_source_generation": 0,
+                            "requested_counterpart_generation": 0,
+                            "requested_count": 0,
+                            "selected_unit_tags": [],
+                        },
+                        "write_identity": {
+                            "update_id": "",
+                            "operation_id": "",
+                            "operation_generation": 0,
+                            "stage": "",
+                            "game_frame": 0,
+                            "selection_identity": {
+                                "update_id": "",
+                                "source_owner_id": "",
+                                "counterpart_operation_id": "",
+                                "source_action": "",
+                                "counterpart_action": "",
+                                "source_generation": 0,
+                                "counterpart_generation": 0,
+                                "requested_source_generation": 0,
+                                "requested_counterpart_generation": 0,
+                                "requested_count": 0,
+                                "selected_unit_tags": [],
+                            },
+                        },
+                        "successful_write_acknowledgement": {
+                            "acknowledged": False,
+                            "acknowledged_frame": 0,
+                            "identity": {
+                                "update_id": "",
+                                "operation_id": "",
+                                "operation_generation": 0,
+                                "stage": "",
+                                "game_frame": 0,
+                                "selection_identity": {
+                                    "update_id": "",
+                                    "source_owner_id": "",
+                                    "counterpart_operation_id": "",
+                                    "source_action": "",
+                                    "counterpart_action": "",
+                                    "source_generation": 0,
+                                    "counterpart_generation": 0,
+                                    "requested_source_generation": 0,
+                                    "requested_counterpart_generation": 0,
+                                    "requested_count": 0,
+                                    "selected_unit_tags": [],
+                                },
+                            },
+                        },
+                    },
+                }
+            ],
+            "autonomous_ownership": [
+                {
+                    "owner_id": "BaseDefense:main",
+                    "owner_count": 2,
+                    "owner_tags": [201, 202],
+                    "integrity_status": "valid",
+                }
+            ],
+            "unassigned_unit_tags": [301, 302],
+            "bases": [
+                {
+                    "base_id": "main",
+                    "semantic_anchor": "self_main",
+                    "base_readiness": {
+                        "readiness_state": "ready",
+                        "reason": "protected_minimum_satisfied",
+                        "ground_threat": 2.0,
+                        "air_threat": 0.0,
+                        "observed_enemy_strength": 2.0,
+                        "last_evidence_frame": frame - 2,
+                        "evidence_class": "observed_enemy_units",
+                        "assigned_defender_count": 2,
+                        "ground_capable_defender_count": 2,
+                        "air_capable_defender_count": 2,
+                        "required_defender_count": 2,
+                        "required_ground_defender_count": 2,
+                        "required_air_defender_count": 0,
+                        "protected_minimum": [
+                            {
+                                "family": "marine",
+                                "role": "defender",
+                                "count": 2,
+                            }
+                        ],
+                    },
+                }
+            ],
+            "transfer_availability": {
+                "evaluated_at_frame": frame,
+                "atomic_revalidation_required": True,
+                "entries": [
+                    {
+                        "source_owner_id": "flank-alpha",
+                        "source_owner_count": 4,
+                        "protected_minimum": 2,
+                        "transferable_count": 2,
+                        "transferable_unit_tags": [103, 104],
+                        "transfer_safe": True,
+                        "atomic_runtime_blocker": "",
+                        "recommended_resolution_choices": [],
+                        "safety_evidence": {
+                            "evaluated_at_frame": frame,
+                            "protected_minimum_respected": True,
+                            "atomic_revalidation_required": True,
+                        },
+                        "atomic_revalidation_inputs": {
+                            "requested": False,
+                            "selected_unit_tags": [103, 104],
+                            "requested_count": 0,
+                            "source_owner_id": "flank-alpha",
+                            "action": "availability",
+                            "requested_generation": 3,
+                            "counterpart_operation_id": "",
+                            "counterpart_action": "",
+                            "counterpart_generation": 0,
+                            "requested_source_generation": 0,
+                            "requested_counterpart_generation": 0,
+                            "edit_resolution": "none",
+                            "counterpart_present": False,
+                            "counterpart_pending": False,
+                            "reciprocal_action": True,
+                            "reciprocal_counterpart": True,
+                            "reciprocal_generation": True,
+                            "reciprocal_count": True,
+                            "source_active": True,
+                            "destination_active": True,
+                            "ownership_integrity": True,
+                            "operation_assignments_match": True,
+                            "squad_assignments_match": True,
+                            "action_assignments_match": True,
+                            "role_assignments_match": True,
+                            "atomic_revalidation_ready": True,
+                        },
+                    }
+                ],
+            },
+        },
+    }
+
+
+def attached_runtime_telemetry(document, runtime_instance_id):
+    payload = {
+        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+        "frame": int(document["frame"]),
+        "bot_name": "MicroMachine",
+        "race": "Terran",
+        "managers": {},
+        "active_modulation_ids": [],
+        "last_failure": None,
+        "runtime_instance_id": runtime_instance_id,
+    }
+    payload.update(deepcopy(document))
+    payload["runtime_instance_id"] = runtime_instance_id
+    return payload
 
 
 def contains_hangul(text):
@@ -370,6 +642,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
     def attach_fake_micromachine_runtime(self, directory):
+        runtime_instance_id = "f" * 32
+        telemetry_path = os.path.join(directory, "latest_telemetry.json")
+        if os.path.exists(telemetry_path):
+            with open(telemetry_path, encoding="utf-8") as handle:
+                telemetry = json.load(handle)
+            telemetry["runtime_instance_id"] = runtime_instance_id
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(telemetry, handle)
+
         class FakeAttachedMicroMachineLauncher:
             def snapshot(self, blackboard_dir=""):
                 root = blackboard_dir or directory
@@ -387,12 +668,23 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "status": "connected",
                     "blackboard_dir": root,
                     "pid": 4242,
+                    "runtime_instance_id": runtime_instance_id,
                     "runtime_attached": True,
                     "telemetry_present": telemetry_frame is not None,
                     "telemetry_current_for_process": telemetry_frame is not None,
                     "telemetry_stale_or_detached": False,
                     "telemetry_frame": telemetry_frame,
                 }
+
+            def validated_snapshot(self, blackboard_dir=""):
+                root = blackboard_dir or directory
+                telemetry_path = os.path.join(root, "latest_telemetry.json")
+                with open(telemetry_path, encoding="utf-8") as handle:
+                    telemetry = json.load(handle)
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata=self.snapshot(root),
+                    telemetry_document=telemetry,
+                )
 
         self.server._http.micromachine_launcher = FakeAttachedMicroMachineLauncher()
 
@@ -1213,6 +1505,425 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
             self.assertEqual("수비", intervention["goal"])
 
+    def test_micromachine_status_exposes_authoritative_battlefield_overview(self):
+        telemetry = battlefield_projection_telemetry()
+        payload = web_gui._micromachine_status_payload(
+            {
+                "active_updates": [
+                    {
+                        "update_id": "representative-operation",
+                        "manager_bias_domains": ["combat"],
+                        "vector": {
+                            "goal": "representative operation",
+                            "operations": [
+                                {
+                                    "operation_id": "representative-operation",
+                                    "generation": 1,
+                                    "goal": "representative operation",
+                                    "tactical_task": {
+                                        "task_type": "pressure_with_main_army",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+            telemetry=telemetry,
+        )
+
+        self.assertTrue(payload["battlefield_projection"]["ok"])
+        overview = payload["battlefield_overview"]
+        self.assertEqual(8, overview["eligible_combat_count"])
+        self.assertEqual(4, overview["explicit_operation_owned_count"])
+        self.assertEqual(2, overview["autonomous_owned_count"])
+        self.assertEqual(2, overview["unassigned_count"])
+        self.assertEqual(
+            overview["identity"],
+            payload["battlefield_projection_identity"],
+        )
+        self.assertEqual(
+            "valid",
+            payload["battlefield_projection_integrity"]["status"],
+        )
+        self.assertNotEqual(
+            payload["update"]["update_id"],
+            overview["identity"]["update_id"],
+        )
+
+    def test_real_filesystem_status_preserves_battlefield_overview(self):
+        from starcraft_commander.micromachine_runtime import (
+            MicroMachineFilesystemBlackboard,
+        )
+
+        runtime_instance_id = "a" * 32
+        telemetry = battlefield_projection_telemetry()
+        telemetry.update(
+            {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {},
+                "active_modulation_ids": [],
+                "last_failure": None,
+                "runtime_instance_id": runtime_instance_id,
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            MicroMachineFilesystemBlackboard(directory).ingest_telemetry(
+                telemetry
+            )
+            bridge = SessionLoopBridge(session=self.session)
+
+            payload = bridge.micromachine_status_for_runtime(
+                blackboard_dir=directory,
+                runtime_instance_id=runtime_instance_id,
+                telemetry_document=telemetry,
+            )
+
+        self.assertTrue(
+            payload["battlefield_projection"]["ok"],
+            payload["battlefield_projection"],
+        )
+        self.assertEqual(
+            "battlefield-current",
+            payload["battlefield_overview"]["identity"]["update_id"],
+        )
+        self.assertEqual(
+            8,
+            payload["battlefield_overview"]["eligible_combat_count"],
+        )
+
+    def test_real_filesystem_status_rejects_other_runtime_telemetry(self):
+        from starcraft_commander.micromachine_runtime import (
+            MicroMachineFilesystemBlackboard,
+        )
+
+        telemetry = battlefield_projection_telemetry()
+        telemetry.update(
+            {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {},
+                "active_modulation_ids": [],
+                "last_failure": None,
+                "runtime_instance_id": "b" * 32,
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            MicroMachineFilesystemBlackboard(directory).ingest_telemetry(
+                telemetry
+            )
+            bridge = SessionLoopBridge(session=self.session)
+
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id="c" * 32,
+                    telemetry_document=telemetry,
+                )
+
+    def test_micromachine_status_malformed_latest_projection_fails_closed(self):
+        valid_archive = battlefield_projection_telemetry(
+            update_id="archive-valid",
+            frame=300,
+        )
+        malformed_latest = battlefield_projection_telemetry(
+            update_id="latest-malformed",
+            frame=320,
+        )
+        del malformed_latest["battlefield_overview"]["bases"]
+
+        payload = web_gui._micromachine_status_payload(
+            {"active_updates": []},
+            telemetry=malformed_latest,
+            telemetry_archive=(valid_archive,),
+        )
+
+        self.assertFalse(payload["battlefield_projection"]["ok"])
+        self.assertIsNone(payload["battlefield_overview"])
+        self.assertEqual(
+            "blocked",
+            payload["battlefield_projection_integrity"]["status"],
+        )
+        self.assertIn(
+            "invalid_projection_sequence",
+            {
+                blocker["code"]
+                for blocker in payload["battlefield_projection"]["blockers"]
+            },
+        )
+
+    def test_micromachine_status_selects_latest_monotonic_archive_projection(self):
+        payload = web_gui._micromachine_status_payload(
+            {"active_updates": []},
+            telemetry_archive=(
+                battlefield_projection_telemetry(
+                    update_id="archive-older",
+                    frame=300,
+                    generation=6,
+                ),
+                battlefield_projection_telemetry(
+                    update_id="archive-current",
+                    frame=320,
+                    generation=7,
+                ),
+            ),
+        )
+
+        self.assertTrue(payload["battlefield_projection"]["ok"])
+        self.assertEqual(
+            "archive-current",
+            payload["battlefield_overview"]["identity"]["update_id"],
+        )
+        self.assertEqual(
+            320,
+            payload["battlefield_projection_identity"]["game_frame"],
+        )
+        self.assertEqual(
+            "archive",
+            payload["battlefield_projection"]["source"],
+        )
+        self.assertEqual(
+            1,
+            payload["battlefield_projection"]["source_index"],
+        )
+
+    def test_micromachine_status_redacts_battlefield_unit_identity(self):
+        telemetry = battlefield_projection_telemetry()
+        telemetry["battlefield_overview"]["bases"][0]["base_readiness"][
+            "reason"
+        ] = "protected minimum actor_tag=987654"
+        telemetry["battlefield_overview"]["unit_tag_ids"] = [991, 992]
+        telemetry["battlefield_overview"]["private_config"] = {
+            "api_key": "battlefield-private-secret",
+            "nested": {"token": "battlefield-private-token"},
+        }
+        telemetry["battlefield_overview"]["bases"][0]["unknown_runtime_state"] = {
+            "password": "battlefield-private-password",
+        }
+
+        payload = web_gui._micromachine_status_payload(
+            {"active_updates": []},
+            telemetry=telemetry,
+        )
+        serialized = json.dumps(payload, sort_keys=True)
+
+        for forbidden_key in (
+            "owner_tags",
+            "unassigned_unit_tags",
+            "transferable_unit_tags",
+            "duplicate_owner_tags",
+            "excluded_unit_tags",
+        ):
+            self.assertNotIn(forbidden_key, serialized)
+        for raw_tag in ("101", "102", "103", "104", "201", "202", "301", "302"):
+            self.assertNotIn(raw_tag, serialized)
+        for forbidden_value in (
+            "991",
+            "992",
+            "battlefield-private-secret",
+            "battlefield-private-token",
+            "battlefield-private-password",
+        ):
+            self.assertNotIn(forbidden_value, serialized)
+        self.assertNotIn("unit_tag_ids", serialized)
+        self.assertNotIn("private_config", serialized)
+        self.assertNotIn("unknown_runtime_state", serialized)
+        self.assertNotIn("actor_tag", serialized)
+        self.assertNotIn("987654", serialized)
+        self.assertIn(
+            "protected minimum",
+            payload["battlefield_overview"]["bases"][0]["base_readiness"][
+                "reason"
+            ],
+        )
+        self.assertEqual(
+            4,
+            payload["battlefield_overview"]["operation_ownership"][0][
+                "operation_ownership"
+            ]["owner_count"],
+        )
+        self.assertEqual(
+            2,
+            payload["battlefield_overview"]["transfer_availability"]["entries"][0][
+                "transferable_count"
+            ],
+        )
+
+    def test_micromachine_status_persists_projection_cursor_per_blackboard(self):
+        current = {
+            "telemetry": battlefield_projection_telemetry(
+                update_id="frame-500",
+                frame=500,
+                generation=9,
+            )
+        }
+
+        class Backend:
+            def __init__(self, _root):
+                pass
+
+            def read_recent_telemetry_archive(self, **_kwargs):
+                return ()
+
+            def read_latest_update(self, **_kwargs):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = SessionLoopBridge(session=self.session)
+            runtime_a = "a" * 32
+            runtime_b = "b" * 32
+            with mock.patch(
+                "starcraft_commander.micromachine_runtime."
+                "MicroMachineFilesystemBlackboard",
+                Backend,
+            ):
+                first = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id=runtime_a,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_a,
+                    ),
+                )
+                self.assertTrue(first["battlefield_projection"]["ok"])
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="frame-400",
+                    frame=400,
+                    generation=10,
+                )
+                stale = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id=runtime_a,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_a,
+                    ),
+                )
+                self.assertFalse(stale["battlefield_projection"]["ok"])
+                self.assertIn(
+                    "stale_game_frame",
+                    {
+                        blocker["code"]
+                        for blocker in stale["battlefield_projection"][
+                            "blockers"
+                        ]
+                    },
+                )
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="new-session",
+                    frame=320,
+                    generation=1,
+                    session_epoch=1700000000100,
+                )
+                reset = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id=runtime_a,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_a,
+                    ),
+                )
+                self.assertTrue(
+                    reset["battlefield_projection"]["ok"],
+                    reset["battlefield_projection"],
+                )
+                self.assertEqual(
+                    1700000000100,
+                    reset["battlefield_projection_identity"][
+                        "session_epoch"
+                    ],
+                )
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="replacement-runtime",
+                    frame=320,
+                    generation=1,
+                    session_epoch=1600000000000,
+                )
+                replacement = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id=runtime_b,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_b,
+                    ),
+                )
+                self.assertTrue(
+                    replacement["battlefield_projection"]["ok"],
+                    replacement["battlefield_projection"],
+                )
+                self.assertEqual(
+                    1600000000000,
+                    replacement["battlefield_projection_identity"][
+                        "session_epoch"
+                    ],
+                )
+
+    def test_micromachine_status_rejects_cross_poll_identity_mutation(self):
+        current = {
+            "telemetry": battlefield_projection_telemetry(
+                update_id="stable-identity",
+                frame=500,
+                generation=9,
+            )
+        }
+
+        class Backend:
+            def __init__(self, _root):
+                pass
+
+            def read_recent_telemetry_archive(self, **_kwargs):
+                return ()
+
+            def read_latest_update(self, **_kwargs):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = SessionLoopBridge(session=self.session)
+            runtime_id = "a" * 32
+            with mock.patch(
+                "starcraft_commander.micromachine_runtime."
+                "MicroMachineFilesystemBlackboard",
+                Backend,
+            ):
+                first = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id=runtime_id,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_id,
+                    ),
+                )
+                self.assertTrue(first["battlefield_projection"]["ok"])
+
+                mutated = deepcopy(current["telemetry"])
+                mutated["battlefield_overview"]["bases"][0][
+                    "base_readiness"
+                ]["reason"] = "changed_without_identity_advance"
+                current["telemetry"] = mutated
+                collision = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id=runtime_id,
+                    telemetry_document=attached_runtime_telemetry(
+                        current["telemetry"],
+                        runtime_id,
+                    ),
+                )
+
+        self.assertFalse(collision["battlefield_projection"]["ok"])
+        self.assertIn(
+            "identity_collision",
+            {
+                blocker["code"]
+                for blocker in collision["battlefield_projection"]["blockers"]
+            },
+        )
+
     def test_micromachine_status_requires_post_publish_telemetry_before_consumed(self):
         with tempfile.TemporaryDirectory() as directory:
             self.post_micromachine_modulation(
@@ -1236,6 +1947,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "managers": {},
                 "active_modulation_ids": ["web-consume-1"],
                 "last_failure": None,
+                "runtime_instance_id": "f" * 32,
             }
             with open(telemetry_path, "w", encoding="utf-8") as handle:
                 json.dump(telemetry, handle)
@@ -1338,6 +2050,440 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(document["intervention"]["applied"])
             self.assertFalse(document["intervention"]["policy_active"])
             self.assertTrue(document["telemetry_stale_or_detached"])
+
+    def test_detached_projection_cannot_poison_attached_runtime_cursor(self):
+        current = {
+            "telemetry": battlefield_projection_telemetry(
+                update_id="detached-old",
+                frame=900,
+                generation=9,
+                session_epoch=1700000000200,
+            )
+        }
+
+        class Telemetry:
+            def __init__(self, document):
+                self.document = document
+                self.frame = document["frame"]
+
+            def to_dict(self):
+                return dict(self.document)
+
+        class Backend:
+            def __init__(self, _root):
+                pass
+
+            def read_latest_telemetry(self):
+                return Telemetry(current["telemetry"])
+
+            def read_recent_telemetry_archive(self, **_kwargs):
+                return ()
+
+            def read_latest_update(self, **_kwargs):
+                return None
+
+            def dashboard_snapshot(self, **_kwargs):
+                return SimpleNamespace(
+                    to_dict=lambda: {"active_updates": []}
+                )
+
+        class Launcher:
+            attached = False
+            runtime_instance_id = "d" * 32
+
+            def snapshot(self, blackboard_dir=""):
+                return {
+                    "status": "connected" if self.attached else "idle",
+                    "runtime_instance_id": (
+                        self.runtime_instance_id if self.attached else ""
+                    ),
+                    "runtime_attached": self.attached,
+                    "telemetry_present": True,
+                    "telemetry_current_for_process": self.attached,
+                    "telemetry_stale_or_detached": not self.attached,
+                    "telemetry_frame": current["telemetry"]["frame"],
+                    "blackboard_dir": blackboard_dir,
+                }
+
+            def validated_snapshot(self, blackboard_dir=""):
+                telemetry_document = (
+                    attached_runtime_telemetry(
+                        current["telemetry"],
+                        self.runtime_instance_id,
+                    )
+                    if self.attached
+                    else None
+                )
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata=self.snapshot(blackboard_dir),
+                    telemetry_document=telemetry_document,
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Launcher()
+            self.server._http.micromachine_launcher = launcher
+            with mock.patch(
+                "starcraft_commander.micromachine_runtime."
+                "MicroMachineFilesystemBlackboard",
+                Backend,
+            ):
+                detached = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+                self.assertIsNone(detached["battlefield_overview"])
+                self.assertTrue(detached["telemetry_stale_or_detached"])
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="attached-current",
+                    frame=320,
+                    generation=1,
+                    session_epoch=1700000000100,
+                )
+                launcher.attached = True
+                attached = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+
+            self.assertTrue(
+                attached["battlefield_projection"]["ok"],
+                attached["battlefield_projection"],
+            )
+            self.assertEqual(
+                1700000000100,
+                attached["battlefield_projection_identity"]["session_epoch"],
+            )
+
+    def test_attached_status_consumes_validated_telemetry_snapshot_after_file_replace(
+        self,
+    ):
+        runtime_instance_id = "e" * 32
+        original = attached_runtime_telemetry(
+            battlefield_projection_telemetry(
+                update_id="validated-original",
+                frame=320,
+                generation=1,
+            ),
+            runtime_instance_id,
+        )
+        replacement = attached_runtime_telemetry(
+            battlefield_projection_telemetry(
+                update_id="same-runtime-replacement",
+                frame=640,
+                generation=2,
+            ),
+            runtime_instance_id,
+        )
+
+        class FakeRunningProcess:
+            pid = 4242
+
+            def poll(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            telemetry_path = os.path.join(directory, "latest_telemetry.json")
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(original, handle)
+            write_ns = time.time_ns()
+            os.utime(telemetry_path, ns=(write_ns, write_ns))
+
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            launcher._blackboard_dir = directory  # noqa: SLF001
+            launcher._process = FakeRunningProcess()  # noqa: SLF001
+            launcher._status = "running"  # noqa: SLF001
+            launcher._runtime_instance_id = runtime_instance_id  # noqa: SLF001
+            launcher._launch_started_at_ns = write_ns - 1_000_000  # noqa: SLF001
+            self.server._http.micromachine_launcher = launcher
+
+            original_status = self.bridge.micromachine_status_for_runtime
+
+            def replace_after_validation(**kwargs):
+                with open(telemetry_path, "w", encoding="utf-8") as handle:
+                    json.dump(replacement, handle)
+                replacement_ns = time.time_ns()
+                os.utime(
+                    telemetry_path,
+                    ns=(replacement_ns, replacement_ns),
+                )
+                return original_status(**kwargs)
+
+            with mock.patch.object(
+                self.bridge,
+                "micromachine_status_for_runtime",
+                side_effect=replace_after_validation,
+            ):
+                document = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+
+            with open(telemetry_path, encoding="utf-8") as handle:
+                file_document = json.load(handle)
+
+        self.assertEqual(
+            "same-runtime-replacement",
+            file_document["battlefield_overview"]["identity"]["update_id"],
+        )
+        self.assertEqual(
+            "validated-original",
+            document["battlefield_projection_identity"]["update_id"],
+        )
+        self.assertEqual(320, document["telemetry_frame"])
+
+    def test_attached_status_without_validated_bridge_consumer_fails_closed(
+        self,
+    ):
+        runtime_instance_id = "f" * 32
+        telemetry = attached_runtime_telemetry(
+            battlefield_projection_telemetry(
+                update_id="validated-source",
+                frame=320,
+            ),
+            runtime_instance_id,
+        )
+
+        class LegacyBridge:
+            status_calls = 0
+
+            def micromachine_status(self, *, blackboard_dir=""):
+                self.status_calls += 1
+                return web_gui._micromachine_status_payload(
+                    {"active_updates": []},
+                    telemetry=attached_runtime_telemetry(
+                        battlefield_projection_telemetry(
+                            update_id="legacy-reread",
+                            frame=640,
+                        ),
+                        runtime_instance_id,
+                    ),
+                    blackboard_dir=blackboard_dir,
+                )
+
+        class Launcher:
+            def validated_snapshot(self, blackboard_dir=""):
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata={
+                        "status": "connected",
+                        "runtime_instance_id": runtime_instance_id,
+                        "runtime_attached": True,
+                        "telemetry_present": True,
+                        "telemetry_current_for_process": True,
+                        "telemetry_stale_or_detached": False,
+                        "telemetry_frame": 320,
+                        "blackboard_dir": blackboard_dir,
+                        "error": "",
+                    },
+                    telemetry_document=telemetry,
+                )
+
+        legacy_bridge = LegacyBridge()
+        self.server._http.micromachine_launcher = Launcher()
+        with mock.patch.object(
+            self.server._http,
+            "bridge",
+            legacy_bridge,
+        ):
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=/tmp/legacy-bridge"
+            )
+
+        self.assertEqual(0, legacy_bridge.status_calls)
+        self.assertEqual("source_error", document["status"])
+        self.assertIsNone(document["battlefield_overview"])
+        self.assertFalse(document["telemetry_current_for_process"])
+        self.assertTrue(document["telemetry_stale_or_detached"])
+        self.assertIn("validated telemetry snapshot", document["error"])
+
+    def test_attached_status_with_missing_validated_document_fails_closed(
+        self,
+    ):
+        runtime_instance_id = "f" * 32
+
+        class LegacyBridge:
+            status_calls = 0
+
+            def micromachine_status(self, *, blackboard_dir=""):
+                self.status_calls += 1
+                return web_gui._micromachine_status_payload(
+                    {"active_updates": []},
+                    telemetry=attached_runtime_telemetry(
+                        battlefield_projection_telemetry(
+                            update_id="missing-snapshot-reread",
+                            frame=640,
+                        ),
+                        runtime_instance_id,
+                    ),
+                    blackboard_dir=blackboard_dir,
+                )
+
+        class Launcher:
+            def validated_snapshot(self, blackboard_dir=""):
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata={
+                        "status": "connected",
+                        "runtime_instance_id": runtime_instance_id,
+                        "runtime_attached": True,
+                        "telemetry_present": True,
+                        "telemetry_current_for_process": True,
+                        "telemetry_stale_or_detached": False,
+                        "telemetry_frame": 320,
+                        "blackboard_dir": blackboard_dir,
+                        "error": "",
+                    },
+                    telemetry_document=None,
+                )
+
+        legacy_bridge = LegacyBridge()
+        self.server._http.micromachine_launcher = Launcher()
+        with mock.patch.object(
+            self.server._http,
+            "bridge",
+            legacy_bridge,
+        ):
+            document = self.get_json(
+                "/api/micromachine/status?blackboard_dir=/tmp/incomplete-snapshot"
+            )
+
+        self.assertEqual(0, legacy_bridge.status_calls)
+        self.assertEqual("source_error", document["status"])
+        self.assertIsNone(document["battlefield_overview"])
+        self.assertFalse(document["telemetry_current_for_process"])
+        self.assertTrue(document["telemetry_stale_or_detached"])
+        self.assertIn("validated telemetry snapshot", document["error"])
+
+    def test_attached_status_rejects_unbound_archive_family_evidence(self):
+        from starcraft_commander.micromachine_bridge import (
+            MicroMachineTelemetry,
+        )
+
+        update_id = "runtime-bound-archive"
+        operation_id = "marine-recon"
+        runtime_instance_id = "a" * 32
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "expires_at_frame": 2_000,
+                    "manager_bias_domains": ["scouting", "squad"],
+                    "vector": {
+                        "goal": "마린 한 기로 정찰",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "goal": "마린 한 기로 정찰",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "duration_seconds": 120,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 300},
+        }
+        delivered = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": 1,
+            "family": "marine",
+            "unit_type": "TERRAN_MARINE",
+            "role": "scout",
+            "action": "move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 2,
+            "attempted_count": 1,
+            "attempted_frame": 210,
+            "submitted_count": 1,
+            "submitted_frame": 220,
+            "effect_kind": "movement",
+            "effect_count": 1,
+            "effect_frame": 230,
+            "blocker_manager": "",
+            "blocker": "",
+        }
+        unbound_archive = MicroMachineTelemetry.from_mapping(
+            {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 240,
+                "managers": {
+                    "OperationDirector": {
+                        "policy_update_id": update_id,
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "status": "MOVING",
+                                "received_frame": 205,
+                            }
+                        ],
+                        "pending_family_effects": [delivered],
+                    }
+                },
+                "active_modulation_ids": [update_id],
+                "runtime_instance_id": "",
+            }
+        )
+        latest = attached_runtime_telemetry(
+            {
+                "frame": 300,
+                "active_modulation_ids": [update_id],
+                "managers": {
+                    "OperationDirector": {
+                        "policy_update_id": update_id,
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "status": "MOVING",
+                                "received_frame": 205,
+                                "assigned_frame": 215,
+                                "assigned_count": 1,
+                                "submitted_frame": 220,
+                            }
+                        ],
+                        "pending_family_effects": [],
+                    }
+                },
+            },
+            runtime_instance_id,
+        )
+
+        class Backend:
+            def __init__(self, _root):
+                pass
+
+            def read_recent_telemetry_archive(self, **_kwargs):
+                return (unbound_archive,)
+
+            def read_latest_update(self, **_kwargs):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = SessionLoopBridge(session=self.session)
+            with (
+                mock.patch(
+                    "starcraft_commander.micromachine_runtime."
+                    "MicroMachineFilesystemBlackboard",
+                    Backend,
+                ),
+                mock.patch(
+                    "starcraft_commander.policy_observability."
+                    "build_policy_modulation_dashboard_snapshot",
+                    return_value=SimpleNamespace(
+                        to_dict=lambda: dashboard,
+                    ),
+                ),
+            ):
+                payload = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id=runtime_instance_id,
+                    telemetry_document=latest,
+                )
+
+        self.assertEqual(1, len(payload["operations"]))
+        self.assertEqual([], payload["operations"][0]["family_evidence"])
 
     def test_micromachine_runtime_gate_redacts_runtime_identity_text(self):
         cases = (
@@ -3536,6 +4682,57 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             for raw_tag in raw_tags:
                 self.assertNotIn(raw_tag, payload[line_name])
 
+    def test_public_runtime_payload_semantic_tags_reject_unit_identities(self):
+        payload = web_gui._public_runtime_launcher_payload(
+            {
+                "tags": [
+                    "pressure",
+                    "phase-2",
+                    "squad-42",
+                    9101,
+                    "9102",
+                    "unit_9108",
+                    "tag 9109",
+                    ["nested-label", 9103],
+                    {"nested": 9104},
+                    "tag=9105",
+                    "[9106, 9107]",
+                ],
+                "strategic_tags": (
+                    "flank",
+                    9201,
+                    "9202|9203",
+                    ("nested-label", 9204),
+                ),
+                "expected_tags": [
+                    "scouting_map_control",
+                    {"nested": [9301]},
+                    9302,
+                    "<9303 9304>",
+                ],
+                "tech_path_tags": 9401,
+                "expected_profile_tags": {
+                    "label": "pressure",
+                    "unit_identity": 9501,
+                },
+            }
+        )
+
+        self.assertEqual(
+            ["pressure", "phase-2", "squad-42"],
+            payload["tags"],
+        )
+        self.assertEqual(("flank",), payload["strategic_tags"])
+        self.assertEqual(
+            ["scouting_map_control"],
+            payload["expected_tags"],
+        )
+        self.assertNotIn("tech_path_tags", payload)
+        self.assertNotIn("expected_profile_tags", payload)
+        serialized = json.dumps(payload, sort_keys=True)
+        for raw_tag in (*range(9101, 9502), 9108, 9109):
+            self.assertNotIn(str(raw_tag), serialized)
+
     def test_micromachine_operation_root_update_id_is_fail_closed(self):
         update_id = "parallel-current-update"
 
@@ -4189,7 +5386,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "last_line": "actor_tag=7001 action=attack",
                 "error": "target_unit_tags=[8001, 8002]",
                 "nested": {"commanded_unit_tag": 9001},
-                "tags": ["public-strategy-tag"],
+                "tags": [
+                    "public-strategy-tag",
+                    9101,
+                    ["nested-label", 9102],
+                ],
+                "strategic_tags": ["pressure", 9201, "9202"],
+                "expected_tags": ["scouting-map-control", {"tag": 9301}],
             }
 
         class FakeLegacyLauncher:
@@ -4285,9 +5488,22 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 self.assertNotIn("8001", serialized)
                 self.assertNotIn("8002", serialized)
                 self.assertNotIn("9001", serialized)
+                self.assertNotIn("9101", serialized)
+                self.assertNotIn("9102", serialized)
+                self.assertNotIn("9201", serialized)
+                self.assertNotIn("9202", serialized)
+                self.assertNotIn("9301", serialized)
                 self.assertEqual(
                     ["public-strategy-tag"],
                     runtime_payload["tags"],
+                )
+                self.assertEqual(
+                    ["pressure"],
+                    runtime_payload["strategic_tags"],
+                )
+                self.assertEqual(
+                    ["scouting-map-control"],
+                    runtime_payload["expected_tags"],
                 )
                 self.assertIn("action=attack", runtime_payload["last_line"])
 
@@ -4371,6 +5587,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertIn("--fresh-live-session", argv)
             self.assertEqual(argv[argv.index("--enemy-difficulty") + 1], "9")
             self.assertEqual(env["SMOKE_ENEMY_DIFFICULTY"], "9")
+            self.assertRegex(
+                env["VOI_MICROMACHINE_RUNTIME_INSTANCE_ID"],
+                r"^[a-f0-9]{32}$",
+            )
+            self.assertEqual(
+                env["VOI_MICROMACHINE_RUNTIME_INSTANCE_ID"],
+                launcher._runtime_instance_id,  # noqa: SLF001
+            )
             self.assertLess(
                 argv.index("--fresh-live-session"),
                 argv.index("--blackboard-dir"),
@@ -4421,6 +5645,281 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(payload["runtime_attached"])
             self.assertFalse(payload["telemetry_current_for_process"])
             self.assertTrue(payload["telemetry_stale_or_detached"])
+
+    def test_micromachine_launcher_rejects_prelaunch_tolerance_window(self):
+        class FakeRunningProcess:
+            pid = 12345
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return None
+
+            def wait(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            telemetry_path = os.path.join(directory, "latest_telemetry.json")
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                        "frame": 99,
+                    },
+                    handle,
+                )
+            prelaunch_time = time.time() - 0.5
+            os.utime(telemetry_path, (prelaunch_time, prelaunch_time))
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            with (
+                mock.patch.object(
+                    web_gui.subprocess,
+                    "Popen",
+                    return_value=FakeRunningProcess(),
+                ),
+                mock.patch.object(
+                    web_gui.threading.Thread,
+                    "start",
+                    return_value=None,
+                ),
+            ):
+                stale = launcher.start(directory)
+
+            self.assertTrue(stale["runtime_attached"])
+            self.assertFalse(stale["telemetry_present"])
+            self.assertFalse(stale["telemetry_current_for_process"])
+            self.assertNotEqual("connected", stale["status"])
+
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                        "frame": 100,
+                        "runtime_instance_id": launcher._runtime_instance_id,  # noqa: SLF001
+                    },
+                    handle,
+                )
+            fresh_ns = launcher._launch_started_at_ns + 1_000_000_000  # noqa: SLF001
+            os.utime(telemetry_path, ns=(fresh_ns, fresh_ns))
+
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=fresh_ns,
+            ):
+                fresh = launcher.snapshot(directory)
+
+            self.assertTrue(fresh["telemetry_current_for_process"])
+            self.assertEqual(100, fresh["telemetry_frame"])
+            self.assertEqual("connected", fresh["status"])
+
+    def test_micromachine_launcher_marks_postlaunch_telemetry_stale_until_rewritten(
+        self,
+    ):
+        class FakeRunningProcess:
+            pid = 12345
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return None
+
+            def wait(self):
+                return 0
+
+        launch_ns = 1_700_000_000_000_000_000
+        with tempfile.TemporaryDirectory() as directory:
+            telemetry_path = os.path.join(directory, "latest_telemetry.json")
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            with (
+                mock.patch.object(
+                    web_gui.subprocess,
+                    "Popen",
+                    return_value=FakeRunningProcess(),
+                ),
+                mock.patch.object(
+                    web_gui.threading.Thread,
+                    "start",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    web_gui.time,
+                    "time_ns",
+                    return_value=launch_ns,
+                ),
+            ):
+                launcher.start(directory)
+
+            def write_telemetry(frame, mtime_ns):
+                with open(telemetry_path, "w", encoding="utf-8") as handle:
+                    json.dump(
+                        {
+                            "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                            "frame": frame,
+                            "runtime_instance_id": launcher._runtime_instance_id,  # noqa: SLF001
+                        },
+                        handle,
+                    )
+                os.utime(telemetry_path, ns=(mtime_ns, mtime_ns))
+
+            first_write_ns = launch_ns + 1_000_000_000
+            write_telemetry(100, first_write_ns)
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=first_write_ns + 15_000_000_000,
+            ):
+                boundary = launcher.snapshot(directory)
+
+            self.assertTrue(boundary["telemetry_current_for_process"])
+            self.assertFalse(boundary["telemetry_stale_or_detached"])
+            self.assertEqual("connected", boundary["status"])
+
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=first_write_ns + 16_000_000_000,
+            ):
+                stale = launcher.snapshot(directory)
+
+            self.assertTrue(stale["runtime_attached"])
+            self.assertTrue(stale["telemetry_present"])
+            self.assertEqual(100, stale["telemetry_frame"])
+            self.assertFalse(stale["telemetry_current_for_process"])
+            self.assertTrue(stale["telemetry_stale_or_detached"])
+            self.assertNotEqual("connected", stale["status"])
+
+            rewrite_ns = first_write_ns + 16_000_000_000
+            write_telemetry(100, rewrite_ns)
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=rewrite_ns,
+            ):
+                rewritten = launcher.snapshot(directory)
+
+            self.assertTrue(rewritten["telemetry_current_for_process"])
+            self.assertFalse(rewritten["telemetry_stale_or_detached"])
+            self.assertEqual("connected", rewritten["status"])
+
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=rewrite_ns - 1,
+            ):
+                future_dated = launcher.snapshot(directory)
+
+            self.assertTrue(future_dated["telemetry_present"])
+            self.assertFalse(future_dated["telemetry_current_for_process"])
+            self.assertTrue(future_dated["telemetry_stale_or_detached"])
+            self.assertNotEqual("connected", future_dated["status"])
+
+            stale_again_ns = rewrite_ns + 16_000_000_000
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=stale_again_ns,
+            ):
+                stale_again = launcher.snapshot(directory)
+
+            self.assertTrue(stale_again["telemetry_present"])
+            self.assertFalse(stale_again["telemetry_current_for_process"])
+            self.assertTrue(stale_again["telemetry_stale_or_detached"])
+            self.assertNotEqual("connected", stale_again["status"])
+
+            write_telemetry(101, stale_again_ns)
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=stale_again_ns,
+            ):
+                advanced = launcher.snapshot(directory)
+
+            self.assertEqual(101, advanced["telemetry_frame"])
+            self.assertTrue(advanced["telemetry_current_for_process"])
+            self.assertFalse(advanced["telemetry_stale_or_detached"])
+            self.assertEqual("connected", advanced["status"])
+
+    def test_micromachine_launcher_rejects_fresh_other_runtime_telemetry(self):
+        class FakeRunningProcess:
+            pid = 12345
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return None
+
+            def wait(self):
+                return 0
+
+        launch_ns = 1_700_000_000_000_000_000
+        with tempfile.TemporaryDirectory() as directory:
+            telemetry_path = os.path.join(directory, "latest_telemetry.json")
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            with (
+                mock.patch.object(
+                    web_gui.subprocess,
+                    "Popen",
+                    return_value=FakeRunningProcess(),
+                ),
+                mock.patch.object(
+                    web_gui.threading.Thread,
+                    "start",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    web_gui.time,
+                    "time_ns",
+                    return_value=launch_ns,
+                ),
+            ):
+                launcher.start(directory)
+
+            write_ns = launch_ns + 1_000_000_000
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                        "frame": 100,
+                        "runtime_instance_id": "0" * 32,
+                    },
+                    handle,
+                )
+            os.utime(telemetry_path, ns=(write_ns, write_ns))
+
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=write_ns,
+            ):
+                other_runtime = launcher.snapshot(directory)
+
+            self.assertTrue(other_runtime["telemetry_present"])
+            self.assertFalse(other_runtime["telemetry_current_for_process"])
+            self.assertTrue(other_runtime["telemetry_stale_or_detached"])
+            self.assertNotEqual("connected", other_runtime["status"])
+
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                        "frame": 100,
+                        "runtime_instance_id": launcher._runtime_instance_id,  # noqa: SLF001
+                    },
+                    handle,
+                )
+            os.utime(telemetry_path, ns=(write_ns, write_ns))
+
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=write_ns,
+            ):
+                current_runtime = launcher.snapshot(directory)
+
+            self.assertTrue(current_runtime["telemetry_current_for_process"])
+            self.assertFalse(current_runtime["telemetry_stale_or_detached"])
+            self.assertEqual("connected", current_runtime["status"])
 
     def test_runtime_start_legacy_mode_is_blocked_until_key_is_saved(self):
         body = json.dumps({"mode": "legacy_commander"}).encode("utf-8")
