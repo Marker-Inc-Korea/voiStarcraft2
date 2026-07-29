@@ -5963,22 +5963,28 @@ class _OperationSemanticTimelineReducer:
             payload.get("operation_registry_authoritative") is not False
         )
         with self._lock:
-            self._touch_scope(scope_id)
             active_epoch = self._scope_epochs.get(scope_id, "")
             current_epoch = (
                 active_epoch
                 or self._scope_epoch_history.get(scope_id, "")
             )
-            if (
-                incoming_epoch
-                and incoming_epoch != current_epoch
-                and not epoch_authoritative
-            ):
+            if not epoch_authoritative and current_epoch:
                 return self._restore_accepted_snapshot(
                     result,
                     scope_id=scope_id,
                     session_epoch=current_epoch,
                 )
+            if not epoch_authoritative:
+                for operation in operations:
+                    operation["semantic_timeline"] = []
+                result["operations"] = operations
+                result["operation_summary"] = (
+                    _micromachine_operation_summary(operations)
+                )
+                result["operation_events"] = []
+                result["operation_event_latest_seq"] = 0
+                return result
+            self._touch_scope(scope_id)
             if (
                 incoming_epoch
                 and current_epoch
@@ -12571,7 +12577,13 @@ function commandConsoleTelemetryFrame(data) {
 }
 
 function commandConsoleStageRank(model) {
-  if (model.effectObserved || model.blocked || model.superseded || model.cancelled) { return 4; }
+  if (
+    model.canonicalCompletion ||
+    model.effectObserved ||
+    model.blocked ||
+    model.superseded ||
+    model.cancelled
+  ) { return 4; }
   if (model.actionIssued) { return 3; }
   if (model.assignmentReady) { return 2; }
   if (model.interpreted) { return 1; }
@@ -12583,6 +12595,12 @@ function shouldAdvanceActiveCommandConsole(model, telemetryFrame) {
   var currentModel = commandConsoleStageModel(currentData);
   var candidateRank = commandConsoleStageRank(model);
   if (currentModel.effectObserved && !model.effectObserved) {
+    return false;
+  }
+  if (
+    currentModel.canonicalCompletion &&
+    !model.canonicalCompletion
+  ) {
     return false;
   }
   if (currentModel.cancelled && !model.cancelled) {
@@ -12653,6 +12671,7 @@ function commandConsoleStageModel(data) {
     data && data.accepted === false ||
     data && data.status === "publish_failed"
   );
+  var canonicalCompletion = operationCanonicalCompletion(data);
   var failed = Boolean(
     !cancelled &&
     (
@@ -12665,7 +12684,8 @@ function commandConsoleStageModel(data) {
       executionState === "rejected" ||
       (
         (execution.completed === true || executionState === "completed") &&
-        !observedEffect
+        !observedEffect &&
+        !canonicalCompletion
       )
     )
   );
@@ -12724,14 +12744,21 @@ function commandConsoleStageModel(data) {
     cancelled: cancelled,
     cancellationCleanupVerified: cancellationCleanupVerified,
     superseded: superseded,
+    canonicalCompletion: canonicalCompletion,
     blocked: failed,
-    terminal: cancellationCleanupVerified || failed || superseded || effectObserved,
+    terminal: (
+      canonicalCompletion ||
+      cancellationCleanupVerified ||
+      failed ||
+      superseded ||
+      effectObserved
+    ),
     currentStage: currentStage,
     done: {
       interpret: interpreted,
       assign: assignmentReady,
       execute: actionIssued,
-      verify: effectObserved
+      verify: effectObserved || canonicalCompletion
     }
   };
 }
@@ -12963,6 +12990,13 @@ function commandConsoleVerification(data, model) {
     return commandUiText("실제 게임 상태 확인 완료: ", "Observed in live game state: ", "已在实际游戏状态确认：") +
       (parts.length ? parts.join(" · ") : commandUiText("요청 효과 관측", "requested effect observed", "已观察到请求效果"));
   }
+  if (model.canonicalCompletion) {
+    return commandUiText(
+      "MicroMachine 권위 완료 조건 확인: ",
+      "MicroMachine canonical completion confirmed: ",
+      "MicroMachine 权威完成条件已确认："
+    ) + operationCompletionSummary(data);
+  }
   if (model.submissionDelayed) {
     return commandUiText(
       "웹 게이트웨이 응답이 지연되고 있습니다. 실패로 확정하지 않고 같은 명령 응답을 계속 기다립니다.",
@@ -13053,6 +13087,9 @@ function commandConsoleStateLabel(model) {
   if (model.effectObserved) {
     return commandUiText("실행 확인", "Execution verified", "执行已确认");
   }
+  if (model.canonicalCompletion) {
+    return commandUiText("실행 확인", "Execution verified", "执行已确认");
+  }
   if (model.submissionDelayed) {
     return commandUiText("게이트웨이 응답 지연", "Gateway response delayed", "网关响应延迟");
   }
@@ -13083,6 +13120,9 @@ function commandConsoleClassName(model) {
   if (model.superseded) { return "active-command-console command-console-superseded"; }
   if (model.blocked) { return "active-command-console command-console-blocked"; }
   if (model.effectObserved) { return "active-command-console command-console-verified"; }
+  if (model.canonicalCompletion) {
+    return "active-command-console command-console-verified";
+  }
   if (model.submissionDelayed) { return "active-command-console command-console-interpreting"; }
   if (model.observationDelayed) { return "active-command-console command-console-executing"; }
   if (model.actionIssued) { return "active-command-console command-console-executing"; }
@@ -15154,17 +15194,13 @@ function renderOperationConsole(data) {
   var sessionEpoch = operationPayloadSessionEpoch(data, operations);
   var epochAuthoritative =
     data.operation_registry_authoritative !== false;
+  if (sessionEpoch && !epochAuthoritative) {
+    return false;
+  }
   if (
     operationConsoleScopeId &&
     scopeId &&
     operationConsoleScopeId !== scopeId
-  ) {
-    return false;
-  }
-  if (
-    sessionEpoch &&
-    operationConsoleSessionEpoch !== sessionEpoch &&
-    !epochAuthoritative
   ) {
     return false;
   }
@@ -15259,11 +15295,7 @@ function renderActiveCommandConsole(data, force) {
   );
   var epochAuthoritative =
     data.operation_registry_authoritative !== false;
-  if (
-    sessionEpoch &&
-    activeCommandConsoleRecord.sessionEpoch !== sessionEpoch &&
-    !epochAuthoritative
-  ) {
+  if (sessionEpoch && !epochAuthoritative) {
     return;
   }
   if (
@@ -15326,7 +15358,13 @@ function renderActiveCommandConsole(data, force) {
   if (!force && !shouldAdvanceActiveCommandConsole(model, telemetryFrame)) {
     return;
   }
-  if (model.effectObserved || model.blocked || model.superseded || model.cancelled) {
+  if (
+    model.canonicalCompletion ||
+    model.effectObserved ||
+    model.blocked ||
+    model.superseded ||
+    model.cancelled
+  ) {
     activeCommandConsoleRecord.observationTimedOut = false;
     activeCommandConsoleRecord.submissionDelayed = false;
     if (scopedData.command_console_observation_delayed) {

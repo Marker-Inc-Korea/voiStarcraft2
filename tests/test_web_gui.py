@@ -2636,10 +2636,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 )
 
                 current["telemetry"] = battlefield_projection_telemetry(
-                    update_id="detached-foreign",
+                    update_id="detached-same-epoch-ahead",
                     frame=900,
                     generation=9,
-                    session_epoch=1700000000200,
+                    session_epoch=1700000000100,
                 )
                 launcher.attached = False
                 detached = self.get_json(
@@ -7028,7 +7028,10 @@ class SessionLoopBridgeTest(unittest.TestCase):
             frame=200,
         )
         attached["operation_registry_authoritative"] = True
-        reducer.observe(attached, blackboard_scope_id=scope_id)
+        accepted = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
         self.assertEqual(1, len(reducer._accepted_operations))
 
         detached = reducer.observe(
@@ -7040,7 +7043,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
             blackboard_scope_id=scope_id,
         )
 
-        self.assertEqual([], detached["operations"])
+        self.assertEqual(accepted["operations"], detached["operations"])
         self.assertEqual(1, len(reducer._accepted_operations))
 
         reducer.observe(
@@ -7053,6 +7056,125 @@ class SessionLoopBridgeTest(unittest.TestCase):
             blackboard_scope_id=scope_id,
         )
         self.assertEqual(0, len(reducer._accepted_operations))
+
+    def test_operation_timeline_non_authoritative_same_epoch_cannot_advance_state(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-detached-same-epoch"
+        session_epoch = 1700000000000
+        attached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=1,
+            frame=200,
+            session_epoch=session_epoch,
+        )
+        attached["operation_registry_authoritative"] = True
+        accepted = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+
+        detached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=9,
+            frame=900,
+            session_epoch=session_epoch,
+            movement=True,
+        )
+        detached["operation_registry_authoritative"] = False
+        restored = reducer.observe(
+            detached,
+            blackboard_scope_id=scope_id,
+        )
+
+        family_key = (
+            scope_id,
+            str(session_epoch),
+            "recon-alpha",
+        )
+        self.assertEqual(accepted["operations"], restored["operations"])
+        self.assertEqual(1, reducer._generation_high_water[family_key])
+        self.assertEqual(200, reducer._family_last_frame[family_key])
+
+        resumed = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=2,
+            frame=201,
+            session_epoch=session_epoch,
+            movement=True,
+        )
+        resumed["operation_registry_authoritative"] = True
+        resumed_result = reducer.observe(
+            resumed,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            2,
+            resumed_result["operations"][0][
+                "operation_generation"
+            ],
+        )
+        self.assertEqual(
+            201,
+            resumed_result["operations"][0]["telemetry_frame"],
+        )
+        self.assertEqual(2, reducer._generation_high_water[family_key])
+        self.assertEqual(201, reducer._family_last_frame[family_key])
+
+    def test_operation_timeline_non_authoritative_snapshot_cannot_establish_state(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-detached-without-authority"
+        session_epoch = 1700000000000
+        detached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=9,
+            frame=900,
+            session_epoch=session_epoch,
+            movement=True,
+        )
+        detached["operation_registry_authoritative"] = False
+
+        detached_result = reducer.observe(
+            detached,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual("", reducer._scope_epochs.get(scope_id, ""))
+        self.assertEqual({}, reducer._generation_high_water)
+        self.assertEqual({}, reducer._family_last_frame)
+        self.assertEqual({}, reducer._accepted_operations)
+        self.assertEqual([], detached_result["operation_events"])
+        self.assertEqual(
+            [],
+            detached_result["operations"][0]["semantic_timeline"],
+        )
+
+        attached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            generation=1,
+            frame=100,
+            session_epoch=session_epoch,
+        )
+        attached["operation_registry_authoritative"] = True
+        attached_result = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            1,
+            attached_result["operations"][0][
+                "operation_generation"
+            ],
+        )
+        self.assertEqual(
+            100,
+            attached_result["operations"][0]["telemetry_frame"],
+        )
 
     def test_operation_timeline_non_authoritative_epoch_cannot_replace_current_epoch(
         self,
@@ -12859,6 +12981,45 @@ const assert = require("assert");
     ],
     undefined
   );
+  var sameEpochDetachedOperation = operationResult(
+    "recon-alpha",
+    "detached-same-epoch-update",
+    "분리된 같은 게임의 앞선 세대",
+    "scouting",
+    900,
+    "completed",
+    actionStages("move").slice(0, 6),
+    9
+  );
+  var sameEpochDetachedSnapshot = serverResult({
+    status: "published",
+    operation_registry_authoritative: false,
+    battlefield_projection_identity: {
+      session_epoch: operationEpochBeforeForeignDetached,
+      generation: 9,
+      game_frame: 900
+    },
+    operations: [sameEpochDetachedOperation]
+  }, OPERATION_SCOPE);
+  assert.strictEqual(
+    renderOperationConsole(sameEpochDetachedSnapshot),
+    false
+  );
+  renderActiveCommandConsole(sameEpochDetachedSnapshot, true);
+  renderMicroMachineStatus(sameEpochDetachedSnapshot);
+  assert.strictEqual(
+    operationRecords[reconKey].operationGeneration,
+    1
+  );
+  assert.strictEqual(operationRecords[reconKey].telemetryFrame, 300);
+  assert.strictEqual(
+    activeCommandConsoleRecord.sessionEpoch,
+    activeConsoleEpochBeforeForeignDetached
+  );
+  assert.strictEqual(
+    activeCommandConsoleRecord.updateId,
+    activeConsoleUpdateBeforeForeignDetached
+  );
 
   [reconRecord, assaultRecord].forEach(function(record) {
     var statusNode = record.node.querySelector(".operation-card-state");
@@ -13674,7 +13835,7 @@ const assert = require("assert");
     "마린 1기 정찰",
     "scouting",
     400,
-    "action_issued",
+    "completed",
     actionStages("move").slice(0, 6)
   );
   canonicalReconCompletion.battlefield_operation.operation_lifetime.completed =
@@ -13700,6 +13861,43 @@ const assert = require("assert");
   assert.strictEqual(
     operationRecords[reconKey].node.querySelector(".operation-card-state").textContent,
     "실행 확인"
+  );
+  var canonicalReconModel = commandConsoleStageModel(
+    operationRecords[reconKey].data
+  );
+  assert.strictEqual(canonicalReconModel.canonicalCompletion, true);
+  assert.strictEqual(canonicalReconModel.blocked, false);
+  assert.strictEqual(canonicalReconModel.terminal, true);
+  assert.strictEqual(canonicalReconModel.done.verify, true);
+  assert(
+    commandConsoleVerification(
+      operationRecords[reconKey].data,
+      canonicalReconModel
+    ).includes("권위 완료 조건 확인")
+  );
+  var explicitlyFailedCanonicalCompletion = operationResult(
+    "failed-canonical",
+    "failed-canonical-update",
+    "명시적 실패는 완료로 덮지 않음",
+    "scouting",
+    401,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  explicitlyFailedCanonicalCompletion.intervention.command_execution.failed =
+    true;
+  explicitlyFailedCanonicalCompletion.intervention.command_execution
+    .blocker_reason = "explicit_runtime_failure";
+  var explicitlyFailedCanonicalModel = commandConsoleStageModel(
+    explicitlyFailedCanonicalCompletion
+  );
+  assert.strictEqual(explicitlyFailedCanonicalModel.blocked, true);
+  assert.strictEqual(
+    operationRecordDisposition(
+      explicitlyFailedCanonicalModel,
+      explicitlyFailedCanonicalCompletion
+    ),
+    "blocked"
   );
 
   operationRecords[reconKey].node
