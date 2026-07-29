@@ -210,10 +210,10 @@ July 27, 2026:
 
 | Gate | Result |
 | --- | --- |
-| Current Python suite | `2156 passed, 6363 subtests passed` in the local `dev + llm` environment |
+| Current Python suite | `2157 passed, 6363 subtests passed` in the local `dev + llm` environment |
 | Historical cross-version baseline | Python 3.10, 3.11, and 3.12 each passed `1904 tests, 5357 subtests` on July 27, 2026 |
 | MicroMachine integration kit | `105 passed, 2091 subtests passed` |
-| Current web operation UX | `197 passed, 296 subtests passed`, including non-blocking SSE publication, replay rollover recovery, atomic operation/overview snapshot acceptance, exact update/operation/generation execution identity, non-authoritative detached registry and session-epoch preservation, concurrent source high-water rejection, retention-plus-one milestone deduplication, truthful `order_issued` versus `action_issued`, cancellation cleanup waiting, stable 24-card reconciliation, lane-move focus, and accessibility motion fallbacks |
+| Current web operation UX | `198 passed, 296 subtests passed`, including non-blocking SSE publication, replay rollover recovery, atomic operation/overview snapshot acceptance, exact update/operation/generation execution identity, non-authoritative detached registry and session-epoch preservation, top-level projection epoch rejection, concurrent source high-water rejection, retention-plus-one milestone deduplication, truthful `order_issued` versus `action_issued`, cancellation cleanup waiting, stable 24-card reconciliation, lane-move focus, and accessibility motion fallbacks |
 | Actual Chrome cockpit QA | Chrome 150 passed at desktop `1440x1100` and mobile `390x844`: four lanes, five standard actions per card, no duplicate IDs or horizontal overflow, stable card/focus continuity, contextual-control focus fallback, reduced-motion progress/typing/voice fallbacks, forced-colors, and accessibility roles |
 | Clean patched build | Build identity schema `56`, `ok=true`, identity `sha256:bdb1a8fbbf4ae8449ae8604e54f3a59fcd7e0a077755f17dc521ff225ccfbe0b`, embedded build-input identity `sha256:123adec4894c856c68df71d5f69e08072c8747e72b617b883de6fecccb638410`, binary SHA-256 `4413cec7eae52c04de31d0586ce42e42509dbf673f81d0c100538a715082f9a3` |
 | Fresh live smoke | Difficulty `10`, run ID `20260727T143156Z-27690-3244`, single attempt, final accepted frame `5250`, exit code `0` |

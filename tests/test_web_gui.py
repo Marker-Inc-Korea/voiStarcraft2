@@ -2551,10 +2551,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
     def test_detached_projection_cannot_poison_attached_runtime_cursor(self):
         current = {
             "telemetry": battlefield_projection_telemetry(
-                update_id="detached-old",
-                frame=900,
-                generation=9,
-                session_epoch=1700000000200,
+                update_id="attached-initial",
+                frame=320,
+                generation=1,
+                session_epoch=1700000000100,
             )
         }
 
@@ -2618,22 +2618,41 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             launcher = Launcher()
+            launcher.attached = True
             self.server._http.micromachine_launcher = launcher
             with mock.patch(
                 "starcraft_commander.micromachine_runtime."
                 "MicroMachineFilesystemBlackboard",
                 Backend,
             ):
+                initial = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+                self.assertEqual(
+                    1700000000100,
+                    initial["battlefield_overview"]["identity"][
+                        "session_epoch"
+                    ],
+                )
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="detached-foreign",
+                    frame=900,
+                    generation=9,
+                    session_epoch=1700000000200,
+                )
+                launcher.attached = False
                 detached = self.get_json(
                     "/api/micromachine/status?blackboard_dir=" + directory
                 )
                 self.assertIsNone(detached["battlefield_overview"])
                 self.assertTrue(detached["telemetry_stale_or_detached"])
+                self.assertFalse(detached["operation_registry_authoritative"])
 
                 current["telemetry"] = battlefield_projection_telemetry(
-                    update_id="attached-current",
-                    frame=320,
-                    generation=1,
+                    update_id="attached-resumed",
+                    frame=321,
+                    generation=2,
                     session_epoch=1700000000100,
                 )
                 launcher.attached = True
@@ -2648,6 +2667,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertEqual(
                 1700000000100,
                 attached["battlefield_projection_identity"]["session_epoch"],
+            )
+            self.assertEqual(
+                1700000000100,
+                attached["battlefield_overview"]["identity"][
+                    "session_epoch"
+                ],
             )
 
     def test_attached_status_consumes_validated_telemetry_snapshot_after_file_replace(
@@ -7082,6 +7107,51 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
         self.assertEqual(201, resumed_result["operations"][0]["telemetry_frame"])
         self.assertEqual(str(current_epoch), reducer._scope_epochs[scope_id])
+
+    def test_operation_timeline_uses_top_level_projection_identity_for_epoch_guard(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-top-level-projection-epoch"
+        current_epoch = 1700000000000
+        attached = semantic_operation_payload(
+            operation_id="alpha-operation",
+            frame=200,
+            session_epoch=current_epoch,
+        )
+        attached["operation_registry_authoritative"] = True
+        accepted = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+
+        foreign = semantic_operation_payload(
+            operation_id="beta-operation",
+            frame=1,
+            session_epoch=current_epoch + 1,
+        )
+        foreign["operation_registry_authoritative"] = False
+        foreign["battlefield_projection_identity"] = {
+            "session_epoch": current_epoch + 1,
+            "generation": 1,
+            "game_frame": 1,
+        }
+        foreign["battlefield_overview"] = None
+        foreign["operations"][0]["battlefield_operation"] = None
+        restored = reducer.observe(
+            foreign,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(accepted["operations"], restored["operations"])
+        self.assertEqual(str(current_epoch), reducer._scope_epochs[scope_id])
+        self.assertNotIn(
+            "beta-operation",
+            {
+                operation["operation_id"]
+                for operation in restored["operations"]
+            },
+        )
 
     def test_operation_timeline_rejects_generation_frame_and_same_frame_conflicts(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
@@ -12748,6 +12818,46 @@ const assert = require("assert");
   assert.strictEqual(
     document.activeElement.getAttribute("data-operation-action"),
     "revise"
+  );
+  var foreignUnprojectedOperation = operationResult(
+    "foreign-beta",
+    "foreign-beta-update",
+    "분리된 다른 게임 작전",
+    "attack",
+    1,
+    "action_issued",
+    actionStages("attack").slice(0, 6)
+  );
+  foreignUnprojectedOperation.battlefield_operation = null;
+  var foreignProjectionIdentitySnapshot = serverResult({
+    status: "published",
+    operation_registry_authoritative: false,
+    battlefield_projection_identity: {
+      session_epoch: 1800000000000,
+      generation: 1,
+      game_frame: 1
+    },
+    battlefield_overview: null,
+    operations: [foreignUnprojectedOperation]
+  }, OPERATION_SCOPE);
+  assert.strictEqual(
+    renderOperationConsole(foreignProjectionIdentitySnapshot),
+    false
+  );
+  renderMicroMachineStatus(foreignProjectionIdentitySnapshot);
+  assert.strictEqual(
+    operationConsoleSessionEpoch,
+    operationEpochBeforeForeignDetached
+  );
+  assert.strictEqual(
+    Object.keys(operationRecords).length,
+    operationCountBeforeForeignDetached
+  );
+  assert.strictEqual(
+    operationRecords[
+      operationRecordKey(OPERATION_SCOPE, "foreign-beta")
+    ],
+    undefined
   );
 
   [reconRecord, assaultRecord].forEach(function(record) {

@@ -4040,8 +4040,12 @@ def _web_snapshot_order_identity(
 
     overview = _mapping_child(payload, "battlefield_overview")
     overview_identity = _mapping_child(overview, "identity")
+    projection_identity = _mapping_child(
+        payload,
+        "battlefield_projection_identity",
+    )
     payload_identity = _mapping_child(payload, "identity")
-    identity = overview_identity or payload_identity
+    identity = overview_identity or projection_identity or payload_identity
     session_epoch = str(identity.get("session_epoch", "") or "")
     generation = max(
         0,
@@ -5941,6 +5945,15 @@ class _OperationSemanticTimelineReducer:
             if isinstance(battlefield_overview, Mapping)
             else None
         )
+        if not isinstance(battlefield_identity, Mapping):
+            projection_identity = payload.get(
+                "battlefield_projection_identity"
+            )
+            battlefield_identity = (
+                projection_identity
+                if isinstance(projection_identity, Mapping)
+                else None
+            )
         incoming_epoch = str(
             battlefield_identity.get("session_epoch", "")
             if isinstance(battlefield_identity, Mapping)
@@ -7495,6 +7508,19 @@ class SessionLoopBridge:
             runtime_instance_id="",
         )
 
+    def micromachine_status_detached(
+        self,
+        *,
+        blackboard_dir: str = "",
+    ) -> Mapping[str, object]:
+        """Build detached status without granting telemetry epoch authority."""
+
+        return self._micromachine_status(
+            blackboard_dir=blackboard_dir,
+            runtime_instance_id="",
+            operation_registry_authoritative_override=False,
+        )
+
     def micromachine_status_for_runtime(
         self,
         *,
@@ -7529,6 +7555,7 @@ class SessionLoopBridge:
         blackboard_dir: str,
         runtime_instance_id: str,
         validated_runtime_telemetry: MicroMachineTelemetry | None = None,
+        operation_registry_authoritative_override: bool | None = None,
     ) -> Mapping[str, object]:
         from starcraft_commander.micromachine_runtime import (
             MicroMachineFilesystemBlackboard,
@@ -7643,6 +7670,10 @@ class SessionLoopBridge:
                 result_stream=compile_result_stream,
                 battlefield_projection=battlefield_projection,
             )
+            if operation_registry_authoritative_override is not None:
+                status_payload["operation_registry_authoritative"] = (
+                    operation_registry_authoritative_override
+                )
             blackboard_scope_id = _micromachine_blackboard_scope_id(root)
             status_payload["blackboard_scope_id"] = blackboard_scope_id
             status_payload = self._micromachine_operation_timeline.observe(
@@ -13273,6 +13304,14 @@ function operationPayloadSessionEpoch(data, operations) {
     : {};
   var overviewEpoch = String(overviewIdentity.session_epoch || "");
   if (overviewEpoch) { return overviewEpoch; }
+  var projectionIdentity = data &&
+    typeof data.battlefield_projection_identity === "object"
+    ? data.battlefield_projection_identity || {}
+    : {};
+  var projectionEpoch = String(
+    projectionIdentity.session_epoch || ""
+  );
+  if (projectionEpoch) { return projectionEpoch; }
   var payloads = Array.isArray(operations) ? operations : [];
   for (var index = 0; index < payloads.length; index += 1) {
     var projection = payloads[index] && payloads[index].battlefield_operation;
@@ -18149,7 +18188,21 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 ),
             }
         else:
-            payload = dict(status_fn(blackboard_dir=blackboard_dir))
+            detached_status_fn = getattr(
+                self._bridge,
+                "micromachine_status_detached",
+                None,
+            )
+            status_builder = (
+                detached_status_fn
+                if isinstance(runtime_snapshot, Mapping)
+                and runtime_snapshot.get("telemetry_present") is True
+                and callable(detached_status_fn)
+                else status_fn
+            )
+            payload = dict(
+                status_builder(blackboard_dir=blackboard_dir)
+            )
         return _micromachine_status_with_runtime_gate(
             payload,
             runtime_snapshot=runtime_snapshot,
