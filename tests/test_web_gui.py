@@ -3479,6 +3479,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "actor_tags=[8201] "
                     "owned_tags=[8301]"
                 ),
+                "tuple_line": "actor_tags=(7201, 7202)",
+                "set_line": "owned_tags={7301,7302}",
+                "csv_line": "commanded_tags=7101,7102 action=attack",
+                "spaced_line": "source_tags=7401 7402 action=move",
+                "unclosed_line": "target_tags=[7501,7502",
                 "strategic_tags": ["pressure", "flank"],
             }
         )
@@ -3497,6 +3502,19 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "[internal unit identity]: [redacted]"
             ),
         )
+        for line_name, raw_tags in {
+            "tuple_line": ("7201", "7202"),
+            "set_line": ("7301", "7302"),
+            "csv_line": ("7101", "7102"),
+            "spaced_line": ("7401", "7402"),
+            "unclosed_line": ("7501", "7502"),
+        }.items():
+            self.assertIn(
+                "[internal unit identity]: [redacted]",
+                payload[line_name],
+            )
+            for raw_tag in raw_tags:
+                self.assertNotIn(raw_tag, payload[line_name])
 
     def test_micromachine_operation_root_update_id_is_fail_closed(self):
         update_id = "parallel-current-update"

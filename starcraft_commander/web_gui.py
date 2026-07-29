@@ -2267,9 +2267,17 @@ _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN: Final[re.Pattern[str]] = re.compil
     \s*[:=]\s*
     (?:
         \[[^\]\r\n]*\]
+        |\([^\)\r\n]*\)
+        |\{[^\}\r\n]*\}
+        |<[^>\r\n]*>
         |[-+]?\d+
+            (?:
+                (?:\s*[,;|]\s*|\s+)
+                [-+]?\d+
+            )*
         |'[^'\r\n]*'
         |"[^"\r\n]*"
+        |[\[\(\{<][^\r\n]*
     )
     """
 )
