@@ -707,15 +707,19 @@ def operation_family_evidence(
     expected_update_id: str = "",
     expected_operation_id: str = "",
     expected_generation: int = 0,
+    issued_at_frame: int = 0,
+    deadline_frame: int = 0,
+    snapshot_frame: int = 0,
 ) -> tuple[dict[str, object], ...]:
     """Normalize current runtime family evidence without inventing effects."""
 
     explicit = operation_telemetry.get("family_evidence")
-    if isinstance(explicit, Sequence) and not isinstance(
+    has_explicit_contract = isinstance(explicit, Sequence) and not isinstance(
         explicit,
         (str, bytes, bytearray),
-    ):
-        normalized_items = tuple(
+    )
+    normalized_items = (
+        tuple(
             normalized
             for item in explicit
             if isinstance(item, Mapping)
@@ -730,25 +734,38 @@ def operation_family_evidence(
             )
             is not None
         )
-        latest_by_action: dict[
-            tuple[str, str, str],
-            dict[str, object],
-        ] = {}
-        action_order: list[tuple[str, str, str]] = []
-        for normalized in normalized_items:
-            key = (
-                str(normalized["family"]),
-                str(normalized["role"]),
-                str(normalized["action"]),
+        if has_explicit_contract
+        else ()
+    )
+    effective_snapshot_frame = (
+        _positive_int(snapshot_frame)
+        or _positive_int(operation_telemetry.get("_snapshot_frame"))
+        or _positive_int(operation_telemetry.get("telemetry_frame"))
+    )
+    pending_items = tuple(
+        normalized
+        for item in _mapping_items(
+            operation_telemetry.get("pending_family_effects")
+        )
+        if (
+            normalized := _normalized_pending_family_effect_item(
+                item,
+                expected_update_id=expected_update_id,
+                expected_operation_id=expected_operation_id,
+                expected_generation=expected_generation,
+                issued_at_frame=max(0, issued_at_frame),
+                deadline_frame=max(0, deadline_frame),
+                snapshot_frame=effective_snapshot_frame,
             )
-            current = latest_by_action.get(key)
-            if current is None:
-                action_order.append(key)
-            if current is None or _family_evidence_rank(
-                normalized
-            ) >= _family_evidence_rank(current):
-                latest_by_action[key] = normalized
-        return tuple(latest_by_action[key] for key in action_order)
+        )
+        is not None
+    )
+    if has_explicit_contract or pending_items:
+        merged = _coalesce_family_evidence(
+            (*normalized_items, *pending_items)
+        )
+        if merged or has_explicit_contract:
+            return merged
 
     progress = operation_telemetry.get("requirement_progress")
     if not isinstance(progress, Sequence) or isinstance(
@@ -813,6 +830,217 @@ def operation_family_evidence(
             )
         )
     return tuple(result)
+
+
+def _mapping_items(value: object) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _normalized_pending_family_effect_item(
+    item: Mapping[str, object],
+    *,
+    expected_update_id: str,
+    expected_operation_id: str,
+    expected_generation: int,
+    issued_at_frame: int,
+    deadline_frame: int,
+    snapshot_frame: int,
+) -> dict[str, object] | None:
+    """Accept only an exact, fully delivered effect from the pending queue."""
+
+    update_id = str(item.get("update_id", "") or "").strip()
+    operation_id = str(item.get("operation_id", "") or "").strip()
+    generation = _positive_int(item.get("generation"))
+    attempt_generation = _positive_int(item.get("attempt_generation"))
+    if (
+        not expected_update_id
+        or update_id != expected_update_id
+        or not expected_operation_id
+        or operation_id != expected_operation_id
+        or expected_generation <= 0
+        or generation != expected_generation
+        or attempt_generation <= 0
+        or snapshot_frame <= 0
+    ):
+        return None
+    normalized = _normalized_family_evidence_item(
+        item,
+        operation_telemetry={},
+        expected_update_id=expected_update_id,
+        expected_operation_id=expected_operation_id,
+        expected_generation=expected_generation,
+    )
+    if normalized is None:
+        return None
+    attempted_count = _positive_int(normalized.get("attempted_count"))
+    attempted_frame = _positive_int(normalized.get("attempted_frame"))
+    submitted_count = _positive_int(normalized.get("submitted_count"))
+    submitted_frame = _positive_int(normalized.get("submitted_frame"))
+    effect_count = _positive_int(normalized.get("effect_count"))
+    effect_frame = _positive_int(normalized.get("effect_frame"))
+    family = canonical_terran_unit_family(normalized.get("family"))
+    unit_family = canonical_terran_unit_family(
+        normalized.get("unit_type")
+    )
+    required_effect = str(
+        normalized.get("required_effect", "") or ""
+    ).strip()
+    effect_kind = str(normalized.get("effect_kind", "") or "").strip()
+    action = str(normalized.get("action", "") or "").strip()
+    is_ability_action = action.lower().startswith("ability:")
+    movement_contract = (
+        required_effect == "movement_or_engagement"
+        and effect_kind in {"movement", "engagement"}
+        and not is_ability_action
+    )
+    ability_contract = (
+        required_effect == "ability_state_or_effect"
+        and effect_kind == "ability_state"
+        and is_ability_action
+    )
+    if (
+        attempted_count <= 0
+        or attempted_frame <= 0
+        or submitted_count <= 0
+        or submitted_frame <= 0
+        or effect_count <= 0
+        or effect_frame <= 0
+        or not family
+        or family != unit_family
+        or not (movement_contract or ability_contract)
+        or not (
+            attempted_frame <= submitted_frame <= effect_frame
+        )
+        or effect_frame > snapshot_frame
+        or (issued_at_frame > 0 and attempted_frame < issued_at_frame)
+        or (deadline_frame > 0 and effect_frame > deadline_frame)
+    ):
+        return None
+    return normalized
+
+
+def _coalesce_family_evidence(
+    items: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    latest_by_action: dict[
+        tuple[str, str, str],
+        dict[str, object],
+    ] = {}
+    action_order: list[tuple[str, str, str]] = []
+    for item in items:
+        key = (
+            str(item.get("family", "") or ""),
+            str(item.get("role", "") or ""),
+            str(item.get("action", "") or ""),
+        )
+        current = latest_by_action.get(key)
+        if current is None:
+            action_order.append(key)
+            latest_by_action[key] = dict(item)
+            continue
+        current_attempt = _positive_int(current.get("attempt_generation"))
+        incoming_attempt = _positive_int(item.get("attempt_generation"))
+        if incoming_attempt < current_attempt:
+            continue
+        if incoming_attempt > current_attempt:
+            latest_by_action[key] = dict(item)
+            continue
+        latest_by_action[key] = _merge_family_evidence_attempt(
+            current,
+            item,
+        )
+    return tuple(latest_by_action[key] for key in action_order)
+
+
+def _merge_family_evidence_attempt(
+    previous: Mapping[str, object],
+    current: Mapping[str, object],
+) -> dict[str, object]:
+    preferred = (
+        current
+        if _family_evidence_rank(current) >= _family_evidence_rank(previous)
+        else previous
+    )
+    secondary = previous if preferred is current else current
+    effect_kind = str(preferred.get("effect_kind", "") or "").strip()
+    if not effect_kind:
+        effect_kind = str(secondary.get("effect_kind", "") or "").strip()
+    return _family_evidence_payload(
+        family=str(
+            preferred.get("family") or secondary.get("family") or ""
+        ),
+        unit_type=str(
+            preferred.get("unit_type")
+            or secondary.get("unit_type")
+            or ""
+        ),
+        role=str(preferred.get("role") or secondary.get("role") or ""),
+        assigned=max(
+            _positive_int(previous.get("assigned")),
+            _positive_int(current.get("assigned")),
+        ),
+        represented=max(
+            _positive_int(previous.get("represented")),
+            _positive_int(current.get("represented")),
+        ),
+        update_id=str(
+            preferred.get("update_id")
+            or secondary.get("update_id")
+            or ""
+        ),
+        operation_id=str(
+            preferred.get("operation_id")
+            or secondary.get("operation_id")
+            or ""
+        ),
+        generation=_positive_int(
+            preferred.get("generation") or secondary.get("generation")
+        ),
+        action=str(
+            preferred.get("action") or secondary.get("action") or ""
+        ),
+        required_effect=str(
+            preferred.get("required_effect")
+            or secondary.get("required_effect")
+            or ""
+        ),
+        attempt_generation=_positive_int(
+            preferred.get("attempt_generation")
+            or secondary.get("attempt_generation")
+        ),
+        attempted_count=max(
+            _positive_int(previous.get("attempted_count")),
+            _positive_int(current.get("attempted_count")),
+        ),
+        attempted_frame=max(
+            _positive_int(previous.get("attempted_frame")),
+            _positive_int(current.get("attempted_frame")),
+        ),
+        submitted_count=max(
+            _positive_int(previous.get("submitted_count")),
+            _positive_int(current.get("submitted_count")),
+        ),
+        submitted_frame=max(
+            _positive_int(previous.get("submitted_frame")),
+            _positive_int(current.get("submitted_frame")),
+        ),
+        effect_kind=effect_kind,
+        effect_count=max(
+            _positive_int(previous.get("effect_count")),
+            _positive_int(current.get("effect_count")),
+        ),
+        effect_frame=max(
+            _positive_int(previous.get("effect_frame")),
+            _positive_int(current.get("effect_frame")),
+        ),
+        blocker_manager=str(preferred.get("blocker_manager", "") or ""),
+        blocker=str(preferred.get("blocker", "") or ""),
+    )
 
 
 def _normalized_family_evidence_item(

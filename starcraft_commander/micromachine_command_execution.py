@@ -1251,9 +1251,40 @@ def _aggregate_operation_payloads(
         if not isinstance(director, Mapping):
             continue
         policy_update_id = str(director.get("policy_update_id", "") or "")
-        if not policy_update_id or policy_update_id != command_id:
+        director_matches_command = policy_update_id == command_id
+        pending_by_operation: dict[
+            tuple[str, int],
+            list[Mapping[str, object]],
+        ] = {}
+        for pending in _mapping_sequence(
+            director.get("pending_family_effects")
+        ):
+            pending_operation_id = str(
+                pending.get("operation_id", "") or ""
+            )
+            pending_generation = _int_value(pending.get("generation"))
+            pending_update_id = str(
+                pending.get("update_id", "") or ""
+            )
+            if (
+                pending_update_id != command_id
+                or not pending_operation_id
+                or pending_generation <= 0
+            ):
+                continue
+            pending_by_operation.setdefault(
+                (pending_operation_id, pending_generation),
+                [],
+            ).append(pending)
+        if not director_matches_command and not pending_by_operation:
             continue
-        for payload in _mapping_sequence(director.get("operations")):
+        merged_operation_keys: set[tuple[str, int]] = set()
+        current_operations = (
+            _mapping_sequence(director.get("operations"))
+            if director_matches_command
+            else ()
+        )
+        for payload in current_operations:
             operation_id = str(payload.get("operation_id", "") or "")
             active_generation = max(
                 1,
@@ -1369,6 +1400,10 @@ def _aggregate_operation_payloads(
                 ):
                     normalized_payload[key] = value
                 normalized_payload["family_evidence"] = []
+            normalized_payload["_snapshot_frame"] = payload_snapshot_frame
+            normalized_payload["pending_family_effects"] = list(
+                pending_by_operation.get(operation_key, ())
+            )
             previous = aggregate.get(operation_key, {})
             merged_family_evidence = _merge_operation_family_evidence(
                 previous_payload=previous,
@@ -1384,6 +1419,8 @@ def _aggregate_operation_payloads(
                 normalized_payload["family_evidence"] = (
                     merged_family_evidence
                 )
+            normalized_payload.pop("pending_family_effects", None)
+            normalized_payload.pop("_snapshot_frame", None)
             current_assigned_tags = tuple(
                 _int_value(tag)
                 for tag in _sequence_value(
@@ -1497,6 +1534,49 @@ def _aggregate_operation_payloads(
                 )
             aggregate[operation_key] = normalized_payload
             latest_snapshot_frames[operation_key] = payload_snapshot_frame
+            merged_operation_keys.add(operation_key)
+        for operation_key, pending_rows in pending_by_operation.items():
+            if operation_key in merged_operation_keys:
+                continue
+            epoch = operation_epochs.get(operation_key)
+            if epoch is None or snapshot_frame <= 0:
+                continue
+            operation_id, generation = operation_key
+            issued_at_frame, deadline_frame = epoch
+            previous = aggregate.get(operation_key, {})
+            pending_payload = {
+                "operation_id": operation_id,
+                "generation": generation,
+                "family_evidence": [],
+                "pending_family_effects": list(pending_rows),
+                "_snapshot_frame": snapshot_frame,
+            }
+            merged_family_evidence = _merge_operation_family_evidence(
+                previous_payload=previous,
+                current_payload=pending_payload,
+                command_id=command_id,
+                operation_id=operation_id,
+                operation_generation=generation,
+                issued_at_frame=issued_at_frame,
+                deadline_frame=deadline_frame,
+                snapshot_frame=snapshot_frame,
+            )
+            if not merged_family_evidence:
+                continue
+            normalized_pending_payload = dict(previous)
+            normalized_pending_payload.setdefault(
+                "operation_id",
+                operation_id,
+            )
+            normalized_pending_payload["generation"] = generation
+            normalized_pending_payload["family_evidence"] = (
+                merged_family_evidence
+            )
+            aggregate[operation_key] = normalized_pending_payload
+            latest_snapshot_frames[operation_key] = max(
+                latest_snapshot_frames.get(operation_key, -1),
+                snapshot_frame,
+            )
     return aggregate
 
 
@@ -1545,6 +1625,9 @@ def _merge_operation_family_evidence(
             expected_update_id=command_id,
             expected_operation_id=operation_id,
             expected_generation=operation_generation,
+            issued_at_frame=issued_at_frame,
+            deadline_frame=deadline_frame,
+            snapshot_frame=snapshot_frame,
         )
     )
     previous_rows = tuple(

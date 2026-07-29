@@ -627,6 +627,166 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
         self.assertEqual(4, evidence[0]["attempt_generation"])
         self.assertTrue(evidence[0]["effect"])
 
+    def test_pending_family_effects_merge_only_exact_current_delivery(
+        self,
+    ) -> None:
+        current = {
+            "update_id": "ability-update",
+            "operation_id": "tank-push",
+            "generation": 2,
+            "family": "siege_tank",
+            "unit_type": "TERRAN_SIEGETANK",
+            "role": "siege_support",
+            "assigned": 1,
+            "represented": 1,
+            "action": "ability:MORPH_SIEGEMODE",
+            "required_effect": "ability_state_or_effect",
+            "attempt_generation": 4,
+            "attempted_count": 1,
+            "attempted_frame": 210,
+            "submitted_count": 1,
+            "submitted_frame": 211,
+        }
+        delivered = {
+            **current,
+            "assigned": 0,
+            "represented": 0,
+            "effect_kind": "ability_state",
+            "effect_count": 1,
+            "effect_frame": 212,
+        }
+        evidence = operation_family_evidence(
+            {
+                "update_id": "ability-update",
+                "operation_id": "tank-push",
+                "generation": 2,
+                "family_evidence": [current],
+                "pending_family_effects": [
+                    delivered,
+                    {**delivered, "update_id": "other-update"},
+                    {**delivered, "operation_id": "other-operation"},
+                    {**delivered, "generation": 1},
+                    {
+                        **delivered,
+                        "attempted_frame": 99,
+                        "submitted_frame": 100,
+                        "effect_frame": 101,
+                    },
+                    {**delivered, "effect_frame": 301},
+                    {**delivered, "action": ""},
+                    {**delivered, "effect_kind": ""},
+                ],
+            },
+            expected_update_id="ability-update",
+            expected_operation_id="tank-push",
+            expected_generation=2,
+            issued_at_frame=100,
+            deadline_frame=250,
+            snapshot_frame=300,
+        )
+
+        self.assertEqual(1, len(evidence))
+        self.assertEqual(1, evidence[0]["assigned"])
+        self.assertEqual(1, evidence[0]["represented"])
+        self.assertEqual("ability_state", evidence[0]["effect_kind"])
+        self.assertEqual(212, evidence[0]["effect_frame"])
+        self.assertTrue(evidence[0]["effect"])
+        self.assertEqual("effect", evidence[0]["stage"])
+
+    def test_pending_family_effect_requires_authoritative_snapshot_frame(
+        self,
+    ) -> None:
+        evidence = operation_family_evidence(
+            {
+                "pending_family_effects": [
+                    {
+                        "update_id": "ability-update",
+                        "operation_id": "tank-push",
+                        "generation": 2,
+                        "family": "siege_tank",
+                        "unit_type": "TERRAN_SIEGETANK",
+                        "role": "siege_support",
+                        "action": "ability:MORPH_SIEGEMODE",
+                        "required_effect": "ability_state_or_effect",
+                        "attempt_generation": 4,
+                        "attempted_count": 1,
+                        "attempted_frame": 210,
+                        "submitted_count": 1,
+                        "submitted_frame": 211,
+                        "effect_kind": "ability_state",
+                        "effect_count": 1,
+                        "effect_frame": 212,
+                    }
+                ]
+            },
+            expected_update_id="ability-update",
+            expected_operation_id="tank-push",
+            expected_generation=2,
+            issued_at_frame=100,
+        )
+
+        self.assertEqual((), evidence)
+
+    def test_pending_family_effect_rejects_cross_family_and_action_contracts(
+        self,
+    ) -> None:
+        delivered = {
+            "update_id": "contract-update",
+            "operation_id": "contract-operation",
+            "generation": 1,
+            "family": "marine",
+            "unit_type": "TERRAN_MARINE",
+            "role": "frontline",
+            "action": "attack_move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 1,
+            "attempted_count": 1,
+            "attempted_frame": 100,
+            "submitted_count": 1,
+            "submitted_frame": 101,
+            "effect_kind": "movement",
+            "effect_count": 1,
+            "effect_frame": 102,
+        }
+        invalid_rows = (
+            {**delivered, "unit_type": "TERRAN_REAPER"},
+            {
+                **delivered,
+                "action": "ability:MORPH_SIEGEMODE",
+            },
+            {
+                **delivered,
+                "effect_kind": "ability_state",
+            },
+            {
+                **delivered,
+                "required_effect": "ability_state_or_effect",
+            },
+            {
+                **delivered,
+                "required_effect": "ability_state_or_effect",
+                "action": "ability:MORPH_SIEGEMODE",
+                "effect_kind": "movement",
+            },
+            {
+                **delivered,
+                "required_effect": "unknown_effect_contract",
+            },
+        )
+
+        for invalid in invalid_rows:
+            with self.subTest(invalid=invalid):
+                evidence = operation_family_evidence(
+                    {"pending_family_effects": [invalid]},
+                    expected_update_id="contract-update",
+                    expected_operation_id="contract-operation",
+                    expected_generation=1,
+                    issued_at_frame=90,
+                    deadline_frame=110,
+                    snapshot_frame=105,
+                )
+                self.assertEqual((), evidence)
+
     def test_newer_family_action_attempt_supersedes_stale_attempt(self) -> None:
         base = {
             "update_id": "ability-update",

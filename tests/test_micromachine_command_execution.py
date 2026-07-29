@@ -94,9 +94,9 @@ def _family_operation_case(
     update_id = f"{task_type}-{family}"
     operation_id = f"{family}-{canonical_task_type}"
     effect_kind = (
-        "nearby_enemy_engagement"
+        "engagement"
         if task_type == "defend_with_units"
-        else "movement_observed"
+        else "movement"
     )
     update = {
         "update_id": update_id,
@@ -159,7 +159,7 @@ def _family_operation_case(
                                 "role": role,
                                 "assigned": 1,
                                 "represented": 1,
-                                "action": f"squad_order:{squad_order}",
+                                "action": "attack_move",
                                 "required_effect": (
                                     "movement_or_engagement"
                                 ),
@@ -1483,6 +1483,174 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
                     ),
                     report.to_dict(),
                 )
+
+    def test_pending_family_effect_completes_current_operation_evidence(
+        self,
+    ) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="siege_tank",
+            unit_type="TERRAN_SIEGETANK",
+            role="siege_support",
+            effect=False,
+        )
+        operation = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]
+        current = operation["family_evidence"][0]
+        delivered = {
+            key: current[key]
+            for key in (
+                "update_id",
+                "operation_id",
+                "generation",
+                "family",
+                "unit_type",
+                "role",
+                "action",
+                "required_effect",
+                "attempt_generation",
+                "attempted_count",
+                "attempted_frame",
+                "submitted_count",
+                "submitted_frame",
+            )
+        }
+        delivered.update(
+            {
+                "action": "attack_move",
+                "effect_kind": "movement",
+                "effect_count": 1,
+                "effect_frame": 160,
+                "blocker_manager": "",
+                "blocker": "",
+            }
+        )
+        telemetry["managers"]["OperationDirector"][
+            "pending_family_effects"
+        ] = [delivered]
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertTrue(report.completed, report.to_dict())
+        self.assertTrue(stages["effect_observed"].ok)
+        self.assertNotIn(
+            "pending_family_effects",
+            stages["consumed_by_manager"].evidence,
+        )
+        self.assertNotIn(
+            "_snapshot_frame",
+            stages["consumed_by_manager"].evidence,
+        )
+        lifecycle = stages["effect_observed"].evidence[
+            "family_lifecycle"
+        ]
+        self.assertTrue(lifecycle["effect_ok"])
+        self.assertEqual("effect", lifecycle["evidence"][0]["stage"])
+        self.assertEqual(160, lifecycle["evidence"][0]["effect_frame"])
+
+    def test_removed_operation_pending_effect_is_observation_only(
+        self,
+    ) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="harass_with_units",
+            canonical_task_type="harass",
+            squad_order="harass",
+            family="reaper",
+            unit_type="TERRAN_REAPER",
+            role="worker_harass",
+        )
+        operation = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]
+        current = operation["family_evidence"][0]
+        delivered = {
+            key: current[key]
+            for key in (
+                "update_id",
+                "operation_id",
+                "generation",
+                "family",
+                "unit_type",
+                "role",
+                "action",
+                "required_effect",
+                "attempt_generation",
+                "attempted_count",
+                "attempted_frame",
+                "submitted_count",
+                "submitted_frame",
+                "effect_kind",
+                "effect_count",
+                "effect_frame",
+                "blocker_manager",
+                "blocker",
+            )
+        }
+        delivered["action"] = "attack_move"
+        delivered["effect_kind"] = "movement"
+        telemetry["managers"]["OperationDirector"]["operations"] = []
+        telemetry["managers"]["OperationDirector"][
+            "policy_update_id"
+        ] = "replacement-update"
+        telemetry["managers"]["OperationDirector"][
+            "pending_family_effects"
+        ] = [
+            delivered,
+            {**delivered, "update_id": "other-update"},
+            {**delivered, "operation_id": "other-operation"},
+            {**delivered, "generation": 2},
+            {
+                **delivered,
+                "attempted_frame": 99,
+                "submitted_frame": 100,
+                "effect_frame": 101,
+            },
+            {**delivered, "effect_frame": 181},
+            {**delivered, "family": "unrelated-family"},
+            {**delivered, "action": ""},
+        ]
+        latest_telemetry = {
+            "frame": 200,
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update["update_id"],
+                    "operations": [],
+                }
+            },
+        }
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            telemetry_archive=(telemetry,),
+            latest_telemetry=latest_telemetry,
+            latest_frame=200,
+        )[0]
+
+        stages = {stage.name: stage for stage in report.stages}
+        lifecycle = stages["effect_observed"].evidence[
+            "family_lifecycle"
+        ]
+        self.assertEqual("published", report.state)
+        self.assertFalse(report.completed)
+        self.assertFalse(stages["queued_or_assigned"].ok)
+        self.assertFalse(stages["order_issued"].ok)
+        self.assertFalse(stages["action_issued"].ok)
+        self.assertFalse(stages["effect_observed"].ok)
+        self.assertEqual(1, len(lifecycle["evidence"]))
+        self.assertEqual("effect", lifecycle["evidence"][0]["stage"])
+        self.assertTrue(lifecycle["evidence"][0]["effect"])
+        self.assertFalse(lifecycle["assignment_ok"])
+        self.assertTrue(lifecycle["order_ok"])
+        self.assertTrue(lifecycle["action_ok"])
+        self.assertTrue(lifecycle["effect_ok"])
 
     def test_each_supported_operation_rejects_incorrect_manager_routing(
         self,

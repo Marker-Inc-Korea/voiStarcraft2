@@ -469,6 +469,88 @@ class MicroMachineFilesystemBlackboardTest(unittest.TestCase):
             self.assertEqual(1, snapshot["active_modulation_count"])
             self.assertEqual("MicroMachine", snapshot["telemetry"]["bot_name"])
 
+    def test_recent_telemetry_archive_is_bounded_and_skips_invalid_rows(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard = MicroMachineFilesystemBlackboard(directory)
+            archive = Path(directory) / "telemetry.jsonl"
+            rows = [
+                MicroMachineTelemetry(
+                    frame=frame,
+                    managers={
+                        "OperationDirector": {
+                            "status": f"frame-{frame}"
+                        }
+                    },
+                ).to_dict()
+                for frame in range(1, 6)
+            ]
+            archive.write_text(
+                "\n".join(
+                    [
+                        json.dumps(rows[0]),
+                        "{invalid-json",
+                        json.dumps(["not", "a", "mapping"]),
+                        *(json.dumps(row) for row in rows[1:]),
+                    ]
+                )
+                + "\n"
+            )
+
+            recent = blackboard.read_recent_telemetry_archive(limit=3)
+
+            self.assertEqual([3, 4, 5], [item.frame for item in recent])
+            self.assertEqual(
+                ["frame-3", "frame-4", "frame-5"],
+                [
+                    item.managers["OperationDirector"]["status"]
+                    for item in recent
+                ],
+            )
+            self.assertEqual(
+                (),
+                blackboard.read_recent_telemetry_archive(limit=0),
+            )
+
+    def test_recent_telemetry_archive_can_select_effect_snapshots_only(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard = MicroMachineFilesystemBlackboard(directory)
+            archive = Path(directory) / "telemetry.jsonl"
+            effect = MicroMachineTelemetry(
+                frame=10,
+                managers={
+                    "OperationDirector": {
+                        "pending_family_effects": [
+                            {
+                                "update_id": "effect-update",
+                                "operation_id": "recon-alpha",
+                            }
+                        ]
+                    }
+                },
+            ).to_dict()
+            trailing = [
+                MicroMachineTelemetry(frame=frame).to_dict()
+                for frame in range(11, 211)
+            ]
+            archive.write_text(
+                "\n".join(
+                    json.dumps(row)
+                    for row in (effect, *trailing)
+                )
+                + "\n"
+            )
+
+            recent = blackboard.read_recent_telemetry_archive(
+                limit=2,
+                pending_family_effects_only=True,
+            )
+
+            self.assertEqual([10], [item.frame for item in recent])
+
     def test_provider_unavailable_state_surfaces_as_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             blackboard = MicroMachineFilesystemBlackboard(directory)

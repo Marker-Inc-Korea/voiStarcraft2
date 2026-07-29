@@ -2684,6 +2684,278 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual("executed", by_family["siege_tank"]["stage"])
         self.assertFalse(by_family["siege_tank"]["effect"])
 
+    def test_micromachine_status_exposes_removed_operation_pending_effect(
+        self,
+    ):
+        update_id = "retargeted-harass-update"
+        operation_id = "reaper-harass"
+        generation = 2
+        delivered = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": generation,
+            "family": "reaper",
+            "unit_type": "TERRAN_REAPER",
+            "role": "worker_harass",
+            "action": "attack_move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 3,
+            "attempted_count": 1,
+            "attempted_frame": 210,
+            "submitted_count": 1,
+            "submitted_frame": 220,
+            "effect_kind": "movement",
+            "effect_count": 1,
+            "effect_frame": 230,
+            "blocker_manager": "",
+            "blocker": "",
+        }
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "expires_at_frame": 2_000,
+                    "manager_bias_domains": ["combat", "squad"],
+                    "vector": {
+                        "goal": "리퍼 견제 목표를 변경",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": generation,
+                                "goal": "리퍼로 적 일꾼 견제",
+                                "composition_requirements": [
+                                    {
+                                        "unit_type": "TERRAN_REAPER",
+                                        "count": 1,
+                                        "role": "worker_harass",
+                                    }
+                                ],
+                                "tactical_task": {
+                                    "task_type": "harass_with_units",
+                                    "duration_seconds": 120,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 300},
+        }
+        telemetry_document = {
+            "frame": 300,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": "replacement-update",
+                    "operations": [
+                        {
+                            "operation_id": operation_id,
+                            "generation": generation,
+                            "status": "COMPLETED",
+                            "completed": True,
+                            "assigned_count": 9,
+                            "assigned_unit_tags": list(range(1, 10)),
+                            "submitted_frame": 240,
+                            "last_action_frame": 250,
+                            "last_action": "replacement-operation",
+                        }
+                    ],
+                    "pending_family_effects": [
+                        delivered,
+                        {**delivered, "update_id": "other-update"},
+                        {**delivered, "operation_id": "other-operation"},
+                        {**delivered, "generation": 1},
+                        {
+                            **delivered,
+                            "attempted_frame": 199,
+                            "submitted_frame": 200,
+                            "effect_frame": 201,
+                        },
+                        {**delivered, "effect_frame": 301},
+                        {**delivered, "family": "unrelated-family"},
+                        {**delivered, "action": ""},
+                    ],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=300,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            blackboard_dir="/tmp/removed-operation-family-effect",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "리퍼 견제 목표를 변경해",
+            },
+        )
+
+        self.assertEqual(1, len(payload["operations"]))
+        operation = payload["operations"][0]
+        self.assertTrue(operation["telemetry_current"])
+        self.assertEqual(generation, operation["operation_generation"])
+        self.assertEqual(1, len(operation["family_evidence"]))
+        evidence = operation["family_evidence"][0]
+        self.assertEqual(update_id, evidence["update_id"])
+        self.assertEqual(operation_id, evidence["operation_id"])
+        self.assertEqual(generation, evidence["generation"])
+        self.assertEqual("effect", evidence["stage"])
+        self.assertTrue(evidence["effect"])
+        self.assertEqual(0, evidence["assigned"])
+        self.assertEqual(0, evidence["represented"])
+        execution = operation["intervention"]["command_execution"]
+        self.assertEqual("published", execution["state"])
+        self.assertFalse(execution["completed"])
+        self.assertEqual(
+            set(),
+            {
+                stage["name"]
+                for stage in execution["stages"]
+                if stage["name"]
+                in {
+                    "queued_or_assigned",
+                    "order_issued",
+                    "action_issued",
+                    "effect_observed",
+                }
+            },
+        )
+
+    def test_micromachine_status_preserves_acknowledged_effect_from_archive(
+        self,
+    ):
+        update_id = "acknowledged-effect-update"
+        operation_id = "marine-recon"
+        delivered = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": 1,
+            "family": "marine",
+            "unit_type": "TERRAN_MARINE",
+            "role": "scout",
+            "action": "move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 2,
+            "attempted_count": 1,
+            "attempted_frame": 210,
+            "submitted_count": 1,
+            "submitted_frame": 220,
+            "effect_kind": "movement",
+            "effect_count": 1,
+            "effect_frame": 230,
+            "blocker_manager": "",
+            "blocker": "",
+        }
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "expires_at_frame": 2_000,
+                    "manager_bias_domains": ["scouting", "squad"],
+                    "vector": {
+                        "goal": "마린 한 기로 정찰",
+                        "operations": [
+                            {
+                                "operation_id": operation_id,
+                                "generation": 1,
+                                "goal": "마린 한 기로 정찰",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "duration_seconds": 120,
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 300},
+        }
+        archived_telemetry = {
+            "frame": 240,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": operation_id,
+                            "generation": 1,
+                            "status": "MOVING",
+                            "received_frame": 205,
+                        }
+                    ],
+                    "pending_family_effects": [
+                        delivered,
+                        {**delivered, "update_id": "wrong-update"},
+                        {**delivered, "generation": 2},
+                        {
+                            **delivered,
+                            "attempted_frame": 199,
+                            "submitted_frame": 200,
+                            "effect_frame": 201,
+                        },
+                        {**delivered, "effect_frame": 241},
+                    ],
+                }
+            },
+        }
+        latest_telemetry_document = {
+            "frame": 300,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": operation_id,
+                            "generation": 1,
+                            "status": "MOVING",
+                            "received_frame": 205,
+                            "assigned_frame": 215,
+                            "assigned_count": 1,
+                            "submitted_frame": 220,
+                        }
+                    ],
+                    "pending_family_effects": [],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=300,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: latest_telemetry_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            telemetry_archive=(archived_telemetry,),
+            blackboard_dir="/tmp/acknowledged-family-effect",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "마린 한 기로 정찰해",
+            },
+        )
+
+        operation = payload["operations"][0]
+        self.assertTrue(operation["telemetry_current"])
+        self.assertEqual(1, len(operation["family_evidence"]))
+        evidence = operation["family_evidence"][0]
+        self.assertEqual(update_id, evidence["update_id"])
+        self.assertEqual(operation_id, evidence["operation_id"])
+        self.assertEqual(1, evidence["generation"])
+        self.assertEqual("move", evidence["action"])
+        self.assertEqual("effect", evidence["stage"])
+        self.assertEqual(230, evidence["effect_frame"])
+
     def test_rejected_higher_generation_edit_uses_active_generation_telemetry(self):
         update_id = "rejected-operation-edit"
         dashboard = {
@@ -2743,6 +3015,48 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "edit_blocker": "destination_priority_not_higher",
                         }
                     ],
+                    "pending_family_effects": [
+                        {
+                            "update_id": update_id,
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "scout",
+                            "action": "move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 2,
+                            "attempted_count": 1,
+                            "attempted_frame": 130,
+                            "submitted_count": 1,
+                            "submitted_frame": 140,
+                            "effect_kind": "movement",
+                            "effect_count": 1,
+                            "effect_frame": 150,
+                            "blocker_manager": "",
+                            "blocker": "",
+                        },
+                        {
+                            "update_id": update_id,
+                            "operation_id": "recon-alpha",
+                            "generation": 2,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "scout",
+                            "action": "attack_move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 3,
+                            "attempted_count": 1,
+                            "attempted_frame": 170,
+                            "submitted_count": 1,
+                            "submitted_frame": 180,
+                            "effect_kind": "engagement",
+                            "effect_count": 1,
+                            "effect_frame": 190,
+                            "blocker_manager": "",
+                            "blocker": "",
+                        },
+                    ],
                 }
             },
         }
@@ -2783,6 +3097,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("order_issued", successful_stages)
         self.assertIn("action_issued", successful_stages)
         self.assertIn("effect_observed", successful_stages)
+        self.assertEqual(1, len(operation["family_evidence"]))
+        self.assertEqual(1, operation["family_evidence"][0]["generation"])
+        self.assertEqual("effect", operation["family_evidence"][0]["stage"])
 
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
         execution = web_gui._micromachine_operation_command_execution(

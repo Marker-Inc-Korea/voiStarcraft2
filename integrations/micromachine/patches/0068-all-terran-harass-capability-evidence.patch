@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 98bc077..085f60d 100644
+index 98bc077..8974e1d 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1848,6 +1848,7 @@ bool voiResolveTacticalNukeTargetAnchor(
@@ -38,52 +38,13 @@ index 98bc077..085f60d 100644
  		|| locationIntent == "enemy_start"
  		|| locationIntent == "enemy_start_location"
  		|| locationIntent == "enemy_natural"
-@@ -2181,6 +2187,238 @@ std::string voiOperationJsonEscape(const std::string & value)
+@@ -2181,6 +2187,215 @@ std::string voiOperationJsonEscape(const std::string & value)
  	return escaped.str();
  }
  
 +std::string voiTerranOperationFamily(const std::string & unitType)
 +{
-+	if (unitType == "TERRAN_MARINE") return "marine";
-+	if (unitType == "TERRAN_MARAUDER") return "marauder";
-+	if (unitType == "TERRAN_REAPER") return "reaper";
-+	if (unitType == "TERRAN_GHOST") return "ghost";
-+	if (unitType == "TERRAN_HELLION"
-+		|| unitType == "TERRAN_HELLIONTANK")
-+	{
-+		return "hellion_hellbat";
-+	}
-+	if (unitType == "TERRAN_WIDOWMINE"
-+		|| unitType == "TERRAN_WIDOWMINEBURROWED")
-+	{
-+		return "widow_mine";
-+	}
-+	if (unitType == "TERRAN_CYCLONE") return "cyclone";
-+	if (unitType == "TERRAN_SIEGETANK"
-+		|| unitType == "TERRAN_SIEGETANKSIEGED")
-+	{
-+		return "siege_tank";
-+	}
-+	if (unitType == "TERRAN_THOR"
-+		|| unitType == "TERRAN_THORAP")
-+	{
-+		return "thor";
-+	}
-+	if (unitType == "TERRAN_MEDIVAC") return "medivac";
-+	if (unitType == "TERRAN_RAVEN") return "raven";
-+	if (unitType == "TERRAN_VIKINGFIGHTER"
-+		|| unitType == "TERRAN_VIKINGASSAULT")
-+	{
-+		return "viking";
-+	}
-+	if (unitType == "TERRAN_BANSHEE") return "banshee";
-+	if (unitType == "TERRAN_LIBERATOR"
-+		|| unitType == "TERRAN_LIBERATORAG")
-+	{
-+		return "liberator";
-+	}
-+	if (unitType == "TERRAN_BATTLECRUISER") return "battlecruiser";
-+	return "";
++	return voiCanonicalTerranFamilyForUnitType(unitType);
 +}
 +
 +std::string voiCanonicalOperationTaskType(const std::string & taskType)
@@ -142,6 +103,22 @@ index 98bc077..085f60d 100644
 +	const std::string & role)
 +{
 +	return voiTerranOperationFamily(unitType) + "|" + role;
++}
++
++uint64_t voiNextOperationFamilyAttemptGeneration(
++	VoiOperationState & operation,
++	const std::string & unitType,
++	const std::string & role,
++	uint64_t currentAttemptGeneration)
++{
++	const std::string key =
++		voiOperationFamilyEvidenceKey(unitType, role);
++	auto & generation =
++		operation.familyAttemptGenerationByKey[key];
++	return voiNextMonotonicAttemptGeneration(
++		operation.generation,
++		currentAttemptGeneration,
++		generation);
 +}
 +
 +VoiOperationState::FamilyExecutionEvidence &
@@ -277,7 +254,7 @@ index 98bc077..085f60d 100644
  bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosition & wallCenterTile)
  {
  	if (squad.getUnits().empty())
-@@ -2673,6 +2911,44 @@ void CombatCommander::recordVoiOperationSubmission(
+@@ -2673,6 +2888,47 @@ void CombatCommander::recordVoiOperationSubmission(
  	}
  	operation->lastActionFrame = frame;
  	operation->lastAction = voiActionEvidence(action);
@@ -296,9 +273,12 @@ index 98bc077..085f60d 100644
 +			!= operation->policyUpdateId
 +		|| familyEvidence.action != actionName)
 +	{
-+		familyEvidence.attemptGeneration = std::max(
-+			operation->generation,
-+			familyEvidence.attemptGeneration + 1);
++		familyEvidence.attemptGeneration =
++			voiNextOperationFamilyAttemptGeneration(
++				*operation,
++				sc2::UnitTypeToName(unit->unit_type),
++				role,
++				familyEvidence.attemptGeneration);
 +		familyEvidence.attemptedCount = 0;
 +		familyEvidence.attemptedFrame = 0;
 +		familyEvidence.submittedCount = 0;
@@ -322,7 +302,7 @@ index 98bc077..085f60d 100644
  	if (operation->status != "BLOCKED"
  		&& operation->status != "MOVING"
  		&& operation->status != "ENGAGED"
-@@ -2717,6 +2993,12 @@ void CombatCommander::observeVoiOperations()
+@@ -2717,6 +2973,12 @@ void CombatCommander::observeVoiOperations()
  			{
  				operation.previousSquadByTag.erase(owner->first);
  				operation.submittedPositions.erase(owner->first);
@@ -335,7 +315,7 @@ index 98bc077..085f60d 100644
  				owner = m_voiOperationUnitOwners.erase(owner);
  			}
  			else
-@@ -2756,24 +3038,116 @@ void CombatCommander::observeVoiOperations()
+@@ -2756,24 +3018,123 @@ void CombatCommander::observeVoiOperations()
  		}
  
  		bool observedMovement = false;
@@ -392,12 +372,18 @@ index 98bc077..085f60d 100644
 +					unitMoved,
 +					unitEngaged);
 +			const bool abilityEffect =
-+				matchingSubmission
-+					&& evidence.requiredEffect
-+						== "ability_state_or_effect"
-+					&& voiOperationAbilityStateObserved(
++				voiFamilyAbilityEffectHasMatchingUnitObservation(
++					voiFamilyEffectTelemetrySnapshot(
++						operation.generation,
++						evidence),
++					operation.policyUpdateId,
++					operation.generation,
++					currentFrame,
++					evidence.submittedPositions,
++					unit.getTag(),
++					voiOperationAbilityStateObserved(
 +						evidence,
-+						unit);
++						unit));
 +			observedMovement =
 +				observedMovement || unitMoved;
 +			observedEnemy =
@@ -447,6 +433,7 @@ index 98bc077..085f60d 100644
 +			VoiFamilyEffectTelemetryDelivery delivery;
 +			delivery.operationId =
 +				operation.operationId;
++			delivery.family = evidence.family;
 +			delivery.unitType = evidence.unitType;
 +			delivery.role = evidence.role;
 +			delivery.snapshot = snapshot;
@@ -462,7 +449,7 @@ index 98bc077..085f60d 100644
  		if (observedEnemy)
  		{
  			operation.lastEnemyFrame = currentFrame;
-@@ -2802,20 +3176,15 @@ void CombatCommander::observeVoiOperations()
+@@ -2802,20 +3163,15 @@ void CombatCommander::observeVoiOperations()
  			operation.routeStageComplete = true;
  			operation.activeTargetPosition =
  				operation.targetPosition;
@@ -492,7 +479,7 @@ index 98bc077..085f60d 100644
  		}
  
  		const float completionRadius =
-@@ -2851,7 +3220,8 @@ void CombatCommander::observeVoiOperations()
+@@ -2851,7 +3207,8 @@ void CombatCommander::observeVoiOperations()
  			{
  				objectiveCompleted = targetReached;
  			}
@@ -502,7 +489,7 @@ index 98bc077..085f60d 100644
  				&& targetReached
  				&& !observedEnemy
  				&& m_bot.Map().isExplored(
-@@ -2913,22 +3283,18 @@ void CombatCommander::reconcileVoiOperation(
+@@ -2913,22 +3270,18 @@ void CombatCommander::reconcileVoiOperation(
  	}
  	if (!m_squadData.squadExists(operation.squadName))
  	{
@@ -531,7 +518,7 @@ index 98bc077..085f60d 100644
  					operation.status),
  				ExplicitOperationPriority,
  				m_bot));
-@@ -3528,6 +3894,25 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3528,6 +3881,25 @@ void CombatCommander::reconcileVoiOperation(
  			snapshot.missingPrerequisites =
  				productionProgress.missingPrerequisiteTokens;
  		}
@@ -557,7 +544,7 @@ index 98bc077..085f60d 100644
  		operation.requirementSnapshots.push_back(snapshot);
  	}
  	const VoiRuntimeConvergenceDecision convergence =
-@@ -3546,7 +3931,8 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3546,7 +3918,8 @@ void CombatCommander::reconcileVoiOperation(
  		m_bot.Commander().getVoiPolicyBool(
  			"emergency.force_retreat",
  			false)
@@ -567,7 +554,7 @@ index 98bc077..085f60d 100644
  			&& m_bot.Commander().getVoiPolicyBool(
  				"emergency.cancel_attacks",
  				false));
-@@ -3555,12 +3941,13 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3555,12 +3928,13 @@ void CombatCommander::reconcileVoiOperation(
  		operation.status = "BLOCKED";
  		operation.blockedReason =
  			"emergency_retreat_preempted";
@@ -587,7 +574,7 @@ index 98bc077..085f60d 100644
  		return;
  	}
  	const bool enoughUnits =
-@@ -3574,12 +3961,13 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3574,12 +3948,13 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = convergence.status;
  		operation.blockedReason = convergence.blocker;
@@ -607,7 +594,7 @@ index 98bc077..085f60d 100644
  		return;
  	}
  	if (operation.assignedFrame == 0)
-@@ -3594,22 +3982,15 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3594,22 +3969,15 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = "ASSIGNED";
  	}
@@ -639,7 +626,7 @@ index 98bc077..085f60d 100644
  }
  
  void CombatCommander::updateVoiOperations()
-@@ -3765,26 +4146,15 @@ void CombatCommander::updateVoiOperations()
+@@ -3765,26 +4133,15 @@ void CombatCommander::updateVoiOperations()
  		}
  		requested.policyUpdateId = policyUpdateId;
  		requested.receivedFrame = m_bot.GetGameLoop();
@@ -670,7 +657,7 @@ index 98bc077..085f60d 100644
  		requested.routeType =
  			m_bot.Commander().getVoiPolicyString(
  				prefix + ".route_intent.route_type",
-@@ -4155,7 +4525,8 @@ void CombatCommander::updateVoiOperations()
+@@ -4155,7 +4512,8 @@ void CombatCommander::updateVoiOperations()
  		}
  		else if (requested.taskType != "scout"
  			&& requested.taskType != "attack"
@@ -680,7 +667,7 @@ index 98bc077..085f60d 100644
  		{
  			requested.status = "BLOCKED";
  			requested.blockedReason =
-@@ -4829,22 +5200,20 @@ void CombatCommander::updateVoiOperations()
+@@ -4829,22 +5187,20 @@ void CombatCommander::updateVoiOperations()
  		{
  			if (!m_squadData.squadExists(operation.squadName))
  			{
@@ -711,7 +698,7 @@ index 98bc077..085f60d 100644
  							operation.status),
  						ExplicitOperationPriority,
  						m_bot));
-@@ -4877,6 +5246,8 @@ void CombatCommander::updateVoiOperations()
+@@ -4877,6 +5233,8 @@ void CombatCommander::updateVoiOperations()
  					!= requested.policyUpdateId;
  			existing.policyUpdateId = policyUpdateId;
  			existing.commandLayer = requested.commandLayer;
@@ -720,7 +707,7 @@ index 98bc077..085f60d 100644
  			existing.taskType = requested.taskType;
  			existing.unitClasses = requested.unitClasses;
  			existing.lifetimeMode = requested.lifetimeMode;
-@@ -4945,6 +5316,7 @@ void CombatCommander::updateVoiOperations()
+@@ -4945,6 +5303,7 @@ void CombatCommander::updateVoiOperations()
  				existing.submissionObserved = false;
  				existing.submittedFrame = 0;
  				existing.submittedPositions.clear();
@@ -728,7 +715,18 @@ index 98bc077..085f60d 100644
  			}
  		};
  	auto annotateRejectedEdit =
-@@ -6355,6 +6727,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -5051,6 +5410,10 @@ void CombatCommander::updateVoiOperations()
+ 				|| existing.routeType
+ 					!= requested.routeType;
+ 			VoiOperationState replacement = requested;
++			replacement.familyAttemptGenerationByKey =
++				voiMergeAttemptGenerationWatermarks(
++					existing.familyAttemptGenerationByKey,
++					requested.familyAttemptGenerationByKey);
+ 			replacement.assignedUnitTags =
+ 				existing.assignedUnitTags;
+ 			replacement.assignedCount =
+@@ -6355,6 +6718,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  		++index)
  	{
  		const auto & operation = m_voiOperations[index];
@@ -737,7 +735,7 @@ index 98bc077..085f60d 100644
  		if (index > 0)
  		{
  			payload << ",";
-@@ -6366,10 +6740,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6366,10 +6731,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  			<< "\","
  			<< "\"generation\":"
  			<< operation.generation << ","
@@ -758,7 +756,7 @@ index 98bc077..085f60d 100644
  			<< "\"status\":\""
  			<< voiOperationJsonEscape(
  				operation.status)
-@@ -6465,6 +6849,155 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6465,6 +6840,155 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  			}
  			payload << "]}";
  		}
@@ -914,7 +912,7 @@ index 98bc077..085f60d 100644
  		payload << "],"
  			<< "\"target_x\":"
  			<< operation.targetX << ","
-@@ -6569,10 +7102,96 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6569,10 +7093,101 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  				operation.lastAction)
  			<< "\"}";
  	}
@@ -943,8 +941,7 @@ index 98bc077..085f60d 100644
 +			<< snapshot.operationGeneration
 +			<< ",\"family\":\""
 +			<< voiOperationJsonEscape(
-+				voiTerranOperationFamily(
-+					delivery.unitType))
++				delivery.family)
 +			<< "\",\"unit_type\":\""
 +			<< voiOperationJsonEscape(
 +				delivery.unitType)
@@ -972,6 +969,12 @@ index 98bc077..085f60d 100644
 +			<< snapshot.effectCount
 +			<< ",\"effect_frame\":"
 +			<< snapshot.effectFrame
++			<< ",\"coalesced_observation_count\":"
++			<< delivery.coalescedObservationCount
++			<< ",\"latest_effect_frame\":"
++			<< delivery.latestEffectFrame
++			<< ",\"maximum_effect_count\":"
++			<< delivery.maximumEffectCount
 +			<< ",\"blocker_manager\":\""
 +			<< voiOperationJsonEscape(
 +				snapshot.blockerManager)
@@ -1011,7 +1014,7 @@ index 98bc077..085f60d 100644
  void CombatCommander::bindCurrentVoiExplicitAbilityAttempt(
  	UnitAction & action) const
  {
-@@ -13066,9 +13685,75 @@ void CombatCommander::drawVoiOperationHud()
+@@ -13066,9 +13681,75 @@ void CombatCommander::drawVoiOperationHud()
  			<< " " << operation.taskType
  			<< " [" << operation.status << "]"
  			<< " units=" << operation.assignedCount
@@ -1088,7 +1091,7 @@ index 98bc077..085f60d 100644
  		if (operation.status == "BLOCKED"
  			&& !operation.blockedReason.empty())
  		{
-@@ -14044,6 +14729,53 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+@@ -14044,6 +14725,56 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
  		return false;
  	}
  
@@ -1117,9 +1120,12 @@ index 98bc077..085f60d 100644
 +					!= attemptFrame)
 +			{
 +				evidence.attemptGeneration =
-+					std::max(
-+						operation->generation,
-+						evidence.attemptGeneration + 1);
++					voiNextOperationFamilyAttemptGeneration(
++						*operation,
++						sc2::UnitTypeToName(
++							unit->unit_type),
++						voiRole,
++						evidence.attemptGeneration);
 +				evidence.attemptedCount = 0;
 +				evidence.submittedCount = 0;
 +				evidence.submittedFrame = 0;
@@ -1143,7 +1149,7 @@ index 98bc077..085f60d 100644
  	if (voiRoleBiasedAction || action.description.rfind("VoiRole", 0) == 0)
  	{
 diff --git a/src/CombatCommander.h b/src/CombatCommander.h
-index a872e09..0ad5df4 100644
+index a872e09..715b876 100644
 --- a/src/CombatCommander.h
 +++ b/src/CombatCommander.h
 @@ -4,6 +4,7 @@
@@ -1195,16 +1201,18 @@ index a872e09..0ad5df4 100644
  	std::string unitClasses;
  	std::string locationIntent;
  	std::string lifetimeMode;
-@@ -226,6 +252,8 @@ struct VoiOperationState
+@@ -226,6 +252,10 @@ struct VoiOperationState
  	uint32_t editRejectedFrame = 0;
  	std::string editSupersessionMode;
  	std::map<sc2::Tag, CCPosition> submittedPositions;
 +	std::map<std::string, FamilyExecutionEvidence>
 +		familyEvidenceByKey;
++	std::map<std::string, uint64_t>
++		familyAttemptGenerationByKey;
  	std::map<sc2::Tag, std::string> previousSquadByTag;
  };
  
-@@ -472,6 +500,8 @@ class CombatCommander
+@@ -472,6 +502,8 @@ class CombatCommander
  	std::set<Unit> m_backstabbers;	// Workers that backstab the enemy probes when probe rushed
  	std::map<int, long> m_cachedBiles;	// <corrosive bile location (mapkey generated with Util::ToMapKey), last frame seen>
  	std::vector<VoiOperationState> m_voiOperations;
@@ -1213,7 +1221,7 @@ index a872e09..0ad5df4 100644
  	std::map<sc2::Tag, std::pair<std::string, uint64_t>> m_voiOperationUnitOwners;
  	std::string m_voiOperationPolicyUpdateId;
  	bool m_workersStacked = false;
-@@ -767,6 +797,7 @@ public:
+@@ -767,6 +799,7 @@ public:
  	int getVoiAssignableUnownedUnitCount(
  		const std::string & compositionToken) const;
  	std::string getVoiOperationDirectorTelemetryJson() const;
@@ -1296,17 +1304,97 @@ index 4bbb024..3791f54 100644
  }
 diff --git a/src/voi_family_effect_lifecycle.hpp b/src/voi_family_effect_lifecycle.hpp
 new file mode 100644
-index 0000000..0866b7e
+index 0000000..8dc6751
 --- /dev/null
 +++ b/src/voi_family_effect_lifecycle.hpp
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,496 @@
 +#pragma once
 +
++#include <algorithm>
 +#include <cstddef>
 +#include <cstdint>
 +#include <fstream>
++#include <map>
 +#include <string>
++#include <tuple>
 +#include <vector>
++
++inline std::string voiCanonicalTerranFamilyForUnitType(
++	const std::string & unitType)
++{
++	if (unitType == "TERRAN_MARINE") return "marine";
++	if (unitType == "TERRAN_MARAUDER") return "marauder";
++	if (unitType == "TERRAN_REAPER") return "reaper";
++	if (unitType == "TERRAN_GHOST") return "ghost";
++	if (unitType == "TERRAN_HELLION"
++		|| unitType == "TERRAN_HELLIONTANK")
++	{
++		return "hellion_hellbat";
++	}
++	if (unitType == "TERRAN_WIDOWMINE"
++		|| unitType == "TERRAN_WIDOWMINEBURROWED")
++	{
++		return "widow_mine";
++	}
++	if (unitType == "TERRAN_CYCLONE") return "cyclone";
++	if (unitType == "TERRAN_SIEGETANK"
++		|| unitType == "TERRAN_SIEGETANKSIEGED")
++	{
++		return "siege_tank";
++	}
++	if (unitType == "TERRAN_THOR"
++		|| unitType == "TERRAN_THORAP")
++	{
++		return "thor";
++	}
++	if (unitType == "TERRAN_MEDIVAC") return "medivac";
++	if (unitType == "TERRAN_RAVEN") return "raven";
++	if (unitType == "TERRAN_VIKINGFIGHTER"
++		|| unitType == "TERRAN_VIKINGASSAULT")
++	{
++		return "viking";
++	}
++	if (unitType == "TERRAN_BANSHEE") return "banshee";
++	if (unitType == "TERRAN_LIBERATOR"
++		|| unitType == "TERRAN_LIBERATORAG")
++	{
++		return "liberator";
++	}
++	if (unitType == "TERRAN_BATTLECRUISER")
++	{
++		return "battlecruiser";
++	}
++	return "";
++}
++
++inline std::uint64_t voiNextMonotonicAttemptGeneration(
++	std::uint64_t operationGeneration,
++	std::uint64_t currentAttemptGeneration,
++	std::uint64_t & attemptWatermark)
++{
++	const std::uint64_t previousGeneration =
++		std::max(
++			attemptWatermark,
++			currentAttemptGeneration);
++	attemptWatermark = std::max(
++		operationGeneration,
++		previousGeneration + 1);
++	return attemptWatermark;
++}
++
++inline std::map<std::string, std::uint64_t>
++voiMergeAttemptGenerationWatermarks(
++	const std::map<std::string, std::uint64_t> & existing,
++	const std::map<std::string, std::uint64_t> & requested)
++{
++	std::map<std::string, std::uint64_t> merged = existing;
++	for (const auto & entry : requested)
++	{
++		auto & watermark = merged[entry.first];
++		watermark = std::max(watermark, entry.second);
++	}
++	return merged;
++}
 +
 +struct VoiFamilyEffectTelemetrySnapshot
 +{
@@ -1341,23 +1429,79 @@ index 0000000..0866b7e
 +struct VoiFamilyEffectTelemetryDelivery
 +{
 +	std::string operationId;
++	std::string family;
 +	std::string unitType;
 +	std::string role;
 +	VoiFamilyEffectTelemetrySnapshot snapshot;
++	std::size_t coalescedObservationCount = 1;
++	std::uint32_t latestEffectFrame = 0;
++	std::size_t maximumEffectCount = 0;
++};
++
++struct VoiFamilyEffectTelemetryAttemptKey
++{
++	std::string operationId;
++	std::string family;
++	std::string role;
++	std::string policyUpdateId;
++	std::uint64_t operationGeneration = 0;
++	std::string action;
++	std::string effectKind;
++
++	bool operator<(
++		const VoiFamilyEffectTelemetryAttemptKey & other) const
++	{
++		return std::tie(
++			operationId,
++			family,
++			role,
++			policyUpdateId,
++			operationGeneration,
++			action,
++			effectKind)
++			< std::tie(
++				other.operationId,
++				other.family,
++				other.role,
++				other.policyUpdateId,
++				other.operationGeneration,
++				other.action,
++				other.effectKind);
++	}
 +};
 +
 +struct VoiFamilyEffectTelemetryDeliveryQueue
 +{
 +	std::vector<VoiFamilyEffectTelemetryDelivery> pending;
 +	std::vector<VoiFamilyEffectTelemetryDelivery> acknowledged;
++	std::map<
++		VoiFamilyEffectTelemetryAttemptKey,
++		std::uint64_t> acknowledgedAttemptWatermarks;
 +};
 +
-+inline bool voiSameFamilyEffectTelemetryDelivery(
++inline VoiFamilyEffectTelemetryAttemptKey
++voiFamilyEffectTelemetryAttemptKey(
++	const VoiFamilyEffectTelemetryDelivery & delivery)
++{
++	VoiFamilyEffectTelemetryAttemptKey key;
++	key.operationId = delivery.operationId;
++	key.family = delivery.family;
++	key.role = delivery.role;
++	key.policyUpdateId =
++		delivery.snapshot.policyUpdateId;
++	key.operationGeneration =
++		delivery.snapshot.operationGeneration;
++	key.action = delivery.snapshot.action;
++	key.effectKind = delivery.snapshot.effectKind;
++	return key;
++}
++
++inline bool voiSameFamilyEffectTelemetryDeliveryIdentity(
 +	const VoiFamilyEffectTelemetryDelivery & left,
 +	const VoiFamilyEffectTelemetryDelivery & right)
 +{
 +	return left.operationId == right.operationId
-+		&& left.unitType == right.unitType
++		&& left.family == right.family
 +		&& left.role == right.role
 +		&& left.snapshot.policyUpdateId
 +			== right.snapshot.policyUpdateId
@@ -1367,9 +1511,7 @@ index 0000000..0866b7e
 +		&& left.snapshot.attemptGeneration
 +			== right.snapshot.attemptGeneration
 +		&& left.snapshot.effectKind
-+			== right.snapshot.effectKind
-+		&& left.snapshot.effectFrame
-+			== right.snapshot.effectFrame;
++			== right.snapshot.effectKind;
 +}
 +
 +inline bool voiEnqueueFamilyEffectTelemetryDelivery(
@@ -1377,31 +1519,62 @@ index 0000000..0866b7e
 +	VoiFamilyEffectTelemetryDeliveryQueue & queue)
 +{
 +	if (delivery.operationId.empty()
++		|| delivery.family.empty()
++		|| delivery.unitType.empty()
++		|| delivery.snapshot.policyUpdateId.empty()
++		|| delivery.snapshot.operationGeneration == 0
++		|| delivery.snapshot.action.empty()
++		|| delivery.snapshot.attemptGeneration == 0
 +		|| delivery.snapshot.effectKind.empty()
 +		|| delivery.snapshot.effectCount == 0
 +		|| delivery.snapshot.effectFrame == 0)
 +	{
 +		return false;
 +	}
-+	for (const auto & pending : queue.pending)
++	const auto attemptKey =
++		voiFamilyEffectTelemetryAttemptKey(delivery);
++	const auto acknowledgedAttempt =
++		queue.acknowledgedAttemptWatermarks.find(
++			attemptKey);
++	if (acknowledgedAttempt
++			!= queue.acknowledgedAttemptWatermarks.end()
++		&& delivery.snapshot.attemptGeneration
++			<= acknowledgedAttempt->second)
 +	{
-+		if (voiSameFamilyEffectTelemetryDelivery(
++		return false;
++	}
++	for (auto & pending : queue.pending)
++	{
++		if (voiSameFamilyEffectTelemetryDeliveryIdentity(
 +			pending,
 +			delivery))
 +		{
++			++pending.coalescedObservationCount;
++			pending.latestEffectFrame = std::max(
++				pending.latestEffectFrame,
++				delivery.snapshot.effectFrame);
++			pending.maximumEffectCount = std::max(
++				pending.maximumEffectCount,
++				delivery.snapshot.effectCount);
 +			return false;
 +		}
 +	}
 +	for (const auto & acknowledged : queue.acknowledged)
 +	{
-+		if (voiSameFamilyEffectTelemetryDelivery(
++		if (voiSameFamilyEffectTelemetryDeliveryIdentity(
 +			acknowledged,
 +			delivery))
 +		{
 +			return false;
 +		}
 +	}
-+	queue.pending.push_back(delivery);
++	VoiFamilyEffectTelemetryDelivery pending = delivery;
++	pending.coalescedObservationCount = 1;
++	pending.latestEffectFrame =
++		delivery.snapshot.effectFrame;
++	pending.maximumEffectCount =
++		delivery.snapshot.effectCount;
++	queue.pending.push_back(pending);
 +	return true;
 +}
 +
@@ -1411,6 +1584,14 @@ index 0000000..0866b7e
 +	for (const auto & delivery : queue.pending)
 +	{
 +		queue.acknowledged.push_back(delivery);
++		const auto attemptKey =
++			voiFamilyEffectTelemetryAttemptKey(delivery);
++		auto & acknowledgedAttempt =
++			queue.acknowledgedAttemptWatermarks[
++				attemptKey];
++		acknowledgedAttempt = std::max(
++			acknowledgedAttempt,
++			delivery.snapshot.attemptGeneration);
 +	}
 +	queue.pending.clear();
 +	const std::size_t maximumAcknowledged = 128;
@@ -1526,6 +1707,45 @@ index 0000000..0866b7e
 +			observationFrame);
 +}
 +
++inline bool voiFamilyAbilityEffectHasMatchingObservation(
++	const VoiFamilyEffectTelemetrySnapshot & snapshot,
++	const std::string & policyUpdateId,
++	std::uint64_t operationGeneration,
++	std::uint32_t observationFrame,
++	bool unitSubmissionMatched,
++	bool abilityStateObserved)
++{
++	return unitSubmissionMatched
++		&& abilityStateObserved
++		&& snapshot.requiredEffect
++			== "ability_state_or_effect"
++		&& voiFamilyEffectHasMatchingSubmission(
++			snapshot,
++			policyUpdateId,
++			operationGeneration,
++			observationFrame);
++}
++
++template <typename SubmittedPositions, typename UnitTag>
++inline bool voiFamilyAbilityEffectHasMatchingUnitObservation(
++	const VoiFamilyEffectTelemetrySnapshot & snapshot,
++	const std::string & policyUpdateId,
++	std::uint64_t operationGeneration,
++	std::uint32_t observationFrame,
++	const SubmittedPositions & submittedPositions,
++	const UnitTag & unitTag,
++	bool abilityStateObserved)
++{
++	return voiFamilyAbilityEffectHasMatchingObservation(
++		snapshot,
++		policyUpdateId,
++		operationGeneration,
++		observationFrame,
++		submittedPositions.find(unitTag)
++			!= submittedPositions.end(),
++		abilityStateObserved);
++}
++
 +inline bool voiAcknowledgeFamilyEffectTelemetry(
 +	VoiFamilyEffectTelemetryLatch & latch,
 +	const VoiFamilyEffectTelemetrySnapshot & serializedSnapshot)
@@ -1608,14 +1828,15 @@ index e0a09df..526cc7d 100644
 +)
 diff --git a/tests/family_effect_lifecycle_test.cpp b/tests/family_effect_lifecycle_test.cpp
 new file mode 100644
-index 0000000..c08b535
+index 0000000..d9c1844
 --- /dev/null
 +++ b/tests/family_effect_lifecycle_test.cpp
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,556 @@
 +#include "voi_family_effect_lifecycle.hpp"
 +
 +#include <cassert>
 +#include <cstdio>
++#include <map>
 +
 +VoiFamilyEffectTelemetrySnapshot effect(
 +	const char * policyUpdateId,
@@ -1650,6 +1871,8 @@ index 0000000..c08b535
 +{
 +	VoiFamilyEffectTelemetryDelivery value;
 +	value.operationId = operationId;
++	value.family =
++		voiCanonicalTerranFamilyForUnitType(unitType);
 +	value.unitType = unitType;
 +	value.role = role;
 +	value.snapshot = snapshot;
@@ -1786,6 +2009,12 @@ index 0000000..c08b535
 +	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
 +		siegeDelivery,
 +		deliveryQueue));
++	assert(deliveryQueue.pending.front()
++		.coalescedObservationCount == 2);
++	assert(deliveryQueue.pending.front()
++		.latestEffectFrame == 102);
++	assert(deliveryQueue.pending.front()
++		.maximumEffectCount == 1);
 +	generationLatch = VoiFamilyEffectTelemetryLatch();
 +	assert(!generationLatch.pending);
 +	assert(deliveryQueue.pending.size() == 1);
@@ -1898,6 +2127,135 @@ index 0000000..c08b535
 +		true,
 +		false,
 +		true));
++	// Same-family unit B already in the ability state cannot prove unit A.
++	const std::uint64_t submittedTankTag = 101;
++	const std::uint64_t alreadySiegedTankTag = 202;
++	std::map<std::uint64_t, bool> submittedUnitTags;
++	submittedUnitTags[submittedTankTag] = true;
++	assert(!voiFamilyAbilityEffectHasMatchingUnitObservation(
++		submitted,
++		"update-d",
++		6,
++		421,
++		submittedUnitTags,
++		alreadySiegedTankTag,
++		true));
++	assert(voiFamilyAbilityEffectHasMatchingUnitObservation(
++		submitted,
++		"update-d",
++		6,
++		421,
++		submittedUnitTags,
++		submittedTankTag,
++		true));
++	assert(!voiFamilyAbilityEffectHasMatchingUnitObservation(
++		submitted,
++		"update-d",
++		6,
++		421,
++		submittedUnitTags,
++		submittedTankTag,
++		false));
++
++	// Persistent state observations coalesce without changing first evidence.
++	VoiFamilyEffectTelemetryDeliveryQueue persistentQueue;
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		siegeDelivery,
++		persistentQueue));
++	for (std::uint32_t frame = 103; frame < 1103; ++frame)
++	{
++		auto repeatedSnapshot = observedSiege;
++		repeatedSnapshot.effectFrame = frame;
++		repeatedSnapshot.effectCount =
++			frame % 2 == 0 ? 2 : 1;
++		assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++			delivery(
++				"operation-alpha",
++				frame % 2 == 0
++					? "TERRAN_SIEGETANKSIEGED"
++					: "TERRAN_SIEGETANK",
++				"siege",
++				repeatedSnapshot),
++			persistentQueue));
++	}
++	assert(persistentQueue.pending.size() == 1);
++	assert(persistentQueue.pending.front()
++		.snapshot.effectFrame == 102);
++	assert(persistentQueue.pending.front()
++		.coalescedObservationCount == 1001);
++	assert(persistentQueue.pending.front()
++		.latestEffectFrame == 1102);
++	assert(persistentQueue.pending.front()
++		.maximumEffectCount == 2);
++	assert(persistentQueue.pending.front()
++		.unitType == "TERRAN_SIEGETANK");
++	assert(voiCanonicalTerranFamilyForUnitType(
++		"TERRAN_SIEGETANK")
++		== voiCanonicalTerranFamilyForUnitType(
++			"TERRAN_SIEGETANKSIEGED"));
++
++	// Retarget/reset cannot rewind a family attempt generation.
++	std::uint64_t attemptWatermark = 0;
++	assert(voiNextMonotonicAttemptGeneration(
++		4,
++		6,
++		attemptWatermark) == 7);
++	assert(voiNextMonotonicAttemptGeneration(
++		4,
++		0,
++		attemptWatermark) == 8);
++	assert(voiNextMonotonicAttemptGeneration(
++		9,
++		0,
++		attemptWatermark) == 9);
++
++	// Generation handoff preserves the highest family attempt watermark.
++	std::map<std::string, std::uint64_t> existingWatermarks;
++	existingWatermarks["siege_tank|siege"] = 7;
++	existingWatermarks["marine|frontline"] = 4;
++	std::map<std::string, std::uint64_t> requestedWatermarks;
++	requestedWatermarks["siege_tank|siege"] = 5;
++	requestedWatermarks["ghost|ability"] = 9;
++	const auto mergedWatermarks =
++		voiMergeAttemptGenerationWatermarks(
++			existingWatermarks,
++			requestedWatermarks);
++	assert(mergedWatermarks.size() == 3);
++	assert(mergedWatermarks.at("siege_tank|siege") == 7);
++	assert(mergedWatermarks.at("marine|frontline") == 4);
++	assert(mergedWatermarks.at("ghost|ability") == 9);
++	auto handedOffWatermark =
++		mergedWatermarks.at("siege_tank|siege");
++	assert(voiNextMonotonicAttemptGeneration(
++		5,
++		0,
++		handedOffWatermark) == 8);
++
++	// Every stable identity dimension except raw morph type stays distinct.
++	VoiFamilyEffectTelemetryDeliveryQueue identityQueue;
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		siegeDelivery,
++		identityQueue));
++	for (int dimension = 0; dimension < 7; ++dimension)
++	{
++		auto distinct = siegeDelivery;
++		if (dimension == 0) distinct.family = "viking";
++		if (dimension == 1) distinct.role = "frontline";
++		if (dimension == 2)
++			distinct.snapshot.policyUpdateId = "update-z";
++		if (dimension == 3)
++			distinct.snapshot.operationGeneration = 99;
++		if (dimension == 4)
++			distinct.snapshot.action = "ability:UNSIEGE";
++		if (dimension == 5)
++			distinct.snapshot.attemptGeneration = 99;
++		if (dimension == 6)
++			distinct.snapshot.effectKind = "movement";
++		assert(voiEnqueueFamilyEffectTelemetryDelivery(
++			distinct,
++			identityQueue));
++	}
++	assert(identityQueue.pending.size() == 8);
 +
 +	// Failed writes retain both local and immutable delivery evidence.
 +	VoiFamilyEffectTelemetryLatch writeFailureLatch;
@@ -1909,23 +2267,42 @@ index 0000000..c08b535
 +		siegeDelivery,
 +		writeFailureQueue));
 +	bool failedWriteAcknowledged = false;
-+	assert(!voiWriteAuthoritativeTelemetryFile(
-+		".",
-+		"{\"effect\":\"ability_state\"}\n",
-+		[&]() {
-+			failedWriteAcknowledged = true;
-+			voiAcknowledgeFamilyEffectTelemetry(
-+				writeFailureLatch,
-+				observedSiege);
-+			voiAcknowledgeFamilyEffectTelemetryDeliveries(
-+				writeFailureQueue);
-+		}));
++	for (std::uint32_t frame = 103; frame < 135; ++frame)
++	{
++		auto repeatedSnapshot = observedSiege;
++		repeatedSnapshot.effectFrame = frame;
++		assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++			delivery(
++				"operation-alpha",
++				"TERRAN_SIEGETANKSIEGED",
++				"siege",
++				repeatedSnapshot),
++			writeFailureQueue));
++		assert(!voiWriteAuthoritativeTelemetryFile(
++			".",
++			"{\"effect\":\"ability_state\"}\n",
++			[&]() {
++				failedWriteAcknowledged = true;
++				voiAcknowledgeFamilyEffectTelemetry(
++					writeFailureLatch,
++					observedSiege);
++				voiAcknowledgeFamilyEffectTelemetryDeliveries(
++					writeFailureQueue);
++			}));
++		assert(writeFailureQueue.pending.size() == 1);
++		assert(writeFailureQueue.pending.front()
++			.snapshot.effectFrame == 102);
++	}
 +	assert(!failedWriteAcknowledged);
 +	assert(voiPeekFamilyEffectForTelemetry(
 +		writeFailureLatch,
 +		4) != nullptr);
 +	assert(writeFailureQueue.pending.size() == 1);
 +	assert(writeFailureQueue.acknowledged.empty());
++	assert(writeFailureQueue.pending.front()
++		.coalescedObservationCount == 33);
++	assert(writeFailureQueue.pending.front()
++		.latestEffectFrame == 134);
 +
 +	// Retarget can discard family state without losing queued evidence.
 +	writeFailureLatch = VoiFamilyEffectTelemetryLatch();
@@ -1953,6 +2330,61 @@ index 0000000..c08b535
 +		siegeDelivery,
 +		writeFailureQueue));
 +	assert(std::remove(successfulTelemetryPath) == 0);
++
++	// Bounded diagnostic history cannot reopen an acknowledged attempt.
++	VoiFamilyEffectTelemetryDeliveryQueue watermarkQueue;
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		siegeDelivery,
++		watermarkQueue));
++	voiAcknowledgeFamilyEffectTelemetryDeliveries(
++		watermarkQueue);
++	for (int index = 0; index < 129; ++index)
++	{
++		auto later = siegeDelivery;
++		later.snapshot.action =
++			"ability:TEST_" + std::to_string(index);
++		later.snapshot.attemptGeneration =
++			static_cast<std::uint64_t>(index + 100);
++		assert(voiEnqueueFamilyEffectTelemetryDelivery(
++			later,
++			watermarkQueue));
++		voiAcknowledgeFamilyEffectTelemetryDeliveries(
++			watermarkQueue);
++	}
++	assert(watermarkQueue.acknowledged.size() == 128);
++	assert(watermarkQueue.acknowledgedAttemptWatermarks.size()
++		== 130);
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		siegeDelivery,
++		watermarkQueue));
++
++	// Attempt watermarks reject replays but admit the next monotonic attempt.
++	VoiFamilyEffectTelemetryDeliveryQueue attemptQueue;
++	auto attemptSeven = siegeDelivery;
++	attemptSeven.snapshot.attemptGeneration = 7;
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		attemptSeven,
++		attemptQueue));
++	voiAcknowledgeFamilyEffectTelemetryDeliveries(
++		attemptQueue);
++	auto attemptSix = attemptSeven;
++	attemptSix.snapshot.attemptGeneration = 6;
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		attemptSix,
++		attemptQueue));
++	auto attemptEight = attemptSeven;
++	attemptEight.snapshot.attemptGeneration = 8;
++	assert(voiEnqueueFamilyEffectTelemetryDelivery(
++		attemptEight,
++		attemptQueue));
++	voiAcknowledgeFamilyEffectTelemetryDeliveries(
++		attemptQueue);
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		attemptSeven,
++		attemptQueue));
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		attemptEight,
++		attemptQueue));
 +
 +	return 0;
 +}
