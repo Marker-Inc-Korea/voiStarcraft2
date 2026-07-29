@@ -2564,13 +2564,22 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "attempt_generation": index + 1,
                     "attempted_count": 0 if blocked else 1,
                     "attempted_frame": 0 if blocked else 215 + index,
+                    "attempted_unit_tags": (
+                        [] if blocked else [1000 + index]
+                    ),
                     "submitted_count": 0 if blocked else 1,
                     "submitted_frame": 0 if blocked else 230 + index,
+                    "submitted_unit_tags": (
+                        [] if blocked else [1000 + index]
+                    ),
                     "effect_kind": (
                         "ability_state" if effect_observed else ""
                     ),
                     "effect_count": 1 if effect_observed else 0,
                     "effect_frame": 260 if effect_observed else 0,
+                    "effect_unit_tags": (
+                        [1000 + index] if effect_observed else []
+                    ),
                     "blocker_manager": (
                         "ProductionManager" if blocked else ""
                     ),
@@ -2674,6 +2683,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 self.assertEqual(generation, row["generation"])
                 self.assertTrue(row["action"])
                 self.assertGreater(row["attempt_generation"], 0)
+                self.assertNotIn("attempted_unit_tags", row)
+                self.assertNotIn("submitted_unit_tags", row)
+                self.assertNotIn("effect_unit_tags", row)
         by_family = {row["family"]: row for row in evidence}
         self.assertEqual("effect", by_family["reaper"]["stage"])
         self.assertEqual("blocked", by_family["banshee"]["stage"])

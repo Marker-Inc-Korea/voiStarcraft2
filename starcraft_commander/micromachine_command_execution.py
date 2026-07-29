@@ -1323,6 +1323,11 @@ def _operation_family_lifecycle(
         "action": "submitted_count",
         "effect": "effect_count",
     }
+    stage_unit_tag_fields = {
+        "order": "attempted_unit_tags",
+        "action": "submitted_unit_tags",
+        "effect": "effect_unit_tags",
+    }
     stage_results: dict[str, bool] = {}
     stage_missing: dict[str, list[str]] = {}
     stage_pending: dict[str, list[str]] = {}
@@ -1349,11 +1354,20 @@ def _operation_family_lifecycle(
                 max(0, _int_value(row.get(field_name)))
                 for row in contract_rows
             )
-            observed_count = (
-                max(row_counts, default=0)
-                if stage_name == "assignment"
-                else min(required_count, sum(row_counts))
+            unit_tag_field = stage_unit_tag_fields.get(stage_name)
+            rows_have_unit_identity = bool(
+                unit_tag_field
+                and all(unit_tag_field in row for row in contract_rows)
             )
+            if rows_have_unit_identity and unit_tag_field is not None:
+                unit_tags = {
+                    tag
+                    for row in contract_rows
+                    for tag in _positive_unit_tags(row.get(unit_tag_field))
+                }
+                observed_count = min(required_count, len(unit_tags))
+            else:
+                observed_count = max(row_counts, default=0)
             satisfied = observed_count >= required_count
             if not satisfied:
                 pending.append(label)
@@ -1982,11 +1996,43 @@ def _merge_same_family_action_attempt(
             _int_value(previous.get(count_key)),
             _int_value(current.get(count_key)),
         )
+    for unit_tag_key, count_key in (
+        ("attempted_unit_tags", "attempted_count"),
+        ("submitted_unit_tags", "submitted_count"),
+        ("effect_unit_tags", "effect_count"),
+    ):
+        if unit_tag_key not in previous or unit_tag_key not in current:
+            merged.pop(unit_tag_key, None)
+            continue
+        merged_tags = sorted(
+            {
+                *_positive_unit_tags(previous.get(unit_tag_key)),
+                *_positive_unit_tags(current.get(unit_tag_key)),
+            }
+        )
+        merged[unit_tag_key] = merged_tags
+        merged[count_key] = len(merged_tags)
     if _int_value(current.get("effect_frame")) <= 0:
         merged["effect_kind"] = str(
             previous.get("effect_kind", "") or ""
         )
     return merged
+
+
+def _positive_unit_tags(value: object) -> tuple[int, ...]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return ()
+    tags: list[int] = []
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        tag = _int_value(item)
+        if tag > 0 and tag not in tags:
+            tags.append(tag)
+    return tuple(tags)
 
 
 def _operation_issued_at_frame(

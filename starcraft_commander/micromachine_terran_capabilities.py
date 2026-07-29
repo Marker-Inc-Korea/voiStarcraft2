@@ -972,6 +972,21 @@ def _merge_family_evidence_attempt(
     effect_kind = str(preferred.get("effect_kind", "") or "").strip()
     if not effect_kind:
         effect_kind = str(secondary.get("effect_kind", "") or "").strip()
+    attempted_unit_tags = _merge_optional_unit_tags(
+        previous,
+        current,
+        "attempted_unit_tags",
+    )
+    submitted_unit_tags = _merge_optional_unit_tags(
+        previous,
+        current,
+        "submitted_unit_tags",
+    )
+    effect_unit_tags = _merge_optional_unit_tags(
+        previous,
+        current,
+        "effect_unit_tags",
+    )
     return _family_evidence_payload(
         family=str(
             preferred.get("family") or secondary.get("family") or ""
@@ -1015,26 +1030,38 @@ def _merge_family_evidence_attempt(
             preferred.get("attempt_generation")
             or secondary.get("attempt_generation")
         ),
-        attempted_count=max(
-            _positive_int(previous.get("attempted_count")),
-            _positive_int(current.get("attempted_count")),
+        attempted_count=(
+            len(attempted_unit_tags)
+            if attempted_unit_tags is not None
+            else max(
+                _positive_int(previous.get("attempted_count")),
+                _positive_int(current.get("attempted_count")),
+            )
         ),
         attempted_frame=max(
             _positive_int(previous.get("attempted_frame")),
             _positive_int(current.get("attempted_frame")),
         ),
-        submitted_count=max(
-            _positive_int(previous.get("submitted_count")),
-            _positive_int(current.get("submitted_count")),
+        submitted_count=(
+            len(submitted_unit_tags)
+            if submitted_unit_tags is not None
+            else max(
+                _positive_int(previous.get("submitted_count")),
+                _positive_int(current.get("submitted_count")),
+            )
         ),
         submitted_frame=max(
             _positive_int(previous.get("submitted_frame")),
             _positive_int(current.get("submitted_frame")),
         ),
         effect_kind=effect_kind,
-        effect_count=max(
-            _positive_int(previous.get("effect_count")),
-            _positive_int(current.get("effect_count")),
+        effect_count=(
+            len(effect_unit_tags)
+            if effect_unit_tags is not None
+            else max(
+                _positive_int(previous.get("effect_count")),
+                _positive_int(current.get("effect_count")),
+            )
         ),
         effect_frame=max(
             _positive_int(previous.get("effect_frame")),
@@ -1042,7 +1069,24 @@ def _merge_family_evidence_attempt(
         ),
         blocker_manager=str(preferred.get("blocker_manager", "") or ""),
         blocker=str(preferred.get("blocker", "") or ""),
+        attempted_unit_tags=attempted_unit_tags,
+        submitted_unit_tags=submitted_unit_tags,
+        effect_unit_tags=effect_unit_tags,
     )
+
+
+def _merge_optional_unit_tags(
+    previous: Mapping[str, object],
+    current: Mapping[str, object],
+    key: str,
+) -> tuple[int, ...] | None:
+    if key not in previous or key not in current:
+        return None
+    previous_tags = _normalized_unit_tags(previous.get(key))
+    current_tags = _normalized_unit_tags(current.get(key))
+    if previous_tags is None or current_tags is None:
+        return None
+    return tuple(sorted({*previous_tags, *current_tags}))
 
 
 def _normalized_family_evidence_item(
@@ -1092,6 +1136,34 @@ def _normalized_family_evidence_item(
         item.get("required_effect", "") or ""
     ).strip()
     effect_kind = str(item.get("effect_kind", "") or "").strip()
+    attempted_count = max(
+        _int_value(item.get("attempted_count")),
+        int(item.get("attempted") is True),
+    )
+    attempted_frame = max(0, _int_value(item.get("attempted_frame")))
+    submitted_count = max(
+        _int_value(item.get("submitted_count")),
+        int(item.get("executed") is True),
+    )
+    submitted_frame = max(0, _int_value(item.get("submitted_frame")))
+    effect_count = max(
+        _int_value(item.get("effect_count")),
+        int(item.get("effect") is True),
+    )
+    effect_frame = max(0, _int_value(item.get("effect_frame")))
+    unit_tags: dict[str, tuple[int, ...] | None] = {}
+    for key, expected_count in (
+        ("attempted_unit_tags", attempted_count),
+        ("submitted_unit_tags", submitted_count),
+        ("effect_unit_tags", effect_count),
+    ):
+        if key not in item:
+            unit_tags[key] = None
+            continue
+        normalized_tags = _normalized_unit_tags(item.get(key))
+        if normalized_tags is None or len(normalized_tags) != expected_count:
+            return None
+        unit_tags[key] = normalized_tags
     if (
         not action
         or attempt_generation <= 0
@@ -1099,6 +1171,18 @@ def _normalized_family_evidence_item(
             action=action,
             required_effect=required_effect,
             effect_kind=effect_kind,
+        )
+        or not _family_effect_lifecycle_is_valid(
+            attempted_count=attempted_count,
+            attempted_frame=attempted_frame,
+            submitted_count=submitted_count,
+            submitted_frame=submitted_frame,
+            effect_kind=effect_kind,
+            effect_count=effect_count,
+            effect_frame=effect_frame,
+            attempted_unit_tags=unit_tags["attempted_unit_tags"],
+            submitted_unit_tags=unit_tags["submitted_unit_tags"],
+            effect_unit_tags=unit_tags["effect_unit_tags"],
         )
     ):
         return None
@@ -1114,26 +1198,20 @@ def _normalized_family_evidence_item(
         action=action,
         required_effect=required_effect,
         attempt_generation=attempt_generation,
-        attempted_count=max(
-            _int_value(item.get("attempted_count")),
-            int(item.get("attempted") is True),
-        ),
-        attempted_frame=max(0, _int_value(item.get("attempted_frame"))),
-        submitted_count=max(
-            _int_value(item.get("submitted_count")),
-            int(item.get("executed") is True),
-        ),
-        submitted_frame=max(0, _int_value(item.get("submitted_frame"))),
+        attempted_count=attempted_count,
+        attempted_frame=attempted_frame,
+        submitted_count=submitted_count,
+        submitted_frame=submitted_frame,
         effect_kind=effect_kind,
-        effect_count=max(
-            _int_value(item.get("effect_count")),
-            int(item.get("effect") is True),
-        ),
-        effect_frame=max(0, _int_value(item.get("effect_frame"))),
+        effect_count=effect_count,
+        effect_frame=effect_frame,
         blocker_manager=str(
             item.get("blocker_manager", "") or ""
         ).strip(),
         blocker=str(item.get("blocker", "") or "").strip(),
+        attempted_unit_tags=unit_tags["attempted_unit_tags"],
+        submitted_unit_tags=unit_tags["submitted_unit_tags"],
+        effect_unit_tags=unit_tags["effect_unit_tags"],
     )
 
 
@@ -1152,6 +1230,60 @@ def _family_effect_contract_is_valid(
     if required_effect == "ability_state_or_effect":
         return is_ability_action and effect_kind in {"", "ability_state"}
     return False
+
+
+def _family_effect_lifecycle_is_valid(
+    *,
+    attempted_count: int,
+    attempted_frame: int,
+    submitted_count: int,
+    submitted_frame: int,
+    effect_kind: str,
+    effect_count: int,
+    effect_frame: int,
+    attempted_unit_tags: tuple[int, ...] | None,
+    submitted_unit_tags: tuple[int, ...] | None,
+    effect_unit_tags: tuple[int, ...] | None,
+) -> bool:
+    attempted = attempted_count > 0 or attempted_frame > 0
+    submitted = submitted_count > 0 or submitted_frame > 0
+    effect = effect_count > 0 or effect_frame > 0 or bool(effect_kind)
+    if attempted and not (attempted_count > 0 and attempted_frame > 0):
+        return False
+    if submitted and not (
+        attempted
+        and submitted_count > 0
+        and submitted_frame >= attempted_frame
+    ):
+        return False
+    if effect and not (
+        submitted
+        and effect_count > 0
+        and effect_frame >= submitted_frame
+        and bool(effect_kind)
+    ):
+        return False
+    if attempted_unit_tags is not None and (
+        len(attempted_unit_tags) != attempted_count
+    ):
+        return False
+    if submitted_unit_tags is not None:
+        if len(submitted_unit_tags) != submitted_count:
+            return False
+        if (
+            attempted_unit_tags is not None
+            and not set(submitted_unit_tags).issubset(attempted_unit_tags)
+        ):
+            return False
+    if effect_unit_tags is not None:
+        if len(effect_unit_tags) != effect_count:
+            return False
+        if (
+            submitted_unit_tags is not None
+            and not set(effect_unit_tags).issubset(submitted_unit_tags)
+        ):
+            return False
+    return True
 
 
 def _family_evidence_payload(
@@ -1176,6 +1308,9 @@ def _family_evidence_payload(
     effect_frame: int,
     blocker_manager: str,
     blocker: str,
+    attempted_unit_tags: tuple[int, ...] | None = None,
+    submitted_unit_tags: tuple[int, ...] | None = None,
+    effect_unit_tags: tuple[int, ...] | None = None,
 ) -> dict[str, object]:
     attempted = attempted_count > 0 and attempted_frame > 0
     executed = submitted_count > 0 and submitted_frame > 0
@@ -1194,7 +1329,7 @@ def _family_evidence_payload(
         stage = "represented"
     else:
         stage = "waiting"
-    return {
+    payload: dict[str, object] = {
         "family": family,
         "display_name": TERRAN_UNIT_FAMILY_BY_NAME[family].display_name,
         "unit_type": unit_type,
@@ -1221,6 +1356,13 @@ def _family_evidence_payload(
         "blocker": blocker,
         "stage": stage,
     }
+    if attempted_unit_tags is not None:
+        payload["attempted_unit_tags"] = list(attempted_unit_tags)
+    if submitted_unit_tags is not None:
+        payload["submitted_unit_tags"] = list(submitted_unit_tags)
+    if effect_unit_tags is not None:
+        payload["effect_unit_tags"] = list(effect_unit_tags)
+    return payload
 
 
 def _int_value(value: object) -> int:
@@ -1236,6 +1378,23 @@ def _int_value(value: object) -> int:
 
 def _positive_int(value: object) -> int:
     return max(0, _int_value(value))
+
+
+def _normalized_unit_tags(value: object) -> tuple[int, ...] | None:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return None
+    tags: list[int] = []
+    for item in value:
+        if isinstance(item, bool):
+            return None
+        tag = _int_value(item)
+        if tag <= 0 or tag in tags:
+            return None
+        tags.append(tag)
+    return tuple(tags)
 
 
 def _evidence_update_id(

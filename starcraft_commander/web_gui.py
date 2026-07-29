@@ -2045,7 +2045,9 @@ def _micromachine_operation_status_payload(
         ),
         "requirements": normalized_requirement_progress,
     }
-    family_evidence = aggregate_family_evidence
+    family_evidence = _public_operation_family_evidence(
+        aggregate_family_evidence
+    )
     return {
         "operation_key": operation_key,
         "operation_id": operation_id,
@@ -2082,6 +2084,24 @@ def _micromachine_operation_status_payload(
         ),
         "family_evidence": family_evidence,
     }
+
+
+def _public_operation_family_evidence(
+    rows: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    internal_keys = {
+        "attempted_unit_tags",
+        "submitted_unit_tags",
+        "effect_unit_tags",
+    }
+    return [
+        {
+            key: value
+            for key, value in row.items()
+            if key not in internal_keys
+        }
+        for row in rows
+    ]
 
 
 def _micromachine_operation_evidence_window(

@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 98bc077..47e6d52 100644
+index 98bc077..0c92dba 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1848,6 +1848,7 @@ bool voiResolveTacticalNukeTargetAnchor(
@@ -38,10 +38,28 @@ index 98bc077..47e6d52 100644
  		|| locationIntent == "enemy_start"
  		|| locationIntent == "enemy_start_location"
  		|| locationIntent == "enemy_natural"
-@@ -2181,6 +2187,322 @@ std::string voiOperationJsonEscape(const std::string & value)
+@@ -2181,6 +2187,352 @@ std::string voiOperationJsonEscape(const std::string & value)
  	return escaped.str();
  }
  
++template <typename UnitTags>
++void voiAppendOperationUnitTagsJson(
++	std::ostream & payload,
++	const UnitTags & unitTags)
++{
++	payload << "[";
++	size_t index = 0;
++	for (const auto & unitTag : unitTags)
++	{
++		if (index++ > 0)
++		{
++			payload << ",";
++		}
++		payload << static_cast<std::uint64_t>(unitTag);
++	}
++	payload << "]";
++}
++
 +std::string voiTerranOperationFamily(const std::string & unitType)
 +{
 +	return voiCanonicalTerranFamilyForUnitType(unitType);
@@ -335,12 +353,24 @@ index 98bc077..47e6d52 100644
 +	snapshot.attemptedCount =
 +		evidence.attemptedUnitTags.size();
 +	snapshot.attemptedFrame = evidence.attemptedFrame;
++	snapshot.attemptedUnitTags.insert(
++		evidence.attemptedUnitTags.begin(),
++		evidence.attemptedUnitTags.end());
 +	snapshot.submittedCount =
 +		evidence.submittedPositions.size();
 +	snapshot.submittedFrame = evidence.submittedFrame;
++	for (const auto & submitted :
++		evidence.submittedPositions)
++	{
++		snapshot.submittedUnitTags.insert(
++			submitted.first);
++	}
 +	snapshot.effectKind = evidence.effectKind;
 +	snapshot.effectCount = evidence.effectUnitTags.size();
 +	snapshot.effectFrame = evidence.effectFrame;
++	snapshot.effectUnitTags.insert(
++		evidence.effectUnitTags.begin(),
++		evidence.effectUnitTags.end());
 +	snapshot.blockerManager = evidence.blockerManager;
 +	snapshot.blockerReason = evidence.blockerReason;
 +	return snapshot;
@@ -361,7 +391,7 @@ index 98bc077..47e6d52 100644
  bool voiSquadNeedsOutgoingWallOpen(Squad & squad, CCBot & bot, const CCTilePosition & wallCenterTile)
  {
  	if (squad.getUnits().empty())
-@@ -2673,6 +2995,64 @@ void CombatCommander::recordVoiOperationSubmission(
+@@ -2673,6 +3025,64 @@ void CombatCommander::recordVoiOperationSubmission(
  	}
  	operation->lastActionFrame = frame;
  	operation->lastAction = voiActionEvidence(action);
@@ -426,7 +456,7 @@ index 98bc077..47e6d52 100644
  	if (operation->status != "BLOCKED"
  		&& operation->status != "MOVING"
  		&& operation->status != "ENGAGED"
-@@ -2717,6 +3097,12 @@ void CombatCommander::observeVoiOperations()
+@@ -2717,6 +3127,12 @@ void CombatCommander::observeVoiOperations()
  			{
  				operation.previousSquadByTag.erase(owner->first);
  				operation.submittedPositions.erase(owner->first);
@@ -439,7 +469,7 @@ index 98bc077..47e6d52 100644
  				owner = m_voiOperationUnitOwners.erase(owner);
  			}
  			else
-@@ -2756,24 +3142,126 @@ void CombatCommander::observeVoiOperations()
+@@ -2756,24 +3172,126 @@ void CombatCommander::observeVoiOperations()
  		}
  
  		bool observedMovement = false;
@@ -576,7 +606,7 @@ index 98bc077..47e6d52 100644
  		if (observedEnemy)
  		{
  			operation.lastEnemyFrame = currentFrame;
-@@ -2802,20 +3290,15 @@ void CombatCommander::observeVoiOperations()
+@@ -2802,20 +3320,15 @@ void CombatCommander::observeVoiOperations()
  			operation.routeStageComplete = true;
  			operation.activeTargetPosition =
  				operation.targetPosition;
@@ -606,7 +636,7 @@ index 98bc077..47e6d52 100644
  		}
  
  		const float completionRadius =
-@@ -2851,7 +3334,8 @@ void CombatCommander::observeVoiOperations()
+@@ -2851,7 +3364,8 @@ void CombatCommander::observeVoiOperations()
  			{
  				objectiveCompleted = targetReached;
  			}
@@ -616,7 +646,7 @@ index 98bc077..47e6d52 100644
  				&& targetReached
  				&& !observedEnemy
  				&& m_bot.Map().isExplored(
-@@ -2913,22 +3397,18 @@ void CombatCommander::reconcileVoiOperation(
+@@ -2913,22 +3427,18 @@ void CombatCommander::reconcileVoiOperation(
  	}
  	if (!m_squadData.squadExists(operation.squadName))
  	{
@@ -645,7 +675,7 @@ index 98bc077..47e6d52 100644
  					operation.status),
  				ExplicitOperationPriority,
  				m_bot));
-@@ -3528,6 +4008,28 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3528,6 +4038,28 @@ void CombatCommander::reconcileVoiOperation(
  			snapshot.missingPrerequisites =
  				productionProgress.missingPrerequisiteTokens;
  		}
@@ -674,7 +704,7 @@ index 98bc077..47e6d52 100644
  		operation.requirementSnapshots.push_back(snapshot);
  	}
  	const VoiRuntimeConvergenceDecision convergence =
-@@ -3546,7 +4048,8 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3546,7 +4078,8 @@ void CombatCommander::reconcileVoiOperation(
  		m_bot.Commander().getVoiPolicyBool(
  			"emergency.force_retreat",
  			false)
@@ -684,7 +714,7 @@ index 98bc077..47e6d52 100644
  			&& m_bot.Commander().getVoiPolicyBool(
  				"emergency.cancel_attacks",
  				false));
-@@ -3555,12 +4058,13 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3555,12 +4088,13 @@ void CombatCommander::reconcileVoiOperation(
  		operation.status = "BLOCKED";
  		operation.blockedReason =
  			"emergency_retreat_preempted";
@@ -704,7 +734,7 @@ index 98bc077..47e6d52 100644
  		return;
  	}
  	const bool enoughUnits =
-@@ -3574,12 +4078,13 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3574,12 +4108,13 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = convergence.status;
  		operation.blockedReason = convergence.blocker;
@@ -724,7 +754,7 @@ index 98bc077..47e6d52 100644
  		return;
  	}
  	if (operation.assignedFrame == 0)
-@@ -3594,22 +4099,15 @@ void CombatCommander::reconcileVoiOperation(
+@@ -3594,22 +4129,15 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = "ASSIGNED";
  	}
@@ -756,7 +786,7 @@ index 98bc077..47e6d52 100644
  }
  
  void CombatCommander::updateVoiOperations()
-@@ -3765,26 +4263,15 @@ void CombatCommander::updateVoiOperations()
+@@ -3765,26 +4293,15 @@ void CombatCommander::updateVoiOperations()
  		}
  		requested.policyUpdateId = policyUpdateId;
  		requested.receivedFrame = m_bot.GetGameLoop();
@@ -787,7 +817,7 @@ index 98bc077..47e6d52 100644
  		requested.routeType =
  			m_bot.Commander().getVoiPolicyString(
  				prefix + ".route_intent.route_type",
-@@ -4155,7 +4642,8 @@ void CombatCommander::updateVoiOperations()
+@@ -4155,7 +4672,8 @@ void CombatCommander::updateVoiOperations()
  		}
  		else if (requested.taskType != "scout"
  			&& requested.taskType != "attack"
@@ -797,7 +827,7 @@ index 98bc077..47e6d52 100644
  		{
  			requested.status = "BLOCKED";
  			requested.blockedReason =
-@@ -4829,22 +5317,20 @@ void CombatCommander::updateVoiOperations()
+@@ -4829,22 +5347,20 @@ void CombatCommander::updateVoiOperations()
  		{
  			if (!m_squadData.squadExists(operation.squadName))
  			{
@@ -828,7 +858,7 @@ index 98bc077..47e6d52 100644
  							operation.status),
  						ExplicitOperationPriority,
  						m_bot));
-@@ -4877,6 +5363,8 @@ void CombatCommander::updateVoiOperations()
+@@ -4877,6 +5393,8 @@ void CombatCommander::updateVoiOperations()
  					!= requested.policyUpdateId;
  			existing.policyUpdateId = policyUpdateId;
  			existing.commandLayer = requested.commandLayer;
@@ -837,7 +867,7 @@ index 98bc077..47e6d52 100644
  			existing.taskType = requested.taskType;
  			existing.unitClasses = requested.unitClasses;
  			existing.lifetimeMode = requested.lifetimeMode;
-@@ -4945,6 +5433,7 @@ void CombatCommander::updateVoiOperations()
+@@ -4945,6 +5463,7 @@ void CombatCommander::updateVoiOperations()
  				existing.submissionObserved = false;
  				existing.submittedFrame = 0;
  				existing.submittedPositions.clear();
@@ -845,7 +875,7 @@ index 98bc077..47e6d52 100644
  			}
  		};
  	auto annotateRejectedEdit =
-@@ -5051,6 +5540,10 @@ void CombatCommander::updateVoiOperations()
+@@ -5051,6 +5570,10 @@ void CombatCommander::updateVoiOperations()
  				|| existing.routeType
  					!= requested.routeType;
  			VoiOperationState replacement = requested;
@@ -856,7 +886,7 @@ index 98bc077..47e6d52 100644
  			replacement.assignedUnitTags =
  				existing.assignedUnitTags;
  			replacement.assignedCount =
-@@ -6355,6 +6848,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6355,6 +6878,8 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  		++index)
  	{
  		const auto & operation = m_voiOperations[index];
@@ -865,7 +895,7 @@ index 98bc077..47e6d52 100644
  		if (index > 0)
  		{
  			payload << ",";
-@@ -6366,10 +6861,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6366,10 +6891,20 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  			<< "\","
  			<< "\"generation\":"
  			<< operation.generation << ","
@@ -886,7 +916,7 @@ index 98bc077..47e6d52 100644
  			<< "\"status\":\""
  			<< voiOperationJsonEscape(
  				operation.status)
-@@ -6465,6 +6970,170 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6465,6 +7000,206 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  			}
  			payload << "]}";
  		}
@@ -1015,7 +1045,19 @@ index 98bc077..47e6d52 100644
 +							? telemetryEvidence
 +								->attemptedCount
 +							: 0)
-+					<< ",\"attempted_frame\":"
++					<< ",\"attempted_unit_tags\":";
++				if (telemetryEvidence != nullptr)
++				{
++					voiAppendOperationUnitTagsJson(
++						payload,
++						telemetryEvidence
++							->attemptedUnitTags);
++				}
++				else
++				{
++					payload << "[]";
++				}
++				payload << ",\"attempted_frame\":"
 +					<< (telemetryEvidence != nullptr
 +							? telemetryEvidence
 +								->attemptedFrame
@@ -1025,7 +1067,19 @@ index 98bc077..47e6d52 100644
 +							? telemetryEvidence
 +								->submittedCount
 +							: 0)
-+					<< ",\"submitted_frame\":"
++					<< ",\"submitted_unit_tags\":";
++				if (telemetryEvidence != nullptr)
++				{
++					voiAppendOperationUnitTagsJson(
++						payload,
++						telemetryEvidence
++							->submittedUnitTags);
++				}
++				else
++				{
++					payload << "[]";
++				}
++				payload << ",\"submitted_frame\":"
 +					<< (telemetryEvidence != nullptr
 +							? telemetryEvidence
 +								->submittedFrame
@@ -1041,7 +1095,19 @@ index 98bc077..47e6d52 100644
 +							? telemetryEvidence
 +								->effectCount
 +							: 0)
-+					<< ",\"effect_frame\":"
++					<< ",\"effect_unit_tags\":";
++				if (telemetryEvidence != nullptr)
++				{
++					voiAppendOperationUnitTagsJson(
++						payload,
++						telemetryEvidence
++							->effectUnitTags);
++				}
++				else
++				{
++					payload << "[]";
++				}
++				payload << ",\"effect_frame\":"
 +					<< (telemetryEvidence != nullptr
 +							? telemetryEvidence
 +								->effectFrame
@@ -1057,7 +1123,7 @@ index 98bc077..47e6d52 100644
  		payload << "],"
  			<< "\"target_x\":"
  			<< operation.targetX << ","
-@@ -6569,10 +7238,101 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
+@@ -6569,10 +7304,113 @@ std::string CombatCommander::getVoiOperationDirectorTelemetryJson() const
  				operation.lastAction)
  			<< "\"}";
  	}
@@ -1101,18 +1167,30 @@ index 98bc077..47e6d52 100644
 +			<< snapshot.attemptGeneration
 +			<< ",\"attempted_count\":"
 +			<< snapshot.attemptedCount
-+			<< ",\"attempted_frame\":"
++			<< ",\"attempted_unit_tags\":";
++		voiAppendOperationUnitTagsJson(
++			payload,
++			snapshot.attemptedUnitTags);
++		payload << ",\"attempted_frame\":"
 +			<< snapshot.attemptedFrame
 +			<< ",\"submitted_count\":"
 +			<< snapshot.submittedCount
-+			<< ",\"submitted_frame\":"
++			<< ",\"submitted_unit_tags\":";
++		voiAppendOperationUnitTagsJson(
++			payload,
++			snapshot.submittedUnitTags);
++		payload << ",\"submitted_frame\":"
 +			<< snapshot.submittedFrame
 +			<< ",\"effect_kind\":\""
 +			<< voiOperationJsonEscape(
 +				snapshot.effectKind)
 +			<< "\",\"effect_count\":"
 +			<< snapshot.effectCount
-+			<< ",\"effect_frame\":"
++			<< ",\"effect_unit_tags\":";
++		voiAppendOperationUnitTagsJson(
++			payload,
++			snapshot.effectUnitTags);
++		payload << ",\"effect_frame\":"
 +			<< snapshot.effectFrame
 +			<< ",\"coalesced_observation_count\":"
 +			<< delivery.coalescedObservationCount
@@ -1159,7 +1237,7 @@ index 98bc077..47e6d52 100644
  void CombatCommander::bindCurrentVoiExplicitAbilityAttempt(
  	UnitAction & action) const
  {
-@@ -13066,9 +13826,93 @@ void CombatCommander::drawVoiOperationHud()
+@@ -13066,9 +13904,93 @@ void CombatCommander::drawVoiOperationHud()
  			<< " " << operation.taskType
  			<< " [" << operation.status << "]"
  			<< " units=" << operation.assignedCount
@@ -1254,7 +1332,7 @@ index 98bc077..47e6d52 100644
  		if (operation.status == "BLOCKED"
  			&& !operation.blockedReason.empty())
  		{
-@@ -14044,6 +14888,67 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
+@@ -14044,6 +14966,67 @@ bool CombatCommander::PlanAction(const sc2::Unit* unit, UnitAction action)
  		return false;
  	}
  
@@ -1479,10 +1557,10 @@ index 4bbb024..3791f54 100644
  }
 diff --git a/src/voi_family_effect_lifecycle.hpp b/src/voi_family_effect_lifecycle.hpp
 new file mode 100644
-index 0000000..7565108
+index 0000000..e162649
 --- /dev/null
 +++ b/src/voi_family_effect_lifecycle.hpp
-@@ -0,0 +1,525 @@
+@@ -0,0 +1,612 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -1490,6 +1568,7 @@ index 0000000..7565108
 +#include <cstdint>
 +#include <fstream>
 +#include <map>
++#include <set>
 +#include <string>
 +#include <tuple>
 +#include <vector>
@@ -1580,11 +1659,14 @@ index 0000000..7565108
 +	std::uint64_t attemptGeneration = 0;
 +	int attemptedCount = 0;
 +	std::uint32_t attemptedFrame = 0;
++	std::set<std::uint64_t> attemptedUnitTags;
 +	int submittedCount = 0;
 +	std::uint32_t submittedFrame = 0;
++	std::set<std::uint64_t> submittedUnitTags;
 +	std::string effectKind;
 +	std::size_t effectCount = 0;
 +	std::uint32_t effectFrame = 0;
++	std::set<std::uint64_t> effectUnitTags;
 +	std::string blockerManager;
 +	std::string blockerReason;
 +};
@@ -1700,6 +1782,61 @@ index 0000000..7565108
 +			== right.snapshot.effectKind;
 +}
 +
++inline bool voiFamilyEffectTelemetryLifecycleIsValid(
++	const VoiFamilyEffectTelemetrySnapshot & snapshot,
++	bool requireEffect)
++{
++	const bool attempted =
++		snapshot.attemptedCount > 0
++		|| snapshot.attemptedFrame > 0;
++	const bool submitted =
++		snapshot.submittedCount > 0
++		|| snapshot.submittedFrame > 0;
++	const bool effect =
++		snapshot.effectCount > 0
++		|| snapshot.effectFrame > 0
++		|| !snapshot.effectKind.empty();
++	if (snapshot.attemptedCount < 0
++		|| snapshot.submittedCount < 0
++		|| (attempted
++			&& !(snapshot.attemptedCount > 0
++				&& snapshot.attemptedFrame > 0))
++		|| (submitted
++			&& !(attempted
++				&& snapshot.submittedCount > 0
++				&& snapshot.submittedFrame
++					>= snapshot.attemptedFrame))
++		|| (effect
++			&& !(submitted
++				&& snapshot.effectCount > 0
++				&& snapshot.effectFrame
++					>= snapshot.submittedFrame
++				&& !snapshot.effectKind.empty()))
++		|| (requireEffect && !effect)
++		|| snapshot.attemptedUnitTags.size()
++			!= static_cast<std::size_t>(
++				snapshot.attemptedCount)
++		|| snapshot.submittedUnitTags.size()
++			!= static_cast<std::size_t>(
++				snapshot.submittedCount)
++		|| snapshot.effectUnitTags.size()
++			!= snapshot.effectCount
++		|| !std::includes(
++			snapshot.attemptedUnitTags.begin(),
++			snapshot.attemptedUnitTags.end(),
++			snapshot.submittedUnitTags.begin(),
++			snapshot.submittedUnitTags.end())
++		|| !std::includes(
++			snapshot.submittedUnitTags.begin(),
++			snapshot.submittedUnitTags.end(),
++			snapshot.effectUnitTags.begin(),
++			snapshot.effectUnitTags.end()))
++	{
++		return false;
++	}
++	return true;
++}
++
 +inline bool voiEnqueueFamilyEffectTelemetryDelivery(
 +	const VoiFamilyEffectTelemetryDelivery & delivery,
 +	VoiFamilyEffectTelemetryDeliveryQueue & queue)
@@ -1731,6 +1868,9 @@ index 0000000..7565108
 +		|| delivery.snapshot.effectKind.empty()
 +		|| delivery.snapshot.effectCount == 0
 +		|| delivery.snapshot.effectFrame == 0
++		|| !voiFamilyEffectTelemetryLifecycleIsValid(
++			delivery.snapshot,
++			true)
 +		|| !(movementContract || abilityContract))
 +	{
 +		return false;
@@ -1753,6 +1893,25 @@ index 0000000..7565108
 +			pending,
 +			delivery))
 +		{
++			pending.snapshot.attemptedUnitTags.insert(
++				delivery.snapshot.attemptedUnitTags.begin(),
++				delivery.snapshot.attemptedUnitTags.end());
++			pending.snapshot.attemptedCount =
++				static_cast<int>(
++					pending.snapshot
++						.attemptedUnitTags.size());
++			pending.snapshot.submittedUnitTags.insert(
++				delivery.snapshot.submittedUnitTags.begin(),
++				delivery.snapshot.submittedUnitTags.end());
++			pending.snapshot.submittedCount =
++				static_cast<int>(
++					pending.snapshot
++						.submittedUnitTags.size());
++			pending.snapshot.effectUnitTags.insert(
++				delivery.snapshot.effectUnitTags.begin(),
++				delivery.snapshot.effectUnitTags.end());
++			pending.snapshot.effectCount =
++				pending.snapshot.effectUnitTags.size();
 +			++pending.coalescedObservationCount;
 +			pending.latestEffectFrame = std::max(
 +				pending.latestEffectFrame,
@@ -1815,7 +1974,10 @@ index 0000000..7565108
 +{
 +	if (snapshot.effectKind.empty()
 +		|| snapshot.effectCount == 0
-+		|| snapshot.effectFrame == 0)
++		|| snapshot.effectFrame == 0
++		|| !voiFamilyEffectTelemetryLifecycleIsValid(
++			snapshot,
++			true))
 +	{
 +		return false;
 +	}
@@ -1888,6 +2050,9 @@ index 0000000..7565108
 +		&& snapshot.policyUpdateId == policyUpdateId
 +		&& snapshot.operationGeneration == operationGeneration
 +		&& snapshot.attemptGeneration > 0
++		&& voiFamilyEffectTelemetryLifecycleIsValid(
++			snapshot,
++			false)
 +		&& snapshot.submittedCount > 0
 +		&& snapshot.submittedFrame > 0
 +		&& observationFrame > snapshot.submittedFrame;
@@ -2032,10 +2197,10 @@ index e0a09df..526cc7d 100644
 +)
 diff --git a/tests/family_effect_lifecycle_test.cpp b/tests/family_effect_lifecycle_test.cpp
 new file mode 100644
-index 0000000..be51a4c
+index 0000000..9687713
 --- /dev/null
 +++ b/tests/family_effect_lifecycle_test.cpp
-@@ -0,0 +1,605 @@
+@@ -0,0 +1,636 @@
 +#include "voi_family_effect_lifecycle.hpp"
 +
 +#include <cassert>
@@ -2057,13 +2222,24 @@ index 0000000..be51a4c
 +	snapshot.action = action;
 +	snapshot.requiredEffect = "ability_state_or_effect";
 +	snapshot.attemptGeneration = attemptGeneration;
-+	snapshot.attemptedCount = 1;
++	snapshot.attemptedCount =
++		static_cast<int>(effectCount);
 +	snapshot.attemptedFrame = effectFrame - 2;
-+	snapshot.submittedCount = 1;
++	snapshot.submittedCount =
++		static_cast<int>(effectCount);
 +	snapshot.submittedFrame = effectFrame - 1;
 +	snapshot.effectKind = effectKind;
 +	snapshot.effectCount = effectCount;
 +	snapshot.effectFrame = effectFrame;
++	for (std::uint64_t index = 0;
++		index < effectCount;
++		++index)
++	{
++		const std::uint64_t unitTag = 101 + index;
++		snapshot.attemptedUnitTags.insert(unitTag);
++		snapshot.submittedUnitTags.insert(unitTag);
++		snapshot.effectUnitTags.insert(unitTag);
++	}
 +	return snapshot;
 +}
 +
@@ -2379,6 +2555,14 @@ index 0000000..be51a4c
 +		repeatedSnapshot.effectFrame = frame;
 +		repeatedSnapshot.effectCount =
 +			frame % 2 == 0 ? 2 : 1;
++		if (repeatedSnapshot.effectCount == 2)
++		{
++			repeatedSnapshot.attemptedCount = 2;
++			repeatedSnapshot.submittedCount = 2;
++			repeatedSnapshot.attemptedUnitTags.insert(102);
++			repeatedSnapshot.submittedUnitTags.insert(102);
++			repeatedSnapshot.effectUnitTags.insert(102);
++		}
 +		assert(!voiEnqueueFamilyEffectTelemetryDelivery(
 +			delivery(
 +				"operation-alpha",
@@ -2507,6 +2691,18 @@ index 0000000..be51a4c
 +		"ability_state_or_effect";
 +	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
 +		wrongAbilityAction,
++		invalidQueue));
++	auto reversedFrames = siegeDelivery;
++	reversedFrames.snapshot.attemptedFrame = 170;
++	reversedFrames.snapshot.submittedFrame = 150;
++	reversedFrames.snapshot.effectFrame = 140;
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		reversedFrames,
++		invalidQueue));
++	auto mismatchedUnitIdentity = siegeDelivery;
++	mismatchedUnitIdentity.snapshot.effectUnitTags.clear();
++	assert(!voiEnqueueFamilyEffectTelemetryDelivery(
++		mismatchedUnitIdentity,
 +		invalidQueue));
 +	assert(invalidQueue.pending.empty());
 +

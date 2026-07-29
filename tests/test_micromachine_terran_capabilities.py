@@ -626,6 +626,57 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
         self.assertEqual(4, evidence[0]["attempt_generation"])
         self.assertTrue(evidence[0]["effect"])
 
+    def test_current_family_evidence_rejects_reversed_frames_and_tag_counts(
+        self,
+    ) -> None:
+        current = {
+            "update_id": "ordered-update",
+            "operation_id": "ordered-operation",
+            "generation": 2,
+            "family": "marine",
+            "unit_type": "TERRAN_MARINE",
+            "role": "frontline",
+            "assigned": 1,
+            "represented": 1,
+            "action": "attack_move",
+            "required_effect": "movement_or_engagement",
+            "attempt_generation": 4,
+            "attempted_count": 1,
+            "attempted_frame": 170,
+            "attempted_unit_tags": [101],
+            "submitted_count": 1,
+            "submitted_frame": 171,
+            "submitted_unit_tags": [101],
+            "effect_kind": "movement",
+            "effect_count": 1,
+            "effect_frame": 172,
+            "effect_unit_tags": [101],
+        }
+        for invalid in (
+            {
+                **current,
+                "submitted_frame": 150,
+                "effect_frame": 140,
+            },
+            {
+                **current,
+                "effect_unit_tags": [],
+            },
+            {
+                **current,
+                "submitted_unit_tags": [202],
+                "effect_unit_tags": [202],
+            },
+        ):
+            with self.subTest(invalid=invalid):
+                evidence = operation_family_evidence(
+                    {"family_evidence": [invalid]},
+                    expected_update_id="ordered-update",
+                    expected_operation_id="ordered-operation",
+                    expected_generation=2,
+                )
+                self.assertEqual((), evidence)
+
     def test_pending_family_effects_merge_only_exact_current_delivery(
         self,
     ) -> None:

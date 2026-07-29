@@ -1648,6 +1648,9 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
                 "attempted_count": 2,
                 "submitted_count": 2,
                 "effect_count": 2,
+                "attempted_unit_tags": [101, 102],
+                "submitted_unit_tags": [101, 102],
+                "effect_unit_tags": [101, 102],
             }
         )
         second = {
@@ -1657,6 +1660,9 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
             "attempted_count": 1,
             "submitted_count": 1,
             "effect_count": 1,
+            "attempted_unit_tags": [103],
+            "submitted_unit_tags": [103],
+            "effect_unit_tags": [103],
         }
         third = {
             **copy.deepcopy(first),
@@ -1665,6 +1671,9 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
             "attempted_count": 1,
             "submitted_count": 1,
             "effect_count": 1,
+            "attempted_unit_tags": [104],
+            "submitted_unit_tags": [104],
+            "effect_unit_tags": [104],
         }
         operation_telemetry["family_evidence"] = [first, second, third]
 
@@ -1680,6 +1689,54 @@ class MicroMachineCommandExecutionTest(unittest.TestCase):
         self.assertTrue(lifecycle["order_ok"])
         self.assertTrue(lifecycle["action_ok"])
         self.assertTrue(lifecycle["effect_ok"])
+
+    def test_family_lifecycle_does_not_double_count_one_unit_across_actions(
+        self,
+    ) -> None:
+        update, telemetry = _family_operation_case(
+            task_type="pressure_with_main_army",
+            canonical_task_type="attack",
+            squad_order="attack",
+            family="marine",
+            unit_type="TERRAN_MARINE",
+            role="frontline",
+        )
+        operation = update["vector"]["operations"][0]
+        operation["composition_requirements"][0]["count"] = 2
+        operation_telemetry = telemetry["managers"]["OperationDirector"][
+            "operations"
+        ][0]
+        first = operation_telemetry["family_evidence"][0]
+        first.update(
+            {
+                "assigned": 2,
+                "attempted_count": 1,
+                "submitted_count": 1,
+                "effect_count": 1,
+                "attempted_unit_tags": [101],
+                "submitted_unit_tags": [101],
+                "effect_unit_tags": [101],
+            }
+        )
+        second = {
+            **copy.deepcopy(first),
+            "action": "move",
+            "attempt_generation": 4,
+        }
+        operation_telemetry["family_evidence"] = [first, second]
+
+        report = classify_micromachine_operation_executions(
+            latest_update=update,
+            latest_telemetry=telemetry,
+            latest_frame=180,
+        )[0]
+        lifecycle = {
+            stage.name: stage for stage in report.stages
+        }["effect_observed"].evidence["family_lifecycle"]
+        self.assertTrue(lifecycle["assignment_ok"])
+        self.assertFalse(lifecycle["order_ok"])
+        self.assertFalse(lifecycle["action_ok"])
+        self.assertFalse(lifecycle["effect_ok"])
 
     def test_specific_ability_policy_is_not_weakened_by_generic_policy(
         self,
