@@ -1151,6 +1151,14 @@ def _normalized_family_evidence_item(
         int(item.get("effect") is True),
     )
     effect_frame = max(0, _int_value(item.get("effect_frame")))
+    unit_tag_keys = (
+        "attempted_unit_tags",
+        "submitted_unit_tags",
+        "effect_unit_tags",
+    )
+    unit_tag_fields_present = tuple(key in item for key in unit_tag_keys)
+    if any(unit_tag_fields_present) and not all(unit_tag_fields_present):
+        return None
     unit_tags: dict[str, tuple[int, ...] | None] = {}
     for key, expected_count in (
         ("attempted_unit_tags", attempted_count),

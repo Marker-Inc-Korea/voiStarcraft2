@@ -2048,7 +2048,7 @@ def _micromachine_operation_status_payload(
     family_evidence = _public_operation_family_evidence(
         aggregate_family_evidence
     )
-    return {
+    payload = {
         "operation_key": operation_key,
         "operation_id": operation_id,
         "operation_generation": active_operation_generation,
@@ -2084,24 +2084,57 @@ def _micromachine_operation_status_payload(
         ),
         "family_evidence": family_evidence,
     }
+    public_payload = _public_micromachine_runtime_payload(payload)
+    return (
+        dict(public_payload)
+        if isinstance(public_payload, Mapping)
+        else {}
+    )
 
 
 def _public_operation_family_evidence(
     rows: Sequence[Mapping[str, object]],
 ) -> list[dict[str, object]]:
-    internal_keys = {
-        "attempted_unit_tags",
-        "submitted_unit_tags",
-        "effect_unit_tags",
-    }
-    return [
-        {
-            key: value
-            for key, value in row.items()
-            if key not in internal_keys
+    public_rows: list[dict[str, object]] = []
+    for row in rows:
+        public_row = _public_micromachine_runtime_payload(row)
+        if isinstance(public_row, Mapping):
+            public_rows.append(dict(public_row))
+    return public_rows
+
+
+def _public_micromachine_runtime_payload(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            key: _public_micromachine_runtime_payload(item)
+            for key, item in value.items()
+            if not _micromachine_internal_unit_tag_key(key)
         }
-        for row in rows
-    ]
+    if isinstance(value, list):
+        return [
+            _public_micromachine_runtime_payload(item)
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _public_micromachine_runtime_payload(item)
+            for item in value
+        )
+    return value
+
+
+def _micromachine_internal_unit_tag_key(key: object) -> bool:
+    normalized = str(key or "").strip().lower()
+    return (
+        normalized == "unit_tags"
+        or normalized.endswith("_unit_tags")
+        or normalized
+        in {
+            "owner_tags",
+            "unassigned_tags",
+            "transferable_tags",
+        }
+    )
 
 
 def _micromachine_operation_evidence_window(
@@ -2379,7 +2412,7 @@ def _micromachine_status_payload(
         consumption_status = str(
             representative.get("consumption_status", consumption_status) or ""
         )
-    return {
+    payload = {
         "status": "published" if latest is not None else "idle",
         "dashboard": dict(dashboard),
         "update": dict(latest) if latest is not None else None,
@@ -2397,6 +2430,12 @@ def _micromachine_status_payload(
         "consumption_status": consumption_status,
         "consumed": consumption_status == "consumed",
     }
+    public_payload = _public_micromachine_runtime_payload(payload)
+    return (
+        dict(public_payload)
+        if isinstance(public_payload, Mapping)
+        else {}
+    )
 
 
 def _micromachine_status_with_runtime_gate(
@@ -2637,7 +2676,7 @@ def _micromachine_intervention_summary(
     dashboard_managers = evidence_telemetry.get("managers", {})
     if not isinstance(dashboard_managers, Mapping):
         dashboard_managers = {}
-    return {
+    payload = {
         "applied": consumption_status == "consumed",
         "policy_active": policy_active,
         "latest_update_id": update_id,
@@ -2674,6 +2713,12 @@ def _micromachine_intervention_summary(
         "refusal_reason": refusal_reason,
         "log_snippets": [dict(item) for item in log_snippets],
     }
+    public_payload = _public_micromachine_runtime_payload(payload)
+    return (
+        dict(public_payload)
+        if isinstance(public_payload, Mapping)
+        else {}
+    )
 
 
 def _provider_output_is_terminal(output: Mapping[str, object]) -> bool:

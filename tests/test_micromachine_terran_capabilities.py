@@ -667,6 +667,21 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
                 "submitted_unit_tags": [202],
                 "effect_unit_tags": [202],
             },
+            {
+                key: value
+                for key, value in current.items()
+                if key != "attempted_unit_tags"
+            },
+            {
+                key: value
+                for key, value in current.items()
+                if key != "submitted_unit_tags"
+            },
+            {
+                key: value
+                for key, value in current.items()
+                if key != "effect_unit_tags"
+            },
         ):
             with self.subTest(invalid=invalid):
                 evidence = operation_family_evidence(

@@ -2639,6 +2639,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "last_action_frame": 240,
                             "movement_frame": 250,
                             "assigned_count": 14,
+                            "assigned_unit_tags": list(range(2001, 2015)),
                             "max_home_distance": 24.0,
                             "last_action": "AttackMove",
                             "squad_order": "harass",
@@ -2686,6 +2687,22 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 self.assertNotIn("attempted_unit_tags", row)
                 self.assertNotIn("submitted_unit_tags", row)
                 self.assertNotIn("effect_unit_tags", row)
+        public_payload_json = json.dumps(payload, ensure_ascii=False)
+        for internal_key in (
+            "assigned_unit_tags",
+            "attempted_unit_tags",
+            "submitted_unit_tags",
+            "effect_unit_tags",
+        ):
+            self.assertNotIn(internal_key, public_payload_json)
+        execution_telemetry = operation["intervention"][
+            "command_execution"
+        ]["telemetry"]
+        self.assertNotIn("assigned_unit_tags", execution_telemetry)
+        for row in execution_telemetry["family_evidence"]:
+            self.assertNotIn("attempted_unit_tags", row)
+            self.assertNotIn("submitted_unit_tags", row)
+            self.assertNotIn("effect_unit_tags", row)
         by_family = {row["family"]: row for row in evidence}
         self.assertEqual("effect", by_family["reaper"]["stage"])
         self.assertEqual("blocked", by_family["banshee"]["stage"])
