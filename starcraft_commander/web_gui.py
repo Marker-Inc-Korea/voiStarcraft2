@@ -2120,14 +2120,50 @@ def _public_micromachine_runtime_payload(value: object) -> object:
             _public_micromachine_runtime_payload(item)
             for item in value
         )
+    if isinstance(value, str):
+        return _redact_micromachine_internal_unit_tag_text(value)
     return value
+
+
+_MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"""(?ix)
+    ['"]?
+    (?:
+        [a-z][a-z0-9_]*_tag
+        |(?:[a-z][a-z0-9_]*_)?unit_tags
+        |[a-z][a-z0-9_]*_units_tags
+        |[a-z][a-z0-9_]*_owner_tags
+        |owner_tags
+        |unassigned_tags
+        |transferable_tags
+    )
+    ['"]?
+    \s*[:=]\s*
+    (?:
+        \[[^\]\r\n]*\]
+        |[-+]?\d+
+        |'[^'\r\n]*'
+        |"[^"\r\n]*"
+    )
+    """
+)
+
+
+def _redact_micromachine_internal_unit_tag_text(value: str) -> str:
+    return _MICROMACHINE_INTERNAL_UNIT_TAG_TEXT_PATTERN.sub(
+        "[internal unit identity]: [redacted]",
+        value,
+    )
 
 
 def _micromachine_internal_unit_tag_key(key: object) -> bool:
     normalized = str(key or "").strip().lower()
     return (
-        normalized == "unit_tags"
+        normalized in {"tag", "unit_tags"}
+        or normalized.endswith("_tag")
         or normalized.endswith("_unit_tags")
+        or normalized.endswith("_units_tags")
+        or normalized.endswith("_owner_tags")
         or normalized
         in {
             "owner_tags",
@@ -2655,8 +2691,16 @@ def _micromachine_intervention_summary(
         if evidence_can_be_current
         else ""
     )
+    public_evidence_telemetry = _public_micromachine_runtime_payload(
+        evidence_telemetry
+    )
+    if not isinstance(public_evidence_telemetry, Mapping):
+        public_evidence_telemetry = {
+            "frame": telemetry_frame,
+            "managers": {},
+        }
     tactical_evidence = classify_micromachine_tactical_evidence(
-        latest_telemetry=evidence_telemetry,
+        latest_telemetry=public_evidence_telemetry,
         telemetry_archive=(),
         log_text=tactical_log_text,
         expected_effects=_micromachine_expected_tactical_effects(vector),
@@ -2673,7 +2717,7 @@ def _micromachine_intervention_summary(
         target_frame=0,
     ).to_dict()
     tactical_evidence_payload = tactical_evidence.to_dict()
-    dashboard_managers = evidence_telemetry.get("managers", {})
+    dashboard_managers = public_evidence_telemetry.get("managers", {})
     if not isinstance(dashboard_managers, Mapping):
         dashboard_managers = {}
     payload = {
@@ -5409,8 +5453,12 @@ class SessionLoopBridge:
             ),
         }
         payload["modulation_results"] = compile_result_stream
-        self._update_micromachine_recent_lifecycle(root, payload)
-        return payload
+        public_payload = _public_micromachine_runtime_payload(payload)
+        if not isinstance(public_payload, Mapping):
+            return {}
+        result = dict(public_payload)
+        self._update_micromachine_recent_lifecycle(root, result)
+        return result
 
     def _run_loop(self) -> None:
         """Daemon thread body: run a private asyncio loop draining commands."""

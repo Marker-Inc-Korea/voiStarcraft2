@@ -2640,6 +2640,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "movement_frame": 250,
                             "assigned_count": 14,
                             "assigned_unit_tags": list(range(2001, 2015)),
+                            "actor_tag": 2015,
+                            "commanded_unit_tag": 2016,
+                            "scout_last_commanded_unit_tag": 2017,
                             "max_home_distance": 24.0,
                             "last_action": "AttackMove",
                             "squad_order": "harass",
@@ -2690,6 +2693,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         public_payload_json = json.dumps(payload, ensure_ascii=False)
         for internal_key in (
             "assigned_unit_tags",
+            "actor_tag",
+            "commanded_unit_tag",
+            "scout_last_commanded_unit_tag",
             "attempted_unit_tags",
             "submitted_unit_tags",
             "effect_unit_tags",
@@ -2703,6 +2709,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertNotIn("attempted_unit_tags", row)
             self.assertNotIn("submitted_unit_tags", row)
             self.assertNotIn("effect_unit_tags", row)
+        tactical_evidence_json = json.dumps(
+            operation["intervention"]["tactical_evidence"],
+            ensure_ascii=False,
+        )
+        self.assertNotIn("scout_last_commanded_unit_tag", tactical_evidence_json)
+        self.assertNotIn("2017", tactical_evidence_json)
         by_family = {row["family"]: row for row in evidence}
         self.assertEqual("effect", by_family["reaper"]["stage"])
         self.assertEqual("blocked", by_family["banshee"]["stage"])
@@ -5108,6 +5120,17 @@ class SessionLoopBridgeTest(unittest.TestCase):
                     "status": "publish_failed",
                     "compile_result": compile_result,
                     "update": None,
+                    "runtime_debug": {
+                        "actor_tag": 9000 + index,
+                        "assigned_unit_tags": [9100 + index],
+                        "family_evidence": [
+                            {
+                                "attempted_unit_tags": [9200 + index],
+                                "submitted_unit_tags": [9200 + index],
+                                "effect_unit_tags": [9200 + index],
+                            }
+                        ],
+                    },
                 }
                 web_gui._write_micromachine_compile_result(
                     directory,
@@ -5130,6 +5153,15 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 for item in status["modulation_results"]
             ],
         )
+        serialized = json.dumps(status, ensure_ascii=False)
+        for internal_key in (
+            "actor_tag",
+            "assigned_unit_tags",
+            "attempted_unit_tags",
+            "submitted_unit_tags",
+            "effect_unit_tags",
+        ):
+            self.assertNotIn(internal_key, serialized)
 
     def test_micromachine_recent_command_retains_operation_edit_context(self):
         operation = {
