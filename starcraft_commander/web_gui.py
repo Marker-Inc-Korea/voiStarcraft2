@@ -59,6 +59,8 @@ from starcraft_commander.micromachine_bridge import (
 )
 from starcraft_commander.micromachine_battlefield_projection import (
     BattlefieldProjectionIdentity,
+    BattlefieldProjectionResult,
+    battlefield_overview_fingerprint,
     select_latest_battlefield_projection,
 )
 from starcraft_commander.micromachine_command_execution import (
@@ -2429,7 +2431,9 @@ def _public_battlefield_projection_value(
     schema: object,
 ) -> object:
     if schema is _PUBLIC_BATTLEFIELD_SCALAR:
-        if value is None or isinstance(value, (bool, int, float, str)):
+        if isinstance(value, str):
+            return _redact_micromachine_internal_unit_tag_text(value)
+        if value is None or isinstance(value, (bool, int, float)):
             return value
         return _PUBLIC_BATTLEFIELD_DROP
     if isinstance(schema, Mapping):
@@ -2845,6 +2849,8 @@ def _micromachine_status_payload(
     previous_battlefield_identity: (
         BattlefieldProjectionIdentity | Mapping[str, object] | None
     ) = None,
+    previous_battlefield_payload_fingerprint: str = "",
+    battlefield_projection: BattlefieldProjectionResult | None = None,
 ) -> dict[str, object]:
     """Promote latest blackboard state into the same top-level UI contract."""
 
@@ -2853,15 +2859,19 @@ def _micromachine_status_payload(
         if telemetry is not None
         else None
     )
-    battlefield_projection = select_latest_battlefield_projection(
-        latest_telemetry=latest_telemetry_document,
-        telemetry_archive=tuple(
-            _telemetry_to_mapping(entry)
-            for entry in telemetry_archive
-        ),
-        expected_scope="battlefield",
-        previous_identity=previous_battlefield_identity,
-    )
+    if battlefield_projection is None:
+        battlefield_projection = select_latest_battlefield_projection(
+            latest_telemetry=latest_telemetry_document,
+            telemetry_archive=tuple(
+                _telemetry_to_mapping(entry)
+                for entry in telemetry_archive
+            ),
+            expected_scope="battlefield",
+            previous_identity=previous_battlefield_identity,
+            previous_payload_fingerprint=(
+                previous_battlefield_payload_fingerprint
+            ),
+        )
     updates = dashboard.get("active_updates")
     active_updates = updates if isinstance(updates, list) else []
     latest = (
@@ -4985,6 +4995,53 @@ class _LiveLaunchManager:
                 self._error = self._last_line or "live process exited before GUI URL"
 
 
+@dataclass(frozen=True)
+class _MicroMachineTelemetryFileIdentity:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    sha256: str
+
+
+def _read_micromachine_telemetry_file(
+    path: str,
+) -> tuple[object | None, _MicroMachineTelemetryFileIdentity] | None:
+    try:
+        with open(path, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            payload = handle.read()
+            after = os.fstat(handle.fileno())
+    except OSError:
+        return None
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if before_identity != after_identity or after.st_size != len(payload):
+        return None
+    identity = _MicroMachineTelemetryFileIdentity(
+        device=after.st_dev,
+        inode=after.st_ino,
+        size=after.st_size,
+        mtime_ns=after.st_mtime_ns,
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        document = None
+    return document, identity
+
+
 class _MicroMachineLaunchManager:
     """Start the patched MicroMachine runtime script and expose cockpit status."""
 
@@ -4996,7 +5053,10 @@ class _MicroMachineLaunchManager:
         self._last_line = ""
         self._blackboard_dir = _default_micromachine_blackboard_dir()
         self._enemy_difficulty = DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY
-        self._launch_wall_time = 0.0
+        self._launch_started_at_ns = 0
+        self._launch_telemetry_baseline: (
+            _MicroMachineTelemetryFileIdentity | None
+        ) = None
         self._runtime_instance_id = ""
         self._cwd = cwd.strip() or _REPO_ROOT
         candidate_script = script_path.strip()
@@ -5068,7 +5128,14 @@ class _MicroMachineLaunchManager:
                 max_attempts,
             ]
             try:
-                self._launch_wall_time = time.time()
+                telemetry_path = os.path.realpath(
+                    os.path.join(root, "latest_telemetry.json")
+                )
+                baseline = _read_micromachine_telemetry_file(telemetry_path)
+                self._launch_telemetry_baseline = (
+                    baseline[1] if baseline is not None else None
+                )
+                self._launch_started_at_ns = time.time_ns()
                 self._runtime_instance_id = uuid.uuid4().hex
                 self._process = subprocess.Popen(
                     argv,
@@ -5086,7 +5153,8 @@ class _MicroMachineLaunchManager:
                     normalize_whitespace=True,
                 )
                 self._process = None
-                self._launch_wall_time = 0.0
+                self._launch_started_at_ns = 0
+                self._launch_telemetry_baseline = None
                 self._runtime_instance_id = ""
                 return self._snapshot_unlocked()
             threading.Thread(
@@ -5187,24 +5255,35 @@ class _MicroMachineLaunchManager:
         path_real = os.path.realpath(path)
         if not path_real.startswith(root_real + os.sep) or not os.path.isfile(path_real):
             return None
-        try:
-            with open(path_real, encoding="utf-8") as handle:
-                document = json.load(handle)
-        except (OSError, json.JSONDecodeError):
+        telemetry_file = _read_micromachine_telemetry_file(path_real)
+        if telemetry_file is None:
             return None
+        document, file_identity = telemetry_file
         if not isinstance(document, Mapping):
             return None
         if document.get("protocol_version") != "voi-mm-bridge/v1":
             return None
         process = self._process
-        if process is not None and process.poll() is None and self._launch_wall_time:
-            try:
-                if os.path.getmtime(path_real) + 1.0 < self._launch_wall_time:
-                    return None
-            except OSError:
+        if (
+            process is not None
+            and process.poll() is None
+            and self._launch_started_at_ns
+        ):
+            if file_identity.mtime_ns <= self._launch_started_at_ns:
+                return None
+            if (
+                self._launch_telemetry_baseline is not None
+                and file_identity == self._launch_telemetry_baseline
+            ):
                 return None
         frame = document.get("frame")
         return frame if type(frame) is int else None
+
+
+@dataclass(frozen=True)
+class _BattlefieldProjectionCursor:
+    identity: Mapping[str, object]
+    payload_fingerprint: str
 
 
 class SessionLoopBridge:
@@ -5248,8 +5327,8 @@ class SessionLoopBridge:
         ] = {}
         self._micromachine_recent_commands_lock = threading.Lock()
         self._micromachine_battlefield_identity_lock = threading.Lock()
-        self._micromachine_battlefield_identities: dict[
-            tuple[str, str], Mapping[str, object]
+        self._micromachine_battlefield_cursors: dict[
+            tuple[str, str], _BattlefieldProjectionCursor
         ] = {}
         self._lifecycle_lock = threading.Lock()
         self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
@@ -5973,10 +6052,32 @@ class SessionLoopBridge:
         with self._micromachine_battlefield_identity_lock:
             root_key = os.path.realpath(root)
             identity_key = (root_key, runtime_instance_id)
-            previous_identity = (
-                self._micromachine_battlefield_identities.get(identity_key)
+            previous_cursor = (
+                self._micromachine_battlefield_cursors.get(identity_key)
                 if runtime_instance_id
                 else None
+            )
+            battlefield_projection = select_latest_battlefield_projection(
+                latest_telemetry=(
+                    _telemetry_to_mapping(telemetry)
+                    if telemetry is not None
+                    else None
+                ),
+                telemetry_archive=tuple(
+                    _telemetry_to_mapping(entry)
+                    for entry in telemetry_archive
+                ),
+                expected_scope="battlefield",
+                previous_identity=(
+                    previous_cursor.identity
+                    if previous_cursor is not None
+                    else None
+                ),
+                previous_payload_fingerprint=(
+                    previous_cursor.payload_fingerprint
+                    if previous_cursor is not None
+                    else ""
+                ),
             )
             status_payload = _micromachine_status_payload(
                 snapshot.to_dict(),
@@ -5985,7 +6086,7 @@ class SessionLoopBridge:
                 blackboard_dir=root,
                 compile_result=compile_result,
                 result_stream=compile_result_stream,
-                previous_battlefield_identity=previous_identity,
+                battlefield_projection=battlefield_projection,
             )
             projection = status_payload.get("battlefield_projection")
             identity = status_payload.get("battlefield_projection_identity")
@@ -5994,10 +6095,16 @@ class SessionLoopBridge:
                 and isinstance(projection, Mapping)
                 and projection.get("ok") is True
                 and isinstance(identity, Mapping)
+                and battlefield_projection.battlefield_overview is not None
             ):
-                self._micromachine_battlefield_identities[
+                self._micromachine_battlefield_cursors[
                     identity_key
-                ] = dict(identity)
+                ] = _BattlefieldProjectionCursor(
+                    identity=dict(identity),
+                    payload_fingerprint=battlefield_overview_fingerprint(
+                        battlefield_projection.battlefield_overview
+                    ),
+                )
         payload = {
             "enabled": True,
             "blackboard_dir": root,

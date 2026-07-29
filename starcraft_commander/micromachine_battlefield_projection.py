@@ -11,6 +11,8 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+import hashlib
+import json
 import math
 from typing import Final
 
@@ -199,6 +201,19 @@ class _OwnershipEvidence:
     owner_generations_by_id: Mapping[str, int]
 
 
+def battlefield_overview_fingerprint(overview: Mapping[str, object]) -> str:
+    """Return a deterministic fingerprint for one validated C++ projection."""
+
+    encoded = json.dumps(
+        overview,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def validate_battlefield_overview(
     telemetry: Mapping[str, object] | None,
     *,
@@ -245,6 +260,11 @@ def validate_battlefield_overview(
             source_index=source_index,
         )
     overview = overview_value
+    _validate_json_finite_values(
+        overview,
+        path="$.battlefield_overview",
+        validation=validation,
+    )
 
     schema_version = _exact_int(overview.get("schema_version"))
     if schema_version != BATTLEFIELD_OVERVIEW_SCHEMA_VERSION:
@@ -285,6 +305,22 @@ def validate_battlefield_overview(
             or blocker.code == "identity_field_mismatch"
             for blocker in validation.blockers
         )
+        telemetry_frame = _exact_int(telemetry.get("frame"))
+        if telemetry_frame is None or telemetry_frame < 0:
+            validation.block(
+                "invalid_telemetry_frame",
+                "$.frame",
+                "Telemetry must provide a non-negative enclosing frame.",
+                actual=telemetry.get("frame"),
+            )
+        elif telemetry_frame != identity.game_frame:
+            validation.block(
+                "telemetry_frame_mismatch",
+                "$.frame",
+                "The enclosing telemetry frame must match the projection frame.",
+                telemetry_frame=telemetry_frame,
+                projection_frame=identity.game_frame,
+            )
 
     previous = _coerce_previous_identity(previous_identity, validation)
     if identity is not None and previous is not None:
@@ -300,7 +336,7 @@ def validate_battlefield_overview(
     overview_frame = identity.game_frame if identity is not None else None
     owner_tags = _validate_ownership_partition(
         overview,
-        overview_frame=overview_frame,
+        overview_identity=identity,
         validation=validation,
     )
     _validate_bases(
@@ -329,6 +365,7 @@ def select_latest_battlefield_projection(
     telemetry_archive: Sequence[Mapping[str, object]] = (),
     expected_scope: str,
     previous_identity: BattlefieldProjectionIdentity | Mapping[str, object] | None = None,
+    previous_payload_fingerprint: str = "",
 ) -> BattlefieldProjectionResult:
     """Select the latest monotonic projection for one scope.
 
@@ -340,6 +377,12 @@ def select_latest_battlefield_projection(
     selected: BattlefieldProjectionResult | None = None
     rejected: list[BattlefieldProjectionRejection] = []
     baseline = previous_identity
+    baseline_validation = _Validation()
+    baseline_identity = _coerce_previous_identity(
+        previous_identity,
+        baseline_validation,
+    )
+    baseline_fingerprint = str(previous_payload_fingerprint or "").strip()
 
     for index, entry in enumerate(telemetry_archive):
         if not isinstance(entry, Mapping):
@@ -375,6 +418,25 @@ def select_latest_battlefield_projection(
         )
         if not candidate.ok:
             rejected.append(_as_rejection(candidate))
+            continue
+        if _reuses_changed_previous_payload(
+            candidate,
+            previous_identity=baseline_identity,
+            previous_payload_fingerprint=baseline_fingerprint,
+        ):
+            rejected.append(
+                _as_rejection(
+                    _identity_collision_result(
+                        candidate,
+                        source="archive",
+                        source_index=index,
+                        message=(
+                            "The archive projection reused an accepted identity "
+                            "with a different payload."
+                        ),
+                    )
+                )
+            )
             continue
         if (
             selected is not None
@@ -416,6 +478,22 @@ def select_latest_battlefield_projection(
         )
         if not latest.ok:
             return _with_rejections(latest, rejected)
+        if _reuses_changed_previous_payload(
+            latest,
+            previous_identity=baseline_identity,
+            previous_payload_fingerprint=baseline_fingerprint,
+        ):
+            return _with_rejections(
+                _identity_collision_result(
+                    latest,
+                    source="latest",
+                    message=(
+                        "The latest projection reused an accepted identity with "
+                        "a different payload."
+                    ),
+                ),
+                rejected,
+            )
         if (
             selected is not None
             and latest.identity == selected.identity
@@ -482,9 +560,14 @@ def select_latest_battlefield_projection(
 def _validate_ownership_partition(
     overview: Mapping[str, object],
     *,
-    overview_frame: int | None,
+    overview_identity: BattlefieldProjectionIdentity | None,
     validation: _Validation,
 ) -> _OwnershipEvidence:
+    overview_frame = (
+        overview_identity.game_frame
+        if overview_identity is not None
+        else None
+    )
     count_fields: dict[str, int | None] = {}
     for field_name in (
         "eligible_combat_count",
@@ -527,7 +610,7 @@ def _validate_ownership_partition(
         operation_identity = _read_operation_identity(
             operation,
             path=path,
-            overview_frame=overview_frame,
+            overview_identity=overview_identity,
             validation=validation,
         )
         route = _required_mapping(
@@ -562,6 +645,7 @@ def _validate_ownership_partition(
                 path=f"{path}.operation_route",
                 validation=validation,
             )
+        owner_count: int | None = None
         if ownership is not None:
             tags, owner_count = _validate_owner_block(
                 ownership,
@@ -589,6 +673,7 @@ def _validate_ownership_partition(
                 launch,
                 path=f"{path}.operation_launch_policy",
                 overview_frame=overview_frame,
+                owner_count=owner_count,
                 validation=validation,
             )
         if lifetime is not None and completion is not None:
@@ -842,6 +927,7 @@ def _validate_launch_policy(
     *,
     path: str,
     overview_frame: int | None,
+    owner_count: int | None,
     validation: _Validation,
 ) -> None:
     int_fields = (
@@ -899,6 +985,30 @@ def _validate_launch_policy(
             "Operation launch min_units cannot exceed max_units.",
             min_units=minimum,
             max_units=maximum,
+        )
+    if (
+        maximum is not None
+        and launch_count is not None
+        and launch_count > maximum
+    ):
+        validation.block(
+            "launch_count_exceeds_maximum",
+            f"{path}.launch_count",
+            "Operation launch_count cannot exceed max_units.",
+            launch_count=launch_count,
+            max_units=maximum,
+        )
+    if (
+        owner_count is not None
+        and launch_count is not None
+        and launch_count > owner_count
+    ):
+        validation.block(
+            "launch_count_exceeds_owner_count",
+            f"{path}.launch_count",
+            "Operation launch_count cannot exceed authoritative ownership.",
+            launch_count=launch_count,
+            owner_count=owner_count,
         )
     if (
         minimum is not None
@@ -1046,7 +1156,7 @@ def _validate_bases(
         )
         if readiness is None:
             continue
-        _required_string(
+        readiness_state = _required_string(
             readiness.get("readiness_state"),
             path=f"{path}.base_readiness.readiness_state",
             validation=validation,
@@ -1056,16 +1166,18 @@ def _validate_bases(
             path=f"{path}.base_readiness.reason",
             validation=validation,
         )
-        for field_name in (
-            "ground_threat",
-            "air_threat",
-            "observed_enemy_strength",
-        ):
-            _required_nonnegative_number(
+        threat_values = {
+            field_name: _required_nonnegative_number(
                 readiness.get(field_name),
                 path=f"{path}.base_readiness.{field_name}",
                 validation=validation,
             )
+            for field_name in (
+                "ground_threat",
+                "air_threat",
+                "observed_enemy_strength",
+            )
+        }
         evidence_frame = _required_nonnegative_int(
             readiness.get("last_evidence_frame"),
             path=f"{path}.base_readiness.last_evidence_frame",
@@ -1154,8 +1266,8 @@ def _validate_bases(
                 projection_frame=overview_frame,
                 evidence_frame=evidence_frame,
             )
-        ground_threat = readiness.get("ground_threat")
-        air_threat = readiness.get("air_threat")
+        ground_threat = threat_values["ground_threat"]
+        air_threat = threat_values["air_threat"]
         if (
             assigned_defender_count is not None
             and ground_capable_count is not None
@@ -1199,10 +1311,9 @@ def _validate_bases(
                 air=required_air_count,
             )
         if (
-            isinstance(ground_threat, (int, float))
-            and not isinstance(ground_threat, bool)
+            ground_threat is not None
             and required_ground_count is not None
-            and required_ground_count < math.ceil(float(ground_threat))
+            and required_ground_count < math.ceil(ground_threat)
         ):
             validation.block(
                 "ground_threat_requirement_mismatch",
@@ -1212,10 +1323,9 @@ def _validate_bases(
                 required=required_ground_count,
             )
         if (
-            isinstance(air_threat, (int, float))
-            and not isinstance(air_threat, bool)
+            air_threat is not None
             and required_air_count is not None
-            and required_air_count < math.ceil(float(air_threat))
+            and required_air_count < math.ceil(air_threat)
         ):
             validation.block(
                 "air_threat_requirement_mismatch",
@@ -1224,7 +1334,6 @@ def _validate_bases(
                 threat=air_threat,
                 required=required_air_count,
             )
-        readiness_state = str(readiness.get("readiness_state", "") or "")
         if readiness_state == "ready":
             capability_shortfall = (
                 assigned_defender_count is None
@@ -1948,7 +2057,7 @@ def _read_operation_identity(
     operation: Mapping[str, object],
     *,
     path: str,
-    overview_frame: int | None,
+    overview_identity: BattlefieldProjectionIdentity | None,
     validation: _Validation,
 ) -> BattlefieldProjectionIdentity | None:
     identity, operation_id = _read_identity_components(
@@ -1961,6 +2070,26 @@ def _read_operation_identity(
         return None
     if operation_id is None:
         return identity
+    expected_scope = f"operation:{operation_id}"
+    if identity.scope != expected_scope:
+        validation.block(
+            "operation_scope_mismatch",
+            f"{path}.identity.scope",
+            "Operation projection scope must be bound to its operation_id.",
+            expected=expected_scope,
+            actual=identity.scope,
+        )
+    if (
+        overview_identity is not None
+        and identity.session_epoch != overview_identity.session_epoch
+    ):
+        validation.block(
+            "operation_session_epoch_mismatch",
+            f"{path}.identity.session_epoch",
+            "Operation projection must belong to the battlefield session.",
+            battlefield_session_epoch=overview_identity.session_epoch,
+            operation_session_epoch=identity.session_epoch,
+        )
     direct_operation_id = operation.get("operation_id")
     if not isinstance(direct_operation_id, str) or not direct_operation_id.strip():
         validation.block(
@@ -1992,12 +2121,15 @@ def _read_operation_identity(
             identity=identity.generation,
             payload=direct_generation,
         )
-    if overview_frame is not None and identity.game_frame > overview_frame:
+    if (
+        overview_identity is not None
+        and identity.game_frame > overview_identity.game_frame
+    ):
         validation.block(
             "future_operation_identity",
             f"{path}.identity.game_frame",
             "Operation identity cannot be newer than the battlefield projection.",
-            projection_frame=overview_frame,
+            projection_frame=overview_identity.game_frame,
             operation_frame=identity.game_frame,
         )
     return identity
@@ -2361,6 +2493,40 @@ def _required_positive_int(
     return parsed
 
 
+def _validate_json_finite_values(
+    value: object,
+    *,
+    path: str,
+    validation: _Validation,
+) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_json_finite_values(
+                item,
+                path=f"{path}.{key}",
+                validation=validation,
+            )
+        return
+    if _is_sequence(value):
+        for index, item in enumerate(value):
+            _validate_json_finite_values(
+                item,
+                path=f"{path}[{index}]",
+                validation=validation,
+            )
+        return
+    if (
+        isinstance(value, float)
+        and not math.isfinite(value)
+    ):
+        validation.block(
+            "non_finite_projection_value",
+            path,
+            "The authoritative projection must contain only finite JSON numbers.",
+            actual=value,
+        )
+
+
 def _required_nonnegative_number(
     value: object,
     *,
@@ -2375,7 +2541,18 @@ def _required_nonnegative_number(
             actual=value,
         )
         return None
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except (OverflowError, ValueError):
+        parsed = math.inf
+    if not math.isfinite(parsed):
+        validation.block(
+            "invalid_safety_evidence_value",
+            path,
+            "Safety evidence values must be finite.",
+            actual=value,
+        )
+        return None
     if parsed < 0:
         validation.block(
             "invalid_safety_evidence_value",
@@ -2401,7 +2578,19 @@ def _required_number(
             actual=value,
         )
         return None
-    return float(value)
+    try:
+        parsed = float(value)
+    except (OverflowError, ValueError):
+        parsed = math.inf
+    if not math.isfinite(parsed):
+        validation.block(
+            "invalid_state_value",
+            path,
+            "State values must be finite.",
+            actual=value,
+        )
+        return None
+    return parsed
 
 
 def _required_bool(
@@ -2518,6 +2707,50 @@ def _is_sequence(value: object) -> bool:
     return isinstance(value, Sequence) and not isinstance(
         value,
         (str, bytes, bytearray),
+    )
+
+
+def _reuses_changed_previous_payload(
+    result: BattlefieldProjectionResult,
+    *,
+    previous_identity: BattlefieldProjectionIdentity | None,
+    previous_payload_fingerprint: str,
+) -> bool:
+    return bool(
+        result.ok
+        and result.identity is not None
+        and result.identity == previous_identity
+        and previous_payload_fingerprint
+        and result.battlefield_overview is not None
+        and battlefield_overview_fingerprint(result.battlefield_overview)
+        != previous_payload_fingerprint
+    )
+
+
+def _identity_collision_result(
+    result: BattlefieldProjectionResult,
+    *,
+    source: str,
+    message: str,
+    source_index: int | None = None,
+) -> BattlefieldProjectionResult:
+    return BattlefieldProjectionResult(
+        battlefield_overview=None,
+        identity=result.identity,
+        blockers=(
+            BattlefieldProjectionBlocker(
+                code="identity_collision",
+                path="$.battlefield_overview.identity",
+                message=message,
+            ),
+        ),
+        integrity={
+            **dict(result.integrity),
+            "status": "blocked",
+            "blocker_count": 1,
+        },
+        source=source,
+        source_index=source_index,
     )
 
 

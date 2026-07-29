@@ -8,6 +8,7 @@ import unittest
 
 from starcraft_commander.micromachine_battlefield_projection import (
     BattlefieldProjectionIdentity,
+    battlefield_overview_fingerprint,
     select_latest_battlefield_projection,
     validate_battlefield_overview,
 )
@@ -49,6 +50,7 @@ def _operation(
     reason: str = "",
     completion_frame: int = 0,
 ) -> dict[str, object]:
+    launch_count = len(owner_tags)
     return {
         "identity": _identity(
             update_id=update_id,
@@ -96,10 +98,10 @@ def _operation(
             "allow_partial_requested": True,
             "strict_scope": False,
             "partial_launch_allowed": True,
-            "partial_launch_safe": True,
-            "launch_count": 4,
-            "missing_count": 0,
-            "decision": "launch",
+            "partial_launch_safe": launch_count > 0,
+            "launch_count": launch_count,
+            "missing_count": max(0, 4 - launch_count),
+            "decision": "launch" if launch_count > 0 else "wait",
             "blocker": "",
             "recommended_choices": [],
             "safety_evidence": {
@@ -371,6 +373,18 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("scope_mismatch", _blocker_codes(result))
 
+    def test_enclosing_telemetry_frame_must_match_projection_frame(self) -> None:
+        telemetry = _telemetry()
+        telemetry["frame"] = 319
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("telemetry_frame_mismatch", _blocker_codes(result))
+
     def test_duplicated_identity_fields_must_match(self) -> None:
         telemetry = _telemetry()
         telemetry["battlefield_overview"]["generation"] = 99
@@ -564,6 +578,27 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("identity_field_mismatch", _blocker_codes(result))
 
+    def test_operation_identity_is_bound_to_parent_session_and_scope(self) -> None:
+        cases = (
+            ("session_epoch", 1600000000000, "operation_session_epoch_mismatch"),
+            ("scope", "operation:other", "operation_scope_mismatch"),
+        )
+        for field_name, value, blocker in cases:
+            with self.subTest(field_name=field_name):
+                telemetry = _telemetry()
+                operation = telemetry["battlefield_overview"][
+                    "operation_ownership"
+                ][0]
+                operation["identity"][field_name] = value
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIn(blocker, _blocker_codes(result))
+
     def test_operation_direct_identity_fields_are_required(self) -> None:
         for field_name, code in (
             ("operation_id", "missing_operation_id"),
@@ -675,6 +710,22 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("stale_launch_safety_evidence", _blocker_codes(result))
+
+    def test_launch_count_cannot_exceed_bounds_or_authoritative_owners(self) -> None:
+        telemetry = _telemetry()
+        launch = telemetry["battlefield_overview"]["operation_ownership"][0][
+            "operation_launch_policy"
+        ]
+        launch["launch_count"] = 999
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("launch_count_exceeds_maximum", _blocker_codes(result))
+        self.assertIn("launch_count_exceeds_owner_count", _blocker_codes(result))
 
     def test_base_readiness_requires_protected_minimum_and_threat_evidence(self) -> None:
         field_paths = (
@@ -1088,6 +1139,92 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertIn(code, _blocker_codes(result))
 
+    def test_ready_base_whitespace_cannot_bypass_capability_check(self) -> None:
+        telemetry = _telemetry()
+        readiness = telemetry["battlefield_overview"]["bases"][0][
+            "base_readiness"
+        ]
+        readiness.update(
+            {
+                "readiness_state": "ready ",
+                "ground_threat": 0.0,
+                "air_threat": 1.0,
+                "observed_enemy_strength": 1.0,
+                "ground_capable_defender_count": 2,
+                "air_capable_defender_count": 0,
+                "required_defender_count": 1,
+                "required_ground_defender_count": 0,
+                "required_air_defender_count": 1,
+            }
+        )
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("incompatible_defender_readiness", _blocker_codes(result))
+
+    def test_non_finite_route_and_threat_values_fail_closed(self) -> None:
+        cases = (
+            ("route_nan", "target_x", float("nan"), "invalid_state_value"),
+            (
+                "route_infinity",
+                "target_y",
+                float("inf"),
+                "invalid_state_value",
+            ),
+            (
+                "threat_nan",
+                "ground_threat",
+                float("nan"),
+                "invalid_safety_evidence_value",
+            ),
+            (
+                "threat_infinity",
+                "air_threat",
+                float("inf"),
+                "invalid_safety_evidence_value",
+            ),
+        )
+        for label, field_name, value, blocker in cases:
+            with self.subTest(label=label):
+                telemetry = _telemetry()
+                if label.startswith("route"):
+                    telemetry["battlefield_overview"]["operation_ownership"][0][
+                        "operation_route"
+                    ][field_name] = value
+                else:
+                    telemetry["battlefield_overview"]["bases"][0][
+                        "base_readiness"
+                    ][field_name] = value
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIn(blocker, _blocker_codes(result))
+
+    def test_non_finite_unknown_field_cannot_crash_fingerprint(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["unknown_runtime_state"] = {
+            "unsafe": float("nan"),
+        }
+
+        result = select_latest_battlefield_projection(
+            latest_telemetry=telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "non_finite_projection_value",
+            _blocker_codes(result),
+        )
+
 
 class BattlefieldProjectionSelectionTest(unittest.TestCase):
     def test_selects_latest_monotonic_same_scope_projection(self) -> None:
@@ -1207,6 +1344,32 @@ class BattlefieldProjectionSelectionTest(unittest.TestCase):
         )
         self.assertFalse(collision_result.ok)
         self.assertIn("identity_collision", _blocker_codes(collision_result))
+
+    def test_previous_poll_fingerprint_rejects_identity_payload_mutation(
+        self,
+    ) -> None:
+        accepted = validate_battlefield_overview(
+            _telemetry(update_id="same", generation=7, game_frame=320),
+            expected_scope="battlefield",
+        )
+        assert accepted.identity is not None
+        assert accepted.battlefield_overview is not None
+        mutated = _telemetry(update_id="same", generation=7, game_frame=320)
+        mutated["battlefield_overview"]["bases"][0]["base_readiness"][
+            "reason"
+        ] = "changed_on_later_poll"
+
+        result = select_latest_battlefield_projection(
+            latest_telemetry=mutated,
+            expected_scope="battlefield",
+            previous_identity=accepted.identity,
+            previous_payload_fingerprint=battlefield_overview_fingerprint(
+                accepted.battlefield_overview
+            ),
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("identity_collision", _blocker_codes(result))
 
     def test_returns_explicit_no_projection_blocker(self) -> None:
         result = select_latest_battlefield_projection(

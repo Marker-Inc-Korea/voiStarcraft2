@@ -8,6 +8,7 @@ hard deadline instead of fixed sleeps.
 
 import contextlib
 import concurrent.futures
+from copy import deepcopy
 import http.client
 import inspect
 import io
@@ -1450,6 +1451,46 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             overview["identity"]["update_id"],
         )
 
+    def test_real_filesystem_status_preserves_battlefield_overview(self):
+        from starcraft_commander.micromachine_runtime import (
+            MicroMachineFilesystemBlackboard,
+        )
+
+        telemetry = battlefield_projection_telemetry()
+        telemetry.update(
+            {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {},
+                "active_modulation_ids": [],
+                "last_failure": None,
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            MicroMachineFilesystemBlackboard(directory).ingest_telemetry(
+                telemetry
+            )
+            bridge = SessionLoopBridge(session=self.session)
+
+            payload = bridge.micromachine_status_for_runtime(
+                blackboard_dir=directory,
+                runtime_instance_id="filesystem-runtime",
+            )
+
+        self.assertTrue(
+            payload["battlefield_projection"]["ok"],
+            payload["battlefield_projection"],
+        )
+        self.assertEqual(
+            "battlefield-current",
+            payload["battlefield_overview"]["identity"]["update_id"],
+        )
+        self.assertEqual(
+            8,
+            payload["battlefield_overview"]["eligible_combat_count"],
+        )
+
     def test_micromachine_status_malformed_latest_projection_fails_closed(self):
         valid_archive = battlefield_projection_telemetry(
             update_id="archive-valid",
@@ -1518,6 +1559,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
     def test_micromachine_status_redacts_battlefield_unit_identity(self):
         telemetry = battlefield_projection_telemetry()
+        telemetry["battlefield_overview"]["bases"][0]["base_readiness"][
+            "reason"
+        ] = "protected minimum actor_tag=987654"
         telemetry["battlefield_overview"]["unit_tag_ids"] = [991, 992]
         telemetry["battlefield_overview"]["private_config"] = {
             "api_key": "battlefield-private-secret",
@@ -1554,6 +1598,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertNotIn("unit_tag_ids", serialized)
         self.assertNotIn("private_config", serialized)
         self.assertNotIn("unknown_runtime_state", serialized)
+        self.assertNotIn("actor_tag", serialized)
+        self.assertNotIn("987654", serialized)
+        self.assertIn(
+            "protected minimum",
+            payload["battlefield_overview"]["bases"][0]["base_readiness"][
+                "reason"
+            ],
+        )
         self.assertEqual(
             4,
             payload["battlefield_overview"]["operation_ownership"][0][
@@ -1673,6 +1725,70 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "session_epoch"
                     ],
                 )
+
+    def test_micromachine_status_rejects_cross_poll_identity_mutation(self):
+        current = {
+            "telemetry": battlefield_projection_telemetry(
+                update_id="stable-identity",
+                frame=500,
+                generation=9,
+            )
+        }
+
+        class Telemetry:
+            def __init__(self, document):
+                self.document = document
+                self.frame = document["frame"]
+
+            def to_dict(self):
+                return deepcopy(self.document)
+
+        class Backend:
+            def __init__(self, _root):
+                pass
+
+            def read_latest_telemetry(self):
+                return Telemetry(current["telemetry"])
+
+            def read_recent_telemetry_archive(self, **_kwargs):
+                return ()
+
+            def dashboard_snapshot(self, **_kwargs):
+                return SimpleNamespace(
+                    to_dict=lambda: {"active_updates": []}
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = SessionLoopBridge(session=self.session)
+            with mock.patch(
+                "starcraft_commander.micromachine_runtime."
+                "MicroMachineFilesystemBlackboard",
+                Backend,
+            ):
+                first = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id="runtime-a",
+                )
+                self.assertTrue(first["battlefield_projection"]["ok"])
+
+                mutated = deepcopy(current["telemetry"])
+                mutated["battlefield_overview"]["bases"][0][
+                    "base_readiness"
+                ]["reason"] = "changed_without_identity_advance"
+                current["telemetry"] = mutated
+                collision = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id="runtime-a",
+                )
+
+        self.assertFalse(collision["battlefield_projection"]["ok"])
+        self.assertIn(
+            "identity_collision",
+            {
+                blocker["code"]
+                for blocker in collision["battlefield_projection"]["blockers"]
+            },
+        )
 
     def test_micromachine_status_requires_post_publish_telemetry_before_consumed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -5036,6 +5152,67 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(payload["runtime_attached"])
             self.assertFalse(payload["telemetry_current_for_process"])
             self.assertTrue(payload["telemetry_stale_or_detached"])
+
+    def test_micromachine_launcher_rejects_prelaunch_tolerance_window(self):
+        class FakeRunningProcess:
+            pid = 12345
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return None
+
+            def wait(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            telemetry_path = os.path.join(directory, "latest_telemetry.json")
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                        "frame": 99,
+                    },
+                    handle,
+                )
+            prelaunch_time = time.time() - 0.5
+            os.utime(telemetry_path, (prelaunch_time, prelaunch_time))
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            with (
+                mock.patch.object(
+                    web_gui.subprocess,
+                    "Popen",
+                    return_value=FakeRunningProcess(),
+                ),
+                mock.patch.object(
+                    web_gui.threading.Thread,
+                    "start",
+                    return_value=None,
+                ),
+            ):
+                stale = launcher.start(directory)
+
+            self.assertTrue(stale["runtime_attached"])
+            self.assertFalse(stale["telemetry_present"])
+            self.assertFalse(stale["telemetry_current_for_process"])
+            self.assertNotEqual("connected", stale["status"])
+
+            with open(telemetry_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                        "frame": 100,
+                    },
+                    handle,
+                )
+            fresh_ns = launcher._launch_started_at_ns + 1_000_000_000  # noqa: SLF001
+            os.utime(telemetry_path, ns=(fresh_ns, fresh_ns))
+
+            fresh = launcher.snapshot(directory)
+
+            self.assertTrue(fresh["telemetry_current_for_process"])
+            self.assertEqual(100, fresh["telemetry_frame"])
+            self.assertEqual("connected", fresh["status"])
 
     def test_runtime_start_legacy_mode_is_blocked_until_key_is_saved(self):
         body = json.dumps({"mode": "legacy_commander"}).encode("utf-8")

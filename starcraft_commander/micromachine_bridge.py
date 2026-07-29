@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
@@ -71,6 +72,7 @@ MICROMACHINE_TELEMETRY_SCHEMA: Final[dict[str, object]] = {
         "race": {"type": "string"},
         "managers": {"type": "object"},
         "active_modulation_ids": {"type": "array", "items": {"type": "string"}},
+        "battlefield_overview": {"type": ["object", "null"]},
         "last_failure": {"type": ["string", "null"]},
     },
 }
@@ -144,6 +146,7 @@ class MicroMachineTelemetry:
     race: str = "Terran"
     managers: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
     active_modulation_ids: tuple[str, ...] = ()
+    battlefield_overview: Mapping[str, object] | None = None
     last_failure: MicroMachineBridgeFailureMode | str | None = None
     protocol_version: str = MICROMACHINE_BRIDGE_PROTOCOL_VERSION
 
@@ -158,6 +161,20 @@ class MicroMachineTelemetry:
             self,
             "active_modulation_ids",
             _string_tuple("active_modulation_ids", self.active_modulation_ids),
+        )
+        battlefield_overview = self.battlefield_overview
+        if battlefield_overview is not None:
+            if not isinstance(battlefield_overview, Mapping):
+                raise ValueError("battlefield_overview must be a mapping or null.")
+            reject_raw_policy_control_keys(
+                battlefield_overview,
+                path="battlefield_overview",
+            )
+            battlefield_overview = deepcopy(dict(battlefield_overview))
+        object.__setattr__(
+            self,
+            "battlefield_overview",
+            battlefield_overview,
         )
         failure = self.last_failure
         if failure is not None:
@@ -177,6 +194,10 @@ class MicroMachineTelemetry:
                 "active_modulation_ids",
                 mapping.get("active_modulation_ids", ()),
             ),
+            battlefield_overview=_optional_mapping_from_mapping(
+                mapping,
+                "battlefield_overview",
+            ),
             last_failure=mapping.get("last_failure"),
         )
 
@@ -188,6 +209,11 @@ class MicroMachineTelemetry:
             "race": self.race,
             "managers": {key: dict(value) for key, value in self.managers.items()},
             "active_modulation_ids": list(self.active_modulation_ids),
+            "battlefield_overview": (
+                deepcopy(dict(self.battlefield_overview))
+                if self.battlefield_overview is not None
+                else None
+            ),
             "last_failure": self.last_failure.value if self.last_failure else None,
         }
 
@@ -568,6 +594,18 @@ def _mapping_from_mapping(
     value = mapping.get(key, default)
     if not isinstance(value, Mapping):
         raise ValueError(f"{key} must be a mapping.")
+    return value
+
+
+def _optional_mapping_from_mapping(
+    mapping: Mapping[str, object],
+    key: str,
+) -> Mapping[str, object] | None:
+    value = mapping.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key} must be a mapping or null.")
     return value
 
 
