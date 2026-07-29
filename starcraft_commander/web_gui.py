@@ -2309,7 +2309,7 @@ def _public_operation_family_evidence(
 
 def _battlefield_operation_index(
     battlefield_overview: Mapping[str, object] | None,
-) -> dict[tuple[str, int], dict[str, object]]:
+) -> dict[tuple[str, str, int], dict[str, object]]:
     if not isinstance(battlefield_overview, Mapping):
         return {}
     operations = battlefield_overview.get("operation_ownership")
@@ -2318,19 +2318,22 @@ def _battlefield_operation_index(
         (str, bytes, bytearray),
     ):
         return {}
-    index: dict[tuple[str, int], dict[str, object]] = {}
+    index: dict[tuple[str, str, int], dict[str, object]] = {}
     for operation in operations:
         if not isinstance(operation, Mapping):
             continue
+        identity = _mapping_child(operation, "identity")
+        update_id = str(identity.get("update_id", "") or "").strip()
         operation_id = str(operation.get("operation_id", "") or "").strip()
         generation = operation.get("generation")
         if (
-            not operation_id
+            not update_id
+            or not operation_id
             or type(generation) is not int
             or int(generation) <= 0
         ):
             continue
-        index[(operation_id, int(generation))] = dict(operation)
+        index[(update_id, operation_id, int(generation))] = dict(operation)
     return index
 
 
@@ -2342,11 +2345,13 @@ def _attach_battlefield_operation_projections(
     attached: list[dict[str, object]] = []
     for operation in operations:
         item = dict(operation)
+        update_id = str(item.get("update_id", "") or "").strip()
         operation_id = str(item.get("operation_id", "") or "").strip()
         generation = item.get("operation_generation")
         projection = (
-            index.get((operation_id, int(generation)))
-            if operation_id
+            index.get((update_id, operation_id, int(generation)))
+            if update_id
+            and operation_id
             and type(generation) is int
             and int(generation) > 0
             else None
@@ -5494,6 +5499,20 @@ class _OperationSemanticTimelineReducer:
         """Keep newer execution telemetry without reviving an older edit."""
 
         merged = deepcopy(dict(operation))
+        incoming_intervention = _mapping_child(operation, "intervention")
+        incoming_execution = _mapping_child(
+            incoming_intervention,
+            "command_execution",
+        )
+        execution_owner_update_id = str(
+            operation.get(
+                "operation_console_execution_owner_update_id",
+                "",
+            )
+            or incoming_execution.get("command_id", "")
+            or operation.get("update_id", "")
+            or ""
+        )
         for field in (
             "command_text",
             "compile_result",
@@ -5501,11 +5520,14 @@ class _OperationSemanticTimelineReducer:
             "update",
             "command_queue",
             "operation_edit",
-            "operation_console_execution_owner_update_id",
             "update_id",
         ):
             if field in accepted:
                 merged[field] = deepcopy(accepted[field])
+        if execution_owner_update_id:
+            merged["operation_console_execution_owner_update_id"] = (
+                execution_owner_update_id
+            )
         merged["requested_operation_generation"] = requested_high_water
         return merged
 
@@ -5699,7 +5721,9 @@ class _OperationSemanticTimelineReducer:
             "update_id": update_id,
         }
         projection_matches_operation = bool(
-            str(battlefield_operation.get("operation_id", "") or "")
+            str(projection_identity.get("update_id", "") or "")
+            == execution_owner_update_id
+            and str(battlefield_operation.get("operation_id", "") or "")
             == operation_id
             and _int_or_none(
                 battlefield_operation.get("generation")
@@ -9620,6 +9644,8 @@ var activeCommandConsoleRecord = {
   scopeId: "",
   sessionEpoch: "",
   updateId: "",
+  operationId: "",
+  operationGeneration: 0,
   text: "",
   state: "idle",
   data: null,
@@ -12310,6 +12336,10 @@ function handoffActiveCommandConsole(data, scopeId, updateId) {
       commandOperationPayloads(data)
     ),
     updateId: updateId,
+    operationId: String(data && data.operation_id || ""),
+    operationGeneration: Number(
+      data && data.operation_generation || 0
+    ),
     text: String(
       latestRequest.command_text ||
       compileResult.command_text ||
@@ -12334,6 +12364,8 @@ function beginActiveCommandConsole(text, pendingId) {
     scopeId: "",
     sessionEpoch: "",
     updateId: "",
+    operationId: "",
+    operationGeneration: 0,
     text: String(text || ""),
     state: "received",
     data: {
@@ -12358,6 +12390,8 @@ function resetActiveCommandConsoleState(sessionEpoch) {
     scopeId: "",
     sessionEpoch: String(sessionEpoch || ""),
     updateId: "",
+    operationId: "",
+    operationGeneration: 0,
     text: "",
     state: "idle",
     data: null,
@@ -12526,11 +12560,13 @@ function commandConsoleDataForUpdate(data, updateId) {
   var executionOwnerUpdateId = String(
     data.operation_console_execution_owner_update_id || ""
   );
+  var selectedOperationUpdateId = operationPayloadUpdateId(data);
   var operationGeneration = Number(data.operation_generation || 0);
   var executionGeneration = Number(execution.operation_generation || 0);
   var linkedOperationExecution = Boolean(
     executionOwnerUpdateId &&
-    executionOwnerUpdateId === updateId &&
+    selectedOperationUpdateId === updateId &&
+    String(execution.command_id || "") === executionOwnerUpdateId &&
     data.operation_id &&
     String(execution.operation_id || "") === String(data.operation_id) &&
     operationGeneration > 0 &&
@@ -12578,7 +12614,7 @@ function commandConsoleTelemetryFrame(data) {
 
 function commandConsoleStageRank(model) {
   if (
-    model.canonicalCompletion ||
+    model.canonicalCompletionVerified ||
     model.effectObserved ||
     model.blocked ||
     model.superseded ||
@@ -12598,8 +12634,8 @@ function shouldAdvanceActiveCommandConsole(model, telemetryFrame) {
     return false;
   }
   if (
-    currentModel.canonicalCompletion &&
-    !model.canonicalCompletion
+    currentModel.canonicalCompletionVerified &&
+    !model.canonicalCompletionVerified
   ) {
     return false;
   }
@@ -12640,6 +12676,33 @@ function commandConsoleStageModel(data) {
   var compileResult = (data && data.compile_result) || {};
   var intervention = (data && data.intervention) || {};
   var execution = intervention.command_execution || {};
+  var projection = data && data.battlefield_operation || {};
+  var projectionIdentity = projection.identity || {};
+  var projectionOwnership = projection.operation_ownership || {};
+  var projectionLaunch = projection.operation_launch_policy || {};
+  var projectionCompletion = projection.operation_completion || {};
+  var canonicalProjectionMatches = operationCanonicalProjectionMatches(data);
+  var canonicalAssignmentObserved = Boolean(
+    canonicalProjectionMatches &&
+    (
+      Number(projectionOwnership.owner_count || 0) > 0 ||
+      Number(projectionLaunch.launch_count || 0) > 0 ||
+      ["assigned", "submitted", "moving", "engaged", "completed"].indexOf(
+        String(projectionIdentity.stage || "").toLowerCase()
+      ) >= 0
+    )
+  );
+  var canonicalActionObserved = Boolean(
+    canonicalProjectionMatches &&
+    (
+      projectionCompletion.movement_observed === true ||
+      projectionCompletion.engagement_observed === true ||
+      projectionCompletion.target_reached === true ||
+      ["submitted", "moving", "engaged", "completed"].indexOf(
+        String(projectionIdentity.stage || "").toLowerCase()
+      ) >= 0
+    )
+  );
   var parsed = microMachineExecutionStage(execution, "parsed");
   var reduced = microMachineExecutionStage(execution, "reduced");
   var consumed = microMachineExecutionStage(execution, "consumed_by_manager");
@@ -12648,10 +12711,13 @@ function commandConsoleStageModel(data) {
   var executionState = String(execution.state || "").toLowerCase();
   var received = Boolean(data && data.status === "received");
   var blockerReason = String(execution.blocker_reason || "").toLowerCase();
+  var canonicalState = operationCanonicalTerminalState(data);
   var cancelled = Boolean(
     executionState === "cancelled" ||
     executionState === "canceled" ||
-    blockerReason === "cancelled_by_policy"
+    blockerReason === "cancelled_by_policy" ||
+    canonicalState === "cancelled" ||
+    canonicalState === "canceled"
   );
   var cancellationCleanupVerified = Boolean(
     cancelled &&
@@ -12662,7 +12728,8 @@ function commandConsoleStageModel(data) {
     (
       data && data.status === "superseded" ||
       executionState === "superseded" ||
-      executionState === "replaced"
+      executionState === "replaced" ||
+      canonicalState === "superseded"
     )
   );
   var refused = Boolean(
@@ -12671,13 +12738,18 @@ function commandConsoleStageModel(data) {
     data && data.accepted === false ||
     data && data.status === "publish_failed"
   );
-  var canonicalCompletion = operationCanonicalCompletion(data);
+  var canonicalCompletion = (
+    ["completed", "succeeded", "success"].indexOf(canonicalState) >= 0
+  );
   var failed = Boolean(
     !cancelled &&
+    !superseded &&
     (
       refused ||
       execution.failed === true ||
       execution.expired === true ||
+      canonicalState === "failed" ||
+      canonicalState === "expired" ||
       executionState === "failed" ||
       executionState === "expired" ||
       executionState === "blocked" ||
@@ -12737,6 +12809,13 @@ function commandConsoleStageModel(data) {
       currentStage = "verify";
     }
   }
+  if (failed && canonicalState) {
+    if (canonicalActionObserved) {
+      currentStage = "verify";
+    } else if (canonicalAssignmentObserved) {
+      currentStage = "execute";
+    }
+  }
   return {
     execution: execution,
     received: received,
@@ -12750,6 +12829,7 @@ function commandConsoleStageModel(data) {
     cancelled: cancelled,
     cancellationCleanupVerified: cancellationCleanupVerified,
     superseded: superseded,
+    canonicalState: canonicalState,
     canonicalCompletion: canonicalCompletion,
     canonicalCompletionVerified: canonicalCompletionVerified,
     blocked: failed,
@@ -12763,8 +12843,8 @@ function commandConsoleStageModel(data) {
     currentStage: currentStage,
     done: {
       interpret: interpreted,
-      assign: assignmentReady,
-      execute: actionIssued,
+      assign: assignmentReady || canonicalAssignmentObserved,
+      execute: actionIssued || canonicalActionObserved,
       verify: effectObserved || canonicalCompletionVerified
     }
   };
@@ -12994,9 +13074,14 @@ function commandConsoleVerification(data, model) {
     );
   }
   if (model.blocked) {
-    var blockerManager = model.execution.blocker_manager || "TacticalEvidence";
+    var projection = data && data.battlefield_operation || {};
+    var completion = projection.operation_completion || {};
+    var blockerManager = model.execution.blocker_manager || (
+      model.canonicalState ? "BattlefieldProjection" : "TacticalEvidence"
+    );
     var blockerReason = (
       model.execution.blocker_reason ||
+      completion.reason ||
       compileResult.refusal_reason ||
       compileResult.clarification_prompt ||
       intervention.refusal_reason ||
@@ -13245,6 +13330,11 @@ function operationExecutionMatchesPayload(
   operationGeneration
 ) {
   if (!execution || typeof execution !== "object") { return false; }
+  var executionOwnerUpdateId = String(
+    operation && operation.operation_console_execution_owner_update_id ||
+    updateId ||
+    ""
+  );
   var executionGeneration = Number(
     execution.operation_generation || execution.generation || 0
   );
@@ -13253,7 +13343,8 @@ function operationExecutionMatchesPayload(
     updateId &&
     Number.isFinite(operationGeneration) &&
     operationGeneration > 0 &&
-    String(execution.command_id || "") === updateId &&
+    executionOwnerUpdateId &&
+    String(execution.command_id || "") === executionOwnerUpdateId &&
     String(execution.operation_id || "") === operationId &&
     Number.isFinite(executionGeneration) &&
     executionGeneration === operationGeneration
@@ -13314,6 +13405,7 @@ function commandOperationData(operation, parentData) {
     command_queue: operation.command_queue || {},
     dashboard: parentData && parentData.dashboard || {},
     blackboard_scope_id: scopeId,
+    update_id: updateId,
     operation_id: operationId,
     operation_key: operationRecordKey(scopeId, operationId),
     operation_generation: operationGeneration,
@@ -13344,40 +13436,119 @@ function commandOperationData(operation, parentData) {
   };
 }
 
-function commandConsoleDataForCanonicalOperation(data, updateId) {
+function commandConsoleDataWithoutForeignOperation(
+  data,
+  updateId,
+  operationId,
+  operationGeneration
+) {
+  var result = Object.assign({}, data || {});
+  result.battlefield_operation = null;
+  var intervention = Object.assign({}, result.intervention || {});
+  var execution = intervention.command_execution || {};
+  var executionGeneration = Number(
+    execution.operation_generation || execution.generation || 0
+  );
+  var executionOwnerUpdateId = String(
+    result.operation_console_execution_owner_update_id ||
+    updateId ||
+    ""
+  );
+  var executionIsOperationScoped = Boolean(
+    execution.operation_id || executionGeneration > 0
+  );
+  var executionMatches = Boolean(
+    updateId &&
+    operationId &&
+    operationGeneration > 0 &&
+    operationPayloadUpdateId(result) === String(updateId) &&
+    String(execution.command_id || "") === executionOwnerUpdateId &&
+    String(execution.operation_id || "") === String(operationId) &&
+    executionGeneration === Number(operationGeneration)
+  );
+  if (executionIsOperationScoped && !executionMatches) {
+    intervention.command_execution = {};
+    result.intervention = intervention;
+  }
+  return result;
+}
+
+function commandConsoleDataForCanonicalOperation(
+  data,
+  updateId,
+  operationId,
+  operationGeneration
+) {
   if (!data || typeof data !== "object" || !updateId) { return data; }
   var normalizedUpdateId = String(updateId);
+  var normalizedOperationId = String(operationId || "");
+  var normalizedGeneration = Number(operationGeneration || 0);
   var candidates = [];
-  commandOperationPayloads(data).forEach(function(operation) {
-    var candidate = commandOperationData(operation, data);
-    if (!candidate.battlefield_operation) { return; }
-    var execution = (candidate.intervention || {}).command_execution || {};
+  var seenCandidates = {};
+  var hasCanonicalPayload = Boolean(data.battlefield_operation);
+  function addCandidate(operation, candidate) {
+    if (!candidate || !candidate.battlefield_operation) { return; }
     var payloadUpdateId = operationPayloadUpdateId(operation);
-    var executionUpdateId = String(execution.command_id || "");
-    var ownerUpdateId = String(
-      candidate.operation_console_execution_owner_update_id || ""
-    );
-    var matchRank = 0;
-    if (payloadUpdateId === normalizedUpdateId) {
-      matchRank = 3;
-    } else if (executionUpdateId === normalizedUpdateId) {
-      matchRank = 2;
-    } else if (ownerUpdateId === normalizedUpdateId) {
-      matchRank = 1;
+    var candidateOperationId = String(candidate.operation_id || "");
+    var candidateGeneration = Number(candidate.operation_generation || 0);
+    if (
+      payloadUpdateId !== normalizedUpdateId ||
+      !candidateOperationId ||
+      candidateGeneration <= 0
+    ) {
+      return;
     }
-    if (!matchRank) { return; }
+    if (
+      normalizedOperationId &&
+      candidateOperationId !== normalizedOperationId
+    ) {
+      return;
+    }
+    if (
+      normalizedGeneration > 0 &&
+      candidateGeneration !== normalizedGeneration
+    ) {
+      return;
+    }
+    var key = [
+      payloadUpdateId,
+      candidateOperationId,
+      candidateGeneration
+    ].join("\u0000");
+    if (seenCandidates[key]) { return; }
+    seenCandidates[key] = true;
     candidates.push({
       data: candidate,
-      matchRank: matchRank,
-      generation: Number(candidate.operation_generation || 0),
+      operationId: candidateOperationId,
+      generation: candidateGeneration,
       frame: commandConsoleTelemetryFrame(candidate)
     });
-  });
-  if (!candidates.length) { return data; }
-  candidates.sort(function(left, right) {
-    if (left.matchRank !== right.matchRank) {
-      return right.matchRank - left.matchRank;
+  }
+  if (data.operation_id && data.battlefield_operation) {
+    addCandidate(data, data);
+  }
+  commandOperationPayloads(data).forEach(function(operation) {
+    if (operation.battlefield_operation) {
+      hasCanonicalPayload = true;
     }
+    var candidate = commandOperationData(operation, data);
+    addCandidate(operation, candidate);
+  });
+  if (!candidates.length && !hasCanonicalPayload) {
+    return data;
+  }
+  if (
+    !candidates.length ||
+    (!normalizedOperationId && candidates.length !== 1)
+  ) {
+    return commandConsoleDataWithoutForeignOperation(
+      data,
+      normalizedUpdateId,
+      normalizedOperationId,
+      normalizedGeneration
+    );
+  }
+  candidates.sort(function(left, right) {
     if (left.generation !== right.generation) {
       return right.generation - left.generation;
     }
@@ -13439,11 +13610,18 @@ function operationCanonicalProjectionMatches(data) {
   if (!projection || typeof projection !== "object") { return false; }
   var identity = projection.identity || {};
   var operationId = String(data.operation_id || "");
+  var projectionUpdateId = String(
+    data.operation_console_execution_owner_update_id ||
+    operationPayloadUpdateId(data || {}) ||
+    ""
+  );
   var generation = Number(data.operation_generation || 0);
   var projectionGeneration = Number(projection.generation || 0);
   return Boolean(
     operationId &&
+    projectionUpdateId &&
     generation > 0 &&
+    String(identity.update_id || "") === projectionUpdateId &&
     String(projection.operation_id || "") === operationId &&
     projectionGeneration === generation &&
     String(identity.operation_id || "") === operationId &&
@@ -13451,20 +13629,51 @@ function operationCanonicalProjectionMatches(data) {
   );
 }
 
-function operationCanonicalCompletion(data) {
+function normalizeOperationTerminalState(value) {
+  var state = String(value || "").toLowerCase();
+  if (state === "success" || state === "succeeded") {
+    return "completed";
+  }
+  if (state === "canceled") {
+    return "cancelled";
+  }
+  return state;
+}
+
+function operationCanonicalTerminalState(data) {
   var projection = data && data.battlefield_operation;
-  if (!operationCanonicalProjectionMatches(data)) { return false; }
+  if (!operationCanonicalProjectionMatches(data)) { return ""; }
   var completion = projection.operation_completion || {};
   var lifetime = projection.operation_lifetime || {};
-  var state = String(completion.state || "").toLowerCase();
+  var state = normalizeOperationTerminalState(completion.state);
+  var lifetimeState = normalizeOperationTerminalState(
+    lifetime.completion_state
+  );
   var generation = Number(data.operation_generation || 0);
-  return Boolean(
+  var recognizedStates = [
+    "completed",
+    "failed",
+    "cancelled",
+    "expired",
+    "superseded"
+  ];
+  if (
     Number(completion.generation || 0) === generation &&
     completion.terminal === true &&
-    (
-      lifetime.completed === true ||
-      ["completed", "succeeded", "success"].indexOf(state) >= 0
-    )
+    lifetime.completed === true &&
+    recognizedStates.indexOf(state) >= 0 &&
+    (!lifetimeState || lifetimeState === state)
+  ) {
+    return state;
+  }
+  return "";
+}
+
+function operationCanonicalCompletion(data) {
+  return (
+    ["completed"].indexOf(
+      operationCanonicalTerminalState(data)
+    ) >= 0
   );
 }
 
@@ -13479,9 +13688,11 @@ function operationRecordDisposition(model, data) {
   }
   if (model.superseded) { return "superseded"; }
   if (model.blocked) {
-    return reported === "expired" ? "expired" : "blocked";
+    return (
+      reported === "expired" || model.canonicalState === "expired"
+    ) ? "expired" : "blocked";
   }
-  if (operationCanonicalCompletion(data)) {
+  if (model.canonicalCompletionVerified) {
     return "completed";
   }
   if (reported === "completed") { return "active"; }
@@ -13782,7 +13993,15 @@ function reconcileOperationRecord(operation, parentData) {
     operationGeneration > record.operationGeneration
   ) {
     var latestData = record.data || {};
+    var executionOwnerUpdateId = String(
+      data.operation_console_execution_owner_update_id ||
+      (data.intervention || {}).command_execution &&
+        (data.intervention || {}).command_execution.command_id ||
+      data.update_id ||
+      ""
+    );
     data = Object.assign({}, data, {
+      update_id: record.updateId || data.update_id || "",
       command_text: record.text || latestData.command_text || "",
       compile_result: latestData.compile_result || {},
       latest_request: latestData.latest_request || null,
@@ -13790,7 +14009,7 @@ function reconcileOperationRecord(operation, parentData) {
       command_queue: latestData.command_queue || {},
       requested_operation_generation: latestRequestedOperationGeneration,
       operation_edit: operationEditPayload(latestData),
-      operation_console_execution_owner_update_id: record.updateId || ""
+      operation_console_execution_owner_update_id: executionOwnerUpdateId
     });
     updateId = record.updateId || updateId;
   }
@@ -14738,6 +14957,8 @@ function focusOperationRecord(record) {
       [record.data]
     ),
     updateId: record.updateId,
+    operationId: record.operationId,
+    operationGeneration: record.operationGeneration,
     text: record.text,
     state: "interpreting",
     data: record.data,
@@ -15070,7 +15291,7 @@ function operationRecordLane(record) {
   var disposition = String(record && record.disposition || "").toLowerCase();
   if (
     disposition === "completed" &&
-    operationCanonicalCompletion(data)
+    model.canonicalCompletionVerified
   ) {
     return "completed";
   }
@@ -15418,8 +15639,22 @@ function renderActiveCommandConsole(data, force) {
   );
   scopedData = commandConsoleDataForCanonicalOperation(
     scopedData,
-    activeCommandConsoleRecord.updateId
+    activeCommandConsoleRecord.updateId,
+    activeCommandConsoleRecord.operationId,
+    activeCommandConsoleRecord.operationGeneration
   );
+  if (
+    !activeCommandConsoleRecord.operationId &&
+    scopedData.operation_id &&
+    Number(scopedData.operation_generation || 0) > 0
+  ) {
+    activeCommandConsoleRecord.operationId = String(
+      scopedData.operation_id
+    );
+    activeCommandConsoleRecord.operationGeneration = Number(
+      scopedData.operation_generation
+    );
+  }
   if (activeCommandConsoleRecord.observationTimedOut) {
     scopedData = Object.assign({}, scopedData, {
       command_console_observation_delayed: true
@@ -15436,7 +15671,7 @@ function renderActiveCommandConsole(data, force) {
     return;
   }
   if (
-    model.canonicalCompletion ||
+    model.canonicalCompletionVerified ||
     model.effectObserved ||
     model.blocked ||
     model.superseded ||
@@ -15886,7 +16121,9 @@ function updateMicroMachineBadge(data, updateId) {
   );
   scopedData = commandConsoleDataForCanonicalOperation(
     scopedData,
-    normalizedUpdateId
+    normalizedUpdateId,
+    activeCommandConsoleRecord.operationId,
+    activeCommandConsoleRecord.operationGeneration
   );
   var intervention = scopedData.intervention || {};
   var status = scopedData.consumption_status || scopedData.status || "";
@@ -15915,9 +16152,18 @@ function updateMicroMachineBadge(data, updateId) {
     badge.textContent = commandUiText("실행 실패", "Execution blocked", "执行失败");
     return;
   }
-  if (model.effectObserved || model.canonicalCompletionVerified) {
+  if (model.effectObserved) {
     badge.className = "micro-badge micro-badge-applied";
     badge.textContent = commandUiText("실행 확인", "Effect verified", "效果已确认");
+    return;
+  }
+  if (model.canonicalCompletionVerified) {
+    badge.className = "micro-badge micro-badge-applied";
+    badge.textContent = commandUiText(
+      "작전 완료 확인",
+      "Operation completion verified",
+      "作战完成已确认"
+    );
     return;
   }
   if (model.actionIssued) {
@@ -16691,6 +16937,15 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
   ) {
     candidateUpdateIds.push(executionUpdateId);
   }
+  commandOperationPayloads(data).forEach(function(operation) {
+    var operationUpdateId = operationPayloadUpdateId(operation);
+    if (
+      operationUpdateId &&
+      candidateUpdateIds.indexOf(operationUpdateId) === -1
+    ) {
+      candidateUpdateIds.push(operationUpdateId);
+    }
+  });
   var terminalHandled = false;
   var resultIdentityHandled = false;
   candidateUpdateIds.forEach(function(updateId) {
@@ -16701,8 +16956,33 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
     var executionState = updateId === executionUpdateId
       ? String(execution.state || "").toLowerCase()
       : "";
-    var terminalExecution = Boolean(terminalExecutionStates[executionState]);
-    if (!terminalForUpdate && !terminalExecution) { return; }
+    var operationCandidates = commandOperationPayloads(data)
+      .filter(function(operation) {
+        return (
+          operationPayloadUpdateId(operation) === updateId &&
+          Boolean(operation.battlefield_operation)
+        );
+      })
+      .map(function(operation) {
+        return commandOperationData(operation, data);
+      });
+    var allCanonicalOperationsTerminal = Boolean(
+      operationCandidates.length &&
+      operationCandidates.every(function(candidate) {
+        return commandConsoleStageModel(candidate).terminal;
+      })
+    );
+    var terminalExecution = Boolean(
+      !operationCandidates.length &&
+      terminalExecutionStates[executionState]
+    );
+    if (
+      !terminalForUpdate &&
+      !terminalExecution &&
+      !allCanonicalOperationsTerminal
+    ) {
+      return;
+    }
     if (updateId === compileUpdateId && resultAlreadyConsumed) { return; }
     delete pendingMicroMachineAsyncUpdates[
       microMachinePendingKey(scopeId, updateId)
@@ -16735,9 +17015,18 @@ function maybeAppendMicroMachineAsyncCompletion(data) {
       });
     }
     narrationData = commandConsoleDataForUpdate(narrationData, updateId);
+    if (operationCandidates.length === 1) {
+      narrationData = Object.assign(
+        {},
+        narrationData,
+        operationCandidates[0]
+      );
+    }
     narrationData = commandConsoleDataForCanonicalOperation(
       narrationData,
-      updateId
+      updateId,
+      narrationData.operation_id,
+      narrationData.operation_generation
     );
     var outcomeStatus = microMachineChatOutcomeStatus(
       narrationData,
@@ -16819,7 +17108,9 @@ function microMachineChatNarration(data) {
   );
   scopedData = commandConsoleDataForCanonicalOperation(
     scopedData,
-    narrationUpdateId
+    narrationUpdateId,
+    scopedData.operation_id,
+    scopedData.operation_generation
   );
   var intervention = scopedData.intervention || {};
   var compileResult = scopedData.compile_result || {};
@@ -16947,7 +17238,17 @@ function microMachineChatNarration(data) {
     ));
   }
   if (model.blocked) {
-    var blocker = execution.blocker_reason || compileResult.refusal_reason || intervention.refusal_reason || "";
+    var completion = (
+      scopedData.battlefield_operation &&
+      scopedData.battlefield_operation.operation_completion
+    ) || {};
+    var blocker = (
+      execution.blocker_reason ||
+      completion.reason ||
+      compileResult.refusal_reason ||
+      intervention.refusal_reason ||
+      ""
+    );
     var blockerManager = execution.blocker_manager || "";
     if (blocker) {
       parts.push(
@@ -16975,7 +17276,9 @@ function appendMicroMachineChatResult(text, data, pendingId) {
   );
   resultData = commandConsoleDataForCanonicalOperation(
     resultData,
-    resultUpdateId
+    resultUpdateId,
+    resultData.operation_id,
+    resultData.operation_generation
   );
   if (!resultData.command_console_skip_render) {
     renderActiveCommandConsole(resultData);

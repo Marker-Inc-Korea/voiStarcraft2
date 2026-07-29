@@ -2047,6 +2047,55 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             overview["identity"]["update_id"],
         )
 
+    def test_battlefield_projection_attachment_requires_exact_update_identity(self):
+        overview = deepcopy(
+            battlefield_projection_telemetry()["battlefield_overview"]
+        )
+        first = overview["operation_ownership"][0]
+        first["identity"].update(
+            {
+                "update_id": "update-a",
+                "operation_id": "shared-operation",
+                "generation": 3,
+            }
+        )
+        first["operation_id"] = "shared-operation"
+        first["generation"] = 3
+        second = deepcopy(first)
+        second["identity"]["update_id"] = "update-b"
+        overview["operation_ownership"] = [first, second]
+
+        attached = web_gui._attach_battlefield_operation_projections(
+            [
+                {
+                    "update_id": "update-a",
+                    "operation_id": "shared-operation",
+                    "operation_generation": 3,
+                },
+                {
+                    "update_id": "update-b",
+                    "operation_id": "shared-operation",
+                    "operation_generation": 3,
+                },
+                {
+                    "update_id": "update-c",
+                    "operation_id": "shared-operation",
+                    "operation_generation": 3,
+                },
+            ],
+            overview,
+        )
+
+        self.assertEqual(
+            "update-a",
+            attached[0]["battlefield_operation"]["identity"]["update_id"],
+        )
+        self.assertEqual(
+            "update-b",
+            attached[1]["battlefield_operation"]["identity"]["update_id"],
+        )
+        self.assertIsNone(attached[2]["battlefield_operation"])
+
     def test_real_filesystem_status_preserves_battlefield_overview(self):
         from starcraft_commander.micromachine_runtime import (
             MicroMachineFilesystemBlackboard,
@@ -7562,6 +7611,15 @@ class SessionLoopBridgeTest(unittest.TestCase):
         ] = 99
         cases.append(mismatched_generation)
 
+        mismatched_update = semantic_operation_payload(
+            execution_state="completed",
+            terminal=True,
+        )
+        mismatched_update["operations"][0]["battlefield_operation"][
+            "identity"
+        ]["update_id"] = "different-update"
+        cases.append(mismatched_update)
+
         for index, payload in enumerate(cases):
             with self.subTest(index=index):
                 result = reducer.observe(
@@ -7656,6 +7714,66 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertEqual(
             latest["operations"][0]["operation_edit"],
             stale["operations"][0]["operation_edit"],
+        )
+
+    def test_operation_timeline_preserves_new_execution_owner_for_stale_intent(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-stale-intent-new-execution"
+        reducer.observe(
+            semantic_operation_payload(
+                generation=1,
+                requested_generation=4,
+                frame=100,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "latest_intent_blocker",
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        incoming = semantic_operation_payload(
+            generation=2,
+            requested_generation=3,
+            frame=101,
+            execution_state="completed",
+            movement=True,
+            engagement=True,
+            target_reached=True,
+            terminal=True,
+            operation_edit={
+                "action": "reinforce",
+                "resolution": "blocked",
+                "blocker": "stale_intent_blocker",
+            },
+        )
+        incoming_operation = incoming["operations"][0]
+        execution_owner_update_id = incoming_operation["update_id"]
+        result = reducer.observe(
+            incoming,
+            blackboard_scope_id=scope_id,
+        )
+
+        operation = result["operations"][0]
+        self.assertEqual(4, operation["requested_operation_generation"])
+        self.assertEqual(
+            "update-flank-alpha-4",
+            operation["update_id"],
+        )
+        self.assertEqual(
+            execution_owner_update_id,
+            operation[
+                "operation_console_execution_owner_update_id"
+            ],
+        )
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["battlefield_operation"]["identity"]["update_id"],
+        )
+        self.assertIn(
+            "completed",
+            [event["kind"] for event in operation["semantic_timeline"]],
         )
 
     def test_rejected_snapshot_does_not_poison_requested_generation_high_water(self):
@@ -10650,7 +10768,11 @@ const assert = require("assert");
       }
     }
   }));
-  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert.strictEqual(
+    nodes["command-console-state"].textContent,
+    "실행 확인",
+    "canonical chat should use its exact operation completion"
+  );
   assert(nodes["active-command-console"].className.includes("command-console-verified"));
   assert(nodes["command-stage-interpret"].className.includes("stage-verified"));
   assert(nodes["command-stage-assign"].className.includes("stage-verified"));
@@ -11103,7 +11225,11 @@ const assert = require("assert");
     }
   }));
   assert(!hasPending(SERVER_SCOPE_A, "async-timeout"));
-  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert.strictEqual(
+    nodes["command-console-state"].textContent,
+    "실행 확인",
+    "focused same-update success must not lose canonical completion"
+  );
   assert(nodes["command-console-verification"].textContent.includes("late effect observed"));
   assert.strictEqual(
     logBox.querySelectorAll(".log-entry").filter(function (entry) {
@@ -13873,6 +13999,76 @@ const assert = require("assert");
       canonicalReconModel
     ).includes("권위 완료 조건 확인")
   );
+  var mismatchedCanonicalUpdate = operationResult(
+    "mismatched-canonical-update",
+    "current-canonical-update",
+    "다른 update의 완료 투영은 사용하지 않음",
+    "scouting",
+    400,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  mismatchedCanonicalUpdate.battlefield_operation.identity.update_id =
+    "older-canonical-update";
+  var mismatchedCanonicalUpdateModel = commandConsoleStageModel(
+    mismatchedCanonicalUpdate
+  );
+  assert.strictEqual(
+    operationCanonicalProjectionMatches(mismatchedCanonicalUpdate),
+    false
+  );
+  assert.strictEqual(
+    mismatchedCanonicalUpdateModel.canonicalCompletion,
+    false
+  );
+  assert.strictEqual(
+    mismatchedCanonicalUpdateModel.canonicalCompletionVerified,
+    false
+  );
+  assert.strictEqual(mismatchedCanonicalUpdateModel.blocked, true);
+
+  [
+    ["failed", "blocked", true, false, false],
+    ["expired", "expired", true, false, false],
+    ["superseded", "superseded", false, false, true],
+    ["cancelled", "active", false, true, false]
+  ].forEach(function(definition, index) {
+    var canonicalState = definition[0];
+    var expectedDisposition = definition[1];
+    var expectedBlocked = definition[2];
+    var expectedCancelled = definition[3];
+    var expectedSuperseded = definition[4];
+    var negativeCanonical = operationResult(
+      "negative-canonical-" + canonicalState,
+      "negative-canonical-update-" + canonicalState,
+      "canonical " + canonicalState + " is not success",
+      "scouting",
+      401 + index,
+      "completed",
+      actionStages("move").slice(0, 6)
+    );
+    negativeCanonical.intervention.command_execution = {};
+    negativeCanonical.battlefield_operation.operation_lifetime
+      .completion_state = canonicalState;
+    negativeCanonical.battlefield_operation.operation_lifetime
+      .completion_reason = "canonical_" + canonicalState;
+    negativeCanonical.battlefield_operation.operation_completion.state =
+      canonicalState;
+    negativeCanonical.battlefield_operation.operation_completion.reason =
+      "canonical_" + canonicalState;
+    var negativeModel = commandConsoleStageModel(negativeCanonical);
+    assert.strictEqual(negativeModel.canonicalState, canonicalState);
+    assert.strictEqual(negativeModel.canonicalCompletion, false);
+    assert.strictEqual(negativeModel.canonicalCompletionVerified, false);
+    assert.strictEqual(negativeModel.blocked, expectedBlocked);
+    assert.strictEqual(negativeModel.cancelled, expectedCancelled);
+    assert.strictEqual(negativeModel.superseded, expectedSuperseded);
+    assert.strictEqual(
+      operationRecordDisposition(negativeModel, negativeCanonical),
+      expectedDisposition
+    );
+  });
+
   var explicitlyFailedCanonicalCompletion = operationResult(
     "failed-canonical",
     "failed-canonical-update",
@@ -13907,6 +14103,46 @@ const assert = require("assert");
     ),
     "blocked"
   );
+
+  var successfulAliasCompletion = operationResult(
+    "successful-alias",
+    "successful-alias-update",
+    "success alias is canonical completion",
+    "scouting",
+    402,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  successfulAliasCompletion.battlefield_operation.operation_lifetime
+    .completion_state = "completed";
+  successfulAliasCompletion.battlefield_operation.operation_completion.state =
+    "success";
+  var successfulAliasModel = commandConsoleStageModel(
+    successfulAliasCompletion
+  );
+  assert.strictEqual(successfulAliasModel.canonicalState, "completed");
+  assert.strictEqual(successfulAliasModel.canonicalCompletionVerified, true);
+
+  var cancelledAliasCompletion = operationResult(
+    "cancelled-alias",
+    "cancelled-alias-update",
+    "canceled alias is canonical cancellation",
+    "scouting",
+    403,
+    "completed",
+    actionStages("move").slice(0, 6)
+  );
+  cancelledAliasCompletion.intervention.command_execution = {};
+  cancelledAliasCompletion.battlefield_operation.operation_lifetime
+    .completion_state = "cancelled";
+  cancelledAliasCompletion.battlefield_operation.operation_completion.state =
+    "canceled";
+  var cancelledAliasModel = commandConsoleStageModel(
+    cancelledAliasCompletion
+  );
+  assert.strictEqual(cancelledAliasModel.canonicalState, "cancelled");
+  assert.strictEqual(cancelledAliasModel.canonicalCompletionVerified, false);
+  assert.strictEqual(cancelledAliasModel.cancelled, true);
 
   operationRecords[reconKey].node
     .querySelectorAll(".operation-stage")
@@ -14033,6 +14269,15 @@ const assert = require("assert");
   assert.strictEqual(operationRecords[reconKey].updateId, "parallel-update-a-edit");
   assert.strictEqual(operationRecords[reconKey].text, "정찰대를 마린 2기로 증원");
   assert.strictEqual(
+    operationRecords[reconKey].data
+      .operation_console_execution_owner_update_id,
+    "parallel-update-a-stale-new-active"
+  );
+  assert.strictEqual(
+    operationRecords[reconKey].data.battlefield_operation.identity.update_id,
+    "parallel-update-a-stale-new-active"
+  );
+  assert.strictEqual(
     operationRecords[reconKey].data.intervention.command_execution
       .operation_generation,
     2
@@ -14068,6 +14313,12 @@ const assert = require("assert");
     activeCommandConsoleRecord.data.intervention.command_execution
       .operation_generation,
     2
+  );
+  assert.strictEqual(
+    operationCanonicalProjectionMatches(
+      activeCommandConsoleRecord.data
+    ),
+    true
   );
   assert(nodes["command-console-action"].textContent.includes("move"));
   assert(
@@ -14346,7 +14597,7 @@ const assert = require("assert");
   );
   assert.strictEqual(
     nodes["micromachine-applied-badge"].textContent,
-    "실행 확인"
+    "작전 완료 확인"
   );
   var canonicalChatEntry = logBox.querySelectorAll(".log-entry").find(
     function(entry) {
@@ -14384,6 +14635,321 @@ const assert = require("assert");
     "executed"
   );
 
+  var sharedParallelUpdateId = "shared-parallel-update";
+  var sharedParallelSuccess = operationResult(
+    "shared-parallel-success",
+    sharedParallelUpdateId,
+    "같은 명령의 정찰 성공",
+    "scouting",
+    13,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  sharedParallelSuccess.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  sharedParallelSuccess.battlefield_operation.operation_completion.reason =
+    "shared_parallel_success";
+  var sharedParallelFailure = operationResult(
+    "shared-parallel-failure",
+    sharedParallelUpdateId,
+    "같은 명령의 공격 실패",
+    "attack",
+    14,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  sharedParallelFailure.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  sharedParallelFailure.intervention.command_execution = {};
+  sharedParallelFailure.battlefield_operation.operation_lifetime
+    .completion_state = "failed";
+  sharedParallelFailure.battlefield_operation.operation_lifetime
+    .completion_reason = "shared_parallel_failure";
+  sharedParallelFailure.battlefield_operation.operation_completion.state =
+    "failed";
+  sharedParallelFailure.battlefield_operation.operation_completion.reason =
+    "shared_parallel_failure";
+  var sharedParallelStatus = serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: sharedParallelUpdateId
+    },
+    update: {
+      update_id: sharedParallelUpdateId,
+      vector: { goal: "병렬 정찰과 공격" }
+    },
+    intervention: {
+      latest_update_id: sharedParallelUpdateId,
+      telemetry_frame: 14,
+      command_execution:
+        sharedParallelSuccess.intervention.command_execution
+    },
+    operations: [sharedParallelSuccess, sharedParallelFailure]
+  }, OPERATION_SCOPE);
+  renderOperationConsole(sharedParallelStatus);
+  var sharedSuccessRecord = operationRecords[
+    operationRecordKey(OPERATION_SCOPE, "shared-parallel-success")
+  ];
+  var sharedFailureRecord = operationRecords[
+    operationRecordKey(OPERATION_SCOPE, "shared-parallel-failure")
+  ];
+  assert(sharedSuccessRecord);
+  assert(sharedFailureRecord);
+
+  var ambiguousParallelData = commandConsoleDataForCanonicalOperation(
+    commandConsoleDataForUpdate(
+      sharedParallelStatus,
+      sharedParallelUpdateId
+    ),
+    sharedParallelUpdateId
+  );
+  assert.strictEqual(ambiguousParallelData.battlefield_operation, null);
+  assert.deepStrictEqual(
+    ambiguousParallelData.intervention.command_execution,
+    {}
+  );
+  var ambiguousParallelModel = commandConsoleStageModel(
+    ambiguousParallelData
+  );
+  assert.strictEqual(ambiguousParallelModel.canonicalCompletion, false);
+  assert.strictEqual(ambiguousParallelModel.blocked, false);
+  assert.strictEqual(ambiguousParallelModel.effectObserved, false);
+
+  focusOperationRecord(sharedSuccessRecord);
+  renderMicroMachineIntervention(sharedParallelStatus);
+  assert.strictEqual(
+    activeCommandConsoleRecord.operationId,
+    "shared-parallel-success"
+  );
+  assert.strictEqual(activeCommandConsoleRecord.operationGeneration, 1);
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 확인");
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "권위 완료 조건 확인"
+    )
+  );
+  assert(
+    !nodes["command-console-verification"].textContent.includes(
+      "shared_parallel_failure"
+    )
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "작전 완료 확인"
+  );
+
+  var selectedParallelSuccess = commandConsoleDataForCanonicalOperation(
+    commandConsoleDataForUpdate(
+      sharedParallelStatus,
+      sharedParallelUpdateId
+    ),
+    sharedParallelUpdateId,
+    "shared-parallel-success",
+    1
+  );
+  appendMicroMachineChatResult(
+    "selected same-update operation",
+    Object.assign({}, selectedParallelSuccess, {
+      command_console_skip_render: true
+    }),
+    ""
+  );
+  var selectedParallelEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes("selected same-update operation");
+    }
+  );
+  assert(selectedParallelEntry);
+  assert.strictEqual(
+    selectedParallelEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "executed"
+  );
+  assert(!selectedParallelEntry.textContent.includes("shared_parallel_failure"));
+
+  appendMicroMachineChatResult(
+    "ambiguous same-update operation",
+    Object.assign({}, sharedParallelStatus, {
+      command_console_skip_render: true
+    }),
+    ""
+  );
+  var ambiguousParallelEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes("ambiguous same-update operation");
+    }
+  );
+  assert(ambiguousParallelEntry);
+  assert.strictEqual(
+    ambiguousParallelEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "partially_executed"
+  );
+  assert(!ambiguousParallelEntry.textContent.includes("shared_parallel_success"));
+  assert(!ambiguousParallelEntry.textContent.includes("shared_parallel_failure"));
+
+  var asyncParallelUpdateId = "async-parallel-update";
+  var asyncParallelCommand = "정찰과 공격을 병렬 수행";
+  var asyncParallelPendingId = rememberServerPending(
+    asyncParallelCommand,
+    asyncParallelUpdateId,
+    OPERATION_SCOPE
+  );
+  bindActiveCommandConsoleUpdate(
+    asyncParallelCommand,
+    asyncParallelPendingId,
+    OPERATION_SCOPE,
+    asyncParallelUpdateId
+  );
+  var asyncParallelSuccess = operationResult(
+    "async-parallel-success",
+    asyncParallelUpdateId,
+    "병렬 정찰 성공",
+    "scouting",
+    15,
+    "completed",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  asyncParallelSuccess.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  var asyncParallelActive = operationResult(
+    "async-parallel-active",
+    asyncParallelUpdateId,
+    "병렬 공격 진행 중",
+    "attack",
+    15,
+    "action_issued",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  asyncParallelActive.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: asyncParallelUpdateId
+    },
+    update: {
+      update_id: asyncParallelUpdateId,
+      vector: { goal: asyncParallelCommand }
+    },
+    intervention: {
+      latest_update_id: asyncParallelUpdateId,
+      telemetry_frame: 15,
+      command_execution:
+        asyncParallelSuccess.intervention.command_execution
+    },
+    operations: [asyncParallelSuccess, asyncParallelActive]
+  }, OPERATION_SCOPE));
+  assert(
+    hasPending(OPERATION_SCOPE, asyncParallelUpdateId),
+    "one terminal sibling must not finish the whole parallel command"
+  );
+
+  var asyncParallelFailure = operationResult(
+    "async-parallel-active",
+    asyncParallelUpdateId,
+    "병렬 공격 실패",
+    "attack",
+    16,
+    "completed",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  asyncParallelFailure.battlefield_operation.identity.session_epoch =
+    1800000000000;
+  asyncParallelFailure.intervention.command_execution = {};
+  asyncParallelFailure.battlefield_operation.operation_lifetime
+    .completion_state = "failed";
+  asyncParallelFailure.battlefield_operation.operation_lifetime
+    .completion_reason = "async_parallel_failure";
+  asyncParallelFailure.battlefield_operation.operation_completion.state =
+    "failed";
+  asyncParallelFailure.battlefield_operation.operation_completion.reason =
+    "async_parallel_failure";
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    consumption_status: "consumed",
+    operation_registry_authoritative: true,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: asyncParallelUpdateId
+    },
+    update: {
+      update_id: asyncParallelUpdateId,
+      vector: { goal: asyncParallelCommand }
+    },
+    intervention: {
+      latest_update_id: asyncParallelUpdateId,
+      telemetry_frame: 16,
+      command_execution:
+        asyncParallelSuccess.intervention.command_execution
+    },
+    operations: [asyncParallelSuccess, asyncParallelFailure]
+  }, OPERATION_SCOPE));
+  assert(!hasPending(OPERATION_SCOPE, asyncParallelUpdateId));
+  var asyncParallelEntry = logBox.querySelectorAll(".log-entry").find(
+    function(entry) {
+      return entry.textContent.includes(asyncParallelCommand);
+    }
+  );
+  assert(asyncParallelEntry);
+  assert.strictEqual(
+    asyncParallelEntry.querySelector(".message-bot").getAttribute(
+      "data-status"
+    ),
+    "partially_executed"
+  );
+  assert(!asyncParallelEntry.textContent.includes("async_parallel_failure"));
+
+  focusOperationRecord(sharedFailureRecord);
+  renderMicroMachineIntervention(sharedParallelStatus);
+  assert.strictEqual(
+    activeCommandConsoleRecord.operationId,
+    "shared-parallel-failure"
+  );
+  assert.strictEqual(nodes["command-console-state"].textContent, "실행 실패");
+  assert(
+    nodes["command-console-verification"].textContent.includes(
+      "shared_parallel_failure"
+    )
+  );
+  assert(
+    !nodes["command-console-verification"].textContent.includes(
+      "shared_parallel_success"
+    )
+  );
+  assert.strictEqual(
+    nodes["micromachine-applied-badge"].textContent,
+    "실행 실패"
+  );
+
   var failedCanonicalCommand = "명시적 실패 우선 검증";
   var failedCanonicalUpdateId = "failed-canonical-ui-update";
   var failedCanonicalOperation = operationResult(
@@ -14398,10 +14964,14 @@ const assert = require("assert");
   );
   failedCanonicalOperation.battlefield_operation.identity.session_epoch =
     1800000000000;
-  failedCanonicalOperation.intervention.command_execution.failed = true;
-  failedCanonicalOperation.intervention.command_execution.blocker_manager =
-    "OperationDirector";
-  failedCanonicalOperation.intervention.command_execution.blocker_reason =
+  failedCanonicalOperation.intervention.command_execution = {};
+  failedCanonicalOperation.battlefield_operation.operation_lifetime
+    .completion_state = "failed";
+  failedCanonicalOperation.battlefield_operation.operation_lifetime
+    .completion_reason = "explicit_runtime_failure";
+  failedCanonicalOperation.battlefield_operation.operation_completion.state =
+    "failed";
+  failedCanonicalOperation.battlefield_operation.operation_completion.reason =
     "explicit_runtime_failure";
   var failedCanonicalPendingId = rememberServerPending(
     failedCanonicalCommand,
