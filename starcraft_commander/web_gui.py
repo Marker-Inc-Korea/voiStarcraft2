@@ -58,6 +58,7 @@ from starcraft_commander.micromachine_bridge import (
     require_micromachine_update_id,
 )
 from starcraft_commander.micromachine_battlefield_projection import (
+    BattlefieldProjectionIdentity,
     select_latest_battlefield_projection,
 )
 from starcraft_commander.micromachine_command_execution import (
@@ -2206,10 +2207,278 @@ def _public_operation_family_evidence(
     return public_rows
 
 
+_PUBLIC_BATTLEFIELD_SCALAR: Final[object] = object()
+_PUBLIC_BATTLEFIELD_DROP: Final[object] = object()
+_PUBLIC_BATTLEFIELD_IDENTITY_SCHEMA: Final[Mapping[str, object]] = {
+    "update_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "scope": _PUBLIC_BATTLEFIELD_SCALAR,
+    "session_epoch": _PUBLIC_BATTLEFIELD_SCALAR,
+    "operation_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "stage": _PUBLIC_BATTLEFIELD_SCALAR,
+    "game_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+}
+_PUBLIC_BATTLEFIELD_OPERATION_SCHEMA: Final[Mapping[str, object]] = {
+    "identity": _PUBLIC_BATTLEFIELD_IDENTITY_SCHEMA,
+    "operation_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "operation_route": {
+        "requested_route_type": _PUBLIC_BATTLEFIELD_SCALAR,
+        "applied_route_type": _PUBLIC_BATTLEFIELD_SCALAR,
+        "location_intent": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_type": _PUBLIC_BATTLEFIELD_SCALAR,
+        "resolved_target_label": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_x": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_y": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_evidence": _PUBLIC_BATTLEFIELD_SCALAR,
+    },
+    "operation_lifetime": {
+        "mode": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completion_state": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completion_conditions": (_PUBLIC_BATTLEFIELD_SCALAR,),
+        "duration_seconds": _PUBLIC_BATTLEFIELD_SCALAR,
+        "issued_at_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        "deadline_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        "standing": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completed": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completion_reason": _PUBLIC_BATTLEFIELD_SCALAR,
+        "completed_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+    },
+    "operation_ownership": {
+        "owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+        "integrity_status": _PUBLIC_BATTLEFIELD_SCALAR,
+    },
+    "operation_launch_policy": {
+        "min_units": _PUBLIC_BATTLEFIELD_SCALAR,
+        "max_units": _PUBLIC_BATTLEFIELD_SCALAR,
+        "allow_partial_requested": _PUBLIC_BATTLEFIELD_SCALAR,
+        "strict_scope": _PUBLIC_BATTLEFIELD_SCALAR,
+        "partial_launch_allowed": _PUBLIC_BATTLEFIELD_SCALAR,
+        "partial_launch_safe": _PUBLIC_BATTLEFIELD_SCALAR,
+        "launch_count": _PUBLIC_BATTLEFIELD_SCALAR,
+        "missing_count": _PUBLIC_BATTLEFIELD_SCALAR,
+        "decision": _PUBLIC_BATTLEFIELD_SCALAR,
+        "blocker": _PUBLIC_BATTLEFIELD_SCALAR,
+        "recommended_choices": (_PUBLIC_BATTLEFIELD_SCALAR,),
+        "safety_evidence": {
+            "evaluated_at_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+            "protected_defense_minimum_respected": _PUBLIC_BATTLEFIELD_SCALAR,
+            "source_operation_minimum_respected": _PUBLIC_BATTLEFIELD_SCALAR,
+            "transfer_admission": _PUBLIC_BATTLEFIELD_SCALAR,
+            "emergency_preemption": _PUBLIC_BATTLEFIELD_SCALAR,
+        },
+    },
+    "operation_completion": {
+        "movement_observed": _PUBLIC_BATTLEFIELD_SCALAR,
+        "engagement_observed": _PUBLIC_BATTLEFIELD_SCALAR,
+        "target_reached": _PUBLIC_BATTLEFIELD_SCALAR,
+        "terminal": _PUBLIC_BATTLEFIELD_SCALAR,
+        "state": _PUBLIC_BATTLEFIELD_SCALAR,
+        "reason": _PUBLIC_BATTLEFIELD_SCALAR,
+        "frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        "generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    },
+    "operation_transfer_selection": {
+        "present": _PUBLIC_BATTLEFIELD_SCALAR,
+        "edit_resolution": _PUBLIC_BATTLEFIELD_SCALAR,
+        "identity_valid": _PUBLIC_BATTLEFIELD_SCALAR,
+        "blocker": _PUBLIC_BATTLEFIELD_SCALAR,
+        "successful_write_acknowledgement": {
+            "acknowledged": _PUBLIC_BATTLEFIELD_SCALAR,
+            "acknowledged_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        },
+    },
+}
+_PUBLIC_BATTLEFIELD_TRANSFER_INPUT_SCHEMA: Final[Mapping[str, object]] = {
+    "requested": _PUBLIC_BATTLEFIELD_SCALAR,
+    "requested_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "source_owner_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "action": _PUBLIC_BATTLEFIELD_SCALAR,
+    "requested_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_operation_id": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_action": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "requested_source_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "requested_counterpart_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "edit_resolution": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_present": _PUBLIC_BATTLEFIELD_SCALAR,
+    "counterpart_pending": _PUBLIC_BATTLEFIELD_SCALAR,
+    "reciprocal_action": _PUBLIC_BATTLEFIELD_SCALAR,
+    "reciprocal_counterpart": _PUBLIC_BATTLEFIELD_SCALAR,
+    "reciprocal_generation": _PUBLIC_BATTLEFIELD_SCALAR,
+    "reciprocal_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "source_active": _PUBLIC_BATTLEFIELD_SCALAR,
+    "destination_active": _PUBLIC_BATTLEFIELD_SCALAR,
+    "ownership_integrity": _PUBLIC_BATTLEFIELD_SCALAR,
+    "operation_assignments_match": _PUBLIC_BATTLEFIELD_SCALAR,
+    "squad_assignments_match": _PUBLIC_BATTLEFIELD_SCALAR,
+    "action_assignments_match": _PUBLIC_BATTLEFIELD_SCALAR,
+    "role_assignments_match": _PUBLIC_BATTLEFIELD_SCALAR,
+    "atomic_revalidation_ready": _PUBLIC_BATTLEFIELD_SCALAR,
+}
+_PUBLIC_BATTLEFIELD_SCHEMA: Final[Mapping[str, object]] = {
+    "schema_version": _PUBLIC_BATTLEFIELD_SCALAR,
+    "authority": _PUBLIC_BATTLEFIELD_SCALAR,
+    "identity": _PUBLIC_BATTLEFIELD_IDENTITY_SCHEMA,
+    "eligible_combat_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "explicit_operation_owned_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "autonomous_owned_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "unassigned_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "duplicate_owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+    "operation_ownership": (_PUBLIC_BATTLEFIELD_OPERATION_SCHEMA,),
+    "autonomous_ownership": (
+        {
+            "owner_id": _PUBLIC_BATTLEFIELD_SCALAR,
+            "owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+            "integrity_status": _PUBLIC_BATTLEFIELD_SCALAR,
+        },
+    ),
+    "bases": (
+        {
+            "base_id": _PUBLIC_BATTLEFIELD_SCALAR,
+            "semantic_anchor": _PUBLIC_BATTLEFIELD_SCALAR,
+            "base_readiness": {
+                "readiness_state": _PUBLIC_BATTLEFIELD_SCALAR,
+                "reason": _PUBLIC_BATTLEFIELD_SCALAR,
+                "ground_threat": _PUBLIC_BATTLEFIELD_SCALAR,
+                "air_threat": _PUBLIC_BATTLEFIELD_SCALAR,
+                "observed_enemy_strength": _PUBLIC_BATTLEFIELD_SCALAR,
+                "last_evidence_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+                "evidence_class": _PUBLIC_BATTLEFIELD_SCALAR,
+                "assigned_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "ground_capable_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "air_capable_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "required_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "required_ground_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "required_air_defender_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "protected_minimum": (
+                    {
+                        "family": _PUBLIC_BATTLEFIELD_SCALAR,
+                        "role": _PUBLIC_BATTLEFIELD_SCALAR,
+                        "count": _PUBLIC_BATTLEFIELD_SCALAR,
+                    },
+                ),
+            },
+        },
+    ),
+    "transfer_availability": {
+        "evaluated_at_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+        "atomic_revalidation_required": _PUBLIC_BATTLEFIELD_SCALAR,
+        "entries": (
+            {
+                "source_owner_id": _PUBLIC_BATTLEFIELD_SCALAR,
+                "source_owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "protected_minimum": _PUBLIC_BATTLEFIELD_SCALAR,
+                "transferable_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                "transfer_safe": _PUBLIC_BATTLEFIELD_SCALAR,
+                "atomic_runtime_blocker": _PUBLIC_BATTLEFIELD_SCALAR,
+                "recommended_resolution_choices": (
+                    _PUBLIC_BATTLEFIELD_SCALAR,
+                ),
+                "safety_evidence": {
+                    "evaluated_at_frame": _PUBLIC_BATTLEFIELD_SCALAR,
+                    "protected_minimum_respected": _PUBLIC_BATTLEFIELD_SCALAR,
+                    "atomic_revalidation_required": _PUBLIC_BATTLEFIELD_SCALAR,
+                },
+                "atomic_revalidation_inputs": (
+                    _PUBLIC_BATTLEFIELD_TRANSFER_INPUT_SCHEMA
+                ),
+            },
+        ),
+    },
+}
+
+
+def _micromachine_sensitive_public_key(key: object) -> bool:
+    normalized = str(key or "").strip().lower()
+    compact = re.sub(r"[^a-z0-9]", "", normalized)
+    parts = {
+        part for part in re.split(r"[^a-z0-9]+", normalized) if part
+    }
+    if normalized.startswith("private_"):
+        return True
+    if compact in {
+        "apikey",
+        "accesskey",
+        "privatekey",
+        "clientsecret",
+        "authorization",
+        "authtoken",
+        "password",
+        "passwd",
+        "credential",
+        "credentials",
+        "cookie",
+    }:
+        return True
+    return bool(
+        parts
+        & {
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "credential",
+            "credentials",
+        }
+    )
+
+
+def _public_battlefield_projection_value(
+    value: object,
+    schema: object,
+) -> object:
+    if schema is _PUBLIC_BATTLEFIELD_SCALAR:
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        return _PUBLIC_BATTLEFIELD_DROP
+    if isinstance(schema, Mapping):
+        if not isinstance(value, Mapping):
+            return _PUBLIC_BATTLEFIELD_DROP
+        projected: dict[str, object] = {}
+        for key, child_schema in schema.items():
+            if key not in value or _micromachine_sensitive_public_key(key):
+                continue
+            child = _public_battlefield_projection_value(
+                value[key],
+                child_schema,
+            )
+            if child is not _PUBLIC_BATTLEFIELD_DROP:
+                projected[key] = child
+        return projected
+    if isinstance(schema, tuple) and len(schema) == 1:
+        if not isinstance(value, (list, tuple)):
+            return _PUBLIC_BATTLEFIELD_DROP
+        projected_items = []
+        for item in value:
+            projected = _public_battlefield_projection_value(item, schema[0])
+            if projected is not _PUBLIC_BATTLEFIELD_DROP:
+                projected_items.append(projected)
+        return projected_items
+    return _PUBLIC_BATTLEFIELD_DROP
+
+
+def _public_battlefield_overview_payload(value: object) -> object:
+    return _public_battlefield_projection_value(
+        value,
+        _PUBLIC_BATTLEFIELD_SCHEMA,
+    )
+
+
 def _public_micromachine_runtime_payload(value: object) -> object:
     if isinstance(value, Mapping):
         public_payload: dict[object, object] = {}
         for key, item in value.items():
+            if _micromachine_sensitive_public_key(key):
+                continue
+            if str(key or "").strip().lower() == "battlefield_overview":
+                if item is None:
+                    public_payload[key] = None
+                    continue
+                overview = _public_battlefield_overview_payload(item)
+                if overview is not _PUBLIC_BATTLEFIELD_DROP:
+                    public_payload[key] = overview
+                continue
             if _micromachine_internal_unit_tag_key(key):
                 continue
             if _public_micromachine_semantic_tag_key(key):
@@ -2573,6 +2842,9 @@ def _micromachine_status_payload(
     blackboard_dir: str = "",
     compile_result: object | None = None,
     result_stream: Sequence[Mapping[str, object]] = (),
+    previous_battlefield_identity: (
+        BattlefieldProjectionIdentity | Mapping[str, object] | None
+    ) = None,
 ) -> dict[str, object]:
     """Promote latest blackboard state into the same top-level UI contract."""
 
@@ -2588,6 +2860,7 @@ def _micromachine_status_payload(
             for entry in telemetry_archive
         ),
         expected_scope="battlefield",
+        previous_identity=previous_battlefield_identity,
     )
     updates = dashboard.get("active_updates")
     active_updates = updates if isinstance(updates, list) else []
@@ -4724,6 +4997,7 @@ class _MicroMachineLaunchManager:
         self._blackboard_dir = _default_micromachine_blackboard_dir()
         self._enemy_difficulty = DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY
         self._launch_wall_time = 0.0
+        self._runtime_instance_id = ""
         self._cwd = cwd.strip() or _REPO_ROOT
         candidate_script = script_path.strip()
         if candidate_script and not os.path.isabs(candidate_script):
@@ -4795,6 +5069,7 @@ class _MicroMachineLaunchManager:
             ]
             try:
                 self._launch_wall_time = time.time()
+                self._runtime_instance_id = uuid.uuid4().hex
                 self._process = subprocess.Popen(
                     argv,
                     cwd=self._cwd,
@@ -4812,6 +5087,7 @@ class _MicroMachineLaunchManager:
                 )
                 self._process = None
                 self._launch_wall_time = 0.0
+                self._runtime_instance_id = ""
                 return self._snapshot_unlocked()
             threading.Thread(
                 target=self._read_output,
@@ -4888,6 +5164,9 @@ class _MicroMachineLaunchManager:
             "mode": COMMAND_MODE_MICROMACHINE,
             "status": self._status,
             "pid": process.pid if runtime_attached else None,
+            "runtime_instance_id": (
+                self._runtime_instance_id if runtime_attached else ""
+            ),
             "runtime_attached": runtime_attached,
             "blackboard_dir": self._blackboard_dir,
             "enemy_difficulty": self._enemy_difficulty,
@@ -4968,6 +5247,10 @@ class SessionLoopBridge:
             str, deque[dict[str, object]]
         ] = {}
         self._micromachine_recent_commands_lock = threading.Lock()
+        self._micromachine_battlefield_identity_lock = threading.Lock()
+        self._micromachine_battlefield_identities: dict[
+            tuple[str, str], Mapping[str, object]
+        ] = {}
         self._lifecycle_lock = threading.Lock()
         self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
         self._micromachine_request_lock = threading.Lock()
@@ -5627,6 +5910,33 @@ class SessionLoopBridge:
         return payload
 
     def micromachine_status(self, *, blackboard_dir: str = "") -> Mapping[str, object]:
+        return self._micromachine_status(
+            blackboard_dir=blackboard_dir,
+            runtime_instance_id="",
+        )
+
+    def micromachine_status_for_runtime(
+        self,
+        *,
+        blackboard_dir: str = "",
+        runtime_instance_id: str,
+    ) -> Mapping[str, object]:
+        """Read status and commit freshness only for an attached runtime."""
+
+        instance_id = str(runtime_instance_id or "").strip()
+        if not instance_id:
+            raise ValueError("runtime_instance_id must not be empty.")
+        return self._micromachine_status(
+            blackboard_dir=blackboard_dir,
+            runtime_instance_id=instance_id,
+        )
+
+    def _micromachine_status(
+        self,
+        *,
+        blackboard_dir: str,
+        runtime_instance_id: str,
+    ) -> Mapping[str, object]:
         from starcraft_commander.micromachine_runtime import (
             MicroMachineFilesystemBlackboard,
         )
@@ -5660,18 +5970,39 @@ class SessionLoopBridge:
                 else ""
             ),
         )
-        payload = {
-            "enabled": True,
-            "blackboard_dir": root,
-            **result_metadata,
-            **_micromachine_status_payload(
+        with self._micromachine_battlefield_identity_lock:
+            root_key = os.path.realpath(root)
+            identity_key = (root_key, runtime_instance_id)
+            previous_identity = (
+                self._micromachine_battlefield_identities.get(identity_key)
+                if runtime_instance_id
+                else None
+            )
+            status_payload = _micromachine_status_payload(
                 snapshot.to_dict(),
                 telemetry=telemetry,
                 telemetry_archive=telemetry_archive,
                 blackboard_dir=root,
                 compile_result=compile_result,
                 result_stream=compile_result_stream,
-            ),
+                previous_battlefield_identity=previous_identity,
+            )
+            projection = status_payload.get("battlefield_projection")
+            identity = status_payload.get("battlefield_projection_identity")
+            if (
+                runtime_instance_id
+                and isinstance(projection, Mapping)
+                and projection.get("ok") is True
+                and isinstance(identity, Mapping)
+            ):
+                self._micromachine_battlefield_identities[
+                    identity_key
+                ] = dict(identity)
+        payload = {
+            "enabled": True,
+            "blackboard_dir": root,
+            **result_metadata,
+            **status_payload,
         }
         payload["modulation_results"] = compile_result_stream
         public_payload = _public_micromachine_runtime_payload(payload)
@@ -14483,13 +14814,35 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "enabled": False,
                 "error": "MicroMachine modulation bridge is disabled.",
             }
-        payload = dict(status_fn(blackboard_dir=blackboard_dir))
         runtime_snapshot = None
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
         if launcher is not None and callable(getattr(launcher, "snapshot", None)):
             runtime_snapshot = dict(
                 launcher.snapshot(blackboard_dir=blackboard_dir)
             )
+        runtime_instance_id = ""
+        if (
+            isinstance(runtime_snapshot, Mapping)
+            and runtime_snapshot.get("runtime_attached") is True
+            and runtime_snapshot.get("telemetry_current_for_process") is True
+        ):
+            runtime_instance_id = str(
+                runtime_snapshot.get("runtime_instance_id", "") or ""
+            ).strip()
+        runtime_status_fn = getattr(
+            self._bridge,
+            "micromachine_status_for_runtime",
+            None,
+        )
+        if runtime_instance_id and callable(runtime_status_fn):
+            payload = dict(
+                runtime_status_fn(
+                    blackboard_dir=blackboard_dir,
+                    runtime_instance_id=runtime_instance_id,
+                )
+            )
+        else:
+            payload = dict(status_fn(blackboard_dir=blackboard_dir))
         return _micromachine_status_with_runtime_gate(
             payload,
             runtime_snapshot=runtime_snapshot,

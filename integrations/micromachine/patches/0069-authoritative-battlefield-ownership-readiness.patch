@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281224cfa62 100644
+index 0c92dba16a984af2920700cfd220a5af5da7d059..685cdf2efa7c9795b73e9263986931c3f00a6e2f 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -2261,6 +2261,24 @@ std::string voiSquadOrderName(size_t orderType)
@@ -27,7 +27,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  std::string voiOperationFamilyEvidenceKey(
  	const std::string & unitType,
  	const std::string & role,
-@@ -2782,6 +2800,758 @@ CombatCommander::CombatCommander(CCBot & bot)
+@@ -2782,6 +2800,774 @@ CombatCommander::CombatCommander(CCBot & bot)
  {
  }
  
@@ -35,6 +35,14 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
 +{
 +	VoiBattlefieldProjectionInput input;
 +	input.frame = m_bot.GetGameLoop();
++	if (m_voiBattlefieldSessionEpoch == 0)
++	{
++		m_voiBattlefieldSessionEpoch =
++			voiNextBattlefieldSessionEpoch(0);
++	}
++	input.sessionEpoch = m_voiBattlefieldSessionEpoch;
++	input.generation =
++		++m_voiBattlefieldProjectionGeneration;
 +	input.updateId = m_voiOperationPolicyUpdateId.empty()
 +		? "micromachine-autonomous"
 +		: m_voiOperationPolicyUpdateId;
@@ -61,6 +69,10 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
 +					== sc2::UNIT_TYPEID::TERRAN_KD8CHARGE;
 +			projected.combat =
 +				unit.getType().isCombatUnit();
++			projected.canAttackGround =
++				unit.canAttackGround();
++			projected.canAttackAir =
++				unit.canAttackAir();
 +		}
 +		unitsByTag[projected.tag] = projected;
 +	}
@@ -260,6 +272,10 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
 +			projectedBase.observedEnemyStrength > 0.0f;
 +		projectedBase.requiredDefenderCount =
 +			visibleGroundThreatCount + visibleAirThreatCount;
++		projectedBase.requiredGroundDefenderCount =
++			visibleGroundThreatCount;
++		projectedBase.requiredAirDefenderCount =
++			visibleAirThreatCount;
 +		projectedBase.protectedMinimum =
 +			projectedBase.requiredDefenderCount;
 +
@@ -786,7 +802,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  VoiOperationState * CombatCommander::findVoiOperation(
  	const std::string & operationId,
  	uint64_t generation)
-@@ -2987,6 +3757,8 @@ void CombatCommander::releaseVoiOperation(
+@@ -2987,6 +3773,8 @@ void CombatCommander::releaseVoiOperation(
  	if (terminal)
  	{
  		operation.completed = true;
@@ -795,7 +811,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		operation.status = "COMPLETED";
  	}
  	else
-@@ -3339,6 +4111,8 @@ void CombatCommander::observeVoiOperations()
+@@ -3339,6 +4127,8 @@ void CombatCommander::observeVoiOperations()
  				observedUnits,
  				operation.targetPosition,
  				completionRadius) >= majority;
@@ -804,7 +820,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		bool objectiveCompleted = false;
  		if (!operation.standing
  			&& operation.lifetimeMode != "until_cancelled")
-@@ -4302,12 +5076,22 @@ void CombatCommander::updateVoiOperations()
+@@ -4302,12 +5092,22 @@ void CombatCommander::updateVoiOperations()
  		requested.taskType =
  			voiCanonicalOperationTaskType(
  				requested.requestedTaskType);
@@ -832,7 +848,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		requested.locationIntent =
  			m_bot.Commander().getVoiPolicyString(
  				prefix
-@@ -4578,13 +5362,17 @@ void CombatCommander::updateVoiOperations()
+@@ -4578,13 +5378,17 @@ void CombatCommander::updateVoiOperations()
  			requested.taskType,
  			requested.locationIntent,
  			explicitTarget);
@@ -852,7 +868,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		requested.targetX = requested.targetPosition.x;
  		requested.targetY = requested.targetPosition.y;
  		requested.activeTargetPosition =
-@@ -4639,7 +5427,7 @@ void CombatCommander::updateVoiOperations()
+@@ -4639,7 +5443,7 @@ void CombatCommander::updateVoiOperations()
  			requestedStatus == "SUPERSEDED"
  			|| requestedStatus == "superseded"
  			|| requestedCompletionState == "superseded";
@@ -861,7 +877,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		{
  			requested.status = "BLOCKED";
  			requested.blockedReason =
-@@ -4663,12 +5451,16 @@ void CombatCommander::updateVoiOperations()
+@@ -4663,12 +5467,16 @@ void CombatCommander::updateVoiOperations()
  			requested.blockedReason =
  				"future_operation_issued_at_frame";
  		}
@@ -884,7 +900,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		}
  		else if (requested.taskType != "scout"
  			&& requested.taskType != "attack"
-@@ -4748,11 +5540,21 @@ void CombatCommander::updateVoiOperations()
+@@ -4748,11 +5556,21 @@ void CombatCommander::updateVoiOperations()
  			requested.blockedReason =
  				"superseded_by_policy";
  		}
@@ -911,7 +927,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  
  		if (missingIssuedAtFrame
  			|| futureIssuedAtFrame
-@@ -4862,8 +5664,10 @@ void CombatCommander::updateVoiOperations()
+@@ -4862,8 +5680,10 @@ void CombatCommander::updateVoiOperations()
  			}
  			return latest;
  		};
@@ -924,7 +940,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  	auto transferBlockerBeforeHandoff =
  		[&](const VoiOperationState & destination)
  		{
-@@ -5168,10 +5972,48 @@ void CombatCommander::updateVoiOperations()
+@@ -5168,10 +5988,48 @@ void CombatCommander::updateVoiOperations()
  			const std::vector<sc2::Tag> selectionPlan(
  				selectedTags.begin(),
  				selectedTags.end());
@@ -976,7 +992,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  			return std::string();
  		};
  	std::map<std::string, std::string> transferBlockers;
-@@ -5396,6 +6238,12 @@ void CombatCommander::updateVoiOperations()
+@@ -5396,6 +6254,12 @@ void CombatCommander::updateVoiOperations()
  			existing.requestedTaskType =
  				requested.requestedTaskType;
  			existing.taskType = requested.taskType;
@@ -989,7 +1005,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  			existing.unitClasses = requested.unitClasses;
  			existing.lifetimeMode = requested.lifetimeMode;
  			existing.completionConditions =
-@@ -5425,6 +6273,7 @@ void CombatCommander::updateVoiOperations()
+@@ -5425,6 +6289,7 @@ void CombatCommander::updateVoiOperations()
  			}
  			if (newEditEpoch)
  			{
@@ -997,7 +1013,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  				existing.editAction =
  					requested.editAction;
  				existing.editCounterpartOperationId =
-@@ -5476,6 +6325,7 @@ void CombatCommander::updateVoiOperations()
+@@ -5476,6 +6341,7 @@ void CombatCommander::updateVoiOperations()
  				existing,
  				[&]()
  				{
@@ -1005,7 +1021,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  			existing.policyUpdateId = policyUpdateId;
  			existing.editAction = requested.editAction;
  			existing.editCounterpartOperationId =
-@@ -5520,6 +6370,7 @@ void CombatCommander::updateVoiOperations()
+@@ -5520,6 +6386,7 @@ void CombatCommander::updateVoiOperations()
  				existing,
  				[&]()
  				{
@@ -1013,7 +1029,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  			existing.policyUpdateId = policyUpdateId;
  			existing.editAction =
  				counterpartRequest.editAction == "transfer_in"
-@@ -5587,6 +6438,10 @@ void CombatCommander::updateVoiOperations()
+@@ -5587,6 +6454,10 @@ void CombatCommander::updateVoiOperations()
  			replacement.maxHomeDistance =
  				existing.maxHomeDistance;
  			replacement.engaged = existing.engaged;
@@ -1024,7 +1040,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  			replacement.submissionObserved =
  				targetChanged
  					? false
-@@ -5799,9 +6654,9 @@ void CombatCommander::updateVoiOperations()
+@@ -5799,9 +6670,9 @@ void CombatCommander::updateVoiOperations()
  		{
  			if ((requested->editAction == "transfer_in"
  					|| requested->editAction == "transfer_out")
@@ -1036,7 +1052,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  			{
  				annotateRejectedEdit(
  					existing,
-@@ -5984,13 +6839,14 @@ void CombatCommander::updateVoiOperations()
+@@ -5984,13 +6855,14 @@ void CombatCommander::updateVoiOperations()
  			currentOperationById(
  				destinationRequested.operationId);
  		const auto plannedSelection =
@@ -1053,7 +1069,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		{
  			Util::Log(
  				__FUNCTION__,
-@@ -6151,6 +7007,38 @@ void CombatCommander::updateVoiOperations()
+@@ -6151,6 +7023,38 @@ void CombatCommander::updateVoiOperations()
  				{
  					return unit.getTag();
  				});
@@ -1092,7 +1108,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		const auto transactionPlan =
  			voiPlanOperationTransferTransaction(
  				m_voiOperationUnitOwners,
-@@ -6159,29 +7047,123 @@ void CombatCommander::updateVoiOperations()
+@@ -6159,29 +7063,123 @@ void CombatCommander::updateVoiOperations()
  				actionAssignments,
  				sourceAssignedRoles,
  				destinationAssignedRoles,
@@ -1233,7 +1249,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  
  		auto mutationEndpoint =
  			[](
-@@ -6241,7 +7223,18 @@ void CombatCommander::updateVoiOperations()
+@@ -6241,7 +7239,18 @@ void CombatCommander::updateVoiOperations()
  				*destination,
  				destinationRequested,
  				destinationUnits);
@@ -1253,7 +1269,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		{
  			std::string restoreSquad = "Backup";
  			const auto previous =
-@@ -6275,7 +7268,8 @@ void CombatCommander::updateVoiOperations()
+@@ -6275,7 +7284,8 @@ void CombatCommander::updateVoiOperations()
  				transactionPlan.destinationTags.size());
  		const int transferCount =
  			static_cast<int>(
@@ -1263,7 +1279,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		sourceReplacement.transferredOutCount =
  			source->transferredOutCount + transferCount;
  		destinationReplacement.transferredInCount =
-@@ -7409,6 +8403,42 @@ void CombatCommander::acknowledgeVoiFamilyEffects()
+@@ -7409,6 +8419,42 @@ void CombatCommander::acknowledgeVoiFamilyEffects()
  	}
  	voiAcknowledgeFamilyEffectTelemetryDeliveries(
  		m_voiFamilyEffectTelemetryDeliveries);
@@ -1306,7 +1322,19 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  }
  
  void CombatCommander::bindCurrentVoiExplicitAbilityAttempt(
-@@ -7553,6 +8583,7 @@ void CombatCommander::onStart()
+@@ -7503,6 +8549,11 @@ void CombatCommander::advanceVoiExplicitAbilityAttempt()
+ 
+ void CombatCommander::onStart()
+ {
++	m_voiBattlefieldSessionEpoch =
++		voiNextBattlefieldSessionEpoch(
++			m_voiBattlefieldSessionEpoch);
++	m_voiBattlefieldProjectionGeneration = 0;
++
+ 	for (auto& ability : m_bot.Observation()->GetAbilityData())
+ 	{
+ 		m_abilityCastingRanges[ability.ability_id] = ability.cast_range;
+@@ -7553,6 +8604,7 @@ void CombatCommander::onStart()
  
  	//The influence maps are initialised earlier so we can use the blocked tiles influence map to place the turrets
  	updateVoiOperations();
@@ -1314,7 +1342,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  }
  
  void CombatCommander::updateVoiTacticalNukeSquad()
-@@ -9562,6 +10593,7 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
+@@ -9562,6 +10614,7 @@ void CombatCommander::onFrame(const std::vector<Unit> & combatUnits)
  	m_bot.StartProfiling("0.10.4.6    ExecuteActions");
  	ExecuteActions();
  	m_bot.StopProfiling("0.10.4.6    ExecuteActions");
@@ -1322,7 +1350,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  	drawCombatInformation();
  
  	m_bot.StartProfiling("0.10.4.4    lowPriorityCheck");
-@@ -13869,15 +14901,25 @@ void CombatCommander::drawCombatInformation()
+@@ -13869,15 +14922,25 @@ void CombatCommander::drawCombatInformation()
  
  void CombatCommander::drawVoiOperationHud()
  {
@@ -1350,7 +1378,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		{
  			color = sc2::Colors::Red;
  		}
-@@ -13885,41 +14927,58 @@ void CombatCommander::drawVoiOperationHud()
+@@ -13885,41 +14948,58 @@ void CombatCommander::drawVoiOperationHud()
  		{
  			color = sc2::Colors::Red;
  		}
@@ -1423,7 +1451,7 @@ index 0c92dba16a984af2920700cfd220a5af5da7d059..52188a17ea31e1e3527160b456195281
  		{
  			card << " force=";
 diff --git a/src/CombatCommander.h b/src/CombatCommander.h
-index 73e93a027e71b05a0116afd093f721b8db14c5db..258c9eda873ebe82cd9bbfd288369b80a7bd1a00 100644
+index 73e93a027e71b05a0116afd093f721b8db14c5db..86c5970004e2b0030bdefc9f5fe4495be518b743 100644
 --- a/src/CombatCommander.h
 +++ b/src/CombatCommander.h
 @@ -4,6 +4,7 @@
@@ -1467,15 +1495,17 @@ index 73e93a027e71b05a0116afd093f721b8db14c5db..258c9eda873ebe82cd9bbfd288369b80
  	std::vector<CompositionRequirement> editBeforeComposition;
  	std::vector<CompositionRequirement> editAfterComposition;
  	bool editExplicitOverride = false;
-@@ -507,6 +519,7 @@ class CombatCommander
+@@ -507,6 +519,9 @@ class CombatCommander
  		m_voiFamilyEffectTelemetryDeliveries;
  	std::map<sc2::Tag, std::pair<std::string, uint64_t>> m_voiOperationUnitOwners;
  	std::string m_voiOperationPolicyUpdateId;
 +	VoiBattlefieldProjection m_voiBattlefieldProjection;
++	uint64_t m_voiBattlefieldSessionEpoch = 0;
++	uint64_t m_voiBattlefieldProjectionGeneration = 0;
  	bool m_workersStacked = false;
  	bool m_firstProxyReaperWentThroughNatural = false;
  	const sc2::Unit * m_firstProxyReaperToGoThroughNatural = nullptr;
-@@ -562,6 +575,7 @@ class CombatCommander
+@@ -562,6 +577,7 @@ class CombatCommander
  	void			drawInfluenceMaps();
  	void			drawBlockedTiles();
  	void			updateVoiOperations();
@@ -1483,7 +1513,7 @@ index 73e93a027e71b05a0116afd093f721b8db14c5db..258c9eda873ebe82cd9bbfd288369b80
  	void			observeVoiOperations();
  	void			reconcileVoiOperation(VoiOperationState & operation);
  	void			releaseVoiOperation(
-@@ -800,6 +814,16 @@ public:
+@@ -800,6 +816,16 @@ public:
  	int getVoiAssignableUnownedUnitCount(
  		const std::string & compositionToken) const;
  	std::string getVoiOperationDirectorTelemetryJson() const;
@@ -1523,15 +1553,16 @@ index f068e7f6dd333a8c4e7d2420217891ebd611a214..f3934a0e4781f585d31e3171387a58fd
      }
 diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac4acc9da1
+index 0000000000000000000000000000000000000000..7a5b5d7420183a5d1facb4116e2ca8902e920eb9
 --- /dev/null
 +++ b/src/voi_battlefield_projection.hpp
-@@ -0,0 +1,2026 @@
+@@ -0,0 +1,2093 @@
 +#pragma once
 +
 +#include <algorithm>
 +#include <cstddef>
 +#include <cstdint>
++#include <limits>
 +#include <map>
 +#include <set>
 +#include <sstream>
@@ -1540,6 +1571,14 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +
 +#include "voi_operation_transfer_admission.hpp"
 +
++inline std::uint64_t voiNextBattlefieldSessionEpoch(
++	std::uint64_t previous)
++{
++	return previous == std::numeric_limits<std::uint64_t>::max()
++		? previous
++		: previous + 1;
++}
++
 +struct VoiBattlefieldUnitInput
 +{
 +	std::uint64_t tag = 0;
@@ -1547,6 +1586,8 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +	bool selfOwned = true;
 +	bool complete = true;
 +	bool combat = false;
++	bool canAttackGround = false;
++	bool canAttackAir = false;
 +	bool worker = false;
 +	bool structure = false;
 +	bool temporaryPayload = false;
@@ -1570,6 +1611,8 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +	float observedEnemyStrength = 0.0f;
 +	std::vector<std::uint64_t> defenderTags;
 +	std::size_t requiredDefenderCount = 0;
++	std::size_t requiredGroundDefenderCount = 0;
++	std::size_t requiredAirDefenderCount = 0;
 +	std::size_t protectedMinimum = 0;
 +	std::string protectedFamily = "eligible_combat";
 +	std::string protectedRole = "base_defender";
@@ -1663,6 +1706,7 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +	std::uint64_t frame = 0;
 +	std::string updateId = "micromachine-autonomous";
 +	std::string scope = "battlefield";
++	std::uint64_t sessionEpoch = 1;
 +	std::uint64_t generation = 1;
 +	std::string stage = "observed";
 +	bool ownershipEvidencePresent = false;
@@ -1694,7 +1738,11 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +	float airThreat = 0.0f;
 +	float observedEnemyStrength = 0.0f;
 +	std::size_t defenderCount = 0;
++	std::size_t groundCapableDefenderCount = 0;
++	std::size_t airCapableDefenderCount = 0;
 +	std::size_t requiredDefenderCount = 0;
++	std::size_t requiredGroundDefenderCount = 0;
++	std::size_t requiredAirDefenderCount = 0;
 +	std::size_t protectedMinimum = 0;
 +	std::string protectedFamily;
 +	std::string protectedRole;
@@ -1817,6 +1865,7 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +	std::uint64_t frame = 0;
 +	std::string updateId;
 +	std::string scope;
++	std::uint64_t sessionEpoch = 1;
 +	std::uint64_t generation = 1;
 +	std::string stage;
 +	bool ownershipEvidencePresent = false;
@@ -2273,6 +2322,9 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +	result.scope = input.scope.empty()
 +		? "battlefield"
 +		: input.scope;
++	result.sessionEpoch = std::max<std::uint64_t>(
++		1,
++		input.sessionEpoch);
 +	result.generation = std::max<std::uint64_t>(
 +		1,
 +		input.generation);
@@ -2554,14 +2606,35 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +			std::max(0.0f, base.airThreat);
 +		projected.observedEnemyStrength =
 +			std::max(0.0f, base.observedEnemyStrength);
-+		projected.defenderCount =
++		const auto defenderTags =
 +			voiBattlefieldEligibleUniqueTags(
 +				base.defenderTags,
-+				eligibleTagSet).size();
++				eligibleTagSet);
++		projected.defenderCount = defenderTags.size();
++		for (const auto tag : defenderTags)
++		{
++			const auto defender = normalizedUnits.find(tag);
++			if (defender == normalizedUnits.end())
++			{
++				continue;
++			}
++			if (defender->second.canAttackGround)
++			{
++				++projected.groundCapableDefenderCount;
++			}
++			if (defender->second.canAttackAir)
++			{
++				++projected.airCapableDefenderCount;
++			}
++		}
 +		projected.requiredDefenderCount =
 +			base.requiredDefenderCount > 0
 +				? base.requiredDefenderCount
 +				: base.protectedMinimum;
++		projected.requiredGroundDefenderCount =
++			base.requiredGroundDefenderCount;
++		projected.requiredAirDefenderCount =
++			base.requiredAirDefenderCount;
 +		projected.protectedMinimum =
 +			base.protectedMinimum;
 +		projected.protectedFamily =
@@ -2576,8 +2649,14 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +			!base.occupied
 +			|| (projected.evidencePresent
 +				&& (!projected.threatened
-+					|| projected.defenderCount
-+						>= projected.protectedMinimum));
++					|| (projected.defenderCount
++							>= projected.protectedMinimum
++						&& projected.defenderCount
++							>= projected.requiredDefenderCount
++						&& projected.groundCapableDefenderCount
++							>= projected.requiredGroundDefenderCount
++						&& projected.airCapableDefenderCount
++							>= projected.requiredAirDefenderCount)));
 +		projected.readinessState =
 +			!projected.evidencePresent
 +				? "missing_evidence"
@@ -2586,8 +2665,14 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +			!projected.evidencePresent
 +				? "threat_or_readiness_evidence_missing"
 +				: (projected.ready
-+					? "protected_minimum_satisfied"
-+					: "protected_minimum_not_met");
++					? "capability_aware_minimum_satisfied"
++					: (projected.groundCapableDefenderCount
++							< projected.requiredGroundDefenderCount
++						? "ground_capable_defender_minimum_not_met"
++						: (projected.airCapableDefenderCount
++								< projected.requiredAirDefenderCount
++							? "air_capable_defender_minimum_not_met"
++							: "protected_minimum_not_met")));
 +		if (base.occupied)
 +		{
 +			allOccupiedBaseEvidencePresent =
@@ -3039,13 +3124,15 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +{
 +	std::ostringstream output;
 +	output << "{"
-+		<< "\"schema_version\":1,"
++		<< "\"schema_version\":2,"
 +		<< "\"authority\":\"micromachine_cpp\","
 +		<< "\"identity\":{"
 +		<< "\"update_id\":\""
 +		<< voiBattlefieldJsonEscape(projection.updateId)
 +		<< "\",\"scope\":\""
 +		<< voiBattlefieldJsonEscape(projection.scope)
++		<< "\",\"session_epoch\":"
++		<< projection.sessionEpoch
 +		<< "\",\"generation\":"
 +		<< projection.generation
 +		<< ",\"stage\":\""
@@ -3083,6 +3170,8 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +				operation.updateId)
 +			<< "\",\"scope\":\""
 +			<< voiBattlefieldJsonEscape(operation.scope)
++			<< "\",\"session_epoch\":"
++			<< projection.sessionEpoch
 +			<< "\",\"generation\":"
 +			<< operation.generation
 +			<< ",\"stage\":\""
@@ -3342,8 +3431,16 @@ index 0000000000000000000000000000000000000000..b739bc0f7d91e565fc99e70c0c850aac
 +				base.evidenceClass)
 +			<< "\",\"assigned_defender_count\":"
 +			<< base.defenderCount
++			<< ",\"ground_capable_defender_count\":"
++			<< base.groundCapableDefenderCount
++			<< ",\"air_capable_defender_count\":"
++			<< base.airCapableDefenderCount
 +			<< ",\"required_defender_count\":"
 +			<< base.requiredDefenderCount
++			<< ",\"required_ground_defender_count\":"
++			<< base.requiredGroundDefenderCount
++			<< ",\"required_air_defender_count\":"
++			<< base.requiredAirDefenderCount
 +			<< ",\"protected_minimum\":[{"
 +			<< "\"family\":\""
 +			<< voiBattlefieldJsonEscape(
@@ -4144,10 +4241,10 @@ index 526cc7d953991693d4bfb79faf55dbe2a5d40002..93e35d84d94a37a29a93b4f8da06ecb1
 +)
 diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae8efd48c82a543b0bee6d37ca34a7e2a622c076
+index 0000000000000000000000000000000000000000..25aa6d9cf68158caf7a6e6e5d88af24a7cd296b7
 --- /dev/null
 +++ b/tests/battlefield_projection_test.cpp
-@@ -0,0 +1,478 @@
+@@ -0,0 +1,542 @@
 +#include "voi_battlefield_projection.hpp"
 +
 +#include <iostream>
@@ -4169,7 +4266,10 @@ index 0000000000000000000000000000000000000000..ae8efd48c82a543b0bee6d37ca34a7e2
 +		}                                                                    \
 +	} while (false)
 +
-+VoiBattlefieldUnitInput combatUnit(std::uint64_t tag)
++VoiBattlefieldUnitInput combatUnit(
++	std::uint64_t tag,
++	bool canAttackGround = true,
++	bool canAttackAir = true)
 +{
 +	VoiBattlefieldUnitInput unit;
 +	unit.tag = tag;
@@ -4177,6 +4277,8 @@ index 0000000000000000000000000000000000000000..ae8efd48c82a543b0bee6d37ca34a7e2
 +	unit.selfOwned = true;
 +	unit.complete = true;
 +	unit.combat = true;
++	unit.canAttackGround = canAttackGround;
++	unit.canAttackAir = canAttackAir;
 +	return unit;
 +}
 +
@@ -4196,6 +4298,7 @@ index 0000000000000000000000000000000000000000..ae8efd48c82a543b0bee6d37ca34a7e2
 +	base.observedEnemyStrength = 2.0f;
 +	base.defenderTags = { 12, 21 };
 +	base.requiredDefenderCount = 2;
++	base.requiredGroundDefenderCount = 2;
 +	base.protectedMinimum = 2;
 +	return base;
 +}
@@ -4237,6 +4340,8 @@ index 0000000000000000000000000000000000000000..ae8efd48c82a543b0bee6d37ca34a7e2
 +	VoiBattlefieldProjectionInput input;
 +	input.frame = 320;
 +	input.updateId = "battlefield-test";
++	input.sessionEpoch = 1700000000000ULL;
++	input.generation = 7;
 +	input.ownershipEvidencePresent = true;
 +	input.baseEvidencePresent = true;
 +
@@ -4282,11 +4387,21 @@ index 0000000000000000000000000000000000000000..ae8efd48c82a543b0bee6d37ca34a7e2
 +	CHECK(projection.unassignedCount == 1);
 +	CHECK(projection.duplicateOwnershipCount == 0);
 +	CHECK(projection.operations.size() == 2);
++	CHECK(voiNextBattlefieldSessionEpoch(0) == 1);
++	CHECK(voiNextBattlefieldSessionEpoch(41) == 42);
++	CHECK(
++		voiNextBattlefieldSessionEpoch(
++			std::numeric_limits<std::uint64_t>::max())
++		== std::numeric_limits<std::uint64_t>::max());
++	CHECK(projection.sessionEpoch == 1700000000000ULL);
++	CHECK(projection.generation == 7);
 +	CHECK(
 +		projection.operations[0].launchState
 +		== VoiBattlefieldDecisionState::Safe);
 +	CHECK(projection.operations[0].launchReason == "partial_launch_safe");
 +	CHECK(projection.bases[0].ready);
++	CHECK(projection.bases[0].groundCapableDefenderCount == 2);
++	CHECK(projection.bases[0].airCapableDefenderCount == 2);
 +	CHECK(projection.transfers.size() == 1);
 +	CHECK(projection.transfers[0].transferableTags
 +		== std::vector<std::uint64_t>({ 11 }));
@@ -4355,6 +4470,45 @@ index 0000000000000000000000000000000000000000..ae8efd48c82a543b0bee6d37ca34a7e2
 +	CHECK(
 +		unsafeBaseProjection.operations[0].launchReason
 +		== "base_protected_minimum_not_met");
++
++	auto hellionAgainstAir = validInput();
++	hellionAgainstAir.units[1] = combatUnit(12, true, false);
++	hellionAgainstAir.units[2] = combatUnit(21, true, false);
++	hellionAgainstAir.units[1].explicitOwners = {
++		"operation:defense-bravo#2"
++	};
++	hellionAgainstAir.units[2].autonomousOwners = {
++		"squad:BaseDefense:main"
++	};
++	hellionAgainstAir.bases[0].groundThreat = 0.0f;
++	hellionAgainstAir.bases[0].airThreat = 1.0f;
++	hellionAgainstAir.bases[0].observedEnemyStrength = 1.0f;
++	hellionAgainstAir.bases[0].requiredDefenderCount = 1;
++	hellionAgainstAir.bases[0].requiredGroundDefenderCount = 0;
++	hellionAgainstAir.bases[0].requiredAirDefenderCount = 1;
++	hellionAgainstAir.bases[0].protectedMinimum = 1;
++	const auto hellionAgainstAirProjection =
++		voiMakeBattlefieldProjection(hellionAgainstAir);
++	CHECK(!hellionAgainstAirProjection.bases[0].ready);
++	CHECK(
++		hellionAgainstAirProjection.bases[0].readinessReason
++		== "air_capable_defender_minimum_not_met");
++
++	auto vikingAgainstGround = validInput();
++	vikingAgainstGround.units[1] = combatUnit(12, false, true);
++	vikingAgainstGround.units[2] = combatUnit(21, false, true);
++	vikingAgainstGround.units[1].explicitOwners = {
++		"operation:defense-bravo#2"
++	};
++	vikingAgainstGround.units[2].autonomousOwners = {
++		"squad:BaseDefense:main"
++	};
++	const auto vikingAgainstGroundProjection =
++		voiMakeBattlefieldProjection(vikingAgainstGround);
++	CHECK(!vikingAgainstGroundProjection.bases[0].ready);
++	CHECK(
++		vikingAgainstGroundProjection.bases[0].readinessReason
++		== "ground_capable_defender_minimum_not_met");
 +
 +	auto transfer = validInput();
 +	auto & request = transfer.operations[0].transfer;
@@ -4601,6 +4755,13 @@ index 0000000000000000000000000000000000000000..ae8efd48c82a543b0bee6d37ca34a7e2
 +	const std::string json =
 +		voiBattlefieldProjectionJson(projection);
 +	CHECK(json.find("\"battlefield\"") != std::string::npos);
++	CHECK(json.find("\"schema_version\":2") != std::string::npos);
++	CHECK(
++		json.find("\"session_epoch\":1700000000000")
++		!= std::string::npos);
++	CHECK(
++		json.find("\"ground_capable_defender_count\":2")
++		!= std::string::npos);
 +	CHECK(json.find("\"operation_route\"") != std::string::npos);
 +	CHECK(json.find("\"operation_launch_policy\"") != std::string::npos);
 +	CHECK(json.find("\"operation_completion\"") != std::string::npos);

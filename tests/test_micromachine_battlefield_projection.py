@@ -17,6 +17,7 @@ def _identity(
     *,
     update_id: str = "voi-mm-current",
     scope: str = "battlefield",
+    session_epoch: int = 1700000000000,
     generation: int = 7,
     stage: str = "observed",
     game_frame: int = 320,
@@ -25,6 +26,7 @@ def _identity(
     payload: dict[str, object] = {
         "update_id": update_id,
         "scope": scope,
+        "session_epoch": session_epoch,
         "generation": generation,
         "stage": stage,
         "game_frame": game_frame,
@@ -139,7 +141,7 @@ def _telemetry(
     return {
         "frame": game_frame,
         "battlefield_overview": {
-            "schema_version": 1,
+            "schema_version": 2,
             "authority": "micromachine_cpp",
             "identity": _identity(
                 update_id=update_id,
@@ -175,7 +177,11 @@ def _telemetry(
                         "last_evidence_frame": game_frame - 2,
                         "evidence_class": "observed_enemy_units",
                         "assigned_defender_count": 2,
+                        "ground_capable_defender_count": 2,
+                        "air_capable_defender_count": 2,
                         "required_defender_count": 2,
+                        "required_ground_defender_count": 2,
+                        "required_air_defender_count": 0,
                         "protected_minimum": [
                             {
                                 "family": "marine",
@@ -972,6 +978,7 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         previous = BattlefieldProjectionIdentity(
             update_id="previous",
             scope="battlefield",
+            session_epoch=1700000000000,
             generation=8,
             stage="observed",
             game_frame=400,
@@ -991,6 +998,95 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertIn(code, _blocker_codes(result))
                 self.assertFalse(result.integrity["monotonic"])
+
+    def test_newer_session_epoch_allows_safe_game_frame_reset(self) -> None:
+        previous = BattlefieldProjectionIdentity(
+            update_id="previous",
+            scope="battlefield",
+            session_epoch=1700000000000,
+            generation=800,
+            stage="observed",
+            game_frame=5000,
+        )
+        telemetry = _telemetry(generation=1, game_frame=320)
+        telemetry["battlefield_overview"]["identity"]["session_epoch"] = (
+            1700000000100
+        )
+        for operation in telemetry["battlefield_overview"]["operation_ownership"]:
+            operation["identity"]["session_epoch"] = 1700000000100
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+            previous_identity=previous,
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertTrue(result.integrity["monotonic"])
+
+    def test_retired_session_epoch_cannot_replace_current_game(self) -> None:
+        previous = BattlefieldProjectionIdentity(
+            update_id="current",
+            scope="battlefield",
+            session_epoch=1700000000200,
+            generation=4,
+            stage="observed",
+            game_frame=40,
+        )
+
+        result = validate_battlefield_overview(
+            _telemetry(generation=900, game_frame=9000),
+            expected_scope="battlefield",
+            previous_identity=previous,
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("stale_session_epoch", _blocker_codes(result))
+
+    def test_ready_base_requires_compatible_ground_and_air_defenders(self) -> None:
+        cases = (
+            (
+                {
+                    "ground_threat": 0.0,
+                    "air_threat": 1.0,
+                    "observed_enemy_strength": 1.0,
+                    "ground_capable_defender_count": 2,
+                    "air_capable_defender_count": 0,
+                    "required_defender_count": 1,
+                    "required_ground_defender_count": 0,
+                    "required_air_defender_count": 1,
+                },
+                "incompatible_defender_readiness",
+            ),
+            (
+                {
+                    "ground_threat": 1.0,
+                    "air_threat": 0.0,
+                    "observed_enemy_strength": 1.0,
+                    "ground_capable_defender_count": 0,
+                    "air_capable_defender_count": 2,
+                    "required_defender_count": 1,
+                    "required_ground_defender_count": 1,
+                    "required_air_defender_count": 0,
+                },
+                "incompatible_defender_readiness",
+            ),
+        )
+        for updates, code in cases:
+            with self.subTest(updates=updates):
+                telemetry = _telemetry()
+                readiness = telemetry["battlefield_overview"]["bases"][0][
+                    "base_readiness"
+                ]
+                readiness.update(updates)
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIn(code, _blocker_codes(result))
 
 
 class BattlefieldProjectionSelectionTest(unittest.TestCase):

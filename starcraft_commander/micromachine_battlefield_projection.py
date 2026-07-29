@@ -11,10 +11,11 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+import math
 from typing import Final
 
 
-BATTLEFIELD_OVERVIEW_SCHEMA_VERSION: Final[int] = 1
+BATTLEFIELD_OVERVIEW_SCHEMA_VERSION: Final[int] = 2
 BATTLEFIELD_OVERVIEW_AUTHORITY: Final[str] = "micromachine_cpp"
 
 _TERMINAL_COMPLETION_STATES: Final[frozenset[str]] = frozenset(
@@ -37,6 +38,7 @@ class BattlefieldProjectionIdentity:
 
     update_id: str
     scope: str
+    session_epoch: int
     generation: int
     stage: str
     game_frame: int
@@ -45,6 +47,7 @@ class BattlefieldProjectionIdentity:
         return {
             "update_id": self.update_id,
             "scope": self.scope,
+            "session_epoch": self.session_epoch,
             "generation": self.generation,
             "stage": self.stage,
             "game_frame": self.game_frame,
@@ -1073,14 +1076,46 @@ def _validate_bases(
             path=f"{path}.base_readiness.evidence_class",
             validation=validation,
         )
-        _required_nonnegative_int(
+        assigned_defender_count = _required_nonnegative_int(
             readiness.get("assigned_defender_count"),
             path=f"{path}.base_readiness.assigned_defender_count",
             validation=validation,
         )
-        _required_nonnegative_int(
+        ground_capable_count = _required_nonnegative_int(
+            readiness.get("ground_capable_defender_count"),
+            path=(
+                f"{path}.base_readiness."
+                "ground_capable_defender_count"
+            ),
+            validation=validation,
+        )
+        air_capable_count = _required_nonnegative_int(
+            readiness.get("air_capable_defender_count"),
+            path=(
+                f"{path}.base_readiness."
+                "air_capable_defender_count"
+            ),
+            validation=validation,
+        )
+        required_defender_count = _required_nonnegative_int(
             readiness.get("required_defender_count"),
             path=f"{path}.base_readiness.required_defender_count",
+            validation=validation,
+        )
+        required_ground_count = _required_nonnegative_int(
+            readiness.get("required_ground_defender_count"),
+            path=(
+                f"{path}.base_readiness."
+                "required_ground_defender_count"
+            ),
+            validation=validation,
+        )
+        required_air_count = _required_nonnegative_int(
+            readiness.get("required_air_defender_count"),
+            path=(
+                f"{path}.base_readiness."
+                "required_air_defender_count"
+            ),
             validation=validation,
         )
         protected = _required_mapping_sequence(
@@ -1119,6 +1154,98 @@ def _validate_bases(
                 projection_frame=overview_frame,
                 evidence_frame=evidence_frame,
             )
+        ground_threat = readiness.get("ground_threat")
+        air_threat = readiness.get("air_threat")
+        if (
+            assigned_defender_count is not None
+            and ground_capable_count is not None
+            and ground_capable_count > assigned_defender_count
+        ):
+            validation.block(
+                "defender_capability_count_mismatch",
+                f"{path}.base_readiness.ground_capable_defender_count",
+                "Ground-capable defenders cannot exceed assigned defenders.",
+                assigned=assigned_defender_count,
+                capable=ground_capable_count,
+            )
+        if (
+            assigned_defender_count is not None
+            and air_capable_count is not None
+            and air_capable_count > assigned_defender_count
+        ):
+            validation.block(
+                "defender_capability_count_mismatch",
+                f"{path}.base_readiness.air_capable_defender_count",
+                "Air-capable defenders cannot exceed assigned defenders.",
+                assigned=assigned_defender_count,
+                capable=air_capable_count,
+            )
+        if (
+            required_defender_count is not None
+            and required_ground_count is not None
+            and required_air_count is not None
+            and required_defender_count
+            < required_ground_count + required_air_count
+        ):
+            validation.block(
+                "defender_requirement_count_mismatch",
+                f"{path}.base_readiness.required_defender_count",
+                (
+                    "Total required defenders must cover ground and air "
+                    "requirements without double-counting one unit."
+                ),
+                total=required_defender_count,
+                ground=required_ground_count,
+                air=required_air_count,
+            )
+        if (
+            isinstance(ground_threat, (int, float))
+            and not isinstance(ground_threat, bool)
+            and required_ground_count is not None
+            and required_ground_count < math.ceil(float(ground_threat))
+        ):
+            validation.block(
+                "ground_threat_requirement_mismatch",
+                f"{path}.base_readiness.required_ground_defender_count",
+                "Visible ground threats require ground-capable defenders.",
+                threat=ground_threat,
+                required=required_ground_count,
+            )
+        if (
+            isinstance(air_threat, (int, float))
+            and not isinstance(air_threat, bool)
+            and required_air_count is not None
+            and required_air_count < math.ceil(float(air_threat))
+        ):
+            validation.block(
+                "air_threat_requirement_mismatch",
+                f"{path}.base_readiness.required_air_defender_count",
+                "Visible air threats require air-capable defenders.",
+                threat=air_threat,
+                required=required_air_count,
+            )
+        readiness_state = str(readiness.get("readiness_state", "") or "")
+        if readiness_state == "ready":
+            capability_shortfall = (
+                assigned_defender_count is None
+                or ground_capable_count is None
+                or air_capable_count is None
+                or required_defender_count is None
+                or required_ground_count is None
+                or required_air_count is None
+                or assigned_defender_count < required_defender_count
+                or ground_capable_count < required_ground_count
+                or air_capable_count < required_air_count
+            )
+            if capability_shortfall:
+                validation.block(
+                    "incompatible_defender_readiness",
+                    f"{path}.base_readiness.readiness_state",
+                    (
+                        "A base cannot be ready when assigned defenders cannot "
+                        "attack every observed threat domain."
+                    ),
+                )
     validation.checks["base_readiness_valid"] = len(validation.blockers) == start
 
 
@@ -1918,6 +2045,11 @@ def _read_identity_components(
         path=f"{path}.identity.scope",
         validation=validation,
     )
+    session_epoch = _identity_positive_int(
+        nested.get("session_epoch"),
+        path=f"{path}.identity.session_epoch",
+        validation=validation,
+    )
     generation = _identity_positive_int(
         nested.get("generation"),
         path=f"{path}.identity.generation",
@@ -1944,6 +2076,7 @@ def _read_identity_components(
     for field_name, identity_value in (
         ("update_id", update_id),
         ("scope", scope),
+        ("session_epoch", session_epoch),
         ("generation", generation),
         ("stage", stage),
         ("game_frame", game_frame),
@@ -1958,12 +2091,20 @@ def _read_identity_components(
                 payload=direct,
             )
 
-    if None in (update_id, scope, generation, stage, game_frame):
+    if None in (
+        update_id,
+        scope,
+        session_epoch,
+        generation,
+        stage,
+        game_frame,
+    ):
         return (None, operation_id)
     return (
         BattlefieldProjectionIdentity(
             update_id=str(update_id),
             scope=str(scope),
+            session_epoch=int(session_epoch),
             generation=int(generation),
             stage=str(stage),
             game_frame=int(game_frame),
@@ -1987,6 +2128,17 @@ def _validate_monotonic_identity(
             previous=previous.scope,
             actual=identity.scope,
         )
+        return
+    if identity.session_epoch < previous.session_epoch:
+        validation.block(
+            "stale_session_epoch",
+            f"{path}.session_epoch",
+            "A retired runtime or match session cannot replace the current one.",
+            previous=previous.session_epoch,
+            actual=identity.session_epoch,
+        )
+    if identity.session_epoch > previous.session_epoch:
+        validation.checks["monotonic"] = True
         return
     if identity.generation < previous.generation:
         validation.block(
@@ -2024,6 +2176,7 @@ def _validate_monotonic_identity(
         in {
             "stale_generation",
             "stale_game_frame",
+            "stale_session_epoch",
             "identity_collision",
             "scope_mismatch",
         }

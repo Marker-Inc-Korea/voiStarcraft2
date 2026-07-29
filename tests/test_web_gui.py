@@ -60,17 +60,19 @@ def battlefield_projection_telemetry(
     update_id="battlefield-current",
     frame=320,
     generation=7,
+    session_epoch=1700000000000,
 ):
     """Return one complete authoritative battlefield projection fixture."""
 
     return {
         "frame": frame,
         "battlefield_overview": {
-            "schema_version": 1,
+            "schema_version": 2,
             "authority": "micromachine_cpp",
             "identity": {
                 "update_id": update_id,
                 "scope": "battlefield",
+                "session_epoch": session_epoch,
                 "generation": generation,
                 "stage": "observed",
                 "game_frame": frame,
@@ -85,6 +87,7 @@ def battlefield_projection_telemetry(
                     "identity": {
                         "update_id": "battlefield-operation",
                         "scope": "operation:flank-alpha",
+                        "session_epoch": session_epoch,
                         "operation_id": "flank-alpha",
                         "generation": 3,
                         "stage": "effect_observed",
@@ -176,7 +179,11 @@ def battlefield_projection_telemetry(
                         "last_evidence_frame": frame - 2,
                         "evidence_class": "observed_enemy_units",
                         "assigned_defender_count": 2,
+                        "ground_capable_defender_count": 2,
+                        "air_capable_defender_count": 2,
                         "required_defender_count": 2,
+                        "required_ground_defender_count": 2,
+                        "required_air_defender_count": 0,
                         "protected_minimum": [
                             {
                                 "family": "marine",
@@ -570,6 +577,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "status": "connected",
                     "blackboard_dir": root,
                     "pid": 4242,
+                    "runtime_instance_id": "fake-runtime-4242",
                     "runtime_attached": True,
                     "telemetry_present": telemetry_frame is not None,
                     "telemetry_current_for_process": telemetry_frame is not None,
@@ -1510,6 +1518,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
     def test_micromachine_status_redacts_battlefield_unit_identity(self):
         telemetry = battlefield_projection_telemetry()
+        telemetry["battlefield_overview"]["unit_tag_ids"] = [991, 992]
+        telemetry["battlefield_overview"]["private_config"] = {
+            "api_key": "battlefield-private-secret",
+            "nested": {"token": "battlefield-private-token"},
+        }
+        telemetry["battlefield_overview"]["bases"][0]["unknown_runtime_state"] = {
+            "password": "battlefield-private-password",
+        }
 
         payload = web_gui._micromachine_status_payload(
             {"active_updates": []},
@@ -1527,6 +1543,17 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertNotIn(forbidden_key, serialized)
         for raw_tag in ("101", "102", "103", "104", "201", "202", "301", "302"):
             self.assertNotIn(raw_tag, serialized)
+        for forbidden_value in (
+            "991",
+            "992",
+            "battlefield-private-secret",
+            "battlefield-private-token",
+            "battlefield-private-password",
+        ):
+            self.assertNotIn(forbidden_value, serialized)
+        self.assertNotIn("unit_tag_ids", serialized)
+        self.assertNotIn("private_config", serialized)
+        self.assertNotIn("unknown_runtime_state", serialized)
         self.assertEqual(
             4,
             payload["battlefield_overview"]["operation_ownership"][0][
@@ -1539,6 +1566,113 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "transferable_count"
             ],
         )
+
+    def test_micromachine_status_persists_projection_cursor_per_blackboard(self):
+        current = {
+            "telemetry": battlefield_projection_telemetry(
+                update_id="frame-500",
+                frame=500,
+                generation=9,
+            )
+        }
+
+        class Telemetry:
+            def __init__(self, document):
+                self.document = document
+                self.frame = document["frame"]
+
+            def to_dict(self):
+                return dict(self.document)
+
+        class Backend:
+            def __init__(self, _root):
+                pass
+
+            def read_latest_telemetry(self):
+                return Telemetry(current["telemetry"])
+
+            def read_recent_telemetry_archive(self, **_kwargs):
+                return ()
+
+            def dashboard_snapshot(self, **_kwargs):
+                return SimpleNamespace(
+                    to_dict=lambda: {"active_updates": []}
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = SessionLoopBridge(session=self.session)
+            with mock.patch(
+                "starcraft_commander.micromachine_runtime."
+                "MicroMachineFilesystemBlackboard",
+                Backend,
+            ):
+                first = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id="runtime-a",
+                )
+                self.assertTrue(first["battlefield_projection"]["ok"])
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="frame-400",
+                    frame=400,
+                    generation=10,
+                )
+                stale = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id="runtime-a",
+                )
+                self.assertFalse(stale["battlefield_projection"]["ok"])
+                self.assertIn(
+                    "stale_game_frame",
+                    {
+                        blocker["code"]
+                        for blocker in stale["battlefield_projection"][
+                            "blockers"
+                        ]
+                    },
+                )
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="new-session",
+                    frame=320,
+                    generation=1,
+                    session_epoch=1700000000100,
+                )
+                reset = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id="runtime-a",
+                )
+                self.assertTrue(
+                    reset["battlefield_projection"]["ok"],
+                    reset["battlefield_projection"],
+                )
+                self.assertEqual(
+                    1700000000100,
+                    reset["battlefield_projection_identity"][
+                        "session_epoch"
+                    ],
+                )
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="replacement-runtime",
+                    frame=320,
+                    generation=1,
+                    session_epoch=1600000000000,
+                )
+                replacement = bridge.micromachine_status_for_runtime(
+                    blackboard_dir=directory,
+                    runtime_instance_id="runtime-b",
+                )
+                self.assertTrue(
+                    replacement["battlefield_projection"]["ok"],
+                    replacement["battlefield_projection"],
+                )
+                self.assertEqual(
+                    1600000000000,
+                    replacement["battlefield_projection_identity"][
+                        "session_epoch"
+                    ],
+                )
 
     def test_micromachine_status_requires_post_publish_telemetry_before_consumed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1665,6 +1799,90 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(document["intervention"]["applied"])
             self.assertFalse(document["intervention"]["policy_active"])
             self.assertTrue(document["telemetry_stale_or_detached"])
+
+    def test_detached_projection_cannot_poison_attached_runtime_cursor(self):
+        current = {
+            "telemetry": battlefield_projection_telemetry(
+                update_id="detached-old",
+                frame=900,
+                generation=9,
+                session_epoch=1700000000200,
+            )
+        }
+
+        class Telemetry:
+            def __init__(self, document):
+                self.document = document
+                self.frame = document["frame"]
+
+            def to_dict(self):
+                return dict(self.document)
+
+        class Backend:
+            def __init__(self, _root):
+                pass
+
+            def read_latest_telemetry(self):
+                return Telemetry(current["telemetry"])
+
+            def read_recent_telemetry_archive(self, **_kwargs):
+                return ()
+
+            def dashboard_snapshot(self, **_kwargs):
+                return SimpleNamespace(
+                    to_dict=lambda: {"active_updates": []}
+                )
+
+        class Launcher:
+            attached = False
+
+            def snapshot(self, blackboard_dir=""):
+                return {
+                    "status": "connected" if self.attached else "idle",
+                    "runtime_instance_id": (
+                        "attached-runtime" if self.attached else ""
+                    ),
+                    "runtime_attached": self.attached,
+                    "telemetry_present": True,
+                    "telemetry_current_for_process": self.attached,
+                    "telemetry_stale_or_detached": not self.attached,
+                    "telemetry_frame": current["telemetry"]["frame"],
+                    "blackboard_dir": blackboard_dir,
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Launcher()
+            self.server._http.micromachine_launcher = launcher
+            with mock.patch(
+                "starcraft_commander.micromachine_runtime."
+                "MicroMachineFilesystemBlackboard",
+                Backend,
+            ):
+                detached = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+                self.assertIsNone(detached["battlefield_overview"])
+                self.assertTrue(detached["telemetry_stale_or_detached"])
+
+                current["telemetry"] = battlefield_projection_telemetry(
+                    update_id="attached-current",
+                    frame=320,
+                    generation=1,
+                    session_epoch=1700000000100,
+                )
+                launcher.attached = True
+                attached = self.get_json(
+                    "/api/micromachine/status?blackboard_dir=" + directory
+                )
+
+            self.assertTrue(
+                attached["battlefield_projection"]["ok"],
+                attached["battlefield_projection"],
+            )
+            self.assertEqual(
+                1700000000100,
+                attached["battlefield_projection_identity"]["session_epoch"],
+            )
 
     def test_micromachine_runtime_gate_redacts_runtime_identity_text(self):
         cases = (
