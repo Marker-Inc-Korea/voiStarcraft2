@@ -23,7 +23,7 @@ from starcraft_commander.micromachine_build_identity import (
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(69, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(70, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -2340,6 +2340,16 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ).name,
         )
 
+    def test_battlefield_projection_review_cli_defaults_to_patch_0070(self) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0070-battlefield-projection-review-closure.patch",
+            Path(
+                args.micromachine_battlefield_projection_review_closure_patch
+            ).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -2857,6 +2867,48 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 },
             )
 
+    def test_battlefield_projection_review_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_battlefield_projection_review_closure_patch_sha256"
+            )
+
+            config.micromachine_battlefield_projection_review_closure_patch.write_text(
+                "changed battlefield projection review closure\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_battlefield_projection_review_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_battlefield_projection_review_closure_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_battlefield_projection_review_closure_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
     def test_operation_production_review_closure_patch_changes_identity(
         self,
     ) -> None:
@@ -3287,6 +3339,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root
             / "micromachine-authoritative-battlefield-ownership-readiness.patch"
         )
+        micromachine_battlefield_projection_review_closure_patch = (
+            root / "micromachine-battlefield-projection-review-closure.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -3361,6 +3416,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_runtime_convergence_defense_placement_information_patch,
             micromachine_all_terran_harass_capability_evidence_patch,
             micromachine_authoritative_battlefield_ownership_readiness_patch,
+            micromachine_battlefield_projection_review_closure_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -3566,6 +3622,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_authoritative_battlefield_ownership_readiness_patch=(
                 micromachine_authoritative_battlefield_ownership_readiness_patch
+            ),
+            micromachine_battlefield_projection_review_closure_patch=(
+                micromachine_battlefield_projection_review_closure_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

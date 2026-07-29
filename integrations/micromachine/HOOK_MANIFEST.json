@@ -353,6 +353,11 @@
       "path": "patches/0069-authoritative-battlefield-ownership-readiness.patch",
       "order": 69,
       "scope": "project all eligible combat units into exclusive explicit-operation, autonomous, or unassigned ownership; expose generation-scoped route, lifetime, launch, completion, base-readiness, and transfer-safety evidence; atomically revalidate exact transfer selections immediately before mutation; and make telemetry plus the in-game HUD consume one canonical battlefield projection"
+    },
+    {
+      "path": "patches/0070-battlefield-projection-review-closure.patch",
+      "order": 70,
+      "scope": "emit parseable battlefield JSON, seed session identity from a process-unique wall-clock epoch, and execute parser-backed C++ regression contracts so distinct MicroMachine launches cannot reuse authoritative projection identity"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

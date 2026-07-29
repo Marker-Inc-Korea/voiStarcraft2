@@ -201,6 +201,31 @@ class _OwnershipEvidence:
     owner_generations_by_id: Mapping[str, int]
 
 
+@dataclass(frozen=True)
+class _TransferSelectionIdentity:
+    update_id: str
+    source_owner_id: str
+    counterpart_operation_id: str
+    source_action: str
+    counterpart_action: str
+    source_generation: int
+    counterpart_generation: int
+    requested_source_generation: int
+    requested_counterpart_generation: int
+    requested_count: int
+    selected_unit_tags: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _TransferSelectionWriteIdentity:
+    update_id: str
+    operation_id: str
+    operation_generation: int
+    stage: str
+    game_frame: int
+    selection_identity: _TransferSelectionIdentity
+
+
 def battlefield_overview_fingerprint(overview: Mapping[str, object]) -> str:
     """Return a deterministic fingerprint for one validated C++ projection."""
 
@@ -601,6 +626,10 @@ def _validate_ownership_partition(
     explicit_tags: list[int] = []
     owner_tags_by_id: dict[str, frozenset[int]] = {}
     owner_generations_by_id: dict[str, int] = {}
+    operation_identities_by_id: dict[str, BattlefieldProjectionIdentity] = {}
+    operation_rows_with_identity: list[
+        tuple[Mapping[str, object], str, BattlefieldProjectionIdentity | None]
+    ] = []
     operation_count_sum = 0
     operation_blocks_start = len(validation.blockers)
     launch_blockers_start = len(validation.blockers)
@@ -638,6 +667,7 @@ def _validate_ownership_partition(
             path=f"{path}.operation_completion",
             validation=validation,
         )
+        operation_rows_with_identity.append((operation, path, operation_identity))
 
         if route is not None:
             _validate_operation_route(
@@ -668,6 +698,10 @@ def _validate_ownership_partition(
                     owner_generations_by_id[operation_id] = (
                         operation_identity.generation
                     )
+                    operation_identities_by_id.setdefault(
+                        operation_id,
+                        operation_identity,
+                    )
         if launch is not None:
             _validate_launch_policy(
                 launch,
@@ -685,6 +719,15 @@ def _validate_ownership_partition(
                 operation_identity=operation_identity,
                 validation=validation,
             )
+
+    for operation, path, operation_identity in operation_rows_with_identity:
+        _validate_operation_transfer_selection(
+            operation.get("operation_transfer_selection"),
+            path=f"{path}.operation_transfer_selection",
+            operation_identity=operation_identity,
+            operation_identities_by_id=operation_identities_by_id,
+            validation=validation,
+        )
 
     validation.checks["operation_blocks_valid"] = (
         len(validation.blockers) == operation_blocks_start
@@ -920,6 +963,610 @@ def _validate_operation_route(
             path=f"{path}.{field_name}",
             validation=validation,
         )
+
+
+def _validate_operation_transfer_selection(
+    value: object,
+    *,
+    path: str,
+    operation_identity: BattlefieldProjectionIdentity | None,
+    operation_identities_by_id: Mapping[
+        str,
+        BattlefieldProjectionIdentity,
+    ],
+    validation: _Validation,
+) -> None:
+    selection = _required_mapping(
+        value,
+        path=path,
+        validation=validation,
+    )
+    if selection is None:
+        return
+
+    present = _required_bool(
+        selection.get("present"),
+        path=f"{path}.present",
+        validation=validation,
+    )
+    edit_resolution = _required_string_allow_empty(
+        selection.get("edit_resolution"),
+        path=f"{path}.edit_resolution",
+        validation=validation,
+    )
+    identity_valid = _required_bool(
+        selection.get("identity_valid"),
+        path=f"{path}.identity_valid",
+        validation=validation,
+    )
+    blocker = _required_string_allow_empty(
+        selection.get("blocker"),
+        path=f"{path}.blocker",
+        validation=validation,
+    )
+    selection_identity = _read_transfer_selection_identity(
+        selection.get("identity"),
+        path=f"{path}.identity",
+        validation=validation,
+    )
+    write_identity = _read_transfer_selection_write_identity(
+        selection.get("write_identity"),
+        path=f"{path}.write_identity",
+        validation=validation,
+    )
+    acknowledgement = _required_mapping(
+        selection.get("successful_write_acknowledgement"),
+        path=f"{path}.successful_write_acknowledgement",
+        validation=validation,
+    )
+    acknowledged: bool | None = None
+    acknowledged_frame: int | None = None
+    acknowledged_identity: _TransferSelectionWriteIdentity | None = None
+    if acknowledgement is not None:
+        acknowledged = _required_bool(
+            acknowledgement.get("acknowledged"),
+            path=f"{path}.successful_write_acknowledgement.acknowledged",
+            validation=validation,
+        )
+        acknowledged_frame = _required_nonnegative_int(
+            acknowledgement.get("acknowledged_frame"),
+            path=(
+                f"{path}.successful_write_acknowledgement."
+                "acknowledged_frame"
+            ),
+            validation=validation,
+        )
+        acknowledged_identity = _read_transfer_selection_write_identity(
+            acknowledgement.get("identity"),
+            path=f"{path}.successful_write_acknowledgement.identity",
+            validation=validation,
+        )
+
+    if present is False:
+        if identity_valid is not False or acknowledged is not False:
+            validation.block(
+                "impossible_transfer_selection_state",
+                path,
+                (
+                    "An absent transfer selection cannot be identity-valid or "
+                    "successfully acknowledged."
+                ),
+            )
+        if blocker:
+            validation.block(
+                "absent_transfer_selection_blocker",
+                f"{path}.blocker",
+                "An absent transfer selection cannot carry a runtime blocker.",
+            )
+        if (
+            selection_identity is not None
+            and not _transfer_selection_identity_is_empty(selection_identity)
+        ):
+            validation.block(
+                "absent_transfer_selection_identity",
+                f"{path}.identity",
+                "An absent transfer selection must carry the zero identity.",
+            )
+        if (
+            write_identity is not None
+            and not _transfer_selection_write_identity_is_empty(write_identity)
+        ):
+            validation.block(
+                "absent_transfer_selection_write_identity",
+                f"{path}.write_identity",
+                "An absent transfer selection must carry the zero write identity.",
+            )
+    elif present is True:
+        if edit_resolution not in {"pending", "blocked", "applied"}:
+            validation.block(
+                "invalid_transfer_selection_resolution",
+                f"{path}.edit_resolution",
+                "A present transfer selection requires a canonical resolution.",
+                actual=edit_resolution,
+            )
+        if identity_valid is True and blocker:
+            validation.block(
+                "contradictory_transfer_selection_identity",
+                f"{path}.identity_valid",
+                "A valid transfer selection cannot carry an identity blocker.",
+                blocker=blocker,
+            )
+        if identity_valid is False and not blocker:
+            validation.block(
+                "contradictory_transfer_selection_identity",
+                f"{path}.identity_valid",
+                "An invalid transfer selection requires an explicit blocker.",
+            )
+        if selection_identity is not None:
+            _validate_transfer_selection_identity(
+                selection_identity,
+                path=f"{path}.identity",
+                edit_resolution=edit_resolution,
+                operation_identity=operation_identity,
+                operation_identities_by_id=operation_identities_by_id,
+                validation=validation,
+            )
+        if write_identity is not None and selection_identity is not None:
+            _validate_transfer_selection_write_identity(
+                write_identity,
+                path=f"{path}.write_identity",
+                selection_identity=selection_identity,
+                operation_identity=operation_identity,
+                expected_frame=(
+                    operation_identity.game_frame
+                    if operation_identity is not None
+                    else None
+                ),
+                validation=validation,
+            )
+
+    if acknowledged_frame is not None:
+        projection_frame = (
+            operation_identity.game_frame
+            if operation_identity is not None
+            else None
+        )
+        if projection_frame is not None and acknowledged_frame > projection_frame:
+            validation.block(
+                "future_transfer_selection_acknowledgement",
+                (
+                    f"{path}.successful_write_acknowledgement."
+                    "acknowledged_frame"
+                ),
+                "A transfer-selection acknowledgement cannot be from the future.",
+                projection_frame=projection_frame,
+                acknowledged_frame=acknowledged_frame,
+            )
+
+    if acknowledged is False:
+        if acknowledged_frame not in {None, 0}:
+            validation.block(
+                "unacknowledged_transfer_selection_frame",
+                (
+                    f"{path}.successful_write_acknowledgement."
+                    "acknowledged_frame"
+                ),
+                "An unacknowledged transfer selection must use frame zero.",
+                acknowledged_frame=acknowledged_frame,
+            )
+        if (
+            acknowledged_identity is not None
+            and not _transfer_selection_write_identity_is_empty(
+                acknowledged_identity
+            )
+        ):
+            validation.block(
+                "unacknowledged_transfer_selection_identity",
+                f"{path}.successful_write_acknowledgement.identity",
+                "An unacknowledged transfer selection must carry the zero identity.",
+            )
+    elif acknowledged is True:
+        acknowledgement_start = len(validation.blockers)
+        if present is not True or identity_valid is not True:
+            validation.block(
+                "impossible_transfer_selection_acknowledgement",
+                f"{path}.successful_write_acknowledgement.acknowledged",
+                (
+                    "Only a present, identity-valid transfer selection can be "
+                    "successfully acknowledged."
+                ),
+            )
+        if acknowledged_frame is None or acknowledged_frame <= 0:
+            validation.block(
+                "malformed_successful_transfer_selection_acknowledgement",
+                f"{path}.successful_write_acknowledgement",
+                "A successful acknowledgement requires a positive frame.",
+            )
+        if (
+            acknowledged_identity is not None
+            and selection_identity is not None
+        ):
+            _validate_transfer_selection_write_identity(
+                acknowledged_identity,
+                path=f"{path}.successful_write_acknowledgement.identity",
+                selection_identity=selection_identity,
+                operation_identity=operation_identity,
+                expected_frame=acknowledged_frame,
+                validation=validation,
+            )
+            if (
+                write_identity is not None
+                and not _transfer_selection_write_context_matches(
+                    write_identity,
+                    acknowledged_identity,
+                )
+            ):
+                validation.block(
+                    "transfer_selection_ack_identity_mismatch",
+                    f"{path}.successful_write_acknowledgement.identity",
+                    (
+                        "The acknowledged write identity must match the current "
+                        "operation write context."
+                    ),
+                )
+        if len(validation.blockers) > acknowledgement_start and not any(
+            blocker.code
+            == "malformed_successful_transfer_selection_acknowledgement"
+            for blocker in validation.blockers[acknowledgement_start:]
+        ):
+            validation.block(
+                "malformed_successful_transfer_selection_acknowledgement",
+                f"{path}.successful_write_acknowledgement",
+                "The successful acknowledgement identity is malformed.",
+            )
+
+
+def _read_transfer_selection_identity(
+    value: object,
+    *,
+    path: str,
+    validation: _Validation,
+) -> _TransferSelectionIdentity | None:
+    identity = _required_mapping(
+        value,
+        path=path,
+        validation=validation,
+    )
+    if identity is None:
+        return None
+    strings = {
+        field_name: _required_string_allow_empty(
+            identity.get(field_name),
+            path=f"{path}.{field_name}",
+            validation=validation,
+        )
+        for field_name in (
+            "update_id",
+            "source_owner_id",
+            "counterpart_operation_id",
+            "source_action",
+            "counterpart_action",
+        )
+    }
+    integers = {
+        field_name: _required_nonnegative_int(
+            identity.get(field_name),
+            path=f"{path}.{field_name}",
+            validation=validation,
+        )
+        for field_name in (
+            "source_generation",
+            "counterpart_generation",
+            "requested_source_generation",
+            "requested_counterpart_generation",
+            "requested_count",
+        )
+    }
+    selected_unit_tags = _required_unit_tags(
+        identity.get("selected_unit_tags"),
+        path=f"{path}.selected_unit_tags",
+        validation=validation,
+    )
+    if any(value is None for value in (*strings.values(), *integers.values())):
+        return None
+    return _TransferSelectionIdentity(
+        update_id=str(strings["update_id"]),
+        source_owner_id=str(strings["source_owner_id"]),
+        counterpart_operation_id=str(strings["counterpart_operation_id"]),
+        source_action=str(strings["source_action"]),
+        counterpart_action=str(strings["counterpart_action"]),
+        source_generation=int(integers["source_generation"]),
+        counterpart_generation=int(integers["counterpart_generation"]),
+        requested_source_generation=int(
+            integers["requested_source_generation"]
+        ),
+        requested_counterpart_generation=int(
+            integers["requested_counterpart_generation"]
+        ),
+        requested_count=int(integers["requested_count"]),
+        selected_unit_tags=tuple(selected_unit_tags),
+    )
+
+
+def _read_transfer_selection_write_identity(
+    value: object,
+    *,
+    path: str,
+    validation: _Validation,
+) -> _TransferSelectionWriteIdentity | None:
+    identity = _required_mapping(
+        value,
+        path=path,
+        validation=validation,
+    )
+    if identity is None:
+        return None
+    update_id = _required_string_allow_empty(
+        identity.get("update_id"),
+        path=f"{path}.update_id",
+        validation=validation,
+    )
+    operation_id = _required_string_allow_empty(
+        identity.get("operation_id"),
+        path=f"{path}.operation_id",
+        validation=validation,
+    )
+    operation_generation = _required_nonnegative_int(
+        identity.get("operation_generation"),
+        path=f"{path}.operation_generation",
+        validation=validation,
+    )
+    stage = _required_string_allow_empty(
+        identity.get("stage"),
+        path=f"{path}.stage",
+        validation=validation,
+    )
+    game_frame = _required_nonnegative_int(
+        identity.get("game_frame"),
+        path=f"{path}.game_frame",
+        validation=validation,
+    )
+    selection_identity = _read_transfer_selection_identity(
+        identity.get("selection_identity"),
+        path=f"{path}.selection_identity",
+        validation=validation,
+    )
+    if None in (
+        update_id,
+        operation_id,
+        operation_generation,
+        stage,
+        game_frame,
+        selection_identity,
+    ):
+        return None
+    assert selection_identity is not None
+    return _TransferSelectionWriteIdentity(
+        update_id=str(update_id),
+        operation_id=str(operation_id),
+        operation_generation=int(operation_generation),
+        stage=str(stage),
+        game_frame=int(game_frame),
+        selection_identity=selection_identity,
+    )
+
+
+def _validate_transfer_selection_identity(
+    identity: _TransferSelectionIdentity,
+    *,
+    path: str,
+    edit_resolution: str | None,
+    operation_identity: BattlefieldProjectionIdentity | None,
+    operation_identities_by_id: Mapping[
+        str,
+        BattlefieldProjectionIdentity,
+    ],
+    validation: _Validation,
+) -> None:
+    if not identity.update_id.strip():
+        validation.block(
+            "missing_transfer_selection_update",
+            f"{path}.update_id",
+            "A present transfer selection requires a non-empty update identity.",
+        )
+    if (
+        not identity.source_owner_id.strip()
+        or not identity.counterpart_operation_id.strip()
+        or identity.source_owner_id == identity.counterpart_operation_id
+    ):
+        validation.block(
+            "invalid_transfer_selection_operations",
+            path,
+            "A transfer selection requires two distinct operation identities.",
+        )
+    if (
+        identity.source_action != "transfer_out"
+        or identity.counterpart_action != "transfer_in"
+    ):
+        validation.block(
+            "invalid_transfer_selection_actions",
+            path,
+            "Transfer selection actions must be transfer_out and transfer_in.",
+        )
+    if (
+        identity.source_generation <= 0
+        or identity.counterpart_generation <= 0
+        or identity.requested_source_generation <= identity.source_generation
+        or identity.requested_counterpart_generation
+        <= identity.counterpart_generation
+    ):
+        validation.block(
+            "invalid_transfer_selection_generations",
+            path,
+            "Transfer selection generations must advance both operations.",
+        )
+    if (
+        identity.requested_count <= 0
+        or identity.requested_count != len(identity.selected_unit_tags)
+    ):
+        validation.block(
+            "invalid_transfer_selection_count",
+            f"{path}.requested_count",
+            "Requested count must match a non-empty exact unit-tag selection.",
+            requested_count=identity.requested_count,
+            selected_count=len(identity.selected_unit_tags),
+        )
+
+    source_identity = operation_identities_by_id.get(identity.source_owner_id)
+    counterpart_identity = operation_identities_by_id.get(
+        identity.counterpart_operation_id
+    )
+    if source_identity is None or counterpart_identity is None:
+        validation.block(
+            "unknown_transfer_selection_operation",
+            path,
+            "Both transfer selection operations must exist in this projection.",
+            source_owner_id=identity.source_owner_id,
+            counterpart_operation_id=identity.counterpart_operation_id,
+        )
+    for referenced_identity in (source_identity, counterpart_identity):
+        if (
+            referenced_identity is not None
+            and referenced_identity.update_id != identity.update_id
+        ):
+            validation.block(
+                "transfer_selection_update_mismatch",
+                f"{path}.update_id",
+                (
+                    "Selection update identity must match both operation "
+                    "identities in the battlefield session."
+                ),
+                selection_update_id=identity.update_id,
+                operation_id=referenced_identity.scope,
+                operation_update_id=referenced_identity.update_id,
+            )
+
+    if operation_identity is None:
+        return
+    current_operation_id = operation_identity.scope.removeprefix("operation:")
+    if current_operation_id not in {
+        identity.source_owner_id,
+        identity.counterpart_operation_id,
+    }:
+        validation.block(
+            "transfer_selection_operation_mismatch",
+            path,
+            "The selection must name the enclosing operation.",
+            operation_id=current_operation_id,
+        )
+        return
+    source_operation = current_operation_id == identity.source_owner_id
+    existing_generation = (
+        identity.source_generation
+        if source_operation
+        else identity.counterpart_generation
+    )
+    requested_generation = (
+        identity.requested_source_generation
+        if source_operation
+        else identity.requested_counterpart_generation
+    )
+    expected_generation = (
+        requested_generation
+        if edit_resolution == "applied"
+        else existing_generation
+    )
+    if operation_identity.generation != expected_generation:
+        validation.block(
+            "transfer_selection_generation_mismatch",
+            path,
+            "Selection generation must match the enclosing operation state.",
+            operation_generation=operation_identity.generation,
+            expected_generation=expected_generation,
+            edit_resolution=edit_resolution,
+        )
+
+
+def _validate_transfer_selection_write_identity(
+    identity: _TransferSelectionWriteIdentity,
+    *,
+    path: str,
+    selection_identity: _TransferSelectionIdentity,
+    operation_identity: BattlefieldProjectionIdentity | None,
+    expected_frame: int | None,
+    validation: _Validation,
+) -> None:
+    if identity.selection_identity != selection_identity:
+        validation.block(
+            "transfer_selection_write_selection_mismatch",
+            f"{path}.selection_identity",
+            "Write identity must embed the exact admitted selection identity.",
+        )
+    if operation_identity is None:
+        return
+    expected_operation_id = operation_identity.scope.removeprefix("operation:")
+    mismatches: dict[str, object] = {}
+    if identity.update_id != operation_identity.update_id:
+        mismatches["update_id"] = identity.update_id
+    if identity.operation_id != expected_operation_id:
+        mismatches["operation_id"] = identity.operation_id
+    if identity.operation_generation != operation_identity.generation:
+        mismatches["operation_generation"] = identity.operation_generation
+    if identity.stage != operation_identity.stage:
+        mismatches["stage"] = identity.stage
+    if expected_frame is None or identity.game_frame != expected_frame:
+        mismatches["game_frame"] = identity.game_frame
+    if mismatches:
+        validation.block(
+            "transfer_selection_write_identity_mismatch",
+            path,
+            (
+                "Write identity must match the enclosing operation update, "
+                "scope, generation, stage, and frame."
+            ),
+            expected={
+                "update_id": operation_identity.update_id,
+                "operation_id": expected_operation_id,
+                "operation_generation": operation_identity.generation,
+                "stage": operation_identity.stage,
+                "game_frame": expected_frame,
+            },
+            actual=mismatches,
+        )
+
+
+def _transfer_selection_identity_is_empty(
+    identity: _TransferSelectionIdentity,
+) -> bool:
+    return identity == _TransferSelectionIdentity(
+        update_id="",
+        source_owner_id="",
+        counterpart_operation_id="",
+        source_action="",
+        counterpart_action="",
+        source_generation=0,
+        counterpart_generation=0,
+        requested_source_generation=0,
+        requested_counterpart_generation=0,
+        requested_count=0,
+        selected_unit_tags=(),
+    )
+
+
+def _transfer_selection_write_identity_is_empty(
+    identity: _TransferSelectionWriteIdentity,
+) -> bool:
+    return (
+        not identity.update_id
+        and not identity.operation_id
+        and identity.operation_generation == 0
+        and not identity.stage
+        and identity.game_frame == 0
+        and _transfer_selection_identity_is_empty(identity.selection_identity)
+    )
+
+
+def _transfer_selection_write_context_matches(
+    current: _TransferSelectionWriteIdentity,
+    acknowledged: _TransferSelectionWriteIdentity,
+) -> bool:
+    return (
+        current.update_id == acknowledged.update_id
+        and current.operation_id == acknowledged.operation_id
+        and current.operation_generation == acknowledged.operation_generation
+        and current.stage == acknowledged.stage
+        and current.selection_identity == acknowledged.selection_identity
+    )
 
 
 def _validate_launch_policy(

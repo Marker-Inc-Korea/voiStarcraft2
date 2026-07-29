@@ -4041,6 +4041,9 @@ _MICROMACHINE_SYNC_PUBLISH_DEADLINE_SECONDS: Final[float] = 25.0
 _MICROMACHINE_COMPILE_RESULT_FRESH_SECONDS: Final[float] = 300.0
 """How long a failed/clarifying compile result remains current in the dashboard."""
 
+_MICROMACHINE_TELEMETRY_FRESHNESS_NS: Final[int] = 15 * 1_000_000_000
+"""Maximum age of post-launch telemetry accepted as current for the process."""
+
 _MICROMACHINE_COMPILE_RESULT_HISTORY_LIMIT: Final[int] = 64
 """Maximum per-update compile/publish results retained for browser polling."""
 
@@ -5172,8 +5175,8 @@ class _MicroMachineLaunchManager:
         with self._lock:
             if self._process is None or self._process.poll() is not None:
                 self._blackboard_dir = root
-            self._refresh_unlocked()
-            return self._snapshot_unlocked()
+            telemetry = self._refresh_unlocked()
+            return self._snapshot_unlocked(telemetry)
 
     def _read_output(self, process: subprocess.Popen[str]) -> None:
         if process.stdout is None:
@@ -5193,7 +5196,7 @@ class _MicroMachineLaunchManager:
                     self._status = "running"
                 if "MicroMachine smoke passed" in clean:
                     self._status = "passed"
-                elif self._latest_telemetry_frame_unlocked() is not None:
+                elif self._latest_telemetry_unlocked()[1]:
                     self._status = "connected"
         process.wait()
         with self._lock:
@@ -5206,13 +5209,22 @@ class _MicroMachineLaunchManager:
                 self._status = "failed"
                 self._error = self._last_line or f"process exited {process.returncode}"
 
-    def _refresh_unlocked(self) -> None:
+    def _refresh_unlocked(self) -> tuple[int | None, bool]:
         process = self._process
-        telemetry_frame = self._latest_telemetry_frame_unlocked()
+        telemetry = self._latest_telemetry_unlocked()
+        telemetry_frame, telemetry_current_for_process = telemetry
         if process is not None and process.poll() is None:
-            if telemetry_frame is not None and self._status in {"starting", "running"}:
+            if (
+                telemetry_current_for_process
+                and self._status in {"starting", "running"}
+            ):
                 self._status = "connected"
-            return
+            elif (
+                not telemetry_current_for_process
+                and self._status == "connected"
+            ):
+                self._status = "running"
+            return telemetry
         if process is not None and process.poll() is not None:
             if process.returncode == 0:
                 self._status = "passed"
@@ -5220,13 +5232,23 @@ class _MicroMachineLaunchManager:
             elif self._status not in {"failed", "passed"}:
                 self._status = "failed"
                 self._error = self._last_line or f"process exited {process.returncode}"
-            return
+            return telemetry_frame, False
+        return telemetry
 
-    def _snapshot_unlocked(self) -> dict[str, object]:
+    def _snapshot_unlocked(
+        self,
+        telemetry: tuple[int | None, bool] | None = None,
+    ) -> dict[str, object]:
         process = self._process
-        telemetry_frame = self._latest_telemetry_frame_unlocked()
+        telemetry_frame, telemetry_fresh_for_process = (
+            telemetry
+            if telemetry is not None
+            else self._latest_telemetry_unlocked()
+        )
         runtime_attached = process is not None and process.poll() is None
-        telemetry_current_for_process = bool(runtime_attached and telemetry_frame is not None)
+        telemetry_current_for_process = bool(
+            runtime_attached and telemetry_fresh_for_process
+        )
         return {
             "enabled": True,
             "mode": COMMAND_MODE_MICROMACHINE,
@@ -5249,20 +5271,23 @@ class _MicroMachineLaunchManager:
             "telemetry_frame": telemetry_frame,
         }
 
-    def _latest_telemetry_frame_unlocked(self) -> int | None:
+    def _latest_telemetry_unlocked(self) -> tuple[int | None, bool]:
         path = os.path.join(self._blackboard_dir, "latest_telemetry.json")
         root_real = os.path.realpath(self._blackboard_dir)
         path_real = os.path.realpath(path)
         if not path_real.startswith(root_real + os.sep) or not os.path.isfile(path_real):
-            return None
+            return None, False
         telemetry_file = _read_micromachine_telemetry_file(path_real)
         if telemetry_file is None:
-            return None
+            return None, False
         document, file_identity = telemetry_file
         if not isinstance(document, Mapping):
-            return None
+            return None, False
         if document.get("protocol_version") != "voi-mm-bridge/v1":
-            return None
+            return None, False
+        frame = document.get("frame")
+        if type(frame) is not int:
+            return None, False
         process = self._process
         if (
             process is not None
@@ -5270,14 +5295,18 @@ class _MicroMachineLaunchManager:
             and self._launch_started_at_ns
         ):
             if file_identity.mtime_ns <= self._launch_started_at_ns:
-                return None
+                return None, False
             if (
                 self._launch_telemetry_baseline is not None
                 and file_identity == self._launch_telemetry_baseline
             ):
-                return None
-        frame = document.get("frame")
-        return frame if type(frame) is int else None
+                return None, False
+            age_ns = time.time_ns() - file_identity.mtime_ns
+            return (
+                frame,
+                0 <= age_ns <= _MICROMACHINE_TELEMETRY_FRESHNESS_NS,
+            )
+        return frame, False
 
 
 @dataclass(frozen=True)

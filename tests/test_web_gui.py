@@ -156,6 +156,69 @@ def battlefield_projection_telemetry(
                         "frame": 0,
                         "generation": 3,
                     },
+                    "operation_transfer_selection": {
+                        "present": False,
+                        "edit_resolution": "",
+                        "identity_valid": False,
+                        "blocker": "",
+                        "identity": {
+                            "update_id": "",
+                            "source_owner_id": "",
+                            "counterpart_operation_id": "",
+                            "source_action": "",
+                            "counterpart_action": "",
+                            "source_generation": 0,
+                            "counterpart_generation": 0,
+                            "requested_source_generation": 0,
+                            "requested_counterpart_generation": 0,
+                            "requested_count": 0,
+                            "selected_unit_tags": [],
+                        },
+                        "write_identity": {
+                            "update_id": "",
+                            "operation_id": "",
+                            "operation_generation": 0,
+                            "stage": "",
+                            "game_frame": 0,
+                            "selection_identity": {
+                                "update_id": "",
+                                "source_owner_id": "",
+                                "counterpart_operation_id": "",
+                                "source_action": "",
+                                "counterpart_action": "",
+                                "source_generation": 0,
+                                "counterpart_generation": 0,
+                                "requested_source_generation": 0,
+                                "requested_counterpart_generation": 0,
+                                "requested_count": 0,
+                                "selected_unit_tags": [],
+                            },
+                        },
+                        "successful_write_acknowledgement": {
+                            "acknowledged": False,
+                            "acknowledged_frame": 0,
+                            "identity": {
+                                "update_id": "",
+                                "operation_id": "",
+                                "operation_generation": 0,
+                                "stage": "",
+                                "game_frame": 0,
+                                "selection_identity": {
+                                    "update_id": "",
+                                    "source_owner_id": "",
+                                    "counterpart_operation_id": "",
+                                    "source_action": "",
+                                    "counterpart_action": "",
+                                    "source_generation": 0,
+                                    "counterpart_generation": 0,
+                                    "requested_source_generation": 0,
+                                    "requested_counterpart_generation": 0,
+                                    "requested_count": 0,
+                                    "selected_unit_tags": [],
+                                },
+                            },
+                        },
+                    },
                 }
             ],
             "autonomous_ownership": [
@@ -5208,11 +5271,142 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             fresh_ns = launcher._launch_started_at_ns + 1_000_000_000  # noqa: SLF001
             os.utime(telemetry_path, ns=(fresh_ns, fresh_ns))
 
-            fresh = launcher.snapshot(directory)
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=fresh_ns,
+            ):
+                fresh = launcher.snapshot(directory)
 
             self.assertTrue(fresh["telemetry_current_for_process"])
             self.assertEqual(100, fresh["telemetry_frame"])
             self.assertEqual("connected", fresh["status"])
+
+    def test_micromachine_launcher_marks_postlaunch_telemetry_stale_until_rewritten(
+        self,
+    ):
+        class FakeRunningProcess:
+            pid = 12345
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return None
+
+            def wait(self):
+                return 0
+
+        launch_ns = 1_700_000_000_000_000_000
+        with tempfile.TemporaryDirectory() as directory:
+            telemetry_path = os.path.join(directory, "latest_telemetry.json")
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            with (
+                mock.patch.object(
+                    web_gui.subprocess,
+                    "Popen",
+                    return_value=FakeRunningProcess(),
+                ),
+                mock.patch.object(
+                    web_gui.threading.Thread,
+                    "start",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    web_gui.time,
+                    "time_ns",
+                    return_value=launch_ns,
+                ),
+            ):
+                launcher.start(directory)
+
+            def write_telemetry(frame, mtime_ns):
+                with open(telemetry_path, "w", encoding="utf-8") as handle:
+                    json.dump(
+                        {
+                            "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                            "frame": frame,
+                        },
+                        handle,
+                    )
+                os.utime(telemetry_path, ns=(mtime_ns, mtime_ns))
+
+            first_write_ns = launch_ns + 1_000_000_000
+            write_telemetry(100, first_write_ns)
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=first_write_ns + 15_000_000_000,
+            ):
+                boundary = launcher.snapshot(directory)
+
+            self.assertTrue(boundary["telemetry_current_for_process"])
+            self.assertFalse(boundary["telemetry_stale_or_detached"])
+            self.assertEqual("connected", boundary["status"])
+
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=first_write_ns + 16_000_000_000,
+            ):
+                stale = launcher.snapshot(directory)
+
+            self.assertTrue(stale["runtime_attached"])
+            self.assertTrue(stale["telemetry_present"])
+            self.assertEqual(100, stale["telemetry_frame"])
+            self.assertFalse(stale["telemetry_current_for_process"])
+            self.assertTrue(stale["telemetry_stale_or_detached"])
+            self.assertNotEqual("connected", stale["status"])
+
+            rewrite_ns = first_write_ns + 16_000_000_000
+            write_telemetry(100, rewrite_ns)
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=rewrite_ns,
+            ):
+                rewritten = launcher.snapshot(directory)
+
+            self.assertTrue(rewritten["telemetry_current_for_process"])
+            self.assertFalse(rewritten["telemetry_stale_or_detached"])
+            self.assertEqual("connected", rewritten["status"])
+
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=rewrite_ns - 1,
+            ):
+                future_dated = launcher.snapshot(directory)
+
+            self.assertTrue(future_dated["telemetry_present"])
+            self.assertFalse(future_dated["telemetry_current_for_process"])
+            self.assertTrue(future_dated["telemetry_stale_or_detached"])
+            self.assertNotEqual("connected", future_dated["status"])
+
+            stale_again_ns = rewrite_ns + 16_000_000_000
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=stale_again_ns,
+            ):
+                stale_again = launcher.snapshot(directory)
+
+            self.assertTrue(stale_again["telemetry_present"])
+            self.assertFalse(stale_again["telemetry_current_for_process"])
+            self.assertTrue(stale_again["telemetry_stale_or_detached"])
+            self.assertNotEqual("connected", stale_again["status"])
+
+            write_telemetry(101, stale_again_ns)
+            with mock.patch.object(
+                web_gui.time,
+                "time_ns",
+                return_value=stale_again_ns,
+            ):
+                advanced = launcher.snapshot(directory)
+
+            self.assertEqual(101, advanced["telemetry_frame"])
+            self.assertTrue(advanced["telemetry_current_for_process"])
+            self.assertFalse(advanced["telemetry_stale_or_detached"])
+            self.assertEqual("connected", advanced["status"])
 
     def test_runtime_start_legacy_mode_is_blocked_until_key_is_saved(self):
         body = json.dumps({"mode": "legacy_commander"}).encode("utf-8")

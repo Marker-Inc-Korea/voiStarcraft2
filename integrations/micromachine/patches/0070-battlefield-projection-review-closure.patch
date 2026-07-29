@@ -1,0 +1,111 @@
+diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
+--- a/src/voi_battlefield_projection.hpp
++++ b/src/voi_battlefield_projection.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+ #include <limits>
+@@ -12,9 +13,25 @@
+ 
+ #include "voi_operation_transfer_admission.hpp"
+ 
+-inline std::uint64_t voiNextBattlefieldSessionEpoch(
+-	std::uint64_t previous)
++inline std::uint64_t voiCurrentBattlefieldSessionEpoch()
+ {
++	const auto ticks = std::chrono::duration_cast<
++		std::chrono::nanoseconds>(
++			std::chrono::system_clock::now().time_since_epoch())
++			.count();
++	return ticks > 0
++		? static_cast<std::uint64_t>(ticks)
++		: 1;
++}
++
++inline std::uint64_t voiNextBattlefieldSessionEpoch(
++	std::uint64_t previous,
++	std::uint64_t processEpoch = 0)
++{
++	if (processEpoch > previous)
++	{
++		return processEpoch;
++	}
+ 	return previous == std::numeric_limits<std::uint64_t>::max()
+ 		? previous
+ 		: previous + 1;
+@@ -1574,7 +1591,7 @@
+ 		<< voiBattlefieldJsonEscape(projection.scope)
+ 		<< "\",\"session_epoch\":"
+ 		<< projection.sessionEpoch
+-		<< "\",\"generation\":"
++		<< ",\"generation\":"
+ 		<< projection.generation
+ 		<< ",\"stage\":\""
+ 		<< voiBattlefieldJsonEscape(projection.stage)
+@@ -1613,7 +1630,7 @@
+ 			<< voiBattlefieldJsonEscape(operation.scope)
+ 			<< "\",\"session_epoch\":"
+ 			<< projection.sessionEpoch
+-			<< "\",\"generation\":"
++			<< ",\"generation\":"
+ 			<< operation.generation
+ 			<< ",\"stage\":\""
+ 			<< voiBattlefieldJsonEscape(
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -8551,7 +8551,8 @@
+ {
+ 	m_voiBattlefieldSessionEpoch =
+ 		voiNextBattlefieldSessionEpoch(
+-			m_voiBattlefieldSessionEpoch);
++			m_voiBattlefieldSessionEpoch,
++			voiCurrentBattlefieldSessionEpoch());
+ 	m_voiBattlefieldProjectionGeneration = 0;
+ 
+ 	for (auto& ability : m_bot.Observation()->GetAbilityData())
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -1,4 +1,5 @@
+ #include "voi_battlefield_projection.hpp"
++#include "json/json.hpp"
+ 
+ #include <iostream>
+ #include <string>
+@@ -142,6 +143,9 @@
+ 	CHECK(projection.operations.size() == 2);
+ 	CHECK(voiNextBattlefieldSessionEpoch(0) == 1);
+ 	CHECK(voiNextBattlefieldSessionEpoch(41) == 42);
++	CHECK(voiNextBattlefieldSessionEpoch(41, 1700000000000ULL)
++		== 1700000000000ULL);
++	CHECK(voiCurrentBattlefieldSessionEpoch() > 1);
+ 	CHECK(
+ 		voiNextBattlefieldSessionEpoch(
+ 			std::numeric_limits<std::uint64_t>::max())
+@@ -507,6 +511,21 @@
+ 
+ 	const std::string json =
+ 		voiBattlefieldProjectionJson(projection);
++	bool jsonParsed = false;
++	try
++	{
++		const auto parsed = nlohmann::json::parse(json);
++		jsonParsed = parsed.is_object()
++			&& parsed["identity"]["session_epoch"]
++				== 1700000000000ULL
++			&& parsed["operation_ownership"][0]["identity"][
++				"session_epoch"] == 1700000000000ULL;
++	}
++	catch (const std::exception &)
++	{
++		jsonParsed = false;
++	}
++	CHECK(jsonParsed);
+ 	CHECK(json.find("\"battlefield\"") != std::string::npos);
+ 	CHECK(json.find("\"schema_version\":2") != std::string::npos);
+ 	CHECK(

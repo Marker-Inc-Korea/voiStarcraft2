@@ -251,6 +251,11 @@ AUTHORITATIVE_BATTLEFIELD_OWNERSHIP_READINESS_PATCH_FILE = (
     / "patches"
     / "0069-authoritative-battlefield-ownership-readiness.patch"
 )
+BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0070-battlefield-projection-review-closure.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -975,14 +980,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 70)),
+            list(range(1, 71)),
         )
-        self.assertEqual(len(set(manifest_paths)), 69)
+        self.assertEqual(len(set(manifest_paths)), 70)
         self.assertEqual(
             manifest_paths[-1],
             (
                 "patches/"
-                "0069-authoritative-battlefield-ownership-readiness.patch"
+                "0070-battlefield-projection-review-closure.patch"
             ),
         )
         self.assertTrue(
@@ -1187,8 +1192,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 68,
             },
             {
-                "path": manifest["patch_bundle"][-2]["path"],
-                "order": manifest["patch_bundle"][-2]["order"],
+                "path": manifest["patch_bundle"][-3]["path"],
+                "order": manifest["patch_bundle"][-3]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1268,20 +1273,6 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             with self.subTest(contract=contract):
                 self.assertIn(contract, patch)
 
-        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
-        self.assertEqual(
-            {
-                "path": (
-                    "patches/"
-                    "0069-authoritative-battlefield-ownership-readiness.patch"
-                ),
-                "order": 69,
-            },
-            {
-                "path": manifest["patch_bundle"][-1]["path"],
-                "order": manifest["patch_bundle"][-1]["order"],
-            },
-        )
         build_script = BUILD_SCRIPT.read_text()
         patch_variable = (
             "AUTHORITATIVE_BATTLEFIELD_OWNERSHIP_READINESS_PATCH_FILE"
@@ -1309,6 +1300,69 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "apply",
                 "--numstat",
                 str(AUTHORITATIVE_BATTLEFIELD_OWNERSHIP_READINESS_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_battlefield_projection_review_closure_patch_is_required(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH_FILE
+        )
+        for contract in (
+            "#include <chrono>",
+            "voiCurrentBattlefieldSessionEpoch",
+            "std::chrono::nanoseconds",
+            '<< ",\\"generation\\":"',
+            "nlohmann::json::parse",
+            "1700000000000ULL",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, patch)
+
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": (
+                    "patches/"
+                    "0070-battlefield-projection-review-closure.patch"
+                ),
+                "order": 70,
+            },
+            {
+                "path": manifest["patch_bundle"][-1]["path"],
+                "order": manifest["patch_bundle"][-1]["order"],
+            },
+        )
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = "BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH_FILE"
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0070-battlefield-projection-review-closure.patch"',
+            build_script,
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${'
+            f'{patch_variable}'
+            '}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            f'"${{{patch_variable}}}"'
+        )
+        self.assertLess(patch_check, patch_apply)
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH_FILE),
             ],
             check=False,
             capture_output=True,
@@ -5140,7 +5194,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "BuildingManager::assignWorkerToUnassignedBuilding(Building &, bool)",
             "patches/0068-all-terran-harass-capability-evidence.patch",
             "patches/0069-authoritative-battlefield-ownership-readiness.patch",
-            "through `0069`",
+            "patches/0070-battlefield-projection-review-closure.patch",
+            "through `0070`",
         )
         for term in required_terms:
             with self.subTest(term=term):

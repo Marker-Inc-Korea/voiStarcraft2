@@ -37,6 +37,90 @@ def _identity(
     return payload
 
 
+def _empty_transfer_selection_identity() -> dict[str, object]:
+    return {
+        "update_id": "",
+        "source_owner_id": "",
+        "counterpart_operation_id": "",
+        "source_action": "",
+        "counterpart_action": "",
+        "source_generation": 0,
+        "counterpart_generation": 0,
+        "requested_source_generation": 0,
+        "requested_counterpart_generation": 0,
+        "requested_count": 0,
+        "selected_unit_tags": [],
+    }
+
+
+def _transfer_selection_identity() -> dict[str, object]:
+    return {
+        "update_id": "voi-mm-operation",
+        "source_owner_id": "flank-alpha",
+        "counterpart_operation_id": "assault-bravo",
+        "source_action": "transfer_out",
+        "counterpart_action": "transfer_in",
+        "source_generation": 3,
+        "counterpart_generation": 5,
+        "requested_source_generation": 4,
+        "requested_counterpart_generation": 6,
+        "requested_count": 2,
+        "selected_unit_tags": [103, 104],
+    }
+
+
+def _transfer_selection_write_identity(
+    *,
+    operation_id: str = "",
+    operation_generation: int = 0,
+    game_frame: int = 0,
+    present: bool = False,
+) -> dict[str, object]:
+    return {
+        "update_id": "voi-mm-operation" if present else "",
+        "operation_id": operation_id,
+        "operation_generation": operation_generation,
+        "stage": "effect_observed" if present else "",
+        "game_frame": game_frame,
+        "selection_identity": (
+            _transfer_selection_identity()
+            if present
+            else _empty_transfer_selection_identity()
+        ),
+    }
+
+
+def _operation_transfer_selection(
+    *,
+    operation_id: str = "",
+    operation_generation: int = 0,
+    game_frame: int = 0,
+    present: bool = False,
+) -> dict[str, object]:
+    return {
+        "present": present,
+        "edit_resolution": "pending" if present else "",
+        "identity_valid": present,
+        "blocker": "",
+        "identity": (
+            _transfer_selection_identity()
+            if present
+            else _empty_transfer_selection_identity()
+        ),
+        "write_identity": _transfer_selection_write_identity(
+            operation_id=operation_id,
+            operation_generation=operation_generation,
+            game_frame=game_frame,
+            present=present,
+        ),
+        "successful_write_acknowledgement": {
+            "acknowledged": False,
+            "acknowledged_frame": 0,
+            "identity": _transfer_selection_write_identity(),
+        },
+    }
+
+
 def _operation(
     *,
     update_id: str = "voi-mm-operation",
@@ -122,6 +206,7 @@ def _operation(
             "frame": completion_frame,
             "generation": generation,
         },
+        "operation_transfer_selection": _operation_transfer_selection(),
     }
 
 
@@ -134,11 +219,25 @@ def _telemetry(
 ) -> dict[str, object]:
     operation = _operation(game_frame=game_frame)
     counterpart = _operation(
-        update_id="voi-mm-counterpart",
+        update_id="voi-mm-operation",
         operation_id="assault-bravo",
         generation=5,
         game_frame=game_frame,
         owner_tags=(),
+    )
+    operation["operation_transfer_selection"] = _operation_transfer_selection(
+        operation_id="flank-alpha",
+        operation_generation=3,
+        game_frame=game_frame,
+        present=True,
+    )
+    counterpart["operation_transfer_selection"] = (
+        _operation_transfer_selection(
+            operation_id="assault-bravo",
+            operation_generation=5,
+            game_frame=game_frame,
+            present=True,
+        )
     )
     return {
         "frame": game_frame,
@@ -525,6 +624,7 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
             "operation_ownership",
             "operation_launch_policy",
             "operation_completion",
+            "operation_transfer_selection",
         )
         for block_name in block_names:
             with self.subTest(block_name=block_name):
@@ -543,6 +643,313 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                     "missing_safety_or_state_block",
                     _blocker_codes(result),
                 )
+
+    def test_transfer_selection_block_requires_complete_typed_identities(
+        self,
+    ) -> None:
+        cases = (
+            ("present", "yes"),
+            ("identity_valid", 1),
+            ("identity.update_id", None),
+            ("identity.source_generation", True),
+            ("write_identity.stage", None),
+            (
+                "successful_write_acknowledgement.acknowledged",
+                "false",
+            ),
+            (
+                "successful_write_acknowledgement.acknowledged_frame",
+                1.5,
+            ),
+        )
+        for field_path, value in cases:
+            with self.subTest(field_path=field_path):
+                telemetry = _telemetry()
+                selection = telemetry["battlefield_overview"][
+                    "operation_ownership"
+                ][0]["operation_transfer_selection"]
+                target = selection
+                parts = field_path.split(".")
+                for part in parts[:-1]:
+                    target = target[part]
+                target[parts[-1]] = value
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIsNone(result.battlefield_overview)
+
+    def test_transfer_selection_identity_binds_both_operations(self) -> None:
+        cases = (
+            (
+                "identity.update_id",
+                "other-update",
+                "transfer_selection_update_mismatch",
+            ),
+            (
+                "identity.source_owner_id",
+                "missing-operation",
+                "unknown_transfer_selection_operation",
+            ),
+            (
+                "identity.requested_source_generation",
+                3,
+                "invalid_transfer_selection_generations",
+            ),
+            (
+                "write_identity.update_id",
+                "other-update",
+                "transfer_selection_write_identity_mismatch",
+            ),
+            (
+                "write_identity.operation_id",
+                "assault-bravo",
+                "transfer_selection_write_identity_mismatch",
+            ),
+            (
+                "write_identity.operation_generation",
+                4,
+                "transfer_selection_write_identity_mismatch",
+            ),
+            (
+                "write_identity.stage",
+                "submitted",
+                "transfer_selection_write_identity_mismatch",
+            ),
+            (
+                "write_identity.game_frame",
+                319,
+                "transfer_selection_write_identity_mismatch",
+            ),
+        )
+        for field_path, value, code in cases:
+            with self.subTest(field_path=field_path):
+                telemetry = _telemetry()
+                selection = telemetry["battlefield_overview"][
+                    "operation_ownership"
+                ][0]["operation_transfer_selection"]
+                target = selection
+                parts = field_path.split(".")
+                for part in parts[:-1]:
+                    target = target[part]
+                target[parts[-1]] = value
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIn(code, _blocker_codes(result))
+
+    def test_transfer_selection_resolution_binds_current_generation(self) -> None:
+        telemetry = _telemetry()
+        operation = telemetry["battlefield_overview"]["operation_ownership"][0]
+        selection = operation["operation_transfer_selection"]
+        selection["edit_resolution"] = "applied"
+        operation["identity"]["generation"] = 4
+        operation["generation"] = 4
+        operation["operation_completion"]["generation"] = 4
+        selection["write_identity"]["operation_generation"] = 4
+        telemetry["battlefield_overview"]["transfer_availability"]["entries"][
+            0
+        ]["atomic_revalidation_inputs"]["requested_generation"] = 4
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+
+        selection["edit_resolution"] = "pending"
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "transfer_selection_generation_mismatch",
+            _blocker_codes(result),
+        )
+
+    def test_transfer_selection_rejects_impossible_state_combinations(
+        self,
+    ) -> None:
+        mutations = (
+            {"present": False},
+            {"identity_valid": False, "blocker": ""},
+            {"identity_valid": True, "blocker": "runtime_mismatch"},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                telemetry = _telemetry()
+                selection = telemetry["battlefield_overview"][
+                    "operation_ownership"
+                ][0]["operation_transfer_selection"]
+                selection.update(mutation)
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertTrue(
+                    {
+                        "impossible_transfer_selection_state",
+                        "contradictory_transfer_selection_identity",
+                        "absent_transfer_selection_identity",
+                    }
+                    & _blocker_codes(result)
+                )
+
+    def test_unacknowledged_transfer_selection_requires_zero_frame_and_identity(
+        self,
+    ) -> None:
+        cases = (
+            (
+                12,
+                _transfer_selection_write_identity(),
+                "unacknowledged_transfer_selection_frame",
+            ),
+            (
+                999,
+                _transfer_selection_write_identity(),
+                "future_transfer_selection_acknowledgement",
+            ),
+            (
+                0,
+                _transfer_selection_write_identity(
+                    operation_id="flank-alpha",
+                    operation_generation=3,
+                    game_frame=300,
+                    present=True,
+                ),
+                "unacknowledged_transfer_selection_identity",
+            ),
+        )
+        for frame, identity, code in cases:
+            with self.subTest(frame=frame, code=code):
+                telemetry = _telemetry()
+                acknowledgement = telemetry["battlefield_overview"][
+                    "operation_ownership"
+                ][0]["operation_transfer_selection"][
+                    "successful_write_acknowledgement"
+                ]
+                acknowledgement["acknowledged_frame"] = frame
+                acknowledgement["identity"] = identity
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIn(code, _blocker_codes(result))
+
+    def test_successful_transfer_selection_acknowledgement_is_strictly_bound(
+        self,
+    ) -> None:
+        telemetry = _telemetry()
+        acknowledgement = telemetry["battlefield_overview"][
+            "operation_ownership"
+        ][0]["operation_transfer_selection"][
+            "successful_write_acknowledgement"
+        ]
+        acknowledgement.update(
+            {
+                "acknowledged": True,
+                "acknowledged_frame": 300,
+                "identity": _transfer_selection_write_identity(
+                    operation_id="flank-alpha",
+                    operation_generation=3,
+                    game_frame=300,
+                    present=True,
+                ),
+            }
+        )
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        preserved = result.battlefield_overview["operation_ownership"][0][
+            "operation_transfer_selection"
+        ]
+        self.assertEqual(acknowledgement, preserved[
+            "successful_write_acknowledgement"
+        ])
+
+        malformed_cases = (
+            ("zero_frame", "acknowledged_frame", 0),
+            ("future_frame", "acknowledged_frame", 321),
+            ("wrong_update", "identity.update_id", "other-update"),
+            ("wrong_operation", "identity.operation_id", "assault-bravo"),
+            ("wrong_generation", "identity.operation_generation", 4),
+            ("wrong_stage", "identity.stage", "submitted"),
+            ("wrong_frame", "identity.game_frame", 299),
+        )
+        for label, field_path, value in malformed_cases:
+            with self.subTest(label=label):
+                malformed = deepcopy(telemetry)
+                candidate = malformed["battlefield_overview"][
+                    "operation_ownership"
+                ][0]["operation_transfer_selection"][
+                    "successful_write_acknowledgement"
+                ]
+                target = candidate
+                parts = field_path.split(".")
+                for part in parts[:-1]:
+                    target = target[part]
+                target[parts[-1]] = value
+
+                malformed_result = validate_battlefield_overview(
+                    malformed,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(malformed_result.ok)
+                self.assertIn(
+                    "malformed_successful_transfer_selection_acknowledgement",
+                    _blocker_codes(malformed_result),
+                )
+
+    def test_invalid_transfer_selection_cannot_claim_successful_ack(self) -> None:
+        telemetry = _telemetry()
+        selection = telemetry["battlefield_overview"][
+            "operation_ownership"
+        ][0]["operation_transfer_selection"]
+        selection["identity_valid"] = False
+        selection["blocker"] = "transfer_selection_runtime_ownership_mismatch"
+        selection["successful_write_acknowledgement"].update(
+            {
+                "acknowledged": True,
+                "acknowledged_frame": 300,
+                "identity": _transfer_selection_write_identity(
+                    operation_id="flank-alpha",
+                    operation_generation=3,
+                    game_frame=300,
+                    present=True,
+                ),
+            }
+        )
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "impossible_transfer_selection_acknowledgement",
+            _blocker_codes(result),
+        )
 
     def test_route_and_lifetime_evidence_are_not_inferred(self) -> None:
         cases = (
