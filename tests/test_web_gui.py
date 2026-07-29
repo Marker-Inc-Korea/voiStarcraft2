@@ -7029,6 +7029,60 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
         self.assertEqual(0, len(reducer._accepted_operations))
 
+    def test_operation_timeline_non_authoritative_epoch_cannot_replace_current_epoch(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-detached-foreign-epoch"
+        current_epoch = 1700000000000
+        attached = semantic_operation_payload(
+            operation_id="recon-alpha",
+            frame=200,
+            session_epoch=current_epoch,
+        )
+        attached["operation_registry_authoritative"] = True
+        accepted = reducer.observe(
+            attached,
+            blackboard_scope_id=scope_id,
+        )
+
+        detached = semantic_operation_payload(
+            operation_id="foreign-operation",
+            frame=1,
+            session_epoch=current_epoch + 1,
+        )
+        detached["operation_registry_authoritative"] = False
+        detached["operations"] = []
+        restored = reducer.observe(
+            detached,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(str(current_epoch), reducer._scope_epochs[scope_id])
+        self.assertEqual(accepted["operations"], restored["operations"])
+        self.assertEqual(
+            accepted["battlefield_overview"],
+            restored["battlefield_overview"],
+        )
+        self.assertNotIn(
+            str(current_epoch),
+            reducer._retired_scope_epochs.get(scope_id, ()),
+        )
+
+        resumed = semantic_operation_payload(
+            operation_id="recon-alpha",
+            frame=201,
+            session_epoch=current_epoch,
+            movement=True,
+        )
+        resumed["operation_registry_authoritative"] = True
+        resumed_result = reducer.observe(
+            resumed,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(201, resumed_result["operations"][0]["telemetry_frame"])
+        self.assertEqual(str(current_epoch), reducer._scope_epochs[scope_id])
+
     def test_operation_timeline_rejects_generation_frame_and_same_frame_conflicts(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         scope_id = "scope-semantic-test"
@@ -12651,6 +12705,49 @@ const assert = require("assert");
   assert.strictEqual(
     operationRecords[reconKey].node,
     reconNodeBeforeDetachedSnapshot
+  );
+  var operationEpochBeforeForeignDetached =
+    operationConsoleSessionEpoch;
+  var operationCountBeforeForeignDetached =
+    Object.keys(operationRecords).length;
+  var activeConsoleEpochBeforeForeignDetached =
+    activeCommandConsoleRecord.sessionEpoch;
+  var activeConsoleUpdateBeforeForeignDetached =
+    activeCommandConsoleRecord.updateId;
+  reconRecord.node.querySelectorAll("button")[1].focus();
+  var foreignDetachedSnapshot = serverResult({
+    status: "idle",
+    runtime_attached: false,
+    telemetry_stale_or_detached: true,
+    operation_registry_authoritative: false,
+    battlefield_overview: {
+      identity: { session_epoch: 1800000000000 }
+    },
+    operations: []
+  }, OPERATION_SCOPE);
+  assert.strictEqual(renderOperationConsole(foreignDetachedSnapshot), false);
+  renderActiveCommandConsole(foreignDetachedSnapshot, true);
+  renderMicroMachineStatus(foreignDetachedSnapshot);
+  assert.strictEqual(
+    operationConsoleSessionEpoch,
+    operationEpochBeforeForeignDetached
+  );
+  assert.strictEqual(
+    Object.keys(operationRecords).length,
+    operationCountBeforeForeignDetached
+  );
+  assert.strictEqual(operationRecords[reconKey].node, reconRecord.node);
+  assert.strictEqual(
+    activeCommandConsoleRecord.sessionEpoch,
+    activeConsoleEpochBeforeForeignDetached
+  );
+  assert.strictEqual(
+    activeCommandConsoleRecord.updateId,
+    activeConsoleUpdateBeforeForeignDetached
+  );
+  assert.strictEqual(
+    document.activeElement.getAttribute("data-operation-action"),
+    "revise"
   );
 
   [reconRecord, assaultRecord].forEach(function(record) {

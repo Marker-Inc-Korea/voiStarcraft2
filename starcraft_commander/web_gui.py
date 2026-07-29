@@ -5946,6 +5946,9 @@ class _OperationSemanticTimelineReducer:
             if isinstance(battlefield_identity, Mapping)
             else ""
         )
+        epoch_authoritative = (
+            payload.get("operation_registry_authoritative") is not False
+        )
         with self._lock:
             self._touch_scope(scope_id)
             active_epoch = self._scope_epochs.get(scope_id, "")
@@ -5953,6 +5956,16 @@ class _OperationSemanticTimelineReducer:
                 active_epoch
                 or self._scope_epoch_history.get(scope_id, "")
             )
+            if (
+                incoming_epoch
+                and incoming_epoch != current_epoch
+                and not epoch_authoritative
+            ):
+                return self._restore_accepted_snapshot(
+                    result,
+                    scope_id=scope_id,
+                    session_epoch=current_epoch,
+                )
             if (
                 incoming_epoch
                 and current_epoch
@@ -15100,10 +15113,19 @@ function renderOperationConsole(data) {
     scopeId = operationPayloadScopeId(operations[0], data);
   }
   var sessionEpoch = operationPayloadSessionEpoch(data, operations);
+  var epochAuthoritative =
+    data.operation_registry_authoritative !== false;
   if (
     operationConsoleScopeId &&
     scopeId &&
     operationConsoleScopeId !== scopeId
+  ) {
+    return false;
+  }
+  if (
+    sessionEpoch &&
+    operationConsoleSessionEpoch !== sessionEpoch &&
+    !epochAuthoritative
   ) {
     return false;
   }
@@ -15196,6 +15218,15 @@ function renderActiveCommandConsole(data, force) {
     data,
     operationPayloads
   );
+  var epochAuthoritative =
+    data.operation_registry_authoritative !== false;
+  if (
+    sessionEpoch &&
+    activeCommandConsoleRecord.sessionEpoch !== sessionEpoch &&
+    !epochAuthoritative
+  ) {
+    return;
+  }
   if (
     activeCommandConsoleRecord.sessionEpoch &&
     sessionEpoch &&
@@ -15810,6 +15841,22 @@ function renderMicroMachineStatus(data) {
     renderBattlefieldControlOverview(data || {});
     renderActiveCommandConsole(data || {});
     renderMicroMachineIntervention(data || {});
+    return;
+  }
+  var statusOperationPayloads = commandOperationPayloads(data);
+  var statusSessionEpoch = operationPayloadSessionEpoch(
+    data,
+    statusOperationPayloads
+  );
+  var currentSessionEpoch = (
+    operationConsoleSessionEpoch ||
+    activeCommandConsoleRecord.sessionEpoch
+  );
+  if (
+    data.operation_registry_authoritative === false &&
+    statusSessionEpoch &&
+    statusSessionEpoch !== currentSessionEpoch
+  ) {
     return;
   }
   var modulationResults = Array.isArray(data.modulation_results)
