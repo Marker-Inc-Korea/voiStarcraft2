@@ -77,12 +77,17 @@ from starcraft_commander.micromachine_pre_live_artifact import (
 
 REPOSITORY = "Marker-Inc-Korea/voiStarcraft2"
 HEAD_SHA = "a" * 40
+BASE_SHA = "b" * 40
 RUN_ID = 101
 RUN_ATTEMPT = 2
 JOB_ID = 201
 ARTIFACT_ID = 301
 WORKFLOW_ID = 401
 WORKFLOW_PATH = AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH
+WORKFLOW_REF = (
+    f"{REPOSITORY}/{WORKFLOW_PATH}@refs/pull/137/merge"
+)
+WORKFLOW_SHA = "c" * 40
 
 
 def candidate_authority(
@@ -201,11 +206,36 @@ class FakeGitHubAdapter:
                     "full_name": REPOSITORY,
                 },
             },
+            "base": {
+                "sha": BASE_SHA,
+                "ref": "main",
+                "repo": {
+                    "id": AUTHORITATIVE_REPOSITORY_ID,
+                    "full_name": REPOSITORY,
+                },
+            },
             "merged_at": None,
+        }
+        self.closing_issues = [
+            {
+                "databaseId": 2,
+                "number": 138,
+                "repository": {
+                    "databaseId": AUTHORITATIVE_REPOSITORY_ID,
+                    "nameWithOwner": REPOSITORY,
+                },
+            }
+        ]
+        self.comparison = {
+            "status": "ahead",
+            "base_commit": {"sha": BASE_SHA},
+            "merge_base_commit": {"sha": BASE_SHA},
+            "head_commit": {"sha": head_sha},
         }
         self.workflow_run = {
             "id": RUN_ID,
             "workflow_id": WORKFLOW_ID,
+            "run_number": 17,
             "run_attempt": RUN_ATTEMPT,
             "head_sha": head_sha,
             "head_branch": "issue-138-authenticated-prelive-provenance",
@@ -228,6 +258,7 @@ class FakeGitHubAdapter:
             "status": "completed",
             "conclusion": "success",
         }
+        self.workflow_runs = [dict(self.workflow_run)]
         self.workflow = {
             "id": WORKFLOW_ID,
             "path": WORKFLOW_PATH,
@@ -246,6 +277,10 @@ class FakeGitHubAdapter:
                 "run_id": RUN_ID,
                 "run_attempt": RUN_ATTEMPT,
                 "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": "2026-07-30T00:01:00Z",
+                "completed_at": "2026-07-30T00:09:00Z",
             }
         ]
         self.job = {
@@ -278,6 +313,25 @@ class FakeGitHubAdapter:
         )
         self.fail_at: str | None = None
         self.download_calls = 0
+        self.workflow_references = {
+            "refs/pull/137/merge": {
+                "ref": "refs/pull/137/merge",
+                "object": {"type": "commit", "sha": WORKFLOW_SHA},
+            },
+            (
+                "refs/heads/issue-138-authenticated-prelive-provenance"
+            ): {
+                "ref": (
+                    "refs/heads/"
+                    "issue-138-authenticated-prelive-provenance"
+                ),
+                "object": {"type": "commit", "sha": head_sha},
+            },
+            "refs/heads/main": {
+                "ref": "refs/heads/main",
+                "object": {"type": "commit", "sha": BASE_SHA},
+            },
+        }
         self.references: dict[str, dict[str, object]] = {}
         self.rulesets, self.ruleset_details = make_replay_ruleset_fixtures()
 
@@ -303,12 +357,38 @@ class FakeGitHubAdapter:
     ) -> dict[str, object]:
         return self._result("pull_request", self.pull_request)
 
+    def list_pull_request_closing_issues(
+        self,
+        repository: str,
+        pull_number: int,
+    ) -> list[dict[str, object]]:
+        return self._result("closing_issues", self.closing_issues)
+
+    def compare_commits(
+        self,
+        repository: str,
+        *,
+        base: str,
+        head: str,
+    ) -> dict[str, object]:
+        return self._result("comparison", self.comparison)
+
     def get_workflow_run(
         self,
         repository: str,
         run_id: int,
     ) -> dict[str, object]:
         return self._result("workflow_run", self.workflow_run)
+
+    def list_workflow_runs(
+        self,
+        repository: str,
+        workflow_id: int,
+        *,
+        branch: str,
+        event: str,
+    ) -> list[dict[str, object]]:
+        return self._result("workflow_runs", self.workflow_runs)
 
     def get_workflow(
         self,
@@ -384,6 +464,11 @@ class FakeGitHubAdapter:
         *,
         ref: str,
     ) -> dict[str, object]:
+        if ref in self.workflow_references:
+            return self._result(
+                "workflow_reference",
+                self.workflow_references[ref],
+            )
         try:
             return self.references[ref]
         except KeyError as exc:
@@ -681,6 +766,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             1,
         )[0]
         self.assertNotIn("GITHUB_TOKEN", build_step)
+        self.assertNotIn("GITHUB_WORKFLOW_REF:", provenance_job)
+        self.assertNotIn("GITHUB_WORKFLOW_SHA:", provenance_job)
         self.assertIn(
             "  micromachine-macos-contracts:\n    if: github.event_name == 'push'\n",
             workflow,
@@ -761,7 +848,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             run_id=RUN_ID,
             run_attempt=RUN_ATTEMPT,
             expected_head_sha=HEAD_SHA,
-            workflow_ref=("refs/heads/issue-138-authenticated-prelive-provenance"),
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
         )
 
         self.assertTrue(report["ok"], report)
@@ -775,18 +863,92 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             run_id=RUN_ID,
             run_attempt=RUN_ATTEMPT,
             expected_head_sha=HEAD_SHA,
-            workflow_ref=("refs/heads/issue-138-authenticated-prelive-provenance"),
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
         )
         self.assertFalse(ambiguous["ok"], ambiguous)
 
+    def test_rejects_tampered_runner_workflow_identity(self) -> None:
+        mutations = {
+            "repository": (
+                f"attacker/example/{WORKFLOW_PATH}@refs/pull/137/merge",
+                WORKFLOW_SHA,
+            ),
+            "path": (
+                f"{REPOSITORY}/.github/workflows/other.yml@refs/pull/137/merge",
+                WORKFLOW_SHA,
+            ),
+            "ref": (
+                f"{REPOSITORY}/{WORKFLOW_PATH}@refs/tags/forged",
+                WORKFLOW_SHA,
+            ),
+            "sha": (WORKFLOW_REF, "D" * 40),
+        }
+        for name, (workflow_ref, workflow_sha) in mutations.items():
+            with self.subTest(name=name):
+                report = attest_github_actions_emission_context(
+                    FakeGitHubAdapter(),
+                    repository=REPOSITORY,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    expected_head_sha=HEAD_SHA,
+                    workflow_ref=workflow_ref,
+                    workflow_sha=workflow_sha,
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertRegex(
+                    " ".join(report["blockers"]),
+                    r"workflow(?: execution|_sha)",
+                )
+
+    def test_rejects_downloaded_bundle_with_unbound_workflow_identity(
+        self,
+    ) -> None:
+        mutations = {
+            "unrelated branch": (
+                f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/unrelated",
+                WORKFLOW_SHA,
+            ),
+            "other pull request": (
+                f"{REPOSITORY}/{WORKFLOW_PATH}@refs/pull/999/merge",
+                WORKFLOW_SHA,
+            ),
+            "different valid sha": (WORKFLOW_REF, "d" * 40),
+        }
+        for name, (workflow_ref, workflow_sha) in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                adapter.artifact_bytes = make_source_artifact_bundle(
+                    HEAD_SHA,
+                    workflow_ref=workflow_ref,
+                    workflow_sha=workflow_sha,
+                )
+                adapter.artifact["digest"] = (
+                    "sha256:"
+                    + hashlib.sha256(adapter.artifact_bytes).hexdigest()
+                )
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertRegex(
+                    " ".join(report["blockers"]),
+                    r"workflow (?:execution|SHA)",
+                )
+
     def test_rejects_unrelated_issue_without_pr_closure_binding(self) -> None:
         adapter = FakeGitHubAdapter()
-        adapter.pull_request["body"] = "No issue relationship."
+        adapter.pull_request["body"] = "This text does not close #138."
+        adapter.closing_issues.clear()
 
         report = self.attest(adapter)
 
         self.assertFalse(report["ok"], report)
-        self.assertIn("Closes #138", " ".join(report["blockers"]))
+        self.assertIn(
+            "closingIssuesReferences",
+            " ".join(report["blockers"]),
+        )
 
         unrelated = attest_github_source(
             adapter,
@@ -802,6 +964,77 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )
         self.assertFalse(unrelated["ok"], unrelated)
         self.assertIn("expected=138", " ".join(unrelated["blockers"]))
+
+    def test_accepts_server_closing_relationship_without_body_keyword(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.pull_request["body"] = "No user-authored closing keyword."
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+
+    def test_rejects_non_main_base_and_non_descendant_head(self) -> None:
+        mutations = {
+            "base branch": lambda adapter: adapter.pull_request["base"].update(
+                {"ref": "release"}
+            ),
+            "base repository": lambda adapter: adapter.pull_request["base"][
+                "repo"
+            ].update({"id": 999}),
+            "base ancestry": lambda adapter: adapter.comparison.update(
+                {"status": "diverged"}
+            ),
+            "merge base": lambda adapter: adapter.comparison[
+                "merge_base_commit"
+            ].update({"sha": "d" * 40}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+                report = self.attest(adapter)
+                self.assertFalse(report["ok"], report)
+
+    def test_rejects_stale_success_when_newer_applicable_run_exists(self) -> None:
+        adapter = FakeGitHubAdapter()
+        newer = dict(adapter.workflow_run)
+        newer.update(
+            {
+                "id": RUN_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        )
+        adapter.workflow_runs.append(newer)
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("stale", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_artifact_without_exclusive_selected_job_window(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.jobs.append(
+            {
+                "id": JOB_ID + 1,
+                "run_id": RUN_ID,
+                "run_attempt": RUN_ATTEMPT,
+                "name": "overlapping-job",
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": "2026-07-30T00:04:00Z",
+                "completed_at": "2026-07-30T00:06:00Z",
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("overlaps another workflow job", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
 
     def test_rejects_stale_attempt_job_and_artifact_membership(self) -> None:
         mutations = {
@@ -995,12 +1228,20 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                     "run_id": RUN_ID,
                     "run_attempt": RUN_ATTEMPT,
                     "name": "unit-contracts",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "started_at": "2026-07-29T23:50:00Z",
+                    "completed_at": "2026-07-30T00:00:30Z",
                 },
                 {
                     "id": JOB_ID + 2,
                     "run_id": RUN_ID,
                     "run_attempt": RUN_ATTEMPT,
                     "name": "micromachine-macos-contracts",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                    "started_at": None,
+                    "completed_at": None,
                 },
             ]
         )
@@ -1040,13 +1281,24 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             "ref": replay_ref,
             "object": {"type": "commit", "sha": HEAD_SHA},
         }
+        workflow_reference_record = {
+            "ref": "refs/pull/137/merge",
+            "object": {"type": "commit", "sha": WORKFLOW_SHA},
+        }
         rulesets, ruleset_details = make_replay_ruleset_fixtures()
         payloads: dict[str, object] = {
             f"/repos/{REPOSITORY}": {"id": 1},
             f"/repos/{REPOSITORY}/issues/138": {"id": 2},
             f"/repos/{REPOSITORY}/pulls/137": {"id": 3},
+            f"/repos/{REPOSITORY}/compare/{BASE_SHA}...{HEAD_SHA}": {
+                "status": "ahead"
+            },
             f"/repos/{REPOSITORY}/actions/runs/{RUN_ID}": {"id": RUN_ID},
             f"/repos/{REPOSITORY}/actions/workflows/{WORKFLOW_ID}": {"id": WORKFLOW_ID},
+            f"/repos/{REPOSITORY}/actions/workflows/{WORKFLOW_ID}/runs": {
+                "total_count": 1,
+                "workflow_runs": [{"id": RUN_ID}],
+            },
             (f"/repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}"): {
                 "id": RUN_ID,
                 "run_attempt": RUN_ATTEMPT,
@@ -1063,6 +1315,9 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             (
                 f"/repos/{REPOSITORY}/git/ref/{replay_ref.removeprefix('refs/')}"
             ): replay_record,
+            (
+                f"/repos/{REPOSITORY}/git/ref/pull/137/merge"
+            ): workflow_reference_record,
             f"/repos/{REPOSITORY}/rulesets": rulesets,
             f"/repos/{REPOSITORY}/rulesets/501": ruleset_details[501],
             f"/repos/{REPOSITORY}/rulesets/502": ruleset_details[502],
@@ -1082,6 +1337,33 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             if parsed.path.endswith(f"/artifacts/{ARTIFACT_ID}/zip"):
                 return FakeHTTPResponse(b"artifact zip")
             if request.get_method() == "POST":
+                if parsed.path == "/graphql":
+                    graphql_payload = {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "closingIssuesReferences": {
+                                        "nodes": [
+                                            {
+                                                "databaseId": 2,
+                                                "number": 138,
+                                                "repository": {
+                                                    "databaseId": (
+                                                        AUTHORITATIVE_REPOSITORY_ID
+                                                    ),
+                                                    "nameWithOwner": REPOSITORY,
+                                                },
+                                            }
+                                        ],
+                                        "pageInfo": {"hasNextPage": False},
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return FakeHTTPResponse(
+                        json.dumps(graphql_payload).encode()
+                    )
                 self.assertEqual(
                     {"ref": replay_ref, "sha": HEAD_SHA},
                     json.loads(request.data),
@@ -1098,12 +1380,35 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
         self.assertEqual(2, adapter.get_issue(REPOSITORY, 138)["id"])
         self.assertEqual(3, adapter.get_pull_request(REPOSITORY, 137)["id"])
         self.assertEqual(
+            138,
+            adapter.list_pull_request_closing_issues(REPOSITORY, 137)[0][
+                "number"
+            ],
+        )
+        self.assertEqual(
+            "ahead",
+            adapter.compare_commits(
+                REPOSITORY,
+                base=BASE_SHA,
+                head=HEAD_SHA,
+            )["status"],
+        )
+        self.assertEqual(
             RUN_ID,
             adapter.get_workflow_run(REPOSITORY, RUN_ID)["id"],
         )
         self.assertEqual(
             WORKFLOW_ID,
             adapter.get_workflow(REPOSITORY, WORKFLOW_ID)["id"],
+        )
+        self.assertEqual(
+            RUN_ID,
+            adapter.list_workflow_runs(
+                REPOSITORY,
+                WORKFLOW_ID,
+                branch="issue-138-authenticated-prelive-provenance",
+                event="pull_request",
+            )[0]["id"],
         )
         self.assertEqual(
             RUN_ATTEMPT,
@@ -1150,6 +1455,13 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             adapter.get_git_reference(REPOSITORY, ref=replay_ref),
         )
         self.assertEqual(
+            workflow_reference_record,
+            adapter.get_git_reference(
+                REPOSITORY,
+                ref="refs/pull/137/merge",
+            ),
+        )
+        self.assertEqual(
             rulesets,
             adapter.list_repository_rulesets(REPOSITORY),
         )
@@ -1161,13 +1473,57 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             ruleset_details[502],
             adapter.get_repository_ruleset(REPOSITORY, 502),
         )
-        self.assertEqual(16, len(requested))
+        self.assertEqual(20, len(requested))
         self.assertTrue(
             all(header == "Bearer fixture-token" for _, header, _, _ in requested)
         )
 
 
 class BuildBindingTest(unittest.TestCase):
+    def test_rejects_coherent_build_from_non_authoritative_upstream_commit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            micromachine_dir = fixture["config"].micromachine_dir
+            (micromachine_dir / "new-upstream-state.txt").write_text("new\n")
+            git(micromachine_dir, "add", "new-upstream-state.txt")
+            git(
+                micromachine_dir,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "untrusted upstream",
+            )
+            untrusted_commit = git(
+                micromachine_dir,
+                "rev-parse",
+                "HEAD",
+            ).stdout.strip()
+            refresh_build_fixture(
+                fixture,
+                replace(
+                    fixture["config"],
+                    micromachine_commit=untrusted_commit,
+                ),
+            )
+
+            report = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=passing_ctest,
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "repository-authoritative",
+                " ".join(report["blockers"]),
+            )
+
     def test_rebuilds_schema_71_identity_and_exact_five_ctests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
@@ -1778,7 +2134,8 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                 expected_commit=fixture["repository_commit"],
                 run_id=RUN_ID,
                 run_attempt=RUN_ATTEMPT,
-                workflow_ref=("refs/heads/issue-138-authenticated-prelive-provenance"),
+                workflow_ref=WORKFLOW_REF,
+                workflow_sha=WORKFLOW_SHA,
                 build_report_path=fixture["report_path"],
                 expected_build_dir=fixture["config"].micromachine_build_dir,
                 output_path=output,
@@ -1846,9 +2203,8 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                         expected_commit=fixture["repository_commit"],
                         run_id=RUN_ID,
                         run_attempt=RUN_ATTEMPT,
-                        workflow_ref=(
-                            "refs/heads/issue-138-authenticated-prelive-provenance"
-                        ),
+                        workflow_ref=WORKFLOW_REF,
+                        workflow_sha=WORKFLOW_SHA,
                         build_report_path=fixture["report_path"],
                         expected_build_dir=(fixture["config"].micromachine_build_dir),
                         output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
@@ -1883,7 +2239,8 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                 expected_commit=fixture["repository_commit"],
                 run_id=RUN_ID,
                 run_attempt=RUN_ATTEMPT,
-                workflow_ref=("refs/heads/issue-138-authenticated-prelive-provenance"),
+                workflow_ref=WORKFLOW_REF,
+                workflow_sha=WORKFLOW_SHA,
                 build_report_path=fixture["report_path"],
                 expected_build_dir=fixture["config"].micromachine_build_dir,
                 output_path=output,
@@ -1895,6 +2252,64 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
             self.assertFalse(report["ok"], report)
             self.assertFalse(output.exists())
             self.assertEqual([], producer_calls)
+
+    def test_emitter_rejects_build_replacement_during_producer_execution(
+        self,
+    ) -> None:
+        for label in ("report", "binary"):
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    fixture = make_build_fixture(root / "fixture")
+                    adapter = FakeGitHubAdapter(
+                        head_sha=fixture["repository_commit"],
+                    )
+                    output = root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME
+
+                    def racing_producer(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        if label == "report":
+                            target = fixture["report_path"]
+                            replacement = target.with_name(
+                                target.name + ".replacement"
+                            )
+                            replacement.write_bytes(b'{"replaced":true}\n')
+                        else:
+                            target = fixture["config"].binary_path
+                            replacement = target.with_name(
+                                target.name + ".replacement"
+                            )
+                            replacement.write_bytes(b"replaced binary")
+                            replacement.chmod(0o755)
+                        os.replace(replacement, target)
+                        return subprocess.run(*args, **kwargs)
+
+                    report = emit_github_actions_pre_live_bundle(
+                        adapter=adapter,
+                        repository_dir=fixture["repository"],
+                        expected_commit=fixture["repository_commit"],
+                        run_id=RUN_ID,
+                        run_attempt=RUN_ATTEMPT,
+                        workflow_ref=WORKFLOW_REF,
+                        workflow_sha=WORKFLOW_SHA,
+                        build_report_path=fixture["report_path"],
+                        expected_build_dir=(
+                            fixture["config"].micromachine_build_dir
+                        ),
+                        output_path=output,
+                        producer_id="fixture_producer",
+                        ctest_runner=passing_ctest,
+                        producer_runner=racing_producer,
+                    )
+
+                    self.assertFalse(report["ok"], report)
+                    self.assertFalse(output.exists())
+                    self.assertIn(
+                        f"admitted {label} changed after build attestation",
+                        " ".join(report["blockers"]),
+                    )
 
 
 class LocalProducerTest(unittest.TestCase):
@@ -2608,7 +3023,8 @@ class ReplayLedgerTest(unittest.TestCase):
             "repository": REPOSITORY,
             "head_sha": HEAD_SHA,
             "workflow_path": WORKFLOW_PATH,
-            "workflow_ref": "refs/heads/issue-138-authenticated-prelive-provenance",
+            "workflow_ref": WORKFLOW_REF,
+            "workflow_sha": WORKFLOW_SHA,
             "artifact_sha256": "1" * 64,
             "source_ids": {
                 "repository_id": AUTHORITATIVE_REPOSITORY_ID,
@@ -2656,6 +3072,34 @@ class ReplayLedgerTest(unittest.TestCase):
         )
 
         self.assertNotEqual(first, second)
+        for field, replacement in (
+            (
+                "workflow_ref",
+                f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main",
+            ),
+            ("workflow_sha", "d" * 40),
+        ):
+            with self.subTest(field=field):
+                changed_source = dict(github_source)
+                changed_source[field] = replacement
+                self.assertNotEqual(
+                    first,
+                    canonical_replay_digest(
+                        changed_source,
+                        build_binding,
+                        producer_policy,
+                        local_execution,
+                    ),
+                )
+        missing_workflow_sha = dict(github_source)
+        missing_workflow_sha.pop("workflow_sha")
+        with self.assertRaises(ValueError):
+            canonical_replay_digest(
+                missing_workflow_sha,
+                build_binding,
+                producer_policy,
+                local_execution,
+            )
         rejected_source = dict(github_source)
         rejected_source["ok"] = False
         with self.assertRaises(ValueError):
@@ -3332,6 +3776,22 @@ def make_build_fixture(root: Path) -> dict[str, Any]:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         path_values[field.name] = destination
+    build_script_source = (
+        BUILD_IDENTITY_REPO_ROOT
+        / "integrations"
+        / "micromachine"
+        / "scripts"
+        / "build_macos_local.sh"
+    )
+    build_script = (
+        repository
+        / "integrations"
+        / "micromachine"
+        / "scripts"
+        / "build_macos_local.sh"
+    )
+    build_script.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(build_script_source, build_script)
     policy_path = repository / PRODUCER_POLICY_RELATIVE_PATH
     policy_path.parent.mkdir(parents=True, exist_ok=True)
     (repository / "fixture_producer.py").write_text(
@@ -3379,6 +3839,32 @@ def make_build_fixture(root: Path) -> dict[str, Any]:
     s2client_dir.mkdir()
     micromachine_commit = init_git_repo(micromachine_dir, add_origin=False)
     s2client_commit = init_git_repo(s2client_dir, add_origin=False)
+    build_script_text = build_script.read_text()
+    build_script_text = re.sub(
+        r'(?m)^MICROMACHINE_COMMIT=.*$',
+        f'MICROMACHINE_COMMIT="${{MICROMACHINE_COMMIT:-{micromachine_commit}}}"',
+        build_script_text,
+        count=1,
+    )
+    build_script_text = re.sub(
+        r'(?m)^S2CLIENT_COMMIT=.*$',
+        f'S2CLIENT_COMMIT="${{S2CLIENT_COMMIT:-{s2client_commit}}}"',
+        build_script_text,
+        count=1,
+    )
+    build_script.write_text(build_script_text)
+    git(repository, "add", build_script.relative_to(repository).as_posix())
+    git(
+        repository,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--amend",
+        "--no-edit",
+    )
+    repository_commit = git(repository, "rev-parse", "HEAD").stdout.strip()
     build_dir = micromachine_dir / "build"
     build_dir.mkdir(parents=True)
     ctest_path = shutil.which("ctest")
@@ -3547,6 +4033,8 @@ def make_source_artifact_bundle(
     producer_ended_at: str = "2026-07-30T00:03:00Z",
     pull_id: int = 3,
     pull_number: int = 137,
+    workflow_ref: str = WORKFLOW_REF,
+    workflow_sha: str = WORKFLOW_SHA,
 ) -> bytes:
     authority = candidate_authority(
         head_sha,
@@ -3561,14 +4049,27 @@ def make_source_artifact_bundle(
             "sha256": "f" * 64,
         }
     }
+    upstream_commit_policy = {
+        "path": "integrations/micromachine/scripts/build_macos_local.sh",
+        "sha256": "d" * 64,
+        "micromachine_commit": "1" * 40,
+        "s2client_commit": "2" * 40,
+    }
+    repository_input_material = {
+        "paths": repository_paths,
+        "upstream_commit_policy": upstream_commit_policy,
+    }
     repository_input = canonical_json_bytes(
         {
             "schema_version": 1,
             "repository_commit": head_sha,
             "build_input_identity": repository_input_identity,
             "repository_inputs_digest": "sha256:"
-            + hashlib.sha256(canonical_json_bytes(repository_paths)).hexdigest(),
+            + hashlib.sha256(
+                canonical_json_bytes(repository_input_material)
+            ).hexdigest(),
             "paths": repository_paths,
+            "upstream_commit_policy": upstream_commit_policy,
         }
     )
     report_identity = "sha256:" + "a" * 64
@@ -3620,8 +4121,8 @@ def make_source_artifact_bundle(
         repository_commit=head_sha,
         workflow_id=WORKFLOW_ID,
         workflow_path=WORKFLOW_PATH,
-        workflow_ref="refs/heads/issue-138-authenticated-prelive-provenance",
-        workflow_sha=head_sha,
+        workflow_ref=workflow_ref,
+        workflow_sha=workflow_sha,
         run_id=RUN_ID,
         run_attempt=RUN_ATTEMPT,
         job_id=JOB_ID,
@@ -3666,6 +4167,8 @@ def bind_adapter_to_build_fixture(
 ) -> None:
     config = fixture["config"]
     repository = fixture["repository"]
+    adapter.workflow_runs = [dict(adapter.workflow_run)]
+    adapter.comparison["head_commit"]["sha"] = fixture["repository_commit"]
     repository_paths: dict[str, object] = {}
     excluded = {
         "micromachine_dir",
@@ -3687,8 +4190,21 @@ def bind_adapter_to_build_fixture(
             "sha256": hashlib.sha256(payload).hexdigest(),
             "size_bytes": len(payload),
         }
+    build_script_relative = "integrations/micromachine/scripts/build_macos_local.sh"
+    build_script = repository / build_script_relative
+    upstream_commit_policy = {
+        "path": build_script_relative,
+        "sha256": hashlib.sha256(build_script.read_bytes()).hexdigest(),
+        "micromachine_commit": config.micromachine_commit,
+        "s2client_commit": config.s2client_commit,
+    }
+    repository_input_material = {
+        "paths": repository_paths,
+        "upstream_commit_policy": upstream_commit_policy,
+    }
     repository_inputs_digest = (
-        "sha256:" + hashlib.sha256(canonical_json_bytes(repository_paths)).hexdigest()
+        "sha256:"
+        + hashlib.sha256(canonical_json_bytes(repository_input_material)).hexdigest()
     )
     build_input_identity = fixture["report"]["observed"][
         "embedded_build_input_identity"
@@ -3700,6 +4216,7 @@ def bind_adapter_to_build_fixture(
             "build_input_identity": build_input_identity,
             "repository_inputs_digest": repository_inputs_digest,
             "paths": repository_paths,
+            "upstream_commit_policy": upstream_commit_policy,
         }
     )
     policy = (repository / PRODUCER_POLICY_RELATIVE_PATH).read_bytes()
@@ -3747,8 +4264,8 @@ def bind_adapter_to_build_fixture(
         repository_commit=fixture["repository_commit"],
         workflow_id=WORKFLOW_ID,
         workflow_path=WORKFLOW_PATH,
-        workflow_ref="refs/heads/issue-138-authenticated-prelive-provenance",
-        workflow_sha=fixture["repository_commit"],
+        workflow_ref=WORKFLOW_REF,
+        workflow_sha=WORKFLOW_SHA,
         run_id=RUN_ID,
         run_attempt=RUN_ATTEMPT,
         job_id=JOB_ID,

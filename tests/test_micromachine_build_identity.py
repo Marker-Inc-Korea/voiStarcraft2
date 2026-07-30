@@ -3055,6 +3055,34 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self.assertLess(cleanup, create_root)
         self.assertLess(create_root, initialize)
 
+    def test_build_script_binds_and_runs_one_resolved_ctest_executable(
+        self,
+    ) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "integrations"
+            / "micromachine"
+            / "scripts"
+            / "build_macos_local.sh"
+        ).read_text()
+
+        resolve = script.index(
+            'CTEST_COMMAND="$(resolve_regular_executable "${CTEST_COMMAND}" "CTest")"'
+        )
+        configure = script.index(
+            '-DCMAKE_CTEST_COMMAND:INTERNAL="${CTEST_COMMAND}"',
+            resolve,
+        )
+        execute = script.index(
+            '"${CTEST_COMMAND}" --test-dir "${MICROMACHINE_BUILD_DIR}"',
+            configure,
+        )
+        finalize = script.index("--finalize-build-attestation", execute)
+
+        self.assertLess(resolve, configure)
+        self.assertLess(configure, execute)
+        self.assertLess(execute, finalize)
+
     def test_build_script_preflight_rejects_linked_build_root_before_cleanup(
         self,
     ) -> None:

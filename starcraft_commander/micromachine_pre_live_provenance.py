@@ -39,6 +39,7 @@ from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
     PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE,
     PreLiveArtifactMetadata,
+    PreLiveBuildAdmissionSnapshot,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
     canonical_json_bytes,
@@ -52,6 +53,7 @@ REPLAY_LEDGER_SCHEMA_VERSION: Final[int] = 1
 PRODUCER_POLICY_SCHEMA_VERSION: Final[int] = 1
 AUTHORITATIVE_REPOSITORY: Final[str] = "Marker-Inc-Korea/voiStarcraft2"
 AUTHORITATIVE_REPOSITORY_ID: Final[int] = 1_266_216_251
+AUTHORITATIVE_BASE_BRANCH: Final[str] = "main"
 AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER: Final[int] = 138
 AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH: Final[str] = ".github/workflows/ci.yml"
 AUTHORITATIVE_PROVENANCE_JOB_NAME: Final[str] = "pre-live-provenance"
@@ -103,11 +105,6 @@ _SHA256_IDENTITY_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$
 _REPOSITORY_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 )
-_CLOSES_ISSUE_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)(?:^|\s)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+"
-    r"(?:https://github\.com/Marker-Inc-Korea/voiStarcraft2/issues/)?#?138"
-    r"(?:\b|$)"
-)
 _CTEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^\s*(\d+)%\s+tests passed,\s+(\d+)\s+tests failed out of\s+(\d+)\s*$"
 )
@@ -116,6 +113,10 @@ _CTEST_FRACTION_RE: Final[re.Pattern[str]] = re.compile(
 )
 _CMAKE_CTEST_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^CMAKE_CTEST_COMMAND:INTERNAL=(.+)$"
+)
+_BUILD_SCRIPT_UPSTREAM_COMMIT_RE: Final[re.Pattern[str]] = re.compile(
+    r'(?m)^(MICROMACHINE_COMMIT|S2CLIENT_COMMIT)="\$\{'
+    r'\1:-([0-9a-f]{40})\}"$'
 )
 _REQUIRED_CTEST_COMMANDS: Final[dict[str, str]] = dict(
     MICROMACHINE_REQUIRED_NATIVE_TESTS
@@ -178,11 +179,34 @@ class GitHubSourceAdapter(Protocol):
         pull_number: int,
     ) -> Mapping[str, object]: ...
 
+    def list_pull_request_closing_issues(
+        self,
+        repository: str,
+        pull_number: int,
+    ) -> Sequence[Mapping[str, object]]: ...
+
+    def compare_commits(
+        self,
+        repository: str,
+        *,
+        base: str,
+        head: str,
+    ) -> Mapping[str, object]: ...
+
     def get_workflow_run(
         self,
         repository: str,
         run_id: int,
     ) -> Mapping[str, object]: ...
+
+    def list_workflow_runs(
+        self,
+        repository: str,
+        workflow_id: int,
+        *,
+        branch: str,
+        event: str,
+    ) -> Sequence[Mapping[str, object]]: ...
 
     def get_workflow(
         self,
@@ -223,6 +247,13 @@ class GitHubSourceAdapter(Protocol):
     ) -> Mapping[str, object]: ...
 
     def download_artifact(self, repository: str, artifact_id: int) -> bytes: ...
+
+    def get_git_reference(
+        self,
+        repository: str,
+        *,
+        ref: str,
+    ) -> Mapping[str, object]: ...
 
 
 class GitHubReferenceAdapter(Protocol):
@@ -400,6 +431,74 @@ class StdlibGitHubRESTAdapter:
             f"{self._repo_path(repository)}/pulls/{_positive_id(pull_number, 'pull_number')}"
         )
 
+    def list_pull_request_closing_issues(
+        self,
+        repository: str,
+        pull_number: int,
+    ) -> Sequence[Mapping[str, object]]:
+        normalized = normalize_github_repository(repository, allow_slug=True)
+        owner, name = normalized.split("/", 1)
+        payload = self._request_json(
+            "/graphql",
+            method="POST",
+            payload={
+                "query": (
+                    "query($owner:String!,$name:String!,$number:Int!){"
+                    "repository(owner:$owner,name:$name){"
+                    "pullRequest(number:$number){"
+                    "closingIssuesReferences(first:100){"
+                    "nodes{databaseId number repository{databaseId nameWithOwner}}"
+                    "pageInfo{hasNextPage}"
+                    "}}}}"
+                ),
+                "variables": {
+                    "owner": owner,
+                    "name": name,
+                    "number": _positive_id(pull_number, "pull_number"),
+                },
+            },
+        )
+        errors = payload.get("errors")
+        if errors not in (None, []):
+            raise GitHubSourceError(
+                f"GitHub GraphQL closing-issue lookup failed: {errors!r}"
+            )
+        data = _mapping(payload.get("data"))
+        repository_record = _mapping(data.get("repository"))
+        pull_request = _mapping(repository_record.get("pullRequest"))
+        closing = _mapping(pull_request.get("closingIssuesReferences"))
+        page_info = _mapping(closing.get("pageInfo"))
+        if page_info.get("hasNextPage") is not False:
+            raise GitHubSourceError(
+                "pull request has more than 100 closing issue references"
+            )
+        nodes = closing.get("nodes")
+        if not isinstance(nodes, list):
+            raise GitHubSourceError(
+                "GitHub closingIssuesReferences.nodes must be a list"
+            )
+        result: list[Mapping[str, object]] = []
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                raise GitHubSourceError(
+                    "GitHub closing issue reference must be an object"
+                )
+            result.append(cast(Mapping[str, object], node))
+        return result
+
+    def compare_commits(
+        self,
+        repository: str,
+        *,
+        base: str,
+        head: str,
+    ) -> Mapping[str, object]:
+        if not _SHA40_RE.fullmatch(base) or not _SHA40_RE.fullmatch(head):
+            raise ValueError("commit comparison requires exact lowercase SHAs")
+        return self._get_json(
+            f"{self._repo_path(repository)}/compare/{base}...{head}"
+        )
+
     def get_workflow_run(
         self,
         repository: str,
@@ -407,6 +506,31 @@ class StdlibGitHubRESTAdapter:
     ) -> Mapping[str, object]:
         return self._get_json(
             f"{self._repo_path(repository)}/actions/runs/{_positive_id(run_id, 'run_id')}"
+        )
+
+    def list_workflow_runs(
+        self,
+        repository: str,
+        workflow_id: int,
+        *,
+        branch: str,
+        event: str,
+    ) -> Sequence[Mapping[str, object]]:
+        if not branch or len(branch) > 255:
+            raise ValueError("workflow branch is required")
+        if event != "pull_request":
+            raise ValueError("only pull_request workflow runs are authoritative")
+        query = urllib.parse.urlencode(
+            {
+                "branch": branch,
+                "event": event,
+                "exclude_pull_requests": "false",
+            }
+        )
+        return self._get_paginated(
+            f"{self._repo_path(repository)}/actions/workflows/"
+            f"{_positive_id(workflow_id, 'workflow_id')}/runs?{query}",
+            "workflow_runs",
         )
 
     def get_workflow(
@@ -913,12 +1037,37 @@ def attest_github_source(
             normalized_repository,
             pull_number,
         )
+        lookup_head = _mapping(pull_request.get("head"))
+        lookup_head_ref = lookup_head.get("ref")
+        lookup_base = _mapping(pull_request.get("base"))
+        lookup_base_sha = lookup_base.get("sha")
+        if not isinstance(lookup_head_ref, str) or not lookup_head_ref:
+            raise ValueError("pull_request.head.ref is required")
+        if not isinstance(lookup_base_sha, str) or not _SHA40_RE.fullmatch(
+            lookup_base_sha
+        ):
+            raise ValueError("pull_request.base.sha must be an exact lowercase SHA")
+        closing_issues = adapter.list_pull_request_closing_issues(
+            normalized_repository,
+            pull_number,
+        )
+        comparison = adapter.compare_commits(
+            normalized_repository,
+            base=lookup_base_sha,
+            head=expected_head_sha,
+        )
         workflow_run = adapter.get_workflow_run(normalized_repository, run_id)
         workflow_id = _positive_id(
             workflow_run.get("workflow_id"),
             "workflow_run.workflow_id",
         )
         workflow = adapter.get_workflow(normalized_repository, workflow_id)
+        workflow_runs = adapter.list_workflow_runs(
+            normalized_repository,
+            workflow_id,
+            branch=lookup_head_ref,
+            event="pull_request",
+        )
         attempt = adapter.get_workflow_run_attempt(
             normalized_repository,
             run_id,
@@ -1014,11 +1163,22 @@ def attest_github_source(
         )
     if expected_pull_state == "open" and pull_request.get("merged_at") is not None:
         blockers.append("open pull request unexpectedly has merged_at")
-    pull_body = pull_request.get("body")
-    if not isinstance(pull_body, str) or not _CLOSES_ISSUE_RE.search(pull_body):
+    matching_closing_issues = [
+        candidate
+        for candidate in closing_issues
+        if candidate.get("databaseId") == issue_id
+        and candidate.get("number") == issue_number
+        and _mapping(candidate.get("repository")).get("databaseId")
+        == expected_repository_id
+        and str(
+            _mapping(candidate.get("repository")).get("nameWithOwner", "")
+        ).casefold()
+        == normalized_repository.casefold()
+    ]
+    if len(matching_closing_issues) != 1:
         blockers.append(
-            "pull request body does not server-bind the authenticated issue "
-            f"with Closes #{AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER}"
+            "GitHub closingIssuesReferences does not uniquely bind the "
+            f"authenticated issue #{AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER}"
         )
     pull_head = _mapping(pull_request.get("head"))
     pull_head_sha = pull_head.get("sha")
@@ -1053,6 +1213,73 @@ def attest_github_source(
         "pull_request.head",
         blockers,
     )
+    pull_base = _mapping(pull_request.get("base"))
+    pull_base_ref = _server_string(
+        pull_base,
+        "ref",
+        "pull_request.base",
+        blockers,
+    )
+    pull_base_sha = _server_string(
+        pull_base,
+        "sha",
+        "pull_request.base",
+        blockers,
+    )
+    if pull_base_ref != AUTHORITATIVE_BASE_BRANCH:
+        blockers.append(
+            "pull request base branch mismatch: "
+            f"expected={AUTHORITATIVE_BASE_BRANCH!r} actual={pull_base_ref!r}"
+        )
+    pull_base_repo = _mapping(pull_base.get("repo"))
+    pull_base_repository_id = _server_positive_id(
+        pull_base_repo.get("id"),
+        "pull_request.base.repo.id",
+        blockers,
+    )
+    if pull_base_repository_id != expected_repository_id:
+        blockers.append(
+            "pull request base repository ID mismatch: "
+            f"expected={expected_repository_id} actual={pull_base_repository_id}"
+        )
+    pull_base_full_name = pull_base_repo.get("full_name")
+    if (
+        not isinstance(pull_base_full_name, str)
+        or pull_base_full_name.casefold() != normalized_repository.casefold()
+    ):
+        blockers.append(
+            "pull request base repository mismatch: "
+            f"expected={normalized_repository} actual={pull_base_full_name!r}"
+        )
+    comparison_base = _mapping(comparison.get("base_commit"))
+    comparison_head = _mapping(comparison.get("head_commit"))
+    comparison_merge_base = _mapping(comparison.get("merge_base_commit"))
+    _expect_server_value(
+        comparison_base,
+        "sha",
+        pull_base_sha,
+        "comparison.base_commit",
+        blockers,
+    )
+    _expect_server_value(
+        comparison_head,
+        "sha",
+        expected_head_sha,
+        "comparison.head_commit",
+        blockers,
+    )
+    _expect_server_value(
+        comparison_merge_base,
+        "sha",
+        pull_base_sha,
+        "comparison.merge_base_commit",
+        blockers,
+    )
+    if comparison.get("status") != "ahead":
+        blockers.append(
+            "pull request head must descend from the authenticated main base: "
+            f"status={comparison.get('status')!r}"
+        )
     authority = {
         "scope": PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE,
         "release_authoritative": False,
@@ -1149,7 +1376,8 @@ def attest_github_source(
             "workflow run branch differs from pull request head ref: "
             f"run={head_branch!r} pull={pull_head_ref!r}"
         )
-    workflow_ref = f"refs/heads/{pull_head_ref}" if pull_head_ref else None
+    workflow_ref: str | None = None
+    workflow_sha: str | None = None
     _validate_workflow_pull_request_binding(
         workflow_run.get("pull_requests"),
         label="workflow_run.pull_requests",
@@ -1159,6 +1387,35 @@ def attest_github_source(
         expected_repository_id=expected_repository_id,
         blockers=blockers,
     )
+    eligible_runs = [
+        candidate
+        for candidate in workflow_runs
+        if _workflow_run_matches_candidate(
+            candidate,
+            workflow_id=workflow_id,
+            workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            head_sha=expected_head_sha,
+            head_branch=pull_head_ref,
+            repository_id=expected_repository_id,
+        )
+    ]
+    if not eligible_runs:
+        blockers.append("no applicable workflow run exists for the candidate head")
+    else:
+        newest_run = max(eligible_runs, key=_workflow_run_order_key)
+        if newest_run.get("id") != run_id:
+            blockers.append(
+                "selected workflow run is stale: "
+                f"selected={run_id} latest={newest_run.get('id')!r}"
+            )
+        elif newest_run.get("run_attempt") != run_attempt:
+            blockers.append(
+                "selected workflow run attempt is stale: "
+                f"selected={run_attempt} "
+                f"latest={newest_run.get('run_attempt')!r}"
+            )
     run_status = _server_string(
         workflow_run,
         "status",
@@ -1394,6 +1651,31 @@ def attest_github_source(
         and artifact_updated_at > job_completed_at
     ):
         blockers.append("artifact was updated after the selected workflow job")
+    if artifact_created_at is not None:
+        for candidate in attempt_jobs:
+            if not isinstance(candidate, Mapping) or candidate.get("id") == job_id:
+                continue
+            candidate_status = candidate.get("status")
+            candidate_conclusion = candidate.get("conclusion")
+            candidate_started = _parse_utc(candidate.get("started_at"))
+            candidate_completed = _parse_utc(candidate.get("completed_at"))
+            if (
+                candidate_conclusion == "skipped"
+                and candidate_started is None
+                and candidate_completed is None
+            ):
+                continue
+            if candidate_started is None or candidate_completed is None:
+                blockers.append(
+                    "cannot establish exclusive artifact upload window because "
+                    f"job {candidate.get('id')!r} lacks exact timestamps"
+                )
+                continue
+            if candidate_started <= artifact_created_at <= candidate_completed:
+                blockers.append(
+                    "artifact creation overlaps another workflow job: "
+                    f"selected={job_id} overlapping={candidate.get('id')!r}"
+                )
     artifact_sha256: str | None = None
     artifact_size_bytes: int | None = None
     artifact_bundle: dict[str, object] = {
@@ -1458,6 +1740,34 @@ def attest_github_source(
                 manifest_run = _mapping(manifest.get("run"))
                 manifest_job = _mapping(manifest.get("job"))
                 manifest_artifact = _mapping(manifest.get("artifact"))
+                workflow_ref = _server_string(
+                    manifest_workflow,
+                    "ref",
+                    "artifact manifest workflow",
+                    blockers,
+                )
+                workflow_sha = _server_string(
+                    manifest_workflow,
+                    "sha",
+                    "artifact manifest workflow",
+                    blockers,
+                )
+                workflow_git_ref = _validate_workflow_execution_identity(
+                    repository=normalized_repository,
+                    workflow_path=workflow_path,
+                    pull_number=pull_number,
+                    pull_head_ref=pull_head_ref,
+                    workflow_ref=workflow_ref,
+                    workflow_sha=workflow_sha,
+                    blockers=blockers,
+                )
+                _validate_workflow_reference_target(
+                    adapter,
+                    repository=normalized_repository,
+                    workflow_git_ref=workflow_git_ref,
+                    workflow_sha=workflow_sha,
+                    blockers=blockers,
+                )
                 bundle_bindings = {
                     "authority.scope": (
                         manifest_authority.get("scope"),
@@ -1511,14 +1821,6 @@ def attest_github_source(
                         manifest_workflow.get("path"),
                         workflow_path,
                     ),
-                    "workflow.ref": (
-                        manifest_workflow.get("ref"),
-                        workflow_ref,
-                    ),
-                    "workflow.sha": (
-                        manifest_workflow.get("sha"),
-                        expected_head_sha,
-                    ),
                     "run.id": (manifest_run.get("id"), run_id),
                     "run.attempt": (
                         manifest_run.get("attempt"),
@@ -1557,6 +1859,7 @@ def attest_github_source(
         head_sha=run_head_sha,
         workflow_path=workflow_path,
         workflow_ref=workflow_ref,
+        workflow_sha=workflow_sha,
         workflow_id=workflow_id,
         head_branch=head_branch,
         event=event,
@@ -1621,6 +1924,20 @@ def attest_build_binding(
     report_sha256: str | None = None
     report_snapshot: tuple[int, int, int, int, str] | None = None
     report_eligible = True
+    upstream_commit_policy = _repository_authoritative_upstream_commits(
+        repository_root,
+        expected_commit=expected_repository_commit,
+        git_runner=git_runner,
+    )
+    blockers.extend(
+        _prefixed_blockers("repository upstream commit policy", upstream_commit_policy)
+    )
+    repository_head = _git_head(repository_root, git_runner)
+    if repository_head != expected_repository_commit:
+        blockers.append(
+            "repository build-input HEAD mismatch: "
+            f"expected={expected_repository_commit} actual={repository_head}"
+        )
     if path.name != "voi_build_identity.json":
         blockers.append("build report must be named voi_build_identity.json")
         report_eligible = False
@@ -1661,9 +1978,17 @@ def attest_build_binding(
                         blockers.append(
                             "schema-71 build report contains recorded failures"
                         )
-                    else:
+                    elif upstream_commit_policy.get("ok") is True:
                         try:
-                            config = _build_config_from_report(recorded)
+                            config = _build_config_from_report(
+                                recorded,
+                                expected_micromachine_commit=str(
+                                    upstream_commit_policy["micromachine_commit"]
+                                ),
+                                expected_s2client_commit=str(
+                                    upstream_commit_policy["s2client_commit"]
+                                ),
+                            )
                         except (TypeError, ValueError) as exc:
                             blockers.append(
                                 f"invalid build report configuration: {exc}"
@@ -1702,6 +2027,27 @@ def attest_build_binding(
         blockers.extend(
             _prefixed_blockers("repository build inputs", repository_inputs)
         )
+        if repository_inputs.get("ok") is True:
+            repository_input_material = {
+                "paths": dict(_mapping(repository_inputs.get("paths"))),
+                "upstream_commit_policy": {
+                    "path": upstream_commit_policy.get("path"),
+                    "sha256": upstream_commit_policy.get("sha256"),
+                    "micromachine_commit": upstream_commit_policy.get(
+                        "micromachine_commit"
+                    ),
+                    "s2client_commit": upstream_commit_policy.get("s2client_commit"),
+                },
+            }
+            repository_inputs["upstream_commit_policy"] = repository_input_material[
+                "upstream_commit_policy"
+            ]
+            repository_inputs["digest"] = (
+                "sha256:"
+                + hashlib.sha256(
+                    _canonical_json(repository_input_material)
+                ).hexdigest()
+            )
         build_dir_bound = True
         lexical_build_dir = Path(os.path.abspath(config.micromachine_build_dir))
         lexical_source_dir = Path(os.path.abspath(config.micromachine_dir))
@@ -2454,6 +2800,7 @@ def attest_github_actions_emission_context(
     run_attempt: int,
     expected_head_sha: str,
     workflow_ref: str,
+    workflow_sha: str,
     job_name: str = AUTHORITATIVE_PROVENANCE_JOB_NAME,
 ) -> dict[str, object]:
     """Resolve immutable workflow and current-job IDs before artifact upload."""
@@ -2470,12 +2817,10 @@ def attest_github_actions_emission_context(
             raise ValueError(
                 "expected_head_sha must be an exact lowercase 40-character SHA"
             )
-        if (
-            not isinstance(workflow_ref, str)
-            or not workflow_ref.startswith("refs/heads/")
-            or len(workflow_ref) > 512
-        ):
-            raise ValueError("workflow_ref must be an exact refs/heads reference")
+        if not isinstance(workflow_ref, str) or len(workflow_ref) > 1024:
+            raise ValueError("workflow_ref must be a bounded workflow reference")
+        if not isinstance(workflow_sha, str) or not _SHA40_RE.fullmatch(workflow_sha):
+            raise ValueError("workflow_sha must be an exact lowercase SHA")
         if job_name != AUTHORITATIVE_PROVENANCE_JOB_NAME:
             raise ValueError("job_name must identify the authoritative provenance job")
         repository_record = adapter.get_repository(normalized_repository)
@@ -2501,6 +2846,27 @@ def attest_github_actions_emission_context(
             normalized_repository,
             pull_number,
         )
+        pull_base = _mapping(pull_request.get("base"))
+        pull_base_sha = pull_base.get("sha")
+        if not isinstance(pull_base_sha, str) or not _SHA40_RE.fullmatch(
+            pull_base_sha
+        ):
+            raise ValueError("pull_request.base.sha must be an exact lowercase SHA")
+        closing_issues = adapter.list_pull_request_closing_issues(
+            normalized_repository,
+            pull_number,
+        )
+        comparison = adapter.compare_commits(
+            normalized_repository,
+            base=pull_base_sha,
+            head=expected_head_sha,
+        )
+        workflow_runs = adapter.list_workflow_runs(
+            normalized_repository,
+            workflow_id,
+            branch=str(run.get("head_branch")),
+            event="pull_request",
+        )
         jobs = adapter.list_workflow_run_attempt_jobs(
             normalized_repository,
             run_id,
@@ -2514,6 +2880,7 @@ def attest_github_actions_emission_context(
             workflow_id=None,
             workflow_path=None,
             workflow_ref=workflow_ref,
+            workflow_sha=workflow_sha,
             run_id=run_id,
             run_attempt=run_attempt,
             job_id=None,
@@ -2612,6 +2979,21 @@ def attest_github_actions_emission_context(
     )
     if pull_request.get("merged_at") is not None:
         blockers.append("candidate pull request is already merged")
+    matching_closing_issues = [
+        candidate
+        for candidate in closing_issues
+        if candidate.get("number") == AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER
+        and _mapping(candidate.get("repository")).get("databaseId")
+        == AUTHORITATIVE_REPOSITORY_ID
+        and str(
+            _mapping(candidate.get("repository")).get("nameWithOwner", "")
+        ).casefold()
+        == normalized_repository.casefold()
+    ]
+    if len(matching_closing_issues) != 1:
+        blockers.append(
+            "GitHub closingIssuesReferences does not bind the provenance issue"
+        )
     pull_head = _mapping(pull_request.get("head"))
     _expect_server_value(
         pull_head,
@@ -2638,6 +3020,64 @@ def attest_github_actions_emission_context(
             f"expected={AUTHORITATIVE_REPOSITORY_ID} "
             f"actual={pull_head_repository_id}"
         )
+    pull_base = _mapping(pull_request.get("base"))
+    pull_base_ref = _server_string(
+        pull_base,
+        "ref",
+        "pull_request.base",
+        blockers,
+    )
+    pull_base_sha = _server_string(
+        pull_base,
+        "sha",
+        "pull_request.base",
+        blockers,
+    )
+    if pull_base_ref != AUTHORITATIVE_BASE_BRANCH:
+        blockers.append(
+            "pull request base branch mismatch: "
+            f"expected={AUTHORITATIVE_BASE_BRANCH!r} actual={pull_base_ref!r}"
+        )
+    pull_base_repository = _mapping(pull_base.get("repo"))
+    _expect_server_value(
+        pull_base_repository,
+        "id",
+        AUTHORITATIVE_REPOSITORY_ID,
+        "pull_request.base.repo",
+        blockers,
+    )
+    _expect_server_value(
+        pull_base_repository,
+        "full_name",
+        normalized_repository,
+        "pull_request.base.repo",
+        blockers,
+    )
+    _expect_server_value(
+        _mapping(comparison.get("base_commit")),
+        "sha",
+        pull_base_sha,
+        "comparison.base_commit",
+        blockers,
+    )
+    _expect_server_value(
+        _mapping(comparison.get("merge_base_commit")),
+        "sha",
+        pull_base_sha,
+        "comparison.merge_base_commit",
+        blockers,
+    )
+    _expect_server_value(
+        _mapping(comparison.get("head_commit")),
+        "sha",
+        expected_head_sha,
+        "comparison.head_commit",
+        blockers,
+    )
+    if comparison.get("status") != "ahead":
+        blockers.append(
+            "pull request head must descend from the authenticated main base"
+        )
     _validate_workflow_pull_request_binding(
         run_pull_requests,
         label="workflow_run.pull_requests",
@@ -2652,11 +3092,49 @@ def attest_github_actions_emission_context(
             "workflow run branch differs from pull-request head ref: "
             f"run={head_branch!r} pull={pull_head_ref!r}"
         )
-    if head_branch and workflow_ref != f"refs/heads/{head_branch}":
-        blockers.append(
-            "workflow ref does not match the workflow run head branch: "
-            f"expected=refs/heads/{head_branch} actual={workflow_ref}"
+    workflow_git_ref = _validate_workflow_execution_identity(
+        repository=normalized_repository,
+        workflow_path=workflow_path,
+        pull_number=pull_number,
+        pull_head_ref=pull_head_ref,
+        workflow_ref=workflow_ref,
+        workflow_sha=workflow_sha,
+        blockers=blockers,
+    )
+    _validate_workflow_reference_target(
+        adapter,
+        repository=normalized_repository,
+        workflow_git_ref=workflow_git_ref,
+        workflow_sha=workflow_sha,
+        blockers=blockers,
+    )
+    eligible_runs = [
+        candidate
+        for candidate in workflow_runs
+        if _workflow_run_matches_candidate(
+            candidate,
+            workflow_id=workflow_id,
+            workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            head_sha=expected_head_sha,
+            head_branch=pull_head_ref,
+            repository_id=AUTHORITATIVE_REPOSITORY_ID,
         )
+    ]
+    if not eligible_runs:
+        blockers.append("no applicable workflow run exists for the candidate head")
+    else:
+        newest_run = max(eligible_runs, key=_workflow_run_order_key)
+        if newest_run.get("id") != run_id:
+            blockers.append(
+                "current workflow run is not the latest applicable run: "
+                f"current={run_id} latest={newest_run.get('id')!r}"
+            )
+        elif newest_run.get("run_attempt") != run_attempt:
+            blockers.append(
+                "current workflow attempt is not the latest applicable attempt"
+            )
 
     matching_jobs = [
         candidate
@@ -2735,6 +3213,7 @@ def attest_github_actions_emission_context(
         workflow_id=workflow_id,
         workflow_path=workflow_path,
         workflow_ref=workflow_ref,
+        workflow_sha=workflow_sha,
         run_id=run_id,
         run_attempt=run_attempt,
         job_id=job_id,
@@ -2753,6 +3232,7 @@ def emit_github_actions_pre_live_bundle(
     run_id: int,
     run_attempt: int,
     workflow_ref: str,
+    workflow_sha: str,
     build_report_path: Path | str,
     expected_build_dir: Path | str,
     output_path: Path | str,
@@ -2793,6 +3273,7 @@ def emit_github_actions_pre_live_bundle(
         run_attempt=run_attempt,
         expected_head_sha=expected_commit,
         workflow_ref=workflow_ref,
+        workflow_sha=workflow_sha,
     )
     build_binding = attest_build_binding(
         build_report_path,
@@ -2805,6 +3286,8 @@ def emit_github_actions_pre_live_bundle(
     blockers.extend(_prefixed_blockers("repository", repository_before))
     blockers.extend(_prefixed_blockers("github_context", source_context))
     blockers.extend(_prefixed_blockers("build", build_binding))
+    admitted_build = _capture_admitted_build_snapshots(build_binding)
+    blockers.extend(_prefixed_blockers("admitted_build", admitted_build))
 
     producer_policy: dict[str, object]
     local_execution: dict[str, object]
@@ -2856,6 +3339,13 @@ def emit_github_actions_pre_live_bundle(
                 command_runner=git_runner,
             )
             blockers.extend(_prefixed_blockers("repository_after", repository_after))
+            unchanged_build = _verify_admitted_build_snapshots_unchanged(
+                build_binding,
+                admitted_build,
+            )
+            blockers.extend(
+                _prefixed_blockers("admitted_build_after", unchanged_build)
+            )
 
     bundle_sha256: str | None = None
     bundle_size_bytes: int | None = None
@@ -2871,10 +3361,16 @@ def emit_github_actions_pre_live_bundle(
                 expected_commit=expected_commit,
                 source_context=source_context,
                 build_binding=build_binding,
+                admitted_build=admitted_build,
                 producer_policy=producer_policy,
                 local_execution=local_execution,
             )
-            verification = verify_pre_live_artifact_bundle(bundle)
+            verification = verify_pre_live_artifact_bundle(
+                bundle,
+                admission_snapshot=_admission_snapshot_from_mapping(
+                    admitted_build
+                ),
+            )
             if verification.get("ok") is not True:
                 raise ValueError(
                     "assembled bundle failed verification: "
@@ -2933,26 +3429,93 @@ def _producer_authenticated_runtime_files(
     return authenticated_files, authenticated_digests
 
 
+def _capture_admitted_build_snapshots(
+    build_binding: Mapping[str, object],
+) -> dict[str, object]:
+    blockers: list[str] = []
+    report_payload: bytes | None = None
+    binary_payload: bytes | None = None
+    report_snapshot: tuple[int, int, int, int, str] | None = None
+    binary_snapshot: tuple[int, int, int, int, str] | None = None
+    binary_mode: int | None = None
+    if build_binding.get("ok") is not True:
+        blockers.append("build binding must be accepted before snapshot capture")
+    else:
+        try:
+            report_path = Path(str(build_binding["report_path"]))
+            binary_path = Path(str(build_binding["binary_path"]))
+            report_payload, report_snapshot = _read_regular_file_snapshot(
+                report_path,
+                maximum=MAX_BUILD_REPORT_BYTES,
+            )
+            binary_payload, binary_snapshot = _read_regular_file_snapshot(
+                binary_path,
+                maximum=MAX_GITHUB_ARTIFACT_BYTES,
+            )
+            binary_stat = binary_path.stat()
+            binary_mode = binary_stat.st_mode
+        except (KeyError, OSError, ValueError) as exc:
+            blockers.append(f"could not capture admitted build snapshots: {exc}")
+        else:
+            if report_snapshot[4] != build_binding.get("report_sha256"):
+                blockers.append("admitted report digest differs from build binding")
+            if binary_snapshot[4] != build_binding.get("binary_sha256"):
+                blockers.append("admitted binary digest differs from build binding")
+            if binary_mode is None or binary_mode & 0o111 == 0:
+                blockers.append("admitted binary is not executable")
+    return _component_result(
+        blockers,
+        report_payload=report_payload,
+        binary_payload=binary_payload,
+        report_snapshot=list(report_snapshot) if report_snapshot is not None else None,
+        binary_snapshot=list(binary_snapshot) if binary_snapshot is not None else None,
+        binary_mode=binary_mode,
+    )
+
+
+def _verify_admitted_build_snapshots_unchanged(
+    build_binding: Mapping[str, object],
+    admitted_build: Mapping[str, object],
+) -> dict[str, object]:
+    blockers: list[str] = []
+    if admitted_build.get("ok") is not True:
+        blockers.append("admitted build snapshots were not accepted")
+        return _component_result(blockers)
+    for label, path_key, maximum in (
+        ("report", "report_path", MAX_BUILD_REPORT_BYTES),
+        ("binary", "binary_path", MAX_GITHUB_ARTIFACT_BYTES),
+    ):
+        expected_snapshot = admitted_build.get(f"{label}_snapshot")
+        try:
+            _, current_snapshot = _read_regular_file_snapshot(
+                Path(str(build_binding[path_key])),
+                maximum=maximum,
+            )
+        except (KeyError, OSError) as exc:
+            blockers.append(f"admitted {label} changed or disappeared: {exc}")
+            continue
+        if list(current_snapshot) != expected_snapshot:
+            blockers.append(f"admitted {label} changed after build attestation")
+    return _component_result(blockers)
+
+
 def _assemble_github_actions_pre_live_bundle(
     *,
     repository_root: Path,
     expected_commit: str,
     source_context: Mapping[str, object],
     build_binding: Mapping[str, object],
+    admitted_build: Mapping[str, object],
     producer_policy: Mapping[str, object],
     local_execution: Mapping[str, object],
 ) -> bytes:
-    repository_inputs = _mapping(build_binding.get("repository_inputs"))
     ctest = _mapping(build_binding.get("ctest"))
     local_artifact = _mapping(local_execution.get("output_artifact"))
     repository_input = canonical_json_bytes(
-        {
-            "schema_version": 1,
-            "repository_commit": expected_commit,
-            "build_input_identity": build_binding.get("embedded_build_input_identity"),
-            "repository_inputs_digest": repository_inputs.get("digest"),
-            "paths": dict(_mapping(repository_inputs.get("paths"))),
-        }
+        _repository_input_evidence_payload(
+            build_binding,
+            repository_commit=expected_commit,
+        )
     )
     ctest_bytes = canonical_ctest_evidence_bytes(ctest)
     argv_bytes = canonical_json_bytes(producer_policy.get("argv"))
@@ -2973,14 +3536,16 @@ def _assemble_github_actions_pre_live_bundle(
             "stderr_sha256": local_execution.get("stderr_sha256"),
         }
     )
-    report_path = Path(str(build_binding["report_path"]))
-    binary_path = Path(str(build_binding["binary_path"]))
     policy_path = repository_root / PRODUCER_POLICY_RELATIVE_PATH
     executable_path = Path(cast(list[str], producer_policy["argv"])[0])
     producer_output_path = Path(str(local_artifact["path"]))
+    report_payload = admitted_build.get("report_payload")
+    binary_payload = admitted_build.get("binary_payload")
+    if not isinstance(report_payload, bytes) or not isinstance(binary_payload, bytes):
+        raise ValueError("admitted build payloads are missing")
     members = {
-        "build/voi_build_identity.json": report_path.read_bytes(),
-        "build/MicroMachine": binary_path.read_bytes(),
+        "build/voi_build_identity.json": report_payload,
+        "build/MicroMachine": binary_payload,
         "build/repository-input.json": repository_input,
         "build/ctest-evidence.json": ctest_bytes,
         "producer/policy.json": policy_path.read_bytes(),
@@ -3006,7 +3571,7 @@ def _assemble_github_actions_pre_live_bundle(
         workflow_id=int(source_context["workflow_id"]),
         workflow_path=str(source_context["workflow_path"]),
         workflow_ref=str(source_context["workflow_ref"]),
-        workflow_sha=expected_commit,
+        workflow_sha=str(source_context["workflow_sha"]),
         run_id=int(source_context["run_id"]),
         run_attempt=int(source_context["run_attempt"]),
         job_id=int(source_context["job_id"]),
@@ -3026,7 +3591,48 @@ def _assemble_github_actions_pre_live_bundle(
         producer_output_member="payload/provenance-foundation.json",
         producer_provenance_member="producer/provenance.json",
     )
-    return build_pre_live_artifact_bundle(metadata, members)
+    return build_pre_live_artifact_bundle(
+        metadata,
+        members,
+        admission_snapshot=_admission_snapshot_from_mapping(admitted_build),
+    )
+
+
+def _repository_input_evidence_payload(
+    build_binding: Mapping[str, object],
+    *,
+    repository_commit: object,
+) -> dict[str, object]:
+    repository_inputs = _mapping(build_binding.get("repository_inputs"))
+    return {
+        "schema_version": 1,
+        "repository_commit": repository_commit,
+        "build_input_identity": build_binding.get("embedded_build_input_identity"),
+        "repository_inputs_digest": repository_inputs.get("digest"),
+        "paths": dict(_mapping(repository_inputs.get("paths"))),
+        "upstream_commit_policy": dict(
+            _mapping(repository_inputs.get("upstream_commit_policy"))
+        ),
+    }
+
+
+def _admission_snapshot_from_mapping(
+    admitted_build: Mapping[str, object],
+) -> PreLiveBuildAdmissionSnapshot:
+    report_payload = admitted_build.get("report_payload")
+    binary_payload = admitted_build.get("binary_payload")
+    binary_mode = admitted_build.get("binary_mode")
+    if (
+        not isinstance(report_payload, bytes)
+        or not isinstance(binary_payload, bytes)
+        or type(binary_mode) is not int
+    ):
+        raise ValueError("admitted build snapshot is incomplete")
+    return PreLiveBuildAdmissionSnapshot(
+        build_report_bytes=report_payload,
+        binary_bytes=binary_payload,
+        binary_mode=binary_mode,
+    )
 
 
 def canonical_replay_digest(
@@ -3061,6 +3667,7 @@ def canonical_replay_digest(
         "artifact_database_id": source_ids.get("artifact_database_id"),
         "workflow_path": github_source.get("workflow_path"),
         "workflow_ref": github_source.get("workflow_ref"),
+        "workflow_sha": github_source.get("workflow_sha"),
         "head_sha": github_source.get("head_sha"),
         "artifact_sha256": github_source.get("artifact_sha256"),
         "build_identity": build_binding.get("current_identity"),
@@ -3085,6 +3692,7 @@ def canonical_replay_digest(
         "artifact_database_id",
         "workflow_path",
         "workflow_ref",
+        "workflow_sha",
         "head_sha",
         "artifact_sha256",
         "build_identity",
@@ -3122,17 +3730,12 @@ def attest_artifact_local_bindings(
     build = _mapping(manifest.get("build"))
     producer = _mapping(manifest.get("producer"))
     artifact = _mapping(manifest.get("artifact"))
-    repository_inputs = _mapping(build_binding.get("repository_inputs"))
     ctest = _mapping(build_binding.get("ctest"))
-    paths = _mapping(repository_inputs.get("paths"))
     local_artifact = _mapping(local_execution.get("output_artifact"))
-    repository_input_payload = {
-        "schema_version": 1,
-        "repository_commit": build_binding.get("repository_commit"),
-        "build_input_identity": build_binding.get("embedded_build_input_identity"),
-        "repository_inputs_digest": repository_inputs.get("digest"),
-        "paths": dict(paths),
-    }
+    repository_input_payload = _repository_input_evidence_payload(
+        build_binding,
+        repository_commit=build_binding.get("repository_commit"),
+    )
     repository_input_bytes = canonical_json_bytes(repository_input_payload)
     argv_bytes = canonical_json_bytes(producer_policy.get("argv"))
     try:
@@ -3900,8 +4503,73 @@ def require_release_authority(
     )
 
 
+def _repository_authoritative_upstream_commits(
+    repository_root: Path,
+    *,
+    expected_commit: str,
+    git_runner: CommandRunner,
+) -> dict[str, object]:
+    relative_path = Path(
+        "integrations/micromachine/scripts/build_macos_local.sh"
+    )
+    blockers: list[str] = []
+    payload = b""
+    try:
+        completed = git_runner(
+            [
+                TRUSTED_GIT_EXECUTABLE,
+                "show",
+                f"{expected_commit}:{relative_path.as_posix()}",
+            ],
+            cwd=str(repository_root),
+            check=False,
+            capture_output=True,
+            text=False,
+            shell=False,
+            env=dict(SANITIZED_GIT_ENV),
+        )
+    except Exception as exc:
+        blockers.append(f"could not read committed build script: {exc}")
+    else:
+        if int(completed.returncode) != 0:
+            blockers.append("committed build script is missing")
+        else:
+            payload = _as_bytes(completed.stdout)
+    commits: dict[str, str] = {}
+    if payload:
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            blockers.append("committed build script is not UTF-8")
+        else:
+            for name, commit in _BUILD_SCRIPT_UPSTREAM_COMMIT_RE.findall(text):
+                key = (
+                    "micromachine_commit"
+                    if name == "MICROMACHINE_COMMIT"
+                    else "s2client_commit"
+                )
+                if key in commits:
+                    blockers.append(f"committed build script repeats {name}")
+                commits[key] = commit
+    for key in ("micromachine_commit", "s2client_commit"):
+        if key not in commits:
+            blockers.append(
+                f"committed build script does not pin {key.replace('_commit', '')}"
+            )
+    return _component_result(
+        blockers,
+        path=relative_path.as_posix(),
+        sha256=hashlib.sha256(payload).hexdigest() if payload else None,
+        micromachine_commit=commits.get("micromachine_commit"),
+        s2client_commit=commits.get("s2client_commit"),
+    )
+
+
 def _build_config_from_report(
     report: Mapping[str, object],
+    *,
+    expected_micromachine_commit: str,
+    expected_s2client_commit: str,
 ) -> MicroMachineBuildIdentityConfig:
     paths = report.get("paths")
     expected = report.get("expected")
@@ -3917,10 +4585,20 @@ def _build_config_from_report(
         raise ValueError("expected micromachine commit must be a lowercase SHA")
     if not isinstance(s2client_commit, str) or not _SHA40_RE.fullmatch(s2client_commit):
         raise ValueError("expected s2client commit must be a lowercase SHA")
+    if micromachine_commit != expected_micromachine_commit:
+        raise ValueError(
+            "expected micromachine commit is not repository-authoritative: "
+            f"expected={expected_micromachine_commit} actual={micromachine_commit}"
+        )
+    if s2client_commit != expected_s2client_commit:
+        raise ValueError(
+            "expected s2client commit is not repository-authoritative: "
+            f"expected={expected_s2client_commit} actual={s2client_commit}"
+        )
 
     values: dict[str, object] = {
-        "micromachine_commit": micromachine_commit,
-        "s2client_commit": s2client_commit,
+        "micromachine_commit": expected_micromachine_commit,
+        "s2client_commit": expected_s2client_commit,
     }
     non_path_fields = {"micromachine_commit", "s2client_commit"}
     for field in fields(MicroMachineBuildIdentityConfig):
@@ -5194,7 +5872,8 @@ def _main(argv: Sequence[str]) -> int:
             repository = os.environ["GITHUB_REPOSITORY"]
             repository_dir = os.environ["GITHUB_WORKSPACE"]
             expected_commit = os.environ["VOI_RELEASE_COMMIT"]
-            workflow_ref = os.environ["VOI_WORKFLOW_REF"]
+            workflow_ref = os.environ["GITHUB_WORKFLOW_REF"]
+            workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
             run_id = int(os.environ["GITHUB_RUN_ID"])
             run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
             token = os.environ["GITHUB_TOKEN"]
@@ -5225,6 +5904,7 @@ def _main(argv: Sequence[str]) -> int:
             run_id=run_id,
             run_attempt=run_attempt,
             workflow_ref=workflow_ref,
+            workflow_sha=workflow_sha,
             build_report_path=argv[2],
             expected_build_dir=argv[3],
             output_path=argv[1],
@@ -5350,6 +6030,139 @@ def _validate_workflow_pull_request_binding(
         f"{label}.head.repo",
         blockers,
     )
+
+
+def _workflow_run_matches_candidate(
+    record: Mapping[str, object],
+    *,
+    workflow_id: int,
+    workflow_path: str,
+    pull_id: int | None,
+    pull_number: int,
+    head_sha: str,
+    head_branch: str | None,
+    repository_id: int,
+) -> bool:
+    try:
+        _positive_id(record.get("id"), "workflow_run.id")
+        _positive_id(record.get("run_number"), "workflow_run.run_number")
+        _positive_id(record.get("run_attempt"), "workflow_run.run_attempt")
+    except ValueError:
+        return False
+    if (
+        record.get("workflow_id") != workflow_id
+        or record.get("path") != workflow_path
+        or record.get("event") != "pull_request"
+        or record.get("head_sha") != head_sha
+        or record.get("head_branch") != head_branch
+    ):
+        return False
+    head_repository = _mapping(record.get("head_repository"))
+    if head_repository.get("id") != repository_id:
+        return False
+    pull_requests = record.get("pull_requests")
+    if not isinstance(pull_requests, list) or len(pull_requests) != 1:
+        return False
+    pull = pull_requests[0]
+    if not isinstance(pull, Mapping):
+        return False
+    pull_head = _mapping(pull.get("head"))
+    pull_repository = _mapping(pull_head.get("repo"))
+    return (
+        pull.get("id") == pull_id
+        and pull.get("number") == pull_number
+        and pull_head.get("sha") == head_sha
+        and pull_repository.get("id") == repository_id
+    )
+
+
+def _workflow_run_order_key(record: Mapping[str, object]) -> tuple[int, int, int]:
+    return (
+        int(record["run_number"]),
+        int(record["run_attempt"]),
+        int(record["id"]),
+    )
+
+
+def _validate_workflow_execution_identity(
+    *,
+    repository: str,
+    workflow_path: str | None,
+    pull_number: int,
+    pull_head_ref: str | None,
+    workflow_ref: str | None,
+    workflow_sha: str | None,
+    blockers: list[str],
+) -> str | None:
+    if workflow_path is None or pull_head_ref is None:
+        blockers.append(
+            "workflow execution identity cannot be checked without path and head ref"
+        )
+        return None
+    expected_prefix = f"{repository}/{workflow_path}@"
+    allowed_refs = {
+        f"refs/pull/{pull_number}/merge",
+        f"refs/heads/{pull_head_ref}",
+        f"refs/heads/{AUTHORITATIVE_BASE_BRANCH}",
+    }
+    if (
+        not isinstance(workflow_ref, str)
+        or not workflow_ref.startswith(expected_prefix)
+        or workflow_ref.removeprefix(expected_prefix) not in allowed_refs
+    ):
+        blockers.append(
+            "workflow execution ref is not a runner-authenticated candidate ref: "
+            f"actual={workflow_ref!r}"
+        )
+        workflow_git_ref = None
+    else:
+        workflow_git_ref = workflow_ref.removeprefix(expected_prefix)
+    if not isinstance(workflow_sha, str) or not _SHA40_RE.fullmatch(workflow_sha):
+        blockers.append(
+            "workflow execution SHA is not an exact runner-authenticated commit"
+        )
+    return workflow_git_ref
+
+
+def _validate_workflow_reference_target(
+    adapter: GitHubSourceAdapter,
+    *,
+    repository: str,
+    workflow_git_ref: str | None,
+    workflow_sha: str | None,
+    blockers: list[str],
+) -> None:
+    if workflow_git_ref is None or not isinstance(workflow_sha, str):
+        return
+    if _SHA40_RE.fullmatch(workflow_sha) is None:
+        return
+    try:
+        reference = adapter.get_git_reference(
+            repository,
+            ref=workflow_git_ref,
+        )
+    except Exception as exc:
+        blockers.append(
+            "workflow Git reference lookup failed closed: "
+            f"ref={workflow_git_ref!r} error={exc}"
+        )
+        return
+    observed_ref, observed_sha, target_type = _git_reference_identity(reference)
+    if observed_ref != workflow_git_ref:
+        blockers.append(
+            "workflow Git reference identity mismatch: "
+            f"expected={workflow_git_ref!r} actual={observed_ref!r}"
+        )
+    if target_type != "commit":
+        blockers.append(
+            "workflow Git reference does not target a commit: "
+            f"actual={target_type!r}"
+        )
+    if observed_sha != workflow_sha:
+        blockers.append(
+            "workflow SHA differs from the authenticated Git reference target: "
+            f"expected={observed_sha!r} actual={workflow_sha!r}"
+        )
 
 
 def _mapping(value: object) -> Mapping[str, object]:

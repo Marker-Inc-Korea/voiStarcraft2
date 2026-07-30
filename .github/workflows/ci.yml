@@ -63,7 +63,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-          VOI_WORKFLOW_REF: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || format('refs/heads/{0}', github.ref_name) }}
         run: |
           mkdir -p "${RUNNER_TEMP}/pre-live"
           python3 -B -m starcraft_commander.micromachine_pre_live_provenance \

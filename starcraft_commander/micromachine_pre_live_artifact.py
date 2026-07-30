@@ -66,6 +66,13 @@ _ALLOWED_COMPRESSION: Final[frozenset[int]] = frozenset(
 )
 _ALLOWED_GENERAL_PURPOSE_FLAGS: Final[int] = 0x0800
 _REGULAR_FILE_MODE: Final[int] = stat.S_IFREG | 0o644
+_EXECUTABLE_FILE_MODE: Final[int] = stat.S_IFREG | 0o755
+_CANONICAL_FILE_MODES: Final[frozenset[int]] = frozenset(
+    {_REGULAR_FILE_MODE, _EXECUTABLE_FILE_MODE}
+)
+_CANONICAL_EXTERNAL_ATTRS: Final[frozenset[int]] = frozenset(
+    mode << 16 for mode in _CANONICAL_FILE_MODES
+)
 _LOCAL_FILE_HEADER: Final[struct.Struct] = struct.Struct("<4s5H3L2H")
 _CENTRAL_DIRECTORY_HEADER: Final[struct.Struct] = struct.Struct("<4s6H3L5H2L")
 _END_CENTRAL_DIRECTORY: Final[struct.Struct] = struct.Struct("<4s4H2LH")
@@ -136,6 +143,24 @@ _PRODUCER_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _MEMBER_KEYS: Final[frozenset[str]] = frozenset({"name", "sha256", "size_bytes"})
+_REPOSITORY_INPUT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "repository_commit",
+        "build_input_identity",
+        "repository_inputs_digest",
+        "paths",
+        "upstream_commit_policy",
+    }
+)
+_UPSTREAM_COMMIT_POLICY_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "path",
+        "sha256",
+        "micromachine_commit",
+        "s2client_commit",
+    }
+)
 _CTEST_EVIDENCE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "schema_version",
@@ -245,6 +270,39 @@ MicroMachinePreLiveArtifactMetadata = PreLiveArtifactMetadata
 MicroMachinePreLiveArtifactLimits = PreLiveArtifactLimits
 
 
+@dataclass(frozen=True)
+class PreLiveBuildAdmissionSnapshot:
+    """Immutable bytes and source mode accepted by schema-71 admission."""
+
+    build_report_bytes: bytes
+    binary_bytes: bytes
+    binary_mode: int
+
+    def __post_init__(self) -> None:
+        for field_name in ("build_report_bytes", "binary_bytes"):
+            value = getattr(self, field_name)
+            if not isinstance(value, (bytes, bytearray, memoryview)):
+                raise TypeError(f"{field_name} must be bytes-like")
+            object.__setattr__(self, field_name, bytes(value))
+        if type(self.binary_mode) is not int:
+            raise TypeError("binary_mode must be an integer stat mode")
+        if stat.S_IFMT(self.binary_mode) != stat.S_IFREG:
+            raise ValueError("admitted MicroMachine binary must be a regular file")
+        if self.binary_mode & 0o111 == 0:
+            raise ValueError("admitted MicroMachine binary must be executable")
+
+    @property
+    def build_report_sha256(self) -> str:
+        return hashlib.sha256(self.build_report_bytes).hexdigest()
+
+    @property
+    def binary_sha256(self) -> str:
+        return hashlib.sha256(self.binary_bytes).hexdigest()
+
+
+MicroMachinePreLiveBuildAdmissionSnapshot = PreLiveBuildAdmissionSnapshot
+
+
 class DuplicateJSONKeyError(ValueError):
     """Raised when JSON contains an ambiguous duplicate object key."""
 
@@ -279,16 +337,24 @@ def build_pre_live_artifact_bundle(
     members: Mapping[str, bytes | bytearray | memoryview],
     *,
     limits: PreLiveArtifactLimits | None = None,
+    admission_snapshot: PreLiveBuildAdmissionSnapshot | None = None,
 ) -> bytes:
     """Build deterministic ZIP bytes from trusted metadata and payload bytes."""
 
     effective_limits = limits or PreLiveArtifactLimits()
+    _require_admission_snapshot_type(admission_snapshot)
     normalized_metadata = _coerce_metadata(metadata)
     metadata_blockers = _validate_metadata(normalized_metadata)
     if metadata_blockers:
         raise ValueError(_format_builder_blockers(metadata_blockers))
     normalized_members = _normalize_builder_members(members, effective_limits)
     manifest = _build_manifest(normalized_metadata, normalized_members)
+    if admission_snapshot is not None:
+        _validate_builder_admission_snapshot(
+            normalized_metadata,
+            normalized_members,
+            admission_snapshot,
+        )
     manifest_bytes = canonical_json_bytes(manifest)
     if len(manifest_bytes) > effective_limits.max_manifest_bytes:
         raise ValueError("canonical manifest exceeds max_manifest_bytes")
@@ -316,6 +382,11 @@ def build_pre_live_artifact_bundle(
                 archive,
                 name,
                 normalized_members[name],
+                mode=(
+                    _EXECUTABLE_FILE_MODE
+                    if name == normalized_metadata.binary_member
+                    else _REGULAR_FILE_MODE
+                ),
             )
     bundle = output.getvalue()
     if len(bundle) > effective_limits.max_archive_bytes:
@@ -324,12 +395,13 @@ def build_pre_live_artifact_bundle(
     verification = verify_pre_live_artifact_bundle(
         bundle,
         limits=effective_limits,
+        admission_snapshot=admission_snapshot,
     )
     if verification["ok"] is not True:
         blockers = cast(list[Mapping[str, object]], verification["blockers"])
         raise ValueError(
             "constructed bundle failed verification: "
-            + ", ".join(str(item.get("code")) for item in blockers)
+            + _format_builder_blockers(blockers)
         )
     return bundle
 
@@ -339,10 +411,12 @@ def verify_pre_live_artifact_bundle(
     *,
     limits: PreLiveArtifactLimits | None = None,
     caller_claims: Mapping[str, object] | None = None,
+    admission_snapshot: PreLiveBuildAdmissionSnapshot | None = None,
 ) -> dict[str, object]:
     """Verify a bundle from bytes without trusting caller-supplied status."""
 
     effective_limits = limits or PreLiveArtifactLimits()
+    _require_admission_snapshot_type(admission_snapshot)
     blockers: list[dict[str, object]] = []
     manifest: dict[str, object] | None = None
     manifest_evidence: dict[str, object] = {
@@ -545,6 +619,20 @@ def verify_pre_live_artifact_bundle(
                     caller_claims,
                 )
 
+            _validate_archive_member_modes(
+                info_by_name,
+                manifest,
+                blockers,
+            )
+            if blockers:
+                return _verification_result(
+                    blockers,
+                    manifest,
+                    manifest_evidence,
+                    member_evidence,
+                    caller_claims,
+                )
+
             build = _mapping(manifest.get("build"))
             producer = _mapping(manifest.get("producer"))
             build_report_name = cast(str, build["report_member"])
@@ -616,6 +704,13 @@ def verify_pre_live_artifact_bundle(
                 evidence_by_name,
                 blockers,
             )
+            if admission_snapshot is not None:
+                _validate_admission_snapshot_binding(
+                    manifest,
+                    evidence_by_name,
+                    admission_snapshot,
+                    blockers,
+                )
             report_bytes = captured_members.get(build_report_name)
             if report_bytes is not None:
                 _validate_build_report_binding(
@@ -673,13 +768,16 @@ def verify_downloaded_pre_live_artifact(
     *,
     limits: PreLiveArtifactLimits | None = None,
     bundle_member_name: str = GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+    admission_snapshot: PreLiveBuildAdmissionSnapshot | None = None,
 ) -> dict[str, object]:
     """Verify direct bundle bytes or GitHub's one-file artifact ZIP wrapper."""
 
     effective_limits = limits or PreLiveArtifactLimits()
+    _require_admission_snapshot_type(admission_snapshot)
     direct = verify_pre_live_artifact_bundle(
         artifact,
         limits=effective_limits,
+        admission_snapshot=admission_snapshot,
     )
     if direct["ok"] is True:
         return {
@@ -830,6 +928,7 @@ def verify_downloaded_pre_live_artifact(
     inner = verify_pre_live_artifact_bundle(
         inner_bundle,
         limits=effective_limits,
+        admission_snapshot=admission_snapshot,
     )
     delivery = {
         "kind": "github_artifact_zip",
@@ -1138,32 +1237,24 @@ def _validate_metadata(
         metadata.workflow_ref,
         "$.workflow.ref",
         blockers,
-        maximum=512,
-        prefix="refs/",
+        maximum=1024,
     )
-    if (
-        isinstance(metadata.pull_request_head_ref, str)
-        and isinstance(metadata.workflow_ref, str)
-        and metadata.workflow_ref != f"refs/heads/{metadata.pull_request_head_ref}"
+    expected_workflow_ref_prefix = (
+        f"{metadata.repository_full_name}/{metadata.workflow_path}@refs/"
+    )
+    if isinstance(metadata.workflow_ref, str) and (
+        not metadata.workflow_ref.startswith(expected_workflow_ref_prefix)
+        or len(metadata.workflow_ref) == len(expected_workflow_ref_prefix)
     ):
         _add_blocker(
             blockers,
-            "authority_workflow_ref_mismatch",
+            "workflow_ref_binding_mismatch",
             "$.workflow.ref",
-            "workflow ref must equal the pull-request head ref",
+            "workflow ref must bind the exact repository and workflow path",
+            expected_prefix=expected_workflow_ref_prefix,
+            actual=metadata.workflow_ref,
         )
     _require_sha40(metadata.workflow_sha, "$.workflow.sha", blockers)
-    if (
-        _SHA40_RE.fullmatch(metadata.repository_commit) is not None
-        and _SHA40_RE.fullmatch(metadata.workflow_sha) is not None
-        and metadata.repository_commit != metadata.workflow_sha
-    ):
-        _add_blocker(
-            blockers,
-            "repository_workflow_sha_mismatch",
-            "$.workflow.sha",
-            "workflow SHA must equal the exact repository commit",
-        )
     _require_positive_int(metadata.run_id, "$.run.id", blockers)
     _require_positive_int(metadata.run_attempt, "$.run.attempt", blockers)
     _require_positive_int(metadata.job_id, "$.job.id", blockers)
@@ -1284,6 +1375,50 @@ def _normalize_builder_members(
     return normalized
 
 
+def _require_admission_snapshot_type(
+    snapshot: PreLiveBuildAdmissionSnapshot | None,
+) -> None:
+    if snapshot is not None and not isinstance(
+        snapshot,
+        PreLiveBuildAdmissionSnapshot,
+    ):
+        raise TypeError(
+            "admission_snapshot must be PreLiveBuildAdmissionSnapshot or None"
+        )
+
+
+def _validate_builder_admission_snapshot(
+    metadata: PreLiveArtifactMetadata,
+    members: Mapping[str, bytes],
+    snapshot: PreLiveBuildAdmissionSnapshot,
+) -> None:
+    admitted_roles = (
+        (
+            "schema-71 build report",
+            metadata.build_report_member,
+            snapshot.build_report_bytes,
+            snapshot.build_report_sha256,
+        ),
+        (
+            "MicroMachine binary",
+            metadata.binary_member,
+            snapshot.binary_bytes,
+            snapshot.binary_sha256,
+        ),
+    )
+    for role, name, admitted_bytes, admitted_sha256 in admitted_roles:
+        payload = members[name]
+        payload_sha256 = hashlib.sha256(payload).hexdigest()
+        if (
+            len(payload) != len(admitted_bytes)
+            or not hmac.compare_digest(payload_sha256, admitted_sha256)
+            or not hmac.compare_digest(payload, admitted_bytes)
+        ):
+            raise ValueError(
+                f"{role} differs from the immutable admission snapshot"
+            )
+
+
 def _build_manifest(
     metadata: PreLiveArtifactMetadata,
     members: Mapping[str, bytes],
@@ -1395,13 +1530,15 @@ def _write_deterministic_member(
     archive: zipfile.ZipFile,
     name: str,
     payload: bytes,
+    *,
+    mode: int = _REGULAR_FILE_MODE,
 ) -> None:
     info = zipfile.ZipInfo(name, date_time=DETERMINISTIC_ZIP_TIMESTAMP)
     info.compress_type = zipfile.ZIP_STORED
     info.create_system = 3
     info.create_version = 20
     info.extract_version = 20
-    info.external_attr = _REGULAR_FILE_MODE << 16
+    info.external_attr = mode << 16
     info.internal_attr = 0
     info.extra = b""
     info.comment = b""
@@ -1574,7 +1711,7 @@ def _validate_central_directory(
             and comment_size == 0
             and disk_number == 0
             and internal_attr == 0
-            and external_attr == _REGULAR_FILE_MODE << 16
+            and external_attr in _CANONICAL_EXTERNAL_ATTRS
             and local_offset == info.header_offset
             and raw_filename == canonical_name
             and b"\x00" not in raw_filename
@@ -1746,7 +1883,8 @@ def _preflight_archive(
             and info.reserved == 0
             and info.flag_bits == 0
             and info.compress_type == zipfile.ZIP_STORED
-            and info.external_attr == _REGULAR_FILE_MODE << 16
+            and ((info.external_attr >> 16) & 0xFFFF)
+            in _CANONICAL_FILE_MODES
             and info.internal_attr == 0
             and info.volume == 0
         )
@@ -1889,6 +2027,7 @@ def _read_member(
         error = str(exc)
     evidence: dict[str, object] = {
         "name": info.filename,
+        "mode": (info.external_attr >> 16) & 0xFFFF,
         "compression": info.compress_type,
         "compressed_size_bytes": info.compress_size,
         "declared_uncompressed_size_bytes": info.file_size,
@@ -2138,33 +2277,30 @@ def _validate_manifest(
         workflow.get("ref"),
         "$.workflow.ref",
         blockers,
-        maximum=512,
-        prefix="refs/",
+        maximum=1024,
+    )
+    expected_workflow_ref_prefix = (
+        f"{_string(repository.get('full_name'))}/{_string(workflow_path)}@refs/"
     )
     if (
-        isinstance(authority_pull_request.get("head_ref"), str)
-        and isinstance(workflow.get("ref"), str)
-        and workflow.get("ref")
-        != f"refs/heads/{authority_pull_request.get('head_ref')}"
+        isinstance(workflow.get("ref"), str)
+        and (
+            not _string(workflow.get("ref")).startswith(
+                expected_workflow_ref_prefix
+            )
+            or len(_string(workflow.get("ref")))
+            == len(expected_workflow_ref_prefix)
+        )
     ):
         _add_blocker(
             blockers,
-            "authority_workflow_ref_mismatch",
+            "workflow_ref_binding_mismatch",
             "$.workflow.ref",
-            "workflow ref must equal the pull-request head ref",
+            "workflow ref must bind the exact repository and workflow path",
+            expected_prefix=expected_workflow_ref_prefix,
+            actual=workflow.get("ref"),
         )
     _require_sha40(workflow.get("sha"), "$.workflow.sha", blockers)
-    if (
-        isinstance(repository.get("commit_sha"), str)
-        and isinstance(workflow.get("sha"), str)
-        and repository.get("commit_sha") != workflow.get("sha")
-    ):
-        _add_blocker(
-            blockers,
-            "repository_workflow_sha_mismatch",
-            "$.workflow.sha",
-            "workflow SHA must equal the exact repository commit",
-        )
     _require_positive_int(run.get("id"), "$.run.id", blockers)
     _require_positive_int(run.get("attempt"), "$.run.attempt", blockers)
     _require_positive_int(job.get("id"), "$.job.id", blockers)
@@ -2510,6 +2646,87 @@ def _validate_role_bindings(
             )
 
 
+def _validate_archive_member_modes(
+    info_by_name: Mapping[str, zipfile.ZipInfo],
+    manifest: Mapping[str, object],
+    blockers: list[dict[str, object]],
+) -> None:
+    build = _mapping(manifest.get("build"))
+    binary_name = cast(str, build["binary_member"])
+    for name, info in info_by_name.items():
+        actual_mode = (info.external_attr >> 16) & 0xFFFF
+        expected_mode = (
+            _EXECUTABLE_FILE_MODE if name == binary_name else _REGULAR_FILE_MODE
+        )
+        if actual_mode == expected_mode:
+            continue
+        if name == binary_name:
+            _add_blocker(
+                blockers,
+                "build_binary_not_executable",
+                f"$.archive[{name!r}].mode",
+                "MicroMachine binary must have deterministic executable ZIP mode",
+                expected=oct(expected_mode),
+                actual=oct(actual_mode),
+            )
+        else:
+            _add_blocker(
+                blockers,
+                "unexpected_executable_entry",
+                f"$.archive[{name!r}].mode",
+                "non-binary ZIP members must have deterministic regular-file mode",
+                expected=oct(expected_mode),
+                actual=oct(actual_mode),
+            )
+
+
+def _validate_admission_snapshot_binding(
+    manifest: Mapping[str, object],
+    evidence: Mapping[str, Mapping[str, object]],
+    snapshot: PreLiveBuildAdmissionSnapshot,
+    blockers: list[dict[str, object]],
+) -> None:
+    build = _mapping(manifest.get("build"))
+    admitted_roles = (
+        (
+            "admitted_build_report_mismatch",
+            "$.build.report_sha256",
+            cast(str, build["report_member"]),
+            snapshot.build_report_sha256,
+            len(snapshot.build_report_bytes),
+            "bundled build report does not match the admitted report bytes",
+        ),
+        (
+            "admitted_build_binary_mismatch",
+            "$.build.binary_sha256",
+            cast(str, build["binary_member"]),
+            snapshot.binary_sha256,
+            len(snapshot.binary_bytes),
+            "bundled MicroMachine binary does not match the admitted binary bytes",
+        ),
+    )
+    for code, path, name, expected_digest, expected_size, message in admitted_roles:
+        observed = evidence.get(name, {})
+        actual_digest = observed.get("sha256")
+        actual_size = observed.get("size_bytes")
+        if (
+            not isinstance(actual_digest, str)
+            or not hmac.compare_digest(actual_digest, expected_digest)
+            or actual_size != expected_size
+        ):
+            _add_blocker(
+                blockers,
+                code,
+                path,
+                message,
+                name=name,
+                expected_sha256=expected_digest,
+                actual_sha256=actual_digest,
+                expected_size_bytes=expected_size,
+                actual_size_bytes=actual_size,
+            )
+
+
 def _validate_build_report_binding(
     report_bytes: bytes,
     manifest: Mapping[str, object],
@@ -2742,15 +2959,7 @@ def _validate_repository_input_binding(
         )
     _require_exact_keys(
         payload,
-        frozenset(
-            {
-                "schema_version",
-                "repository_commit",
-                "build_input_identity",
-                "repository_inputs_digest",
-                "paths",
-            }
-        ),
+        _REPOSITORY_INPUT_KEYS,
         "$.repository_input",
         blockers,
     )
@@ -2783,8 +2992,36 @@ def _validate_repository_input_binding(
             "repository input paths must be a non-empty object",
         )
         return
+    upstream_commit_policy = _schema_mapping(
+        payload.get("upstream_commit_policy"),
+        "$.repository_input.upstream_commit_policy",
+        _UPSTREAM_COMMIT_POLICY_KEYS,
+        blockers,
+    )
+    _require_equal(
+        upstream_commit_policy.get("path"),
+        "integrations/micromachine/scripts/build_macos_local.sh",
+        "$.repository_input.upstream_commit_policy.path",
+        blockers,
+    )
+    _require_sha256(
+        upstream_commit_policy.get("sha256"),
+        "$.repository_input.upstream_commit_policy.sha256",
+        blockers,
+    )
+    for key in ("micromachine_commit", "s2client_commit"):
+        _require_sha40(
+            upstream_commit_policy.get(key),
+            f"$.repository_input.upstream_commit_policy.{key}",
+            blockers,
+        )
+    digest_material = {
+        "paths": dict(paths),
+        "upstream_commit_policy": dict(upstream_commit_policy),
+    }
     expected_digest = (
-        "sha256:" + hashlib.sha256(canonical_json_bytes(paths)).hexdigest()
+        "sha256:"
+        + hashlib.sha256(canonical_json_bytes(digest_material)).hexdigest()
     )
     _require_equal(
         payload.get("repository_inputs_digest"),

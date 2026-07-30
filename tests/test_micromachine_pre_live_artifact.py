@@ -6,8 +6,10 @@ from dataclasses import replace
 import hashlib
 import io
 import json
+from pathlib import Path
 import stat
 import struct
+import tempfile
 import unittest
 import warnings
 import zipfile
@@ -23,6 +25,7 @@ from starcraft_commander.micromachine_pre_live_artifact import (
     PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
     PreLiveArtifactLimits,
     PreLiveArtifactMetadata,
+    PreLiveBuildAdmissionSnapshot,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
     canonical_json_bytes,
@@ -35,7 +38,11 @@ REPOSITORY = "Marker-Inc-Korea/voiStarcraft2"
 COMMIT = "a" * 40
 REPORT_IDENTITY = "sha256:" + ("b" * 64)
 WORKFLOW_PATH = ".github/workflows/pre-live.yml"
-WORKFLOW_REF = "refs/heads/issue-138-authenticated-prelive-provenance"
+WORKFLOW_REF = (
+    f"{REPOSITORY}/{WORKFLOW_PATH}"
+    "@refs/heads/issue-138-authenticated-prelive-provenance"
+)
+WORKFLOW_SHA = "e" * 40
 
 
 class PreLiveArtifactBundleTest(unittest.TestCase):
@@ -48,6 +55,16 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 "sha256": "c" * 64,
             }
         }
+        upstream_commit_policy = {
+            "path": "integrations/micromachine/scripts/build_macos_local.sh",
+            "sha256": "f" * 64,
+            "micromachine_commit": "1" * 40,
+            "s2client_commit": "2" * 40,
+        }
+        repository_input_material = {
+            "paths": repository_input_paths,
+            "upstream_commit_policy": upstream_commit_policy,
+        }
         self.repository_input_identity = "sha256:" + ("d" * 64)
         self.repository_input = canonical_json_bytes(
             {
@@ -55,8 +72,9 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 "repository_commit": COMMIT,
                 "build_input_identity": self.repository_input_identity,
                 "repository_inputs_digest": "sha256:"
-                + sha256(canonical_json_bytes(repository_input_paths)),
+                + sha256(canonical_json_bytes(repository_input_material)),
                 "paths": repository_input_paths,
+                "upstream_commit_policy": upstream_commit_policy,
             }
         )
         self.binary = b"\x7fELF-micromachine-production-binary"
@@ -81,7 +99,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             workflow_id=9001,
             workflow_path=WORKFLOW_PATH,
             workflow_ref=WORKFLOW_REF,
-            workflow_sha=COMMIT,
+            workflow_sha=WORKFLOW_SHA,
             run_id=10001,
             run_attempt=2,
             job_id=20001,
@@ -102,9 +120,15 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             producer_provenance_member="producer/provenance.json",
         )
         self.members = self.make_members()
+        self.admission_snapshot = PreLiveBuildAdmissionSnapshot(
+            build_report_bytes=self.members[self.metadata.build_report_member],
+            binary_bytes=self.members[self.metadata.binary_member],
+            binary_mode=stat.S_IFREG | 0o755,
+        )
         self.bundle = build_pre_live_artifact_bundle(
             self.metadata,
             self.members,
+            admission_snapshot=self.admission_snapshot,
         )
 
     def make_members(self) -> dict[str, bytes]:
@@ -180,10 +204,12 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
         rebuilt = build_pre_live_artifact_bundle(
             as_nested_metadata(self.metadata),
             dict(reversed(list(self.members.items()))),
+            admission_snapshot=self.admission_snapshot,
         )
         report = verify_pre_live_artifact_bundle(
             self.bundle,
             caller_claims={"ok": False, "status": "failure"},
+            admission_snapshot=self.admission_snapshot,
         )
 
         self.assertEqual(self.bundle, rebuilt)
@@ -219,6 +245,15 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 self.assertEqual(b"", info.extra)
                 self.assertEqual(b"", info.comment)
                 self.assertEqual(stat.S_IFREG, stat.S_IFMT(info.external_attr >> 16))
+                expected_permissions = (
+                    0o755
+                    if info.filename == self.metadata.binary_member
+                    else 0o644
+                )
+                self.assertEqual(
+                    expected_permissions,
+                    (info.external_attr >> 16) & 0o777,
+                )
 
             manifest_bytes = archive.read(PRE_LIVE_ARTIFACT_MANIFEST_NAME)
             manifest = json.loads(manifest_bytes)
@@ -248,6 +283,15 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 manifest["repository"]["database_id"],
             )
             self.assertEqual(
+                {
+                    "id": self.metadata.workflow_id,
+                    "path": WORKFLOW_PATH,
+                    "ref": WORKFLOW_REF,
+                    "sha": WORKFLOW_SHA,
+                },
+                manifest["workflow"],
+            )
+            self.assertEqual(
                 self.metadata.artifact_logical_name,
                 manifest["artifact"]["logical_name"],
             )
@@ -259,6 +303,132 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 manifest["artifact"]["sha256"],
                 manifest["producer"]["output_sha256"],
             )
+
+    def test_rejects_toctou_replacement_after_build_admission(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report_path = root / "voi_build_identity.json"
+            binary_path = root / "MicroMachine"
+            report_path.write_bytes(
+                self.members[self.metadata.build_report_member]
+            )
+            binary_path.write_bytes(self.members[self.metadata.binary_member])
+            binary_path.chmod(0o755)
+            admitted = PreLiveBuildAdmissionSnapshot(
+                build_report_bytes=report_path.read_bytes(),
+                binary_bytes=binary_path.read_bytes(),
+                binary_mode=binary_path.stat().st_mode,
+            )
+
+            replacements = {
+                "build report": (
+                    self.metadata.build_report_member,
+                    b'{"attacker":"replacement"}',
+                ),
+                "binary": (
+                    self.metadata.binary_member,
+                    b"replacement-micromachine-binary",
+                ),
+            }
+            for name, (member_name, replacement) in replacements.items():
+                with self.subTest(name=name):
+                    report_path.write_bytes(
+                        self.members[self.metadata.build_report_member]
+                    )
+                    binary_path.write_bytes(
+                        self.members[self.metadata.binary_member]
+                    )
+                    source_path = (
+                        report_path
+                        if member_name == self.metadata.build_report_member
+                        else binary_path
+                    )
+                    source_path.write_bytes(replacement)
+                    reopened_members = dict(self.members)
+                    reopened_members[self.metadata.build_report_member] = (
+                        report_path.read_bytes()
+                    )
+                    reopened_members[self.metadata.binary_member] = (
+                        binary_path.read_bytes()
+                    )
+
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "immutable admission snapshot",
+                    ):
+                        build_pre_live_artifact_bundle(
+                            self.metadata,
+                            reopened_members,
+                            admission_snapshot=admitted,
+                        )
+
+    def test_verifier_rejects_coherent_build_replacement_against_admission(
+        self,
+    ) -> None:
+        replacement_binary = b"attacker-controlled-production-binary"
+        replacement_report = json.loads(
+            self.members[self.metadata.build_report_member]
+        )
+        replacement_report["observed"]["binary_sha256"] = sha256(
+            replacement_binary
+        )
+        replacement_report["attacker_note"] = "same semantic identity"
+        replacement_report_bytes = canonical_json_bytes(replacement_report)
+        replacement_members = dict(self.members)
+        replacement_members[self.metadata.build_report_member] = (
+            replacement_report_bytes
+        )
+        replacement_members[self.metadata.binary_member] = replacement_binary
+        replacement_admission = PreLiveBuildAdmissionSnapshot(
+            build_report_bytes=replacement_report_bytes,
+            binary_bytes=replacement_binary,
+            binary_mode=stat.S_IFREG | 0o755,
+        )
+        replacement_bundle = build_pre_live_artifact_bundle(
+            self.metadata,
+            replacement_members,
+            admission_snapshot=replacement_admission,
+        )
+
+        unpinned = verify_pre_live_artifact_bundle(replacement_bundle)
+        pinned = verify_pre_live_artifact_bundle(
+            replacement_bundle,
+            admission_snapshot=self.admission_snapshot,
+        )
+
+        self.assertTrue(unpinned["ok"], unpinned["blockers"])
+        self.assertFalse(pinned["ok"])
+        self.assertEqual(
+            {
+                "admitted_build_report_mismatch",
+                "admitted_build_binary_mismatch",
+            },
+            blocker_codes(pinned),
+        )
+
+    def test_rejects_non_executable_admission_and_archive_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be executable"):
+            PreLiveBuildAdmissionSnapshot(
+                build_report_bytes=self.members[
+                    self.metadata.build_report_member
+                ],
+                binary_bytes=self.members[self.metadata.binary_member],
+                binary_mode=stat.S_IFREG | 0o644,
+            )
+
+        non_executable = rewrite_bundle(
+            self.bundle,
+            mode_replacements={
+                self.metadata.binary_member: stat.S_IFREG | 0o644,
+            },
+        )
+        report = verify_pre_live_artifact_bundle(
+            non_executable,
+            admission_snapshot=self.admission_snapshot,
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("build_binary_not_executable", blocker_codes(report))
 
     def test_rejects_tampered_member_even_with_success_claims(self) -> None:
         tampered = rewrite_bundle(
@@ -686,7 +856,13 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             manifest["repository"]["commit_sha"] = COMMIT.upper()
 
         def set_workflow_sha(manifest: dict[str, object]) -> None:
-            manifest["workflow"]["sha"] = "e" * 40
+            manifest["workflow"]["sha"] = "E" * 40
+
+        def set_workflow_ref(manifest: dict[str, object]) -> None:
+            manifest["workflow"]["ref"] = (
+                f"attacker/example/{WORKFLOW_PATH}"
+                "@refs/heads/issue-138-authenticated-prelive-provenance"
+            )
 
         def set_run_attempt(manifest: dict[str, object]) -> None:
             manifest["run"]["attempt"] = 0
@@ -701,6 +877,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             ("schema", set_schema),
             ("repository_id", set_repository_id),
             ("commit", set_commit),
+            ("workflow_ref", set_workflow_ref),
             ("workflow_sha", set_workflow_sha),
             ("run_attempt", set_run_attempt),
             ("job_id", set_job_id),
@@ -861,10 +1038,33 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
         )
 
     def test_builder_rejects_invalid_metadata_missing_roles_and_limits(self) -> None:
-        with self.assertRaisesRegex(ValueError, "repository_workflow_sha_mismatch"):
+        invalid_workflow_refs = (
+            "refs/heads/issue-138-authenticated-prelive-provenance",
+            (
+                f"attacker/example/{WORKFLOW_PATH}"
+                "@refs/heads/issue-138-authenticated-prelive-provenance"
+            ),
+            f"{REPOSITORY}/{WORKFLOW_PATH}@refs/",
+        )
+        for workflow_ref in invalid_workflow_refs:
+            with self.subTest(workflow_ref=workflow_ref):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "workflow_ref_binding_mismatch",
+                ):
+                    build_pre_live_artifact_bundle(
+                        replace(
+                            self.metadata,
+                            workflow_ref=workflow_ref,
+                        ),
+                        self.members,
+                        admission_snapshot=self.admission_snapshot,
+                    )
+        with self.assertRaisesRegex(ValueError, "invalid_manifest_field"):
             build_pre_live_artifact_bundle(
-                replace(self.metadata, workflow_sha="f" * 40),
+                replace(self.metadata, workflow_sha="F" * 40),
                 self.members,
+                admission_snapshot=self.admission_snapshot,
             )
         with self.assertRaisesRegex(ValueError, "role members are missing"):
             build_pre_live_artifact_bundle(
@@ -874,11 +1074,16 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                     for name, payload in self.members.items()
                     if name != self.metadata.producer_policy_member
                 },
+                admission_snapshot=self.admission_snapshot,
             )
         nested = as_nested_metadata(self.metadata)
         nested["repository"]["ok"] = True
         with self.assertRaisesRegex(ValueError, "fields mismatch"):
-            build_pre_live_artifact_bundle(nested, self.members)
+            build_pre_live_artifact_bundle(
+                nested,
+                self.members,
+                admission_snapshot=self.admission_snapshot,
+            )
         with self.assertRaisesRegex(ValueError, "max_member_uncompressed_bytes"):
             build_pre_live_artifact_bundle(
                 self.metadata,
@@ -892,6 +1097,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                     max_total_uncompressed_bytes=1024,
                     max_compression_ratio=200,
                 ),
+                admission_snapshot=self.admission_snapshot,
             )
 
     def test_rejects_malformed_zip(self) -> None:
@@ -1108,11 +1314,18 @@ def rewrite_bundle(
     additions: dict[str, bytes] | None = None,
     removals: set[str] | None = None,
     special_entry: tuple[str, bytes, int] | None = None,
+    mode_replacements: dict[str, int] | None = None,
 ) -> bytes:
     replacements = replacements or {}
     additions = additions or {}
     removals = removals or set()
+    mode_replacements = mode_replacements or {}
     entries = read_entries(bundle)
+    with zipfile.ZipFile(io.BytesIO(bundle)) as source:
+        modes = {
+            info.filename: (info.external_attr >> 16) & 0xFFFF
+            for info in source.infolist()
+        }
     output = io.BytesIO()
     with zipfile.ZipFile(output, mode="w") as archive:
         for name, payload in entries.items():
@@ -1122,6 +1335,7 @@ def rewrite_bundle(
                 archive,
                 name,
                 replacements.get(name, payload),
+                mode=mode_replacements.get(name, modes[name]),
             )
         for name, payload in additions.items():
             write_entry(archive, name, payload)
