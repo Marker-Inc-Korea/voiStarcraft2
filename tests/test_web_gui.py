@@ -1266,6 +1266,229 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(2, len(operation_events))
         self.assertEqual("target_reached", operation_events[-1]["payload"]["kind"])
 
+    def test_concurrent_first_refresh_retries_after_snapshot_cut(self):
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        refresh_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        refresh_handler.server = self.server._http
+        scope_id = "scope-concurrent-snapshot-lifecycle"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "snapshot-race-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-snapshot-race-alpha",
+            "kind": "movement_observed",
+            "game_frame": 300,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 301,
+            "summary": "engagement observed",
+        }
+        snapshot_entered = threading.Event()
+        snapshot_release = threading.Event()
+
+        def blocking_snapshot(_directory):
+            snapshot_entered.set()
+            if not snapshot_release.wait(2):
+                raise TimeoutError("test did not release operation snapshot")
+            return {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first],
+                },
+            }
+
+        snapshot_handler._authoritative_event_snapshot = blocking_snapshot
+        snapshot_handler._write_sse_event = lambda _event: None
+        refresh_handler._state_payload = lambda: {"available": True}
+        refresh_handler._micromachine_status_payload = lambda _directory: {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first, second],
+        }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            snapshot_future = pool.submit(
+                snapshot_handler._write_authoritative_sse_snapshot,
+                self.server._http.event_journal,
+                "/tmp/concurrent-snapshot-lifecycle",
+                scope_id,
+            )
+            self.assertTrue(snapshot_entered.wait(1))
+            self.assertTrue(
+                self.server._http.operation_event_snapshot_pending(scope_id)
+            )
+
+            refresh_handler._refresh_event_sources(
+                "/tmp/concurrent-snapshot-lifecycle"
+            )
+            self.assertTrue(
+                self.server._http.operation_event_retry_pending(scope_id)
+            )
+            self.assertEqual(
+                [],
+                [
+                    event
+                    for event in self.server._http.event_journal.events_after(0)
+                    if event["event_type"] == "operation_event"
+                ],
+            )
+
+            snapshot_release.set()
+            snapshot_future.result(timeout=3)
+
+        self.assertFalse(
+            self.server._http.operation_event_snapshot_pending(scope_id)
+        )
+        self.assertEqual(
+            1,
+            self.server._http._operation_event_snapshot_baselines[scope_id],
+        )
+
+        # The status snapshot is unchanged, so only the retry marker can
+        # trigger extraction of the event created after the snapshot cut.
+        refresh_handler._refresh_event_sources(
+            "/tmp/concurrent-snapshot-lifecycle"
+        )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual(2, operation_events[0]["payload"]["timeline_seq"])
+        self.assertEqual(
+            "engagement_observed",
+            operation_events[0]["payload"]["kind"],
+        )
+        self.assertFalse(
+            self.server._http.operation_event_retry_pending(scope_id)
+        )
+
+    def test_failed_snapshot_releases_operation_hydration_cut(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        scope_id = "scope-failed-operation-snapshot"
+        handler._authoritative_event_snapshot = lambda _directory: (
+            (_ for _ in ()).throw(RuntimeError("snapshot failed"))
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+            handler._write_authoritative_sse_snapshot(
+                self.server._http.event_journal,
+                "/tmp/failed-operation-snapshot",
+                scope_id,
+            )
+
+        self.assertFalse(
+            self.server._http.operation_event_snapshot_pending(scope_id)
+        )
+        self.assertNotIn(
+            scope_id,
+            self.server._http._operation_event_snapshot_baselines,
+        )
+
+    def test_concurrent_refresh_retries_when_snapshot_scope_changes(self):
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        refresh_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        refresh_handler.server = self.server._http
+        requested_scope = "scope-requested-snapshot"
+        actual_scope = "scope-actual-snapshot"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "scope-race-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-scope-race-alpha",
+            "kind": "movement_observed",
+            "game_frame": 400,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 401,
+            "summary": "engagement observed",
+        }
+        snapshot_entered = threading.Event()
+        snapshot_release = threading.Event()
+
+        def blocking_snapshot(_directory):
+            snapshot_entered.set()
+            if not snapshot_release.wait(2):
+                raise TimeoutError("test did not release scope snapshot")
+            return {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": {
+                    "blackboard_scope_id": actual_scope,
+                    "operation_events": [first],
+                },
+            }
+
+        snapshot_handler._authoritative_event_snapshot = blocking_snapshot
+        snapshot_handler._write_sse_event = lambda _event: None
+        refresh_handler._state_payload = lambda: {"available": True}
+        refresh_handler._micromachine_status_payload = lambda _directory: {
+            "blackboard_scope_id": actual_scope,
+            "operation_events": [first, second],
+        }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            snapshot_future = pool.submit(
+                snapshot_handler._write_authoritative_sse_snapshot,
+                self.server._http.event_journal,
+                "/tmp/scope-changing-snapshot",
+                requested_scope,
+            )
+            self.assertTrue(snapshot_entered.wait(1))
+
+            refresh_handler._refresh_event_sources(
+                "/tmp/scope-changing-snapshot"
+            )
+            self.assertTrue(
+                self.server._http.operation_event_retry_pending(actual_scope)
+            )
+
+            snapshot_release.set()
+            snapshot_future.result(timeout=3)
+
+        self.assertEqual(
+            1,
+            self.server._http._operation_event_snapshot_baselines[
+                actual_scope
+            ],
+        )
+        refresh_handler._refresh_event_sources(
+            "/tmp/scope-changing-snapshot"
+        )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == actual_scope
+            )
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual(2, operation_events[0]["payload"]["timeline_seq"])
+        self.assertFalse(
+            self.server._http.operation_event_retry_pending(actual_scope)
+        )
+
     def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
         original = self.bridge.micromachine_status
         self.server._http.publish_event(
