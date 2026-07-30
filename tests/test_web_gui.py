@@ -874,6 +874,29 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         self.server._http.micromachine_launcher = FakeAttachedMicroMachineLauncher()
 
+    def detach_fake_micromachine_runtime(self, directory):
+        class FakeDetachedMicroMachineLauncher:
+            def validated_snapshot(self, blackboard_dir=""):
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata={
+                        "enabled": True,
+                        "mode": "micromachine",
+                        "status": "idle",
+                        "blackboard_dir": blackboard_dir or directory,
+                        "runtime_instance_id": "",
+                        "runtime_attached": False,
+                        "telemetry_present": True,
+                        "telemetry_current_for_process": False,
+                        "telemetry_stale_or_detached": True,
+                        "telemetry_frame": 1,
+                    },
+                    telemetry_document=None,
+                )
+
+        self.server._http.micromachine_launcher = (
+            FakeDetachedMicroMachineLauncher()
+        )
+
     def post_llm_config_with_control(self, llm_control, api_key="unit-test-sensitive"):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session, llm_control=llm_control)
@@ -3873,25 +3896,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 ]
             )
 
-            class DetachedLauncher:
-                def validated_snapshot(self, blackboard_dir=""):
-                    return web_gui._MicroMachineValidatedRuntimeSnapshot(
-                        metadata={
-                            "enabled": True,
-                            "mode": "micromachine",
-                            "status": "idle",
-                            "blackboard_dir": blackboard_dir,
-                            "runtime_instance_id": "",
-                            "runtime_attached": False,
-                            "telemetry_present": True,
-                            "telemetry_current_for_process": False,
-                            "telemetry_stale_or_detached": True,
-                            "telemetry_frame": 1,
-                        },
-                        telemetry_document=None,
-                    )
-
-            self.server._http.micromachine_launcher = DetachedLauncher()
+            self.detach_fake_micromachine_runtime(blackboard_dir)
             reconnect = self.parse_sse_events(
                 self.get_sse(
                     event_path,
@@ -3905,6 +3910,196 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertFalse(detached["runtime_attached"])
         self.assertFalse(detached["telemetry_current_for_process"])
         self.assertTrue(detached["telemetry_stale_or_detached"])
+
+    def test_equal_cursor_reconnect_revalidates_detach_with_unrelated_replay(
+        self,
+    ):
+        for replay_kind in ("foreign_operation", "state"):
+            with (
+                self.subTest(replay_kind=replay_kind),
+                tempfile.TemporaryDirectory() as blackboard_dir,
+            ):
+                self.server._http.event_journal = web_gui._WebEventJournal()
+                self.attach_fake_micromachine_runtime(blackboard_dir)
+                self.server._http.publish_event(
+                    "state",
+                    {
+                        "available": True,
+                        "marker": f"baseline-{replay_kind}",
+                    },
+                )
+                event_path = (
+                    "/api/events?"
+                    f"blackboard_dir={quote(blackboard_dir)}&once=1"
+                )
+                initial = self.parse_sse_events(self.get_sse(event_path))
+                cursor = initial[0]["data"]["event_seq"]
+                self.detach_fake_micromachine_runtime(blackboard_dir)
+
+                if replay_kind == "foreign_operation":
+                    self.server._http.publish_event(
+                        "operation_event",
+                        {
+                            "timeline_seq": 1,
+                            "operation_id": "foreign-operation",
+                            "kind": "movement_observed",
+                        },
+                        operation_id="foreign-operation",
+                        blackboard_scope_id="foreign-operation-scope",
+                    )
+                else:
+                    self.server._http.publish_event(
+                        "state",
+                        {
+                            "available": True,
+                            "marker": "unrelated-state-after-detach",
+                        },
+                    )
+
+                reconnect = self.parse_sse_events(
+                    self.get_sse(
+                        event_path,
+                        headers={"Last-Event-ID": str(cursor)},
+                    )
+                )
+
+                self.assertEqual(
+                    ["snapshot"],
+                    [event["event"] for event in reconnect],
+                )
+                detached = reconnect[0]["data"]["payload"][
+                    "micromachine_status"
+                ]
+                self.assertFalse(
+                    detached["operation_registry_authoritative"]
+                )
+                self.assertFalse(detached["runtime_attached"])
+                self.assertTrue(detached["telemetry_stale_or_detached"])
+
+    def test_open_sse_refresh_publishes_authority_loss_and_recovery(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        with tempfile.TemporaryDirectory() as blackboard_dir:
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            event_path = (
+                "/api/events?"
+                f"blackboard_dir={quote(blackboard_dir)}&once=1"
+            )
+            initial = self.parse_sse_events(self.get_sse(event_path))
+            scope_id = web_gui._micromachine_blackboard_scope_id(
+                blackboard_dir
+            )
+            self.assertTrue(
+                initial[0]["data"]["payload"]["micromachine_status"][
+                    "operation_registry_authoritative"
+                ]
+            )
+            self.assertTrue(
+                self.server._http.has_admitted_operation_event_scope(
+                    scope_id
+                )
+            )
+
+            self.detach_fake_micromachine_runtime(blackboard_dir)
+            detach_cursor = self.server._http.event_journal.latest_seq
+            handler._refresh_event_sources(blackboard_dir)
+            detached_events = (
+                self.server._http.event_journal.events_after(detach_cursor)
+            )
+            detached_statuses = [
+                event["payload"]
+                for event in detached_events
+                if event["event_type"] == "micromachine_status"
+            ]
+            self.assertEqual(1, len(detached_statuses))
+            self.assertFalse(
+                detached_statuses[0][
+                    "operation_registry_authoritative"
+                ]
+            )
+            self.assertFalse(detached_statuses[0]["runtime_attached"])
+            self.assertTrue(
+                detached_statuses[0]["telemetry_stale_or_detached"]
+            )
+            self.assertFalse(
+                any(
+                    event["event_type"] == "operation_event"
+                    for event in detached_events
+                )
+            )
+
+            duplicate_cursor = self.server._http.event_journal.latest_seq
+            handler._refresh_event_sources(blackboard_dir)
+            duplicate_statuses = [
+                event
+                for event in self.server._http.event_journal.events_after(
+                    duplicate_cursor
+                )
+                if event["event_type"] == "micromachine_status"
+            ]
+            self.assertEqual([], duplicate_statuses)
+
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            recovery_cursor = self.server._http.event_journal.latest_seq
+            handler._refresh_event_sources(blackboard_dir)
+            recovered_statuses = [
+                event["payload"]
+                for event in self.server._http.event_journal.events_after(
+                    recovery_cursor
+                )
+                if event["event_type"] == "micromachine_status"
+            ]
+            self.assertEqual(1, len(recovered_statuses))
+            self.assertTrue(
+                recovered_statuses[0][
+                    "operation_registry_authoritative"
+                ]
+            )
+
+    def test_open_sse_refresh_publishes_source_error_status(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        with tempfile.TemporaryDirectory() as blackboard_dir:
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            self.get_sse(
+                "/api/events?"
+                f"blackboard_dir={quote(blackboard_dir)}&once=1"
+            )
+            scope_id = web_gui._micromachine_blackboard_scope_id(
+                blackboard_dir
+            )
+            handler._micromachine_status_payload = (
+                lambda _directory, **_kwargs: {
+                    "enabled": False,
+                    "status": "source_error",
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": scope_id,
+                    "operation_registry_authoritative": False,
+                    "error": "status source failed",
+                }
+            )
+            cursor = self.server._http.event_journal.latest_seq
+            handler._refresh_event_sources(blackboard_dir)
+            events = self.server._http.event_journal.events_after(cursor)
+
+        status_events = [
+            event
+            for event in events
+            if event["event_type"] == "micromachine_status"
+        ]
+        source_errors = [
+            event
+            for event in events
+            if event["event_type"] == "source_error"
+        ]
+        self.assertEqual(1, len(status_events))
+        self.assertFalse(
+            status_events[0]["payload"][
+                "operation_registry_authoritative"
+            ]
+        )
+        self.assertEqual("source_error", status_events[0]["payload"]["status"])
+        self.assertEqual(1, len(source_errors))
 
     def test_sse_reconnect_replays_pending_local_lifecycle_at_equal_cursor(
         self,

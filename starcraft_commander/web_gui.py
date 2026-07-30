@@ -21746,6 +21746,18 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         with self._event_source_lock:
             return self._admit_operation_event_scope_locked(scope_id)
 
+    def has_admitted_operation_event_scope(self, scope_id: str) -> bool:
+        """Return whether one scope already owns bounded replay history."""
+
+        normalized_scope = str(scope_id or "")
+        if not normalized_scope:
+            return False
+        with self._event_source_lock:
+            return (
+                normalized_scope
+                in self._observed_operation_event_high_water
+            )
+
     def remember_operation_event_high_water(
         self,
         scope_id: str,
@@ -22205,10 +22217,47 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     == blackboard_scope_id
                     for event in replay_events
                 )
+                reconnect_authority_current = False
+                try:
+                    reconnect_status = self._micromachine_status_payload(
+                        blackboard_dir,
+                        read_only=True,
+                    )
+                    reconnect_scope = str(
+                        reconnect_status.get("blackboard_scope_id")
+                        or blackboard_scope_id
+                    )
+                    reconnect_status_name = str(
+                        reconnect_status.get("status", "") or ""
+                    )
+                    reconnect_authority_current = bool(
+                        reconnect_scope == blackboard_scope_id
+                        and reconnect_status.get(
+                            "operation_registry_authoritative"
+                        )
+                        is True
+                        and reconnect_status_name
+                        not in {
+                            "operation_history_capacity_rejected",
+                            "scope_capacity_rejected",
+                            "scope_identity_mismatch",
+                            "source_error",
+                        }
+                    )
+                except Exception:  # noqa: BLE001 - snapshot reports failure.
+                    reconnect_authority_current = False
+                scope_was_authoritative = (
+                    server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
+                        blackboard_scope_id
+                    )
+                )
                 if (
                     cursor != after
                     or replay_requires_snapshot
-                    or not replay_events
+                    or (
+                        scope_was_authoritative
+                        and not reconnect_authority_current
+                    )
                 ):
                     cursor = self._write_authoritative_sse_snapshot(
                         journal,
@@ -22687,20 +22736,50 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         "MicroMachine status scope does not match the "
                         "requested blackboard scope."
                     )
-                if (
-                    str(status.get("status", "") or "")
-                    in {
+                status_name = str(status.get("status", "") or "")
+                status_is_authoritative = bool(
+                    status.get("operation_registry_authoritative")
+                    is True
+                    and status_name
+                    not in {
                         "operation_history_capacity_rejected",
                         "scope_capacity_rejected",
                         "scope_identity_mismatch",
                         "source_error",
                     }
-                ):
-                    return
-                if (
-                    status.get("operation_registry_authoritative")
-                    is not True
-                ):
+                )
+                if not status_is_authoritative:
+                    if not server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
+                        requested_scope
+                    ):
+                        return
+                    with server._event_source_lock:  # type: ignore[attr-defined]
+                        server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                            f"micromachine:{scope}",
+                            "micromachine_status",
+                            status,
+                            blackboard_dir=blackboard_dir,
+                        )
+                    if status_name == "source_error":
+                        server.publish_source_error(  # type: ignore[attr-defined]
+                            f"micromachine_status:{scope}",
+                            "micromachine_status",
+                            {
+                                "blackboard_dir": blackboard_dir,
+                                "blackboard_scope_id": scope,
+                                "error": str(
+                                    status.get("error", "")
+                                    or "MicroMachine status source failed."
+                                ),
+                            },
+                            blackboard_dir=blackboard_dir,
+                        )
+                    else:
+                        server.publish_source_recovered(  # type: ignore[attr-defined]
+                            f"micromachine_status:{scope}",
+                            "micromachine_status",
+                            blackboard_dir=blackboard_dir,
+                        )
                     return
                 if not server.admit_operation_event_scope(  # type: ignore[attr-defined]
                     requested_scope
@@ -22726,16 +22805,33 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 )
         except Exception as error:  # noqa: BLE001 - stream remains available.
             scope_id = _micromachine_blackboard_scope_id(blackboard_dir)
+            error_text = _redact_sensitive_text(
+                error,
+                normalize_whitespace=True,
+            )
+            if server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
+                scope_id
+            ):
+                server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                    f"micromachine:{scope_id}",
+                    "micromachine_status",
+                    {
+                        "enabled": False,
+                        "status": "source_error",
+                        "blackboard_dir": blackboard_dir,
+                        "blackboard_scope_id": scope_id,
+                        "operation_registry_authoritative": False,
+                        "error": error_text,
+                    },
+                    blackboard_dir=blackboard_dir,
+                )
             server.publish_source_error(  # type: ignore[attr-defined]
                 f"micromachine_status:{scope_id}",
                 "micromachine_status",
                 {
                     "blackboard_dir": blackboard_dir,
                     "blackboard_scope_id": scope_id,
-                    "error": _redact_sensitive_text(
-                        error,
-                        normalize_whitespace=True,
-                    ),
+                    "error": error_text,
                 },
                 blackboard_dir=blackboard_dir,
             )
