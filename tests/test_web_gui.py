@@ -468,6 +468,35 @@ def semantic_operation_payload(
     }
 
 
+def set_semantic_operation_identity(
+    payload,
+    *,
+    request_update_id=None,
+    execution_owner_update_id=None,
+):
+    """Set independent request and execution-owner identity channels."""
+
+    operation = payload["operations"][0]
+    request_id = str(
+        request_update_id
+        if request_update_id is not None
+        else operation.get("update_id", "")
+    )
+    owner_id = str(
+        execution_owner_update_id
+        if execution_owner_update_id is not None
+        else request_id
+    )
+    operation["update_id"] = request_id
+    operation["compile_result"]["update_id"] = request_id
+    if isinstance(operation.get("update"), dict):
+        operation["update"]["update_id"] = request_id
+    operation["operation_console_execution_owner_update_id"] = owner_id
+    operation["intervention"]["command_execution"]["command_id"] = owner_id
+    operation["battlefield_operation"]["identity"]["update_id"] = owner_id
+    return payload
+
+
 def contains_hangul(text):
     """Return whether the text contains at least one Hangul syllable."""
 
@@ -764,8 +793,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             events.append(fields)
         return events
 
-    def post_command(self, text):
-        body = json.dumps({"text": text}).encode("utf-8")
+    def post_command(self, text, request_id=""):
+        document = {"text": text}
+        if request_id:
+            document["request_id"] = request_id
+            document["operation_id"] = request_id
+        body = json.dumps(document).encode("utf-8")
         return self.request(
             "POST",
             "/api/command",
@@ -788,13 +821,24 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         if os.path.exists(telemetry_path):
             with open(telemetry_path, encoding="utf-8") as handle:
                 telemetry = json.load(handle)
-            telemetry["runtime_instance_id"] = runtime_instance_id
-            with open(telemetry_path, "w", encoding="utf-8") as handle:
-                json.dump(telemetry, handle)
+        else:
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 1,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {},
+                "active_modulation_ids": [],
+                "last_failure": None,
+            }
+        telemetry["runtime_instance_id"] = runtime_instance_id
+        with open(telemetry_path, "w", encoding="utf-8") as handle:
+            json.dump(telemetry, handle)
 
         class FakeAttachedMicroMachineLauncher:
             def snapshot(self, blackboard_dir=""):
-                root = blackboard_dir or directory
+                del blackboard_dir
+                root = directory
                 telemetry_path = os.path.join(root, "latest_telemetry.json")
                 telemetry_frame = None
                 if os.path.exists(telemetry_path):
@@ -818,7 +862,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 }
 
             def validated_snapshot(self, blackboard_dir=""):
-                root = blackboard_dir or directory
+                del blackboard_dir
+                root = directory
                 telemetry_path = os.path.join(root, "latest_telemetry.json")
                 with open(telemetry_path, encoding="utf-8") as handle:
                     telemetry = json.load(handle)
@@ -828,6 +873,29 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 )
 
         self.server._http.micromachine_launcher = FakeAttachedMicroMachineLauncher()
+
+    def detach_fake_micromachine_runtime(self, directory):
+        class FakeDetachedMicroMachineLauncher:
+            def validated_snapshot(self, blackboard_dir=""):
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata={
+                        "enabled": True,
+                        "mode": "micromachine",
+                        "status": "idle",
+                        "blackboard_dir": blackboard_dir or directory,
+                        "runtime_instance_id": "",
+                        "runtime_attached": False,
+                        "telemetry_present": True,
+                        "telemetry_current_for_process": False,
+                        "telemetry_stale_or_detached": True,
+                        "telemetry_frame": 1,
+                    },
+                    telemetry_document=None,
+                )
+
+        self.server._http.micromachine_launcher = (
+            FakeDetachedMicroMachineLauncher()
+        )
 
     def post_llm_config_with_control(self, llm_control, api_key="unit-test-sensitive"):
         session, _bot = build_dry_run_session()
@@ -1009,7 +1077,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("micromachine_status", payload)
         self.assertTrue(payload["state"]["available"])
 
-    def test_operation_event_snapshot_hydration_does_not_consume_live_watermark(self):
+    def test_operation_event_snapshot_hydration_is_read_only(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
         scope_id = "scope-operation-events"
@@ -1033,6 +1101,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             status,
             blackboard_dir="/tmp/operation-events",
             publish=False,
+        )
+        self.assertEqual(
+            0,
+            self.server._http._observed_operation_event_seq.get(
+                scope_id,
+                0,
+            ),
         )
         self.assertEqual(
             [],
@@ -1061,19 +1136,1849 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         operation_events = [
             event
             for event in self.server._http.event_journal.events_after(0)
-            if event["event_type"] == "operation_event"
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual([], operation_events)
+        self.assertEqual(
+            2,
+            self.server._http._observed_operation_event_seq[scope_id],
+        )
+
+        third = {
+            **first,
+            "timeline_seq": 3,
+            "kind": "movement_observed",
+            "game_frame": 102,
+            "summary": "movement observed",
+        }
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second, third],
+            },
+            blackboard_dir="/tmp/operation-events",
+            publish=True,
+        )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual("movement_observed", operation_events[0]["payload"]["kind"])
+        self.assertEqual(3, operation_events[0]["payload"]["timeline_seq"])
+        self.assertEqual("update-scout-alpha", operation_events[0]["update_id"])
+        self.assertEqual(1, operation_events[0]["generation"])
+        self.assertEqual(102, operation_events[0]["game_frame"])
+
+    def test_new_subscriber_snapshot_cannot_hide_lifecycle_from_existing_subscriber(
+        self,
+    ):
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        publisher_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        publisher_handler.server = self.server._http
+        scope_id = "scope-snapshot-lifecycle-high-water"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "snapshot-alpha",
+            "generation": 2,
+            "requested_generation": 2,
+            "update_id": "update-snapshot-alpha",
+            "kind": "movement_observed",
+            "game_frame": 200,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        snapshot_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: status
+        )
+        snapshot_handler._authoritative_event_snapshot = (
+            lambda _directory, **_kwargs: {
+            "state": {"available": True},
+            "history": {"events": [], "latest": 0},
+            "micromachine_status": status,
+            }
+        )
+        written = []
+        snapshot_handler._write_sse_event = written.append
+
+        cursor = snapshot_handler._write_authoritative_sse_snapshot(
+            self.server._http.event_journal,
+            "/tmp/snapshot-lifecycle",
+            scope_id,
+        )
+
+        self.assertEqual(self.server._http.event_journal.latest_seq, cursor)
+        self.assertEqual("snapshot", written[0]["event_type"])
+        self.assertEqual(
+            1,
+            self.server._http._observed_operation_event_seq.get(
+                scope_id,
+                0,
+            ),
+        )
+        self.assertEqual(
+            [],
+            [
+                event
+                for event in self.server._http.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 201,
+            "summary": "engagement observed",
+        }
+        publisher_handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second],
+            },
+            blackboard_dir="/tmp/snapshot-lifecycle",
+            publish=True,
+        )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual(
+            "engagement_observed",
+            operation_events[0]["payload"]["kind"],
+        )
+        self.assertEqual(
+            2,
+            operation_events[0]["payload"]["timeline_seq"],
+        )
+
+        third = {
+            **first,
+            "timeline_seq": 3,
+            "kind": "target_reached",
+            "game_frame": 202,
+            "summary": "target reached",
+        }
+        publisher_handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second, third],
+            },
+            blackboard_dir="/tmp/snapshot-lifecycle",
+            publish=True,
+        )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
         ]
         self.assertEqual(2, len(operation_events))
+        self.assertEqual("target_reached", operation_events[-1]["payload"]["kind"])
+
+    def test_post_cut_event_in_snapshot_and_refresh_is_still_published(self):
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        refresh_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        refresh_handler.server = self.server._http
+        scope_id = "scope-snapshot-same-read-race"
+        blackboard_dir = "/tmp/snapshot-same-read-race"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "snapshot-same-read-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-snapshot-same-read-alpha",
+            "kind": "movement_observed",
+            "game_frame": 300,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 301,
+            "summary": "engagement observed",
+        }
+        source_events = [first]
+        capture_entered = threading.Event()
+        capture_release = threading.Event()
+        source_lock = threading.Lock()
+        source_reads = 0
+
+        def status(_directory, **_kwargs):
+            nonlocal source_reads
+            with source_lock:
+                source_reads += 1
+                read_number = source_reads
+            if read_number == 2:
+                capture_entered.set()
+                if not capture_release.wait(2):
+                    raise TimeoutError("test did not release source capture")
+            return {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": scope_id,
+                "operation_events": list(source_events),
+            }
+
+        def snapshot(_directory, **kwargs):
+            return {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+
+        snapshot_handler._micromachine_status_payload = status
+        snapshot_handler._authoritative_event_snapshot = snapshot
+        snapshot_handler._write_sse_event = lambda _event: None
+        refresh_handler._state_payload = lambda: {"available": True}
+        refresh_handler._micromachine_status_payload = status
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            snapshot_future = pool.submit(
+                snapshot_handler._write_authoritative_sse_snapshot,
+                self.server._http.event_journal,
+                blackboard_dir,
+                scope_id,
+            )
+            self.assertTrue(capture_entered.wait(1))
+
+            # The first read materialized event 1 as historical. Event 2 is
+            # created during the official capture and must be journaled.
+            source_events.append(second)
+            refresh_future = pool.submit(
+                refresh_handler._refresh_event_sources,
+                blackboard_dir,
+            )
+            time.sleep(0.05)
+            self.assertFalse(refresh_future.done())
+
+            capture_release.set()
+            snapshot_future.result(timeout=3)
+            refresh_future.result(timeout=3)
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual(2, operation_events[0]["payload"]["timeline_seq"])
         self.assertEqual(
-            ["assigned", "submitted"],
-            [event["payload"]["kind"] for event in operation_events],
+            "engagement_observed",
+            operation_events[0]["payload"]["kind"],
         )
-        self.assertEqual("update-scout-alpha", operation_events[1]["update_id"])
-        self.assertEqual(1, operation_events[1]["generation"])
-        self.assertEqual(101, operation_events[1]["game_frame"])
+
+    def test_failed_snapshot_does_not_absorb_post_cut_event(self):
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        scope_id = "scope-failed-snapshot-race"
+        blackboard_dir = "/tmp/failed-snapshot-race"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "failed-snapshot-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-failed-snapshot-alpha",
+            "kind": "movement_observed",
+            "game_frame": 350,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 351,
+            "summary": "engagement observed",
+        }
+        baseline_status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        current_status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first, second],
+        }
+        statuses = iter((baseline_status, current_status))
+
+        def status(_directory, **_kwargs):
+            return next(statuses)
+
+        def failing_snapshot(_directory, **_kwargs):
+            raise RuntimeError("snapshot failed")
+
+        snapshot_handler._micromachine_status_payload = status
+        snapshot_handler._authoritative_event_snapshot = failing_snapshot
+
+        with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+            snapshot_handler._write_authoritative_sse_snapshot(
+                self.server._http.event_journal,
+                blackboard_dir,
+                scope_id,
+            )
+
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual(
+            [2],
+            [
+                event["payload"]["timeline_seq"]
+                for event in operation_events
+            ],
+        )
+        snapshot_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: current_status
+        )
+        snapshot_handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        snapshot_handler._write_sse_event = written.append
+        cursor = snapshot_handler._write_authoritative_sse_snapshot(
+            self.server._http.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+        replay_available, replay_events = (
+            self.server._http.event_journal.replay_batch(cursor)
+        )
+        self.assertTrue(replay_available)
+        snapshot_handler._write_visible_sse_events(
+            replay_events,
+            cursor=cursor,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["snapshot", "operation_event"],
+            [event["event_type"] for event in written],
+        )
+        self.assertIn(
+            scope_id,
+            self.server._http._pending_operation_events,
+        )
+
+    def test_failed_snapshot_write_does_not_absorb_post_cut_event(self):
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        scope_id = "scope-failed-snapshot-write"
+        blackboard_dir = "/tmp/failed-snapshot-write"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "failed-write-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-failed-write-alpha",
+            "kind": "movement_observed",
+            "game_frame": 360,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 361,
+            "summary": "engagement observed",
+        }
+        baseline_status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        current_status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first, second],
+        }
+        statuses = iter((baseline_status, current_status))
+
+        snapshot_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: next(statuses)
+        )
+        snapshot_handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        snapshot_handler._write_sse_event = lambda _event: (
+            (_ for _ in ()).throw(BrokenPipeError("snapshot write failed"))
+        )
+
+        with self.assertRaisesRegex(
+            BrokenPipeError,
+            "snapshot write failed",
+        ):
+            snapshot_handler._write_authoritative_sse_snapshot(
+                self.server._http.event_journal,
+                blackboard_dir,
+                scope_id,
+            )
+
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual(
+            [2],
+            [
+                event["payload"]["timeline_seq"]
+                for event in operation_events
+            ],
+        )
+        snapshot_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: current_status
+        )
+        written = []
+        snapshot_handler._write_sse_event = written.append
+        cursor = snapshot_handler._write_authoritative_sse_snapshot(
+            self.server._http.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+        replay_available, replay_events = (
+            self.server._http.event_journal.replay_batch(cursor)
+        )
+        self.assertTrue(replay_available)
+        snapshot_handler._write_visible_sse_events(
+            replay_events,
+            cursor=cursor,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["snapshot", "operation_event"],
+            [event["event_type"] for event in written],
+        )
+        self.assertIn(
+            scope_id,
+            self.server._http._pending_operation_events,
+        )
+
+    def test_failed_snapshot_event_survives_journal_rollover(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        journal = web_gui._WebEventJournal(retention=2)
+        original_journal = server.event_journal
+        server.event_journal = journal
+        self.addCleanup(setattr, server, "event_journal", original_journal)
+        scope_id = "scope-failed-snapshot-rollover"
+        blackboard_dir = "/tmp/failed-snapshot-rollover"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "rollover-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-rollover-alpha",
+            "kind": "movement_observed",
+            "game_frame": 370,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 371,
+            "summary": "engagement observed",
+        }
+        third = {
+            **first,
+            "timeline_seq": 3,
+            "kind": "target_reached",
+            "game_frame": 372,
+            "summary": "target reached",
+        }
+        fourth = {
+            **first,
+            "timeline_seq": 4,
+            "kind": "completed",
+            "game_frame": 373,
+            "summary": "completed",
+        }
+        baseline_status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        current_status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first, second, third, fourth],
+        }
+        statuses = iter((baseline_status, current_status))
+        handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: next(statuses)
+        )
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        handler._write_sse_event = lambda _event: (
+            (_ for _ in ()).throw(BrokenPipeError("snapshot write failed"))
+        )
+
+        with self.assertRaises(BrokenPipeError):
+            handler._write_authoritative_sse_snapshot(
+                journal,
+                blackboard_dir,
+                scope_id,
+            )
+        for index in range(2):
+            server.publish_event(
+                "command_received",
+                {"command_text": f"rollover-{index}"},
+            )
+        self.assertGreater(journal.oldest_seq, 1)
+
+        handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: current_status
+        )
+        written = []
+        handler._write_sse_event = written.append
+        cursor = handler._write_authoritative_sse_snapshot(
+            journal,
+            blackboard_dir,
+            scope_id,
+        )
+        replay_available, replay_events = journal.replay_batch(cursor)
+        self.assertTrue(replay_available)
+        handler._write_visible_sse_events(
+            replay_events,
+            cursor=cursor,
+            blackboard_scope_id=scope_id,
+        )
+
+        lifecycle = [
+            event
+            for event in written
+            if event["event_type"] == "operation_event"
+        ]
+        self.assertEqual(
+            [2, 3, 4],
+            [
+                event["payload"]["timeline_seq"]
+                for event in lifecycle
+            ],
+        )
+        self.assertIn(scope_id, server._pending_operation_events)
+
+    def test_each_new_subscriber_receives_recent_operation_lifecycle(self):
+        first_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        first_handler.server = self.server._http
+        second_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        second_handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-independent-subscriber-replay"
+        blackboard_dir = "/tmp/independent-subscriber-replay"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "subscriber-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-subscriber-alpha",
+            "kind": "movement_observed",
+            "game_frame": 380,
+            "summary": "movement observed",
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 381,
+            "summary": "engagement observed",
+        }
+        baseline_status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        current_status = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first, second],
+        }
+        first_handler._publish_new_operation_events(
+            baseline_status,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        first_handler._publish_new_operation_events(
+            current_status,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+
+        def configure(handler, written):
+            handler._micromachine_status_payload = (
+                lambda _directory, **_kwargs: current_status
+            )
+            handler._authoritative_event_snapshot = (
+                lambda _directory, **kwargs: {
+                    "state": {"available": True},
+                    "history": {"events": [], "latest": 0},
+                    "micromachine_status": kwargs[
+                        "micromachine_status"
+                    ],
+                }
+            )
+            handler._write_sse_event = written.append
+
+        first_written = []
+        second_written = []
+        configure(first_handler, first_written)
+        configure(second_handler, second_written)
+
+        first_handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+        for index in range(web_gui.WEB_GUI_EVENT_RETENTION):
+            server.publish_event(
+                "command_received",
+                {"command_text": f"subscriber-rollover-{index}"},
+            )
+        second_handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+
+        for written in (first_written, second_written):
+            lifecycle = [
+                event
+                for event in written
+                if event["event_type"] == "operation_event"
+            ]
+            self.assertEqual(1, len(lifecycle))
+            self.assertEqual(
+                2,
+                lifecycle[0]["payload"]["timeline_seq"],
+            )
+
+    def test_snapshot_socket_write_does_not_hold_scope_source_lock(self):
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        refresh_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        refresh_handler.server = self.server._http
+        scope_id = "scope-snapshot-socket-write"
+        blackboard_dir = "/tmp/snapshot-socket-write"
+        baseline = {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "operation_events": [],
+        }
+        advanced = {
+            **baseline,
+            "status": "advanced",
+        }
+        snapshot_handler._publish_new_operation_events(
+            baseline,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        snapshot_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: baseline
+        )
+        snapshot_handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        write_entered = threading.Event()
+        write_release = threading.Event()
+
+        def blocking_write(_event):
+            write_entered.set()
+            if not write_release.wait(2):
+                raise TimeoutError("test did not release snapshot write")
+
+        snapshot_handler._write_sse_event = blocking_write
+        refresh_handler._state_payload = lambda: {"available": True}
+        refresh_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: advanced
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            snapshot_future = pool.submit(
+                snapshot_handler._write_authoritative_sse_snapshot,
+                self.server._http.event_journal,
+                blackboard_dir,
+                scope_id,
+            )
+            self.assertTrue(write_entered.wait(1))
+            refresh_future = pool.submit(
+                refresh_handler._refresh_event_sources,
+                blackboard_dir,
+            )
+            refresh_future.result(timeout=1)
+            write_release.set()
+            snapshot_future.result(timeout=3)
+
+    def test_snapshot_rejects_reported_scope_mismatch(self):
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        requested_scope = "scope-requested-snapshot"
+        actual_scope = "scope-actual-snapshot"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "scope-race-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-scope-race-alpha",
+            "kind": "movement_observed",
+            "game_frame": 400,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        snapshot_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": actual_scope,
+                "operation_events": [first],
+            }
+        )
+        snapshot_handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        snapshot_handler._write_sse_event = written.append
+
+        snapshot_handler._write_authoritative_sse_snapshot(
+            self.server._http.event_journal,
+            "/tmp/scope-changing-snapshot",
+            requested_scope,
+        )
+
+        rejected = written[0]["payload"]["micromachine_status"]
+        self.assertEqual("scope_identity_mismatch", rejected["status"])
+        self.assertEqual(requested_scope, rejected["blackboard_scope_id"])
+        self.assertEqual(
+            actual_scope,
+            rejected["reported_blackboard_scope_id"],
+        )
+        self.assertEqual(
+            (False, 0),
+            self.server._http.operation_event_source_cursor(
+                requested_scope
+            ),
+        )
+        self.assertNotIn(
+            actual_scope,
+            self.server._http._observed_operation_event_high_water,
+        )
+        self.assertEqual(
+            [],
+            [
+                event
+                for event in self.server._http.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+    def test_cold_snapshot_ignores_failed_second_source_read(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-cold-second-read-failure"
+        blackboard_dir = "/tmp/cold-second-read-failure"
+        first = {
+            "timeline_seq": 1,
+            "session_epoch": "epoch-cold-read",
+            "operation_id": "cold-read-operation",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "cold-read-update",
+            "kind": "movement_observed",
+            "game_frame": 400,
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 401,
+        }
+        statuses = iter(
+            (
+                {
+                    "enabled": True,
+                    "status": "live",
+                    "operation_registry_authoritative": True,
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first],
+                },
+                {
+                    "enabled": False,
+                    "status": "source_error",
+                    "operation_registry_authoritative": True,
+                    "blackboard_scope_id": scope_id,
+                    "error": "second read failed",
+                    "operation_events": [first, second],
+                },
+            )
+        )
+        handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: next(statuses)
+        )
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+
+        handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+
+        status = written[0]["payload"]["micromachine_status"]
+        self.assertEqual("live", status["status"])
+        self.assertNotIn("second read failed", json.dumps(status))
+        cached = server._observed_payload_snapshots[
+            f"micromachine:{scope_id}"
+        ]
+        self.assertEqual("live", cached["status"])
+        self.assertEqual(
+            [],
+            [
+                event
+                for event in server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+    def test_rejected_warm_snapshot_does_not_replay_pending_lifecycle(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        requested_scope = "scope-warm-snapshot-rejected"
+        actual_scope = "scope-warm-snapshot-foreign"
+        blackboard_dir = "/tmp/warm-snapshot-rejected"
+        self.assertTrue(server.admit_operation_event_scope(requested_scope))
+        server._materialized_operation_event_scopes.add(requested_scope)
+        server._observed_operation_event_seq[requested_scope] = 0
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": requested_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "session_epoch": "epoch-warm",
+                        "operation_id": "warm-operation",
+                        "generation": 1,
+                        "kind": "movement_observed",
+                    }
+                ],
+            },
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        self.assertIn(
+            requested_scope,
+            server._pending_operation_events,
+        )
+
+        handler._micromachine_status_payload = lambda _directory, **_kwargs: {
+            "status": "live",
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": actual_scope,
+            "operation_events": [],
+        }
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+
+        cursor = handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            requested_scope,
+        )
+
+        self.assertEqual(server.event_journal.latest_seq, cursor)
+        self.assertEqual(1, len(written))
+        rejected = written[0]["payload"]["micromachine_status"]
+        self.assertEqual("scope_identity_mismatch", rejected["status"])
+        self.assertIn(
+            requested_scope,
+            server._pending_operation_events,
+            "a later accepted snapshot must still be able to replay it",
+        )
+
+    def test_stale_authoritative_snapshot_does_not_admit_pending_replay(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-stale-authoritative-snapshot"
+        blackboard_dir = "/tmp/stale-authoritative-snapshot"
+        first = {
+            "timeline_seq": 1,
+            "session_epoch": "1700000000000",
+            "operation_id": "stale-authoritative-operation",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "stale-authoritative-update",
+            "kind": "assigned",
+            "game_frame": 700,
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "movement_observed",
+            "game_frame": 701,
+        }
+        current_status = {
+            "status": "live",
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": scope_id,
+            "battlefield_overview": {
+                "identity": {
+                    "session_epoch": "1700000000000",
+                    "generation": 2,
+                    "game_frame": 800,
+                }
+            },
+            "operation_events": [first, second],
+        }
+        stale_status = {
+            **current_status,
+            "battlefield_overview": {
+                "identity": {
+                    "session_epoch": "1600000000000",
+                    "generation": 1,
+                    "game_frame": 750,
+                }
+            },
+        }
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first],
+            },
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        handler._publish_new_operation_events(
+            current_status,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        accepted, _ = server.authoritative_snapshot_payload(
+            f"micromachine:{scope_id}",
+            current_status,
+        )
+        self.assertTrue(accepted)
+        handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: stale_status
+        )
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+
+        cursor = handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+
+        self.assertFalse(handler._last_authoritative_snapshot_admitted)
+        self.assertEqual(server.event_journal.latest_seq, cursor)
+        self.assertEqual(["snapshot"], [event["event_type"] for event in written])
+        self.assertEqual(
+            "1700000000000",
+            written[0]["payload"]["micromachine_status"][
+                "battlefield_overview"
+            ]["identity"]["session_epoch"],
+        )
+        self.assertIn(scope_id, server._pending_operation_events)
+
+    def test_concurrent_cold_scope_reservation_is_atomic_at_capacity(self):
+        server = self.server._http
+        history_retention = (
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        )
+        for index in range(history_retention - 1):
+            self.assertTrue(
+                server.admit_operation_event_scope(
+                    f"reserved-scope-{index}"
+                )
+            )
+        self.assertEqual(
+            (False, 0),
+            server.operation_event_source_cursor("reserved-scope-0"),
+        )
+
+        candidates = (
+            ("race-scope-alpha", "/tmp/race-scope-alpha"),
+            ("race-scope-beta", "/tmp/race-scope-beta"),
+        )
+        start = threading.Barrier(3)
+        status_reads = []
+        status_reads_lock = threading.Lock()
+
+        def run_snapshot(scope_id, blackboard_dir):
+            handler = object.__new__(web_gui._WebGuiRequestHandler)
+            handler.server = server
+            written = []
+
+            def status(_directory, **_kwargs):
+                with status_reads_lock:
+                    status_reads.append(scope_id)
+                return {
+                    "status": "live",
+                    "operation_registry_authoritative": True,
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [],
+                }
+
+            handler._micromachine_status_payload = status
+            handler._authoritative_event_snapshot = (
+                lambda _directory, **kwargs: {
+                    "state": {"available": True},
+                    "history": {"events": [], "latest": 0},
+                    "micromachine_status": kwargs[
+                        "micromachine_status"
+                    ],
+                }
+            )
+            handler._write_sse_event = written.append
+            start.wait()
+            handler._write_authoritative_sse_snapshot(
+                server.event_journal,
+                blackboard_dir,
+                scope_id,
+            )
+            return written[0]["payload"]["micromachine_status"]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(run_snapshot, scope_id, blackboard_dir)
+                for scope_id, blackboard_dir in candidates
+            ]
+            start.wait()
+            statuses = [
+                future.result(timeout=3)
+                for future in futures
+            ]
+
+        self.assertEqual(
+            {"live", "scope_capacity_rejected"},
+            {str(status.get("status", "")) for status in statuses},
+        )
+        self.assertEqual(
+            history_retention,
+            len(server._observed_operation_event_high_water),
+        )
+        admitted_candidates = {
+            scope_id
+            for scope_id, _ in candidates
+            if scope_id in server._observed_operation_event_high_water
+        }
+        self.assertEqual(1, len(admitted_candidates))
+        self.assertEqual(
+            {scope_id for scope_id, _ in candidates},
+            set(status_reads),
+            "source identity is checked before permanent scope admission",
+        )
+        admitted_scope = next(iter(admitted_candidates))
+        self.assertEqual(
+            (True, 0),
+            server.operation_event_source_cursor(admitted_scope),
+        )
+        rejected_scope = next(
+            scope_id
+            for scope_id, _ in candidates
+            if scope_id != admitted_scope
+        )
+        self.assertNotIn(
+            f"micromachine:{rejected_scope}",
+            server._observed_payload_snapshots,
+        )
+
+        operation_events = [
+            event
+            for event in server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+        ]
+        self.assertEqual([], operation_events)
+
+    def test_capacity_rejected_refreshes_do_not_grow_source_error_caches(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        handler._state_payload = lambda: {"available": True}
+        retention = server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        for index in range(retention - 1):
+            self.assertTrue(
+                server.admit_operation_event_scope(
+                    f"refresh-reserved-scope-{index}"
+                )
+            )
+        baseline_dir = "/tmp/refresh-admitted-baseline"
+        baseline_scope = web_gui._micromachine_blackboard_scope_id(
+            baseline_dir
+        )
+        self.assertTrue(server.admit_operation_event_scope(baseline_scope))
+        handler._micromachine_status_payload = lambda _directory, **_kwargs: {
+            "status": "live",
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": baseline_scope,
+            "operation_events": [],
+        }
+        handler._refresh_event_sources(baseline_dir)
+
+        failed_before = set(server._failed_event_sources)
+        hashes_before = dict(server._observed_payload_hashes)
+        snapshots_before = deepcopy(server._observed_payload_snapshots)
+        status_reads = 0
+
+        def capacity_checked_status(directory, **_kwargs):
+            nonlocal status_reads
+            status_reads += 1
+            return {
+                "status": "live",
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": (
+                    web_gui._micromachine_blackboard_scope_id(directory)
+                ),
+                "operation_events": [],
+            }
+
+        handler._micromachine_status_payload = (
+            capacity_checked_status
+        )
+        for index in range(64):
+            handler._refresh_event_sources(
+                f"/tmp/refresh-capacity-rejected-{index}"
+            )
+
+        self.assertEqual(64, status_reads)
+        self.assertEqual(failed_before, server._failed_event_sources)
+        self.assertEqual(hashes_before, server._observed_payload_hashes)
+        self.assertEqual(
+            snapshots_before,
+            server._observed_payload_snapshots,
+        )
+
+    def test_unadmitted_source_errors_do_not_grow_cache_or_evict_replay(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        server.event_journal = web_gui._WebEventJournal()
+        handler._state_payload = lambda: {"available": True}
+
+        def failed_status(_directory, **_kwargs):
+            raise RuntimeError("untrusted status source failed")
+
+        handler._micromachine_status_payload = failed_status
+        legitimate = server.publish_event(
+            "command_received",
+            {"status": "received", "command_text": "preserve replay"},
+            update_id="legitimate-replay-update",
+        )
+        handler._refresh_event_sources("/tmp/unadmitted-error-warmup")
+        failed_before = set(server._failed_event_sources)
+        hashes_before = dict(server._observed_payload_hashes)
+        snapshots_before = deepcopy(server._observed_payload_snapshots)
+        journal_latest_before = server.event_journal.latest_seq
+
+        for index in range(600):
+            handler._refresh_event_sources(
+                f"/tmp/unadmitted-source-error-{index}"
+            )
+
+        self.assertEqual(
+            {},
+            server._observed_operation_event_high_water,
+        )
+        self.assertEqual(failed_before, server._failed_event_sources)
+        self.assertEqual(hashes_before, server._observed_payload_hashes)
+        self.assertEqual(
+            snapshots_before,
+            server._observed_payload_snapshots,
+        )
+        self.assertEqual(
+            journal_latest_before,
+            server.event_journal.latest_seq,
+        )
+        replay_available, replay_events = server.event_journal.replay_batch(
+            int(legitimate["event_seq"]) - 1
+        )
+        self.assertTrue(replay_available)
+        self.assertEqual(
+            "command_received",
+            replay_events[0]["event_type"],
+        )
+
+    def test_status_endpoint_does_not_consume_replay_scope_capacity(self):
+        server = self.server._http
+        for index in range(
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        ):
+            self.assertTrue(
+                server.admit_operation_event_scope(
+                    f"status-reserved-scope-{index}"
+                )
+            )
+
+        novel_dir = "/tmp/status-capacity-read-only"
+        novel_scope = web_gui._micromachine_blackboard_scope_id(novel_dir)
+        document = self.get_json(
+            "/api/micromachine/status?"
+            f"blackboard_dir={novel_dir}"
+        )
+
+        self.assertTrue(document["enabled"])
+        self.assertNotEqual("scope_capacity_rejected", document["status"])
+        self.assertNotIn(
+            novel_scope,
+            server._observed_operation_event_high_water,
+        )
+        self.assertEqual(
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION,
+            len(server._observed_operation_event_high_water),
+        )
+
+    def test_many_read_only_probes_cannot_deny_attached_sse_scope(self):
+        server = self.server._http
+        timeline = self.bridge._micromachine_operation_timeline
+        legitimate_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(legitimate_directory.cleanup)
+        legitimate_dir = legitimate_directory.name
+        self.attach_fake_micromachine_runtime(legitimate_dir)
+        legitimate_scope = web_gui._micromachine_blackboard_scope_id(
+            legitimate_dir
+        )
+        scope_history_before = dict(
+            timeline._scope_epoch_history
+        )
+
+        for index in range(
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION + 8
+        ):
+            document = self.get_json(
+                "/api/micromachine/status?"
+                f"blackboard_dir=/tmp/untrusted-status-probe-{index}"
+            )
+            self.assertNotEqual(
+                "scope_capacity_rejected",
+                document["status"],
+            )
+
+        for index in range(
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION + 8
+        ):
+            stream = self.get_sse(
+                "/api/events?"
+                f"blackboard_dir=/tmp/untrusted-sse-probe-{index}"
+                "&once=1"
+            )
+            events = self.parse_sse_events(stream)
+            detached_status = events[0]["data"]["payload"][
+                "micromachine_status"
+            ]
+            self.assertNotEqual(
+                "scope_capacity_rejected",
+                detached_status["status"],
+            )
+            self.assertFalse(
+                detached_status["operation_registry_authoritative"]
+            )
+
+        self.assertEqual(
+            {},
+            server._observed_operation_event_high_water,
+            "read-only status/SSE probes must not reserve replay tombstones",
+        )
+        self.assertEqual(
+            scope_history_before,
+            timeline._scope_epoch_history,
+            "read-only status/SSE probes must not reserve reducer scope history",
+        )
+
+        stream = self.get_sse(
+            "/api/events?"
+            f"blackboard_dir={quote(legitimate_dir)}&once=1"
+        )
+        events = self.parse_sse_events(stream)
+
+        self.assertEqual("snapshot", events[0]["event"])
+        self.assertNotEqual(
+            "scope_capacity_rejected",
+            events[0]["data"]["payload"][
+                "micromachine_status"
+            ]["status"],
+        )
+        self.assertTrue(
+            events[0]["data"]["payload"]["micromachine_status"][
+                "operation_registry_authoritative"
+            ]
+        )
+        self.assertIn(
+            legitimate_scope,
+            server._observed_operation_event_high_water,
+        )
+        self.assertIn(
+            legitimate_scope,
+            timeline._scope_epoch_history,
+            "a later authoritative source must still admit the legitimate scope",
+        )
+
+    def test_status_endpoint_rejects_reported_scope_mismatch(self):
+        original = self.bridge.micromachine_status_detached
+
+        def mismatched_status(*, blackboard_dir=""):
+            return {
+                "enabled": True,
+                "status": "live",
+                "blackboard_dir": blackboard_dir,
+                "blackboard_scope_id": "foreign-status-scope",
+            }
+
+        self.bridge.micromachine_status_detached = mismatched_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status_detached",
+            original,
+        )
+
+        blackboard_dir = "/tmp/status-scope-mismatch"
+        document = self.get_json(
+            "/api/micromachine/status?blackboard_dir="
+            + blackboard_dir
+        )
+
+        self.assertFalse(document["enabled"])
+        self.assertEqual("scope_identity_mismatch", document["status"])
+        self.assertEqual(
+            web_gui._micromachine_blackboard_scope_id(blackboard_dir),
+            document["blackboard_scope_id"],
+        )
+        self.assertEqual(
+            "foreign-status-scope",
+            document["reported_blackboard_scope_id"],
+        )
+
+    def test_regressive_status_cannot_advance_operation_source_cursor(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        blackboard_dir = "/tmp/regressive-source-cursor"
+        scope_id = web_gui._micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "regressive-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-regressive-alpha",
+            "kind": "movement_observed",
+            "game_frame": 500,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 501,
+            "summary": "engagement observed",
+        }
+        third = {
+            **first,
+            "timeline_seq": 3,
+            "kind": "target_reached",
+            "game_frame": 502,
+            "summary": "target reached",
+        }
+
+        def status(generation, frame, events):
+            return {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": scope_id,
+                "battlefield_overview": {
+                    "identity": {
+                        "session_epoch": "1700000000000",
+                        "generation": generation,
+                        "game_frame": frame,
+                    }
+                },
+                "operation_events": events,
+            }
+
+        baseline = status(1, 100, [first])
+        current = status(2, 200, [first, second])
+        stale = status(1, 150, [first])
+        advanced = status(3, 300, [first, second, third])
+        handler._publish_new_operation_events(
+            baseline,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        handler._state_payload = lambda: {"available": True}
+        statuses = iter((current, stale, advanced))
+        handler._micromachine_status_payload = lambda _directory, **_kwargs: next(
+            statuses
+        )
+
+        handler._refresh_event_sources(blackboard_dir)
+        self.assertEqual(
+            2,
+            server._observed_operation_event_seq[scope_id],
+        )
+        self.assertEqual(
+            [2],
+            [
+                event["payload"]["timeline_seq"]
+                for event in server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+        handler._refresh_event_sources(blackboard_dir)
+        self.assertEqual(
+            [2],
+            [
+                event["payload"]["timeline_seq"]
+                for event in server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+        handler._refresh_event_sources(blackboard_dir)
+        self.assertEqual(
+            [2, 3],
+            [
+                event["payload"]["timeline_seq"]
+                for event in server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+    def test_regressive_authoritative_snapshot_uses_last_accepted_status(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-regressive-authoritative-snapshot"
+        blackboard_dir = "/tmp/regressive-authoritative-snapshot"
+
+        def status(generation, frame):
+            return {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": scope_id,
+                "battlefield_overview": {
+                    "identity": {
+                        "session_epoch": "1700000000000",
+                        "generation": generation,
+                        "game_frame": frame,
+                    }
+                },
+                "operation_events": [],
+            }
+
+        accepted = status(2, 200)
+        stale = status(1, 100)
+        self.assertTrue(
+            server.publish_changed_snapshot(
+                f"micromachine:{scope_id}",
+                "micromachine_status",
+                accepted,
+                blackboard_dir=blackboard_dir,
+            )
+        )
+        handler._publish_new_operation_events(
+            accepted,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: deepcopy(stale)
+        )
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+
+        handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+
+        identity = written[0]["payload"]["micromachine_status"][
+            "battlefield_overview"
+        ]["identity"]
+        self.assertEqual(2, identity["generation"])
+        self.assertEqual(200, identity["game_frame"])
+        self.assertEqual(
+            ("1700000000000", 2, 200),
+            server._observed_payload_identities[
+                f"micromachine:{scope_id}"
+            ],
+        )
+
+    def test_authoritative_identity_survives_active_scope_churn(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-history-backed-authoritative-status"
+        blackboard_dir = "/tmp/history-backed-authoritative-status"
+
+        def status(scope, generation, frame):
+            return {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": scope,
+                "battlefield_overview": {
+                    "identity": {
+                        "session_epoch": "1700000000000",
+                        "generation": generation,
+                        "game_frame": frame,
+                    }
+                },
+                "operation_events": [],
+            }
+
+        accepted = status(scope_id, 2, 200)
+        stale = status(scope_id, 1, 100)
+        self.assertTrue(
+            server.publish_changed_snapshot(
+                f"micromachine:{scope_id}",
+                "micromachine_status",
+                accepted,
+                blackboard_dir=blackboard_dir,
+            )
+        )
+        handler._publish_new_operation_events(
+            accepted,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        for index in range(
+            server._OPERATION_EVENT_SCOPE_RETENTION + 2
+        ):
+            churn_scope = f"scope-authoritative-churn-{index}"
+            churn_status = status(churn_scope, 1, index)
+            server.publish_changed_snapshot(
+                f"micromachine:{churn_scope}",
+                "micromachine_status",
+                churn_status,
+                blackboard_dir=f"/tmp/{churn_scope}",
+            )
+            handler._publish_new_operation_events(
+                churn_status,
+                blackboard_dir=f"/tmp/{churn_scope}",
+                publish=True,
+            )
+        self.assertNotIn(
+            scope_id,
+            server._observed_operation_event_seq,
+        )
+        self.assertIn(
+            f"micromachine:{scope_id}",
+            server._observed_payload_snapshots,
+        )
+
+        handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: deepcopy(stale)
+        )
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+        handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+
+        identity = written[0]["payload"]["micromachine_status"][
+            "battlefield_overview"
+        ]["identity"]
+        self.assertEqual(2, identity["generation"])
+        self.assertEqual(200, identity["game_frame"])
+
+    def test_same_scope_snapshot_waits_for_refresh_commit_boundary(self):
+        refresh_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        refresh_handler.server = self.server._http
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        server = self.server._http
+        blackboard_dir = "/tmp/serialized-source-commit"
+        scope_id = web_gui._micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "serialized-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-serialized-alpha",
+            "kind": "movement_observed",
+            "game_frame": 600,
+            "summary": "movement observed",
+            "technical": {},
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 601,
+            "summary": "engagement observed",
+        }
+
+        def status(generation, frame, events):
+            return {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": scope_id,
+                "battlefield_overview": {
+                    "identity": {
+                        "session_epoch": "1700000000000",
+                        "generation": generation,
+                        "game_frame": frame,
+                    }
+                },
+                "operation_events": events,
+            }
+
+        baseline = status(2, 200, [first])
+        stale = status(1, 100, [first])
+        advanced = status(3, 300, [first, second])
+        self.assertTrue(
+            server.publish_changed_snapshot(
+                f"micromachine:{scope_id}",
+                "micromachine_status",
+                baseline,
+                blackboard_dir=blackboard_dir,
+            )
+        )
+        refresh_handler._publish_new_operation_events(
+            baseline,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+
+        publish_entered = threading.Event()
+        publish_release = threading.Event()
+        snapshot_source_entered = threading.Event()
+        original_publish = server.publish_changed_snapshot
+
+        def blocking_publish(cache_key, event_type, payload, **kwargs):
+            if payload is stale:
+                publish_entered.set()
+                if not publish_release.wait(2):
+                    raise TimeoutError("test did not release stale publish")
+            return original_publish(
+                cache_key,
+                event_type,
+                payload,
+                **kwargs,
+            )
+
+        server.publish_changed_snapshot = blocking_publish
+        self.addCleanup(
+            setattr,
+            server,
+            "publish_changed_snapshot",
+            original_publish,
+        )
+        refresh_handler._state_payload = lambda: {"available": True}
+        refresh_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: stale
+        )
+
+        def snapshot_status(_directory, **_kwargs):
+            snapshot_source_entered.set()
+            return advanced
+
+        snapshot_handler._micromachine_status_payload = snapshot_status
+        snapshot_handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        snapshot_handler._write_sse_event = lambda _event: None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            refresh_future = pool.submit(
+                refresh_handler._refresh_event_sources,
+                blackboard_dir,
+            )
+            self.assertTrue(publish_entered.wait(1))
+            snapshot_future = pool.submit(
+                snapshot_handler._write_authoritative_sse_snapshot,
+                server.event_journal,
+                blackboard_dir,
+                scope_id,
+            )
+            time.sleep(0.05)
+            self.assertFalse(snapshot_source_entered.is_set())
+
+            publish_release.set()
+            refresh_future.result(timeout=3)
+            snapshot_future.result(timeout=3)
+
+        self.assertTrue(snapshot_source_entered.is_set())
+        self.assertEqual(
+            [2],
+            [
+                event["payload"]["timeline_seq"]
+                for event in server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+    def test_blocked_scope_source_does_not_block_other_scope_snapshot(self):
+        blocked_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        blocked_handler.server = self.server._http
+        free_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        free_handler.server = self.server._http
+        blocked_dir = "/tmp/blocked-operation-source"
+        free_dir = "/tmp/free-operation-source"
+        blocked_scope = "scope-blocked-operation-source"
+        free_scope = "scope-free-operation-source"
+        blocked_entered = threading.Event()
+        blocked_release = threading.Event()
+
+        def blocked_status(_directory, **_kwargs):
+            blocked_entered.set()
+            if not blocked_release.wait(2):
+                raise TimeoutError("test did not release blocked source")
+            return {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": blocked_scope,
+                "operation_events": [],
+            }
+
+        blocked_handler._micromachine_status_payload = blocked_status
+        blocked_handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        blocked_handler._write_sse_event = lambda _event: None
+        free_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": free_scope,
+                "operation_events": [],
+            }
+        )
+        free_handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        free_handler._write_sse_event = lambda _event: None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            blocked_future = pool.submit(
+                blocked_handler._write_authoritative_sse_snapshot,
+                self.server._http.event_journal,
+                blocked_dir,
+                blocked_scope,
+            )
+            self.assertTrue(blocked_entered.wait(1))
+            free_future = pool.submit(
+                free_handler._write_authoritative_sse_snapshot,
+                self.server._http.event_journal,
+                free_dir,
+                free_scope,
+            )
+            free_future.result(timeout=1)
+            blocked_release.set()
+            blocked_future.result(timeout=3)
 
     def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
-        original = self.bridge.micromachine_status
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.attach_fake_micromachine_runtime(directory.name)
+        original = self.bridge.micromachine_status_for_runtime
         self.server._http.publish_event(
             "state",
             {"available": True, "marker": "snapshot-race-baseline"},
@@ -1082,22 +2987,35 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         status_release = threading.Event()
         publisher_started = threading.Event()
 
-        def blocking_status(*, blackboard_dir=""):
+        def blocking_status(
+            *,
+            blackboard_dir="",
+            runtime_instance_id,
+            telemetry_document,
+        ):
             status_entered.set()
             if not status_release.wait(2):
                 raise TimeoutError("test did not release snapshot status")
-            return original(blackboard_dir=blackboard_dir)
+            return original(
+                blackboard_dir=blackboard_dir,
+                runtime_instance_id=runtime_instance_id,
+                telemetry_document=telemetry_document,
+            )
 
-        self.bridge.micromachine_status = blocking_status
+        self.bridge.micromachine_status_for_runtime = blocking_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original,
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            response_future = pool.submit(self.get_sse)
+            response_future = pool.submit(
+                self.get_sse,
+                "/api/events?"
+                f"blackboard_dir={quote(directory.name)}&once=1",
+            )
             self.assertTrue(
                 status_entered.wait(1),
                 "authoritative snapshot did not enter MicroMachine status",
@@ -1140,8 +3058,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ],
         )
 
-    def test_sse_snapshot_restarts_when_concurrent_events_roll_past_retention(self):
-        original = self.bridge.micromachine_status
+    def test_sse_snapshot_advances_cut_when_events_roll_past_retention(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.attach_fake_micromachine_runtime(directory.name)
+        original = self.bridge.micromachine_status_for_runtime
         self.server._http.event_journal = web_gui._WebEventJournal(
             retention=2
         )
@@ -1152,22 +3073,35 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         status_entered = threading.Event()
         status_release = threading.Event()
 
-        def blocking_status(*, blackboard_dir=""):
+        def blocking_status(
+            *,
+            blackboard_dir="",
+            runtime_instance_id,
+            telemetry_document,
+        ):
             status_entered.set()
             if not status_release.wait(2):
                 raise TimeoutError("test did not release snapshot status")
-            return original(blackboard_dir=blackboard_dir)
+            return original(
+                blackboard_dir=blackboard_dir,
+                runtime_instance_id=runtime_instance_id,
+                telemetry_document=telemetry_document,
+            )
 
-        self.bridge.micromachine_status = blocking_status
+        self.bridge.micromachine_status_for_runtime = blocking_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original,
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            response_future = pool.submit(self.get_sse)
+            response_future = pool.submit(
+                self.get_sse,
+                "/api/events?"
+                f"blackboard_dir={quote(directory.name)}&once=1",
+            )
             self.assertTrue(status_entered.wait(1))
             for index in range(3):
                 self.server._http.publish_event(
@@ -1191,7 +3125,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             for event in self.parse_sse_events(stream)
             if event["event"] == "snapshot"
         ]
-        self.assertGreaterEqual(len(snapshots), 2)
+        self.assertEqual(1, len(snapshots))
         self.assertEqual(
             self.server._http.event_journal.latest_seq,
             snapshots[-1]["data"]["event_seq"],
@@ -1237,7 +3171,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
     def test_concurrent_source_refresh_cannot_publish_older_snapshot_last(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
-        scope_id = "scope-refresh-high-water"
+        blackboard_dir = "/tmp/source-refresh-high-water"
+        scope_id = web_gui._micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
         older = semantic_operation_payload(
             generation=1,
             frame=100,
@@ -1258,7 +3195,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         call_lock = threading.Lock()
         call_count = 0
 
-        def raced_status(_blackboard_dir):
+        def raced_status(_blackboard_dir, **_kwargs):
             nonlocal call_count
             with call_lock:
                 call_count += 1
@@ -1275,16 +3212,18 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             older_future = pool.submit(
                 handler._refresh_event_sources,
-                "/tmp/source-refresh-high-water",
+                blackboard_dir,
             )
             self.assertTrue(first_entered.wait(1))
             newer_future = pool.submit(
                 handler._refresh_event_sources,
-                "/tmp/source-refresh-high-water",
+                blackboard_dir,
             )
-            newer_future.result(timeout=3)
+            time.sleep(0.05)
+            self.assertFalse(newer_future.done())
             release_first.set()
             older_future.result(timeout=3)
+            newer_future.result(timeout=3)
 
         published = [
             event["payload"]
@@ -1292,10 +3231,19 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             if event["event_type"] == "micromachine_status"
             and event["payload"].get("blackboard_scope_id") == scope_id
         ]
-        self.assertEqual(1, len(published))
+        self.assertEqual(2, len(published))
+        self.assertEqual(
+            [1, 2],
+            [
+                payload["battlefield_overview"]["identity"][
+                    "generation"
+                ]
+                for payload in published
+            ],
+        )
         self.assertEqual(
             2,
-            published[0]["battlefield_overview"]["identity"][
+            published[-1]["battlefield_overview"]["identity"][
                 "generation"
             ],
         )
@@ -1306,7 +3254,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ],
         )
 
-    def test_operation_event_scope_cursor_and_caches_are_lru_bounded(self):
+    def test_operation_event_active_cursor_is_lru_bounded_with_history_cache(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
         http_server = self.server._http
@@ -1351,35 +3299,392 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             evicted_scope,
             http_server._observed_operation_event_seq,
         )
-        self.assertNotIn(
+        self.assertIn(
             f"micromachine:{evicted_scope}",
             http_server._observed_payload_hashes,
         )
-        self.assertNotIn(
+        self.assertIn(
             f"source:micromachine_status:{evicted_scope}",
             http_server._observed_payload_hashes,
         )
-        self.assertNotIn(
+        self.assertIn(
             f"micromachine_status:{evicted_scope}",
             http_server._failed_event_sources,
         )
+        self.assertEqual(
+            1,
+            http_server._observed_operation_event_high_water[
+                evicted_scope
+            ],
+        )
+
+        operation_events_before_revisit = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": evicted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "assigned",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{evicted_scope}",
+            publish=True,
+        )
+        operation_events_after_replay = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        self.assertEqual(
+            operation_events_before_revisit,
+            operation_events_after_replay,
+        )
+
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": evicted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": retention + 100,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "movement_observed",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{evicted_scope}",
+            publish=True,
+        )
+        operation_events_after_advance = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        self.assertEqual(
+            len(operation_events_before_revisit) + 1,
+            len(operation_events_after_advance),
+        )
+        self.assertEqual(
+            "movement_observed",
+            operation_events_after_advance[-1]["payload"]["kind"],
+        )
+
+        for index in range(70):
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": f"history-scope-{index}",
+                    "operation_events": [
+                        {
+                            "timeline_seq": index + 1,
+                            "operation_id": f"history-operation-{index}",
+                            "generation": 1,
+                            "kind": "assigned",
+                        }
+                    ],
+                },
+                blackboard_dir=f"/tmp/history-scope-{index}",
+                publish=True,
+            )
+        self.assertNotIn(
+            evicted_scope,
+            http_server._observed_operation_event_seq,
+        )
+        self.assertEqual(
+            retention + 100,
+            http_server._observed_operation_event_high_water[
+                evicted_scope
+            ],
+        )
+
+        operation_events_before_retired_revisit = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": evicted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "assigned",
+                    },
+                    {
+                        "timeline_seq": retention + 100,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "movement_observed",
+                    },
+                ],
+            },
+            blackboard_dir=f"/tmp/{evicted_scope}",
+            publish=True,
+        )
+        self.assertEqual(
+            operation_events_before_retired_revisit,
+            [
+                event
+                for event in http_server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == evicted_scope
+            ],
+        )
+
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": evicted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": retention + 101,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "engagement_observed",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{evicted_scope}",
+            publish=True,
+        )
+        operation_events_after_retired_advance = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        self.assertEqual(
+            len(operation_events_before_retired_revisit) + 1,
+            len(operation_events_after_retired_advance),
+        )
+        self.assertEqual(
+            "engagement_observed",
+            operation_events_after_retired_advance[-1]["payload"]["kind"],
+        )
+
+    def test_pending_operation_event_survives_history_scope_churn(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-pending-history-churn"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "pending-history-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-pending-history-alpha",
+            "kind": "movement_observed",
+            "game_frame": 700,
+            "summary": "movement observed",
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 701,
+            "summary": "engagement observed",
+        }
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first],
+            },
+            blackboard_dir=f"/tmp/{scope_id}",
+            publish=True,
+        )
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second],
+            },
+            blackboard_dir=f"/tmp/{scope_id}",
+            publish=True,
+        )
+        self.assertIn(scope_id, server._pending_operation_events)
+
+        for index in range(
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION + 5
+        ):
+            churn_scope = f"scope-pending-history-churn-{index}"
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": churn_scope,
+                    "operation_events": [
+                        {
+                            "timeline_seq": 1,
+                            "operation_id": f"operation-{index}",
+                            "generation": 1,
+                            "kind": "assigned",
+                        }
+                    ],
+                },
+                blackboard_dir=f"/tmp/{churn_scope}",
+                publish=True,
+            )
+
+        self.assertIn(scope_id, server._pending_operation_events)
+        self.assertIn(
+            scope_id,
+            server._observed_operation_event_high_water,
+        )
+        self.assertLessEqual(
+            len(server._observed_operation_event_high_water),
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION,
+        )
+
+    def test_operation_event_scope_capacity_rejects_novel_scope_atomically(
+        self,
+    ):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        http_server = self.server._http
+        active_retention = http_server._OPERATION_EVENT_SCOPE_RETENTION
+        history_retention = (
+            http_server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        )
+
+        for index in range(history_retention):
+            scope_id = f"bounded-history-scope-{index}"
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [
+                        {
+                            "timeline_seq": 1,
+                            "operation_id": f"bounded-operation-{index}",
+                            "generation": 1,
+                            "kind": "assigned",
+                        }
+                    ],
+                },
+                blackboard_dir=f"/tmp/{scope_id}",
+                publish=True,
+            )
+
+        self.assertEqual(
+            active_retention,
+            len(http_server._observed_operation_event_seq),
+        )
+        self.assertEqual(
+            active_retention,
+            len(http_server._observed_operation_scope_order),
+        )
+        self.assertEqual(
+            history_retention,
+            len(http_server._observed_operation_event_high_water),
+        )
+
+        novel_scope = "bounded-history-scope-overflow"
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": novel_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "operation_id": "overflow-operation",
+                        "generation": 1,
+                        "kind": "assigned",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{novel_scope}",
+            publish=True,
+        )
+        self.assertEqual(
+            history_retention,
+            len(http_server._observed_operation_event_high_water),
+        )
+        self.assertNotIn(
+            novel_scope,
+            http_server._observed_operation_event_high_water,
+        )
+        self.assertNotIn(
+            novel_scope,
+            http_server._observed_operation_event_seq,
+        )
+        self.assertNotIn(
+            novel_scope,
+            http_server._observed_operation_scope_order,
+        )
+        self.assertNotIn(
+            f"micromachine:{novel_scope}",
+            http_server._observed_payload_snapshots,
+        )
+
+        handler._micromachine_status_payload = lambda _directory, **_kwargs: {
+            "operation_registry_authoritative": True,
+            "blackboard_scope_id": novel_scope,
+            "operation_events": [
+                {
+                    "timeline_seq": 2,
+                    "operation_id": "overflow-operation",
+                    "generation": 1,
+                    "kind": "movement_observed",
+                }
+            ],
+        }
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+        handler._write_authoritative_sse_snapshot(
+            http_server.event_journal,
+            f"/tmp/{novel_scope}",
+            novel_scope,
+        )
+
+        rejected = written[0]["payload"]["micromachine_status"]
+        self.assertEqual(
+            "scope_capacity_rejected",
+            rejected["status"],
+        )
+        self.assertNotIn(
+            f"micromachine:{novel_scope}",
+            http_server._observed_payload_snapshots,
+        )
+        self.assertNotIn(
+            novel_scope,
+            http_server._pending_operation_events,
+        )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
-        original = self.bridge.micromachine_status
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.attach_fake_micromachine_runtime(directory.name)
+        original = self.bridge.micromachine_status_for_runtime
 
-        def unavailable_status(*, blackboard_dir=""):
-            del blackboard_dir
+        def unavailable_status(**_kwargs):
             raise OSError("blackboard source unavailable")
 
-        self.bridge.micromachine_status = unavailable_status
+        self.bridge.micromachine_status_for_runtime = unavailable_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original,
         )
 
-        stream = self.get_sse()
+        stream = self.get_sse(
+            "/api/events?"
+            f"blackboard_dir={quote(directory.name)}&once=1"
+        )
         events = self.parse_sse_events(stream)
 
         self.assertIn(": heartbeat", stream)
@@ -1392,6 +3697,199 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn(
             "blackboard source unavailable",
             snapshot["micromachine_status"]["error"],
+        )
+
+    def test_rejected_snapshot_does_not_emit_concurrent_lifecycle_event(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.attach_fake_micromachine_runtime(directory.name)
+        original = self.bridge.micromachine_status_for_runtime
+        requested_scope = web_gui._micromachine_blackboard_scope_id(
+            directory.name
+        )
+        status_entered = threading.Event()
+        status_release = threading.Event()
+
+        def foreign_status(**_kwargs):
+            status_entered.set()
+            if not status_release.wait(2):
+                raise TimeoutError("test did not release rejected status")
+            return {
+                "enabled": True,
+                "status": "live",
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": "scope-foreign-rejected",
+                "operation_events": [],
+            }
+
+        self.bridge.micromachine_status_for_runtime = foreign_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status_for_runtime",
+            original,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            response_future = pool.submit(
+                self.get_sse,
+                "/api/events?"
+                f"blackboard_dir={quote(directory.name)}&once=1",
+            )
+            self.assertTrue(status_entered.wait(1))
+            self.server._http.publish_event(
+                "operation_event",
+                {
+                    "timeline_seq": 1,
+                    "session_epoch": "epoch-rejected",
+                    "operation_id": "rejected-operation",
+                    "generation": 1,
+                    "requested_generation": 1,
+                    "kind": "movement_observed",
+                    "blackboard_scope_id": requested_scope,
+                },
+                operation_id="rejected-operation",
+                generation=1,
+                blackboard_scope_id=requested_scope,
+            )
+            status_release.set()
+            stream = response_future.result(timeout=3)
+
+        events = self.parse_sse_events(stream)
+        self.assertEqual(["snapshot"], [event["event"] for event in events])
+        self.assertEqual(
+            "scope_identity_mismatch",
+            events[0]["data"]["payload"][
+                "micromachine_status"
+            ]["status"],
+        )
+
+    def test_rejected_snapshot_reconnect_cannot_replay_lifecycle(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        blackboard_dir = directory.name
+        self.attach_fake_micromachine_runtime(blackboard_dir)
+        original = self.bridge.micromachine_status_for_runtime
+        requested_scope = web_gui._micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        first = {
+            "timeline_seq": 1,
+            "session_epoch": "epoch-rejected-reconnect",
+            "operation_id": "rejected-reconnect-operation",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "rejected-reconnect-update",
+            "kind": "assigned",
+            "game_frame": 600,
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "movement_observed",
+            "game_frame": 601,
+        }
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": requested_scope,
+                "operation_events": [first],
+            },
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": requested_scope,
+                "operation_events": [first, second],
+            },
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+
+        def foreign_status(**_kwargs):
+            return {
+                "enabled": True,
+                "status": "live",
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": "scope-rejected-reconnect-foreign",
+                "operation_events": [],
+            }
+
+        self.bridge.micromachine_status_for_runtime = foreign_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status_for_runtime",
+            original,
+        )
+
+        event_path = (
+            "/api/events?"
+            f"blackboard_dir={quote(blackboard_dir)}&once=1"
+        )
+        initial = self.parse_sse_events(self.get_sse(event_path))
+        rejected_cursor = initial[0]["data"]["event_seq"]
+        self.assertEqual(
+            "scope_identity_mismatch",
+            initial[0]["data"]["payload"][
+                "micromachine_status"
+            ]["status"],
+        )
+
+        rejected_reconnect = self.parse_sse_events(
+            self.get_sse(
+                event_path,
+                headers={"Last-Event-ID": str(rejected_cursor)}
+            )
+        )
+        self.assertEqual(
+            ["snapshot"],
+            [event["event"] for event in rejected_reconnect],
+        )
+        self.assertEqual(
+            "scope_identity_mismatch",
+            rejected_reconnect[0]["data"]["payload"][
+                "micromachine_status"
+            ]["status"],
+        )
+
+        def admitted_status(*, blackboard_dir="", **_kwargs):
+            return {
+                "enabled": True,
+                "status": "live",
+                "operation_registry_authoritative": True,
+                "blackboard_dir": blackboard_dir,
+                "blackboard_scope_id": requested_scope,
+                "battlefield_overview": {
+                    "identity": {
+                        "session_epoch": "1700000000000",
+                        "generation": 1,
+                        "game_frame": 601,
+                    }
+                },
+                "operation_events": [first, second],
+            }
+
+        self.bridge.micromachine_status_for_runtime = admitted_status
+        admitted_reconnect = self.parse_sse_events(
+            self.get_sse(
+                event_path,
+                headers={"Last-Event-ID": str(rejected_cursor)}
+            )
+        )
+
+        self.assertEqual(
+            ["snapshot", "operation_event"],
+            [event["event"] for event in admitted_reconnect],
+        )
+        self.assertTrue(
+            admitted_reconnect[1]["data"]["subscriber_local_replay"]
+        )
+        self.assertEqual(
+            2,
+            admitted_reconnect[1]["data"]["payload"]["timeline_seq"],
         )
 
     def test_sse_last_event_id_replays_only_newer_events(self):
@@ -1426,6 +3924,549 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             events[0]["data"]["payload"]["command_text"],
             "second",
         )
+
+    def test_equal_cursor_reconnect_revalidates_detached_runtime_snapshot(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as blackboard_dir:
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            self.server._http.publish_event(
+                "state",
+                {"available": True, "marker": "attached-before-detach"},
+            )
+            event_path = (
+                "/api/events?"
+                f"blackboard_dir={quote(blackboard_dir)}&once=1"
+            )
+            initial = self.parse_sse_events(self.get_sse(event_path))
+            cursor = initial[0]["data"]["event_seq"]
+            self.assertTrue(
+                initial[0]["data"]["payload"]["micromachine_status"][
+                    "operation_registry_authoritative"
+                ]
+            )
+
+            self.detach_fake_micromachine_runtime(blackboard_dir)
+            reconnect = self.parse_sse_events(
+                self.get_sse(
+                    event_path,
+                    headers={"Last-Event-ID": str(cursor)},
+                )
+            )
+
+        self.assertEqual(["snapshot"], [event["event"] for event in reconnect])
+        detached = reconnect[0]["data"]["payload"]["micromachine_status"]
+        self.assertFalse(detached["operation_registry_authoritative"])
+        self.assertFalse(detached["runtime_attached"])
+        self.assertFalse(detached["telemetry_current_for_process"])
+        self.assertTrue(detached["telemetry_stale_or_detached"])
+
+    def test_equal_cursor_reconnect_revalidates_detach_with_unrelated_replay(
+        self,
+    ):
+        for replay_kind in ("foreign_operation", "state"):
+            with (
+                self.subTest(replay_kind=replay_kind),
+                tempfile.TemporaryDirectory() as blackboard_dir,
+            ):
+                self.server._http.event_journal = web_gui._WebEventJournal()
+                self.attach_fake_micromachine_runtime(blackboard_dir)
+                self.server._http.publish_event(
+                    "state",
+                    {
+                        "available": True,
+                        "marker": f"baseline-{replay_kind}",
+                    },
+                )
+                event_path = (
+                    "/api/events?"
+                    f"blackboard_dir={quote(blackboard_dir)}&once=1"
+                )
+                initial = self.parse_sse_events(self.get_sse(event_path))
+                cursor = initial[0]["data"]["event_seq"]
+                self.detach_fake_micromachine_runtime(blackboard_dir)
+
+                if replay_kind == "foreign_operation":
+                    self.server._http.publish_event(
+                        "operation_event",
+                        {
+                            "timeline_seq": 1,
+                            "operation_id": "foreign-operation",
+                            "kind": "movement_observed",
+                        },
+                        operation_id="foreign-operation",
+                        blackboard_scope_id="foreign-operation-scope",
+                    )
+                else:
+                    self.server._http.publish_event(
+                        "state",
+                        {
+                            "available": True,
+                            "marker": "unrelated-state-after-detach",
+                        },
+                    )
+
+                reconnect = self.parse_sse_events(
+                    self.get_sse(
+                        event_path,
+                        headers={"Last-Event-ID": str(cursor)},
+                    )
+                )
+
+                self.assertEqual(
+                    ["snapshot"],
+                    [event["event"] for event in reconnect],
+                )
+                detached = reconnect[0]["data"]["payload"][
+                    "micromachine_status"
+                ]
+                self.assertFalse(
+                    detached["operation_registry_authoritative"]
+                )
+                self.assertFalse(detached["runtime_attached"])
+                self.assertTrue(detached["telemetry_stale_or_detached"])
+
+    def test_open_sse_refresh_publishes_authority_loss_and_recovery(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        with tempfile.TemporaryDirectory() as blackboard_dir:
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            event_path = (
+                "/api/events?"
+                f"blackboard_dir={quote(blackboard_dir)}&once=1"
+            )
+            initial = self.parse_sse_events(self.get_sse(event_path))
+            scope_id = web_gui._micromachine_blackboard_scope_id(
+                blackboard_dir
+            )
+            self.assertTrue(
+                initial[0]["data"]["payload"]["micromachine_status"][
+                    "operation_registry_authoritative"
+                ]
+            )
+            self.assertTrue(
+                self.server._http.has_admitted_operation_event_scope(
+                    scope_id
+                )
+            )
+
+            self.detach_fake_micromachine_runtime(blackboard_dir)
+            detach_cursor = self.server._http.event_journal.latest_seq
+            handler._refresh_event_sources(blackboard_dir)
+            detached_events = (
+                self.server._http.event_journal.events_after(detach_cursor)
+            )
+            detached_statuses = [
+                event["payload"]
+                for event in detached_events
+                if event["event_type"] == "micromachine_status"
+            ]
+            self.assertEqual(1, len(detached_statuses))
+            self.assertFalse(
+                detached_statuses[0][
+                    "operation_registry_authoritative"
+                ]
+            )
+            self.assertFalse(detached_statuses[0]["runtime_attached"])
+            self.assertTrue(
+                detached_statuses[0]["telemetry_stale_or_detached"]
+            )
+            self.assertFalse(
+                any(
+                    event["event_type"] == "operation_event"
+                    for event in detached_events
+                )
+            )
+
+            duplicate_cursor = self.server._http.event_journal.latest_seq
+            handler._refresh_event_sources(blackboard_dir)
+            duplicate_statuses = [
+                event
+                for event in self.server._http.event_journal.events_after(
+                    duplicate_cursor
+                )
+                if event["event_type"] == "micromachine_status"
+            ]
+            self.assertEqual([], duplicate_statuses)
+
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            recovery_cursor = self.server._http.event_journal.latest_seq
+            handler._refresh_event_sources(blackboard_dir)
+            recovered_statuses = [
+                event["payload"]
+                for event in self.server._http.event_journal.events_after(
+                    recovery_cursor
+                )
+                if event["event_type"] == "micromachine_status"
+            ]
+            self.assertEqual(1, len(recovered_statuses))
+            self.assertTrue(
+                recovered_statuses[0][
+                    "operation_registry_authoritative"
+                ]
+            )
+
+    def test_open_sse_refresh_publishes_source_error_status(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        with tempfile.TemporaryDirectory() as blackboard_dir:
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            self.get_sse(
+                "/api/events?"
+                f"blackboard_dir={quote(blackboard_dir)}&once=1"
+            )
+            scope_id = web_gui._micromachine_blackboard_scope_id(
+                blackboard_dir
+            )
+            handler._micromachine_status_payload = (
+                lambda _directory, **_kwargs: {
+                    "enabled": False,
+                    "status": "source_error",
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": scope_id,
+                    "operation_registry_authoritative": False,
+                    "error": "status source failed",
+                }
+            )
+            cursor = self.server._http.event_journal.latest_seq
+            handler._refresh_event_sources(blackboard_dir)
+            events = self.server._http.event_journal.events_after(cursor)
+
+        status_events = [
+            event
+            for event in events
+            if event["event_type"] == "micromachine_status"
+        ]
+        source_errors = [
+            event
+            for event in events
+            if event["event_type"] == "source_error"
+        ]
+        self.assertEqual(1, len(status_events))
+        self.assertFalse(
+            status_events[0]["payload"][
+                "operation_registry_authoritative"
+            ]
+        )
+        self.assertEqual("source_error", status_events[0]["payload"]["status"])
+        self.assertEqual(1, len(source_errors))
+
+    def test_sse_reconnect_replays_pending_local_lifecycle_at_equal_cursor(
+        self,
+    ):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard_dir = os.path.join(directory, "pending-reconnect")
+            os.makedirs(blackboard_dir)
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            scope_id = web_gui._micromachine_blackboard_scope_id(
+                blackboard_dir
+            )
+            first = {
+                "timeline_seq": 1,
+                "session_epoch": "epoch-pending-reconnect",
+                "operation_id": "pending-reconnect-operation",
+                "generation": 1,
+                "requested_generation": 1,
+                "update_id": "pending-reconnect-update",
+                "kind": "movement_observed",
+                "game_frame": 500,
+            }
+            second = {
+                **first,
+                "timeline_seq": 2,
+                "kind": "engagement_observed",
+                "game_frame": 501,
+            }
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first],
+                },
+                blackboard_dir=blackboard_dir,
+                publish=True,
+            )
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first, second],
+                },
+                blackboard_dir=blackboard_dir,
+                publish=True,
+            )
+            cursor = self.server._http.event_journal.latest_seq
+
+            stream = self.get_sse(
+                "/api/events"
+                f"?blackboard_dir={quote(blackboard_dir)}"
+                "&once=1",
+                headers={"Last-Event-ID": str(cursor)},
+            )
+
+        events = self.parse_sse_events(stream)
+        self.assertEqual(2, len(events))
+        self.assertEqual("snapshot", events[0]["event"])
+        self.assertEqual("operation_event", events[1]["event"])
+        self.assertTrue(events[1]["data"]["subscriber_local_replay"])
+        self.assertEqual(
+            events[0]["data"]["event_seq"],
+            events[1]["data"]["event_seq"],
+        )
+        self.assertEqual(
+            2,
+            events[1]["data"]["payload"]["timeline_seq"],
+        )
+
+    def test_sse_reconnect_rollover_forces_snapshot_before_pending_replay(self):
+        server = self.server._http
+        journal = web_gui._WebEventJournal(retention=2)
+        server.event_journal = journal
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = server
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard_dir = os.path.join(directory, "rollover-reconnect")
+            os.makedirs(blackboard_dir)
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            scope_id = web_gui._micromachine_blackboard_scope_id(
+                blackboard_dir
+            )
+            first = {
+                "timeline_seq": 1,
+                "session_epoch": "epoch-rollover-reconnect",
+                "operation_id": "rollover-reconnect-operation",
+                "generation": 1,
+                "requested_generation": 1,
+                "update_id": "rollover-reconnect-update",
+                "kind": "assigned",
+                "game_frame": 800,
+            }
+            second = {
+                **first,
+                "timeline_seq": 2,
+                "kind": "movement_observed",
+                "game_frame": 801,
+            }
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first],
+                },
+                blackboard_dir=blackboard_dir,
+                publish=True,
+            )
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first, second],
+                },
+                blackboard_dir=blackboard_dir,
+                publish=True,
+            )
+            cursor = journal.latest_seq
+            original_replay_batch = journal.replay_batch
+            replay_calls = 0
+
+            def rollover_before_replay(after):
+                nonlocal replay_calls
+                replay_calls += 1
+                if replay_calls == 1:
+                    for index in range(3):
+                        journal.publish(
+                            "state",
+                            {"rollover": index},
+                        )
+                return original_replay_batch(after)
+
+            journal.replay_batch = rollover_before_replay
+            original_status = self.bridge.micromachine_status_for_runtime
+
+            def admitted_status(*, blackboard_dir="", **_kwargs):
+                return {
+                    "enabled": True,
+                    "status": "live",
+                    "operation_registry_authoritative": True,
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": scope_id,
+                    "battlefield_overview": {
+                        "identity": {
+                            "session_epoch": "1700000000000",
+                            "generation": 1,
+                            "game_frame": 801,
+                        }
+                    },
+                    "operation_events": [first, second],
+                }
+
+            self.bridge.micromachine_status_for_runtime = admitted_status
+            try:
+                stream = self.get_sse(
+                    "/api/events"
+                    f"?blackboard_dir={quote(blackboard_dir)}"
+                    "&once=1",
+                    headers={"Last-Event-ID": str(cursor)},
+                )
+            finally:
+                self.bridge.micromachine_status_for_runtime = (
+                    original_status
+                )
+                journal.replay_batch = original_replay_batch
+
+        events = self.parse_sse_events(stream)
+        self.assertEqual(
+            ["snapshot", "operation_event"],
+            [event["event"] for event in events],
+        )
+        self.assertGreater(events[0]["data"]["event_seq"], cursor)
+        self.assertEqual(
+            events[0]["data"]["event_seq"],
+            events[1]["data"]["event_seq"],
+        )
+        self.assertTrue(events[1]["data"]["subscriber_local_replay"])
+        self.assertEqual(2, events[1]["data"]["payload"]["timeline_seq"])
+        self.assertGreaterEqual(replay_calls, 2)
+
+    def test_partial_sse_operation_frame_reconnects_without_event_loss(self):
+        server = self.server._http
+        original_status = self.bridge.micromachine_status_for_runtime
+        statuses = {}
+
+        def admitted_status(*, blackboard_dir="", **_kwargs):
+            return statuses[blackboard_dir]
+
+        class StagedWriter:
+            def __init__(self, *, fail_write_call=0, fail_flush=False):
+                self.fail_write_call = fail_write_call
+                self.fail_flush = fail_flush
+                self.write_calls = 0
+                self.parts = []
+
+            def write(self, data):
+                self.write_calls += 1
+                if self.write_calls == self.fail_write_call:
+                    raise BrokenPipeError("partial SSE frame failed")
+                self.parts.append(data)
+
+            def flush(self):
+                if self.fail_flush:
+                    raise BrokenPipeError("partial SSE flush failed")
+
+        self.bridge.micromachine_status_for_runtime = admitted_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status_for_runtime",
+            original_status,
+        )
+
+        for name, fail_write_call, fail_flush in (
+            ("after_id", 2, False),
+            ("after_event", 3, False),
+            ("after_data", 0, True),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                blackboard_dir = os.path.join(directory, name)
+                os.makedirs(blackboard_dir)
+                self.attach_fake_micromachine_runtime(blackboard_dir)
+                scope_id = web_gui._micromachine_blackboard_scope_id(
+                    blackboard_dir
+                )
+                first = {
+                    "timeline_seq": 1,
+                    "session_epoch": f"epoch-partial-{name}",
+                    "operation_id": f"partial-{name}-operation",
+                    "generation": 1,
+                    "requested_generation": 1,
+                    "update_id": f"partial-{name}-update",
+                    "kind": "assigned",
+                    "game_frame": 900,
+                }
+                second = {
+                    **first,
+                    "timeline_seq": 2,
+                    "kind": "movement_observed",
+                    "game_frame": 901,
+                }
+                status = {
+                    "enabled": True,
+                    "status": "live",
+                    "operation_registry_authoritative": True,
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": scope_id,
+                    "battlefield_overview": {
+                        "identity": {
+                            "session_epoch": "1700000000000",
+                            "generation": 1,
+                            "game_frame": 901,
+                        }
+                    },
+                    "operation_events": [first, second],
+                }
+                statuses[blackboard_dir] = status
+                handler = object.__new__(web_gui._WebGuiRequestHandler)
+                handler.server = server
+                handler._publish_new_operation_events(
+                    {
+                        "blackboard_scope_id": scope_id,
+                        "operation_events": [first],
+                    },
+                    blackboard_dir=blackboard_dir,
+                    publish=True,
+                )
+                handler._publish_new_operation_events(
+                    status,
+                    blackboard_dir=blackboard_dir,
+                    publish=True,
+                )
+                cursor = server.event_journal.latest_seq
+                replay_cursor, replay_events = (
+                    server.prepare_authoritative_operation_replay(
+                        scope_id,
+                        snapshot_cursor=cursor,
+                    )
+                )
+                self.assertEqual(cursor, replay_cursor)
+                self.assertEqual(1, len(replay_events))
+                writer = StagedWriter(
+                    fail_write_call=fail_write_call,
+                    fail_flush=fail_flush,
+                )
+                handler.wfile = writer
+
+                with self.assertRaisesRegex(
+                    BrokenPipeError,
+                    "partial SSE",
+                ):
+                    handler._write_sse_event(replay_events[0])
+
+                stream = self.get_sse(
+                    "/api/events"
+                    f"?blackboard_dir={quote(blackboard_dir)}"
+                    "&once=1",
+                    headers={"Last-Event-ID": str(cursor)},
+                )
+                events = self.parse_sse_events(stream)
+                self.assertEqual(
+                    ["snapshot", "operation_event"],
+                    [event["event"] for event in events],
+                )
+                self.assertEqual(
+                    1,
+                    len(
+                        [
+                            event
+                            for event in events
+                            if event["event"] == "operation_event"
+                        ]
+                    ),
+                )
+                self.assertTrue(
+                    events[1]["data"]["subscriber_local_replay"]
+                )
+                self.assertEqual(
+                    2,
+                    events[1]["data"]["payload"]["timeline_seq"],
+                )
 
     def test_sse_truncated_cursor_falls_back_to_snapshot(self):
         journal = web_gui._WebEventJournal(retention=2)
@@ -2079,6 +5120,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 },
                 {
                     "update_id": "update-c",
+                    "operation_console_execution_owner_update_id": "update-a",
                     "operation_id": "shared-operation",
                     "operation_generation": 3,
                 },
@@ -2094,7 +5136,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "update-b",
             attached[1]["battlefield_operation"]["identity"]["update_id"],
         )
-        self.assertIsNone(attached[2]["battlefield_operation"])
+        self.assertEqual(
+            "update-a",
+            attached[2]["battlefield_operation"]["identity"]["update_id"],
+        )
 
     def test_real_filesystem_status_preserves_battlefield_overview(self):
         from starcraft_commander.micromachine_runtime import (
@@ -4758,6 +7803,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
     def test_rejected_higher_generation_edit_uses_active_generation_telemetry(self):
         update_id = "rejected-operation-edit"
+        execution_owner_update_id = "active-recon-alpha-owner"
         dashboard = {
             "active_updates": [
                 {
@@ -4795,6 +7841,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         {
                             "operation_id": "recon-alpha",
                             "generation": 1,
+                            "policy_update_id": execution_owner_update_id,
                             "status": "MOVING",
                             "received_frame": 100,
                             "assigned_frame": 120,
@@ -4817,7 +7864,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     ],
                     "pending_family_effects": [
                         {
-                            "update_id": update_id,
+                            "update_id": execution_owner_update_id,
                             "operation_id": "recon-alpha",
                             "generation": 1,
                             "family": "marine",
@@ -4885,7 +7932,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         self.assertEqual(1, operation["operation_generation"])
         self.assertEqual(2, operation["requested_operation_generation"])
+        self.assertEqual(update_id, operation["update_id"])
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["operation_console_execution_owner_update_id"],
+        )
         execution = operation["intervention"]["command_execution"]
+        self.assertEqual(
+            execution_owner_update_id,
+            execution["command_id"],
+        )
         self.assertEqual(1, execution["operation_generation"])
         self.assertEqual("effect_observed", execution["state"])
         self.assertFalse(execution["failed"])
@@ -4899,7 +7955,166 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("effect_observed", successful_stages)
         self.assertEqual(1, len(operation["family_evidence"]))
         self.assertEqual(1, operation["family_evidence"][0]["generation"])
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["family_evidence"][0]["update_id"],
+        )
         self.assertEqual("effect", operation["family_evidence"][0]["stage"])
+
+    def test_archive_only_rejected_edit_restores_execution_owner_identity(self):
+        update_id = "archive-rejected-operation-edit"
+        execution_owner_update_id = "archive-active-recon-owner"
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "manager_bias_domains": ["combat", "squad"],
+                    "vector": {
+                        "goal": "transfer one scout",
+                        "operations": [
+                            {
+                                "operation_id": "recon-alpha",
+                                "generation": 2,
+                                "goal": "release one scout",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "duration_seconds": 120,
+                                },
+                                "operation_edit": {
+                                    "action": "transfer_out",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 260},
+        }
+        archived_document = {
+            "frame": 240,
+            "active_modulation_ids": [
+                update_id,
+                execution_owner_update_id,
+            ],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "policy_update_id": execution_owner_update_id,
+                            "status": "MOVING",
+                            "received_frame": 100,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "last_action_frame": 140,
+                            "movement_frame": 150,
+                            "assigned_unit_tags": [11],
+                            "assigned_count": 1,
+                            "max_home_distance": 20.0,
+                            "last_action": "AttackUnitOrder",
+                            "edit_action": "transfer_out",
+                            "edit_requested_generation": 2,
+                            "edit_rejected_update_id": update_id,
+                            "edit_rejected_frame": 225,
+                            "edit_resolution": "blocked",
+                            "edit_blocker": "destination_priority_not_higher",
+                        }
+                    ],
+                    "pending_family_effects": [
+                        {
+                            "update_id": execution_owner_update_id,
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "scout",
+                            "action": "move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 2,
+                            "attempted_count": 1,
+                            "attempted_frame": 130,
+                            "submitted_count": 1,
+                            "submitted_frame": 140,
+                            "effect_kind": "movement",
+                            "effect_count": 1,
+                            "effect_frame": 150,
+                            "blocker_manager": "",
+                            "blocker": "",
+                        }
+                    ],
+                }
+            },
+        }
+        current_document = {
+            "frame": 260,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [],
+                    "pending_family_effects": [
+                        {
+                            "update_id": update_id,
+                            "operation_id": "recon-alpha",
+                            "generation": 2,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "scout",
+                            "action": "move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 1,
+                            "attempted_count": 1,
+                            "attempted_frame": 250,
+                            "submitted_count": 0,
+                            "submitted_frame": 0,
+                            "effect_kind": "",
+                            "effect_count": 0,
+                            "effect_frame": 0,
+                            "blocker_manager": "",
+                            "blocker": "",
+                        }
+                    ],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=260,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: current_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            telemetry_archive=(archived_document,),
+            blackboard_dir="/tmp/archive-rejected-operation-edit",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "정찰대 마린 한 기를 공격대로 이관해",
+            },
+        )
+
+        operation = payload["operations"][0]
+        self.assertFalse(operation["telemetry_current"])
+        self.assertEqual(1, operation["operation_generation"])
+        self.assertEqual(2, operation["requested_operation_generation"])
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["operation_console_execution_owner_update_id"],
+        )
+        execution = operation["intervention"]["command_execution"]
+        self.assertEqual(execution_owner_update_id, execution["command_id"])
+        self.assertEqual(1, execution["operation_generation"])
+        self.assertEqual("effect_observed", execution["state"])
+        self.assertEqual(1, len(operation["family_evidence"]))
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["family_evidence"][0]["update_id"],
+        )
 
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
         execution = web_gui._micromachine_operation_command_execution(
@@ -6608,6 +9823,29 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIsInstance(event["seq"], int)
         self.assertGreaterEqual(event["seq"], 1)
 
+    def test_legacy_command_preserves_exact_browser_request_correlation(self):
+        request_id = "pending-http-correlation-17"
+        status, _content_type, payload = self.post_command(
+            "상황 보고해줘",
+            request_id=request_id,
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(json.loads(payload.decode("utf-8")), {"accepted": True})
+
+        matched = self.poll_history_until(
+            lambda event: (
+                event.get("detail", {}).get("web_request_id")
+                == request_id
+            ),
+            "legacy outcome carrying the exact browser request identity",
+        )
+        event = matched[0]
+        self.assertEqual(request_id, event["request_id"])
+        self.assertEqual(
+            request_id,
+            event["detail"]["web_request_id"],
+        )
+
     def test_train_command_yields_executed_family_event(self):
         status, _content_type, _payload = self.post_command("SCV 계속 찍어")
         self.assertEqual(status, 202)
@@ -6837,6 +10075,18 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ("empty text", json.dumps({"text": ""}).encode("utf-8")),
             ("blank text", json.dumps({"text": "   "}).encode("utf-8")),
             ("non-string text", json.dumps({"text": 42}).encode("utf-8")),
+            (
+                "non-string request id",
+                json.dumps(
+                    {"text": "상태확인", "request_id": 42}
+                ).encode("utf-8"),
+            ),
+            (
+                "blank request id",
+                json.dumps(
+                    {"text": "상태확인", "request_id": "   "}
+                ).encode("utf-8"),
+            ),
         )
         for label, body in bad_bodies:
             with self.subTest(label=label):
@@ -7065,6 +10315,446 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertNotIn(
             "Matching-generation SC2 action submitted.",
             [event["summary"] for event in result["operation_events"]],
+        )
+
+    def test_operation_timeline_emits_authoritative_safety_transitions(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-authoritative-safety-transitions"
+
+        baseline = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=200,
+            owner_count=4,
+            required_count=4,
+        )
+        operation = baseline["operations"][0]
+        operation["update"] = {
+            "update_id": operation["update_id"],
+            "vector": {
+                "operation_id": "safety-alpha",
+                "generation": 2,
+                "command_layer": "emergency",
+                "emergency": {
+                    "force_retreat": True,
+                    "cancel_attacks": True,
+                },
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "tactical_nuke",
+                },
+            },
+        }
+        operation["family_evidence"] = [
+            {
+                "update_id": operation["update_id"],
+                "operation_id": "safety-alpha",
+                "generation": 2,
+                "family": "ghost",
+                "action": "ability:tactical_nuke",
+                "required_effect": "ability_state_or_effect",
+                "attempt_generation": 1,
+                "attempted_count": 1,
+                "attempted_frame": 199,
+                "submitted_count": 0,
+                "effect_count": 0,
+                "blocker_manager": "CombatCommander",
+                "blocker": "no_valid_nuke_target",
+                "stage": "blocked",
+            }
+        ]
+        operation["intervention"]["command_execution"].update(
+            {
+                "state": "failed",
+                "failed": True,
+                "blocker_manager": "CombatCommander",
+                "blocker_reason": "no_valid_nuke_target",
+            }
+        )
+
+        initial = reducer.observe(
+            baseline,
+            blackboard_scope_id=scope_id,
+        )
+        initial_kinds = {
+            event["kind"] for event in initial["operation_events"]
+        }
+        self.assertIn("critical_ability_failure", initial_kinds)
+        self.assertNotIn("emergency_retreat", initial_kinds)
+        self.assertNotIn("force_loss", initial_kinds)
+        self.assertNotIn("base_under_attack", initial_kinds)
+
+        retreat = deepcopy(baseline)
+        retreat["operations"][0]["telemetry_frame"] = 201
+        retreat_operation = retreat["operations"][0]
+        retreat_projection = retreat_operation["battlefield_operation"]
+        retreat_projection["identity"]["game_frame"] = 201
+        retreat_projection["operation_completion"].update(
+            {
+                "movement_observed": True,
+                "frame": 201,
+            }
+        )
+        retreat_operation["operation_convergence"].update(
+            {
+                "status": "BLOCKED",
+                "blocker": "emergency_retreat_preempted",
+            }
+        )
+        retreat_operation["squad_order"] = "retreat"
+        retreat_projection["operation_launch_policy"]["safety_evidence"][
+            "emergency_preemption"
+        ] = "active"
+        retreat["battlefield_overview"]["identity"]["game_frame"] = 201
+        retreat_result = reducer.observe(
+            retreat,
+            blackboard_scope_id=scope_id,
+        )
+        retreat_kinds = [
+            event["kind"]
+            for event in retreat_result["operations"][0][
+                "semantic_timeline"
+            ]
+        ]
+        self.assertEqual(1, retreat_kinds.count("emergency_retreat"))
+
+        force_loss = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=202,
+            owner_count=2,
+            required_count=4,
+        )
+        force_loss["operations"][0]["update"] = deepcopy(
+            baseline["operations"][0]["update"]
+        )
+        force_loss["operations"][0]["family_evidence"] = deepcopy(
+            baseline["operations"][0]["family_evidence"]
+        )
+        force_loss_result = reducer.observe(
+            force_loss,
+            blackboard_scope_id=scope_id,
+        )
+        force_loss_events = [
+            event
+            for event in force_loss_result["operation_events"]
+            if event["kind"] == "force_loss"
+        ]
+        self.assertEqual(1, len(force_loss_events))
+        self.assertEqual(2, force_loss_events[0]["owner_count"])
+        self.assertEqual(4, force_loss_events[0]["required_count"])
+
+        persistent_loss = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=203,
+            owner_count=2,
+            required_count=4,
+        )
+        persistent_loss_result = reducer.observe(
+            persistent_loss,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            1,
+            sum(
+                event["kind"] == "force_loss"
+                for event in persistent_loss_result["operation_events"]
+            ),
+        )
+
+        recovered = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=204,
+            owner_count=4,
+            required_count=4,
+        )
+        reducer.observe(recovered, blackboard_scope_id=scope_id)
+        second_loss = semantic_operation_payload(
+            operation_id="safety-alpha",
+            generation=2,
+            frame=205,
+            owner_count=1,
+            required_count=4,
+        )
+        second_loss_result = reducer.observe(
+            second_loss,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            2,
+            sum(
+                event["kind"] == "force_loss"
+                for event in second_loss_result["operation_events"]
+            ),
+        )
+
+        clear_base = deepcopy(second_loss)
+        clear_base["operations"][0]["telemetry_frame"] = 206
+        clear_base["operations"][0]["battlefield_operation"]["identity"][
+            "game_frame"
+        ] = 206
+        clear_base["battlefield_overview"]["identity"]["game_frame"] = 206
+        clear_readiness = clear_base["battlefield_overview"]["bases"][0][
+            "base_readiness"
+        ]
+        clear_readiness.update(
+            {
+                "readiness_state": "ready",
+                "ground_threat": 0.0,
+                "air_threat": 0.0,
+                "observed_enemy_strength": 0.0,
+                "last_evidence_frame": 206,
+            }
+        )
+        reducer.observe(clear_base, blackboard_scope_id=scope_id)
+
+        threatened_base = deepcopy(clear_base)
+        threatened_base["operations"][0]["telemetry_frame"] = 207
+        threatened_base["operations"][0]["battlefield_operation"]["identity"][
+            "game_frame"
+        ] = 207
+        threatened_base["battlefield_overview"]["identity"]["game_frame"] = 207
+        readiness = threatened_base["battlefield_overview"]["bases"][0][
+            "base_readiness"
+        ]
+        readiness.update(
+            {
+                "readiness_state": "unsafe",
+                "reason": "visible_ground_attack",
+                "ground_threat": 3.0,
+                "observed_enemy_strength": 3.0,
+                "last_evidence_frame": 207,
+                "evidence_class": "visible_enemy_units",
+            }
+        )
+        threatened_projection = threatened_base["operations"][0][
+            "battlefield_operation"
+        ]
+        threatened_projection["operation_launch_policy"].update(
+            {
+                "decision": "blocked",
+                "blocker": "base_protected_minimum_not_met",
+            }
+        )
+        threatened_projection["operation_launch_policy"][
+            "safety_evidence"
+        ]["protected_defense_minimum_respected"] = False
+        threatened_result = reducer.observe(
+            threatened_base,
+            blackboard_scope_id=scope_id,
+        )
+        base_events = [
+            event
+            for event in threatened_result["operation_events"]
+            if event["kind"] == "base_under_attack"
+        ]
+        self.assertEqual(1, len(base_events))
+        self.assertEqual("safety-alpha", base_events[0]["operation_id"])
+        self.assertEqual("visible_ground_attack", base_events[0]["summary"])
+
+        same_threat = deepcopy(threatened_base)
+        same_threat["operations"][0]["telemetry_frame"] = 208
+        same_threat["operations"][0]["battlefield_operation"]["identity"][
+            "game_frame"
+        ] = 208
+        same_threat["battlefield_overview"]["identity"]["game_frame"] = 208
+        same_threat["battlefield_overview"]["bases"][0]["base_readiness"][
+            "last_evidence_frame"
+        ] = 208
+        same_threat_result = reducer.observe(
+            same_threat,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            1,
+            sum(
+                event["kind"] == "base_under_attack"
+                for event in same_threat_result["operation_events"]
+            ),
+        )
+
+    def test_operation_timeline_safety_transitions_rearm_after_clear(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-safety-transition-rearm"
+
+        def emergency_payload(frame, *, active):
+            payload = semantic_operation_payload(
+                operation_id="rearm-alpha",
+                generation=2,
+                frame=frame,
+            )
+            operation = payload["operations"][0]
+            projection = operation["battlefield_operation"]
+            if active:
+                operation["operation_convergence"].update(
+                    {
+                        "status": "BLOCKED",
+                        "blocker": "emergency_retreat_preempted",
+                    }
+                )
+                operation["squad_order"] = "retreat"
+                projection["operation_launch_policy"]["safety_evidence"][
+                    "emergency_preemption"
+                ] = "active"
+            return payload
+
+        reducer.observe(
+            emergency_payload(400, active=False),
+            blackboard_scope_id=scope_id,
+        )
+        first = reducer.observe(
+            emergency_payload(401, active=True),
+            blackboard_scope_id=scope_id,
+        )
+        reducer.observe(
+            emergency_payload(402, active=False),
+            blackboard_scope_id=scope_id,
+        )
+        second = reducer.observe(
+            emergency_payload(403, active=True),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            1,
+            sum(
+                event["kind"] == "emergency_retreat"
+                for event in first["operation_events"]
+            ),
+        )
+        self.assertEqual(
+            2,
+            sum(
+                event["kind"] == "emergency_retreat"
+                for event in second["operation_events"]
+            ),
+        )
+
+    def test_operation_timeline_force_loss_excludes_transfer_and_terminal_drop(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-force-loss-exclusions"
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="loss-alpha",
+                generation=3,
+                frame=500,
+                owner_count=4,
+                required_count=4,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        transferred = reducer.observe(
+            semantic_operation_payload(
+                operation_id="loss-alpha",
+                generation=3,
+                frame=501,
+                owner_count=2,
+                required_count=4,
+                operation_edit={
+                    "action": "transfer_out",
+                    "resolution": "transferred",
+                    "transferred_out_count": 2,
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertNotIn(
+            "force_loss",
+            [event["kind"] for event in transferred["operation_events"]],
+        )
+
+        terminal_reducer = web_gui._OperationSemanticTimelineReducer()
+        terminal_reducer.observe(
+            semantic_operation_payload(
+                operation_id="terminal-loss",
+                generation=1,
+                frame=600,
+                owner_count=4,
+                required_count=4,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        terminal = terminal_reducer.observe(
+            semantic_operation_payload(
+                operation_id="terminal-loss",
+                generation=1,
+                frame=601,
+                owner_count=0,
+                required_count=4,
+                terminal=True,
+                disposition="completed",
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertNotIn(
+            "force_loss",
+            [event["kind"] for event in terminal["operation_events"]],
+        )
+
+    def test_operation_timeline_rejects_mismatched_critical_ability_evidence(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        payload = semantic_operation_payload(
+            operation_id="ability-alpha",
+            generation=3,
+            frame=300,
+            execution_state="failed",
+            blocker="ability_failed",
+        )
+        operation = payload["operations"][0]
+        operation["update"] = {
+            "update_id": operation["update_id"],
+            "vector": {
+                "operation_id": "ability-alpha",
+                "generation": 3,
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "yamato",
+                },
+            },
+        }
+        operation["family_evidence"] = [
+            {
+                "update_id": operation["update_id"],
+                "operation_id": "ability-alpha",
+                "generation": 2,
+                "action": "ability:yamato",
+                "required_effect": "ability_state_or_effect",
+                "attempt_generation": 1,
+                "attempted_count": 1,
+                "attempted_frame": 299,
+                "effect_count": 0,
+                "blocker_manager": "CombatCommander",
+                "blocker": "ability_failed",
+                "stage": "blocked",
+            },
+            {
+                "update_id": operation["update_id"],
+                "operation_id": "ability-alpha",
+                "generation": 3,
+                "action": "ability:stimpack",
+                "required_effect": "ability_state_or_effect",
+                "attempt_generation": 2,
+                "attempted_count": 1,
+                "attempted_frame": 300,
+                "effect_count": 0,
+                "blocker_manager": "CombatCommander",
+                "blocker": "ability_failed",
+                "stage": "blocked",
+            },
+        ]
+
+        result = reducer.observe(
+            payload,
+            blackboard_scope_id="scope-ability-generation-mismatch",
+        )
+
+        self.assertNotIn(
+            "critical_ability_failure",
+            [event["kind"] for event in result["operation_events"]],
         )
 
     def test_operation_timeline_non_authoritative_empty_snapshot_preserves_registry(
@@ -7423,6 +11113,558 @@ class SessionLoopBridgeTest(unittest.TestCase):
             [event["kind"] for event in advanced["operation_events"]],
         )
 
+    def test_operation_timeline_rejects_foreign_update_for_same_generation(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-foreign-update"
+        accepted = reducer.observe(
+            semantic_operation_payload(
+                operation_id="identity-alpha",
+                generation=2,
+                requested_generation=2,
+                frame=200,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        accepted_operation = deepcopy(accepted["operations"][0])
+        accepted_seq = accepted["operation_event_latest_seq"]
+
+        foreign = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            requested_generation=2,
+            frame=201,
+            movement=True,
+            engagement=True,
+        )
+        foreign_operation = foreign["operations"][0]
+        foreign_update_id = "foreign-update-identity-alpha-2"
+        foreign_operation["update_id"] = foreign_update_id
+        foreign_operation["compile_result"]["update_id"] = foreign_update_id
+        foreign_operation["intervention"]["command_execution"][
+            "command_id"
+        ] = foreign_update_id
+        foreign_operation["battlefield_operation"]["identity"][
+            "update_id"
+        ] = foreign_update_id
+
+        rejected = reducer.observe(
+            foreign,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(accepted_seq, rejected["operation_event_latest_seq"])
+        self.assertEqual(accepted_operation, rejected["operations"][0])
+        self.assertNotIn(
+            "engagement_observed",
+            [
+                event["kind"]
+                for event in rejected["operations"][0]["semantic_timeline"]
+            ],
+        )
+
+        missing_identity = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            requested_generation=2,
+            frame=202,
+            movement=True,
+        )
+        missing_operation = missing_identity["operations"][0]
+        missing_operation["update_id"] = ""
+        missing_operation["compile_result"]["update_id"] = ""
+        missing_operation["intervention"]["command_execution"][
+            "command_id"
+        ] = ""
+        missing_operation["battlefield_operation"]["identity"][
+            "update_id"
+        ] = ""
+        missing_result = reducer.observe(
+            missing_identity,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            missing_result["operations"][0],
+        )
+
+        forged_request = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            requested_generation=3,
+            frame=203,
+            movement=True,
+        )
+        forged_result = reducer.observe(
+            forged_request,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            forged_result["operations"][0],
+        )
+
+        forged_cancellation = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            requested_generation=2,
+            frame=204,
+            execution_state="cancelled",
+        )
+        forged_execution = forged_cancellation["operations"][0][
+            "intervention"
+        ]["command_execution"]
+        forged_cancel_operation = forged_cancellation["operations"][0]
+        forged_cancel_update_id = "foreign-cancel-identity-alpha-2"
+        forged_cancel_operation["update_id"] = forged_cancel_update_id
+        forged_cancel_operation["compile_result"][
+            "update_id"
+        ] = forged_cancel_update_id
+        forged_cancel_operation["battlefield_operation"]["identity"][
+            "update_id"
+        ] = forged_cancel_update_id
+        forged_execution["command_id"] = forged_cancel_update_id
+        forged_execution["blocker_reason"] = "cancelled_by_policy"
+        forged_execution["terminal_cleanup"] = {
+            "action": "release_stop|cancelled_by_policy",
+            "frame": 204,
+            "operation_id": "identity-alpha",
+            "generation": 2,
+        }
+        forged_cancel_result = reducer.observe(
+            forged_cancellation,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            forged_cancel_result["operations"][0],
+        )
+
+        accepted_edit_payload = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="identity-alpha",
+                generation=2,
+                requested_generation=3,
+                frame=205,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "awaiting_reinforcement",
+                },
+            ),
+            execution_owner_update_id="update-identity-alpha-2",
+        )
+        accepted_edit = reducer.observe(
+            accepted_edit_payload,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            3,
+            accepted_edit["operations"][0][
+                "requested_operation_generation"
+            ],
+        )
+        self.assertEqual(
+            "update-identity-alpha-3",
+            accepted_edit["operations"][0]["update_id"],
+        )
+        self.assertEqual(
+            "update-identity-alpha-2",
+            accepted_edit["operations"][0][
+                "operation_console_execution_owner_update_id"
+            ],
+        )
+
+        advanced = reducer.observe(
+            semantic_operation_payload(
+                operation_id="identity-alpha",
+                generation=3,
+                requested_generation=3,
+                frame=206,
+                movement=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            3,
+            advanced["operations"][0]["operation_generation"],
+        )
+        self.assertEqual(
+            "update-identity-alpha-3",
+            advanced["operations"][0]["update_id"],
+        )
+
+    def test_operation_timeline_authenticates_split_identity_channels(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-split-identity-authentication"
+        owner_update_id = "update-split-alpha-3"
+        latest_request_update_id = "update-split-alpha-4"
+
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=3,
+                frame=100,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        latest_request = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=4,
+                frame=101,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "latest_request_waiting",
+                },
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        accepted = reducer.observe(
+            latest_request,
+            blackboard_scope_id=scope_id,
+        )
+        accepted_operation = deepcopy(accepted["operations"][0])
+        accepted_seq = accepted["operation_event_latest_seq"]
+        self.assertEqual(
+            latest_request_update_id,
+            accepted_operation["update_id"],
+        )
+        self.assertEqual(
+            owner_update_id,
+            accepted_operation[
+                "operation_console_execution_owner_update_id"
+            ],
+        )
+
+        channel_swap = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=4,
+                frame=102,
+                movement=True,
+            ),
+            request_update_id=owner_update_id,
+            execution_owner_update_id=owner_update_id,
+        )
+        swapped = reducer.observe(
+            channel_swap,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(accepted_operation, swapped["operations"][0])
+        self.assertEqual(accepted_seq, swapped["operation_event_latest_seq"])
+
+        arbitrary_edit = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=5,
+                frame=103,
+                movement=True,
+                operation_edit={
+                    "action": "not-a-real-operation-edit",
+                    "resolution": "blocked",
+                },
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        arbitrary_result = reducer.observe(
+            arbitrary_edit,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            arbitrary_result["operations"][0],
+        )
+
+        forged_cancellation = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=5,
+                frame=104,
+                execution_state="cancelled",
+                operation_edit={
+                    "action": "cancel",
+                    "resolution": "applied",
+                },
+            ),
+            execution_owner_update_id="foreign-split-owner",
+        )
+        forged_execution = forged_cancellation["operations"][0][
+            "intervention"
+        ]["command_execution"]
+        forged_execution["blocker_reason"] = "cancelled_by_policy"
+        forged_execution["terminal_cleanup"] = {
+            "action": "release_stop|cancelled_by_policy",
+            "frame": 104,
+            "operation_id": "split-alpha",
+            "generation": 2,
+        }
+        forged_result = reducer.observe(
+            forged_cancellation,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            forged_result["operations"][0],
+        )
+
+        valid_cancellation = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=5,
+                frame=105,
+                execution_state="cancelled",
+                operation_edit={
+                    "action": "cancel",
+                    "resolution": "applied",
+                },
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        valid_execution = valid_cancellation["operations"][0][
+            "intervention"
+        ]["command_execution"]
+        valid_execution["blocker_reason"] = "cancelled_by_policy"
+        valid_execution["terminal_cleanup"] = {
+            "action": "release_stop|cancelled_by_policy",
+            "frame": 105,
+            "operation_id": "split-alpha",
+            "generation": 2,
+        }
+        cancelled = reducer.observe(
+            valid_cancellation,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            5,
+            cancelled["operations"][0][
+                "requested_operation_generation"
+            ],
+        )
+        self.assertEqual(
+            "update-split-alpha-5",
+            cancelled["operations"][0]["update_id"],
+        )
+        self.assertEqual(
+            owner_update_id,
+            cancelled["operations"][0][
+                "operation_console_execution_owner_update_id"
+            ],
+        )
+
+    def test_operation_timeline_accepts_delayed_execution_owner_telemetry(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-delayed-owner-telemetry"
+        owner_update_id = "update-delayed-alpha-3"
+
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="delayed-alpha",
+                generation=2,
+                requested_generation=3,
+                frame=100,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        latest_request = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="delayed-alpha",
+                generation=2,
+                requested_generation=4,
+                frame=101,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "latest_intent_waiting",
+                },
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        reducer.observe(
+            latest_request,
+            blackboard_scope_id=scope_id,
+        )
+
+        delayed_owner_telemetry = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="delayed-alpha",
+                generation=2,
+                requested_generation=3,
+                frame=102,
+                movement=True,
+                engagement=True,
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        result = reducer.observe(
+            delayed_owner_telemetry,
+            blackboard_scope_id=scope_id,
+        )
+
+        operation = result["operations"][0]
+        self.assertEqual(102, operation["telemetry_frame"])
+        self.assertEqual(4, operation["requested_operation_generation"])
+        self.assertEqual("update-delayed-alpha-4", operation["update_id"])
+        self.assertEqual(
+            "latest_intent_waiting",
+            operation["operation_edit"]["blocker"],
+        )
+        self.assertEqual(
+            owner_update_id,
+            operation["operation_console_execution_owner_update_id"],
+        )
+        self.assertTrue(
+            operation["battlefield_operation"]["operation_completion"][
+                "movement_observed"
+            ]
+        )
+        self.assertTrue(
+            operation["battlefield_operation"]["operation_completion"][
+                "engagement_observed"
+            ]
+        )
+        self.assertTrue(
+            {"movement_observed", "engagement_observed"}.issubset(
+                {
+                    event["kind"]
+                    for event in result["operation_events"]
+                }
+            )
+        )
+
+    def test_operation_timeline_retirement_keeps_identity_tombstone(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        reducer._PER_SCOPE_OPERATION_RETENTION = 1
+        scope_id = "scope-retired-family-identity"
+
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="retired-alpha",
+                generation=1,
+                frame=100,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        active = reducer.observe(
+            semantic_operation_payload(
+                operation_id="active-beta",
+                generation=1,
+                frame=101,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["active-beta"],
+            [item["operation_id"] for item in active["operations"]],
+        )
+        self.assertIn(
+            (scope_id, "1700000000000", "retired-alpha"),
+            reducer._retired_operation_identities,
+        )
+
+        retired_replay = semantic_operation_payload(
+            operation_id="retired-alpha",
+            generation=1,
+            frame=102,
+            movement=True,
+        )
+        active_advance = semantic_operation_payload(
+            operation_id="active-beta",
+            generation=1,
+            frame=102,
+            movement=True,
+        )
+        combined = deepcopy(active_advance)
+        combined["operations"].insert(
+            0,
+            retired_replay["operations"][0],
+        )
+        combined["battlefield_overview"][
+            "operation_ownership"
+        ].insert(
+            0,
+            retired_replay["battlefield_overview"][
+                "operation_ownership"
+            ][0],
+        )
+        advanced_active = reducer.observe(
+            combined,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["active-beta"],
+            [
+                item["operation_id"]
+                for item in advanced_active["operations"]
+            ],
+        )
+        self.assertEqual(
+            102,
+            advanced_active["operations"][0]["telemetry_frame"],
+        )
+        self.assertIn(
+            "movement_observed",
+            {
+                event["kind"]
+                for event in advanced_active["operation_events"]
+                if event["operation_id"] == "active-beta"
+            },
+        )
+        self.assertEqual(
+            ["active-beta"],
+            [
+                item["operation_id"]
+                for item in advanced_active["battlefield_overview"][
+                    "operation_ownership"
+                ]
+            ],
+        )
+        self.assertEqual(
+            4,
+            advanced_active["battlefield_overview"][
+                "explicit_operation_owned_count"
+            ],
+        )
+
+        foreign = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="retired-alpha",
+                generation=1,
+                frame=103,
+                movement=True,
+            ),
+            request_update_id="foreign-retired-alpha",
+            execution_owner_update_id="foreign-retired-alpha",
+        )
+        rejected = reducer.observe(
+            foreign,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["active-beta"],
+            [item["operation_id"] for item in rejected["operations"]],
+        )
+
+        advanced = reducer.observe(
+            semantic_operation_payload(
+                operation_id="retired-alpha",
+                generation=2,
+                frame=104,
+                movement=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            2,
+            advanced["operations"][0]["operation_generation"],
+        )
+
     def test_operation_timeline_session_epoch_resets_generation_and_retained_state(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         first = reducer.observe(
@@ -7556,6 +11798,115 @@ class SessionLoopBridgeTest(unittest.TestCase):
             "completed",
             [event["kind"] for event in delayed["operation_events"]],
         )
+
+    def test_operation_timeline_epoch_high_water_survives_scope_churn(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-retired-session-history"
+        reducer.observe(
+            semantic_operation_payload(
+                frame=111,
+                session_epoch=111,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        current = reducer.observe(
+            semantic_operation_payload(
+                frame=10,
+                session_epoch=222,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        for index in range(
+            reducer._SCOPE_EPOCH_HISTORY_RETENTION + 5
+        ):
+            reducer.observe(
+                semantic_operation_payload(
+                    operation_id=f"history-operation-{index}",
+                    frame=20 + index,
+                    session_epoch=1000 + index,
+                ),
+                blackboard_scope_id=f"history-scope-{index}",
+            )
+
+        delayed = reducer.observe(
+            semantic_operation_payload(
+                frame=999,
+                session_epoch=111,
+                movement=True,
+                engagement=True,
+                target_reached=True,
+                terminal=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            222,
+            delayed["battlefield_overview"]["identity"][
+                "session_epoch"
+            ],
+        )
+        self.assertEqual(
+            10,
+            delayed["operations"][0]["telemetry_frame"],
+        )
+        self.assertNotIn(
+            "completed",
+            [event["kind"] for event in delayed["operation_events"]],
+        )
+        self.assertEqual(
+            "222",
+            reducer._scope_epoch_history[scope_id],
+        )
+
+    def test_operation_timeline_opaque_epoch_history_fails_closed_when_full(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        reducer._RETIRED_OPAQUE_EPOCH_RETENTION = 2
+        scope_id = "scope-opaque-epoch-history"
+
+        reducer.observe(
+            semantic_operation_payload(
+                frame=100,
+                session_epoch="epoch-alpha",
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        reducer.observe(
+            semantic_operation_payload(
+                frame=10,
+                session_epoch="epoch-beta",
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        current = reducer.observe(
+            semantic_operation_payload(
+                frame=1,
+                session_epoch="epoch-gamma",
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        rejected = reducer.observe(
+            semantic_operation_payload(
+                frame=1,
+                session_epoch="epoch-delta",
+                movement=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            current["operation_event_latest_seq"],
+            rejected["operation_event_latest_seq"],
+        )
+        self.assertEqual("epoch-gamma", reducer._scope_epochs[scope_id])
+        self.assertEqual(
+            ["epoch-alpha", "epoch-beta"],
+            list(reducer._retired_scope_epochs[scope_id]),
+        )
+        self.assertIn(scope_id, reducer._opaque_epoch_history_saturated)
 
     def test_operation_timeline_standing_operation_is_not_completed_by_activity(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
@@ -7763,17 +12114,29 @@ class SessionLoopBridgeTest(unittest.TestCase):
     def test_operation_timeline_preserves_new_execution_owner_for_stale_intent(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         scope_id = "scope-stale-intent-new-execution"
-        reducer.observe(
-            semantic_operation_payload(
-                generation=1,
-                requested_generation=4,
-                frame=100,
-                operation_edit={
-                    "action": "reinforce",
-                    "resolution": "blocked",
-                    "blocker": "latest_intent_blocker",
+        accepted = semantic_operation_payload(
+            generation=1,
+            requested_generation=4,
+            frame=100,
+            operation_edit={
+                "action": "reinforce",
+                "resolution": "blocked",
+                "blocker": "latest_intent_blocker",
+            },
+        )
+        accepted["operations"][0]["update"] = {
+            "update_id": "update-flank-alpha-4",
+            "vector": {
+                "operation_id": "flank-alpha",
+                "generation": 1,
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "yamato_cannon",
                 },
-            ),
+            },
+        }
+        reducer.observe(
+            accepted,
             blackboard_scope_id=scope_id,
         )
 
@@ -7794,6 +12157,46 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
         incoming_operation = incoming["operations"][0]
         execution_owner_update_id = incoming_operation["update_id"]
+        incoming_operation["update"] = {
+            "update_id": execution_owner_update_id,
+            "vector": {
+                "operation_id": "flank-alpha",
+                "generation": 2,
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "tactical_nuke",
+                },
+            },
+        }
+        incoming_operation["family_evidence"] = [
+            {
+                "update_id": execution_owner_update_id,
+                "operation_id": "flank-alpha",
+                "generation": 2,
+                "family": "ghost",
+                "action": "ability:tactical_nuke",
+                "required_effect": "ability_state_or_effect",
+                "attempt_generation": 1,
+                "attempted_count": 1,
+                "attempted_frame": 100,
+                "submitted_count": 0,
+                "effect_count": 0,
+                "blocker_manager": "CombatCommander",
+                "blocker": "no_valid_nuke_target",
+                "stage": "blocked",
+            }
+        ]
+        incoming_execution = incoming_operation["intervention"][
+            "command_execution"
+        ]
+        incoming_execution.update(
+            {
+                "state": "failed",
+                "failed": True,
+                "blocker_manager": "CombatCommander",
+                "blocker_reason": "no_valid_nuke_target",
+            }
+        )
         result = reducer.observe(
             incoming,
             blackboard_scope_id=scope_id,
@@ -7812,6 +12215,16 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
+            "yamato_cannon",
+            operation["update"]["vector"]["tactical_task"]["ability"],
+        )
+        self.assertEqual(
+            "tactical_nuke",
+            operation["operation_console_execution_owner_vector"][
+                "tactical_task"
+            ]["ability"],
+        )
+        self.assertEqual(
             execution_owner_update_id,
             operation["battlefield_operation"]["identity"]["update_id"],
         )
@@ -7819,6 +12232,127 @@ class SessionLoopBridgeTest(unittest.TestCase):
             "completed",
             [event["kind"] for event in operation["semantic_timeline"]],
         )
+        critical_failures = [
+            event
+            for event in operation["semantic_timeline"]
+            if event["kind"] == "critical_ability_failure"
+        ]
+        self.assertEqual(1, len(critical_failures))
+        self.assertEqual(
+            execution_owner_update_id,
+            critical_failures[0]["update_id"],
+        )
+        self.assertEqual(
+            "tactical_nuke",
+            critical_failures[0]["technical"]["ability"],
+        )
+
+        wrong_owner_reducer = web_gui._OperationSemanticTimelineReducer()
+        wrong_owner_reducer.observe(
+            accepted,
+            blackboard_scope_id=scope_id,
+        )
+        wrong_owner = deepcopy(incoming)
+        wrong_owner["operations"][0]["family_evidence"][0]["update_id"] = (
+            "update-flank-alpha-4"
+        )
+        wrong_owner_result = wrong_owner_reducer.observe(
+            wrong_owner,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertNotIn(
+            "critical_ability_failure",
+            [
+                event["kind"]
+                for event in wrong_owner_result["operation_events"]
+            ],
+        )
+
+    def test_operation_timeline_force_loss_requires_matching_projection_identity(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-force-loss-projection-identity"
+        baseline = reducer.observe(
+            semantic_operation_payload(
+                operation_id="identity-alpha",
+                generation=2,
+                frame=200,
+                owner_count=4,
+                required_count=4,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        baseline_seq = baseline["operation_event_latest_seq"]
+        mismatched = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            frame=999,
+            owner_count=2,
+            required_count=4,
+        )
+        projection = mismatched["operations"][0]["battlefield_operation"]
+        projection["identity"]["update_id"] = "stale-projection-update"
+        canonical = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            frame=201,
+            owner_count=2,
+            required_count=4,
+        )
+        self.assertTrue(
+            reducer._snapshot_operations_are_monotonic(
+                [
+                    mismatched["operations"][0],
+                    canonical["operations"][0],
+                ],
+                scope_id=scope_id,
+                session_epoch="1700000000000",
+            )
+        )
+
+        result = reducer.observe(
+            mismatched,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertNotIn(
+            "force_loss",
+            [event["kind"] for event in result["operation_events"]],
+        )
+        mismatch_events = [
+            event
+            for event in result["operation_events"]
+            if event["timeline_seq"] > baseline_seq
+        ]
+        self.assertNotIn(
+            "partially_assigned",
+            [event["kind"] for event in mismatch_events],
+        )
+        self.assertTrue(
+            all(event["game_frame"] <= 200 for event in mismatch_events)
+        )
+        family_key = (
+            scope_id,
+            "1700000000000",
+            "identity-alpha",
+        )
+        self.assertEqual(200, reducer._family_last_frame[family_key])
+        canonical_result = reducer.observe(
+            canonical,
+            blackboard_scope_id=scope_id,
+        )
+        force_losses = [
+            event
+            for event in canonical_result["operation_events"]
+            if event["kind"] == "force_loss"
+        ]
+        self.assertEqual(1, len(force_losses))
+        self.assertEqual(
+            4,
+            force_losses[0]["technical"]["previous_owner_count"],
+        )
+        self.assertEqual(2, force_losses[0]["owner_count"])
 
     def test_rejected_snapshot_does_not_poison_requested_generation_high_water(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
@@ -7849,11 +12383,20 @@ class SessionLoopBridgeTest(unittest.TestCase):
             reducer._requested_generation_high_water[family_key],
         )
 
-        accepted = reducer.observe(
+        accepted_payload = set_semantic_operation_identity(
             semantic_operation_payload(
                 requested_generation=5,
                 frame=101,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "awaiting_reinforcement",
+                },
             ),
+            execution_owner_update_id="update-flank-alpha-4",
+        )
+        accepted = reducer.observe(
+            accepted_payload,
             blackboard_scope_id=scope_id,
         )
         self.assertEqual(
@@ -8098,6 +12641,226 @@ class SessionLoopBridgeTest(unittest.TestCase):
             reducer._SCOPE_EPOCH_HISTORY_RETENTION,
         )
 
+    def test_operation_timeline_retains_family_tombstones_past_1024(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        original_scope = "scope-family-history-original"
+        original_payload = semantic_operation_payload(
+            operation_id="original-operation",
+            frame=100,
+            session_epoch=1000,
+        )
+        first = reducer.observe(
+            original_payload,
+            blackboard_scope_id=original_scope,
+        )
+        first_seq = first["operation_event_latest_seq"]
+
+        for scope_index in range(17):
+            scope_id = f"scope-family-history-{scope_index}"
+            payload = semantic_operation_payload(
+                operation_id=f"operation-{scope_index}-0",
+                frame=200 + scope_index,
+                session_epoch=2000 + scope_index,
+            )
+            for operation_index in range(
+                1,
+                reducer._PER_SCOPE_OPERATION_RETENTION,
+            ):
+                operation_payload = semantic_operation_payload(
+                    operation_id=(
+                        f"operation-{scope_index}-{operation_index}"
+                    ),
+                    frame=200 + scope_index + operation_index,
+                    session_epoch=2000 + scope_index,
+                )
+                payload["operations"].extend(
+                    operation_payload["operations"]
+                )
+                payload["battlefield_overview"][
+                    "operation_ownership"
+                ].extend(
+                    operation_payload["battlefield_overview"][
+                        "operation_ownership"
+                    ]
+                )
+            reducer.observe(payload, blackboard_scope_id=scope_id)
+
+        self.assertGreater(len(reducer._family_order), 1024)
+        self.assertLessEqual(
+            len(reducer._family_order),
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        )
+        replayed = reducer.observe(
+            deepcopy(original_payload),
+            blackboard_scope_id=original_scope,
+        )
+
+        self.assertEqual([], replayed["operation_events"])
+        self.assertEqual(
+            first_seq,
+            replayed["operation_event_latest_seq"],
+        )
+
+    def test_operation_timeline_rejects_capacity_plus_one_without_reviving_oldest(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-family-history-capacity"
+        session_epoch = "epoch-family-history-capacity"
+        original_payload = semantic_operation_payload(
+            operation_id="oldest-operation",
+            frame=100,
+            session_epoch=session_epoch,
+        )
+        first = reducer.observe(
+            original_payload,
+            blackboard_scope_id=scope_id,
+        )
+        first_seq = first["operation_event_latest_seq"]
+
+        for index in range(
+            1,
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        ):
+            family_key = (
+                scope_id,
+                session_epoch,
+                f"retired-operation-{index}",
+            )
+            reducer._family_order.append(family_key)
+            reducer._generation_high_water[family_key] = 1
+            reducer._requested_generation_high_water[family_key] = 1
+            reducer._family_last_frame[family_key] = index
+            reducer._retired_operation_identities[family_key] = {
+                "operation_id": family_key[2],
+                "operation_generation": 1,
+                "requested_operation_generation": 1,
+                "update_id": f"retired-update-{index}",
+                "operation_console_execution_owner_update_id": "",
+            }
+
+        overflow = reducer.observe(
+            semantic_operation_payload(
+                operation_id="capacity-plus-one",
+                frame=200,
+                session_epoch=session_epoch,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        replayed = reducer.observe(
+            deepcopy(original_payload),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            "operation_history_capacity_rejected",
+            overflow["status"],
+        )
+        self.assertFalse(overflow["enabled"])
+        self.assertEqual([], overflow["operation_events"])
+        self.assertEqual(
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+            len(reducer._family_order),
+        )
+        self.assertEqual(
+            first["operation_events"],
+            replayed["operation_events"],
+        )
+        self.assertEqual(
+            first_seq,
+            replayed["operation_event_latest_seq"],
+        )
+
+    def test_operation_timeline_scope_history_capacity_fails_closed(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        capacity = reducer._SCOPE_EPOCH_HISTORY_RETENTION
+        for index in range(capacity):
+            result = reducer.observe(
+                semantic_operation_payload(
+                    operation_id=f"bounded-operation-{index}",
+                    frame=100 + index,
+                    session_epoch=1000 + index,
+                ),
+                blackboard_scope_id=f"bounded-scope-{index}",
+            )
+            self.assertNotEqual(
+                "scope_capacity_rejected",
+                result.get("operation_timeline_status"),
+            )
+
+        overflow = reducer.observe(
+            semantic_operation_payload(
+                operation_id="overflow-operation",
+                frame=999,
+                session_epoch=9999,
+            ),
+            blackboard_scope_id="bounded-scope-overflow",
+        )
+
+        self.assertEqual(
+            "scope_capacity_rejected",
+            overflow["operation_timeline_status"],
+        )
+        self.assertEqual(
+            "scope_capacity_rejected",
+            overflow["status"],
+        )
+        self.assertFalse(overflow["enabled"])
+        self.assertIn("capacity is exhausted", overflow["error"])
+        self.assertFalse(overflow["operation_registry_authoritative"])
+        self.assertEqual([], overflow["operations"])
+        self.assertEqual(capacity, len(reducer._scope_epoch_history))
+        self.assertEqual(capacity, len(reducer._scope_epoch_history_order))
+        self.assertEqual(capacity, len(reducer._scope_event_high_water))
+        self.assertEqual(
+            capacity,
+            len(reducer._scope_battlefield_overviews),
+        )
+        self.assertNotIn(
+            "bounded-scope-overflow",
+            reducer._scope_epoch_history,
+        )
+
+    def test_operation_timeline_cursor_survives_numeric_and_opaque_scope_lru(
+        self,
+    ):
+        for session_epoch in (1700000000000, "epoch-live"):
+            with self.subTest(session_epoch=session_epoch):
+                reducer = web_gui._OperationSemanticTimelineReducer()
+                scope_id = f"scope-lru-{session_epoch}"
+                first = reducer.observe(
+                    semantic_operation_payload(
+                        frame=100,
+                        session_epoch=session_epoch,
+                    ),
+                    blackboard_scope_id=scope_id,
+                )
+                first_seq = first["operation_event_latest_seq"]
+                for index in range(reducer._SCOPE_RETENTION):
+                    reducer.observe(
+                        semantic_operation_payload(
+                            operation_id=f"other-operation-{index}",
+                            frame=200 + index,
+                            session_epoch=2000 + index,
+                        ),
+                        blackboard_scope_id=f"other-scope-{index}",
+                    )
+                self.assertNotIn(scope_id, reducer._scope_events)
+
+                replayed = reducer.observe(
+                    semantic_operation_payload(
+                        frame=100,
+                        session_epoch=session_epoch,
+                    ),
+                    blackboard_scope_id=scope_id,
+                )
+
+                self.assertEqual([], replayed["operation_events"])
+                self.assertEqual(
+                    first_seq,
+                    replayed["operation_event_latest_seq"],
+                )
+
     def test_operation_timeline_scope_lru_revisit_emits_only_new_transition(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         original_scope = "scope-lru-original"
@@ -8126,6 +12889,10 @@ class SessionLoopBridgeTest(unittest.TestCase):
             blackboard_scope_id=original_scope,
         )
         self.assertEqual([], replayed["operation_events"])
+        self.assertEqual(
+            first["operation_event_latest_seq"],
+            replayed["operation_event_latest_seq"],
+        )
 
         advanced = reducer.observe(
             semantic_operation_payload(
@@ -8217,6 +12984,15 @@ class SessionLoopBridgeTest(unittest.TestCase):
             bridge.submit_command(123)
         with self.assertRaises(ValueError):
             bridge.submit_command("   ")
+        with self.assertRaises(TypeError):
+            bridge.submit_correlated_command("상황 보고해줘", 123)
+        with self.assertRaises(ValueError):
+            bridge.submit_correlated_command("상황 보고해줘", "   ")
+        with self.assertRaises(ValueError):
+            bridge.submit_correlated_command(
+                "상황 보고해줘",
+                "x" * (web_gui.MAX_WEB_REQUEST_ID_CHARS + 1),
+            )
 
     def test_commands_record_sequential_history_events(self):
         session, _bot = build_dry_run_session()
@@ -8239,6 +13015,36 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertIn("read_only", statuses)
         self.assertTrue(EXECUTED_FAMILY_STATUSES.intersection(statuses))
         self.assertEqual(bridge.history_since(bridge.latest_seq()), ())
+
+    def test_correlated_commands_record_exact_request_identity(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        requests = (
+            ("동일 명령", "pending-correlated-first"),
+            ("동일 명령", "pending-correlated-second"),
+        )
+        for text, request_id in requests:
+            bridge.submit_correlated_command(text, request_id)
+
+        deadline = time.monotonic() + POLL_DEADLINE_SECONDS
+        while time.monotonic() < deadline and bridge.latest_seq() < 2:
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+        events = bridge.history_since(0)
+        self.assertEqual(2, len(events))
+        self.assertEqual(
+            [request_id for _text, request_id in requests],
+            [event["request_id"] for event in events],
+        )
+        self.assertEqual(
+            [request_id for _text, request_id in requests],
+            [
+                event["detail"]["web_request_id"]
+                for event in events
+            ],
+        )
 
     def test_micromachine_emergency_supersedes_inflight_publish_and_runs_next(self):
         started = threading.Event()
@@ -9932,9 +14738,10 @@ for (let index = 0; index < MAX_CHAT_EVENTS - 1; index += 1) {
     narration: "이전 응답 " + index
   });
 }
-appendVoiceRecordingBubble();
+var recordingSession = appendVoiceRecordingBubble();
+var recordingNode = recordingSession.node;
 assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
-appendPendingCommand("상황 보고해줘");
+var firstPendingId = appendPendingCommand("상황 보고해줘");
 assert.strictEqual(pendingCommandCount(), 1);
 assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
 assert(pendingStatus.textContent.includes("LLM 응답을 기다리는 중"));
@@ -9942,15 +14749,16 @@ assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
 assert.strictEqual(logBox.querySelectorAll(".typing-indicator").length, 1);
 assert.strictEqual(logBox.querySelector(".message-pending").getAttribute("role"), null);
 assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
-assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(recordingNode.parentNode, logBox);
 assert.strictEqual(logBox.querySelector(".voice-wave").querySelectorAll("span").length, 5);
-appendPendingCommand("상황 보고해줘");
+var secondPendingId = appendPendingCommand("상황 보고해줘");
 assert.strictEqual(pendingCommandCount(), 2);
 assert(pendingStatus.textContent.includes("대기 중인 응답 2개"));
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
-assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(recordingNode.parentNode, logBox);
 appendLog({
   seq: MAX_CHAT_EVENTS + 1,
+  request_id: firstPendingId,
   command_text: "상황 보고해줘",
   status: "read_only",
   narration: "현재 상태를 요약했습니다."
@@ -9959,9 +14767,10 @@ assert.strictEqual(pendingCommandCount(), 1);
 assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
 assert(pendingStatus.textContent.includes("LLM 응답을 기다리는 중"));
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
-assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(recordingNode.parentNode, logBox);
 appendLog({
   seq: MAX_CHAT_EVENTS + 2,
+  request_id: secondPendingId,
   command_text: "상황 보고해줘",
   status: "read_only",
   narration: "두 번째 응답입니다."
@@ -9970,11 +14779,90 @@ assert.strictEqual(pendingCommandCount(), 0);
 assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
 assert.strictEqual(pendingStatus.textContent, "");
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
-assert(document.getElementById("voice-recording-entry"));
+assert.strictEqual(recordingNode.parentNode, logBox);
 removeVoiceRecordingBubble();
-assert.strictEqual(document.getElementById("voice-recording-entry"), null);
+assert.strictEqual(recordingNode.parentNode, null);
 assert(logBox.textContent.includes("현재 상태를 요약했습니다."));
 assert(logBox.textContent.includes("두 번째 응답입니다."));
+
+var standardsRemoveChild = logBox.removeChild.bind(logBox);
+logBox.removeChild = function(child) {
+  if (this.children.indexOf(child) < 0) {
+    throw new Error("NotFoundError: child is no longer attached");
+  }
+  return standardsRemoveChild(child);
+};
+var stalledVoiceCount = MAX_CHAT_EVENTS + 12;
+for (let index = 0; index < stalledVoiceCount; index += 1) {
+  var stalledSession = appendVoiceRecordingBubble();
+  stalledSession.finalText = "지연 음성 명령 " + index;
+  stalledSession.submitted = true;
+  appendPendingCommand(stalledSession.finalText, stalledSession);
+  assert(
+    logBox.querySelectorAll(".log-entry").length <= MAX_CHAT_EVENTS,
+    "submitted voice nodes must obey the chat DOM retention bound"
+  );
+  assert(
+    Object.keys(voiceSessionsByPendingId).length <= MAX_CHAT_EVENTS,
+    "submitted voice session mappings must remain bounded"
+  );
+}
+assert(
+  pendingCommandCount() <= MAX_CHAT_EVENTS,
+  "trimmed pending identities must obey the chat retention bound"
+);
+assert(
+  Object.keys(pendingNodes).length <= MAX_CHAT_EVENTS,
+  "trimmed pending command buckets must obey the chat retention bound"
+);
+assert.strictEqual(
+  Object.keys(pendingNodes).reduce(function(total, text) {
+    return total + pendingNodes[text].length;
+  }, 0),
+  pendingCommandCount()
+);
+assert(
+  Object.keys(voiceSessionsByPendingId).length < stalledVoiceCount,
+  "trimmed voice nodes must release their session mapping"
+);
+assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
+assert.strictEqual(logBox.querySelectorAll(".message-pending").length, MAX_CHAT_EVENTS);
+assert.strictEqual(pendingAggregateNode, null);
+assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+
+var retainedVoiceSessions = Object.keys(voiceSessionsByPendingId).map(
+  function(pendingId) {
+    return voiceSessionsByPendingId[pendingId];
+  }
+).filter(function(session) {
+  return session && session.node && session.node.parentNode === logBox;
+});
+assert(retainedVoiceSessions.length > 0);
+var lastPendingVoiceSession = retainedVoiceSessions[0];
+Object.keys(voiceSessionsByPendingId).forEach(function(pendingId) {
+  if (voiceSessionsByPendingId[pendingId] !== lastPendingVoiceSession) {
+    removePendingById(pendingId);
+  }
+});
+assert.strictEqual(pendingCommandCount(), 1);
+var trimIterations = 0;
+while (
+  lastPendingVoiceSession.node &&
+  lastPendingVoiceSession.node.parentNode === logBox &&
+  trimIterations < MAX_CHAT_EVENTS * 3
+) {
+  trimIterations += 1;
+  appendLog({
+    seq: MAX_CHAT_EVENTS * 10 + trimIterations,
+    command_text: "trim filler " + trimIterations,
+    status: "read_only",
+    narration: "trim filler response " + trimIterations
+  });
+}
+assert.strictEqual(lastPendingVoiceSession.node, null);
+assert.strictEqual(pendingCommandCount(), 0);
+assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+assert.strictEqual(pendingStatus.textContent, "");
 """
         with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
             script_file.write(harness)
@@ -10198,6 +15086,9 @@ function element(id, tagName) {
 var logBox = element("log");
 var nodes = {
   "assistant-pending-status": element("assistant-pending-status", "p"),
+  "tactical-radio-status": element("tactical-radio-status", "span"),
+  "tactical-radio-mute": element("tactical-radio-mute", "button"),
+  "tactical-radio-captions": element("tactical-radio-captions", "ol"),
   "command-form": element("command-form", "form"),
   "command-input": element("command-input", "input"),
   "send-button": element("send-button", "button"),
@@ -10342,18 +15233,87 @@ var document = {
   }
 };
 var timeoutCallbacks = [];
+var timeoutDelays = [];
+var fakeNowMs = 1700000000000;
+Date.now = function () { return fakeNowMs; };
+var recognitionInstances = [];
+class FakeSpeechRecognition {
+  constructor() {
+    this.lang = "";
+    this.interimResults = false;
+    this.continuous = false;
+    this.onstart = null;
+    this.onend = null;
+    this.onerror = null;
+    this.onresult = null;
+    this.deferStart = false;
+    this.pendingStart = false;
+    this.startCalls = 0;
+    recognitionInstances.push(this);
+  }
+  start() {
+    this.startCalls += 1;
+    if (this.pendingStart) {
+      throw new Error("InvalidStateError");
+    }
+    if (this.deferStart) {
+      this.pendingStart = true;
+      return;
+    }
+    if (this.onstart) { this.onstart(); }
+  }
+  fireStart() {
+    this.pendingStart = false;
+    if (this.onstart) { this.onstart(); }
+  }
+  fireError(error) {
+    this.pendingStart = false;
+    if (this.onerror) { this.onerror({ error: error }); }
+  }
+  fireEnd() {
+    this.pendingStart = false;
+    if (this.onend) { this.onend(); }
+  }
+  stop() {
+    if (this.onend) { this.onend(); }
+  }
+  abort() {
+    if (this.onend) { this.onend(); }
+  }
+}
+class FakeSpeechSynthesisUtterance {
+  constructor(text) {
+    this.text = text;
+    this.lang = "";
+    this.onend = null;
+    this.onerror = null;
+  }
+}
+var spokenUtterances = [];
+var speechCancelCount = 0;
+var speechSynthesis = {
+  speak: function (utterance) {
+    spokenUtterances.push(utterance);
+  },
+  cancel: function () {
+    speechCancelCount += 1;
+  }
+};
 var window = {
   location: { search: "" },
-  setTimeout: function (callback) {
+  setTimeout: function (callback, delay) {
     timeoutCallbacks.push(callback);
+    timeoutDelays.push(Number(delay || 0));
     return timeoutCallbacks.length - 1;
   },
   clearTimeout: function (id) {
     timeoutCallbacks[id] = function () {};
   },
   open: function () {},
-  SpeechRecognition: null,
-  webkitSpeechRecognition: null
+  SpeechRecognition: FakeSpeechRecognition,
+  webkitSpeechRecognition: null,
+  SpeechSynthesisUtterance: FakeSpeechSynthesisUtterance,
+  speechSynthesis: speechSynthesis
 };
     var console = {
       warn: function () {},
@@ -12565,6 +17525,162 @@ const assert = require("assert");
   assert(nodes["micromachine-status"].textContent.includes("queued poll recovered"));
   assert.strictEqual(microMachinePollInFlight, false);
 
+  // A fallback status response that wins the initial SSE race hydrates silently.
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.captions = [];
+  tacticalRadio.dedupe = {};
+  tacticalRadio.planAnnouncements = {};
+  renderTacticalRadioCaptions();
+  commandEventAwaitingInitialSnapshot = true;
+  var initialHydrationPollStart = requests.length;
+  pollMicroMachineStatus();
+  var initialHydrationPoll = requests[initialHydrationPollStart];
+  var initialHydrationStatus = serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "historical-initial-plan",
+    compile_result: {
+      status: "compiled",
+      update_id: "historical-initial-plan",
+      vector: {
+        operations: [
+          {
+            operation_id: "historical-initial-operation",
+            generation: 3,
+            composition_requirements: [
+              { unit_type: "TERRAN_MARINE", count: 2 }
+            ],
+            tactical_task: { task_type: "scout_with_units" },
+            target_intent: { target_type: "enemy_main" },
+            route_intent: { route_type: "direct" },
+            lifetime: {
+              mode: "until_completed",
+              completion_conditions: ["enemy_observed"]
+            }
+          }
+        ]
+      }
+    }
+  }, SERVER_SCOPE_A);
+  initialHydrationPoll.deferred.resolve(response(200, initialHydrationStatus));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(tacticalRadio.captions.length, 0);
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      tacticalRadioPlanAnnouncementKey(
+        SERVER_SCOPE_A,
+        "",
+        "historical-initial-plan",
+        "historical-initial-operation",
+        3
+      )
+    ],
+    true
+  );
+  assert.strictEqual(commandEventAwaitingInitialSnapshot, false);
+  assert.strictEqual(commandEventPollWonInitialHydration, true);
+  var pollWinnerStatusText =
+    nodes["micromachine-status"].textContent;
+  applyServerEvent({
+    type: "snapshot",
+    lastEventId: "804",
+    data: JSON.stringify({
+      event_seq: 804,
+      event_type: "snapshot",
+      blackboard_scope_id: SERVER_SCOPE_A,
+      payload: {
+        history: { events: [], latest: 0 },
+        micromachine_status: serverResult({
+          enabled: true,
+          status: "late-sse-snapshot-must-not-render",
+          dashboard: { telemetry: { frame: 1 } }
+        }, SERVER_SCOPE_A)
+      }
+    })
+  });
+  assert.strictEqual(commandEventPollWonInitialHydration, false);
+  assert.strictEqual(lastEventSeq, 804);
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    pollWinnerStatusText
+  );
+  assert(
+    !nodes["micromachine-status"].textContent.includes(
+      "late-sse-snapshot-must-not-render"
+    )
+  );
+  assert.strictEqual(tacticalRadio.captions.length, 0);
+
+  // If the SSE snapshot wins first, the older hydration-only poll is discarded.
+  commandEventAwaitingInitialSnapshot = true;
+  commandEventPollWonInitialHydration = false;
+  var staleHydrationPollStart = requests.length;
+  pollMicroMachineStatus();
+  var staleHydrationPoll = requests[staleHydrationPollStart];
+  var sseWinnerStatus = serverResult({
+    enabled: true,
+    status: "sse-snapshot-won",
+    dashboard: { telemetry: { frame: 804 } }
+  }, SERVER_SCOPE_A);
+  applyEventSnapshot({
+    micromachine_status: sseWinnerStatus
+  });
+  assert.strictEqual(commandEventAwaitingInitialSnapshot, false);
+  assert(nodes["micromachine-status"].textContent.includes("sse-snapshot-won"));
+  var appliedSeqAfterSseWinner = microMachinePollAppliedSeq;
+  var staleHydrationStatus = serverResult({
+    ok: true,
+    accepted: true,
+    status: "stale-hydration-must-not-render",
+    update_id: "stale-hydration-plan",
+    compile_result: {
+      status: "compiled",
+      update_id: "stale-hydration-plan",
+      vector: {
+        operations: [
+          {
+            operation_id: "stale-hydration-operation",
+            generation: 1,
+            composition_requirements: [
+              { unit_type: "TERRAN_MARINE", count: 1 }
+            ],
+            tactical_task: { task_type: "scout_with_units" },
+            target_intent: { target_type: "enemy_main" },
+            route_intent: { route_type: "direct" },
+            lifetime: { mode: "until_completed" }
+          }
+        ]
+      }
+    }
+  }, SERVER_SCOPE_A);
+  staleHydrationPoll.deferred.resolve(
+    response(200, staleHydrationStatus)
+  );
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(microMachinePollAppliedSeq, appliedSeqAfterSseWinner);
+  assert(nodes["micromachine-status"].textContent.includes("sse-snapshot-won"));
+  assert(
+    !nodes["micromachine-status"].textContent.includes(
+      "stale-hydration-must-not-render"
+    )
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      tacticalRadioPlanAnnouncementKey(
+        SERVER_SCOPE_A,
+        "",
+        "stale-hydration-plan",
+        "stale-hydration-operation",
+        1
+      )
+    ],
+    undefined
+  );
+  assert.strictEqual(microMachinePollInFlight, false);
+
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-submit-scope-a";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-submit-scope-a");
   var pendingCountBeforeStaleSubmit = pendingCommandCount();
@@ -12935,6 +18051,68 @@ const assert = require("assert");
     stages[5].evidence.last_actual_command = action;
     return stages;
   }
+
+  var cancellationBaseline = operationResult(
+    "cancel-auth-alpha",
+    "cancel-auth-owner-1",
+    "취소 인증 기준 작전",
+    "attack",
+    190,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    1
+  );
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [cancellationBaseline]
+  }, OPERATION_SCOPE));
+  var cancellationRequest = operationResult(
+    "cancel-auth-alpha",
+    "cancel-auth-request-2",
+    "취소 인증 요청",
+    "attack",
+    191,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  cancellationRequest.requested_operation_generation = 2;
+  cancellationRequest.operation_console_execution_owner_update_id =
+    "cancel-auth-owner-1";
+  cancellationRequest.intervention.command_execution.command_id =
+    "cancel-auth-owner-1";
+  cancellationRequest.battlefield_operation.identity.update_id =
+    "cancel-auth-owner-1";
+  cancellationRequest.operation_edit = {
+    action: "cancel",
+    resolution: "applied"
+  };
+  cancellationRequest.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  cancellationRequest.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 191,
+    operation_id: "cancel-auth-alpha",
+    generation: 1
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [cancellationRequest]
+  }, OPERATION_SCOPE));
+  var cancellationRecord = operationRecords[
+    operationRecordKey(OPERATION_SCOPE, "cancel-auth-alpha")
+  ];
+  assert.strictEqual(cancellationRecord.updateId, "cancel-auth-request-2");
+  assert.strictEqual(cancellationRecord.requestedOperationGeneration, 2);
+  assert.strictEqual(
+    cancellationRecord.data.operation_console_execution_owner_update_id,
+    "cancel-auth-owner-1"
+  );
+  assert.strictEqual(
+    cancellationRecord.data.intervention.command_execution.state,
+    "cancelled"
+  );
+  resetOperationConsoleRegistry();
 
   var foreignExecutionOperation = operationResult(
     "new-operation",
@@ -13313,12 +18491,14 @@ const assert = require("assert");
       event_type: "operation_event",
       event_seq: operationEventSeq,
       blackboard_scope_id: OPERATION_SCOPE,
+      update_id: "parallel-update-a",
       operation_id: "recon-alpha",
       generation: 1,
       payload: {
         timeline_seq: 302,
         blackboard_scope_id: OPERATION_SCOPE,
         session_epoch: "1700000000000",
+        update_id: "parallel-update-a",
         operation_id: "recon-alpha",
         generation: 1,
         kind: "engagement_observed",
@@ -13756,6 +18936,12 @@ const assert = require("assert");
     2
   );
   latestActiveRejectedEdit.requested_operation_generation = 4;
+  latestActiveRejectedEdit.operation_console_execution_owner_update_id =
+    "parallel-update-b-edit";
+  latestActiveRejectedEdit.intervention.command_execution.command_id =
+    "parallel-update-b-edit";
+  latestActiveRejectedEdit.battlefield_operation.identity.update_id =
+    "parallel-update-b-edit";
   latestActiveRejectedEdit.operation_edit = {
     action: "reinforce",
     before_composition: [
@@ -13775,6 +18961,282 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.terminal, false);
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
   assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+
+  var channelSwapSnapshot = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit",
+    "request and owner channel swap must fail closed",
+    "attack",
+    1000,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  channelSwapSnapshot.requested_operation_generation = 4;
+  channelSwapSnapshot.operation_console_execution_owner_update_id =
+    "parallel-update-b-edit";
+  channelSwapSnapshot.intervention.command_execution.command_id =
+    "parallel-update-b-edit";
+  channelSwapSnapshot.battlefield_operation.identity.update_id =
+    "parallel-update-b-edit";
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [channelSwapSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(
+    assaultRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "request and owner channel swap must fail closed"
+    )
+  );
+
+  var arbitraryEditSnapshot = operationResult(
+    "assault-bravo",
+    "invalid-edit-request-5",
+    "arbitrary edit action must fail closed",
+    "attack",
+    1001,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  arbitraryEditSnapshot.requested_operation_generation = 5;
+  arbitraryEditSnapshot.operation_console_execution_owner_update_id =
+    "parallel-update-b-edit";
+  arbitraryEditSnapshot.intervention.command_execution.command_id =
+    "parallel-update-b-edit";
+  arbitraryEditSnapshot.battlefield_operation.identity.update_id =
+    "parallel-update-b-edit";
+  arbitraryEditSnapshot.operation_edit = {
+    action: "not-a-real-operation-edit",
+    resolution: "blocked"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [arbitraryEditSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+
+  var forgedNewCancellation = operationResult(
+    "assault-bravo",
+    "forged-cancel-request-5",
+    "foreign owner cancellation must fail closed",
+    "attack",
+    1002,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    2
+  );
+  forgedNewCancellation.requested_operation_generation = 5;
+  forgedNewCancellation.operation_console_execution_owner_update_id =
+    "foreign-cancel-owner";
+  forgedNewCancellation.intervention.command_execution.command_id =
+    "foreign-cancel-owner";
+  forgedNewCancellation.battlefield_operation.identity.update_id =
+    "foreign-cancel-owner";
+  forgedNewCancellation.operation_edit = {
+    action: "cancel",
+    resolution: "applied"
+  };
+  forgedNewCancellation.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  forgedNewCancellation.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 1002,
+    operation_id: "assault-bravo",
+    generation: 2
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [forgedNewCancellation]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+
+  var delayedOwnerTelemetry = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit",
+    "execution owner telemetry",
+    "attack",
+    332,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  delayedOwnerTelemetry.requested_operation_generation = 2;
+  delayedOwnerTelemetry.operation_console_execution_owner_update_id =
+    "parallel-update-b-edit";
+  delayedOwnerTelemetry.intervention.command_execution.command_id =
+    "parallel-update-b-edit";
+  delayedOwnerTelemetry.battlefield_operation.identity.update_id =
+    "parallel-update-b-edit";
+  delayedOwnerTelemetry.battlefield_operation.operation_completion
+    .movement_observed = true;
+  delayedOwnerTelemetry.battlefield_operation.operation_completion
+    .engagement_observed = true;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [delayedOwnerTelemetry]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.operationGeneration, 2);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
+  assert.strictEqual(
+    assaultRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert.strictEqual(assaultRecord.text, "공격조 편성을 다시 변경");
+  assert.strictEqual(
+    assaultRecord.data.operation_console_execution_owner_update_id,
+    "parallel-update-b-edit"
+  );
+  assert.strictEqual(
+    assaultRecord.data.intervention.command_execution.state,
+    "effect_observed"
+  );
+  assert.strictEqual(
+    assaultRecord.data.battlefield_operation.operation_completion
+      .engagement_observed,
+    true
+  );
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+  assert(
+    !assaultRecord.node.textContent.includes("execution owner telemetry")
+  );
+
+  // A fully self-consistent foreign update may not replace the canonical
+  // operation at the same active generation, even with a newer frame.
+  var foreignSameGenerationSnapshot = operationResult(
+    "assault-bravo",
+    "foreign-parallel-update-b",
+    "foreign snapshot must not replace canonical operation",
+    "attack",
+    999,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  foreignSameGenerationSnapshot.requested_operation_generation = 4;
+  foreignSameGenerationSnapshot.battlefield_operation.operation_completion
+    .movement_observed = true;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [foreignSameGenerationSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.operationGeneration, 2);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
+  assert.strictEqual(
+    assaultRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert.strictEqual(assaultRecord.text, "공격조 편성을 다시 변경");
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "foreign snapshot must not replace canonical operation"
+    )
+  );
+
+  var missingIdentitySnapshot = operationResult(
+    "assault-bravo",
+    "missing-identity",
+    "missing identity must fail closed",
+    "attack",
+    1000,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  missingIdentitySnapshot.requested_operation_generation = 4;
+  missingIdentitySnapshot.update_id = "";
+  if (missingIdentitySnapshot.compile_result) {
+    missingIdentitySnapshot.compile_result.update_id = "";
+  }
+  missingIdentitySnapshot.update.update_id = "";
+  missingIdentitySnapshot.intervention.command_execution.command_id = "";
+  missingIdentitySnapshot.battlefield_operation.identity.update_id = "";
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [missingIdentitySnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
+  assert.strictEqual(
+    assaultRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "missing identity must fail closed"
+    )
+  );
+
+  var forgedNewRequestSnapshot = operationResult(
+    "assault-bravo",
+    "foreign-request-without-edit",
+    "generation number alone is not an edit",
+    "attack",
+    1001,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  forgedNewRequestSnapshot.requested_operation_generation = 5;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [forgedNewRequestSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "generation number alone is not an edit"
+    )
+  );
+
+  var forgedCancellationSnapshot = operationResult(
+    "assault-bravo",
+    "foreign-cancellation-owner",
+    "foreign cancellation must fail closed",
+    "attack",
+    1002,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    2
+  );
+  forgedCancellationSnapshot.requested_operation_generation = 4;
+  forgedCancellationSnapshot.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  forgedCancellationSnapshot.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 1002,
+    operation_id: "assault-bravo",
+    generation: 2
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [forgedCancellationSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "foreign cancellation must fail closed"
+    )
+  );
 
   var staleActiveRejectedEdit = operationResult(
     "assault-bravo",
@@ -13804,7 +19266,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
   assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
   assert(
     !assaultRecord.node.textContent.includes(
@@ -13835,7 +19297,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
   assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
   assert(!assaultRecord.node.textContent.includes("오래된 승인 공격조 변경"));
 
@@ -13888,6 +19350,9 @@ const assert = require("assert");
       "오래된 공격조 변경과 새 실행 세대"
     )
   );
+  var canonicalAssaultExecutionOwnerUpdateId =
+    assaultRecord.data.operation_console_execution_owner_update_id;
+  assert(canonicalAssaultExecutionOwnerUpdateId);
   assaultRecord.node.querySelectorAll("button")[0].dispatchEvent({
     type: "click"
   });
@@ -13934,7 +19399,7 @@ const assert = require("assert");
   // Cancellation remains active until matching release_stop cleanup arrives.
   var cancellationPending = operationResult(
     "assault-bravo",
-    "parallel-update-b-edit",
+    "parallel-update-b-edit-latest",
     "공격조를 마린 6기로 증원",
     "attack",
     340,
@@ -13942,6 +19407,12 @@ const assert = require("assert");
     actionStages("attack").slice(0, 6),
     3
   );
+  cancellationPending.operation_console_execution_owner_update_id =
+    canonicalAssaultExecutionOwnerUpdateId;
+  cancellationPending.intervention.command_execution.command_id =
+    canonicalAssaultExecutionOwnerUpdateId;
+  cancellationPending.battlefield_operation.identity.update_id =
+    canonicalAssaultExecutionOwnerUpdateId;
   cancellationPending.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
   cancellationPending.intervention.command_execution.terminal_cleanup = {};
@@ -13965,7 +19436,7 @@ const assert = require("assert");
 
   var verifiedCancellation = operationResult(
     "assault-bravo",
-    "parallel-update-b-edit",
+    "parallel-update-b-edit-latest",
     "공격조를 마린 6기로 증원",
     "attack",
     350,
@@ -13973,6 +19444,12 @@ const assert = require("assert");
     actionStages("attack").slice(0, 6),
     3
   );
+  verifiedCancellation.operation_console_execution_owner_update_id =
+    canonicalAssaultExecutionOwnerUpdateId;
+  verifiedCancellation.intervention.command_execution.command_id =
+    canonicalAssaultExecutionOwnerUpdateId;
+  verifiedCancellation.battlefield_operation.identity.update_id =
+    canonicalAssaultExecutionOwnerUpdateId;
   verifiedCancellation.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
   verifiedCancellation.intervention.command_execution.terminal_cleanup = {
@@ -14208,6 +19685,12 @@ const assert = require("assert");
     1
   );
   rejectedTerminalEdit.requested_operation_generation = 2;
+  rejectedTerminalEdit.operation_console_execution_owner_update_id =
+    "parallel-update-a";
+  rejectedTerminalEdit.intervention.command_execution.command_id =
+    "parallel-update-a";
+  rejectedTerminalEdit.battlefield_operation.identity.update_id =
+    "parallel-update-a";
   rejectedTerminalEdit.operation_edit = {
     action: "reinforce",
     before_composition: [
@@ -15554,6 +21037,1820 @@ const assert = require("assert");
     expectedNewestWithPending
   );
 
+  // Unrelated legacy history cannot consume a pending voice command.
+  var legacyVoiceSession = appendVoiceRecordingBubble();
+  legacyVoiceSession.finalText = "pending legacy voice order";
+  legacyVoiceSession.submitted = true;
+  var legacyVoicePendingId = appendPendingCommand(
+    legacyVoiceSession.finalText,
+    legacyVoiceSession
+  );
+  var pendingBeforeUnrelatedHistory = pendingCommandCount();
+  appendLog({
+    seq: 50001,
+    command_text: "unrelated legacy history",
+    status: "read_only",
+    narration: "unrelated history response"
+  });
+  assert.strictEqual(
+    pendingCommandCount(),
+    pendingBeforeUnrelatedHistory,
+    "unrelated history must not consume the oldest pending voice node"
+  );
+  assert.strictEqual(
+    voiceSessionForPendingId(legacyVoicePendingId),
+    legacyVoiceSession
+  );
+  assert.strictEqual(
+    legacyVoiceSession.node.querySelectorAll(".message-pending").length,
+    1
+  );
+  appendLog({
+    seq: 50002,
+    command_text: legacyVoiceSession.finalText,
+    status: "read_only",
+    narration: "matching history response"
+  });
+  assert.strictEqual(pendingCommandCount(), pendingBeforeUnrelatedHistory - 1);
+  assert.strictEqual(
+    legacyVoiceSession.node.querySelectorAll(".message-pending").length,
+    0
+  );
+
+  // Identical legacy voice commands require exact request correlation.
+  var duplicateVoiceText = "identical delayed voice order";
+  var firstDuplicateVoice = appendVoiceRecordingBubble();
+  firstDuplicateVoice.finalText = duplicateVoiceText;
+  firstDuplicateVoice.submitted = true;
+  var firstDuplicatePendingId = appendPendingCommand(
+    duplicateVoiceText,
+    firstDuplicateVoice
+  );
+  var secondDuplicateVoice = appendVoiceRecordingBubble();
+  secondDuplicateVoice.finalText = duplicateVoiceText;
+  secondDuplicateVoice.submitted = true;
+  var secondDuplicatePendingId = appendPendingCommand(
+    duplicateVoiceText,
+    secondDuplicateVoice
+  );
+  var duplicatePendingCount = pendingCommandCount();
+  appendLog({
+    seq: 50003,
+    command_text: duplicateVoiceText,
+    status: "read_only",
+    narration: "uncorrelated identical response"
+  });
+  assert.strictEqual(
+    pendingCommandCount(),
+    duplicatePendingCount,
+    "uncorrelated identical text must fail closed"
+  );
+  assert.strictEqual(
+    firstDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    1
+  );
+  assert.strictEqual(
+    secondDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    1
+  );
+  appendLog({
+    seq: 50004,
+    command_text: duplicateVoiceText,
+    status: "read_only",
+    narration: "second exact response",
+    detail: { web_request_id: secondDuplicatePendingId }
+  });
+  assert.strictEqual(
+    secondDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    0
+  );
+  assert(secondDuplicateVoice.node.textContent.includes("second exact response"));
+  assert.strictEqual(
+    firstDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    1
+  );
+  appendLog({
+    seq: 50005,
+    request_id: firstDuplicatePendingId,
+    command_text: duplicateVoiceText,
+    status: "read_only",
+    narration: "first exact response"
+  });
+  assert.strictEqual(
+    firstDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    0
+  );
+  assert(firstDuplicateVoice.node.textContent.includes("first exact response"));
+  assert.strictEqual(
+    voiceSessionForPendingId(firstDuplicatePendingId),
+    null
+  );
+  assert.strictEqual(
+    voiceSessionForPendingId(secondDuplicatePendingId),
+    null
+  );
+
+  // Voice keeps one DOM identity from interim transcript through pending/result.
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
+  setupVoiceInput();
+  assert.strictEqual(recognitionInstances.length, 1);
+  var voiceRecognition = recognitionInstances[0];
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "음성 입력");
+  var voiceRequestStart = requests.length;
+
+  // Async browser error/end before onstart release the single-flight slot.
+  voiceRecognition.deferStart = true;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert(pendingVoiceRecognitionRequest);
+  var failedBeforeStartRecognition = voiceRecognition;
+  var voiceSessionSeqBeforeFailedStart = voiceSessionSeq;
+  var voiceSessionBeforeFailedStart = activeVoiceSession;
+  voiceRecognition.fireError("not-allowed");
+  assert.strictEqual(pendingVoiceRecognitionRequest, null);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert(nodes["llm-status-message"].textContent.includes("not-allowed"));
+  assert.strictEqual(recognitionInstances.length, 2);
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-voice-radio-after-error";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-voice-radio-after-error"
+  );
+  failedBeforeStartRecognition.fireStart();
+  assert.strictEqual(voiceSessionSeq, voiceSessionSeqBeforeFailedStart);
+  assert.strictEqual(
+    activeVoiceSession,
+    voiceSessionBeforeFailedStart
+  );
+  voiceRecognition = recognitionInstances[recognitionInstances.length - 1];
+  voiceRecognition.deferStart = true;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert(pendingVoiceRecognitionRequest);
+  failedBeforeStartRecognition.fireEnd();
+  assert(
+    pendingVoiceRecognitionRequest,
+    "a retired recognizer end cannot cancel the replacement start"
+  );
+  var endedBeforeStartRecognition = voiceRecognition;
+  voiceRecognition.fireEnd();
+  assert.strictEqual(pendingVoiceRecognitionRequest, null);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert.strictEqual(recognitionInstances.length, 3);
+  endedBeforeStartRecognition.fireStart();
+  assert.strictEqual(voiceSessionSeq, voiceSessionSeqBeforeFailedStart);
+  assert.strictEqual(
+    activeVoiceSession,
+    voiceSessionBeforeFailedStart
+  );
+  voiceRecognition = recognitionInstances[recognitionInstances.length - 1];
+
+  // A delayed browser onstart cannot create a session in a replacement scope.
+  voiceRecognition.deferStart = true;
+  var delayedVoiceSessionSeq = voiceSessionSeq;
+  var voiceSessionBeforeDelayedStart = activeVoiceSession;
+  var delayedVoiceStartCalls = voiceRecognition.startCalls;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(voiceRecognition.pendingStart, true);
+  assert.strictEqual(
+    voiceRecognition.startCalls,
+    delayedVoiceStartCalls + 1
+  );
+  var delayedVoiceRequest = pendingVoiceRecognitionRequest;
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-voice-radio-delayed-next";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-voice-radio-delayed-next"
+  );
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(
+    pendingVoiceRecognitionRequest,
+    delayedVoiceRequest,
+    "a replacement scope cannot overwrite an unresolved browser start"
+  );
+  assert.strictEqual(
+    voiceRecognition.startCalls,
+    delayedVoiceStartCalls + 1
+  );
+  voiceRecognition.fireStart();
+  assert.strictEqual(voiceSessionSeq, delayedVoiceSessionSeq);
+  assert.strictEqual(activeVoiceSession, voiceSessionBeforeDelayedStart);
+  assert.strictEqual(pendingVoiceRecognitionRequest, null);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert.strictEqual(requests.length, voiceRequestStart);
+  assert.strictEqual(recognitionInstances.length, 4);
+  voiceRecognition = recognitionInstances[recognitionInstances.length - 1];
+  voiceRecognition.deferStart = false;
+  delayedVoiceStartCalls = voiceRecognition.startCalls;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(
+    voiceRecognition.startCalls,
+    delayedVoiceStartCalls + 1
+  );
+  assert.strictEqual(
+    nodes["voice-button"].getAttribute("aria-pressed"),
+    "true",
+    "the replacement recognizer must enter recording state"
+  );
+  assert.strictEqual(
+    activeVoiceSession.contextGeneration,
+    microMachineBlackboardContextGeneration
+  );
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
+
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
+  assert.strictEqual(
+    nodes["voice-button"].getAttribute("aria-pressed"),
+    "true",
+    "a scope reset must allow the next voice recording"
+  );
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "녹음 중지");
+  var firstVoiceSession = activeVoiceSession;
+  var firstVoiceNode = firstVoiceSession.node;
+  var interimResult = [{ transcript: "마린 두 기로" }];
+  interimResult.isFinal = false;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [interimResult]
+  });
+  assert.strictEqual(activeVoiceSession.node, firstVoiceNode);
+  assert(firstVoiceNode.textContent.includes("마린 두 기로"));
+  assert.strictEqual(requests.length, voiceRequestStart);
+
+  var finalResult = [{ transcript: "마린 두 기로 정찰하고 네 기로 우회 공격해" }];
+  finalResult.isFinal = true;
+  voiceRecognition.onend();
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "음성 입력");
+  assert.strictEqual(requests.length, voiceRequestStart);
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [finalResult]
+  });
+  assert.strictEqual(requests.length, voiceRequestStart + 1);
+  assert.strictEqual(activeVoiceSession.node, firstVoiceNode);
+  assert.strictEqual(firstVoiceSession.submitted, true);
+  assert.strictEqual(pendingAggregateNode, null);
+  assert.strictEqual(document.getElementById(pendingAggregateId), null);
+  assert.strictEqual(
+    firstVoiceNode.querySelectorAll(".message-pending").length,
+    1
+  );
+  voiceRecognition.onend();
+  assert.strictEqual(requests.length, voiceRequestStart + 1);
+
+  var voiceReconOperation = operationResult(
+    "voice-recon",
+    "voice-plan-update",
+    "마린 두 기로 정찰",
+    "scouting",
+    610,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    3
+  );
+  voiceReconOperation.update.vector = {
+    operation_id: "voice-recon",
+    generation: 3,
+    composition_requirements: [
+      { unit_type: "TERRAN_MARINE", count: 2 }
+    ],
+    tactical_task: { task_type: "scout_with_units" },
+    route_intent: {
+      route_type: "direct",
+      target_intent: "enemy_main"
+    },
+    lifetime: { mode: "until_completed" }
+  };
+  var voiceAssaultOperation = operationResult(
+    "voice-assault",
+    "voice-plan-update",
+    "마린 네 기로 우회 공격",
+    "attack",
+    611,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    7
+  );
+  voiceAssaultOperation.update.vector = {
+    operation_id: "voice-assault",
+    generation: 7,
+    composition_requirements: [
+      { unit_type: "TERRAN_MARINE", count: 4 }
+    ],
+    tactical_task: { task_type: "pressure_with_main_army" },
+    route_intent: {
+      route_type: "flank_right",
+      target_intent: "enemy_natural"
+    },
+    lifetime: { mode: "until_completed" }
+  };
+  voiceReconOperation.update.vector.target_intent = {
+    target_type: "enemy_main"
+  };
+  voiceReconOperation.update.vector.route_intent.target_intent =
+    "stale_route_target";
+  voiceReconOperation.update.vector.lifetime = {
+    mode: "until_completed",
+    completion_conditions: ["enemy_observed", "target_reached"],
+    completion_state: "active",
+    reason: "until_enemy_main_is_confirmed"
+  };
+  var canonicalVoiceReadback = structuredOperationsForReadback({
+    accepted: true,
+    status: "published",
+    compile_result: {
+      status: "compiled",
+      vector: {
+        operations: [voiceReconOperation.update.vector]
+      }
+    }
+  })[0];
+  assert.strictEqual(canonicalVoiceReadback.target, "enemy_main");
+  assert.strictEqual(
+    canonicalVoiceReadback.lifetime,
+    "until_completed · conditions=enemy_observed, target_reached" +
+      " · state=active · reason=until_enemy_main_is_confirmed"
+  );
+  requests[voiceRequestStart].deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "voice-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "voice-plan-update",
+      command_text: "마린 두 기로 정찰하고 네 기로 우회 공격해",
+      vector: {
+        goal: "parallel voice operation",
+        operations: [
+          voiceReconOperation.update.vector,
+          voiceAssaultOperation.update.vector
+        ]
+      }
+    },
+    operations: [voiceReconOperation, voiceAssaultOperation]
+  }, SERVER_SCOPE_A)));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(firstVoiceNode.parentNode, logBox);
+  assert(firstVoiceNode.textContent.includes("마린 두 기로 정찰하고"));
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 0);
+  assert(nodes["tactical-radio-captions"].textContent.includes("voice-recon#3"));
+  assert(nodes["tactical-radio-captions"].textContent.includes("voice-assault#7"));
+  assert(nodes["tactical-radio-captions"].textContent.includes("계획 확인"));
+  assert(!nodes["tactical-radio-captions"].textContent.includes("이동 시작"));
+  assert(spokenUtterances.length >= 1);
+  assert(spokenUtterances[spokenUtterances.length - 1].text.length <= 180);
+
+  // Recognition errors remain on the same node and never submit.
+  var errorRequestStart = requests.length;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
+  var errorVoiceSession = activeVoiceSession;
+  var errorVoiceNode = errorVoiceSession.node;
+  voiceRecognition.onerror({ error: "no-speech" });
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  voiceRecognition.onend();
+  assert.strictEqual(requests.length, errorRequestStart);
+  assert.strictEqual(errorVoiceNode.parentNode, logBox);
+  assert(errorVoiceNode.textContent.includes("transcript"));
+
+  // Concurrent voice commands retain separate pending/result DOM identities.
+  var concurrentRequestStart = requests.length;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
+  var concurrentRetiredRecognition = voiceRecognition;
+  var concurrentFirstSession = activeVoiceSession;
+  var concurrentFirstNode = concurrentFirstSession.node;
+  var concurrentFirstResult = [{ transcript: "첫 번째 정찰 작전" }];
+  concurrentFirstResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [concurrentFirstResult]
+  });
+  voiceRecognition.onend();
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
+  var concurrentSecondSession = activeVoiceSession;
+  var concurrentSecondNode = concurrentSecondSession.node;
+  var retiredLateResult = [{ transcript: "종료된 인식기의 늦은 명령" }];
+  retiredLateResult.isFinal = true;
+  concurrentRetiredRecognition.onresult({
+    resultIndex: 0,
+    results: [retiredLateResult]
+  });
+  assert.strictEqual(
+    requests.length,
+    concurrentRequestStart + 1,
+    "a retired recognizer cannot submit into the replacement session"
+  );
+  assert(
+    !concurrentSecondNode.textContent.includes("종료된 인식기의 늦은 명령")
+  );
+  var concurrentSecondResult = [{ transcript: "두 번째 방어 작전" }];
+  concurrentSecondResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [concurrentSecondResult]
+  });
+  voiceRecognition.onend();
+  assert.strictEqual(requests.length, concurrentRequestStart + 2);
+  assert.notStrictEqual(concurrentFirstNode, concurrentSecondNode);
+  assert(concurrentFirstNode.textContent.includes("첫 번째 정찰 작전"));
+  assert(!concurrentFirstNode.textContent.includes("두 번째 방어 작전"));
+  assert(concurrentSecondNode.textContent.includes("두 번째 방어 작전"));
+  assert(!concurrentSecondNode.textContent.includes("첫 번째 정찰 작전"));
+  requests[concurrentRequestStart + 1].deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "concurrent-voice-second",
+    compile_result: {
+      status: "compiled",
+      update_id: "concurrent-voice-second",
+      assistant_message: "두 번째 작전 계획 확인"
+    },
+    update: { update_id: "concurrent-voice-second" }
+  }, SERVER_SCOPE_A)));
+  requests[concurrentRequestStart].deferred.resolve(response(202, serverResult({
+    ok: true,
+    accepted: true,
+    async_publish: false,
+    status: "published",
+    update_id: "concurrent-voice-first",
+    compile_result: {
+      status: "compiled",
+      update_id: "concurrent-voice-first",
+      assistant_message: "첫 번째 작전 계획 확인"
+    },
+    update: { update_id: "concurrent-voice-first" }
+  }, SERVER_SCOPE_A)));
+  await flushPromises();
+  await flushPromises();
+  assert(concurrentFirstNode.textContent.includes("첫 번째 작전 계획 확인"));
+  assert(!concurrentFirstNode.textContent.includes("두 번째 작전 계획 확인"));
+  assert(concurrentSecondNode.textContent.includes("두 번째 작전 계획 확인"));
+  assert(!concurrentSecondNode.textContent.includes("첫 번째 작전 계획 확인"));
+
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
+  var scopeResetSession = activeVoiceSession;
+  var scopeResetResult = [{ transcript: "scope 전환 전 대기 명령" }];
+  scopeResetResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [scopeResetResult]
+  });
+  assert(Object.keys(voiceSessionsByPendingId).length > 0);
+  nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio-next";
+  synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio-next");
+  assert.strictEqual(Object.keys(voiceSessionsByPendingId).length, 0);
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(
+    scopeResetSession.node.querySelectorAll(".message-pending").length,
+    0
+  );
+
+  // An unbound finalizing session cannot cross a blackboard scope boundary.
+  var staleVoiceRequestStart = requests.length;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
+  var staleFinalizingSession = activeVoiceSession;
+  var staleVoiceSessionSeq = voiceSessionSeq;
+  var staleInterimResult = [{ transcript: "이전 scope의 임시 정찰 명령" }];
+  staleInterimResult.isFinal = false;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [staleInterimResult]
+  });
+  voiceRecognition.onend();
+  var staleFinalizationTimerIndex = timeoutCallbacks.length - 1;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(
+    voiceSessionSeq,
+    staleVoiceSessionSeq,
+    "a new recording must not replace a session during finalization grace"
+  );
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-voice-radio-third";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-voice-radio-third"
+  );
+  assert.strictEqual(staleFinalizingSession.invalidated, true);
+  assert.strictEqual(activeVoiceSession, null);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  var staleFinalResult = [{ transcript: "늦게 도착한 이전 scope 명령" }];
+  staleFinalResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [staleFinalResult]
+  });
+  timeoutCallbacks[staleFinalizationTimerIndex]();
+  assert.strictEqual(
+    requests.length,
+    staleVoiceRequestStart,
+    "late result and finalization fallback must not submit into the new scope"
+  );
+
+  // A scope change discovered inside submitCommanderText fails closed.
+  var submitScopeVoiceRequestStart = requests.length;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
+  var submitScopeVoiceSession = activeVoiceSession;
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-voice-radio-submit-next";
+  var submitScopeFinalResult = [{
+    transcript: "새 scope로 넘어가면 제출하면 안 되는 음성 명령"
+  }];
+  submitScopeFinalResult.isFinal = true;
+  voiceRecognition.onresult({
+    resultIndex: 0,
+    results: [submitScopeFinalResult]
+  });
+  assert.strictEqual(submitScopeVoiceSession.invalidated, true);
+  assert.strictEqual(
+    submitScopeVoiceSession.node.querySelectorAll(".message-pending").length,
+    0
+  );
+  assert.strictEqual(requests.length, submitScopeVoiceRequestStart);
+
+  // Scheduler priority, interruption, compaction and dedupe are deterministic.
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.dedupe = {};
+  tacticalRadio.lastSpokenAt = { 0: 0, 1: 0, 2: 0 };
+  fakeNowMs += 5000;
+  queueTacticalRadioCallout({
+    priority: 2,
+    caption: "moving alpha",
+    speech: "moving alpha",
+    dedupeKey: "moving-alpha",
+    operationKey: "scope|alpha|1",
+    progressionRank: 2,
+    createdAt: fakeNowMs
+  });
+  assert.strictEqual(tacticalRadio.current.caption, "moving alpha");
+  var cancelsBeforeP1 = speechCancelCount;
+  queueTacticalRadioCallout({
+    priority: 1,
+    caption: "blocked alpha",
+    speech: "blocked alpha",
+    dedupeKey: "blocked-alpha",
+    operationKey: "scope|alpha|1",
+    progressionRank: -1,
+    createdAt: fakeNowMs
+  });
+  assert(speechCancelCount > cancelsBeforeP1);
+  assert.strictEqual(tacticalRadio.current.caption, "blocked alpha");
+  var cancelsBeforeP0 = speechCancelCount;
+  queueTacticalRadioCallout({
+    priority: 0,
+    caption: "emergency retreat",
+    speech: "emergency retreat",
+    dedupeKey: "emergency-retreat",
+    operationKey: "scope|alpha|1",
+    progressionRank: -1,
+    createdAt: fakeNowMs
+  });
+  assert(speechCancelCount > cancelsBeforeP0);
+  assert.strictEqual(tacticalRadio.current.caption, "emergency retreat");
+  var captionsBeforeDuplicate = tacticalRadio.captions.length;
+  assert.strictEqual(queueTacticalRadioCallout({
+    priority: 0,
+    caption: "emergency retreat",
+    speech: "emergency retreat",
+    dedupeKey: "emergency-retreat",
+    createdAt: fakeNowMs
+  }), false);
+  assert.strictEqual(tacticalRadio.captions.length, captionsBeforeDuplicate);
+  tacticalRadio.current && spokenUtterances[spokenUtterances.length - 1].onend();
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.lastSpokenAt[2] = fakeNowMs;
+  queueTacticalRadioCallout({
+    priority: 2,
+    caption: "moving compact",
+    speech: "moving compact",
+    dedupeKey: "moving-compact",
+    operationKey: "scope|compact|1",
+    progressionRank: 2,
+    createdAt: fakeNowMs
+  });
+  queueTacticalRadioCallout({
+    priority: 2,
+    caption: "engaged compact",
+    speech: "engaged compact",
+    dedupeKey: "engaged-compact",
+    operationKey: "scope|compact|1",
+    progressionRank: 3,
+    createdAt: fakeNowMs
+  });
+  assert.strictEqual(
+    tacticalRadio.queue.filter(function(item) {
+      return item.operationKey === "scope|compact|1";
+    }).length,
+    1
+  );
+  assert.strictEqual(
+    tacticalRadio.queue.filter(function(item) {
+      return item.operationKey === "scope|compact|1";
+    })[0].caption,
+    "engaged compact"
+  );
+  assert.strictEqual(timeoutDelays[timeoutDelays.length - 1], 3500);
+
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.lastSpokenAt[2] = fakeNowMs;
+  var productionPlan = serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "production-plan-update",
+    battlefield_projection_identity: {
+      session_epoch: "production-plan-epoch"
+    },
+    compile_result: {
+      status: "compiled",
+      update_id: "production-plan-update",
+      vector: {
+        operations: [
+          {
+            operation_id: "production-plan-alpha",
+            generation: 4,
+            composition_requirements: [
+              { unit_type: "TERRAN_MARINE", count: 4 }
+            ],
+            tactical_task: { task_type: "pressure_with_main_army" },
+            route_intent: { route_type: "direct", target_intent: "enemy_main" }
+          }
+        ]
+      }
+    }
+  }, SERVER_SCOPE_A);
+  announceAcceptedTacticalPlan(productionPlan, "status");
+  var canonicalPlanKey = tacticalRadioOperationKey(
+    SERVER_SCOPE_A,
+    tacticalRadio.sessionEpoch,
+    "production-plan-alpha",
+    4
+  );
+  assert(
+    tacticalRadio.queue.some(function(item) {
+      return item.operationKey === canonicalPlanKey &&
+        item.progressionRank === 0;
+    })
+  );
+  var productionRecord = {
+    updateId: "production-plan-update",
+    operationGeneration: 4,
+    sessionEpoch: "production-plan-epoch"
+  };
+  announceOperationLifecycleEvent(
+    { update_id: "production-plan-update", created_at_unix_ms: fakeNowMs },
+    {
+      operation_id: "production-plan-alpha",
+      generation: 4,
+      requested_generation: 4,
+      update_id: "production-plan-update",
+      kind: "movement_observed",
+      game_frame: 810,
+      summary: "movement observed"
+    },
+    SERVER_SCOPE_A,
+    productionRecord
+  );
+  assert(
+    !tacticalRadio.queue.some(function(item) {
+      return item.operationKey === canonicalPlanKey &&
+        item.progressionRank === 0;
+    })
+  );
+
+  var partialCaptionCount = tacticalRadio.captions.length;
+  announceOperationLifecycleEvent(
+    { update_id: "production-plan-update", created_at_unix_ms: fakeNowMs },
+    {
+      operation_id: "production-plan-alpha",
+      generation: 4,
+      requested_generation: 4,
+      update_id: "production-plan-update",
+      kind: "partially_assigned",
+      game_frame: 811,
+      owner_count: 2,
+      required_count: 4,
+      summary: "2/4 units assigned"
+    },
+    SERVER_SCOPE_A,
+    productionRecord
+  );
+  assert.strictEqual(tacticalRadio.captions.length, partialCaptionCount + 1);
+  assert(
+    tacticalRadio.captions[tacticalRadio.captions.length - 1]
+      .caption.includes("부분 편성")
+  );
+  assert.strictEqual(
+    tacticalRadio.captions[tacticalRadio.captions.length - 1].priority,
+    3
+  );
+
+  var splitRadioScope = "split-radio-scope";
+  var splitRadioRecord = {
+    updateId: "split-radio-request-4",
+    operationGeneration: 2,
+    requestedOperationGeneration: 4,
+    data: {
+      operation_console_execution_owner_update_id: "split-radio-owner-3"
+    }
+  };
+  var ownerFailureCallout = tacticalLifecycleCallout(
+    {
+      update_id: "split-radio-owner-3",
+      created_at_unix_ms: fakeNowMs
+    },
+    {
+      timeline_seq: 1,
+      update_id: "split-radio-owner-3",
+      operation_id: "split-radio-operation",
+      generation: 2,
+      requested_generation: 4,
+      kind: "critical_ability_failure",
+      game_frame: 820,
+      summary: "tactical nuke target unavailable"
+    },
+    splitRadioScope,
+    splitRadioRecord
+  );
+  assert(ownerFailureCallout);
+  assert(
+    ownerFailureCallout.caption.includes(t("tacticalCriticalAbilityFailure"))
+  );
+  var requestLifecycleCallout = tacticalLifecycleCallout(
+    {
+      update_id: "split-radio-request-4",
+      created_at_unix_ms: fakeNowMs
+    },
+    {
+      timeline_seq: 2,
+      update_id: "split-radio-request-4",
+      operation_id: "split-radio-operation",
+      generation: 2,
+      requested_generation: 4,
+      kind: "engagement_observed",
+      game_frame: 821,
+      summary: "preserved owner engaged"
+    },
+    splitRadioScope,
+    splitRadioRecord
+  );
+  assert(requestLifecycleCallout);
+  assert(requestLifecycleCallout.caption.includes(t("tacticalEngaged")));
+  assert.strictEqual(
+    tacticalLifecycleCallout(
+      {
+        update_id: "split-radio-owner-3",
+        created_at_unix_ms: fakeNowMs
+      },
+      {
+        timeline_seq: 3,
+        update_id: "split-radio-owner-3",
+        operation_id: "split-radio-operation",
+        generation: 2,
+        requested_generation: 3,
+        kind: "movement_observed",
+        game_frame: 822,
+        summary: "stale requested generation"
+      },
+      splitRadioScope,
+      splitRadioRecord
+    ),
+    null
+  );
+
+  // Session epochs isolate lifecycle high-water for restarted runtimes.
+  resetTacticalRadio("epoch-radio-scope", "epoch-one");
+  var epochRadioRecord = {
+    updateId: "epoch-radio-update",
+    operationGeneration: 1,
+    requestedOperationGeneration: 1,
+    sessionEpoch: "epoch-one",
+    data: {}
+  };
+  assert.strictEqual(
+    announceOperationLifecycleEvent(
+      {
+        update_id: "epoch-radio-update",
+        created_at_unix_ms: fakeNowMs
+      },
+      {
+        timeline_seq: 900,
+        session_epoch: "epoch-one",
+        update_id: "epoch-radio-update",
+        operation_id: "epoch-radio-operation",
+        generation: 1,
+        requested_generation: 1,
+        kind: "movement_observed",
+        game_frame: 900,
+        summary: "old runtime movement"
+      },
+      "epoch-radio-scope",
+      epochRadioRecord
+    ),
+    true
+  );
+  var oldEpochRadioKey = tacticalRadioOperationKey(
+    "epoch-radio-scope",
+    "epoch-one",
+    "epoch-radio-operation",
+    1
+  );
+  assert.strictEqual(tacticalRadio.frameHighWater[oldEpochRadioKey], 900);
+  epochRadioRecord.sessionEpoch = "epoch-two";
+  assert.strictEqual(
+    announceOperationLifecycleEvent(
+      {
+        update_id: "epoch-radio-update",
+        created_at_unix_ms: fakeNowMs
+      },
+      {
+        timeline_seq: 1,
+        session_epoch: "epoch-two",
+        update_id: "epoch-radio-update",
+        operation_id: "epoch-radio-operation",
+        generation: 1,
+        requested_generation: 1,
+        kind: "movement_observed",
+        game_frame: 1,
+        summary: "restarted runtime movement"
+      },
+      "epoch-radio-scope",
+      epochRadioRecord
+    ),
+    true
+  );
+  var newEpochRadioKey = tacticalRadioOperationKey(
+    "epoch-radio-scope",
+    "epoch-two",
+    "epoch-radio-operation",
+    1
+  );
+  assert.strictEqual(tacticalRadio.frameHighWater[oldEpochRadioKey], undefined);
+  assert.strictEqual(tacticalRadio.frameHighWater[newEpochRadioKey], 1);
+
+  // Direct plan responses inherit the authoritative current runtime epoch.
+  cancelTacticalRadioSpeechAndQueue();
+  resetTacticalRadio("epoch-plan-scope", "epoch-plan-current");
+  var previousOperationConsoleScopeId = operationConsoleScopeId;
+  var previousOperationConsoleSessionEpoch = operationConsoleSessionEpoch;
+  var previousActiveCommandConsoleRecord = activeCommandConsoleRecord;
+  operationConsoleScopeId = "epoch-plan-scope";
+  operationConsoleSessionEpoch = "epoch-plan-current";
+  activeCommandConsoleRecord = {
+    scopeId: "epoch-plan-scope",
+    sessionEpoch: "epoch-plan-current",
+    updateId: "epoch-plan-update"
+  };
+  var epochlessPlan = {
+    ok: true,
+    accepted: true,
+    status: "published",
+    blackboard_scope_id: "epoch-plan-scope",
+    update_id: "epoch-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "epoch-plan-update",
+      vector: {
+        operations: [
+          {
+            operation_id: "epoch-plan-operation",
+            generation: 1,
+            composition_requirements: [
+              { unit_type: "TERRAN_MARINE", count: 2 }
+            ],
+            tactical_task: { task_type: "scout_with_units" },
+            route_intent: {
+              route_type: "direct",
+              target_intent: "enemy_natural"
+            }
+          }
+        ]
+      }
+    }
+  };
+  assert.strictEqual(
+    announceAcceptedTacticalPlan(epochlessPlan, "direct"),
+    true
+  );
+  var inheritedPlanAnnouncementKey = tacticalRadioPlanAnnouncementKey(
+    "epoch-plan-scope",
+    "epoch-plan-current",
+    "epoch-plan-update",
+    "epoch-plan-operation",
+    1
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[inheritedPlanAnnouncementKey],
+    true
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      tacticalRadioPlanAnnouncementKey(
+        "epoch-plan-scope",
+        "",
+        "epoch-plan-update",
+        "epoch-plan-operation",
+        1
+      )
+    ],
+    undefined
+  );
+  var delayedEpochlessPlan = JSON.parse(JSON.stringify(epochlessPlan));
+  delayedEpochlessPlan.update_id = "epoch-plan-old-update";
+  delayedEpochlessPlan.compile_result.update_id = "epoch-plan-old-update";
+  assert.strictEqual(
+    announceAcceptedTacticalPlan(delayedEpochlessPlan, "direct"),
+    false
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      tacticalRadioPlanAnnouncementKey(
+        "epoch-plan-scope",
+        "epoch-plan-current",
+        "epoch-plan-old-update",
+        "epoch-plan-operation",
+        1
+      )
+    ],
+    undefined
+  );
+  var epochPlanRecord = {
+    updateId: "epoch-plan-update",
+    operationGeneration: 1,
+    requestedOperationGeneration: 1,
+    sessionEpoch: "epoch-plan-current",
+    data: {}
+  };
+  var epochPlanLifecycle = tacticalLifecycleCallout(
+    {
+      update_id: "epoch-plan-update",
+      created_at_unix_ms: fakeNowMs
+    },
+    {
+      timeline_seq: 1,
+      update_id: "epoch-plan-update",
+      operation_id: "epoch-plan-operation",
+      generation: 1,
+      requested_generation: 1,
+      kind: "movement_observed",
+      game_frame: 10,
+      summary: "movement observed"
+    },
+    "epoch-plan-scope",
+    epochPlanRecord
+  );
+  assert(epochPlanLifecycle);
+  assert.strictEqual(
+    epochPlanLifecycle.operationKey,
+    tacticalRadioOperationKey(
+      "epoch-plan-scope",
+      "epoch-plan-current",
+      "epoch-plan-operation",
+      1
+    )
+  );
+  operationConsoleScopeId = previousOperationConsoleScopeId;
+  operationConsoleSessionEpoch = previousOperationConsoleSessionEpoch;
+  activeCommandConsoleRecord = previousActiveCommandConsoleRecord;
+
+  // Tactical Radio registries remain bounded during long sessions.
+  resetTacticalRadio("bounded-radio-scope", "bounded-radio-epoch");
+  for (
+    var planIdentityIndex = 0;
+    planIdentityIndex < TACTICAL_RADIO_MAX_PLAN_IDENTITIES + 40;
+    planIdentityIndex += 1
+  ) {
+    rememberBoundedTacticalRadioValue(
+      tacticalRadio.planAnnouncements,
+      tacticalRadio.planAnnouncementOrder,
+      "bounded-plan-" + planIdentityIndex,
+      true,
+      TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+    );
+  }
+  assert.strictEqual(
+    Object.keys(tacticalRadio.planAnnouncements).length,
+    TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncementOrder.length,
+    TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements["bounded-plan-0"],
+    undefined
+  );
+  for (
+    var highWaterIndex = 0;
+    highWaterIndex < TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER + 40;
+    highWaterIndex += 1
+  ) {
+    rememberTacticalRadioHighWater(
+      "bounded-operation-" + highWaterIndex,
+      highWaterIndex,
+      highWaterIndex + 1
+    );
+  }
+  assert.strictEqual(
+    Object.keys(tacticalRadio.frameHighWater).length,
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  assert.strictEqual(
+    Object.keys(tacticalRadio.timelineHighWater).length,
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  assert.strictEqual(
+    tacticalRadio.operationHighWaterOrder.length,
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  assert.strictEqual(
+    tacticalRadio.frameHighWater["bounded-operation-0"],
+    undefined
+  );
+
+  // Chinese Tactical Radio speech uses the Chinese locale.
+  resetTacticalRadio("zh-radio-scope", "zh-radio-epoch");
+  spokenUtterances.length = 0;
+  currentLang = "zh";
+  assert(queueTacticalRadioCallout({
+    priority: 0,
+    caption: "紧急撤退",
+    speech: "紧急撤退",
+    dedupeKey: "zh-radio-speech",
+    createdAt: fakeNowMs
+  }));
+  assert.strictEqual(spokenUtterances.length, 1);
+  assert.strictEqual(spokenUtterances[0].lang, "zh-CN");
+  currentLang = "ko";
+  cancelTacticalRadioSpeechAndQueue();
+  resetTacticalRadio(SERVER_SCOPE_A, "1700000000000");
+
+  // Snapshot hydration seeds high-water state without replaying old audio.
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.dedupe = {};
+  tacticalRadio.captions = [];
+  tacticalRadio.planAnnouncements = {};
+  tacticalRadio.timelineHighWater = {};
+  renderTacticalRadioCaptions();
+  spokenUtterances.length = 0;
+  var hydrationOperation = operationResult(
+    "hydrated-operation",
+    "hydrated-update",
+    "hydrated operation",
+    "attack",
+    700,
+    "action_issued",
+    actionStages("attack").slice(0, 6),
+    2
+  );
+  var hydrationPlanOperation = operationResult(
+    "hydrated-plan-operation",
+    "hydrated-plan-update",
+    "hydrated plan operation",
+    "scouting",
+    699,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    5
+  );
+  hydrationPlanOperation.update.vector = {
+    operation_id: "hydrated-plan-operation",
+    generation: 5,
+    composition_requirements: [
+      { unit_type: "TERRAN_VIKINGFIGHTER", count: 2 }
+    ],
+    tactical_task: { task_type: "scout_with_units" },
+    route_intent: {
+      route_type: "flank_left",
+      target_intent: "enemy_natural"
+    },
+    lifetime: { mode: "until_completed" }
+  };
+  var hydrationStatus = serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    operations: [hydrationOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "hydrated-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "hydrated-plan-update",
+          vector: hydrationPlanOperation.update.vector
+        },
+        operations: [hydrationPlanOperation]
+      }
+    ]
+  }, SERVER_SCOPE_A);
+  applyEventSnapshot({
+    micromachine_status: hydrationStatus
+  });
+  assert.strictEqual(spokenUtterances.length, 0);
+  assert.strictEqual(tacticalRadio.captions.length, 0);
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      tacticalRadioPlanAnnouncementKey(
+        SERVER_SCOPE_A,
+        "1700000000000",
+        "hydrated-plan-update",
+        "hydrated-plan-operation",
+        5
+      )
+    ],
+    true
+  );
+  renderMicroMachineStatus(hydrationStatus);
+  assert.strictEqual(spokenUtterances.length, 0);
+  assert.strictEqual(tacticalRadio.captions.length, 0);
+  assert.strictEqual(
+    tacticalRadio.frameHighWater[
+      tacticalRadioOperationKey(
+        SERVER_SCOPE_A,
+        "1700000000000",
+        "hydrated-operation",
+        2
+      )
+    ],
+    700
+  );
+  assert.strictEqual(
+    tacticalRadio.timelineHighWater[
+      tacticalRadioOperationKey(
+        SERVER_SCOPE_A,
+        "1700000000000",
+        "hydrated-operation",
+        2
+      )
+    ],
+    700
+  );
+  var hydratedRecord = operationRecords[
+    operationRecordKey(SERVER_SCOPE_A, "hydrated-operation")
+  ];
+  assert(hydratedRecord);
+  var hydratedTimelineLength =
+    hydratedRecord.data.semantic_timeline.length;
+  applyOperationSemanticEvent(
+    {
+      event_seq: 901,
+      event_type: "operation_event",
+      update_id: "hydrated-update",
+      operation_id: "hydrated-operation",
+      generation: 2,
+      blackboard_scope_id: SERVER_SCOPE_A
+    },
+    Object.assign(
+      {
+        blackboard_scope_id: SERVER_SCOPE_A,
+        session_epoch: "1700000000000",
+        update_id: "hydrated-update",
+        requested_generation: 2
+      },
+      hydrationOperation.semantic_timeline[0]
+    )
+  );
+  assert.strictEqual(
+    hydratedRecord.data.semantic_timeline.length,
+    hydratedTimelineLength
+  );
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    0,
+    "snapshot lifecycle replay must remain silent"
+  );
+  assert.strictEqual(spokenUtterances.length, 0);
+  var foreignProjectionOperation = JSON.parse(
+    JSON.stringify(hydrationOperation)
+  );
+  foreignProjectionOperation.telemetry_frame = 999;
+  foreignProjectionOperation.battlefield_operation.identity.update_id =
+    "foreign-projection-update";
+  foreignProjectionOperation.battlefield_operation.identity.game_frame = 999;
+  foreignProjectionOperation.battlefield_operation.operation_ownership.owner_count = 1;
+  foreignProjectionOperation.battlefield_operation.operation_launch_policy.min_units = 4;
+  foreignProjectionOperation.semantic_timeline = [
+    {
+      timeline_seq: 701,
+      operation_id: "hydrated-operation",
+      generation: 2,
+      requested_generation: 2,
+      kind: "partially_assigned",
+      game_frame: 999,
+      summary: "foreign projection partial assignment",
+      technical: {
+        projection_identity_valid: false,
+        owner_count: 1,
+        required_count: 4
+      }
+    }
+  ];
+  var foreignProjectionStatus = serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    operations: [foreignProjectionOperation]
+  }, SERVER_SCOPE_A);
+  hydrateTacticalRadioState(foreignProjectionStatus);
+  renderMicroMachineStatus(foreignProjectionStatus);
+  assert.strictEqual(hydratedRecord.telemetryFrame, 700);
+  assert.strictEqual(
+    tacticalRadio.frameHighWater[
+      tacticalRadioOperationKey(
+        SERVER_SCOPE_A,
+        "1700000000000",
+        "hydrated-operation",
+        2
+      )
+    ],
+    700
+  );
+  applyOperationSemanticEvent(
+    {
+      event_seq: 902,
+      event_type: "operation_event",
+      update_id: "hydrated-update",
+      operation_id: "hydrated-operation",
+      generation: 2,
+      blackboard_scope_id: SERVER_SCOPE_A,
+      created_at_unix_ms: fakeNowMs
+    },
+    {
+      timeline_seq: 702,
+      blackboard_scope_id: SERVER_SCOPE_A,
+      session_epoch: "1700000000000",
+      update_id: "hydrated-update",
+      operation_id: "hydrated-operation",
+      generation: 2,
+      requested_generation: 2,
+      kind: "force_loss",
+      game_frame: 701,
+      owner_count: 2,
+      required_count: 4,
+      summary: "canonical force loss",
+      technical: {
+        projection_identity_valid: true,
+        previous_owner_count: 4,
+        owner_count: 2,
+        required_count: 4
+      }
+    }
+  );
+  assert(
+    tacticalRadio.captions.some(function(caption) {
+      return caption.caption.includes(t("tacticalForceLoss"));
+    }),
+    "a canonical force loss must survive a foreign high-frame projection"
+  );
+
+  // A new update cannot relabel an older full-registry operation as a plan.
+  var priorRegistryOperation = operationResult(
+    "prior-registry-operation",
+    "prior-registry-update",
+    "prior registry operation",
+    "scouting",
+    701,
+    "action_issued",
+    actionStages("move").slice(0, 6),
+    1
+  );
+  priorRegistryOperation.update.vector = {
+    operation_id: "prior-registry-operation",
+    generation: 1,
+    composition_requirements: [
+      { unit_type: "TERRAN_MARINE", count: 1 }
+    ],
+    tactical_task: { task_type: "scout_with_units" },
+    target_intent: { target_type: "enemy_main" },
+    route_intent: { route_type: "direct" },
+    lifetime: { mode: "until_completed" }
+  };
+  var currentRegistryOperation = operationResult(
+    "current-registry-operation",
+    "current-registry-update",
+    "current registry operation",
+    "attack",
+    702,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    1
+  );
+  currentRegistryOperation.update.vector = {
+    operation_id: "current-registry-operation",
+    generation: 1,
+    composition_requirements: [
+      { unit_type: "TERRAN_MARINE", count: 4 }
+    ],
+    tactical_task: { task_type: "pressure_with_main_army" },
+    target_intent: { target_type: "enemy_natural" },
+    route_intent: { route_type: "flank_right" },
+    lifetime: { mode: "until_completed" }
+  };
+  var captionsBeforeCurrentRegistryPlan = tacticalRadio.captions.length;
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "current-registry-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "current-registry-update",
+      vector: currentRegistryOperation.update.vector
+    },
+    operations: [priorRegistryOperation, currentRegistryOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "current-registry-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "current-registry-update",
+          vector: currentRegistryOperation.update.vector
+        },
+        operations: [currentRegistryOperation]
+      }
+    ]
+  }, SERVER_SCOPE_A));
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeCurrentRegistryPlan + 1
+  );
+  assert(
+    tacticalRadio.captions[tacticalRadio.captions.length - 1]
+      .caption.includes("current-registry-operation#1")
+  );
+  assert(
+    !tacticalRadio.captions[tacticalRadio.captions.length - 1]
+      .caption.includes("prior-registry-operation#1")
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      tacticalRadioPlanAnnouncementKey(
+        SERVER_SCOPE_A,
+        "1700000000000",
+        "current-registry-update",
+        "prior-registry-operation",
+        1
+      )
+    ],
+    undefined
+  );
+
+  // Foreign-scope and stale-epoch statuses cannot reset or announce plans.
+  var admittedRadioScope = tacticalRadio.scopeId;
+  var admittedRadioEpoch = tacticalRadio.sessionEpoch;
+  var captionsBeforeRejectedPlan = tacticalRadio.captions.length;
+  var speechBeforeRejectedPlan = spokenUtterances.length;
+  var foreignPlanOperation = JSON.parse(
+    JSON.stringify(currentRegistryOperation)
+  );
+  foreignPlanOperation.operation_id = "foreign-plan-operation";
+  foreignPlanOperation.update_id = "foreign-plan-update";
+  foreignPlanOperation.update.update_id = "foreign-plan-update";
+  foreignPlanOperation.update.vector.operation_id =
+    "foreign-plan-operation";
+  foreignPlanOperation.battlefield_operation.identity.operation_id =
+    "foreign-plan-operation";
+  foreignPlanOperation.battlefield_operation.identity.update_id =
+    "foreign-plan-update";
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "foreign-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "foreign-plan-update",
+      vector: foreignPlanOperation.update.vector
+    },
+    operations: [foreignPlanOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "foreign-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "foreign-plan-update",
+          vector: foreignPlanOperation.update.vector
+        },
+        operations: [foreignPlanOperation]
+      }
+    ]
+  }, "foreign-plan-scope"));
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeRejectedPlan
+  );
+  assert.strictEqual(
+    spokenUtterances.length,
+    speechBeforeRejectedPlan
+  );
+  assert.strictEqual(tacticalRadio.scopeId, admittedRadioScope);
+  assert.strictEqual(tacticalRadio.sessionEpoch, admittedRadioEpoch);
+
+  // A cold operation registry still inherits the active command identity.
+  var savedOperationRecords = operationRecords;
+  var savedOperationRecordOrder = operationRecordOrder;
+  var savedOperationConsoleScopeId = operationConsoleScopeId;
+  var savedOperationConsoleSessionEpoch = operationConsoleSessionEpoch;
+  var savedSelectedOperationKey = selectedOperationKey;
+  var savedActiveCommandConsoleRecord = activeCommandConsoleRecord;
+  operationRecords = {};
+  operationRecordOrder = [];
+  operationConsoleScopeId = "";
+  operationConsoleSessionEpoch = "";
+  selectedOperationKey = "";
+  activeCommandConsoleRecord = Object.assign(
+    {},
+    activeCommandConsoleRecord,
+    {
+      scopeId: SERVER_SCOPE_A,
+      sessionEpoch: "1700000000000"
+    }
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "cold-foreign-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "cold-foreign-plan-update",
+      vector: foreignPlanOperation.update.vector
+    },
+    operations: [foreignPlanOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "cold-foreign-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "cold-foreign-plan-update",
+          vector: foreignPlanOperation.update.vector
+        },
+        operations: [foreignPlanOperation]
+      }
+    ]
+  }, "cold-foreign-plan-scope"));
+  assert.strictEqual(operationConsoleScopeId, "");
+  assert.strictEqual(operationConsoleSessionEpoch, "");
+  assert.strictEqual(Object.keys(operationRecords).length, 0);
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeRejectedPlan
+  );
+  assert.strictEqual(
+    spokenUtterances.length,
+    speechBeforeRejectedPlan
+  );
+  assert.strictEqual(tacticalRadio.scopeId, admittedRadioScope);
+  assert.strictEqual(tacticalRadio.sessionEpoch, admittedRadioEpoch);
+  var coldStalePlanOperation = JSON.parse(
+    JSON.stringify(currentRegistryOperation)
+  );
+  coldStalePlanOperation.operation_id = "cold-stale-plan-operation";
+  coldStalePlanOperation.update_id = "cold-stale-plan-update";
+  coldStalePlanOperation.update.update_id = "cold-stale-plan-update";
+  coldStalePlanOperation.update.vector.operation_id =
+    "cold-stale-plan-operation";
+  coldStalePlanOperation.battlefield_operation.identity.operation_id =
+    "cold-stale-plan-operation";
+  coldStalePlanOperation.battlefield_operation.identity.update_id =
+    "cold-stale-plan-update";
+  coldStalePlanOperation.battlefield_operation.identity.session_epoch =
+    "1600000000000";
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "cold-stale-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "cold-stale-plan-update",
+      vector: coldStalePlanOperation.update.vector
+    },
+    operations: [coldStalePlanOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "cold-stale-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "cold-stale-plan-update",
+          vector: coldStalePlanOperation.update.vector
+        },
+        operations: [coldStalePlanOperation]
+      }
+    ]
+  }, SERVER_SCOPE_A));
+  assert.strictEqual(operationConsoleScopeId, "");
+  assert.strictEqual(operationConsoleSessionEpoch, "");
+  assert.strictEqual(Object.keys(operationRecords).length, 0);
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeRejectedPlan
+  );
+  assert.strictEqual(
+    spokenUtterances.length,
+    speechBeforeRejectedPlan
+  );
+  assert.strictEqual(tacticalRadio.scopeId, admittedRadioScope);
+  assert.strictEqual(tacticalRadio.sessionEpoch, admittedRadioEpoch);
+  operationRecords = savedOperationRecords;
+  operationRecordOrder = savedOperationRecordOrder;
+  operationConsoleScopeId = savedOperationConsoleScopeId;
+  operationConsoleSessionEpoch = savedOperationConsoleSessionEpoch;
+  selectedOperationKey = savedSelectedOperationKey;
+  activeCommandConsoleRecord = savedActiveCommandConsoleRecord;
+
+  var stalePlanOperation = JSON.parse(
+    JSON.stringify(currentRegistryOperation)
+  );
+  stalePlanOperation.operation_id = "stale-plan-operation";
+  stalePlanOperation.update_id = "stale-plan-update";
+  stalePlanOperation.update.update_id = "stale-plan-update";
+  stalePlanOperation.update.vector.operation_id =
+    "stale-plan-operation";
+  stalePlanOperation.battlefield_operation.identity.operation_id =
+    "stale-plan-operation";
+  stalePlanOperation.battlefield_operation.identity.update_id =
+    "stale-plan-update";
+  stalePlanOperation.battlefield_operation.identity.session_epoch =
+    "1600000000000";
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "stale-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "stale-plan-update",
+      vector: stalePlanOperation.update.vector
+    },
+    operations: [stalePlanOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "stale-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "stale-plan-update",
+          vector: stalePlanOperation.update.vector
+        },
+        operations: [stalePlanOperation]
+      }
+    ]
+  }, SERVER_SCOPE_A));
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeRejectedPlan
+  );
+  assert.strictEqual(
+    spokenUtterances.length,
+    speechBeforeRejectedPlan
+  );
+  assert.strictEqual(tacticalRadio.scopeId, admittedRadioScope);
+  assert.strictEqual(tacticalRadio.sessionEpoch, admittedRadioEpoch);
+
+  // Exact-generation lifecycle events remain distinct; stale variants are silent.
+  var hydratedRecord = operationRecords[
+    operationRecordKey(SERVER_SCOPE_A, "hydrated-operation")
+  ];
+  assert(hydratedRecord);
+  var captionsBeforeForeignUpdate = tacticalRadio.captions.length;
+  var timelineBeforeForeignUpdate =
+    hydratedRecord.data.semantic_timeline.length;
+  var foreignUpdateEnvelope = {
+    event_seq: 903,
+    event_type: "operation_event",
+    update_id: "foreign-hydrated-update",
+    operation_id: "hydrated-operation",
+    generation: 2,
+    blackboard_scope_id: SERVER_SCOPE_A,
+    created_at_unix_ms: fakeNowMs
+  };
+  var foreignUpdatePayload = {
+    timeline_seq: 703,
+    blackboard_scope_id: SERVER_SCOPE_A,
+    session_epoch: "1700000000000",
+    update_id: "foreign-hydrated-update",
+    operation_id: "hydrated-operation",
+    generation: 2,
+    requested_generation: 2,
+    kind: "engagement_observed",
+    game_frame: 702,
+    summary: "foreign update must not alter canonical operation",
+    technical: { engagement_observed: true }
+  };
+  assert.strictEqual(
+    announceOperationLifecycleEvent(
+      foreignUpdateEnvelope,
+      foreignUpdatePayload,
+      SERVER_SCOPE_A,
+      hydratedRecord
+    ),
+    false
+  );
+  applyOperationSemanticEvent(
+    foreignUpdateEnvelope,
+    foreignUpdatePayload
+  );
+  assert.strictEqual(
+    hydratedRecord.data.semantic_timeline.length,
+    timelineBeforeForeignUpdate
+  );
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeForeignUpdate
+  );
+  var captionsBeforeStale = tacticalRadio.captions.length;
+  announceOperationLifecycleEvent(
+    { update_id: "hydrated-update", created_at_unix_ms: fakeNowMs },
+    {
+      operation_id: "hydrated-operation",
+      generation: 1,
+      requested_generation: 1,
+      update_id: "hydrated-update",
+      kind: "movement_observed",
+      game_frame: 701,
+      summary: "stale generation"
+    },
+    SERVER_SCOPE_A,
+    hydratedRecord
+  );
+  announceOperationLifecycleEvent(
+    { update_id: "hydrated-update", created_at_unix_ms: fakeNowMs },
+    {
+      operation_id: "hydrated-operation",
+      generation: 2,
+      requested_generation: 3,
+      update_id: "hydrated-update",
+      kind: "movement_observed",
+      game_frame: 701,
+      summary: "requested generation mismatch"
+    },
+    SERVER_SCOPE_A,
+    hydratedRecord
+  );
+  announceOperationLifecycleEvent(
+    {
+      update_id: "hydrated-update",
+      created_at_unix_ms: fakeNowMs - 20000
+    },
+    {
+      operation_id: "hydrated-operation",
+      generation: 2,
+      requested_generation: 2,
+      update_id: "hydrated-update",
+      kind: "movement_observed",
+      game_frame: 701,
+      summary: "old replay"
+    },
+    SERVER_SCOPE_A,
+    hydratedRecord
+  );
+  assert.strictEqual(
+    queueTacticalRadioCallout({
+      priority: 3,
+      caption: "old P3 replay",
+      speech: "",
+      dedupeKey: "old-p3-replay",
+      createdAt: fakeNowMs - 15001,
+      fromReplay: true
+    }),
+    false
+  );
+  assert.strictEqual(tacticalRadio.captions.length, captionsBeforeStale);
+  [
+    ["movement_observed", "Operation movement observed.", "이동 시작", 701],
+    ["engagement_observed", "Operation engagement observed.", "교전 시작", 702],
+    ["target_reached", "Operation target reached.", "목표 도달", 703],
+    ["completed", "Operation completed.", "작전 완료", 704]
+  ].forEach(function(item) {
+    announceOperationLifecycleEvent(
+      { update_id: "hydrated-update", created_at_unix_ms: fakeNowMs },
+      {
+        operation_id: "hydrated-operation",
+        generation: 2,
+        requested_generation: 2,
+        update_id: "hydrated-update",
+        kind: item[0],
+        game_frame: item[3],
+        summary: item[1]
+      },
+      SERVER_SCOPE_A,
+      hydratedRecord
+    );
+    assert(nodes["tactical-radio-captions"].textContent.includes(item[2]));
+  });
+
+  // Muting or unavailable TTS never blocks captions.
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadioSetMuted(true);
+  var mutedCaptionCount = tacticalRadio.captions.length;
+  assert(queueTacticalRadioCallout({
+    priority: 1,
+    caption: "muted caption survives",
+    speech: "must not play",
+    dedupeKey: "muted-caption",
+    createdAt: fakeNowMs
+  }));
+  assert.strictEqual(tacticalRadio.captions.length, mutedCaptionCount + 1);
+  assert(nodes["tactical-radio-status"].textContent.includes("자막"));
+  tacticalRadioSetMuted(false);
+  tacticalRadio.supported = false;
+  var unavailableSpeechCount = spokenUtterances.length;
+  assert(queueTacticalRadioCallout({
+    priority: 1,
+    caption: "unavailable caption survives",
+    speech: "must not play",
+    dedupeKey: "unavailable-caption",
+    createdAt: fakeNowMs
+  }));
+  assert.strictEqual(spokenUtterances.length, unavailableSpeechCount);
+  renderTacticalRadioState();
+  assert(nodes["tactical-radio-status"].textContent.includes("지원하지"));
+  tacticalRadio.supported = true;
+  renderTacticalRadioState();
+
+  // Legacy HTTP failures terminate pending UI instead of looking successful.
+  var originalPollState = pollState;
+  pollState = function () { return Promise.resolve(null); };
+  llmConfigured = true;
+  setCommandMode(COMMAND_MODE_LEGACY_COMMANDER);
+  var legacyConflictRequestStart = requests.length;
+  var legacyConflictPendingId = submitCommanderText(
+    "legacy conflict order",
+    { input: nodes["command-input"] }
+  );
+  assert(legacyConflictPendingId);
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+  requests[legacyConflictRequestStart].deferred.resolve(
+    response(409, { error: "legacy conflict" })
+  );
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert(logBox.textContent.includes("legacy conflict"));
+
+  var legacyUnavailableVoice = appendVoiceRecordingBubble();
+  legacyUnavailableVoice.finalText = "legacy unavailable voice order";
+  var legacyUnavailableRequestStart = requests.length;
+  var legacyUnavailablePendingId = submitCommanderText(
+    legacyUnavailableVoice.finalText,
+    {
+      input: nodes["command-input"],
+      voiceSession: legacyUnavailableVoice,
+      preserveFocus: true
+    }
+  );
+  assert(legacyUnavailablePendingId);
+  assert.strictEqual(pendingCommandCount(), 1);
+  requests[legacyUnavailableRequestStart].deferred.resolve(
+    response(503, { error: "legacy runtime unavailable" })
+  );
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert.strictEqual(
+    voiceSessionForPendingId(legacyUnavailablePendingId),
+    null
+  );
+  assert(
+    legacyUnavailableVoice.node.textContent.includes(
+      "legacy runtime unavailable"
+    )
+  );
+  setCommandMode(COMMAND_MODE_MICROMACHINE);
+  pollState = originalPollState;
+
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-operation-cards-next";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-operation-cards-next");
   assert.strictEqual(Object.keys(operationRecords).length, 0);
@@ -15644,6 +22941,27 @@ const assert = require("assert");
             "    color: #7ee7b0;",
             page,
         )
+        for fragment in (
+            'id="tactical-radio"',
+            'aria-labelledby="tactical-radio-title"',
+            'id="tactical-radio-status"',
+            'role="status"',
+            'aria-live="polite"',
+            'id="tactical-radio-mute"',
+            'aria-pressed="false"',
+            'id="tactical-radio-captions"',
+            'aria-live="off"',
+            'data-i18n-aria-label="tacticalRadioCaptionsLabel"',
+            'id="voice-button"\n'
+            '              title="음성 입력"\n'
+            '              aria-label="음성 입력"\n'
+            '              aria-pressed="false"',
+            'data-i18n-title="voiceInputLabel"',
+            "@media (prefers-reduced-motion: reduce)",
+            "@media (forced-colors: active)",
+        ):
+            with self.subTest(tactical_radio_contract=fragment):
+                self.assertIn(fragment, page)
 
     def test_chat_panel_is_bounded_and_log_scrolls_internally(self):
         page = render_web_gui_page()
@@ -15971,10 +23289,14 @@ var token = "";
 var authJoin = "";
 var lastSeq = 0;
 var lastEventSeq = 0;
+var subscriberOperationReplayDedupe = {};
+var subscriberOperationReplayOrder = [];
 var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
+var commandEventAwaitingInitialSnapshot = false;
+var commandEventPollWonInitialHydration = false;
 var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var microMachinePollQueued = false;
@@ -15989,13 +23311,20 @@ var renderedStatuses = [];
 var appendedHistory = [];
 var pollCounts = { history: 0, state: 0, micromachine: 0 };
 var POLL_INTERVAL_MS = 1000;
+var SUBSCRIBER_OPERATION_REPLAY_DEDUPE_MAXIMUM = 512;
+var operationConsoleSessionEpoch = "";
+var operationConsoleScopeId = "";
+var operationRenderCount = 0;
+var lifecycleAnnouncementCount = 0;
 function isMicroMachineCommandMode() { return true; }
 function pollHistory() { pollCounts.history += 1; }
 function pollState() { pollCounts.state += 1; }
 function pollMicroMachineStatus() { pollCounts.micromachine += 1; }
 function appendLog(payload) { appendedHistory.push(payload); }
 function renderState() {}
-function safeRenderMicroMachineStatus(payload) { renderedStatuses.push(payload); }
+function safeRenderMicroMachineStatus(payload, options) {
+  renderedStatuses.push({ payload: payload, options: options || {} });
+}
 function commandUiText(ko) { return ko; }
 function beginOperationRecord(text, pendingId) {
   operationRecords[pendingId] = {
@@ -16035,6 +23364,18 @@ function renderActiveCommandConsole(payload) {
   activeCommandConsoleRecord.data = payload;
   activeCommandConsoleRecord.state = payload.status || activeCommandConsoleRecord.state;
 }
+function hydrateTacticalRadioState() {}
+function operationRecordKey(scopeId, operationId) {
+  return String(scopeId || "") + "|" + String(operationId || "");
+}
+function operationEventMatchesRecordUpdate() { return true; }
+function mergeOperationSemanticTimeline(previous, incoming) {
+  return (previous || []).concat(incoming || []);
+}
+function renderOperationRecords() { operationRenderCount += 1; }
+function announceOperationLifecycleEvent() {
+  lifecycleAnnouncementCount += 1;
+}
 """
         scenario = r"""
 connectEventChannel();
@@ -16042,8 +23383,10 @@ const sourceA = FakeEventSource.instances[0];
 assert(sourceA.url.includes("blackboard_dir=%2Ftmp%2Fboard-a"));
 assert(!sourceA.url.includes("after="));
 assert.strictEqual(fallbackPollingIntervals.length, 3);
+assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
 sourceA.onopen();
 assert.strictEqual(fallbackPollingIntervals.length, 0);
+assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
 
 sourceA.emit("snapshot", {
   event_seq: 5,
@@ -16060,6 +23403,8 @@ sourceA.emit("snapshot", {
 });
 assert.strictEqual(lastEventSeq, 5);
 assert.strictEqual(renderedStatuses.length, 1);
+assert.strictEqual(renderedStatuses[0].options.suppressPlanAnnouncements, true);
+assert.strictEqual(commandEventAwaitingInitialSnapshot, false);
 
 lastEventSeq = 999;
 sourceA.emit("snapshot", {
@@ -16076,6 +23421,120 @@ sourceA.emit("snapshot", {
   }
 });
 assert.strictEqual(lastEventSeq, 2, "authoritative snapshot lowers a future cursor");
+
+operationConsoleSessionEpoch = "epoch-a";
+operationConsoleScopeId = "scope-a";
+operationRecords[operationRecordKey("scope-a", "replay-alpha")] = {
+  operationId: "replay-alpha",
+  updateId: "update-replay-alpha",
+  operationGeneration: 1,
+  requestedOperationGeneration: 1,
+  telemetryFrame: 10,
+  sessionEpoch: "epoch-a",
+  data: { semantic_timeline: [] }
+};
+const subscriberReplay = {
+  event_seq: 2,
+  event_type: "operation_event",
+  subscriber_local_replay: true,
+  update_id: "update-replay-alpha",
+  operation_id: "replay-alpha",
+  generation: 1,
+  game_frame: 11,
+  blackboard_scope_id: "scope-a",
+  payload: {
+    blackboard_scope_id: "scope-a",
+    session_epoch: "epoch-a",
+    timeline_seq: 11,
+    update_id: "update-replay-alpha",
+    operation_id: "replay-alpha",
+    generation: 1,
+    requested_generation: 1,
+    game_frame: 11,
+    kind: "movement_observed"
+  }
+};
+const delayedReplay = JSON.parse(JSON.stringify(subscriberReplay));
+delayedReplay.update_id = "update-delayed-replay";
+delayedReplay.operation_id = "delayed-replay";
+delayedReplay.payload.timeline_seq = 10;
+delayedReplay.payload.update_id = "update-delayed-replay";
+delayedReplay.payload.operation_id = "delayed-replay";
+const delayedReplayKey = "scope-a|epoch-a|10";
+const beforeDelayedReplayRender = operationRenderCount;
+sourceA.emit("operation_event", delayedReplay);
+assert.strictEqual(
+  operationRenderCount,
+  beforeDelayedReplayRender,
+  "a replay without an operation record must not apply"
+);
+assert.strictEqual(
+  subscriberOperationReplayDedupe[delayedReplayKey],
+  undefined,
+  "a failed replay must not consume its dedupe identity"
+);
+operationRecords[operationRecordKey("scope-a", "delayed-replay")] = {
+  operationId: "delayed-replay",
+  updateId: "update-delayed-replay",
+  operationGeneration: 1,
+  requestedOperationGeneration: 1,
+  telemetryFrame: 10,
+  sessionEpoch: "epoch-a",
+  data: { semantic_timeline: [] }
+};
+sourceA.emit("operation_event", delayedReplay);
+assert.strictEqual(
+  operationRenderCount,
+  beforeDelayedReplayRender + 1,
+  "the same replay must apply after its operation record arrives"
+);
+assert.strictEqual(subscriberOperationReplayDedupe[delayedReplayKey], true);
+sourceA.emit("operation_event", delayedReplay);
+assert.strictEqual(
+  operationRenderCount,
+  beforeDelayedReplayRender + 1,
+  "an applied replay must still execute exactly once"
+);
+
+const beforeSubscriberReplayRender = operationRenderCount;
+const beforeSubscriberReplayAnnouncement = lifecycleAnnouncementCount;
+sourceA.emit("operation_event", subscriberReplay);
+assert.strictEqual(
+  operationRenderCount,
+  beforeSubscriberReplayRender + 1
+);
+assert.strictEqual(
+  lifecycleAnnouncementCount,
+  beforeSubscriberReplayAnnouncement + 1
+);
+assert.strictEqual(lastEventSeq, 2);
+sourceA.emit("operation_event", subscriberReplay);
+assert.strictEqual(
+  operationRenderCount,
+  beforeSubscriberReplayRender + 1,
+  "local replay is semantically deduped"
+);
+
+const unmarkedEqualCursor = JSON.parse(JSON.stringify(subscriberReplay));
+delete unmarkedEqualCursor.subscriber_local_replay;
+unmarkedEqualCursor.payload.timeline_seq = 12;
+sourceA.emit("operation_event", unmarkedEqualCursor);
+assert.strictEqual(
+  operationRenderCount,
+  beforeSubscriberReplayRender + 1,
+  "an unmarked equal-cursor event must remain rejected"
+);
+
+for (let replayIndex = 0; replayIndex < 513; replayIndex += 1) {
+  const boundedReplay = JSON.parse(JSON.stringify(subscriberReplay));
+  boundedReplay.payload.timeline_seq = 1000 + replayIndex;
+  sourceA.emit("operation_event", boundedReplay);
+}
+assert.strictEqual(subscriberOperationReplayOrder.length, 512);
+assert.strictEqual(
+  Object.keys(subscriberOperationReplayDedupe).length,
+  512
+);
 
 beginActiveCommandConsole("local order", "operation-local");
 const localCardCount = Object.keys(operationRecords).length;
@@ -16191,6 +23650,8 @@ assert(sourceA.closed);
 assert(sourceB.url.includes("blackboard_dir=%2Ftmp%2Fboard-b"));
 assert(!sourceB.url.includes("after="));
 assert.strictEqual(lastEventSeq, 0);
+assert.strictEqual(subscriberOperationReplayOrder.length, 0);
+assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
 sourceA.emit("snapshot", {
   event_seq: 100,
   event_type: "snapshot",

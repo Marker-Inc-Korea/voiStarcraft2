@@ -194,7 +194,8 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 | Comprehensive all-Terran live qualification | Pending family-by-family evidence beyond the currently qualified Marine/Tank and selected support paths. |
 | Web operation UX | Per-operation cards, isolated telemetry, monotonic lifecycle updates, and truthful published/executing distinction. |
 | In-game HUD | Patched MicroMachine overlay for operation identity, force, route, target, assignment, action, movement, engagement, and blockers. |
-| Voice input | Implemented behind optional `[voice]` dependencies. |
+| Voice input | Browser push-to-talk keeps partial/final text in one session node and submits exactly once through the same bounded command gateway. CLI microphone transcription remains behind optional `[voice]` dependencies. |
+| Tactical radio | Implemented pre-live with exact operation ID/generation plan readback, authoritative lifecycle captions, priority TTS, interruption, cooldown, dedupe, mute, and replay/stale-event suppression. Actual SC2 audio/gameplay feel remains a manual live-QA gate. |
 | LLM command interpreter | Required for legacy python-sc2 live commands and production MicroMachine free-form text modulation. OpenAI/GPT is the default; Anthropic is still supported. |
 | Web GUI | Implemented as a localhost-first stdlib server with token-protected network mode. Default chat/voice mode is MicroMachine; legacy commander is explicit opt-in. |
 | Event memory | Implemented and used by state reports and GUI history. |
@@ -204,24 +205,24 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 
 ## Latest Qualification
 
-The current cockpit pre-live regression was refreshed on July 29, 2026.
-The latest clean patched-build and live SC2 evidence below was collected on
-July 27, 2026:
+The current cockpit pre-live regression and clean patched build were refreshed
+on July 30, 2026. The latest live SC2 evidence below was collected on July 27,
+2026:
 
 | Gate | Result |
 | --- | --- |
-| Current Python suite | `2159 passed, 6363 subtests passed` in the local `dev + llm` environment |
+| Current Python suite | `2177 passed, 6386 subtests passed` in the local `dev + llm` environment |
 | Historical cross-version baseline | Python 3.10, 3.11, and 3.12 each passed `1904 tests, 5357 subtests` on July 27, 2026 |
-| MicroMachine integration kit | `105 passed, 2091 subtests passed` |
-| Current web operation UX | `200 passed, 296 subtests passed`, including non-blocking SSE publication, replay rollover recovery, atomic operation/overview snapshot acceptance, exact update/operation/generation execution identity, non-authoritative detached registry and same-epoch high-water isolation, top-level projection epoch rejection, canonical terminal completion without synthetic effect evidence, canonical completion consistency across cards/active console/badge/chat, explicit failure precedence across visual and accessibility surfaces, concurrent source high-water rejection, retention-plus-one milestone deduplication, truthful `order_issued` versus `action_issued`, cancellation cleanup waiting, stable 24-card reconciliation, lane-move focus, and accessibility motion fallbacks |
-| Actual Chrome cockpit QA | Chrome 150 passed at desktop `1440x1100` and mobile `390x844`: four lanes, five standard actions per card, no duplicate IDs or horizontal overflow, stable card/focus continuity, contextual-control focus fallback, canonical-success and explicit-failure cross-surface assertions, reduced-motion progress/typing/voice fallbacks, forced-colors, and accessibility roles |
-| Clean patched build | Build identity schema `56`, `ok=true`, identity `sha256:bdb1a8fbbf4ae8449ae8604e54f3a59fcd7e0a077755f17dc521ff225ccfbe0b`, embedded build-input identity `sha256:123adec4894c856c68df71d5f69e08072c8747e72b617b883de6fecccb638410`, binary SHA-256 `4413cec7eae52c04de31d0586ce42e42509dbf673f81d0c100538a715082f9a3` |
+| MicroMachine integration kit | `117 passed, 2414 subtests passed` |
+| Current web operation UX | `218 passed, 319 subtests passed`, including non-blocking SSE publication, replay rollover recovery, atomic operation/overview snapshot acceptance, split request/execution-owner identity authentication, same-generation foreign-update rejection, delayed owner telemetry reconciliation, bounded scope-revisit replay history, retired-operation identity tombstones, exact legacy voice-request correlation, explicit legacy HTTP failure rendering, bounded stalled-voice DOM/session state, retired-recognizer isolation, session-epoch Tactical Radio reset, bounded plan/high-water registries, Chinese `zh-CN` TTS, canonical terminal completion without synthetic effect evidence, canonical completion consistency across cards/active console/badge/chat, explicit failure precedence across visual and accessibility surfaces, truthful `order_issued` versus `action_issued`, cancellation cleanup waiting, stable 24-card reconciliation, lane-move focus, single-node concurrent voice sessions, async structured plan readback, authoritative safety callouts, and accessibility motion fallbacks |
+| Actual Chrome cockpit QA | Raw headless Google Chrome `150.0.7871.187` passed at desktop `1440x1100` and mobile `390x844`: four operation lanes, four stages per operation card, five exact standard actions, unique DOM IDs, rendered card/stage/action accessibility, keyed action-focus retention, no horizontal overflow, tactical-radio placement, voice exactly-once submission, truthful plan identity, mute/caption behavior, and localized accessibility labels |
+| Clean patched build | Build identity schema `71`, `ok=true`, identity `sha256:2352557f778ca3591ee500d36465b6712b5fb31dac3778edf927aebe91e19bd0`, embedded build-input identity `sha256:95f7504183e50b69bc9820a3c21269e0512dd0aa5f8556e8f69ec87518570be1`, binary SHA-256 `41a911404652a15d0db7215ecbfe56b87e8f442cbe686dcac79c6d6297734d29`, source attestation SHA-256 `d2104a557a01515f791109efbc962de5146a5c3be91832a36da06b9bc92dc005` |
 | Fresh live smoke | Difficulty `10`, run ID `20260727T143156Z-27690-3244`, single attempt, final accepted frame `5250`, exit code `0` |
 | Tech-gas opening | A required Refinery was queued and promoted at frame `1527`; the first Barracks issued an actual SC2 command at `1561`, the Refinery issued its build command at `2616` and was observed building at `2689`, the second Barracks issued an actual command at `2655`, the Refinery completed at `3118`, and `3` live gas workers were observed by frame `3463` |
 | Parallel execution | The parallel update was published at frame `3716` and observed by the manager at `3731`; attack submitted at `3731`, reached `MOVING` at `3745` and `ENGAGED` at `4703`; scout submitted at `5030` and reached `MOVING` at `5046`; the operations used different exclusive unit tags. `MOVING` is set only after observed displacement from the per-unit SC2 submission position. |
 | Selective cancellation | Attack cancellation was published at frame `5030`; frame `5046` recorded matching-generation `release_stop`, released `smoke-attack-bravo#1`, and retained an owner-keyed purge event with exactly one exclusively owned queue item removed while the scout remained `MOVING`; every later archived terminal snapshot through frame `5085` preserved the same cleanup action and frame |
 | Autonomous restoration | Restore policy was issued at frame `5085` with MainAttack command baseline `4`; a fresh autonomous MainAttack action and same-unit movement were observed under the restore policy by frame `5091`, command count reached `8` at frame `5139`, and the final accepted snapshot recorded `31.1514` maximum home distance |
-| Provenance | Runtime manifest covered 36 Python source files and matched the schema-56 embedded build identity through smoke completion |
+| Provenance | Runtime manifest covered 36 Python source files and matched the schema-71 embedded build identity through smoke completion |
 
 This qualification proves the tested parallel operation and autonomous
 restoration path. It does not replace the family-by-family all-Terran live
@@ -372,7 +373,13 @@ python3 -m starcraft_commander.web_gui --dry-run --port 0
 ```
 
 In that page, the **Commander Chat** and browser voice button are the unified
-input surface. Select **MicroMachine policy cockpit** or
+input surface. One push-to-talk session keeps interim text, final text, pending
+state, and the final result in one stable command surface and submits the
+command exactly once. The Tactical Radio panel always retains captions and,
+when browser TTS is available and unmuted, reads structured plan confirmation
+and selected authoritative assignment/movement/engagement/blocker events. A
+plan confirmation never claims that units moved; movement is announced only
+after matching-generation runtime evidence. Select **MicroMachine policy cockpit** or
 **Legacy python-sc2 commander**, then use **선택 모드 실행** to start the selected
 runtime from the same cockpit. In MicroMachine mode this calls
 `POST /api/runtime/start` and launches

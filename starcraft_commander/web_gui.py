@@ -83,6 +83,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
     operation_family_evidence,
 )
 from starcraft_commander.policy_modulation import (
+    MICROMACHINE_OPERATION_EDIT_ACTIONS,
     POLICY_MODULATION_TTL_MAX_SECONDS,
     POLICY_MODULATION_TTL_MIN_SECONDS,
     PolicyModulationSource,
@@ -1196,6 +1197,16 @@ def _micromachine_operation_entry_for_request(
             active["active_generation"] = candidate.get("generation")
             active["requested_generation"] = operation_generation
             active["edit_rejected"] = True
+            execution_owner_update_id = str(
+                candidate.get("policy_update_id", "")
+                or candidate.get("active_update_id", "")
+                or candidate.get("update_id", "")
+                or ""
+            ).strip()
+            if execution_owner_update_id:
+                active[
+                    "operation_console_execution_owner_update_id"
+                ] = execution_owner_update_id
             return active
     exact = entries.get((operation_id, operation_generation))
     if exact is not None:
@@ -1227,14 +1238,21 @@ def _micromachine_operation_telemetry_document(
     ).strip()
     if not update_id:
         return {}, None
+    edit_rejected_for_request = bool(
+        entry.get("edit_rejected") is True
+        and str(
+            entry.get("edit_rejected_update_id", "") or ""
+        ).strip()
+        == update_id
+    )
     director_matches_update = director_update_id == update_id
-    if director_matches_update:
+    if director_matches_update or edit_rejected_for_request:
         entry_update_ids = {
             str(entry.get(key, "") or "").strip()
             for key in ("update_id", "policy_update_id", "active_update_id")
             if str(entry.get(key, "") or "").strip()
         }
-        if any(
+        if not edit_rejected_for_request and any(
             entry_update_id != update_id
             for entry_update_id in entry_update_ids
         ):
@@ -1287,6 +1305,20 @@ def _micromachine_operation_telemetry_document(
         ):
             issued_at_frame = int(active_received_frame)
         deadline_frame = 0
+    execution_owner_update_id = str(
+        scoped_entry.get(
+            "operation_console_execution_owner_update_id",
+            "",
+        )
+        or scoped_entry.get("policy_update_id", "")
+        or scoped_entry.get("active_update_id", "")
+        or scoped_entry.get("update_id", "")
+        or update_id
+    ).strip()
+    if execution_owner_update_id:
+        scoped_entry[
+            "operation_console_execution_owner_update_id"
+        ] = execution_owner_update_id
     snapshot_frame = (
         int(scoped_entry.get("_snapshot_frame"))
         if type(scoped_entry.get("_snapshot_frame")) is int
@@ -1294,7 +1326,7 @@ def _micromachine_operation_telemetry_document(
     )
     family_evidence = operation_family_evidence(
         scoped_entry,
-        expected_update_id=update_id,
+        expected_update_id=execution_owner_update_id,
         expected_operation_id=operation_id,
         expected_generation=evidence_generation,
         issued_at_frame=max(0, issued_at_frame),
@@ -1311,8 +1343,9 @@ def _micromachine_operation_telemetry_document(
     active_ids = _string_list(
         telemetry_document.get("active_modulation_ids", ())
     )
-    if update_id and update_id not in active_ids:
-        active_ids.append(update_id)
+    for active_update_id in (update_id, execution_owner_update_id):
+        if active_update_id and active_update_id not in active_ids:
+            active_ids.append(active_update_id)
     return (
         {
             "frame": frame,
@@ -1897,6 +1930,49 @@ def _micromachine_operation_status_payload(
             deadline_frame=deadline_frame,
         )
     )
+    operation_telemetry_is_current = operation_telemetry is not None
+    archived_operation_matches: list[
+        tuple[int, dict[str, object], dict[str, object]]
+    ] = []
+    for archived_telemetry in telemetry_archive:
+        archived_document = _telemetry_to_mapping(archived_telemetry)
+        if not archived_document:
+            continue
+        archived_operation_document, archived_operation = (
+            _micromachine_operation_telemetry_document(
+                archived_document,
+                update_id=update_id,
+                operation_id=operation_id,
+                operation_generation=operation_generation,
+                issued_at_frame=issued_at_frame,
+                deadline_frame=deadline_frame,
+            )
+        )
+        if archived_operation is None:
+            continue
+        archived_frame = _int_or_none(
+            archived_operation_document.get("frame")
+        ) or 0
+        archived_operation_matches.append(
+            (
+                archived_frame,
+                archived_operation_document,
+                archived_operation,
+            )
+        )
+    if (
+        operation_telemetry is None
+        or operation_telemetry_document.get("_pending_only") is True
+    ) and archived_operation_matches:
+        (
+            _archived_frame,
+            operation_telemetry_document,
+            operation_telemetry,
+        ) = max(
+            archived_operation_matches,
+            key=lambda item: item[0],
+        )
+        operation_telemetry_is_current = False
     active_operation_generation = operation_generation
     if (
         operation_telemetry is not None
@@ -1907,11 +1983,26 @@ def _micromachine_operation_status_payload(
         active_operation_generation = int(
             operation_telemetry["active_generation"]
         )
+    execution_owner_update_id = str(
+        operation_telemetry.get(
+            "operation_console_execution_owner_update_id",
+            "",
+        )
+        if isinstance(operation_telemetry, Mapping)
+        else ""
+    ).strip() or update_id
+    execution_owner_vector = dict(
+        _mapping_child(operation_telemetry or {}, "operation_vector")
+        or _mapping_child(operation_telemetry or {}, "vector")
+        or operation_vector
+    )
+    execution_owner_vector["operation_id"] = operation_id
+    execution_owner_vector["generation"] = active_operation_generation
     current_family_evidence = (
         list(
             operation_family_evidence(
                 operation_telemetry,
-                expected_update_id=update_id,
+                expected_update_id=execution_owner_update_id,
                 expected_operation_id=operation_id,
                 expected_generation=active_operation_generation,
             )
@@ -1921,23 +2012,18 @@ def _micromachine_operation_status_payload(
     )
     archived_family_evidence: list[dict[str, object]] = []
     archived_effect_frame = 0
-    for archived_telemetry in telemetry_archive:
-        archived_document = _telemetry_to_mapping(archived_telemetry)
-        if not archived_document:
-            continue
-        _, archived_operation = _micromachine_operation_telemetry_document(
-            archived_document,
-            update_id=update_id,
-            operation_id=operation_id,
-            operation_generation=operation_generation,
-            issued_at_frame=issued_at_frame,
-            deadline_frame=deadline_frame,
+    for (
+        archived_frame,
+        _archived_operation_document,
+        archived_operation,
+    ) in archived_operation_matches:
+        archived_effect_frame = max(
+            archived_effect_frame,
+            archived_frame,
         )
-        if archived_operation is None:
-            continue
         for row in operation_family_evidence(
             archived_operation,
-            expected_update_id=update_id,
+            expected_update_id=execution_owner_update_id,
             expected_operation_id=operation_id,
             expected_generation=active_operation_generation,
         ):
@@ -1958,7 +2044,7 @@ def _micromachine_operation_status_payload(
                     *archived_family_evidence,
                 ]
             },
-            expected_update_id=update_id,
+            expected_update_id=execution_owner_update_id,
             expected_operation_id=operation_id,
             expected_generation=active_operation_generation,
         )
@@ -2058,8 +2144,11 @@ def _micromachine_operation_status_payload(
         current_family_evidence
         or operation_requires_ability_evidence
     ) and operation_telemetry_document.get("_pending_only") is not True:
+        execution_owner_update = dict(operation_update)
+        execution_owner_update["update_id"] = execution_owner_update_id
+        execution_owner_update["vector"] = execution_owner_vector
         strict_operation_execution = _micromachine_strict_operation_execution(
-            operation_update,
+            execution_owner_update,
             operation_id=operation_id,
             operation_generation=active_operation_generation,
             operation_telemetry_document=operation_telemetry_document,
@@ -2072,7 +2161,7 @@ def _micromachine_operation_status_payload(
         ):
             fallback_execution = strict_operation_execution
     command_execution = _micromachine_operation_command_execution(
-        update_id=update_id,
+        update_id=execution_owner_update_id,
         operation_id=operation_id,
         operation_generation=active_operation_generation,
         operation_telemetry=operation_telemetry or {},
@@ -2117,7 +2206,7 @@ def _micromachine_operation_status_payload(
     )
     telemetry_frame = intervention.get("telemetry_frame")
     telemetry_current = bool(
-        operation_telemetry is not None
+        operation_telemetry_is_current
         and type(telemetry_frame) is int
         and consumption_status == "consumed"
     )
@@ -2258,6 +2347,10 @@ def _micromachine_operation_status_payload(
         "operation_generation": active_operation_generation,
         "requested_operation_generation": operation_generation,
         "update_id": update_id,
+        "operation_console_execution_owner_update_id": (
+            execution_owner_update_id
+        ),
+        "operation_console_execution_owner_vector": execution_owner_vector,
         "command_text": command_text,
         "mission": _micromachine_operation_mission(operation_update),
         "active": active,
@@ -2345,7 +2438,14 @@ def _attach_battlefield_operation_projections(
     attached: list[dict[str, object]] = []
     for operation in operations:
         item = dict(operation)
-        update_id = str(item.get("update_id", "") or "").strip()
+        update_id = str(
+            item.get(
+                "operation_console_execution_owner_update_id",
+                "",
+            )
+            or item.get("update_id", "")
+            or ""
+        ).strip()
         operation_id = str(item.get("operation_id", "") or "").strip()
         generation = item.get("operation_generation")
         projection = (
@@ -4267,6 +4367,9 @@ WEB_GUI_STATUS_COLORS: Final[Mapping[str, str]] = {
 MAX_COMMAND_BODY_BYTES: Final[int] = 64 * 1024
 """Upper bound for one ``POST /api/command`` body; larger bodies are rejected."""
 
+MAX_WEB_REQUEST_ID_CHARS: Final[int] = 128
+"""Upper bound for browser-generated command correlation identities."""
+
 _BRIDGE_THREAD_NAME: Final[str] = "voiStarcraft2-web-gui-session-loop"
 """Daemon thread name for the bridge's asyncio loop (asserted clean in tests)."""
 
@@ -4666,6 +4769,14 @@ class _MicroMachineModulationRequest:
     accepted_at_unix_ns: int = 0
     acceptance_ordinal: int = 0
     publish_committed: bool = False
+
+
+@dataclass(frozen=True)
+class _CorrelatedWebCommand:
+    """One legacy commander utterance bound to its browser pending identity."""
+
+    text: str
+    request_id: str
 
 
 class _GuardedMicroMachineBackend:
@@ -5119,14 +5230,16 @@ class _OperationSemanticTimelineReducer:
     """Reduce repeated operation snapshots into bounded semantic events."""
 
     _SCOPE_RETENTION = 8
+    _SCOPE_EPOCH_HISTORY_RETENTION = 128
+    _RETIRED_OPAQUE_EPOCH_RETENTION = 16
     _PER_SCOPE_OPERATION_RETENTION = 64
     _GLOBAL_OPERATION_RETENTION = (
         _SCOPE_RETENTION * _PER_SCOPE_OPERATION_RETENTION
     )
     _GLOBAL_OPERATION_HISTORY_RETENTION = (
-        _GLOBAL_OPERATION_RETENTION * 2
+        _SCOPE_EPOCH_HISTORY_RETENTION
+        * _PER_SCOPE_OPERATION_RETENTION
     )
-    _SCOPE_EPOCH_HISTORY_RETENTION = _SCOPE_RETENTION * 8
     _PER_OPERATION_RETENTION = 32
     _PER_OPERATION_TOKEN_RETENTION = 64
     _PER_SCOPE_RETENTION = 192
@@ -5166,9 +5279,15 @@ class _OperationSemanticTimelineReducer:
             tuple[str, str, str],
             dict[str, object],
         ] = {}
+        self._retired_operation_identities: dict[
+            tuple[str, str, str],
+            dict[str, object],
+        ] = {}
         self._scope_events: dict[str, deque[dict[str, object]]] = {}
+        self._scope_event_high_water: dict[str, int] = {}
         self._scope_epochs: dict[str, str] = {}
         self._retired_scope_epochs: dict[str, deque[str]] = {}
+        self._opaque_epoch_history_saturated: set[str] = set()
         self._scope_battlefield_overviews: dict[
             str,
             dict[str, object],
@@ -5187,6 +5306,20 @@ class _OperationSemanticTimelineReducer:
         self._scope_epochs.pop(scope_id, None)
         self._scope_families.pop(scope_id, None)
 
+    def _admit_scope(self, scope_id: str, session_epoch: str = "") -> bool:
+        if scope_id not in self._scope_epoch_history:
+            if (
+                len(self._scope_epoch_history)
+                >= self._SCOPE_EPOCH_HISTORY_RETENTION
+            ):
+                return False
+            self._scope_epoch_history[scope_id] = str(session_epoch or "")
+            self._scope_epoch_history_order.append(scope_id)
+            return True
+        if session_epoch:
+            self._scope_epoch_history[scope_id] = str(session_epoch)
+        return True
+
     def _touch_scope(self, scope_id: str) -> None:
         try:
             self._scope_order.remove(scope_id)
@@ -5201,42 +5334,34 @@ class _OperationSemanticTimelineReducer:
         self,
         scope_id: str,
         session_epoch: str,
-    ) -> None:
-        if not session_epoch:
-            return
+    ) -> bool:
+        return self._admit_scope(scope_id, session_epoch)
+
+    @staticmethod
+    def _numeric_epoch(session_epoch: str) -> int | None:
         try:
-            self._scope_epoch_history_order.remove(scope_id)
-        except ValueError:
-            pass
-        self._scope_epoch_history_order.append(scope_id)
-        self._scope_epoch_history[scope_id] = session_epoch
-        while (
-            len(self._scope_epoch_history_order)
-            > self._SCOPE_EPOCH_HISTORY_RETENTION
-        ):
-            evicted_scope = self._scope_epoch_history_order.popleft()
-            if evicted_scope in self._scope_epochs:
-                self._scope_epoch_history_order.append(evicted_scope)
-                continue
-            self._scope_epoch_history.pop(evicted_scope, None)
-            self._retired_scope_epochs.pop(evicted_scope, None)
-            self._scope_battlefield_overviews.pop(evicted_scope, None)
+            return int(session_epoch)
+        except (TypeError, ValueError):
+            return None
 
     def _reset_scope_epoch(self, scope_id: str, session_epoch: str) -> None:
         previous_epoch = (
             self._scope_epochs.get(scope_id, "")
             or self._scope_epoch_history.get(scope_id, "")
         )
-        retired = self._retired_scope_epochs.setdefault(
-            scope_id,
-            deque(maxlen=self._SCOPE_RETENTION),
-        )
         if previous_epoch and previous_epoch != session_epoch:
-            try:
-                retired.remove(previous_epoch)
-            except ValueError:
-                pass
-            retired.append(previous_epoch)
+            if self._numeric_epoch(previous_epoch) is None:
+                retired = self._retired_scope_epochs.setdefault(
+                    scope_id,
+                    deque(),
+                )
+                if previous_epoch not in retired:
+                    retired.append(previous_epoch)
+                if (
+                    len(retired)
+                    >= self._RETIRED_OPAQUE_EPOCH_RETENTION
+                ):
+                    self._opaque_epoch_history_saturated.add(scope_id)
         self._drop_scope(scope_id)
         self._scope_battlefield_overviews.pop(scope_id, None)
         self._scope_epochs[scope_id] = session_epoch
@@ -5257,10 +5382,31 @@ class _OperationSemanticTimelineReducer:
         retired = self._retired_scope_epochs.get(scope_id, ())
         if incoming_epoch in retired:
             return True
-        try:
-            return int(incoming_epoch) < int(current_epoch)
-        except (TypeError, ValueError):
-            return False
+        incoming_numeric = self._numeric_epoch(incoming_epoch)
+        current_numeric = self._numeric_epoch(current_epoch)
+        if incoming_numeric is not None and current_numeric is not None:
+            return incoming_numeric < current_numeric
+        if (incoming_numeric is None) != (current_numeric is None):
+            return True
+        return scope_id in self._opaque_epoch_history_saturated
+
+    @staticmethod
+    def _scope_capacity_rejected_result(
+        result: dict[str, object],
+    ) -> dict[str, object]:
+        result["enabled"] = False
+        result["status"] = "scope_capacity_rejected"
+        result["error"] = (
+            "MicroMachine operation scope capacity is exhausted."
+        )
+        result["operation_registry_authoritative"] = False
+        result["operation_timeline_status"] = "scope_capacity_rejected"
+        result["operations"] = []
+        result["operation_summary"] = _micromachine_operation_summary([])
+        result["battlefield_overview"] = None
+        result["operation_events"] = []
+        result["operation_event_latest_seq"] = 0
+        return result
 
     def _accepted_scope_operations(
         self,
@@ -5306,9 +5452,82 @@ class _OperationSemanticTimelineReducer:
         result["operation_event_latest_seq"] = (
             int(scope_events[-1]["timeline_seq"])
             if scope_events
-            else 0
+            else int(self._scope_event_high_water.get(scope_id, 0))
         )
         return result
+
+    @staticmethod
+    def _overview_for_accepted_operations(
+        battlefield_overview: Mapping[str, object],
+        accepted_operations: Sequence[Mapping[str, object]],
+    ) -> dict[str, object]:
+        """Keep the authoritative overview aligned with admitted operations."""
+
+        accepted_ids = {
+            str(operation.get("operation_id", "") or "").strip()
+            for operation in accepted_operations
+            if str(operation.get("operation_id", "") or "").strip()
+        }
+        overview = deepcopy(dict(battlefield_overview))
+        raw_ownership = overview.get("operation_ownership")
+        ownership = [
+            deepcopy(dict(item))
+            for item in (
+                raw_ownership
+                if isinstance(raw_ownership, Sequence)
+                and not isinstance(
+                    raw_ownership,
+                    (str, bytes, bytearray),
+                )
+                else ()
+            )
+            if isinstance(item, Mapping)
+            and str(item.get("operation_id", "") or "").strip()
+            in accepted_ids
+        ]
+        overview["operation_ownership"] = ownership
+        overview["explicit_operation_owned_count"] = sum(
+            max(
+                0,
+                _int_or_none(
+                    _mapping_child(item, "operation_ownership").get(
+                        "owner_count"
+                    )
+                )
+                or 0,
+            )
+            for item in ownership
+        )
+        transfer_availability = overview.get("transfer_availability")
+        if isinstance(transfer_availability, Mapping):
+            transfer_payload = deepcopy(dict(transfer_availability))
+            raw_entries = transfer_payload.get("entries")
+            transfer_payload["entries"] = [
+                deepcopy(dict(item))
+                for item in (
+                    raw_entries
+                    if isinstance(raw_entries, Sequence)
+                    and not isinstance(
+                        raw_entries,
+                        (str, bytes, bytearray),
+                    )
+                    else ()
+                )
+                if isinstance(item, Mapping)
+                and str(item.get("source_owner_id", "") or "").strip()
+                in accepted_ids
+                and (
+                    not str(
+                        item.get("counterpart_operation_id", "") or ""
+                    ).strip()
+                    or str(
+                        item.get("counterpart_operation_id", "") or ""
+                    ).strip()
+                    in accepted_ids
+                )
+            ]
+            overview["transfer_availability"] = transfer_payload
+        return overview
 
     def _touch_family(
         self,
@@ -5328,11 +5547,63 @@ class _OperationSemanticTimelineReducer:
         self._family_order.append(family_key)
         while len(families) > self._PER_SCOPE_OPERATION_RETENTION:
             self._retire_family(families.popleft())
-        while (
-            len(self._family_order)
-            > self._GLOBAL_OPERATION_HISTORY_RETENTION
-        ):
-            self._drop_family(self._family_order.popleft())
+
+    def _snapshot_fits_family_history(
+        self,
+        operations: Sequence[Mapping[str, object]],
+        *,
+        scope_id: str,
+        session_epoch: str,
+    ) -> bool:
+        """Refuse new identities instead of deleting replay tombstones."""
+
+        new_families = {
+            (scope_id, session_epoch, operation_id)
+            for operation in operations
+            if (
+                (operation_id := str(
+                    operation.get("operation_id", "") or ""
+                ).strip())
+                and max(
+                    0,
+                    _int_or_none(
+                        operation.get("operation_generation")
+                    )
+                    or 0,
+                )
+                > 0
+                and (
+                    scope_id,
+                    session_epoch,
+                    operation_id,
+                )
+                not in self._generation_high_water
+            )
+        }
+        return (
+            len(self._family_order) + len(new_families)
+            <= self._GLOBAL_OPERATION_HISTORY_RETENTION
+        )
+
+    @staticmethod
+    def _family_capacity_rejected_result(
+        result: dict[str, object],
+    ) -> dict[str, object]:
+        result["enabled"] = False
+        result["status"] = "operation_history_capacity_rejected"
+        result["error"] = (
+            "MicroMachine operation identity history capacity is exhausted."
+        )
+        result["operation_registry_authoritative"] = False
+        result["operation_timeline_status"] = (
+            "operation_history_capacity_rejected"
+        )
+        result["operations"] = []
+        result["operation_summary"] = _micromachine_operation_summary([])
+        result["battlefield_overview"] = None
+        result["operation_events"] = []
+        result["operation_event_latest_seq"] = 0
+        return result
 
     def _retire_family(
         self,
@@ -5340,37 +5611,37 @@ class _OperationSemanticTimelineReducer:
     ) -> None:
         """Drop active projection state while retaining semantic high-water."""
 
-        self._accepted_operations.pop(family_key, None)
+        accepted = self._accepted_operations.pop(family_key, None)
+        if accepted is not None:
+            self._retired_operation_identities[family_key] = {
+                "operation_id": str(
+                    accepted.get("operation_id", "") or ""
+                ),
+                "operation_generation": max(
+                    0,
+                    _int_or_none(
+                        accepted.get("operation_generation")
+                    )
+                    or 0,
+                ),
+                "requested_operation_generation": max(
+                    0,
+                    _int_or_none(
+                        accepted.get("requested_operation_generation")
+                    )
+                    or 0,
+                ),
+                "update_id": self._operation_request_update_id(accepted),
+                "operation_console_execution_owner_update_id": (
+                    self._operation_execution_owner_update_id(accepted)
+                ),
+            }
         families = self._scope_families.get(family_key[0])
         if families is not None:
             try:
                 families.remove(family_key)
             except ValueError:
                 pass
-
-    def _drop_family(
-        self,
-        family_key: tuple[str, str, str],
-    ) -> None:
-        self._generation_high_water.pop(family_key, None)
-        self._requested_generation_high_water.pop(family_key, None)
-        self._family_last_frame.pop(family_key, None)
-        self._accepted_operations.pop(family_key, None)
-        self._states = {
-            key: value
-            for key, value in self._states.items()
-            if key[:3] != family_key
-        }
-        families = self._scope_families.get(family_key[0])
-        if families is not None:
-            try:
-                families.remove(family_key)
-            except ValueError:
-                pass
-        try:
-            self._family_order.remove(family_key)
-        except ValueError:
-            pass
 
     def _snapshot_operations_are_monotonic(
         self,
@@ -5393,6 +5664,8 @@ class _OperationSemanticTimelineReducer:
             )
             for key, state in self._states.items()
         }
+        identified_operation_seen = False
+        admissible_operation_seen = False
         for raw_operation in operations:
             operation = dict(raw_operation)
             operation_id = str(
@@ -5404,8 +5677,15 @@ class _OperationSemanticTimelineReducer:
             )
             if not operation_id or generation <= 0:
                 continue
+            identified_operation_seen = True
             family_key = (scope_id, session_epoch, operation_id)
             high_water = provisional_generation.get(family_key, 0)
+            if (
+                family_key in self._retired_operation_identities
+                and generation <= high_water
+            ):
+                continue
+            admissible_operation_seen = True
             requested_generation = max(
                 generation,
                 _int_or_none(
@@ -5416,16 +5696,39 @@ class _OperationSemanticTimelineReducer:
             requested_high_water = (
                 self._requested_generation_high_water.get(family_key, 0)
             )
+            accepted = self._accepted_operations.get(family_key)
+            execution_owner_update = (
+                self._same_generation_execution_owner_update(
+                    operation,
+                    accepted,
+                    generation=generation,
+                    generation_high_water=high_water,
+                    requested_generation=requested_generation,
+                    requested_generation_high_water=requested_high_water,
+                )
+            )
             if (
                 requested_generation > 0
                 and requested_generation < requested_high_water
                 and generation <= high_water
+                and not execution_owner_update
             ):
                 return False
-            accepted = self._accepted_operations.get(family_key)
+            if self._same_generation_update_conflicts(
+                operation,
+                accepted,
+                generation=generation,
+                generation_high_water=high_water,
+                requested_generation=requested_generation,
+                requested_generation_high_water=requested_high_water,
+            ):
+                return False
             if (
                 requested_generation < requested_high_water
-                and generation > high_water
+                and (
+                    generation > high_water
+                    or execution_owner_update
+                )
                 and accepted is not None
             ):
                 operation = self._preserve_latest_requested_intent(
@@ -5442,6 +5745,13 @@ class _OperationSemanticTimelineReducer:
                 dict(battlefield_operation)
                 if isinstance(battlefield_operation, Mapping)
                 else {}
+            )
+            projection_advances_monotonic_state = bool(
+                not battlefield_operation
+                or self._projection_matches_operation(
+                    operation,
+                    battlefield_operation,
+                )
             )
             frame = self._operation_frame(
                 operation,
@@ -5463,12 +5773,14 @@ class _OperationSemanticTimelineReducer:
                 (-1, ""),
             )
             if (
-                family_last_frame >= 0
+                projection_advances_monotonic_state
+                and family_last_frame >= 0
                 and (frame < 0 or frame < family_last_frame)
             ):
                 return False
             if (
-                generation == high_water
+                projection_advances_monotonic_state
+                and generation == high_water
                 and frame >= 0
                 and frame == last_frame
                 and last_fingerprint
@@ -5482,13 +5794,13 @@ class _OperationSemanticTimelineReducer:
                     for state_key, value in provisional_fingerprints.items()
                     if state_key[:3] != family_key
                 }
-            if frame >= 0:
+            if projection_advances_monotonic_state and frame >= 0:
                 provisional_frame[family_key] = max(
                     family_last_frame,
                     frame,
                 )
                 provisional_fingerprints[key] = (frame, fingerprint)
-        return True
+        return not identified_operation_seen or admissible_operation_seen
 
     @staticmethod
     def _preserve_latest_requested_intent(
@@ -5503,6 +5815,22 @@ class _OperationSemanticTimelineReducer:
         incoming_execution = _mapping_child(
             incoming_intervention,
             "command_execution",
+        )
+        execution_owner_vector = deepcopy(
+            dict(
+                _mapping_child(
+                    _mapping_child(operation, "update"),
+                    "vector",
+                )
+                or _mapping_child(
+                    _mapping_child(operation, "compile_result"),
+                    "vector",
+                )
+                or _mapping_child(
+                    operation,
+                    "operation_console_execution_owner_vector",
+                )
+            )
         )
         execution_owner_update_id = str(
             operation.get(
@@ -5527,6 +5855,10 @@ class _OperationSemanticTimelineReducer:
         if execution_owner_update_id:
             merged["operation_console_execution_owner_update_id"] = (
                 execution_owner_update_id
+            )
+        if execution_owner_vector:
+            merged["operation_console_execution_owner_vector"] = (
+                execution_owner_vector
             )
         merged["requested_operation_generation"] = requested_high_water
         return merged
@@ -5602,6 +5934,12 @@ class _OperationSemanticTimelineReducer:
                 intervention,
                 "command_execution",
             ),
+            "operation_console_execution_owner_vector": _mapping_child(
+                operation,
+                "operation_console_execution_owner_vector",
+            ),
+            "update": _mapping_child(operation, "update"),
+            "family_evidence": operation.get("family_evidence", ()),
             "operation_convergence": _mapping_child(
                 operation,
                 "operation_convergence",
@@ -5610,6 +5948,7 @@ class _OperationSemanticTimelineReducer:
                 operation,
                 "operation_edit",
             ),
+            "squad_order": str(operation.get("squad_order", "") or ""),
             "battlefield_operation": dict(battlefield_operation),
         }
         return hashlib.sha256(
@@ -5623,11 +5962,521 @@ class _OperationSemanticTimelineReducer:
         ).hexdigest()
 
     @staticmethod
+    def _operation_vector(
+        operation: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        execution_owner_vector = _mapping_child(
+            operation,
+            "operation_console_execution_owner_vector",
+        )
+        if execution_owner_vector:
+            return execution_owner_vector
+        update_vector = _mapping_child(
+            _mapping_child(operation, "update"),
+            "vector",
+        )
+        if update_vector:
+            return update_vector
+        return _mapping_child(
+            _mapping_child(operation, "compile_result"),
+            "vector",
+        )
+
+    @staticmethod
+    def _operation_request_update_id(
+        operation: Mapping[str, object],
+    ) -> str:
+        update = _mapping_child(operation, "update")
+        compile_result = _mapping_child(operation, "compile_result")
+        return str(
+            operation.get("update_id", "")
+            or update.get("update_id", "")
+            or compile_result.get("update_id", "")
+            or ""
+        )
+
+    @staticmethod
+    def _operation_execution_owner_update_id(
+        operation: Mapping[str, object],
+    ) -> str:
+        execution = _mapping_child(
+            _mapping_child(operation, "intervention"),
+            "command_execution",
+        )
+        return str(
+            operation.get(
+                "operation_console_execution_owner_update_id",
+                "",
+            )
+            or execution.get("command_id", "")
+            or ""
+        )
+
+    @classmethod
+    def _operation_update_id(
+        cls,
+        operation: Mapping[str, object],
+    ) -> str:
+        return (
+            cls._operation_request_update_id(operation)
+            or cls._operation_execution_owner_update_id(operation)
+        )
+
+    @staticmethod
+    def _operation_edit_action(
+        operation: Mapping[str, object],
+    ) -> str:
+        action = str(
+            _mapping_child(operation, "operation_edit").get(
+                "action",
+                "",
+            )
+            or ""
+        ).strip()
+        return (
+            action
+            if action
+            and action in MICROMACHINE_OPERATION_EDIT_ACTIONS
+            else ""
+        )
+
+    @classmethod
+    def _same_generation_execution_owner_update(
+        cls,
+        operation: Mapping[str, object],
+        accepted: Mapping[str, object] | None,
+        *,
+        generation: int,
+        generation_high_water: int,
+        requested_generation: int,
+        requested_generation_high_water: int,
+    ) -> bool:
+        """Recognize delayed telemetry from the preserved execution owner."""
+
+        if (
+            accepted is None
+            or generation <= 0
+            or generation != generation_high_water
+            or requested_generation >= requested_generation_high_water
+        ):
+            return False
+        incoming_request_id = cls._operation_request_update_id(operation)
+        incoming_owner_id = cls._operation_execution_owner_update_id(
+            operation
+        )
+        accepted_request_id = cls._operation_request_update_id(accepted)
+        accepted_owner_id = cls._operation_execution_owner_update_id(
+            accepted
+        )
+        return bool(
+            accepted_request_id
+            and accepted_owner_id
+            and incoming_request_id
+            in {accepted_request_id, accepted_owner_id}
+            and incoming_owner_id == accepted_owner_id
+        )
+
+    @classmethod
+    def _same_generation_update_conflicts(
+        cls,
+        operation: Mapping[str, object],
+        accepted: Mapping[str, object] | None,
+        *,
+        generation: int,
+        generation_high_water: int,
+        requested_generation: int,
+        requested_generation_high_water: int,
+    ) -> bool:
+        """Reject a foreign snapshot masquerading as the current generation."""
+
+        if (
+            accepted is None
+            or generation <= 0
+            or generation != generation_high_water
+        ):
+            return False
+        incoming_request_id = cls._operation_request_update_id(operation)
+        incoming_owner_id = cls._operation_execution_owner_update_id(
+            operation
+        )
+        accepted_request_id = cls._operation_request_update_id(accepted)
+        accepted_owner_id = cls._operation_execution_owner_update_id(
+            accepted
+        )
+        exact_identity = bool(
+            accepted_request_id
+            and accepted_owner_id
+            and incoming_request_id == accepted_request_id
+            and incoming_owner_id == accepted_owner_id
+        )
+        if exact_identity:
+            return False
+        if cls._same_generation_execution_owner_update(
+            operation,
+            accepted,
+            generation=generation,
+            generation_high_water=generation_high_water,
+            requested_generation=requested_generation,
+            requested_generation_high_water=(
+                requested_generation_high_water
+            ),
+        ):
+            return False
+        edit_action = cls._operation_edit_action(operation)
+        is_new_request = bool(
+            requested_generation > requested_generation_high_water
+            and incoming_request_id
+            and incoming_request_id
+            not in {accepted_request_id, accepted_owner_id}
+            and incoming_owner_id == accepted_owner_id
+            and edit_action
+        )
+        execution = _mapping_child(
+            _mapping_child(operation, "intervention"),
+            "command_execution",
+        )
+        execution_state = str(
+            execution.get("state", "") or ""
+        ).lower()
+        execution_generation = max(
+            0,
+            _int_or_none(
+                execution.get("operation_generation")
+                or execution.get("generation")
+            )
+            or 0,
+        )
+        cancellation_identity_matches = bool(
+            execution_state in {"cancelled", "canceled"}
+            and str(
+                execution.get("blocker_reason", "") or ""
+            ).lower()
+            == "cancelled_by_policy"
+            and incoming_owner_id
+            and incoming_owner_id == accepted_owner_id
+            and str(execution.get("operation_id", "") or "")
+            == str(operation.get("operation_id", "") or "")
+            and execution_generation == generation
+        )
+        is_cancellation_transition = bool(
+            cancellation_identity_matches
+            and incoming_request_id == accepted_request_id
+        )
+        is_new_cancellation_request = bool(
+            cancellation_identity_matches
+            and is_new_request
+            and edit_action == "cancel"
+        )
+        if execution_state in {"cancelled", "canceled"}:
+            return not (
+                is_cancellation_transition
+                or is_new_cancellation_request
+            )
+        return not is_new_request
+
+    @staticmethod
+    def _operation_force_counts(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> tuple[int, int]:
+        ownership = _mapping_child(
+            battlefield_operation,
+            "operation_ownership",
+        )
+        launch = _mapping_child(
+            battlefield_operation,
+            "operation_launch_policy",
+        )
+        convergence = _mapping_child(operation, "operation_convergence")
+        return (
+            max(
+                0,
+                _int_or_none(ownership.get("owner_count")) or 0,
+            ),
+            max(
+                0,
+                _int_or_none(launch.get("min_units"))
+                or _int_or_none(convergence.get("target_count"))
+                or 0,
+            ),
+        )
+
+    @staticmethod
+    def _projection_matches_operation(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> bool:
+        operation_id = str(operation.get("operation_id", "") or "")
+        generation = max(
+            0,
+            _int_or_none(operation.get("operation_generation")) or 0,
+        )
+        update_id = str(
+            operation.get(
+                "operation_console_execution_owner_update_id",
+                "",
+            )
+            or operation.get("update_id", "")
+            or ""
+        )
+        projection_identity = _mapping_child(
+            battlefield_operation,
+            "identity",
+        )
+        return bool(
+            update_id
+            and operation_id
+            and generation > 0
+            and str(projection_identity.get("update_id", "") or "")
+            == update_id
+            and str(battlefield_operation.get("operation_id", "") or "")
+            == operation_id
+            and _int_or_none(
+                battlefield_operation.get("generation")
+            )
+            == generation
+            and str(projection_identity.get("operation_id", "") or "")
+            == operation_id
+            and _int_or_none(projection_identity.get("generation"))
+            == generation
+        )
+
+    @staticmethod
+    def _critical_ability_failure(
+        operation: Mapping[str, object],
+        execution: Mapping[str, object],
+        *,
+        update_id: str,
+        operation_id: str,
+        generation: int,
+    ) -> tuple[str, str, int] | None:
+        vector = _OperationSemanticTimelineReducer._operation_vector(
+            operation
+        )
+        tactical_task = _mapping_child(vector, "tactical_task")
+        ability = str(tactical_task.get("ability", "") or "").strip()
+        expected_action = ability.lower()
+        if expected_action and not expected_action.startswith("ability:"):
+            expected_action = f"ability:{expected_action}"
+        task_type = str(
+            tactical_task.get("task_type", "") or ""
+        ).strip().lower()
+        if not ability or task_type != "execute_ability":
+            return None
+        execution_state = str(execution.get("state", "") or "").lower()
+        execution_blocker = str(
+            execution.get("blocker_reason", "") or ""
+        ).strip()
+        execution_blocker_manager = str(
+            execution.get("blocker_manager", "") or ""
+        ).strip()
+        if (
+            execution.get("failed") is not True
+            and execution_state
+            not in {"blocked", "failed", "rejected", "expired"}
+        ) or not execution_blocker:
+            return None
+        raw_evidence = operation.get("family_evidence")
+        evidence_rows = (
+            raw_evidence
+            if isinstance(raw_evidence, Sequence)
+            and not isinstance(
+                raw_evidence,
+                (str, bytes, bytearray),
+            )
+            else ()
+        )
+        for raw_row in evidence_rows:
+            if not isinstance(raw_row, Mapping):
+                continue
+            row = dict(raw_row)
+            if (
+                str(row.get("update_id", "") or "") != update_id
+                or str(row.get("operation_id", "") or "")
+                != operation_id
+                or _int_or_none(row.get("generation")) != generation
+            ):
+                continue
+            action = str(row.get("action", "") or "").strip().lower()
+            blocker = str(row.get("blocker", "") or "").strip()
+            blocker_manager = str(
+                row.get("blocker_manager", "") or ""
+            ).strip()
+            required_effect = str(
+                row.get("required_effect", "") or ""
+            ).lower()
+            effect_count = max(
+                0,
+                _int_or_none(row.get("effect_count")) or 0,
+            )
+            effect_frame = max(
+                0,
+                _int_or_none(row.get("effect_frame")) or 0,
+            )
+            attempted_count = max(
+                0,
+                _int_or_none(row.get("attempted_count")) or 0,
+            )
+            attempted_frame = max(
+                0,
+                _int_or_none(row.get("attempted_frame")) or 0,
+            )
+            stage = str(row.get("stage", "") or "").lower()
+            if (
+                action != expected_action
+                or required_effect != "ability_state_or_effect"
+                or stage != "blocked"
+                or attempted_count <= 0
+                or attempted_frame <= 0
+                or effect_count > 0
+                or effect_frame > 0
+                or not blocker
+                or blocker != execution_blocker
+                or (
+                    blocker_manager
+                    and execution_blocker_manager
+                    and blocker_manager != execution_blocker_manager
+                )
+            ):
+                continue
+            attempt_generation = max(
+                0,
+                _int_or_none(row.get("attempt_generation")) or 0,
+            )
+            reason = (
+                f"{blocker_manager}: {blocker}"
+                if blocker_manager
+                else blocker
+            )
+            return ability, reason, attempt_generation
+        return None
+
+    @staticmethod
+    def _base_threats(
+        battlefield_overview: Mapping[str, object] | None,
+    ) -> dict[str, dict[str, object]]:
+        if not isinstance(battlefield_overview, Mapping):
+            return {}
+        raw_bases = battlefield_overview.get("bases")
+        bases = (
+            raw_bases
+            if isinstance(raw_bases, Sequence)
+            and not isinstance(raw_bases, (str, bytes, bytearray))
+            else ()
+        )
+        result: dict[str, dict[str, object]] = {}
+        for raw_base in bases:
+            if not isinstance(raw_base, Mapping):
+                continue
+            base_id = str(raw_base.get("base_id", "") or "").strip()
+            readiness = _mapping_child(raw_base, "base_readiness")
+            if not base_id or not readiness:
+                continue
+            ground_threat = max(
+                0.0,
+                _number(readiness.get("ground_threat")),
+            )
+            air_threat = max(
+                0.0,
+                _number(readiness.get("air_threat")),
+            )
+            observed_strength = max(
+                0.0,
+                _number(readiness.get("observed_enemy_strength")),
+            )
+            readiness_state = str(
+                readiness.get("readiness_state", "") or ""
+            ).lower()
+            result[base_id] = {
+                "active": bool(
+                    readiness_state == "unsafe"
+                    and (
+                        ground_threat > 0
+                        or air_threat > 0
+                        or observed_strength > 0
+                    )
+                ),
+                "semantic_anchor": str(
+                    raw_base.get("semantic_anchor", "") or ""
+                ),
+                "readiness_state": readiness_state,
+                "reason": str(readiness.get("reason", "") or ""),
+                "evidence_class": str(
+                    readiness.get("evidence_class", "") or ""
+                ),
+                "last_evidence_frame": max(
+                    0,
+                    _int_or_none(
+                        readiness.get("last_evidence_frame")
+                    )
+                    or 0,
+                ),
+                "ground_threat": ground_threat,
+                "air_threat": air_threat,
+                "observed_enemy_strength": observed_strength,
+            }
+        return result
+
+    @staticmethod
+    def _emergency_retreat_active(
+        operation: Mapping[str, object],
+        battlefield_operation: Mapping[str, object],
+    ) -> bool:
+        convergence = _mapping_child(operation, "operation_convergence")
+        launch = _mapping_child(
+            battlefield_operation,
+            "operation_launch_policy",
+        )
+        launch_safety = _mapping_child(launch, "safety_evidence")
+        emergency_preemption = str(
+            launch_safety.get("emergency_preemption", "") or ""
+        ).lower()
+        return bool(
+            str(convergence.get("status", "") or "").upper() == "BLOCKED"
+            and str(convergence.get("blocker", "") or "")
+            == "emergency_retreat_preempted"
+            and str(operation.get("squad_order", "") or "").lower()
+            == "retreat"
+            and emergency_preemption
+            not in {"", "none", "inactive", "not_required"}
+        )
+
+    @staticmethod
+    def _base_attack_active(
+        battlefield_operation: Mapping[str, object],
+        base_threats: Mapping[str, Mapping[str, object]],
+    ) -> bool:
+        launch = _mapping_child(
+            battlefield_operation,
+            "operation_launch_policy",
+        )
+        launch_safety = _mapping_child(launch, "safety_evidence")
+        return bool(
+            any(
+                threat.get("active") is True
+                for threat in base_threats.values()
+            )
+            and str(launch.get("blocker", "") or "")
+            == "base_protected_minimum_not_met"
+            and launch_safety.get(
+                "protected_defense_minimum_respected"
+            )
+            is False
+        )
+
+    @staticmethod
     def _event_candidates(
         operation: Mapping[str, object],
         battlefield_operation: Mapping[str, object],
         *,
         allow_edit_events: bool = True,
+        previous_owner_count: int | None = None,
+        previous_required_count: int = 0,
+        previous_transferred_out_count: int = 0,
+        previous_emergency_retreat_active: bool = False,
+        previous_base_attack_active: bool = False,
+        base_threats: Mapping[str, Mapping[str, object]] | None = None,
+        frame: int = -1,
     ) -> list[tuple[str, str, str, dict[str, object]]]:
         operation_id = str(operation.get("operation_id", "") or "")
         generation = max(
@@ -5682,20 +6531,33 @@ class _OperationSemanticTimelineReducer:
             battlefield_operation,
             "operation_lifetime",
         )
-        owner_count = max(
-            0,
-            _int_or_none(ownership.get("owner_count")) or 0,
+        projection_matches_operation = (
+            _OperationSemanticTimelineReducer
+            ._projection_matches_operation(
+                operation,
+                battlefield_operation,
+            )
         )
-        required_count = max(
-            0,
-            _int_or_none(launch.get("min_units"))
-            or _int_or_none(convergence.get("target_count"))
-            or 0,
+        projection_identity_valid = bool(
+            not battlefield_operation
+            or projection_matches_operation
+        )
+        owner_count, required_count = (
+            _OperationSemanticTimelineReducer._operation_force_counts(
+                operation,
+                battlefield_operation,
+            )
         )
         represented_count = max(
             0,
             _int_or_none(convergence.get("represented_count")) or 0,
         )
+        if not projection_identity_valid:
+            owner_count = 0
+            required_count = max(
+                0,
+                _int_or_none(convergence.get("target_count")) or 0,
+            )
         requested_generation = max(
             generation,
             _int_or_none(
@@ -5703,9 +6565,17 @@ class _OperationSemanticTimelineReducer:
             )
             or generation,
         )
-        launch_decision = str(launch.get("decision", "") or "").lower()
+        launch_decision = (
+            str(launch.get("decision", "") or "").lower()
+            if projection_identity_valid
+            else ""
+        )
         blocker = str(
-            launch.get("blocker")
+            (
+                launch.get("blocker")
+                if projection_identity_valid
+                else ""
+            )
             or convergence.get("blocker")
             or execution.get("blocker_reason")
             or ""
@@ -5719,21 +6589,8 @@ class _OperationSemanticTimelineReducer:
             "disposition": disposition,
             "requested_generation": requested_generation,
             "update_id": update_id,
+            "projection_identity_valid": projection_identity_valid,
         }
-        projection_matches_operation = bool(
-            str(projection_identity.get("update_id", "") or "")
-            == execution_owner_update_id
-            and str(battlefield_operation.get("operation_id", "") or "")
-            == operation_id
-            and _int_or_none(
-                battlefield_operation.get("generation")
-            )
-            == generation
-            and str(projection_identity.get("operation_id", "") or "")
-            == operation_id
-            and _int_or_none(projection_identity.get("generation"))
-            == generation
-        )
         canonical_completion_identity = bool(
             projection_matches_operation
             and _int_or_none(completion.get("generation")) == generation
@@ -5760,12 +6617,22 @@ class _OperationSemanticTimelineReducer:
                     common,
                 )
             )
-        assigned = owner_count > 0 or execution_state in {
-            "queued_or_assigned",
-            "assigned",
-        }
+        assigned = bool(
+            (
+                projection_identity_valid
+                and owner_count > 0
+            )
+            or execution_state in {
+                "queued_or_assigned",
+                "assigned",
+            }
+        )
         if assigned:
-            if required_count > 0 and owner_count < required_count:
+            if (
+                projection_identity_valid
+                and required_count > 0
+                and owner_count < required_count
+            ):
                 candidates.append(
                     (
                         "partially_assigned",
@@ -5819,6 +6686,181 @@ class _OperationSemanticTimelineReducer:
                     "submitted",
                     "Matching-generation SC2 action submitted.",
                     {**common, "execution_state": execution_state},
+                )
+            )
+        launch_safety = _mapping_child(launch, "safety_evidence")
+        emergency_preemption = str(
+            launch_safety.get("emergency_preemption", "") or ""
+        ).lower()
+        emergency_retreat_active = bool(
+            projection_matches_operation
+            and _OperationSemanticTimelineReducer
+            ._emergency_retreat_active(
+                operation,
+                battlefield_operation,
+            )
+        )
+        if (
+            emergency_retreat_active
+            and not previous_emergency_retreat_active
+        ):
+            candidates.append(
+                (
+                    "emergency_retreat",
+                    f"emergency_retreat:{frame}",
+                    "Emergency retreat order is active.",
+                    {
+                        **common,
+                        "operation_convergence": dict(convergence),
+                        "squad_order": str(
+                            operation.get("squad_order", "") or ""
+                        ),
+                        "emergency_preemption": emergency_preemption,
+                    },
+                )
+            )
+        active_base_threats = {
+            base_id: dict(threat)
+            for base_id, threat in (base_threats or {}).items()
+            if threat.get("active") is True
+        }
+        base_attack_active = bool(
+            projection_matches_operation
+            and _OperationSemanticTimelineReducer._base_attack_active(
+                battlefield_operation,
+                active_base_threats,
+            )
+        )
+        if base_attack_active and not previous_base_attack_active:
+            base_ids = sorted(active_base_threats)
+            base_reasons = [
+                str(active_base_threats[base_id].get("reason", "") or "")
+                for base_id in base_ids
+            ]
+            candidates.append(
+                (
+                    "base_under_attack",
+                    f"base_under_attack:{frame}:{','.join(base_ids)}",
+                    (
+                        "; ".join(
+                            reason
+                            for reason in base_reasons
+                            if reason
+                        )
+                        or "Base defense minimum is not met under attack."
+                    ),
+                    {
+                        **common,
+                        "base_ids": base_ids,
+                        "base_threats": active_base_threats,
+                        "launch_safety": dict(launch_safety),
+                    },
+                )
+            )
+        critical_failure = (
+            _OperationSemanticTimelineReducer._critical_ability_failure(
+                operation,
+                execution,
+                update_id=execution_owner_update_id,
+                operation_id=operation_id,
+                generation=generation,
+            )
+        )
+        if critical_failure is not None:
+            ability, reason, attempt_generation = critical_failure
+            candidates.append(
+                (
+                    "critical_ability_failure",
+                    (
+                        "critical_ability_failure:"
+                        f"{ability}:{attempt_generation}:{reason}"
+                    ),
+                    f"{ability} failed: {reason}",
+                    {
+                        **common,
+                        "update_id": execution_owner_update_id,
+                        "ability": ability,
+                        "attempt_generation": attempt_generation,
+                        "blocker": reason,
+                    },
+                )
+            )
+        previous_minimum = max(
+            0,
+            previous_required_count or required_count,
+        )
+        current_transferred_out_count = max(
+            0,
+            _int_or_none(edit.get("transferred_out_count")) or 0,
+        )
+        transferred_out_delta = max(
+            0,
+            current_transferred_out_count
+            - max(0, previous_transferred_out_count),
+        )
+        ownership_integrity = str(
+            ownership.get("integrity_status", "") or ""
+        ).lower()
+        completion_state = str(
+            completion.get("state", "") or ""
+        ).lower()
+        lifetime_state = str(
+            lifetime.get("completion_state", "") or ""
+        ).lower()
+        nonterminal = (
+            completion_state
+            not in {
+                "completed",
+                "failed",
+                "cancelled",
+                "expired",
+                "superseded",
+            }
+            and lifetime_state
+            not in {
+                "completed",
+                "failed",
+                "cancelled",
+                "expired",
+                "superseded",
+            }
+        )
+        raw_owner_loss = (
+            max(0, previous_owner_count - owner_count)
+            if previous_owner_count is not None
+            else 0
+        )
+        net_owner_loss = max(
+            0,
+            raw_owner_loss - transferred_out_delta,
+        )
+        if (
+            projection_matches_operation
+            and previous_owner_count is not None
+            and previous_minimum > 0
+            and previous_owner_count >= previous_minimum
+            and owner_count < required_count
+            and net_owner_loss > 0
+            and ownership_integrity == "valid"
+            and nonterminal
+        ):
+            candidates.append(
+                (
+                    "force_loss",
+                    (
+                        f"force_loss:{frame}:{previous_owner_count}:"
+                        f"{owner_count}:{required_count}"
+                    ),
+                    (
+                        f"Operation force fell from {previous_owner_count} "
+                        f"to {owner_count}; minimum is {required_count}."
+                    ),
+                    {
+                        **common,
+                        "previous_owner_count": previous_owner_count,
+                        "transferred_out_delta": transferred_out_delta,
+                        "net_owner_loss": net_owner_loss,
+                    },
                 )
             )
         if (
@@ -6014,8 +7056,12 @@ class _OperationSemanticTimelineReducer:
                     _micromachine_operation_summary(operations)
                 )
                 result["operation_events"] = []
-                result["operation_event_latest_seq"] = 0
+                result["operation_event_latest_seq"] = int(
+                    self._scope_event_high_water.get(scope_id, 0)
+                )
                 return result
+            if not self._admit_scope(scope_id):
+                return self._scope_capacity_rejected_result(result)
             self._touch_scope(scope_id)
             if (
                 incoming_epoch
@@ -6033,6 +7079,12 @@ class _OperationSemanticTimelineReducer:
                     session_epoch=current_epoch,
                 )
             session_epoch = incoming_epoch or current_epoch
+            if not self._snapshot_fits_family_history(
+                operations,
+                scope_id=scope_id,
+                session_epoch=session_epoch,
+            ):
+                return self._family_capacity_rejected_result(result)
             if not self._snapshot_operations_are_monotonic(
                 operations,
                 scope_id=scope_id,
@@ -6053,13 +7105,14 @@ class _OperationSemanticTimelineReducer:
                     maxlen=self._PER_SCOPE_RETENTION
                 )
                 self._scope_families[scope_id] = deque()
-            if isinstance(battlefield_overview, Mapping):
-                self._scope_battlefield_overviews[scope_id] = deepcopy(
-                    dict(battlefield_overview)
-                )
             scope_events = self._scope_events.setdefault(
                 scope_id,
                 deque(maxlen=self._PER_SCOPE_RETENTION),
+            )
+            base_threats = self._base_threats(
+                battlefield_overview
+                if isinstance(battlefield_overview, Mapping)
+                else None
             )
             accepted_operations: list[dict[str, object]] = []
             incoming_family_keys: set[tuple[str, str, str]] = set()
@@ -6078,6 +7131,11 @@ class _OperationSemanticTimelineReducer:
                 family_key = (scope_id, session_epoch, operation_id)
                 incoming_family_keys.add(family_key)
                 high_water = self._generation_high_water.get(family_key, 0)
+                if (
+                    family_key in self._retired_operation_identities
+                    and generation <= high_water
+                ):
+                    continue
                 requested_generation = max(
                     generation,
                     _int_or_none(
@@ -6096,16 +7154,43 @@ class _OperationSemanticTimelineReducer:
                     and requested_generation < requested_high_water
                 )
                 accepted = self._accepted_operations.get(family_key)
-                if (
-                    stale_requested_generation
-                    and generation <= high_water
+                execution_owner_update = (
+                    self._same_generation_execution_owner_update(
+                        operation,
+                        accepted,
+                        generation=generation,
+                        generation_high_water=high_water,
+                        requested_generation=requested_generation,
+                        requested_generation_high_water=(
+                            requested_high_water
+                        ),
+                    )
+                )
+                if self._same_generation_update_conflicts(
+                    operation,
+                    accepted,
+                    generation=generation,
+                    generation_high_water=high_water,
+                    requested_generation=requested_generation,
+                    requested_generation_high_water=requested_high_water,
                 ):
                     if accepted is not None:
                         accepted_operations.append(deepcopy(accepted))
                     continue
                 if (
                     stale_requested_generation
-                    and generation > high_water
+                    and generation <= high_water
+                    and not execution_owner_update
+                ):
+                    if accepted is not None:
+                        accepted_operations.append(deepcopy(accepted))
+                    continue
+                if (
+                    stale_requested_generation
+                    and (
+                        generation > high_water
+                        or execution_owner_update
+                    )
                     and accepted is not None
                 ):
                     operation = self._preserve_latest_requested_intent(
@@ -6131,6 +7216,16 @@ class _OperationSemanticTimelineReducer:
                     if isinstance(battlefield_operation, Mapping)
                     else {}
                 )
+                projection_matches_operation = (
+                    self._projection_matches_operation(
+                        operation,
+                        battlefield_operation,
+                    )
+                )
+                projection_advances_monotonic_state = bool(
+                    not battlefield_operation
+                    or projection_matches_operation
+                )
                 frame = self._operation_frame(
                     operation,
                     battlefield_operation,
@@ -6150,11 +7245,13 @@ class _OperationSemanticTimelineReducer:
                     else -1
                 )
                 regressing = (
-                    family_last_frame >= 0
+                    projection_advances_monotonic_state
+                    and family_last_frame >= 0
                     and (frame < 0 or frame < family_last_frame)
                 )
                 conflicting_same_frame = bool(
-                    generation == high_water
+                    projection_advances_monotonic_state
+                    and generation == high_water
                     and state is not None
                     and frame >= 0
                     and frame == last_frame
@@ -6186,6 +7283,11 @@ class _OperationSemanticTimelineReducer:
                         "events": deque(
                             maxlen=self._PER_OPERATION_RETENTION
                         ),
+                        "last_owner_count": None,
+                        "last_required_count": 0,
+                        "last_transferred_out_count": 0,
+                        "emergency_retreat_active": False,
+                        "base_attack_active": False,
                     },
                 )
                 if requested_generation > requested_high_water:
@@ -6193,7 +7295,7 @@ class _OperationSemanticTimelineReducer:
                         requested_generation
                     )
                 last_frame = int(state["last_frame"])
-                if frame >= 0:
+                if projection_advances_monotonic_state and frame >= 0:
                     state["last_frame"] = max(last_frame, frame)
                     state["last_fingerprint"] = fingerprint
                     self._family_last_frame[family_key] = max(
@@ -6207,6 +7309,35 @@ class _OperationSemanticTimelineReducer:
                         allow_edit_events=(
                             not stale_requested_generation
                         ),
+                        previous_owner_count=(
+                            state.get("last_owner_count")
+                            if type(state.get("last_owner_count")) is int
+                            else None
+                        ),
+                        previous_required_count=max(
+                            0,
+                            _int_or_none(
+                                state.get("last_required_count")
+                            )
+                            or 0,
+                        ),
+                        previous_transferred_out_count=max(
+                            0,
+                            _int_or_none(
+                                state.get(
+                                    "last_transferred_out_count"
+                                )
+                            )
+                            or 0,
+                        ),
+                        previous_emergency_retreat_active=bool(
+                            state.get("emergency_retreat_active")
+                        ),
+                        previous_base_attack_active=bool(
+                            state.get("base_attack_active")
+                        ),
+                        base_threats=base_threats,
+                        frame=frame,
                     )
                 ):
                     if kind in self._PERMANENT_MILESTONE_KINDS:
@@ -6239,7 +7370,14 @@ class _OperationSemanticTimelineReducer:
                             technical.get("update_id", "") or ""
                         ),
                         "kind": kind,
-                        "game_frame": frame,
+                        "game_frame": (
+                            frame
+                            if technical.get(
+                                "projection_identity_valid"
+                            )
+                            is not False
+                            else last_frame
+                        ),
                         "owner_count": max(
                             0,
                             _int_or_none(
@@ -6259,10 +7397,43 @@ class _OperationSemanticTimelineReducer:
                     }
                     state["events"].append(event)
                     scope_events.append(event)
+                    self._scope_event_high_water[scope_id] = self._seq
+                owner_count, required_count = (
+                    self._operation_force_counts(
+                        operation,
+                        battlefield_operation,
+                    )
+                )
+                if projection_matches_operation:
+                    state["last_owner_count"] = owner_count
+                    state["last_required_count"] = required_count
+                    state["last_transferred_out_count"] = max(
+                        0,
+                        _int_or_none(
+                            _mapping_child(
+                                operation,
+                                "operation_edit",
+                            ).get("transferred_out_count")
+                        )
+                        or 0,
+                    )
+                    state["emergency_retreat_active"] = bool(
+                        self._emergency_retreat_active(
+                            operation,
+                            battlefield_operation,
+                        )
+                    )
+                    state["base_attack_active"] = bool(
+                        self._base_attack_active(
+                            battlefield_operation,
+                            base_threats,
+                        )
+                    )
                 operation["semantic_timeline"] = [
                     dict(event) for event in state["events"]
                 ]
                 accepted = deepcopy(operation)
+                self._retired_operation_identities.pop(family_key, None)
                 self._accepted_operations[family_key] = accepted
                 accepted_operations.append(deepcopy(accepted))
             if payload.get("operation_registry_authoritative") is True:
@@ -6277,13 +7448,22 @@ class _OperationSemanticTimelineReducer:
             result["operation_summary"] = _micromachine_operation_summary(
                 accepted_operations
             )
+            if isinstance(battlefield_overview, Mapping):
+                accepted_overview = self._overview_for_accepted_operations(
+                    battlefield_overview,
+                    accepted_operations,
+                )
+                self._scope_battlefield_overviews[scope_id] = deepcopy(
+                    accepted_overview
+                )
+                result["battlefield_overview"] = accepted_overview
             result["operation_events"] = [
                 dict(event) for event in scope_events
             ]
             result["operation_event_latest_seq"] = (
                 int(scope_events[-1]["timeline_seq"])
                 if scope_events
-                else 0
+                else int(self._scope_event_high_water.get(scope_id, 0))
             )
         return result
 
@@ -6999,15 +8179,35 @@ class SessionLoopBridge:
     def submit_command(self, text: str) -> None:
         """Enqueue one utterance for sequential processing (non-blocking)."""
 
+        cleaned = self._validate_command_text(text)
+        self._accept_bridge_item(
+            cleaned,
+            priority=_BRIDGE_QUEUE_PRIORITY_NORMAL,
+        )
+
+    def submit_correlated_command(self, text: str, request_id: str) -> None:
+        """Enqueue one utterance with an exact browser request identity."""
+
+        cleaned = self._validate_command_text(text)
+        normalized_request_id = _normalize_web_request_id(request_id)
+        if not normalized_request_id:
+            raise ValueError("Web GUI request_id must be non-empty.")
+        self._accept_bridge_item(
+            _CorrelatedWebCommand(
+                text=cleaned,
+                request_id=normalized_request_id,
+            ),
+            priority=_BRIDGE_QUEUE_PRIORITY_NORMAL,
+        )
+
+    @staticmethod
+    def _validate_command_text(text: str) -> str:
         if not isinstance(text, str):
             raise TypeError("Web GUI command text must be a string.")
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("Web GUI command text must be non-empty.")
-        self._accept_bridge_item(
-            cleaned,
-            priority=_BRIDGE_QUEUE_PRIORITY_NORMAL,
-        )
+        return cleaned
 
     def _accept_bridge_item(self, item: object, *, priority: int) -> None:
         """Atomically validate RUNNING state and schedule one accepted item."""
@@ -7828,6 +9028,12 @@ class SessionLoopBridge:
                     continue
                 executor.submit(self._process_one_micromachine_request, item)
                 continue
+            if isinstance(item, _CorrelatedWebCommand):
+                await self._process_one(
+                    item.text,
+                    web_request_id=item.request_id,
+                )
+                continue
             await self._process_one(str(item))
 
     def _process_one_micromachine_request(
@@ -7960,16 +9166,67 @@ class SessionLoopBridge:
                     entry["execution_status"] = execution_status
                 break
 
-    async def _process_one(self, text: str) -> None:
+    async def _process_one(
+        self,
+        text: str,
+        *,
+        web_request_id: str = "",
+    ) -> None:
         """Run one utterance through the session; never drop it silently."""
 
         try:
             outcomes = await self._session.process_text(text)
         except Exception as error:  # noqa: BLE001 - recorded honestly, never dropped.
-            self._history.record(_internal_error_outcome(text, error))
+            outcome = _internal_error_outcome(text, error)
+            self._history.record(
+                _correlate_web_outcome(outcome, web_request_id)
+                if web_request_id
+                else outcome
+            )
             return
         for outcome in outcomes:
-            self._history.record(outcome)
+            self._history.record(
+                _correlate_web_outcome(outcome, web_request_id)
+                if web_request_id
+                else outcome
+            )
+
+
+def _normalize_web_request_id(value: object) -> str:
+    """Validate one optional browser correlation identity."""
+
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        raise TypeError("Web GUI request_id must be a string.")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("Web GUI request_id must be non-empty.")
+    if len(normalized) > MAX_WEB_REQUEST_ID_CHARS:
+        raise ValueError(
+            "Web GUI request_id exceeds "
+            f"{MAX_WEB_REQUEST_ID_CHARS} characters."
+        )
+    if any(character.isspace() or ord(character) < 33 for character in normalized):
+        raise ValueError(
+            "Web GUI request_id may not contain whitespace or control characters."
+        )
+    return normalized
+
+
+def _correlate_web_outcome(
+    outcome: object,
+    request_id: str,
+) -> dict[str, object]:
+    """Attach exact browser correlation without mutating session outcomes."""
+
+    document = _outcome_event(outcome)
+    detail = document.get("detail")
+    correlated_detail = dict(detail) if isinstance(detail, Mapping) else {}
+    correlated_detail["web_request_id"] = request_id
+    document["detail"] = correlated_detail
+    document["request_id"] = request_id
+    return document
 
 
 def _outcome_event(outcome: object) -> dict[str, object]:
@@ -8272,6 +9529,9 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       animation: none !important;
       transform: none;
     }
+    .tactical-radio-status.is-speaking::before {
+      animation: none !important;
+    }
   }
   @media (prefers-contrast: more) {
     :root {
@@ -8293,11 +9553,12 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .operation-lane, .operation-card-detail, .operation-timeline-panel,
     .operation-timeline-item,
     .active-command-console, .battlefield-control-overview,
-    .command-console-field, .command-stage {
+    .command-console-field, .command-stage, .tactical-radio {
       forced-color-adjust: auto; background: Canvas; color: CanvasText;
       border-color: CanvasText; box-shadow: none; backdrop-filter: none;
     }
-    #send-button, #voice-button, #llm-panel button, .runtime-actions button {
+    #send-button, #voice-button, #tactical-radio-mute,
+    #llm-panel button, .runtime-actions button {
       background: ButtonFace; color: ButtonText; border: 1px solid ButtonText;
     }
   }
@@ -9041,6 +10302,15 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     0%, 100% { transform: scaleY(0.5); opacity: 0.55; }
     50% { transform: scaleY(1.25); opacity: 1; }
   }
+  .voice-transcript {
+    display: block; margin-top: 5px; min-height: 1.35em;
+    color: #03101e; font-weight: 900;
+  }
+  .voice-transcript-interim { opacity: 0.7; }
+  .voice-session-state {
+    display: inline-block; margin-left: 7px; font-size: 0.68rem;
+    font-weight: 900; color: rgba(3, 16, 30, 0.72);
+  }
   .message-meta { display: block; margin-bottom: 5px; color: rgba(255, 255, 255, 0.72); font-size: 0.74rem; font-weight: 800; }
   .message-bot .message-meta { color: var(--muted); }
   .status { display: none; font-weight: 900; margin-right: 7px; white-space: nowrap; }
@@ -9050,7 +10320,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .status-clarification { color: __COLOR_CLARIFICATION__; }
   .status-read_only { color: __COLOR_READ_ONLY__; }
   #command-form {
-    order: 4;
+    order: 5;
     display: flex; gap: 12px; padding: 16px 18px; border-top: 1px solid var(--line);
     background: rgba(7, 13, 34, 0.72);
   }
@@ -9071,6 +10341,65 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   }
   #voice-button.recording {
     color: #061126; background: linear-gradient(135deg, var(--amber), var(--accent));
+  }
+  .tactical-radio {
+    order: 4; margin: 0 18px 12px; padding: 11px 12px;
+    border: 1px solid rgba(77, 238, 234, 0.24); border-radius: 17px;
+    background:
+      linear-gradient(135deg, rgba(4, 14, 31, 0.94), rgba(10, 23, 46, 0.84)),
+      radial-gradient(circle at 100% 0, rgba(77, 238, 234, 0.12), transparent 44%);
+  }
+  .tactical-radio-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+  }
+  .tactical-radio-copy { min-width: 0; }
+  .tactical-radio-title {
+    margin: 0; color: var(--ink); font-size: 0.78rem; font-weight: 900;
+    letter-spacing: 0.03em;
+  }
+  .tactical-radio-status {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 3px;
+    color: var(--muted); font-size: 0.66rem; font-weight: 800;
+  }
+  .tactical-radio-status::before {
+    content: ""; width: 6px; height: 6px; border-radius: 999px;
+    background: var(--accent); box-shadow: 0 0 0 3px rgba(77, 238, 234, 0.1);
+  }
+  .tactical-radio-status.is-speaking::before {
+    animation: tactical-radio-pulse 1s ease-in-out infinite;
+  }
+  .tactical-radio-status.is-muted::before,
+  .tactical-radio-status.is-unavailable::before {
+    background: var(--amber); box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.1);
+  }
+  @keyframes tactical-radio-pulse {
+    0%, 100% { transform: scale(0.8); opacity: 0.58; }
+    50% { transform: scale(1.25); opacity: 1; }
+  }
+  #tactical-radio-mute {
+    flex: 0 0 auto; margin: 0; padding: 7px 9px;
+    border: 1px solid var(--line); border-radius: 10px;
+    color: var(--ink); background: rgba(255, 255, 255, 0.07);
+    font-size: 0.66rem; font-weight: 900; cursor: pointer;
+  }
+  .tactical-radio-captions {
+    display: grid; gap: 5px; max-height: 86px; margin: 9px 0 0;
+    padding: 0; overflow-y: auto; list-style: none;
+    overscroll-behavior: contain;
+  }
+  .tactical-radio-caption {
+    display: grid; grid-template-columns: auto minmax(0, 1fr);
+    gap: 7px; align-items: baseline; padding: 6px 7px;
+    border: 1px solid rgba(136, 169, 255, 0.14); border-radius: 9px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+  .tactical-radio-priority {
+    color: var(--accent); font-size: 0.58rem; font-weight: 900;
+  }
+  .tactical-radio-caption-text {
+    min-width: 0; color: var(--ink); font-size: 0.68rem;
+    line-height: 1.35; font-weight: 800; overflow-wrap: anywhere;
   }
   #send-button:disabled, #command-input:disabled, #voice-button:disabled {
     opacity: 0.55; cursor: not-allowed;
@@ -9130,6 +10459,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     .operation-console { margin: 10px 10px 0; padding: 12px; }
     .operation-summary { display: inline-block; margin-top: 9px; }
     .active-command-console { margin: 10px 10px 0; padding: 13px; }
+    .tactical-radio { margin: 0 10px 10px; }
+    .tactical-radio-header { align-items: flex-start; }
     .command-console-actions { display: grid; grid-template-columns: 1fr; }
     .command-console-actions button { width: 100%; }
     .command-console-actions .command-emergency-button { margin-left: 0; }
@@ -9332,10 +10663,43 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       </div>
     </section>
     <div id="log" aria-live="off" role="log"></div>
+    <section id="tactical-radio"
+             class="tactical-radio"
+             aria-labelledby="tactical-radio-title">
+      <div class="tactical-radio-header">
+        <div class="tactical-radio-copy">
+          <h2 id="tactical-radio-title"
+              class="tactical-radio-title"
+              data-i18n="tacticalRadioTitle">전술 무전</h2>
+          <span id="tactical-radio-status"
+                class="tactical-radio-status"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                data-i18n="tacticalRadioReady">음성 준비 · 자막은 항상 표시</span>
+        </div>
+        <button id="tactical-radio-mute"
+                type="button"
+                aria-pressed="false"
+                data-i18n="tacticalRadioMute">음소거</button>
+      </div>
+      <ol id="tactical-radio-captions"
+          class="tactical-radio-captions"
+          role="log"
+          aria-live="off"
+          aria-relevant="additions text"
+          aria-label="전술 무전 자막"
+          data-i18n-aria-label="tacticalRadioCaptionsLabel"></ol>
+    </section>
     <form id="command-form">
       <input id="command-input" type="text" autocomplete="off" autofocus
              placeholder="대화하듯 입력하세요. 예: 보급고 지어 / 음성지원도 되나?">
-      <button type="button" id="voice-button" title="Voice input" aria-label="Voice input">◉</button>
+      <button type="button" id="voice-button"
+              title="음성 입력"
+              aria-label="음성 입력"
+              aria-pressed="false"
+              data-i18n-title="voiceInputLabel"
+              data-i18n-aria-label="voiceInputLabel">◉</button>
       <button type="submit" id="send-button" data-i18n="send">전송</button>
     </form>
   </section>
@@ -9586,10 +10950,14 @@ var authQuery = token ? "?token=" + encodeURIComponent(token) : "";
 var authJoin = token ? "&token=" + encodeURIComponent(token) : "";
 var lastSeq = 0;
 var lastEventSeq = 0;
+var subscriberOperationReplayDedupe = {};
+var subscriberOperationReplayOrder = [];
 var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
+var commandEventAwaitingInitialSnapshot = false;
+var commandEventPollWonInitialHydration = false;
 var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var logBox = document.getElementById("log");
@@ -9606,6 +10974,32 @@ var MICROMACHINE_ASYNC_PENDING_TIMEOUT_MS = 120000;
 var MICROMACHINE_STATUS_POLL_TIMEOUT_MS = 12000;
 var OPERATION_PENDING_RECORD_TIMEOUT_MS = 120000;
 var OPERATION_RECORD_MAXIMUM = 24;
+var TACTICAL_RADIO_MAX_QUEUE = 8;
+var TACTICAL_RADIO_MAX_CAPTION_HISTORY = 20;
+var TACTICAL_RADIO_MAX_SPEECH_CHARS = 180;
+var TACTICAL_RADIO_MAX_PLAN_OPERATIONS = 3;
+var TACTICAL_RADIO_MAX_PLAN_IDENTITIES = 256;
+var TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER = 256;
+var SUBSCRIBER_OPERATION_REPLAY_DEDUPE_MAXIMUM = 512;
+var VOICE_FINALIZATION_GRACE_MS = 350;
+var TACTICAL_RADIO_PRIORITY_INTERVAL_MS = {
+  0: 0,
+  1: 1200,
+  2: 3500,
+  3: 0
+};
+var TACTICAL_RADIO_DEDUPE_TTL_MS = {
+  0: 10000,
+  1: 20000,
+  2: 30000,
+  3: 15000
+};
+var TACTICAL_RADIO_REPLAY_MAX_AGE_MS = {
+  0: 8000,
+  1: 15000,
+  2: 12000,
+  3: 15000
+};
 var trimmedChatEvents = 0;
 var recentEvents = [];
 var archivedChatEvents = [];
@@ -9640,6 +11034,7 @@ var compactedContext = {
 var pendingCommandSeq = 0;
 var pendingNodes = {};
 var pendingAggregateId = "pending-aggregate";
+var pendingAggregateNode = null;
 var latestMicroMachinePlanText = "";
 var operationRecords = {};
 var operationRecordOrder = [];
@@ -9668,6 +11063,33 @@ var latestState = null;
 var briefingAdviceToggleEnabled = false;
 var recognition = null;
 var isRecording = false;
+var voiceSessionSeq = 0;
+var voiceRecognitionRequestSeq = 0;
+var pendingVoiceRecognitionRequest = null;
+var activeVoiceSession = null;
+var voiceSessionsByPendingId = {};
+var tacticalRadio = {
+  muted: false,
+  supported: Boolean(
+    window.speechSynthesis &&
+    typeof window.SpeechSynthesisUtterance === "function"
+  ),
+  speaking: false,
+  current: null,
+  queue: [],
+  captions: [],
+  dedupe: {},
+  planAnnouncements: {},
+  planAnnouncementOrder: [],
+  frameHighWater: {},
+  timelineHighWater: {},
+  operationHighWaterOrder: [],
+  scopeId: "",
+  sessionEpoch: "",
+  speechToken: 0,
+  timerId: null,
+  lastSpokenAt: { 0: 0, 1: 0, 2: 0 }
+};
 var liveGuiUrl = "";
 var COMMAND_MODE_MICROMACHINE = "__COMMAND_MODE_MICROMACHINE__";
 var COMMAND_MODE_LEGACY_COMMANDER = "__COMMAND_MODE_LEGACY_COMMANDER__";
@@ -9835,8 +11257,35 @@ var I18N = {
     assistantWaiting: "LLM 응답을 기다리는 중",
     assistantPendingCount: "대기 중인 응답 {count}개",
     voiceListening: "녹음중",
+    voiceFinalizing: "음성 확정 중",
+    voiceTranscriptUnavailable: "음성 transcript를 사용할 수 없습니다.",
+    voiceInputLabel: "음성 입력",
+    voiceStopLabel: "녹음 중지",
     voiceUnsupported: "이 브라우저는 음성 인식을 지원하지 않습니다.",
     voiceNoResult: "음성이 인식되지 않았습니다.",
+    tacticalRadioTitle: "전술 무전",
+    tacticalRadioCaptionsLabel: "전술 무전 자막",
+    tacticalRadioReady: "음성 준비 · 자막은 항상 표시",
+    tacticalRadioSpeaking: "전술 무전 재생 중 · 자막 활성",
+    tacticalRadioMuted: "음소거됨 · 자막은 계속 활성",
+    tacticalRadioUnavailable: "이 브라우저는 음성 출력을 지원하지 않음 · 자막 활성",
+    tacticalRadioMute: "음소거",
+    tacticalRadioUnmute: "음성 켜기",
+    tacticalPlanConfirmed: "계획 확인",
+    tacticalOperationIdentity: "작전",
+    tacticalForceAssigned: "병력 배정",
+    tacticalForcePartiallyAssigned: "부분 편성",
+    tacticalMoving: "이동 시작",
+    tacticalEngaged: "교전 시작",
+    tacticalTargetReached: "목표 도달",
+    tacticalCompleted: "작전 완료",
+    tacticalBlocked: "작전 차단",
+    tacticalRouteUnavailable: "경로 불가",
+    tacticalEmergencyRetreat: "긴급 후퇴 시작",
+    tacticalBaseAttack: "본진 공격 감지",
+    tacticalCriticalAbilityFailure: "중요 능력 사용 실패",
+    tacticalForceLoss: "핵심 병력 손실",
+    tacticalSubmittedCaption: "SC2 명령 제출 확인",
     workerUnit: "기",
     idleLabel: "유휴",
     llmTitle: "LLM 설정",
@@ -10021,8 +11470,35 @@ var I18N = {
     assistantWaiting: "Waiting for LLM response",
     assistantPendingCount: "{count} response(s) pending",
     voiceListening: "Recording",
+    voiceFinalizing: "Finalizing speech",
+    voiceTranscriptUnavailable: "Voice transcript unavailable.",
+    voiceInputLabel: "Voice input",
+    voiceStopLabel: "Stop recording",
     voiceUnsupported: "This browser does not support speech recognition.",
     voiceNoResult: "No speech was recognized.",
+    tacticalRadioTitle: "Tactical Radio",
+    tacticalRadioCaptionsLabel: "Tactical radio captions",
+    tacticalRadioReady: "Audio ready · captions always active",
+    tacticalRadioSpeaking: "Tactical radio speaking · captions active",
+    tacticalRadioMuted: "Muted · captions remain active",
+    tacticalRadioUnavailable: "Audio unavailable · captions remain active",
+    tacticalRadioMute: "Mute",
+    tacticalRadioUnmute: "Unmute",
+    tacticalPlanConfirmed: "Plan confirmed",
+    tacticalOperationIdentity: "Operation",
+    tacticalForceAssigned: "Force assigned",
+    tacticalForcePartiallyAssigned: "Force partially assigned",
+    tacticalMoving: "Movement started",
+    tacticalEngaged: "Engagement started",
+    tacticalTargetReached: "Target reached",
+    tacticalCompleted: "Operation completed",
+    tacticalBlocked: "Operation blocked",
+    tacticalRouteUnavailable: "Route unavailable",
+    tacticalEmergencyRetreat: "Emergency retreat started",
+    tacticalBaseAttack: "Base under attack",
+    tacticalCriticalAbilityFailure: "Critical ability failed",
+    tacticalForceLoss: "Critical force loss",
+    tacticalSubmittedCaption: "SC2 command submission confirmed",
     workerUnit: "",
     idleLabel: "idle",
     llmTitle: "LLM Settings",
@@ -10207,8 +11683,35 @@ var I18N = {
     assistantWaiting: "正在等待 LLM 响应",
     assistantPendingCount: "等待中的响应 {count} 条",
     voiceListening: "录音中",
+    voiceFinalizing: "Finalizing speech",
+    voiceTranscriptUnavailable: "Voice transcript unavailable.",
+    voiceInputLabel: "语音输入",
+    voiceStopLabel: "停止录音",
     voiceUnsupported: "此浏览器不支持语音识别。",
     voiceNoResult: "未识别到语音。",
+    tacticalRadioTitle: "Tactical Radio",
+    tacticalRadioCaptionsLabel: "Tactical radio captions",
+    tacticalRadioReady: "Audio ready · captions always active",
+    tacticalRadioSpeaking: "Tactical radio speaking · captions active",
+    tacticalRadioMuted: "Muted · captions remain active",
+    tacticalRadioUnavailable: "Audio unavailable · captions remain active",
+    tacticalRadioMute: "Mute",
+    tacticalRadioUnmute: "Unmute",
+    tacticalPlanConfirmed: "Plan confirmed",
+    tacticalOperationIdentity: "Operation",
+    tacticalForceAssigned: "Force assigned",
+    tacticalForcePartiallyAssigned: "Force partially assigned",
+    tacticalMoving: "Movement started",
+    tacticalEngaged: "Engagement started",
+    tacticalTargetReached: "Target reached",
+    tacticalCompleted: "Operation completed",
+    tacticalBlocked: "Operation blocked",
+    tacticalRouteUnavailable: "Route unavailable",
+    tacticalEmergencyRetreat: "Emergency retreat started",
+    tacticalBaseAttack: "Base under attack",
+    tacticalCriticalAbilityFailure: "Critical ability failed",
+    tacticalForceLoss: "Critical force loss",
+    tacticalSubmittedCaption: "SC2 command submission confirmed",
     workerUnit: "",
     idleLabel: "空闲",
     llmTitle: "LLM 设置",
@@ -10359,6 +11862,18 @@ function applyLanguage(lang) {
   Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (node) {
     node.textContent = t(node.getAttribute("data-i18n"));
   });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-aria-label]"), function (node) {
+    node.setAttribute(
+      "aria-label",
+      t(node.getAttribute("data-i18n-aria-label"))
+    );
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-title]"), function (node) {
+    node.setAttribute(
+      "title",
+      t(node.getAttribute("data-i18n-title"))
+    );
+  });
   Array.prototype.forEach.call(document.querySelectorAll("[data-lang-button]"), function (button) {
     button.classList.toggle("active", button.getAttribute("data-lang-button") === currentLang);
   });
@@ -10368,6 +11883,18 @@ function applyLanguage(lang) {
   refreshPendingLabels();
   updateAssistantPendingState();
   renderChatTrimNote();
+  renderTacticalRadioState();
+  renderTacticalRadioCaptions();
+  setVoiceButtonRecordingState(isRecording);
+  if (
+    activeVoiceSession &&
+    (
+      activeVoiceSession.state === "listening" ||
+      activeVoiceSession.state === "finalizing"
+    )
+  ) {
+    renderVoiceSession(activeVoiceSession);
+  }
   if (latestState) { renderStrategyBriefing(latestState); }
   if (activeCommandConsoleRecord.data) {
     renderActiveCommandConsole(activeCommandConsoleRecord.data, true);
@@ -10495,20 +12022,64 @@ function renderArchivedChatDetails(note) {
 function oldestTrimCandidate() {
   var entries = logBox.querySelectorAll(".log-entry");
   for (var i = 0; i < entries.length; i += 1) {
-    if (entries[i].id !== "voice-recording-entry") {
+    var voiceSession = voiceSessionForNode(entries[i]);
+    if (
+      entries[i] !== pendingAggregateNode &&
+      !(
+        voiceSession &&
+        voiceSession.submitted !== true &&
+        (
+          voiceSession.state === "listening" ||
+          voiceSession.state === "finalizing"
+        )
+      )
+    ) {
       return entries[i];
     }
   }
   return null;
 }
 
+function retireVoiceSessionForTrim(entry) {
+  var session = voiceSessionForNode(entry);
+  if (!session) { return false; }
+  clearVoiceFinalizationTimer(session);
+  var retiredPendingId = String(session.pendingId || "");
+  if (retiredPendingId) {
+    removePendingById(retiredPendingId, true);
+  }
+  if (
+    session.pendingId &&
+    voiceSessionsByPendingId[session.pendingId] === session
+  ) {
+    delete voiceSessionsByPendingId[session.pendingId];
+  }
+  if (activeVoiceSession === session) {
+    activeVoiceSession = null;
+  }
+  session.state = session.pendingId ? "retired" : session.state;
+  session.node = null;
+  return Boolean(retiredPendingId);
+}
+
 function trimChatLog() {
+  var retiredPendingVoice = false;
   while (logBox.querySelectorAll(".log-entry").length > MAX_CHAT_EVENTS) {
     var oldestEntry = oldestTrimCandidate();
     if (!oldestEntry) { break; }
     archiveTrimmedEntry(oldestEntry);
+    retiredPendingVoice = retireVoiceSessionForTrim(oldestEntry) ||
+      retiredPendingVoice;
     logBox.removeChild(oldestEntry);
     trimmedChatEvents += 1;
+  }
+  if (retiredPendingVoice) {
+    renderPendingAggregate("", true);
+    updateAssistantPendingState();
+    if (logBox.querySelectorAll(".log-entry").length > MAX_CHAT_EVENTS) {
+      trimChatLog();
+      return;
+    }
   }
   renderChatTrimNote();
 }
@@ -10544,12 +12115,20 @@ function renderStartupGuide() {
 }
 
 function appendLog(ev) {
+  var matchedVoiceSession = pendingVoiceSessionForHistoryEvent(ev);
   if (ev && typeof ev.seq === "number") {
     recentEvents.push(ev);
     compactRecentEventsIfNeeded();
-    if (!removePendingForCommand(ev.command_text || "")) {
-      removeOldestPendingCommand();
-    }
+    removePendingForHistoryEvent(ev);
+  }
+  if (matchedVoiceSession) {
+    renderVoiceSessionTerminal(
+      matchedVoiceSession,
+      String(ev.status || "clarification"),
+      readableCommanderNarration(ev.narration || "")
+    );
+    if (latestState) { renderStrategyBriefing(latestState); }
+    return;
   }
   var entry = document.createElement("div");
   entry.className = "log-entry";
@@ -10624,12 +12203,21 @@ function compactRecentEventsIfNeeded() {
   });
 }
 
-function appendPendingCommand(text) {
+function appendPendingCommand(text, voiceSession) {
   pendingCommandSeq += 1;
   var pendingId = "pending-" + pendingCommandSeq;
   if (!pendingNodes[text]) { pendingNodes[text] = []; }
   pendingNodes[text].push(pendingId);
-  renderPendingAggregate(text);
+  if (voiceSession) {
+    voiceSession.pendingId = pendingId;
+    voiceSession.state = "pending";
+    voiceSessionsByPendingId[pendingId] = voiceSession;
+  }
+  if (voiceSession) {
+    renderVoiceSessionPending(voiceSession, text);
+  } else {
+    renderPendingAggregate(text);
+  }
   updateAssistantPendingState();
   logBox.scrollTop = logBox.scrollHeight;
   return pendingId;
@@ -10639,16 +12227,22 @@ function pendingCommandTexts() {
   var texts = [];
   Object.keys(pendingNodes).forEach(function (key) {
     var ids = pendingNodes[key] || [];
-    ids.forEach(function () { texts.push(key); });
+    ids.forEach(function (pendingId) {
+      if (!voiceSessionForPendingId(pendingId)) {
+        texts.push(key);
+      }
+    });
   });
   return texts;
 }
 
-function renderPendingAggregate(latestText) {
-  var entry = document.getElementById(pendingAggregateId);
+function renderPendingAggregate(latestText, skipTrim) {
   var texts = pendingCommandTexts();
+  var entry = pendingAggregateNode ||
+    document.getElementById(pendingAggregateId);
   if (!texts.length) {
     if (entry) { entry.remove(); }
+    pendingAggregateNode = null;
     return;
   }
   var displayText = latestText || texts[texts.length - 1] || "";
@@ -10658,6 +12252,9 @@ function renderPendingAggregate(latestText) {
     entry.id = pendingAggregateId;
     logBox.appendChild(entry);
   }
+  pendingAggregateNode = entry;
+  entry.className = "log-entry pending-entry";
+  entry.id = pendingAggregateId;
   entry.textContent = "";
 
   var userMessage = document.createElement("div");
@@ -10697,51 +12294,1433 @@ function renderPendingAggregate(latestText) {
   }
   botMessage.appendChild(typingIndicator);
   entry.appendChild(botMessage);
-  trimChatLog();
+  if (skipTrim !== true) { trimChatLog(); }
 }
 
 function clearPendingMicroMachinePlan() {
+  var pendingVoiceSessions = Object.keys(
+    voiceSessionsByPendingId
+  ).map(function(pendingId) {
+    return voiceSessionsByPendingId[pendingId];
+  }).filter(Boolean);
+  if (
+    activeVoiceSession &&
+    (
+      activeVoiceSession.state === "listening" ||
+      activeVoiceSession.state === "finalizing" ||
+      activeVoiceSession.state === "pending"
+    ) &&
+    pendingVoiceSessions.indexOf(activeVoiceSession) < 0
+  ) {
+    pendingVoiceSessions.push(activeVoiceSession);
+  }
+  pendingVoiceSessions.forEach(function(session) {
+    if (session.pendingId) {
+      removePendingById(session.pendingId);
+    }
+    invalidateVoiceSession(
+      session,
+      commandUiText(
+        "MicroMachine 전장 링크가 전환되어 이전 음성 명령 추적을 종료했습니다.",
+        "The MicroMachine battlefield link changed, so the previous voice order is no longer tracked.",
+        "MicroMachine battlefield link changed; the previous voice order is no longer tracked."
+      )
+    );
+  });
+  if (isRecording) {
+    isRecording = false;
+    setVoiceButtonRecordingState(false);
+    if (recognition) {
+      if (typeof recognition.abort === "function") {
+        recognition.abort();
+      } else if (typeof recognition.stop === "function") {
+        recognition.stop();
+      }
+    }
+  }
   Object.keys(pendingNodes).forEach(function (key) {
     delete pendingNodes[key];
   });
+  voiceSessionsByPendingId = {};
   renderPendingAggregate();
   updateAssistantPendingState();
 }
 
-function appendMicroMachinePendingPlan(text) {
+function appendMicroMachinePendingPlan(text, voiceSession) {
   latestMicroMachinePlanText = text;
-  var pendingId = appendPendingCommand(text);
+  var pendingId = appendPendingCommand(text, voiceSession);
   beginActiveCommandConsole(text, pendingId);
   return pendingId;
 }
 
 function appendVoiceRecordingBubble() {
-  removeVoiceRecordingBubble();
+  voiceSessionSeq += 1;
   var entry = document.createElement("div");
-  entry.className = "log-entry";
-  entry.id = "voice-recording-entry";
+  entry.className = "log-entry voice-session-entry";
+  entry.id = "voice-session-" + voiceSessionSeq;
+  entry.setAttribute("data-voice-session-id", String(voiceSessionSeq));
+  var session = {
+    sessionId: voiceSessionSeq,
+    state: "listening",
+    segments: [],
+    finalText: "",
+    interimText: "",
+    submitted: false,
+    pendingId: "",
+    error: false,
+    invalidated: false,
+    contextGeneration: microMachineBlackboardContextGeneration,
+    finalizationTimerId: null,
+    node: entry
+  };
+  activeVoiceSession = session;
+  renderVoiceSession(session);
+  logBox.appendChild(entry);
+  trimChatLog();
+  logBox.scrollTop = logBox.scrollHeight;
+  return session;
+}
+
+function renderVoiceSession(session) {
+  if (!session || !session.node) { return; }
+  var entry = session.node;
+  entry.textContent = "";
   var userMessage = document.createElement("div");
   userMessage.className = "message message-user";
+  userMessage.setAttribute(
+    "data-full-text",
+    session.finalText || session.interimText || ""
+  );
   var meta = document.createElement("span");
   meta.className = "message-meta";
   meta.textContent = t("userLabel");
   userMessage.appendChild(meta);
-  userMessage.appendChild(document.createTextNode(t("voiceListening")));
-  var wave = document.createElement("span");
-  wave.className = "voice-wave";
-  for (var i = 0; i < 5; i += 1) {
-    wave.appendChild(document.createElement("span"));
+  var stateLabel = document.createElement("span");
+  stateLabel.className = "voice-session-state";
+  stateLabel.textContent = session.state === "finalizing"
+    ? t("voiceFinalizing")
+    : t("voiceListening");
+  userMessage.appendChild(stateLabel);
+  if (session.state === "listening") {
+    var wave = document.createElement("span");
+    wave.className = "voice-wave";
+    wave.setAttribute("aria-hidden", "true");
+    for (var i = 0; i < 5; i += 1) {
+      wave.appendChild(document.createElement("span"));
+    }
+    userMessage.appendChild(wave);
   }
-  userMessage.appendChild(wave);
+  var transcriptText = String(
+    session.finalText ||
+    session.interimText ||
+    ""
+  ).trim();
+  if (transcriptText) {
+    var transcript = document.createElement("span");
+    transcript.className = "voice-transcript" +
+      (session.finalText ? "" : " voice-transcript-interim");
+    transcript.textContent = transcriptText;
+    userMessage.appendChild(transcript);
+  }
   entry.appendChild(userMessage);
-  logBox.appendChild(entry);
+}
+
+function renderVoiceSessionPending(session, text) {
+  if (!session || !session.node) { return; }
+  session.state = "pending";
+  var entry = session.node;
+  entry.className = "log-entry pending-entry voice-session-entry";
+  entry.textContent = "";
+
+  var userMessage = document.createElement("div");
+  userMessage.className = "message message-user";
+  userMessage.setAttribute("data-full-text", String(text || ""));
+  var userMeta = document.createElement("span");
+  userMeta.className = "message-meta";
+  userMeta.textContent = t("userLabel");
+  userMessage.appendChild(userMeta);
+  appendCompactText(userMessage, text, "command-text");
+  var voiceState = document.createElement("span");
+  voiceState.className = "voice-session-state";
+  voiceState.textContent = t("voiceFinalizing");
+  userMessage.appendChild(voiceState);
+  entry.appendChild(userMessage);
+
+  var botMessage = document.createElement("div");
+  botMessage.className = "message message-bot message-pending";
+  botMessage.setAttribute("data-full-text", t("assistantThinking"));
+  botMessage.setAttribute("data-status", "pending");
+  botMessage.setAttribute("aria-label", t("assistantWaiting"));
+  var botMeta = document.createElement("span");
+  botMeta.className = "message-meta";
+  botMeta.textContent = t("commanderLabel");
+  botMessage.appendChild(botMeta);
+  var narration = document.createElement("span");
+  narration.className = "narration";
+  narration.textContent = t("assistantThinking");
+  botMessage.appendChild(narration);
+  var typingIndicator = document.createElement("span");
+  typingIndicator.className = "typing-indicator";
+  typingIndicator.setAttribute("aria-hidden", "true");
+  for (var index = 0; index < 3; index += 1) {
+    typingIndicator.appendChild(document.createElement("span"));
+  }
+  botMessage.appendChild(typingIndicator);
+  entry.appendChild(botMessage);
+  trimChatLog();
+}
+
+function clearVoiceFinalizationTimer(session) {
+  if (
+    session &&
+    session.finalizationTimerId !== null &&
+    window.clearTimeout
+  ) {
+    window.clearTimeout(session.finalizationTimerId);
+  }
+  if (session) { session.finalizationTimerId = null; }
+}
+
+function voiceSessionContextIsCurrent(session) {
+  return Boolean(
+    session &&
+    session.invalidated !== true &&
+    session.contextGeneration === microMachineBlackboardContextGeneration
+  );
+}
+
+function setVoiceButtonRecordingState(recording) {
+  var voiceButton = document.getElementById("voice-button");
+  if (!voiceButton) { return; }
+  var active = recording === true;
+  voiceButton.classList.toggle("recording", active);
+  voiceButton.setAttribute("aria-pressed", active ? "true" : "false");
+  voiceButton.setAttribute(
+    "aria-label",
+    t(active ? "voiceStopLabel" : "voiceInputLabel")
+  );
+  voiceButton.setAttribute(
+    "title",
+    t(active ? "voiceStopLabel" : "voiceInputLabel")
+  );
+}
+
+function removeVoiceRecordingBubble() {
+  if (activeVoiceSession && activeVoiceSession.node) {
+    clearVoiceFinalizationTimer(activeVoiceSession);
+    activeVoiceSession.node.remove();
+  }
+  activeVoiceSession = null;
+}
+
+function voiceSessionForNode(node) {
+  if (!node) { return null; }
+  if (activeVoiceSession && activeVoiceSession.node === node) {
+    return activeVoiceSession;
+  }
+  var match = null;
+  Object.keys(voiceSessionsByPendingId).some(function(pendingId) {
+    var session = voiceSessionsByPendingId[pendingId];
+    if (session && session.node === node) {
+      match = session;
+      return true;
+    }
+    return false;
+  });
+  return match;
+}
+
+function voiceSessionForPendingId(pendingId) {
+  return pendingId ? voiceSessionsByPendingId[pendingId] || null : null;
+}
+
+function pendingVoiceSessionForCommand(text) {
+  var pendingIds = pendingNodes[text] || [];
+  for (var index = 0; index < pendingIds.length; index += 1) {
+    var session = voiceSessionForPendingId(pendingIds[index]);
+    if (session) { return session; }
+  }
+  return null;
+}
+
+function historyEventRequestId(ev) {
+  var detail = ev && ev.detail || {};
+  return String(
+    ev && ev.request_id ||
+    detail.web_request_id ||
+    ""
+  ).trim();
+}
+
+function uniquePendingIdForCommand(text) {
+  var pendingIds = pendingNodes[text] || [];
+  return pendingIds.length === 1 ? pendingIds[0] : "";
+}
+
+function pendingVoiceSessionForHistoryEvent(ev) {
+  if (!ev || typeof ev !== "object") { return null; }
+  var requestId = historyEventRequestId(ev);
+  if (requestId) {
+    return voiceSessionForPendingId(requestId);
+  }
+  var pendingId = uniquePendingIdForCommand(
+    String(ev.command_text || "")
+  );
+  return pendingId ? voiceSessionForPendingId(pendingId) : null;
+}
+
+function pendingVoiceSessionForPendingTexts() {
+  var match = null;
+  Object.keys(pendingNodes).some(function(text) {
+    match = pendingVoiceSessionForCommand(text);
+    return Boolean(match);
+  });
+  return match;
+}
+
+function releaseVoicePendingSession(session) {
+  if (!session) { return; }
+  if (session.pendingId) {
+    delete voiceSessionsByPendingId[session.pendingId];
+  }
+}
+
+function renderVoiceSessionTerminal(session, status, narration) {
+  if (!session || !session.node) { return; }
+  clearVoiceFinalizationTimer(session);
+  session.state = status === "blocked" ? "failed" : "completed";
+  releaseVoicePendingSession(session);
+  var entry = session.node;
+  entry.className = "log-entry voice-session-entry";
+  entry.textContent = "";
+  var userMessage = document.createElement("div");
+  userMessage.className = "message message-user";
+  userMessage.setAttribute("data-full-text", session.finalText || "");
+  var userMeta = document.createElement("span");
+  userMeta.className = "message-meta";
+  userMeta.textContent = t("userLabel");
+  userMessage.appendChild(userMeta);
+  appendCompactText(
+    userMessage,
+    session.finalText || session.interimText || t("voiceTranscriptUnavailable"),
+    "command-text"
+  );
+  entry.appendChild(userMessage);
+  var botMessage = document.createElement("div");
+  botMessage.className = "message message-bot";
+  botMessage.setAttribute("data-full-text", narration);
+  botMessage.setAttribute("data-status", status || "clarification");
+  var botMeta = document.createElement("span");
+  botMeta.className = "message-meta";
+  botMeta.textContent = t("commanderLabel");
+  botMessage.appendChild(botMeta);
+  appendCompactText(botMessage, narration, "narration");
+  entry.appendChild(botMessage);
   trimChatLog();
   logBox.scrollTop = logBox.scrollHeight;
 }
 
-function removeVoiceRecordingBubble() {
-  var existing = document.getElementById("voice-recording-entry");
-  if (existing) { existing.remove(); }
+function failVoiceSession(session, message) {
+  if (!session || (session.submitted && session.pendingId)) { return; }
+  clearVoiceFinalizationTimer(session);
+  session.error = true;
+  session.state = "failed";
+  renderVoiceSessionTerminal(
+    session,
+    "blocked",
+    message || t("voiceTranscriptUnavailable")
+  );
+}
+
+function invalidateVoiceSession(session, message) {
+  if (!session || session.invalidated) { return; }
+  clearVoiceFinalizationTimer(session);
+  session.invalidated = true;
+  session.error = true;
+  if (session.pendingId) {
+    removePendingById(session.pendingId);
+  }
+  renderVoiceSessionTerminal(
+    session,
+    "blocked",
+    message || t("voiceTranscriptUnavailable")
+  );
+  if (activeVoiceSession === session) {
+    activeVoiceSession = null;
+  }
+}
+
+function tacticalRadioNow() {
+  return Date.now();
+}
+
+function tacticalRadioUiState() {
+  if (!tacticalRadio.supported) { return "unavailable"; }
+  if (tacticalRadio.muted) { return "muted"; }
+  if (tacticalRadio.speaking) { return "speaking"; }
+  return "ready";
+}
+
+function renderTacticalRadioState() {
+  var statusNode = document.getElementById("tactical-radio-status");
+  var muteButton = document.getElementById("tactical-radio-mute");
+  var state = tacticalRadioUiState();
+  if (statusNode) {
+    statusNode.className = "tactical-radio-status is-" + state;
+    statusNode.textContent = t(
+      state === "speaking"
+        ? "tacticalRadioSpeaking"
+        : (
+          state === "muted"
+            ? "tacticalRadioMuted"
+            : (
+              state === "unavailable"
+                ? "tacticalRadioUnavailable"
+                : "tacticalRadioReady"
+            )
+        )
+    );
+  }
+  if (muteButton) {
+    muteButton.setAttribute("aria-pressed", tacticalRadio.muted ? "true" : "false");
+    muteButton.textContent = t(
+      tacticalRadio.muted ? "tacticalRadioUnmute" : "tacticalRadioMute"
+    );
+  }
+}
+
+function renderTacticalRadioCaptions() {
+  var list = document.getElementById("tactical-radio-captions");
+  if (!list) { return; }
+  list.textContent = "";
+  tacticalRadio.captions.forEach(function(item) {
+    var row = document.createElement("li");
+    row.className = "tactical-radio-caption";
+    var priority = document.createElement("span");
+    priority.className = "tactical-radio-priority";
+    priority.textContent = "P" + String(item.priority);
+    var text = document.createElement("span");
+    text.className = "tactical-radio-caption-text";
+    text.textContent = item.caption;
+    row.appendChild(priority);
+    row.appendChild(text);
+    list.appendChild(row);
+  });
+  list.scrollTop = list.scrollHeight;
+}
+
+function appendTacticalRadioCaption(callout) {
+  tacticalRadio.captions.push({
+    priority: callout.priority,
+    caption: callout.caption,
+    createdAt: callout.createdAt
+  });
+  tacticalRadio.captions = tacticalRadio.captions.slice(
+    -TACTICAL_RADIO_MAX_CAPTION_HISTORY
+  );
+  renderTacticalRadioCaptions();
+}
+
+function clearTacticalRadioTimer() {
+  if (tacticalRadio.timerId !== null && window.clearTimeout) {
+    window.clearTimeout(tacticalRadio.timerId);
+  }
+  tacticalRadio.timerId = null;
+}
+
+function interruptTacticalRadioSpeech() {
+  clearTacticalRadioTimer();
+  tacticalRadio.speechToken += 1;
+  tacticalRadio.speaking = false;
+  tacticalRadio.current = null;
+  if (
+    tacticalRadio.supported &&
+    window.speechSynthesis &&
+    typeof window.speechSynthesis.cancel === "function"
+  ) {
+    window.speechSynthesis.cancel();
+  }
+  renderTacticalRadioState();
+}
+
+function cancelTacticalRadioSpeechAndQueue() {
+  tacticalRadio.queue = [];
+  interruptTacticalRadioSpeech();
+}
+
+function resetTacticalRadio(scopeId, sessionEpoch) {
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.scopeId = String(scopeId || "");
+  tacticalRadio.sessionEpoch = String(sessionEpoch || "");
+  tacticalRadio.dedupe = {};
+  tacticalRadio.planAnnouncements = {};
+  tacticalRadio.planAnnouncementOrder = [];
+  tacticalRadio.frameHighWater = {};
+  tacticalRadio.timelineHighWater = {};
+  tacticalRadio.operationHighWaterOrder = [];
+  tacticalRadio.captions = [];
+  tacticalRadio.lastSpokenAt = { 0: 0, 1: 0, 2: 0 };
+  renderTacticalRadioCaptions();
+  renderTacticalRadioState();
+}
+
+function ensureTacticalRadioScope(scopeId, sessionEpoch) {
+  var normalized = String(scopeId || "");
+  var normalizedEpoch = String(sessionEpoch || "");
+  if (!normalized) { return true; }
+  if (!tacticalRadio.scopeId) {
+    tacticalRadio.scopeId = normalized;
+    tacticalRadio.sessionEpoch = normalizedEpoch;
+    return true;
+  }
+  if (
+    tacticalRadio.scopeId !== normalized ||
+    (
+      normalizedEpoch &&
+      tacticalRadio.sessionEpoch &&
+      tacticalRadio.sessionEpoch !== normalizedEpoch
+    )
+  ) {
+    resetTacticalRadio(normalized, normalizedEpoch);
+  } else if (!tacticalRadio.sessionEpoch && normalizedEpoch) {
+    tacticalRadio.sessionEpoch = normalizedEpoch;
+  }
+  return true;
+}
+
+function rememberBoundedTacticalRadioValue(
+  registry,
+  order,
+  key,
+  value,
+  maximum
+) {
+  var normalizedKey = String(key || "");
+  if (!normalizedKey) { return; }
+  var existingIndex = order.indexOf(normalizedKey);
+  if (existingIndex >= 0) { order.splice(existingIndex, 1); }
+  order.push(normalizedKey);
+  registry[normalizedKey] = value;
+  while (order.length > maximum) {
+    delete registry[order.shift()];
+  }
+}
+
+function tacticalRadioOperationKey(scopeId, sessionEpoch, operationId, generation) {
+  return [
+    String(scopeId || ""),
+    String(sessionEpoch || ""),
+    String(operationId || ""),
+    String(generation || 0)
+  ].join("|");
+}
+
+function tacticalRadioPlanAnnouncementKey(
+  scopeId,
+  sessionEpoch,
+  updateId,
+  operationId,
+  generation
+) {
+  return [
+    String(scopeId || ""),
+    String(sessionEpoch || ""),
+    String(updateId || ""),
+    String(operationId || ""),
+    String(generation || 0)
+  ].join("|");
+}
+
+function rememberTacticalRadioHighWater(key, frame, timelineSeq) {
+  rememberBoundedTacticalRadioValue(
+    tacticalRadio.frameHighWater,
+    tacticalRadio.operationHighWaterOrder,
+    key,
+    Math.max(Number(tacticalRadio.frameHighWater[key] || -1), frame),
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  tacticalRadio.timelineHighWater[key] = Math.max(
+    Number(tacticalRadio.timelineHighWater[key] || 0),
+    timelineSeq
+  );
+  Object.keys(tacticalRadio.timelineHighWater).forEach(function(candidate) {
+    if (tacticalRadio.operationHighWaterOrder.indexOf(candidate) < 0) {
+      delete tacticalRadio.timelineHighWater[candidate];
+    }
+  });
+}
+
+function tacticalRadioDedupeExpired(now) {
+  Object.keys(tacticalRadio.dedupe).forEach(function(key) {
+    if (Number(tacticalRadio.dedupe[key] || 0) <= now) {
+      delete tacticalRadio.dedupe[key];
+    }
+  });
+}
+
+function tacticalRadioSpeechText(text) {
+  var normalized = String(text || "").replace(/\\s+/g, " ").trim();
+  if (normalized.length <= TACTICAL_RADIO_MAX_SPEECH_CHARS) {
+    return normalized;
+  }
+  return normalized.slice(0, TACTICAL_RADIO_MAX_SPEECH_CHARS - 1).trim() + "…";
+}
+
+function tacticalRadioQueueSort(left, right) {
+  if (left.priority !== right.priority) {
+    return left.priority - right.priority;
+  }
+  return left.createdAt - right.createdAt;
+}
+
+function compactTacticalRadioQueue(callout) {
+  if (
+    callout.priority !== 2 ||
+    !callout.operationKey ||
+    callout.progressionRank < 0
+  ) {
+    return;
+  }
+  tacticalRadio.queue = tacticalRadio.queue.filter(function(item) {
+    return !(
+      item.priority === 2 &&
+      item.operationKey === callout.operationKey &&
+      item.progressionRank >= 0 &&
+      item.progressionRank <= callout.progressionRank
+    );
+  });
+}
+
+function speakNextTacticalRadioCallout() {
+  clearTacticalRadioTimer();
+  if (
+    tacticalRadio.muted ||
+    !tacticalRadio.supported ||
+    tacticalRadio.speaking ||
+    !tacticalRadio.queue.length
+  ) {
+    renderTacticalRadioState();
+    return;
+  }
+  tacticalRadio.queue.sort(tacticalRadioQueueSort);
+  var callout = tacticalRadio.queue.shift();
+  var now = tacticalRadioNow();
+  var lastSpokenAt = Number(
+    tacticalRadio.lastSpokenAt[callout.priority] || 0
+  );
+  var interval = Number(
+    TACTICAL_RADIO_PRIORITY_INTERVAL_MS[callout.priority] || 0
+  );
+  var delay = Math.max(0, interval - Math.max(0, now - lastSpokenAt));
+  if (delay > 0 && window.setTimeout) {
+    tacticalRadio.queue.unshift(callout);
+    tacticalRadio.timerId = window.setTimeout(
+      speakNextTacticalRadioCallout,
+      delay
+    );
+    return;
+  }
+  var utterance = new window.SpeechSynthesisUtterance(
+    tacticalRadioSpeechText(callout.speech)
+  );
+  utterance.lang = currentLang === "en"
+    ? "en-US"
+    : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+  var speechToken = tacticalRadio.speechToken + 1;
+  tacticalRadio.speechToken = speechToken;
+  tacticalRadio.current = callout;
+  tacticalRadio.speaking = true;
+  tacticalRadio.lastSpokenAt[callout.priority] = now;
+  function finishSpeech() {
+    if (tacticalRadio.speechToken !== speechToken) { return; }
+    tacticalRadio.speaking = false;
+    tacticalRadio.current = null;
+    renderTacticalRadioState();
+    speakNextTacticalRadioCallout();
+  }
+  utterance.onend = finishSpeech;
+  utterance.onerror = finishSpeech;
+  renderTacticalRadioState();
+  window.speechSynthesis.speak(utterance);
+}
+
+function queueTacticalRadioCallout(callout) {
+  if (!callout || !callout.caption) { return false; }
+  var now = tacticalRadioNow();
+  callout.priority = Math.max(0, Math.min(3, Number(callout.priority || 0)));
+  callout.createdAt = Number(callout.createdAt || now);
+  callout.progressionRank = Number.isFinite(callout.progressionRank)
+    ? callout.progressionRank
+    : -1;
+  var maximumAge = Number(
+    TACTICAL_RADIO_REPLAY_MAX_AGE_MS[callout.priority] || 0
+  );
+  if (
+    callout.fromReplay === true &&
+    maximumAge > 0 &&
+    now - callout.createdAt > maximumAge
+  ) {
+    return false;
+  }
+  tacticalRadioDedupeExpired(now);
+  var dedupeKey = String(
+    callout.dedupeKey ||
+    [callout.priority, callout.caption].join("|")
+  );
+  if (Number(tacticalRadio.dedupe[dedupeKey] || 0) > now) {
+    return false;
+  }
+  tacticalRadio.dedupe[dedupeKey] = now +
+    Number(TACTICAL_RADIO_DEDUPE_TTL_MS[callout.priority] || 0);
+  appendTacticalRadioCaption(callout);
+  if (
+    callout.priority === 3 ||
+    tacticalRadio.muted ||
+    !tacticalRadio.supported ||
+    !callout.speech
+  ) {
+    renderTacticalRadioState();
+    return true;
+  }
+  compactTacticalRadioQueue(callout);
+  if (callout.priority === 0) {
+    tacticalRadio.queue = tacticalRadio.queue.filter(function(item) {
+      return item.priority < 2;
+    });
+    if (
+      tacticalRadio.current &&
+      tacticalRadio.current.priority >= 1
+    ) {
+      interruptTacticalRadioSpeech();
+    }
+  } else if (callout.priority === 1) {
+    if (
+      tacticalRadio.current &&
+      tacticalRadio.current.priority === 2
+    ) {
+      interruptTacticalRadioSpeech();
+    }
+  }
+  tacticalRadio.queue.push(callout);
+  tacticalRadio.queue.sort(tacticalRadioQueueSort);
+  if (tacticalRadio.queue.length > TACTICAL_RADIO_MAX_QUEUE) {
+    tacticalRadio.queue = tacticalRadio.queue.slice(
+      0,
+      TACTICAL_RADIO_MAX_QUEUE
+    );
+  }
+  speakNextTacticalRadioCallout();
+  return true;
+}
+
+function tacticalRadioSetMuted(muted) {
+  tacticalRadio.muted = Boolean(muted);
+  if (tacticalRadio.muted) {
+    cancelTacticalRadioSpeechAndQueue();
+  }
+  renderTacticalRadioState();
+}
+
+function structuredOperationVector(operation, parentData) {
+  var update = operation && operation.update || {};
+  var vector = update.vector && typeof update.vector === "object"
+    ? update.vector
+    : {};
+  if (Object.keys(vector).length) { return vector; }
+  var compileResult = operation && operation.compile_result ||
+    parentData && parentData.compile_result || {};
+  var rootVector = compileResult.vector &&
+    typeof compileResult.vector === "object"
+    ? compileResult.vector
+    : {};
+  var operationId = String(
+    operation && operation.operation_id ||
+    operation && operation.operationId ||
+    ""
+  );
+  var rawOperations = rootVector.operations;
+  if (Array.isArray(rawOperations)) {
+    for (var index = 0; index < rawOperations.length; index += 1) {
+      var candidate = rawOperations[index];
+      if (
+        candidate &&
+        typeof candidate === "object" &&
+        String(candidate.operation_id || "") === operationId
+      ) {
+        return candidate.vector && typeof candidate.vector === "object"
+          ? Object.assign({}, candidate, candidate.vector)
+          : candidate;
+      }
+    }
+  } else if (
+    rawOperations &&
+    typeof rawOperations === "object" &&
+    rawOperations[operationId] &&
+    typeof rawOperations[operationId] === "object"
+  ) {
+    return rawOperations[operationId];
+  }
+  return rootVector;
+}
+
+function structuredOperationUpdateId(operation) {
+  if (!operation || typeof operation !== "object") { return ""; }
+  var update = operation.update || {};
+  var compileResult = operation.compile_result || {};
+  var battlefieldOperation = operation.battlefield_operation || {};
+  var identity = battlefieldOperation.identity || {};
+  return String(
+    operation.update_id ||
+    update.update_id ||
+    compileResult.update_id ||
+    identity.update_id ||
+    ""
+  );
+}
+
+function structuredOperationsForReadback(data) {
+  if (!data || typeof data !== "object") { return []; }
+  var compileResult = data.compile_result || {};
+  var registryOperations = Array.isArray(data.operations);
+  var operations = registryOperations ? data.operations.slice() : [];
+  var rootVector = compileResult.vector || {};
+  var rootUpdateId = String(
+    data.update_id ||
+    compileResult.update_id ||
+    ""
+  );
+  if (registryOperations) {
+    operations = rootUpdateId
+      ? operations.filter(function(operation) {
+          return structuredOperationUpdateId(operation) === rootUpdateId;
+        })
+      : [];
+  }
+  if (!operations.length) {
+    var rawOperations = rootVector.operations;
+    if (Array.isArray(rawOperations)) {
+      operations = rawOperations.slice();
+    } else if (rawOperations && typeof rawOperations === "object") {
+      operations = Object.keys(rawOperations).map(function(operationId) {
+        return Object.assign(
+          { operation_id: operationId },
+          rawOperations[operationId]
+        );
+      });
+    } else if (rootVector.operation_id || data.operation_id) {
+      operations = [{
+        operation_id: rootVector.operation_id || data.operation_id,
+        operation_generation: (
+          rootVector.generation ||
+          data.operation_generation ||
+          1
+        ),
+        update: { vector: rootVector }
+      }];
+    }
+  }
+  return operations.map(function(operation) {
+    var vector = structuredOperationVector(operation, data);
+    var tacticalTask = vector.tactical_task || {};
+    var route = vector.route_intent || {};
+    var targetIntent = vector.target_intent || {};
+    var lifetime = vector.lifetime || {};
+    var operationId = String(
+      operation.operation_id ||
+      vector.operation_id ||
+      tacticalTask.task_id ||
+      ""
+    );
+    var generation = Number(
+      operation.operation_generation ||
+      operation.generation ||
+      vector.generation ||
+      data.operation_generation ||
+      1
+    );
+    if (!operationId || generation <= 0) { return null; }
+    var requirements = Array.isArray(vector.composition_requirements)
+      ? vector.composition_requirements
+      : [];
+    if (!requirements.length) {
+      var unitClasses = Array.isArray(tacticalTask.unit_classes)
+        ? tacticalTask.unit_classes
+        : [];
+      requirements = unitClasses.map(function(unitType) {
+        return {
+          unit_type: unitType,
+          count: Number(
+            tacticalTask.min_units ||
+            tacticalTask.max_units ||
+            1
+          )
+        };
+      });
+    }
+    return {
+      operationId: operationId,
+      generation: generation,
+      requirements: requirements,
+      task: String(
+        tacticalTask.task_type ||
+        operation.mission ||
+        vector.goal ||
+        "operation"
+      ),
+      target: String(
+        targetIntent.target_type ||
+        route.target_intent ||
+        route.location_intent ||
+        route.target ||
+        tacticalTask.location_intent ||
+        (vector.scope || {}).location_intent ||
+        "-"
+      ),
+      route: String(route.route_type || route.type || "direct"),
+      lifetime: structuredOperationLifetimeReadback(
+        lifetime,
+        vector,
+        data
+      )
+    };
+  }).filter(Boolean);
+}
+
+function structuredOperationLifetimeReadback(lifetime, vector, data) {
+  var normalizedLifetime = (
+    lifetime && typeof lifetime === "object"
+      ? lifetime
+      : {}
+  );
+  var parts = [];
+  var mode = String(
+    normalizedLifetime.mode ||
+    (
+      vector.ttl_seconds || data.ttl_seconds
+        ? "ttl=" + String(vector.ttl_seconds || data.ttl_seconds) + "s"
+        : "until_completed"
+    )
+  );
+  parts.push(mode);
+  if (
+    Array.isArray(normalizedLifetime.completion_conditions) &&
+    normalizedLifetime.completion_conditions.length
+  ) {
+    parts.push(
+      "conditions=" +
+      normalizedLifetime.completion_conditions.join(", ")
+    );
+  }
+  if (normalizedLifetime.completion_state) {
+    parts.push("state=" + String(normalizedLifetime.completion_state));
+  }
+  var reason = String(
+    normalizedLifetime.reason ||
+    normalizedLifetime.completion_reason ||
+    ""
+  );
+  if (reason) {
+    parts.push("reason=" + reason);
+  }
+  return parts.join(" · ");
+}
+
+function tacticalRequirementSummary(requirements) {
+  if (!Array.isArray(requirements) || !requirements.length) {
+    return commandUiText("편성 자동", "adaptive force", "adaptive force");
+  }
+  return requirements.map(function(requirement) {
+    var unitType = String(
+      requirement && (
+        requirement.unit_type ||
+        requirement.unit_class ||
+        requirement.family
+      ) || "unit"
+    ).replace(/^TERRAN_/, "");
+    var count = Number(
+      requirement && (
+        requirement.count ||
+        requirement.min_count ||
+        requirement.min_units
+      ) || 1
+    );
+    return unitType + " ×" + count;
+  }).join(", ");
+}
+
+function tacticalPlanSessionEpoch(data, operations, scopeId, updateId) {
+  var explicitEpoch = operationPayloadSessionEpoch(data, operations);
+  if (explicitEpoch) { return explicitEpoch; }
+  var normalizedScope = String(scopeId || "");
+  var normalizedUpdate = String(updateId || "");
+  if (
+    normalizedScope &&
+    activeCommandConsoleRecord.scopeId === normalizedScope &&
+    activeCommandConsoleRecord.updateId === normalizedUpdate &&
+    activeCommandConsoleRecord.sessionEpoch
+  ) {
+    return String(activeCommandConsoleRecord.sessionEpoch);
+  }
+  return "";
+}
+
+function tacticalPlanIdentityIsAdmitted(scopeId, sessionEpoch) {
+  var normalizedScope = String(scopeId || "");
+  var normalizedEpoch = String(sessionEpoch || "");
+  var currentScope = String(
+    operationConsoleScopeId ||
+    activeCommandConsoleRecord.scopeId ||
+    ""
+  );
+  var currentEpoch = String(
+    operationConsoleSessionEpoch ||
+    activeCommandConsoleRecord.sessionEpoch ||
+    ""
+  );
+  if (
+    currentScope &&
+    normalizedScope &&
+    currentScope !== normalizedScope
+  ) {
+    return false;
+  }
+  if (
+    currentEpoch &&
+    normalizedEpoch &&
+    currentEpoch !== normalizedEpoch
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function announceAcceptedTacticalPlan(data, source) {
+  if (!data || typeof data !== "object") { return false; }
+  if (data.accepted === false || data.ok === false) { return false; }
+  var compileResult = data.compile_result || {};
+  var status = String(data.status || compileResult.status || "").toLowerCase();
+  if (
+    status &&
+    ["published", "compiled", "accepted", "pending"].indexOf(status) < 0
+  ) {
+    return false;
+  }
+  var operations = structuredOperationsForReadback(data);
+  if (!operations.length) { return false; }
+  var scopeId = String(
+    data.blackboard_scope_id ||
+    compileResult.blackboard_scope_id ||
+    ""
+  );
+  var updateId = String(
+    data.update_id ||
+    compileResult.update_id ||
+    ""
+  );
+  if (!updateId) { return false; }
+  var sessionEpoch = tacticalPlanSessionEpoch(
+    data,
+    data.operations || [],
+    scopeId,
+    updateId
+  );
+  if (scopeId && !sessionEpoch) { return false; }
+  if (!tacticalPlanIdentityIsAdmitted(scopeId, sessionEpoch)) {
+    return false;
+  }
+  ensureTacticalRadioScope(scopeId, sessionEpoch);
+  var announced = false;
+  var extraOperationCount = Math.max(
+    0,
+    operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS
+  );
+  operations.forEach(function(operation, index) {
+    var operationKey = tacticalRadioOperationKey(
+      scopeId,
+      sessionEpoch,
+      operation.operationId,
+      operation.generation
+    );
+    var announcementKey = tacticalRadioPlanAnnouncementKey(
+      scopeId,
+      sessionEpoch,
+      updateId,
+      operation.operationId,
+      operation.generation
+    );
+    if (tacticalRadio.planAnnouncements[announcementKey]) { return; }
+    var detail = t("tacticalOperationIdentity") + " " +
+      operation.operationId + "#" + operation.generation + " · " +
+      tacticalRequirementSummary(operation.requirements) + " · " +
+      operation.task + " · " + operation.target + " · " +
+      operation.route + " · " + operation.lifetime;
+    var speech = "";
+    if (index < TACTICAL_RADIO_MAX_PLAN_OPERATIONS) {
+      speech = t("tacticalPlanConfirmed") + ". " + detail;
+      if (
+        extraOperationCount > 0 &&
+        index === TACTICAL_RADIO_MAX_PLAN_OPERATIONS - 1
+      ) {
+        speech += ". " + commandUiText(
+          "추가 " + extraOperationCount + "개 작전",
+          extraOperationCount + " more operations",
+          extraOperationCount + " more operations"
+        );
+      }
+    }
+    var queued = queueTacticalRadioCallout({
+      priority: 2,
+      caption: t("tacticalPlanConfirmed") + " · " + detail,
+      speech: speech,
+      dedupeKey: announcementKey + "|plan",
+      operationKey: operationKey,
+      progressionRank: 0,
+      createdAt: tacticalRadioNow(),
+      source: source || "submission"
+    });
+    if (queued) {
+      rememberBoundedTacticalRadioValue(
+        tacticalRadio.planAnnouncements,
+        tacticalRadio.planAnnouncementOrder,
+        announcementKey,
+        true,
+        TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+      );
+      announced = true;
+    }
+  });
+  return announced;
+}
+
+function seedAcceptedTacticalPlanAnnouncements(data) {
+  if (!data || typeof data !== "object") { return; }
+  if (data.accepted === false || data.ok === false) { return; }
+  var compileResult = data.compile_result || {};
+  var status = String(data.status || compileResult.status || "").toLowerCase();
+  if (
+    status &&
+    ["published", "compiled", "accepted", "pending"].indexOf(status) < 0
+  ) {
+    return;
+  }
+  var operations = structuredOperationsForReadback(data);
+  if (!operations.length) { return; }
+  var scopeId = String(
+    data.blackboard_scope_id ||
+    compileResult.blackboard_scope_id ||
+    ""
+  );
+  var updateId = String(
+    data.update_id ||
+    compileResult.update_id ||
+    ""
+  );
+  if (!updateId) { return; }
+  var sessionEpoch = tacticalPlanSessionEpoch(
+    data,
+    data.operations || [],
+    scopeId,
+    updateId
+  );
+  ensureTacticalRadioScope(scopeId, sessionEpoch);
+  operations.forEach(function(operation) {
+    var announcementKey = tacticalRadioPlanAnnouncementKey(
+      scopeId,
+      sessionEpoch,
+      updateId,
+      operation.operationId,
+      operation.generation
+    );
+    rememberBoundedTacticalRadioValue(
+      tacticalRadio.planAnnouncements,
+      tacticalRadio.planAnnouncementOrder,
+      announcementKey,
+      true,
+      TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+    );
+  });
+}
+
+function normalizedTacticalReason(payload) {
+  var technical = payload && payload.technical || {};
+  return String(
+    payload && payload.summary ||
+    payload && payload.blocker ||
+    technical.blocker ||
+    technical.reason ||
+    ""
+  ).trim().toLowerCase().replace(/\\s+/g, " ");
+}
+
+function operationEventMatchesRecordUpdate(envelope, payload, record) {
+  var envelopeUpdateId = String(
+    envelope && envelope.update_id || ""
+  );
+  var payloadUpdateId = String(
+    payload && payload.update_id || ""
+  );
+  var recordRequestUpdateId = String(
+    record && record.updateId || ""
+  );
+  var recordExecutionOwnerUpdateId = String(
+    record && record.data &&
+      record.data.operation_console_execution_owner_update_id ||
+    recordRequestUpdateId ||
+    ""
+  );
+  if (
+    !recordRequestUpdateId ||
+    !recordExecutionOwnerUpdateId ||
+    (!envelopeUpdateId && !payloadUpdateId) ||
+    (
+      envelopeUpdateId &&
+      payloadUpdateId &&
+      envelopeUpdateId !== payloadUpdateId
+    )
+  ) {
+    return false;
+  }
+  var eventUpdateId = String(payloadUpdateId || envelopeUpdateId);
+  return (
+    eventUpdateId === recordRequestUpdateId ||
+    eventUpdateId === recordExecutionOwnerUpdateId
+  );
+}
+
+function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
+  var kind = String(payload && payload.kind || "").toLowerCase();
+  var operationId = String(payload && payload.operation_id || "");
+  var generation = Number(payload && payload.generation || 0);
+  var requestedGeneration = Number(
+    payload && payload.requested_generation || generation
+  );
+  var recordRequestedGeneration = Number(
+    record && (
+      record.requestedOperationGeneration ||
+      record.operationGeneration
+    ) ||
+    0
+  );
+  if (
+    !operationId ||
+    generation <= 0 ||
+    requestedGeneration < generation ||
+    !record ||
+    Number(record.operationGeneration || 0) !== generation ||
+    requestedGeneration !== recordRequestedGeneration ||
+    !operationEventMatchesRecordUpdate(envelope, payload, record)
+  ) {
+    return null;
+  }
+  var frame = Number(payload.game_frame);
+  var sessionEpoch = String(
+    payload && payload.session_epoch ||
+    record && record.sessionEpoch ||
+    operationConsoleSessionEpoch ||
+    ""
+  );
+  var operationKey = tacticalRadioOperationKey(
+    scopeId,
+    sessionEpoch,
+    operationId,
+    generation
+  );
+  var timelineSeq = Number(payload.timeline_seq || 0);
+  var timelineHighWater = Number(
+    tacticalRadio.timelineHighWater[operationKey] || 0
+  );
+  var projectionIdentityValid = !(
+    payload.technical &&
+    payload.technical.projection_identity_valid === false
+  );
+  if (
+    Number.isFinite(timelineSeq) &&
+    timelineSeq > 0 &&
+    timelineSeq <= timelineHighWater
+  ) {
+    return null;
+  }
+  var frameHighWater = Number(
+    tacticalRadio.frameHighWater[operationKey] || -1
+  );
+  if (
+    projectionIdentityValid &&
+    Number.isFinite(frame) &&
+    frame >= 0 &&
+    frameHighWater >= 0 &&
+    frame < frameHighWater
+  ) {
+    return null;
+  }
+  if (
+    projectionIdentityValid &&
+    Number.isFinite(frame) &&
+    frame >= 0
+  ) {
+    rememberTacticalRadioHighWater(
+      operationKey,
+      Math.max(frameHighWater, frame),
+      timelineHighWater
+    );
+  }
+  var reason = normalizedTacticalReason(payload);
+  var priority = 3;
+  var label = "";
+  var progressionRank = -1;
+  if (kind === "assigned") {
+    priority = 2;
+    label = t("tacticalForceAssigned");
+    progressionRank = 1;
+  } else if (kind === "partially_assigned") {
+    priority = 3;
+    label = t("tacticalForcePartiallyAssigned");
+  } else if (kind === "movement_observed" || kind === "moving") {
+    priority = 2;
+    label = t("tacticalMoving");
+    progressionRank = 2;
+  } else if (kind === "engagement_observed" || kind === "engaged") {
+    priority = 2;
+    label = t("tacticalEngaged");
+    progressionRank = 3;
+  } else if (kind === "target_reached" || kind === "reached") {
+    priority = 2;
+    label = t("tacticalTargetReached");
+    progressionRank = 4;
+  } else if (kind === "completed") {
+    priority = 2;
+    label = t("tacticalCompleted");
+    progressionRank = 5;
+  } else if (kind === "blocked" || kind === "waiting") {
+    priority = 1;
+    label = /route|path|경로/.test(reason)
+      ? t("tacticalRouteUnavailable")
+      : t("tacticalBlocked");
+  } else if (kind === "emergency_retreat") {
+    priority = 0;
+    label = t("tacticalEmergencyRetreat");
+  } else if (kind === "base_under_attack") {
+    priority = 0;
+    label = t("tacticalBaseAttack");
+  } else if (kind === "critical_ability_failure") {
+    priority = 0;
+    label = t("tacticalCriticalAbilityFailure");
+  } else if (kind === "force_loss") {
+    priority = 1;
+    label = t("tacticalForceLoss");
+  } else if (kind === "submitted") {
+    priority = 3;
+    label = t("tacticalSubmittedCaption");
+  } else {
+    return null;
+  }
+  if (Number.isFinite(timelineSeq) && timelineSeq > 0) {
+    rememberTacticalRadioHighWater(
+      operationKey,
+      Number(tacticalRadio.frameHighWater[operationKey] || -1),
+      Math.max(timelineHighWater, timelineSeq)
+    );
+  }
+  var identity = operationId + "#" + generation;
+  var detail = reason && reason !== kind ? " · " + reason : "";
+  return {
+    priority: priority,
+    caption: label + " · " + identity + detail,
+    speech: priority < 3 ? label + ". " + identity + detail : "",
+    dedupeKey: [
+      scopeId,
+      String(payload.update_id || envelope.update_id || ""),
+      operationId,
+      generation,
+      requestedGeneration,
+      kind,
+      reason
+    ].join("|"),
+    operationKey: operationKey,
+    progressionRank: progressionRank,
+    createdAt: Number(envelope.created_at_unix_ms || tacticalRadioNow()),
+    fromReplay: true
+  };
+}
+
+function announceOperationLifecycleEvent(envelope, payload, scopeId, record) {
+  ensureTacticalRadioScope(
+    scopeId,
+    payload && payload.session_epoch ||
+      record && record.sessionEpoch ||
+      operationConsoleSessionEpoch ||
+      ""
+  );
+  var callout = tacticalLifecycleCallout(
+    envelope,
+    payload,
+    scopeId,
+    record
+  );
+  return callout ? queueTacticalRadioCallout(callout) : false;
+}
+
+function hydrateTacticalRadioState(data) {
+  if (!data || typeof data !== "object") { return; }
+  seedAcceptedTacticalPlanAnnouncements(data);
+  if (Array.isArray(data.modulation_results)) {
+    data.modulation_results.forEach(function(result) {
+      seedAcceptedTacticalPlanAnnouncements(
+        Object.assign(
+          {
+            blackboard_scope_id: microMachineScopeId(data)
+          },
+          result || {}
+        )
+      );
+    });
+  }
+  var operations = commandOperationPayloads(data);
+  var scopeId = microMachineScopeId(data);
+  if (!scopeId && operations.length) {
+    scopeId = operationPayloadScopeId(operations[0], data);
+  }
+  var sessionEpoch = operationPayloadSessionEpoch(data, operations);
+  ensureTacticalRadioScope(scopeId, sessionEpoch);
+  operations.forEach(function(operation) {
+    var operationId = operationPayloadOperationId(operation);
+    var generation = Number(operation.operation_generation || 0);
+    if (!operationId || generation <= 0) { return; }
+    var key = tacticalRadioOperationKey(
+      scopeId,
+      sessionEpoch,
+      operationId,
+      generation
+    );
+    var operationData = commandOperationData(operation, data);
+    var projection = operationData &&
+      operationData.battlefield_operation;
+    var projectionIdentityValid = Boolean(
+      !projection ||
+      typeof projection !== "object" ||
+      !Object.keys(projection).length ||
+      operationCanonicalProjectionMatches(operationData)
+    );
+    var frame = projectionIdentityValid
+      ? commandConsoleTelemetryFrame(operationData)
+      : -1;
+    var timeline = Array.isArray(operation.semantic_timeline)
+      ? operation.semantic_timeline
+      : [];
+    var timelineSeq = 0;
+    timeline.forEach(function(event) {
+      if (
+        !event.technical ||
+        event.technical.projection_identity_valid !== false
+      ) {
+        frame = Math.max(frame, Number(event.game_frame || -1));
+      }
+      timelineSeq = Math.max(
+        timelineSeq,
+        Number(event.timeline_seq || 0)
+      );
+    });
+    rememberTacticalRadioHighWater(key, frame, timelineSeq);
+  });
 }
 
 function removePendingForCommand(text) {
@@ -10754,7 +13733,19 @@ function removePendingForCommand(text) {
   return true;
 }
 
-function removePendingById(pendingId) {
+function removePendingForHistoryEvent(ev) {
+  if (!ev || typeof ev !== "object") { return false; }
+  var requestId = historyEventRequestId(ev);
+  if (requestId) {
+    return removePendingById(requestId);
+  }
+  var pendingId = uniquePendingIdForCommand(
+    String(ev.command_text || "")
+  );
+  return pendingId ? removePendingById(pendingId) : false;
+}
+
+function removePendingById(pendingId, skipRender) {
   if (!pendingId) { return false; }
   var removed = false;
   Object.keys(pendingNodes).some(function(text) {
@@ -10766,7 +13757,7 @@ function removePendingById(pendingId) {
     removed = true;
     return true;
   });
-  if (removed) {
+  if (removed && skipRender !== true) {
     renderPendingAggregate();
     updateAssistantPendingState();
   }
@@ -10831,6 +13822,9 @@ function resetEventCursorForBlackboard(directory) {
   if (commandEventBlackboardDir === normalized) { return false; }
   commandEventBlackboardDir = normalized;
   lastEventSeq = 0;
+  subscriberOperationReplayDedupe = {};
+  subscriberOperationReplayOrder = [];
+  commandEventPollWonInitialHydration = false;
   return true;
 }
 
@@ -10961,11 +13955,16 @@ function applyEventSnapshot(payload) {
     commandEventFailedSources.state = true;
   }
   if (payload.micromachine_status) {
-    safeRenderMicroMachineStatus(payload.micromachine_status);
+    hydrateTacticalRadioState(payload.micromachine_status);
+    safeRenderMicroMachineStatus(
+      payload.micromachine_status,
+      { suppressPlanAnnouncements: true }
+    );
     if (payload.micromachine_status.status === "source_error") {
       commandEventFailedSources.micromachine_status = true;
     }
   }
+  commandEventAwaitingInitialSnapshot = false;
 }
 
 function serverEventMatchesCurrentBlackboard(envelope, payload) {
@@ -11053,14 +14052,14 @@ function applyEventSourceError(envelope, payload) {
 }
 
 function applyOperationSemanticEvent(envelope, payload) {
-  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return; }
+  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return false; }
   var eventEpoch = String(payload.session_epoch || "");
   if (
     operationConsoleSessionEpoch &&
     eventEpoch &&
     operationConsoleSessionEpoch !== eventEpoch
   ) {
-    return;
+    return false;
   }
   var scopeId = String(
     payload.blackboard_scope_id ||
@@ -11074,12 +14073,15 @@ function applyOperationSemanticEvent(envelope, payload) {
   var generation = Number(
     payload.generation || envelope.generation || 0
   );
-  if (!operationId || generation <= 0) { return; }
+  if (!operationId || generation <= 0) { return false; }
   var record = operationRecords[
     operationRecordKey(scopeId, operationId)
   ];
   if (!record || Number(record.operationGeneration || 0) !== generation) {
-    return;
+    return false;
+  }
+  if (!operationEventMatchesRecordUpdate(envelope, payload, record)) {
+    return false;
   }
   record.data = Object.assign({}, record.data || {}, {
     semantic_timeline: mergeOperationSemanticTimeline(
@@ -11088,6 +14090,50 @@ function applyOperationSemanticEvent(envelope, payload) {
     )
   });
   renderOperationRecords();
+  announceOperationLifecycleEvent(envelope, payload, scopeId, record);
+  return true;
+}
+
+function acceptSubscriberOperationReplay(envelope, payload, eventSeq) {
+  if (
+    envelope.subscriber_local_replay !== true ||
+    String(envelope.event_type || "") !== "operation_event" ||
+    eventSeq !== lastEventSeq
+  ) {
+    return "";
+  }
+  var scopeId = String(
+    payload.blackboard_scope_id ||
+    envelope.blackboard_scope_id ||
+    ""
+  );
+  var sessionEpoch = String(payload.session_epoch || "");
+  var timelineSeq = Number(payload.timeline_seq || 0);
+  if (
+    !scopeId ||
+    !sessionEpoch ||
+    !Number.isFinite(timelineSeq) ||
+    timelineSeq <= 0
+  ) {
+    return "";
+  }
+  var key = [scopeId, sessionEpoch, timelineSeq].join("|");
+  if (subscriberOperationReplayDedupe[key]) { return ""; }
+  return key;
+}
+
+function rememberSubscriberOperationReplay(key) {
+  if (!key || subscriberOperationReplayDedupe[key]) { return; }
+  subscriberOperationReplayDedupe[key] = true;
+  subscriberOperationReplayOrder.push(key);
+  while (
+    subscriberOperationReplayOrder.length >
+    SUBSCRIBER_OPERATION_REPLAY_DEDUPE_MAXIMUM
+  ) {
+    delete subscriberOperationReplayDedupe[
+      subscriberOperationReplayOrder.shift()
+    ];
+  }
 }
 
 function applyServerEvent(event) {
@@ -11100,9 +14146,15 @@ function applyServerEvent(event) {
   var eventType = String(envelope.event_type || event.type || "message");
   var eventSeq = Number(envelope.event_seq || event.lastEventId || 0);
   var payload = envelope.payload || {};
+  var subscriberReplayKey = "";
   if (eventType === "snapshot") {
     lastEventSeq = Number.isFinite(eventSeq) && eventSeq >= 0 ? eventSeq : 0;
-    applyEventSnapshot(payload);
+    if (commandEventPollWonInitialHydration) {
+      commandEventPollWonInitialHydration = false;
+      commandEventFailedSources = {};
+    } else {
+      applyEventSnapshot(payload);
+    }
     if (commandEventSource) {
       commandEventHealthy = true;
       refreshEventPollingFallback();
@@ -11110,10 +14162,21 @@ function applyServerEvent(event) {
     return;
   }
   if (
-    eventSeq > 0 &&
-    eventSeq <= lastEventSeq
+    (
+      eventSeq > 0 &&
+      eventSeq <= lastEventSeq
+    ) ||
+    envelope.subscriber_local_replay === true
   ) {
-    return;
+    if (eventType !== "operation_event") {
+      return;
+    }
+    subscriberReplayKey = acceptSubscriberOperationReplay(
+      envelope,
+      payload,
+      eventSeq
+    );
+    if (!subscriberReplayKey) { return; }
   }
   if (serverEventRegressesOperation(envelope)) { return; }
   if (eventSeq > lastEventSeq) { lastEventSeq = eventSeq; }
@@ -11135,7 +14198,9 @@ function applyServerEvent(event) {
     return;
   }
   if (eventType === "operation_event") {
-    applyOperationSemanticEvent(envelope, payload);
+    if (applyOperationSemanticEvent(envelope, payload)) {
+      rememberSubscriberOperationReplay(subscriberReplayKey);
+    }
     return;
   }
   if (eventType === "state") {
@@ -11150,6 +14215,8 @@ function applyServerEvent(event) {
     if (serverEventMatchesCurrentBlackboard(envelope, payload)) {
       if (eventType === "micromachine_status") {
         markEventSourceRecovered("micromachine_status");
+      } else {
+        announceAcceptedTacticalPlan(payload, "event");
       }
       safeRenderMicroMachineStatus(payload);
     }
@@ -11166,6 +14233,7 @@ function scheduleEventReconnect() {
 
 function connectEventChannel() {
   if (typeof window.EventSource !== "function") {
+    commandEventAwaitingInitialSnapshot = false;
     startPollingFallback();
     return;
   }
@@ -11173,6 +14241,8 @@ function connectEventChannel() {
     commandEventSource.close();
     commandEventSource = null;
   }
+  commandEventPollWonInitialHydration = false;
+  commandEventAwaitingInitialSnapshot = true;
   startPollingFallback();
   var source = new window.EventSource(eventSourceUrl());
   commandEventSource = source;
@@ -13263,17 +16333,49 @@ function operationPayloadScopeId(operation, data) {
 }
 
 function operationPayloadUpdateId(operation) {
+  return String(
+    operationPayloadRequestUpdateId(operation) ||
+    operationPayloadExecutionOwnerUpdateId(operation) ||
+    ""
+  );
+}
+
+function operationPayloadRequestUpdateId(operation) {
   var update = (operation && operation.update) || {};
   var compileResult = (operation && operation.compile_result) || {};
-  var intervention = (operation && operation.intervention) || {};
-  var execution = intervention.command_execution || {};
   return String(
     operation && operation.update_id ||
     update.update_id ||
     compileResult.update_id ||
+    ""
+  );
+}
+
+function operationPayloadExecutionOwnerUpdateId(operation) {
+  var intervention = (operation && operation.intervention) || {};
+  var execution = intervention.command_execution || {};
+  return String(
+    operation && operation.operation_console_execution_owner_update_id ||
     execution.command_id ||
     ""
   );
+}
+
+function operationPayloadEditAction(operation) {
+  var edit = operation && operation.operation_edit || {};
+  var action = String(edit.action || "").trim();
+  var allowed = [
+    "create",
+    "update",
+    "resize",
+    "reinforce",
+    "retarget",
+    "transfer_in",
+    "transfer_out",
+    "cancel",
+    "restart"
+  ];
+  return allowed.indexOf(action) >= 0 ? action : "";
 }
 
 function operationPayloadOperationId(operation) {
@@ -13932,6 +17034,9 @@ function reconcileOperationRecord(operation, parentData) {
   var data = commandOperationData(operation, parentData);
   var operationId = String(data.operation_id || "");
   var updateId = operationPayloadUpdateId(operation);
+  var requestUpdateId = operationPayloadRequestUpdateId(operation);
+  var executionOwnerUpdateId =
+    operationPayloadExecutionOwnerUpdateId(operation);
   var scopeId = String(data.blackboard_scope_id || "");
   if (!operationId) { return null; }
   var key = String(
@@ -13939,6 +17044,23 @@ function reconcileOperationRecord(operation, parentData) {
     operationRecordKey(scopeId, operationId)
   );
   var record = operationRecordForCandidate(key, updateId);
+  var incomingProjection = data && data.battlefield_operation;
+  var projectionIdentityMismatch = Boolean(
+    incomingProjection &&
+    typeof incomingProjection === "object" &&
+    Object.keys(incomingProjection).length &&
+    !operationCanonicalProjectionMatches(data)
+  );
+  if (projectionIdentityMismatch) {
+    var acceptedProjectionData = record && record.data || {};
+    data = Object.assign({}, data, {
+      battlefield_operation:
+        acceptedProjectionData.battlefield_operation || {},
+      telemetry_frame: record
+        ? record.telemetryFrame
+        : -1
+    });
+  }
   var model = commandConsoleStageModel(data);
   var telemetryFrame = commandConsoleTelemetryFrame(data);
   var stageRank = commandConsoleStageRank(model);
@@ -13962,11 +17084,8 @@ function reconcileOperationRecord(operation, parentData) {
     requestedOperationGeneration = 0;
   }
   var editPayload = operationEditPayload(data);
-  var hasEditPayload = Boolean(
-    String(editPayload.action || "") ||
-    Number(editPayload.transferred_in_count || 0) > 0 ||
-    Number(editPayload.transferred_out_count || 0) > 0
-  );
+  var editAction = operationPayloadEditAction(data);
+  var hasEditPayload = Boolean(editAction);
   var rejectedEditPayload = Boolean(
     String(editPayload.resolution || "").toLowerCase() === "blocked" ||
     Boolean(editPayload.blocker)
@@ -13984,21 +17103,105 @@ function reconcileOperationRecord(operation, parentData) {
   ) {
     latestRequestedOperationGeneration = 0;
   }
-  var staleEditPayload = Boolean(
+  var acceptedRequestUpdateId = String(record && record.updateId || "");
+  var acceptedExecutionOwnerUpdateId = String(
+    record && record.data &&
+      record.data.operation_console_execution_owner_update_id ||
+    acceptedRequestUpdateId ||
+    ""
+  );
+  var sameGenerationUpdateIdentityAccepted = Boolean(
+    acceptedRequestUpdateId &&
+    acceptedExecutionOwnerUpdateId &&
+    requestUpdateId === acceptedRequestUpdateId &&
+    executionOwnerUpdateId === acceptedExecutionOwnerUpdateId
+  );
+  var sameGenerationUpdateIdentityRequired = Boolean(
     record &&
-    hasEditPayload &&
+    record.operationGeneration > 0 &&
+    operationGeneration === record.operationGeneration
+  );
+  var sameGenerationExecutionOwnerUpdate = Boolean(
+    sameGenerationUpdateIdentityRequired &&
+    requestedOperationGeneration < latestRequestedOperationGeneration &&
+    acceptedRequestUpdateId &&
+    acceptedExecutionOwnerUpdateId &&
+    (
+      requestUpdateId === acceptedRequestUpdateId ||
+      requestUpdateId === acceptedExecutionOwnerUpdateId
+    ) &&
+    executionOwnerUpdateId === acceptedExecutionOwnerUpdateId
+  );
+  var newerOperationRequest = Boolean(
+    requestedOperationGeneration > latestRequestedOperationGeneration &&
+    requestUpdateId &&
+    requestUpdateId !== acceptedRequestUpdateId &&
+    requestUpdateId !== acceptedExecutionOwnerUpdateId &&
+    executionOwnerUpdateId === acceptedExecutionOwnerUpdateId &&
+    hasEditPayload
+  );
+  var foreignExecution = (data.intervention || {}).command_execution || {};
+  var foreignExecutionGeneration = Number(
+    foreignExecution.operation_generation ||
+    foreignExecution.generation ||
+    0
+  );
+  var cancellationIdentityMatches = Boolean(
+    ["cancelled", "canceled"].indexOf(
+      String(foreignExecution.state || "").toLowerCase()
+    ) >= 0 &&
+    String(foreignExecution.blocker_reason || "").toLowerCase() ===
+      "cancelled_by_policy" &&
+    executionOwnerUpdateId &&
+    executionOwnerUpdateId === acceptedExecutionOwnerUpdateId &&
+    String(foreignExecution.operation_id || "") === operationId &&
+    foreignExecutionGeneration === operationGeneration
+  );
+  var sameGenerationCancellationTransition = Boolean(
+    cancellationIdentityMatches &&
+    requestUpdateId === acceptedRequestUpdateId
+  );
+  var newerCancellationRequest = Boolean(
+    cancellationIdentityMatches &&
+    newerOperationRequest &&
+    editAction === "cancel"
+  );
+  var cancellationState = (
+    ["cancelled", "canceled"].indexOf(
+      String(foreignExecution.state || "").toLowerCase()
+    ) >= 0
+  );
+  if (
+    sameGenerationUpdateIdentityRequired &&
+    !sameGenerationUpdateIdentityAccepted &&
+    !sameGenerationExecutionOwnerUpdate &&
+    (
+      cancellationState
+        ? !sameGenerationCancellationTransition &&
+          !newerCancellationRequest
+        : !newerOperationRequest
+    )
+  ) {
+    return record;
+  }
+  var staleRequestedGeneration = Boolean(
+    record &&
     requestedOperationGeneration > 0 &&
     requestedOperationGeneration < latestRequestedOperationGeneration
   );
   if (
-    staleEditPayload &&
-    operationGeneration <= record.operationGeneration
+    staleRequestedGeneration &&
+    operationGeneration <= record.operationGeneration &&
+    !sameGenerationExecutionOwnerUpdate
   ) {
     return record;
   }
   if (
-    staleEditPayload &&
-    operationGeneration > record.operationGeneration
+    staleRequestedGeneration &&
+    (
+      operationGeneration > record.operationGeneration ||
+      sameGenerationExecutionOwnerUpdate
+    )
   ) {
     var latestData = record.data || {};
     var executionOwnerUpdateId = String(
@@ -15546,6 +18749,50 @@ function renderOperationConsole(data) {
   return Boolean(operations.length);
 }
 
+function microMachineStatusIdentityIsAdmitted(data) {
+  if (!data || typeof data !== "object") { return false; }
+  var operations = commandOperationPayloads(data);
+  var scopeId = microMachineScopeId(data);
+  if (!scopeId && operations.length) {
+    scopeId = operationPayloadScopeId(operations[0], data);
+  }
+  var sessionEpoch = operationPayloadSessionEpoch(data, operations);
+  var epochAuthoritative =
+    data.operation_registry_authoritative !== false;
+  var currentScope = String(
+    operationConsoleScopeId ||
+    activeCommandConsoleRecord.scopeId ||
+    ""
+  );
+  var currentEpoch = String(
+    operationConsoleSessionEpoch ||
+    activeCommandConsoleRecord.sessionEpoch ||
+    ""
+  );
+  if (sessionEpoch && !epochAuthoritative) {
+    return false;
+  }
+  if (
+    currentScope &&
+    scopeId &&
+    currentScope !== scopeId
+  ) {
+    return false;
+  }
+  if (
+    currentEpoch &&
+    sessionEpoch &&
+    currentEpoch !== sessionEpoch &&
+    operationSessionEpochIsStale(
+      currentEpoch,
+      sessionEpoch
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function renderOperationFailure(text, error, pendingId) {
   var record = null;
   Object.keys(operationRecords).some(function(key) {
@@ -16256,7 +19503,8 @@ function microMachineStatusIsStaleForActiveCommand(data) {
   );
 }
 
-function renderMicroMachineStatus(data) {
+function renderMicroMachineStatus(data, options) {
+  options = options || {};
   var node = document.getElementById("micromachine-status");
   if (!node) { return; }
   if (!data || data.enabled === false) {
@@ -16267,29 +19515,30 @@ function renderMicroMachineStatus(data) {
     renderMicroMachineIntervention(data || {});
     return;
   }
-  var statusOperationPayloads = commandOperationPayloads(data);
-  var statusSessionEpoch = operationPayloadSessionEpoch(
-    data,
-    statusOperationPayloads
-  );
-  var currentSessionEpoch = (
-    operationConsoleSessionEpoch ||
-    activeCommandConsoleRecord.sessionEpoch
-  );
-  if (
-    data.operation_registry_authoritative === false &&
-    statusSessionEpoch &&
-    statusSessionEpoch !== currentSessionEpoch
-  ) {
+  if (!microMachineStatusIdentityIsAdmitted(data)) {
     return;
   }
+  renderOperationConsole(data);
   var modulationResults = Array.isArray(data.modulation_results)
     ? data.modulation_results
     : [];
   modulationResults.forEach(function(result) {
+    if (!options.suppressPlanAnnouncements) {
+      announceAcceptedTacticalPlan(
+        Object.assign(
+          {
+            blackboard_scope_id: microMachineScopeId(data)
+          },
+          result || {}
+        ),
+        "status"
+      );
+    }
     maybeAppendMicroMachineAsyncCompletion(result);
   });
-  renderOperationConsole(data);
+  if (!options.suppressPlanAnnouncements) {
+    announceAcceptedTacticalPlan(data, "status");
+  }
   renderBattlefieldControlOverview(data);
   if (microMachineStatusIsStaleForActiveCommand(data)) {
     return;
@@ -16334,9 +19583,9 @@ function renderMicroMachineStatus(data) {
   maybeAppendMicroMachineAsyncCompletion(data);
 }
 
-function safeRenderMicroMachineStatus(data) {
+function safeRenderMicroMachineStatus(data, options) {
   try {
-    renderMicroMachineStatus(data);
+    renderMicroMachineStatus(data, options);
   } catch (error) {
     var node = document.getElementById("micromachine-status");
     if (node) {
@@ -16381,6 +19630,7 @@ function synchronizeMicroMachineBlackboardDirectory(directory) {
   latestMicroMachinePlanText = "";
   clearPendingMicroMachinePlan();
   resetActiveCommandConsole();
+  resetTacticalRadio("");
   renderMicroMachineIntervention({});
   var statusNode = document.getElementById("micromachine-status");
   if (statusNode) {
@@ -16423,6 +19673,7 @@ function pollMicroMachineStatus() {
   microMachinePollRequestSeq += 1;
   var requestSeq = microMachinePollRequestSeq;
   var contextGeneration = microMachineBlackboardContextGeneration;
+  var hydrateOnly = commandEventAwaitingInitialSnapshot;
   microMachinePollInFlight = true;
   microMachinePollActiveRequestSeq = requestSeq;
   microMachinePollAbortController = typeof AbortController !== "undefined"
@@ -16466,8 +19717,23 @@ function pollMicroMachineStatus() {
         microMachinePollActiveRequestSeq === requestSeq &&
         requestSeq >= microMachinePollAppliedSeq
       ) {
+        if (
+          hydrateOnly &&
+          !commandEventAwaitingInitialSnapshot
+        ) {
+          finishMicroMachinePoll(requestSeq);
+          return;
+        }
         microMachinePollAppliedSeq = requestSeq;
-        renderMicroMachineStatus(data);
+        if (hydrateOnly) {
+          commandEventAwaitingInitialSnapshot = false;
+          commandEventPollWonInitialHydration = true;
+          hydrateTacticalRadioState(data);
+        }
+        safeRenderMicroMachineStatus(
+          data,
+          hydrateOnly ? { suppressPlanAnnouncements: true } : undefined
+        );
       }
       finishMicroMachinePoll(requestSeq);
     })
@@ -17406,6 +20672,7 @@ function removeMicroMachineChatPending(text, pendingId) {
 }
 
 function appendMicroMachineChatResult(text, data, pendingId) {
+  var voiceSession = voiceSessionForPendingId(pendingId);
   var resultUpdateId = commandConsolePreferredUpdateId(data || {}) ||
     microMachineUpdateId(data || {});
   var resultData = commandConsoleDataForUpdate(
@@ -17427,25 +20694,36 @@ function appendMicroMachineChatResult(text, data, pendingId) {
     resultData,
     resultData.chat_outcome_status
   );
-  appendLog({
-    command_text: text,
-    status: outcomeStatus,
-    narration: microMachineChatNarration(resultData)
-  });
+  var narration = microMachineChatNarration(resultData);
+  if (voiceSession) {
+    renderVoiceSessionTerminal(voiceSession, outcomeStatus, narration);
+  } else {
+    appendLog({
+      command_text: text,
+      status: outcomeStatus,
+      narration: narration
+    });
+  }
   if (!removed) {
     updateAssistantPendingState();
   }
 }
 
 function appendMicroMachineChatFailure(text, error, pendingId) {
+  var voiceSession = voiceSessionForPendingId(pendingId);
   renderActiveCommandFailure(text, error, pendingId);
   var removed = removeMicroMachineChatPending(text, pendingId);
   if (removed && text === latestMicroMachinePlanText) { latestMicroMachinePlanText = ""; }
-  appendLog({
-    command_text: text,
-    status: "blocked",
-    narration: t("microMachineChatFailed") + ": " + error.message
-  });
+  var narration = t("microMachineChatFailed") + ": " + error.message;
+  if (voiceSession) {
+    renderVoiceSessionTerminal(voiceSession, "blocked", narration);
+  } else {
+    appendLog({
+      command_text: text,
+      status: "blocked",
+      narration: narration
+    });
+  }
   if (!removed) {
     updateAssistantPendingState();
   }
@@ -17640,6 +20918,7 @@ function submitMicroMachineModulation(payload, options) {
           responseOwnsActiveConsole
         );
       }
+      announceAcceptedTacticalPlan(data, "direct");
       if (options.appendChat && !(data && data.async_publish)) {
         safelyAppendMicroMachineChatResult(
           payload.text || "",
@@ -17717,18 +20996,29 @@ if (microMachineForm) {
   });
 }
 
-document.getElementById("command-form").addEventListener("submit", function (event) {
-  event.preventDefault();
-  var input = document.getElementById("command-input");
-  var text = input.value.trim();
-  if (!text) { return; }
+function submitCommanderText(text, options) {
+  options = options || {};
+  var input = options.input || document.getElementById("command-input");
+  var normalizedText = String(text || "").trim();
+  var voiceSession = options.voiceSession || null;
+  if (!normalizedText) { return ""; }
+  if (voiceSession) {
+    voiceSession.finalText = normalizedText;
+    voiceSession.interimText = "";
+  }
   setCommandMode(selectedCommandMode());
   if (isMicroMachineCommandMode()) {
     synchronizeMicroMachineBlackboardDirectory(
       optionalMicroMachineField("micromachine-blackboard-dir")
     );
-    var pendingId = appendMicroMachinePendingPlan(text);
-    var microPayload = buildMicroMachineModulationPayload(text);
+    if (voiceSession && !voiceSessionContextIsCurrent(voiceSession)) {
+      return "";
+    }
+    var pendingId = appendMicroMachinePendingPlan(
+      normalizedText,
+      voiceSession
+    );
+    var microPayload = buildMicroMachineModulationPayload(normalizedText);
     submitMicroMachineModulation(
       microPayload,
       {
@@ -17737,22 +21027,359 @@ document.getElementById("command-form").addEventListener("submit", function (eve
         timeoutMs: MICROMACHINE_CHAT_TIMEOUT_MS
       }
     ).catch(function () {});
-    input.value = "";
-    input.focus();
-    return;
+    if (input) {
+      input.value = "";
+      if (!options.preserveFocus && typeof input.focus === "function") {
+        input.focus();
+      }
+    }
+    return pendingId;
   }
   if (!llmConfigured) {
     setLlmStatus("missing", "llmRequiredLabel", t("commandRejected"));
-    return;
+    if (voiceSession) {
+      failVoiceSession(voiceSession, t("commandRejected"));
+    }
+    return "";
   }
-  appendPendingCommand(text);
+  var legacyPendingId = appendPendingCommand(normalizedText, voiceSession);
   fetch("/api/command" + authQuery, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: text })
-  }).then(function () { pollHistory(); }).catch(function () { removePendingForCommand(text); });
-  input.value = "";
-  input.focus();
+    body: JSON.stringify({
+      text: normalizedText,
+      request_id: legacyPendingId,
+      operation_id: legacyPendingId
+    })
+  }).then(function (response) {
+    return response.text().then(function (text) {
+      var data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (error) {
+        data = {};
+      }
+      if (!response.ok) {
+        throw new Error(
+          String(data.error || ("HTTP " + String(response.status || 0)))
+        );
+      }
+      return data;
+    });
+  }).then(function () {
+    pollHistory();
+  }).catch(function (error) {
+    var failedVoiceSession = voiceSessionForPendingId(legacyPendingId);
+    var failureMessage = error && error.message
+      ? error.message
+      : t("voiceTranscriptUnavailable");
+    removePendingById(legacyPendingId);
+    if (failedVoiceSession) {
+      renderVoiceSessionTerminal(
+        failedVoiceSession,
+        "blocked",
+        failureMessage
+      );
+    } else {
+      appendLog({
+        request_id: legacyPendingId,
+        command_text: normalizedText,
+        status: "blocked",
+        narration: failureMessage
+      });
+    }
+  });
+  if (input) {
+    input.value = "";
+    if (!options.preserveFocus && typeof input.focus === "function") {
+      input.focus();
+    }
+  }
+  return legacyPendingId;
+}
+
+function setupVoiceInput() {
+  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var voiceButton = document.getElementById("voice-button");
+  setVoiceButtonRecordingState(false);
+  if (!SpeechRecognition) {
+    voiceButton.addEventListener("click", function () {
+      setLlmStatus("failed", "llmFailedLabel", t("voiceUnsupported"));
+    });
+    return;
+  }
+  function createVoiceRecognition() {
+    var instance = new SpeechRecognition();
+    instance.lang = currentLang === "en"
+      ? "en-US"
+      : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+    instance.interimResults = true;
+    instance.continuous = false;
+    instance.onstart = function () {
+      handleVoiceRecognitionStart(instance);
+    };
+    return instance;
+  }
+  function retireVoiceRecognition(instance) {
+    if (recognition === instance) {
+      recognition = createVoiceRecognition();
+    }
+  }
+  function abortDetachedVoiceRecognition(instance) {
+    instance.onend = function () {};
+    instance.onerror = function () {};
+    instance.onresult = function () {};
+    if (typeof instance.abort === "function") {
+      instance.abort();
+    } else if (typeof instance.stop === "function") {
+      instance.stop();
+    }
+  }
+  function handleVoiceRecognitionStart(instance) {
+    var startRequest = pendingVoiceRecognitionRequest;
+    if (
+      recognition !== instance ||
+      !startRequest ||
+      startRequest.recognitionInstance !== instance
+    ) {
+      abortDetachedVoiceRecognition(instance);
+      return;
+    }
+    pendingVoiceRecognitionRequest = null;
+    if (
+      startRequest.requestId !== voiceRecognitionRequestSeq ||
+      startRequest.contextGeneration !==
+        microMachineBlackboardContextGeneration ||
+      startRequest.blackboardDirectory !==
+        currentEventBlackboardDirectory()
+    ) {
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(instance);
+      abortDetachedVoiceRecognition(instance);
+      return;
+    }
+    if (
+      activeVoiceSession &&
+      !activeVoiceSession.submitted &&
+      !activeVoiceSession.error &&
+      activeVoiceSession.state === "finalizing" &&
+      voiceSessionContextIsCurrent(activeVoiceSession)
+    ) {
+      if (typeof instance.stop === "function") {
+        instance.stop();
+      }
+      return;
+    }
+    isRecording = true;
+    setVoiceButtonRecordingState(true);
+    var session = appendVoiceRecordingBubble();
+    session.recognitionInstance = instance;
+    function voiceRecognitionOwnsSession() {
+      return Boolean(
+        session &&
+        session.recognitionInstance === instance &&
+        activeVoiceSession === session &&
+        !session.invalidated
+      );
+    }
+    instance.onend = function () {
+      if (!voiceRecognitionOwnsSession()) { return; }
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(instance);
+      if (
+        !session ||
+        session.error ||
+        session.submitted ||
+        !voiceSessionContextIsCurrent(session)
+      ) {
+        return;
+      }
+      clearVoiceFinalizationTimer(session);
+      session.state = "finalizing";
+      renderVoiceSession(session);
+      session.finalizationTimerId = window.setTimeout(function () {
+        session.finalizationTimerId = null;
+        if (
+          session.error ||
+          session.submitted ||
+          !voiceSessionContextIsCurrent(session)
+        ) {
+          return;
+        }
+        var fallbackText = String(
+          session.finalText || session.interimText || ""
+        ).trim();
+        if (!fallbackText) {
+          failVoiceSession(session, t("voiceNoResult"));
+          return;
+        }
+        submitVoiceSession(session, fallbackText);
+      }, VOICE_FINALIZATION_GRACE_MS);
+    };
+    instance.onerror = function () {
+      if (!voiceRecognitionOwnsSession()) { return; }
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(instance);
+      clearVoiceFinalizationTimer(session);
+      if (!voiceSessionContextIsCurrent(session)) { return; }
+      setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
+      failVoiceSession(session, t("voiceTranscriptUnavailable"));
+    };
+    instance.onresult = function (event) {
+      if (
+        !voiceRecognitionOwnsSession() ||
+        !session ||
+        session.error ||
+        session.submitted ||
+        !voiceSessionContextIsCurrent(session)
+      ) {
+        return;
+      }
+      for (var i = 0; i < event.results.length; i += 1) {
+        session.segments[i] = {
+          text: String(event.results[i][0].transcript || ""),
+          final: event.results[i].isFinal === true
+        };
+      }
+      var finalParts = [];
+      var interimParts = [];
+      session.segments.forEach(function(segment) {
+        if (!segment || !segment.text) { return; }
+        if (segment.final) {
+          finalParts.push(segment.text);
+        } else {
+          interimParts.push(segment.text);
+        }
+      });
+      session.finalText = finalParts.join(" ").trim();
+      session.interimText = interimParts.join(" ").trim();
+      var visibleText = String(
+        session.finalText || session.interimText || ""
+      ).trim();
+      document.getElementById("command-input").value = visibleText;
+      renderVoiceSession(session);
+      var finalResult = event.results[event.results.length - 1];
+      if (finalResult && finalResult.isFinal && session.finalText) {
+        clearVoiceFinalizationTimer(session);
+        submitVoiceSession(session, session.finalText);
+      }
+    };
+  }
+  recognition = createVoiceRecognition();
+  voiceButton.addEventListener("click", function () {
+    if (isRecording) {
+      recognition.stop();
+      return;
+    }
+    if (pendingVoiceRecognitionRequest) {
+      return;
+    }
+    if (
+      activeVoiceSession &&
+      !activeVoiceSession.submitted &&
+      !activeVoiceSession.error &&
+      activeVoiceSession.state === "finalizing" &&
+      voiceSessionContextIsCurrent(activeVoiceSession)
+    ) {
+      return;
+    }
+    var recognitionInstance = recognition;
+    recognitionInstance.lang = currentLang === "en"
+      ? "en-US"
+      : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+    voiceRecognitionRequestSeq += 1;
+    pendingVoiceRecognitionRequest = {
+      requestId: voiceRecognitionRequestSeq,
+      contextGeneration: microMachineBlackboardContextGeneration,
+      blackboardDirectory: currentEventBlackboardDirectory(),
+      recognitionInstance: recognitionInstance
+    };
+    var requestedRecognition = pendingVoiceRecognitionRequest;
+    recognitionInstance.onerror = function (error) {
+      if (pendingVoiceRecognitionRequest !== requestedRecognition) {
+        return;
+      }
+      pendingVoiceRecognitionRequest = null;
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(recognitionInstance);
+      setLlmStatus(
+        "failed",
+        "llmFailedLabel",
+        error && (error.message || error.error)
+          ? String(error.message || error.error)
+          : t("voiceNoResult")
+      );
+    };
+    recognitionInstance.onend = function () {
+      if (pendingVoiceRecognitionRequest !== requestedRecognition) {
+        return;
+      }
+      pendingVoiceRecognitionRequest = null;
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(recognitionInstance);
+    };
+    try {
+      recognitionInstance.start();
+    } catch (error) {
+      if (pendingVoiceRecognitionRequest === requestedRecognition) {
+        pendingVoiceRecognitionRequest = null;
+      }
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(recognitionInstance);
+      setLlmStatus(
+        "failed",
+        "llmFailedLabel",
+        error && error.message ? error.message : t("voiceNoResult")
+      );
+    }
+  });
+}
+
+function submitVoiceSession(session, text) {
+  if (!session || session.submitted || session.error) {
+    return session ? session.pendingId : "";
+  }
+  if (!voiceSessionContextIsCurrent(session)) {
+    invalidateVoiceSession(
+      session,
+      commandUiText(
+        "MicroMachine 전장 링크가 전환되어 이 음성 명령을 제출하지 않았습니다.",
+        "The MicroMachine battlefield link changed, so this voice order was not submitted.",
+        "MicroMachine battlefield link changed; this voice order was not submitted."
+      )
+    );
+    return "";
+  }
+  var normalizedText = String(text || "").trim();
+  if (!normalizedText) {
+    failVoiceSession(session, t("voiceNoResult"));
+    return "";
+  }
+  clearVoiceFinalizationTimer(session);
+  session.submitted = true;
+  session.state = "finalizing";
+  session.finalText = normalizedText;
+  session.interimText = "";
+  renderVoiceSession(session);
+  return submitCommanderText(normalizedText, {
+    input: document.getElementById("command-input"),
+    voiceSession: session,
+    preserveFocus: true
+  });
+}
+
+document.getElementById("command-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  var input = document.getElementById("command-input");
+  var text = input.value.trim();
+  if (!text) { return; }
+  submitCommanderText(text, { input: input });
 });
 
 Array.prototype.forEach.call(document.querySelectorAll("[data-command]"), function (button) {
@@ -17764,11 +21391,7 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-command]"), functi
 });
 
 function submitCommanderControlOrder(text) {
-  var input = document.getElementById("command-input");
-  var form = document.getElementById("command-form");
-  if (!input || !form) { return; }
-  input.value = text;
-  form.dispatchEvent(new Event("submit", { cancelable: true }));
+  submitCommanderText(text);
 }
 
 var commandRefreshButton = document.getElementById("command-refresh-button");
@@ -17905,50 +21528,10 @@ document.getElementById("runtime-refresh-button").addEventListener("click", func
   refreshLiveConnectionFlow();
 });
 
-function setupVoiceInput() {
-  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var voiceButton = document.getElementById("voice-button");
-  if (!SpeechRecognition) {
-    voiceButton.addEventListener("click", function () {
-      setLlmStatus("failed", "llmFailedLabel", t("voiceUnsupported"));
-    });
-    return;
-  }
-  recognition = new SpeechRecognition();
-  recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
-  recognition.interimResults = true;
-  recognition.continuous = false;
-  recognition.onstart = function () {
-    isRecording = true;
-    voiceButton.classList.add("recording");
-    appendVoiceRecordingBubble();
-  };
-  recognition.onend = function () {
-    isRecording = false;
-    voiceButton.classList.remove("recording");
-    removeVoiceRecordingBubble();
-  };
-  recognition.onerror = function () {
-    setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
-  };
-  recognition.onresult = function (event) {
-    var transcript = "";
-    for (var i = event.resultIndex; i < event.results.length; i += 1) {
-      transcript += event.results[i][0].transcript;
-    }
-    document.getElementById("command-input").value = transcript.trim();
-    if (event.results[event.results.length - 1].isFinal) {
-      removeVoiceRecordingBubble();
-      document.getElementById("command-form").dispatchEvent(new Event("submit", { cancelable: true }));
-    }
-  };
-  voiceButton.addEventListener("click", function () {
-    if (isRecording) {
-      recognition.stop();
-      return;
-    }
-    recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
-    recognition.start();
+var tacticalRadioMuteButton = document.getElementById("tactical-radio-mute");
+if (tacticalRadioMuteButton) {
+  tacticalRadioMuteButton.addEventListener("click", function () {
+    tacticalRadioSetMuted(!tacticalRadio.muted);
   });
 }
 
@@ -17956,6 +21539,7 @@ applyLanguage("ko");
 setLlmStatus("checking", "llmCheckingLabel", t("llmChecking"));
 renderModelSelect(selectedProviderValue(), "");
 setupVoiceInput();
+renderTacticalRadioState();
 pollLlmSettings();
 refreshLiveConnectionFlow();
 connectEventChannel();
@@ -17996,6 +21580,8 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
 
     daemon_threads = True
     _OPERATION_EVENT_SCOPE_RETENTION = 8
+    _OPERATION_EVENT_SCOPE_HISTORY_RETENTION = 128
+    _PENDING_OPERATION_EVENT_RETENTION = 192
 
     def __init__(
         self,
@@ -18009,17 +21595,43 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self.auth_token = auth_token
         self.event_journal = event_journal or _WebEventJournal()
         self._event_source_lock = threading.RLock()
+        self._operation_status_locks_guard = threading.Lock()
+        self._operation_status_locks: WeakValueDictionary[
+            str,
+            threading.Lock,
+        ] = WeakValueDictionary()
         self._observed_history_seq = 0
         self._observed_payload_hashes: dict[str, str] = {}
         self._observed_payload_identities: dict[
             str,
             tuple[str, int, int],
         ] = {}
+        self._observed_payload_snapshots: dict[str, dict[str, object]] = {}
         self._observed_operation_event_seq: dict[str, int] = {}
         self._observed_operation_scope_order: deque[str] = deque()
+        self._observed_operation_event_high_water: dict[str, int] = {}
+        self._observed_operation_event_history_order: deque[str] = deque()
+        self._materialized_operation_event_scopes: set[str] = set()
+        self._pending_operation_events: dict[
+            str,
+            dict[int, dict[str, object]],
+        ] = {}
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
+
+    def operation_status_lock(
+        self,
+        blackboard_dir: str,
+    ) -> threading.Lock:
+        """Return one weakly retained source coordinator lock per blackboard."""
+
+        key = os.path.realpath(os.path.abspath(blackboard_dir))
+        with self._operation_status_locks_guard:
+            return self._operation_status_locks.setdefault(
+                key,
+                threading.Lock(),
+            )
 
     def publish_event(
         self,
@@ -18085,6 +21697,10 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             self._observed_payload_hashes[cache_key] = digest
             if identity is not None:
                 self._observed_payload_identities[cache_key] = identity
+            if isinstance(safe_payload, Mapping):
+                self._observed_payload_snapshots[cache_key] = deepcopy(
+                    dict(safe_payload)
+                )
             update_id, operation_id, generation, game_frame = (
                 _web_event_identity(payload)
             )
@@ -18100,6 +21716,232 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             )
             return True
 
+    def _admit_operation_event_scope_locked(self, scope_id: str) -> bool:
+        normalized_scope = str(scope_id or "")
+        if not normalized_scope:
+            return False
+        if normalized_scope in self._observed_operation_event_high_water:
+            try:
+                self._observed_operation_event_history_order.remove(
+                    normalized_scope
+                )
+            except ValueError:
+                pass
+            self._observed_operation_event_history_order.append(
+                normalized_scope
+            )
+            return True
+        if (
+            len(self._observed_operation_event_high_water)
+            >= self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        ):
+            return False
+        self._observed_operation_event_high_water[normalized_scope] = 0
+        self._observed_operation_event_history_order.append(normalized_scope)
+        return True
+
+    def admit_operation_event_scope(self, scope_id: str) -> bool:
+        """Atomically reserve one bounded replay scope."""
+
+        with self._event_source_lock:
+            return self._admit_operation_event_scope_locked(scope_id)
+
+    def has_admitted_operation_event_scope(self, scope_id: str) -> bool:
+        """Return whether one scope already owns bounded replay history."""
+
+        normalized_scope = str(scope_id or "")
+        if not normalized_scope:
+            return False
+        with self._event_source_lock:
+            return (
+                normalized_scope
+                in self._observed_operation_event_high_water
+            )
+
+    def remember_operation_event_high_water(
+        self,
+        scope_id: str,
+        timeline_seq: int,
+    ) -> bool:
+        """Retain a bounded replay cursor or fail closed for a novel scope."""
+
+        normalized_scope = str(scope_id or "")
+        normalized_seq = max(0, int(timeline_seq))
+        with self._event_source_lock:
+            if not self._admit_operation_event_scope_locked(
+                normalized_scope
+            ):
+                return False
+            self._observed_operation_event_high_water[normalized_scope] = max(
+                self._observed_operation_event_high_water.get(
+                    normalized_scope,
+                    0,
+                ),
+                normalized_seq,
+            )
+            return True
+
+    def operation_event_source_cursor(
+        self,
+        scope_id: str,
+    ) -> tuple[bool, int]:
+        """Return whether one scope has a materialized source cursor."""
+
+        normalized_scope = str(scope_id or "")
+        if not normalized_scope:
+            return False, 0
+        with self._event_source_lock:
+            if (
+                normalized_scope
+                not in self._materialized_operation_event_scopes
+            ):
+                return False, 0
+            if normalized_scope in self._observed_operation_event_seq:
+                return (
+                    True,
+                    int(
+                        self._observed_operation_event_seq[
+                            normalized_scope
+                        ]
+                    ),
+                )
+            if normalized_scope in self._observed_operation_event_high_water:
+                return (
+                    True,
+                    int(
+                        self._observed_operation_event_high_water[
+                            normalized_scope
+                        ]
+                    ),
+                )
+            return False, 0
+
+    def authoritative_snapshot_payload(
+        self,
+        cache_key: str,
+        payload: Mapping[str, object],
+    ) -> tuple[bool, dict[str, object]]:
+        """Accept one source snapshot or return the last accepted payload."""
+
+        safe_payload = _redact_json_ready(payload)
+        if not isinstance(safe_payload, Mapping):
+            safe_payload = {"value": safe_payload}
+        normalized_payload = dict(safe_payload)
+        serialized = json.dumps(
+            normalized_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        incoming = _web_snapshot_order_identity(payload)
+        with self._event_source_lock:
+            previous = self._observed_payload_identities.get(cache_key)
+            if (
+                incoming is not None
+                and previous is not None
+                and _web_snapshot_identity_regresses(previous, incoming)
+            ):
+                accepted = self._observed_payload_snapshots.get(cache_key)
+                if accepted is not None:
+                    return False, deepcopy(accepted)
+                return (
+                    False,
+                    {
+                        "enabled": False,
+                        "status": "stale_source_rejected",
+                    },
+                )
+            self._observed_payload_hashes[cache_key] = digest
+            if incoming is not None:
+                self._observed_payload_identities[cache_key] = incoming
+            self._observed_payload_snapshots[cache_key] = deepcopy(
+                normalized_payload
+            )
+            return True, deepcopy(normalized_payload)
+
+    def remember_pending_operation_event(
+        self,
+        scope_id: str,
+        event: Mapping[str, object],
+    ) -> None:
+        """Retain lifecycle events until one SSE write succeeds."""
+
+        normalized_scope = str(scope_id or "")
+        payload = event.get("payload")
+        timeline_seq = (
+            _web_event_int(payload.get("timeline_seq"), 0)
+            if isinstance(payload, Mapping)
+            else 0
+        )
+        pending_key = timeline_seq or max(
+            0,
+            int(event.get("event_seq", 0)),
+        )
+        if not normalized_scope or pending_key <= 0:
+            return
+        with self._event_source_lock:
+            pending = self._pending_operation_events.setdefault(
+                normalized_scope,
+                {},
+            )
+            pending[pending_key] = deepcopy(dict(event))
+            while len(pending) > self._PENDING_OPERATION_EVENT_RETENTION:
+                pending.pop(min(pending), None)
+
+    def prepare_authoritative_operation_replay(
+        self,
+        scope_id: str,
+        *,
+        snapshot_cursor: int,
+    ) -> tuple[int, tuple[dict[str, object], ...]]:
+        """Prepare a subscriber-local replay independent of journal retention."""
+
+        normalized_scope = str(scope_id or "")
+        normalized_cursor = max(0, int(snapshot_cursor))
+        with self._event_source_lock:
+            replay_available, retained = self.event_journal.replay_batch(
+                normalized_cursor
+            )
+            effective_cursor = (
+                normalized_cursor
+                if replay_available
+                else self.event_journal.latest_seq
+            )
+            pending = self._pending_operation_events.get(
+                normalized_scope,
+                {},
+            )
+            retained_events = [
+                dict(event)
+                for event in (retained if replay_available else ())
+            ]
+            retained_pending_keys = {
+                _web_event_int(event["payload"].get("timeline_seq"), 0)
+                for event in retained_events
+                if (
+                    str(event.get("event_type", "") or "")
+                    == "operation_event"
+                    and str(
+                        event.get("blackboard_scope_id", "") or ""
+                    )
+                    == normalized_scope
+                    and isinstance(event.get("payload"), Mapping)
+                )
+            }
+            historical_pending = []
+            for pending_key, event in sorted(pending.items()):
+                if pending_key in retained_pending_keys:
+                    continue
+                replay_event = deepcopy(dict(event))
+                replay_event["event_seq"] = effective_cursor
+                replay_event["subscriber_local_replay"] = True
+                historical_pending.append(replay_event)
+            return (
+                effective_cursor,
+                tuple((*historical_pending, *retained_events)),
+            )
+
     def touch_operation_event_scope(self, scope_id: str) -> None:
         """Bound per-blackboard event cursors and their related caches."""
 
@@ -18114,25 +21956,14 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                 > self._OPERATION_EVENT_SCOPE_RETENTION
             ):
                 evicted = self._observed_operation_scope_order.popleft()
-                self._observed_operation_event_seq.pop(evicted, None)
-                self._observed_payload_hashes.pop(
-                    f"micromachine:{evicted}",
-                    None,
+                evicted_seq = self._observed_operation_event_seq.pop(
+                    evicted,
+                    0,
                 )
-                self._observed_payload_identities.pop(
-                    f"micromachine:{evicted}",
-                    None,
+                self.remember_operation_event_high_water(
+                    evicted,
+                    evicted_seq,
                 )
-                source_key = f"micromachine_status:{evicted}"
-                self._observed_payload_hashes.pop(
-                    f"source:{source_key}",
-                    None,
-                )
-                self._observed_payload_identities.pop(
-                    f"source:{source_key}",
-                    None,
-                )
-                self._failed_event_sources.discard(source_key)
 
     def begin_shutdown(self) -> None:
         """Signal active streams and wake their journal waits."""
@@ -18341,15 +22172,24 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         cursor = after
+        snapshot_admitted = True
         try:
-            replay_available, replay_events = journal.replay_batch(after)
-            if after == 0 or not replay_available:
+            if after == 0:
                 while True:
                     cursor = self._write_authoritative_sse_snapshot(
                         journal,
                         blackboard_dir,
                         blackboard_scope_id,
                     )
+                    snapshot_admitted = bool(
+                        getattr(
+                            self,
+                            "_last_authoritative_snapshot_admitted",
+                            False,
+                        )
+                    )
+                    if not snapshot_admitted:
+                        break
                     replay_available, replay_events = journal.replay_batch(
                         cursor
                     )
@@ -18361,16 +22201,115 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         )
                         break
             else:
-                cursor = self._write_visible_sse_events(
-                    replay_events,
-                    cursor=cursor,
-                    blackboard_scope_id=blackboard_scope_id,
+                server = self.server  # type: ignore[assignment]
+                cursor, replay_events = (
+                    server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
+                        blackboard_scope_id,
+                        snapshot_cursor=after,
+                    )
                 )
+                replay_requires_snapshot = any(
+                    str(event.get("event_type", "") or "")
+                    == "operation_event"
+                    and str(
+                        event.get("blackboard_scope_id", "") or ""
+                    )
+                    == blackboard_scope_id
+                    for event in replay_events
+                )
+                reconnect_authority_current = False
+                try:
+                    reconnect_status = self._micromachine_status_payload(
+                        blackboard_dir,
+                        read_only=True,
+                    )
+                    reconnect_scope = str(
+                        reconnect_status.get("blackboard_scope_id")
+                        or blackboard_scope_id
+                    )
+                    reconnect_status_name = str(
+                        reconnect_status.get("status", "") or ""
+                    )
+                    reconnect_authority_current = bool(
+                        reconnect_scope == blackboard_scope_id
+                        and reconnect_status.get(
+                            "operation_registry_authoritative"
+                        )
+                        is True
+                        and reconnect_status_name
+                        not in {
+                            "operation_history_capacity_rejected",
+                            "scope_capacity_rejected",
+                            "scope_identity_mismatch",
+                            "source_error",
+                        }
+                    )
+                except Exception:  # noqa: BLE001 - snapshot reports failure.
+                    reconnect_authority_current = False
+                scope_was_authoritative = (
+                    server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
+                        blackboard_scope_id
+                    )
+                )
+                if (
+                    cursor != after
+                    or replay_requires_snapshot
+                    or (
+                        scope_was_authoritative
+                        and not reconnect_authority_current
+                    )
+                ):
+                    cursor = self._write_authoritative_sse_snapshot(
+                        journal,
+                        blackboard_dir,
+                        blackboard_scope_id,
+                    )
+                    snapshot_admitted = bool(
+                        getattr(
+                            self,
+                            "_last_authoritative_snapshot_admitted",
+                            False,
+                        )
+                    )
+                else:
+                    cursor = self._write_visible_sse_events(
+                        replay_events,
+                        cursor=cursor,
+                        blackboard_scope_id=blackboard_scope_id,
+                    )
             self._write_sse_heartbeat()
             if once:
                 return
             server = self.server  # type: ignore[assignment]
             while not server.shutdown_event.is_set():  # type: ignore[attr-defined]
+                if not snapshot_admitted:
+                    if server.shutdown_event.wait(  # type: ignore[attr-defined]
+                        WEB_GUI_SSE_REFRESH_SECONDS
+                    ):
+                        return
+                    cursor = self._write_authoritative_sse_snapshot(
+                        journal,
+                        blackboard_dir,
+                        blackboard_scope_id,
+                    )
+                    snapshot_admitted = bool(
+                        getattr(
+                            self,
+                            "_last_authoritative_snapshot_admitted",
+                            False,
+                        )
+                    )
+                    if snapshot_admitted:
+                        replay_available, events = journal.replay_batch(
+                            cursor
+                        )
+                        if replay_available:
+                            cursor = self._write_visible_sse_events(
+                                events,
+                                cursor=cursor,
+                                blackboard_scope_id=blackboard_scope_id,
+                            )
+                    continue
                 self._refresh_event_sources(blackboard_dir)
                 replay_available, events = journal.wait_for_replay_batch(
                     cursor,
@@ -18383,6 +22322,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                             blackboard_dir,
                             blackboard_scope_id,
                         )
+                        snapshot_admitted = bool(
+                            getattr(
+                                self,
+                                "_last_authoritative_snapshot_admitted",
+                                False,
+                            )
+                        )
+                        if not snapshot_admitted:
+                            break
                         replay_available, events = journal.replay_batch(
                             cursor
                         )
@@ -18416,35 +22364,207 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         blackboard_dir: str,
         blackboard_scope_id: str,
     ) -> int:
-        # Cut the journal cursor before potentially slow bridge/filesystem
-        # reads. Events published while the snapshot is built remain strictly
-        # newer than this cursor and are replayed after the snapshot.
-        snapshot_cursor = journal.latest_seq
-        snapshot_payload = self._authoritative_event_snapshot(
+        server = self.server  # type: ignore[assignment]
+        # Direct journal publications after this cut remain replayable. A cold
+        # operation source is materialized once without journal publication;
+        # the second read and every warm read commit only timeline_seq values
+        # newer than that scope-local source cursor.
+        snapshot_cut = journal.latest_seq
+        source_lock = server.operation_status_lock(  # type: ignore[attr-defined]
             blackboard_dir
         )
-        micromachine_status = snapshot_payload.get(
-            "micromachine_status"
-        )
-        if isinstance(micromachine_status, Mapping):
-            self._publish_new_operation_events(
-                micromachine_status,
-                blackboard_dir=blackboard_dir,
-                publish=True,
+        with source_lock:
+            requested_scope_id = str(blackboard_scope_id or "")
+            status_read_succeeded = True
+            try:
+                micromachine_status = self._micromachine_status_payload(
+                    blackboard_dir,
+                    read_only=True,
+                )
+            except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+                status_read_succeeded = False
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "source_error",
+                    "blackboard_scope_id": requested_scope_id,
+                    "error": _redact_sensitive_text(
+                        error,
+                        normalize_whitespace=True,
+                    ),
+                }
+            status_scope_id = str(
+                micromachine_status.get("blackboard_scope_id")
+                or requested_scope_id
             )
-        snapshot_event = {
-            "event_seq": snapshot_cursor,
-            "event_type": "snapshot",
-            "created_at_unix_ms": int(time.time() * 1000),
-            "update_id": "",
-            "operation_id": "",
-            "generation": 0,
-            "game_frame": -1,
-            "blackboard_scope_id": blackboard_scope_id,
-            "payload": snapshot_payload,
-        }
+            if (
+                status_read_succeeded
+                and status_scope_id != requested_scope_id
+            ):
+                status_read_succeeded = False
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "scope_identity_mismatch",
+                    "blackboard_scope_id": requested_scope_id,
+                    "reported_blackboard_scope_id": status_scope_id,
+                    "error": (
+                        "MicroMachine status scope does not match the "
+                        "requested blackboard scope."
+                    ),
+                }
+                status_scope_id = requested_scope_id
+            if (
+                status_read_succeeded
+                and str(
+                    micromachine_status.get("status", "") or ""
+                )
+                in {
+                    "operation_history_capacity_rejected",
+                    "scope_capacity_rejected",
+                    "scope_identity_mismatch",
+                    "source_error",
+                }
+            ):
+                status_read_succeeded = False
+            status_is_authoritative = bool(
+                micromachine_status.get(
+                    "operation_registry_authoritative"
+                )
+                is True
+            )
+            if (
+                status_read_succeeded
+                and status_is_authoritative
+                and not server.admit_operation_event_scope(  # type: ignore[attr-defined]
+                    requested_scope_id
+                )
+            ):
+                status_read_succeeded = False
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "scope_capacity_rejected",
+                    "blackboard_scope_id": requested_scope_id,
+                    "error": (
+                        "MicroMachine operation scope capacity is exhausted."
+                    ),
+                }
+                status_scope_id = requested_scope_id
+            source_materialized, _ = (
+                server.operation_event_source_cursor(  # type: ignore[attr-defined]
+                    status_scope_id
+                )
+            )
+            if (
+                status_read_succeeded
+                and status_is_authoritative
+                and not source_materialized
+            ):
+                # First materialization is historical hydration. It advances
+                # the source cursor but emits no lifecycle event.
+                self._publish_new_operation_events(
+                    micromachine_status,
+                    blackboard_dir=blackboard_dir,
+                    publish=True,
+                )
+                try:
+                    candidate_status = self._micromachine_status_payload(
+                        blackboard_dir,
+                        read_only=True,
+                    )
+                except Exception:  # noqa: BLE001 - retain the materialized cut.
+                    candidate_status = micromachine_status
+                candidate_scope_id = str(
+                    candidate_status.get("blackboard_scope_id")
+                    or blackboard_scope_id
+                )
+                candidate_status_name = str(
+                    candidate_status.get("status", "") or ""
+                )
+                first_identity = _web_snapshot_order_identity(
+                    micromachine_status
+                )
+                candidate_identity = _web_snapshot_order_identity(
+                    candidate_status
+                )
+                if (
+                    candidate_scope_id == status_scope_id
+                    and candidate_status.get(
+                        "operation_registry_authoritative"
+                    )
+                    is True
+                    and candidate_status_name
+                    not in {
+                        "operation_history_capacity_rejected",
+                        "scope_capacity_rejected",
+                        "scope_identity_mismatch",
+                        "source_error",
+                    }
+                    and not (
+                        first_identity is not None
+                        and candidate_identity is not None
+                        and _web_snapshot_identity_regresses(
+                            first_identity,
+                            candidate_identity,
+                        )
+                    )
+                ):
+                    micromachine_status = candidate_status
+            status_scope_id = str(
+                micromachine_status.get("blackboard_scope_id")
+                or blackboard_scope_id
+            )
+            status_accepted = False
+            if status_read_succeeded and status_is_authoritative:
+                with server._event_source_lock:  # type: ignore[attr-defined]
+                    status_accepted, accepted_status = (
+                        server.authoritative_snapshot_payload(  # type: ignore[attr-defined]
+                            f"micromachine:{status_scope_id}",
+                            micromachine_status,
+                        )
+                    )
+                    if status_accepted:
+                        self._publish_new_operation_events(
+                            micromachine_status,
+                            blackboard_dir=blackboard_dir,
+                            publish=True,
+                        )
+                    micromachine_status = accepted_status
+            snapshot_payload = self._authoritative_event_snapshot(
+                blackboard_dir,
+                micromachine_status=micromachine_status,
+            )
+            authoritative_status_admitted = bool(
+                status_read_succeeded and status_accepted
+            )
+            if authoritative_status_admitted:
+                snapshot_cursor, prepared_replay = (
+                    server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
+                        status_scope_id,
+                        snapshot_cursor=snapshot_cut,
+                    )
+                )
+            else:
+                snapshot_cursor = snapshot_cut
+                prepared_replay = ()
+            self._last_authoritative_snapshot_admitted = (
+                authoritative_status_admitted
+            )
+            snapshot_event = {
+                "event_seq": snapshot_cursor,
+                "event_type": "snapshot",
+                "created_at_unix_ms": int(time.time() * 1000),
+                "update_id": "",
+                "operation_id": "",
+                "generation": 0,
+                "game_frame": -1,
+                "blackboard_scope_id": blackboard_scope_id,
+                "payload": snapshot_payload,
+            }
         self._write_sse_event(snapshot_event)
-        return snapshot_cursor
+        return self._write_visible_sse_events(
+            prepared_replay,
+            cursor=snapshot_cursor,
+            blackboard_scope_id=blackboard_scope_id,
+        )
 
     def _write_visible_sse_events(
         self,
@@ -18483,6 +22603,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
     def _authoritative_event_snapshot(
         self,
         blackboard_dir: str,
+        *,
+        micromachine_status: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         try:
             snapshot = self._state_payload()
@@ -18514,24 +22636,26 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     normalize_whitespace=True,
                 ),
             }
-        try:
-            micromachine_status = self._micromachine_status_payload(
-                blackboard_dir
-            )
-        except Exception as error:  # noqa: BLE001 - snapshot remains usable.
-            micromachine_status = {
-                "enabled": False,
-                "status": "source_error",
-                "error": _redact_sensitive_text(
-                    error,
-                    normalize_whitespace=True,
-                ),
-            }
+        if micromachine_status is None:
+            try:
+                micromachine_status = self._micromachine_status_payload(
+                    blackboard_dir,
+                    read_only=True,
+                )
+            except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "source_error",
+                    "error": _redact_sensitive_text(
+                        error,
+                        normalize_whitespace=True,
+                    ),
+                }
         return {
             "snapshot_reason": "initial_or_replay_unavailable",
             "state": snapshot,
             "history": history_payload,
-            "micromachine_status": micromachine_status,
+            "micromachine_status": dict(micromachine_status),
         }
 
     def _refresh_event_sources(self, blackboard_dir: str) -> None:
@@ -18592,41 +22716,123 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 },
             )
         try:
-            status = self._micromachine_status_payload(blackboard_dir)
-            scope = str(
-                status.get("blackboard_scope_id")
-                or status.get("blackboard_dir")
-                or blackboard_dir
+            source_lock = server.operation_status_lock(  # type: ignore[attr-defined]
+                blackboard_dir
             )
-            status_published = server.publish_changed_snapshot(  # type: ignore[attr-defined]
-                f"micromachine:{scope}",
-                "micromachine_status",
-                status,
-                blackboard_dir=blackboard_dir,
-            )
-            if status_published:
-                self._publish_new_operation_events(
-                    status,
-                    blackboard_dir=blackboard_dir,
-                    publish=True,
+            with source_lock:
+                requested_scope = _micromachine_blackboard_scope_id(
+                    blackboard_dir
                 )
-            server.publish_source_recovered(  # type: ignore[attr-defined]
-                f"micromachine_status:{scope}",
-                "micromachine_status",
-                blackboard_dir=blackboard_dir,
-            )
+                status = self._micromachine_status_payload(
+                    blackboard_dir,
+                    read_only=True,
+                )
+                scope = str(
+                    status.get("blackboard_scope_id")
+                    or requested_scope
+                )
+                if scope != requested_scope:
+                    raise RuntimeError(
+                        "MicroMachine status scope does not match the "
+                        "requested blackboard scope."
+                    )
+                status_name = str(status.get("status", "") or "")
+                status_is_authoritative = bool(
+                    status.get("operation_registry_authoritative")
+                    is True
+                    and status_name
+                    not in {
+                        "operation_history_capacity_rejected",
+                        "scope_capacity_rejected",
+                        "scope_identity_mismatch",
+                        "source_error",
+                    }
+                )
+                if not status_is_authoritative:
+                    if not server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
+                        requested_scope
+                    ):
+                        return
+                    with server._event_source_lock:  # type: ignore[attr-defined]
+                        server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                            f"micromachine:{scope}",
+                            "micromachine_status",
+                            status,
+                            blackboard_dir=blackboard_dir,
+                        )
+                    if status_name == "source_error":
+                        server.publish_source_error(  # type: ignore[attr-defined]
+                            f"micromachine_status:{scope}",
+                            "micromachine_status",
+                            {
+                                "blackboard_dir": blackboard_dir,
+                                "blackboard_scope_id": scope,
+                                "error": str(
+                                    status.get("error", "")
+                                    or "MicroMachine status source failed."
+                                ),
+                            },
+                            blackboard_dir=blackboard_dir,
+                        )
+                    else:
+                        server.publish_source_recovered(  # type: ignore[attr-defined]
+                            f"micromachine_status:{scope}",
+                            "micromachine_status",
+                            blackboard_dir=blackboard_dir,
+                        )
+                    return
+                if not server.admit_operation_event_scope(  # type: ignore[attr-defined]
+                    requested_scope
+                ):
+                    return
+                with server._event_source_lock:  # type: ignore[attr-defined]
+                    status_published = server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                        f"micromachine:{scope}",
+                        "micromachine_status",
+                        status,
+                        blackboard_dir=blackboard_dir,
+                    )
+                    if status_published:
+                        self._publish_new_operation_events(
+                            status,
+                            blackboard_dir=blackboard_dir,
+                            publish=True,
+                        )
+                server.publish_source_recovered(  # type: ignore[attr-defined]
+                    f"micromachine_status:{scope}",
+                    "micromachine_status",
+                    blackboard_dir=blackboard_dir,
+                )
         except Exception as error:  # noqa: BLE001 - stream remains available.
             scope_id = _micromachine_blackboard_scope_id(blackboard_dir)
+            if not server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
+                scope_id
+            ):
+                return
+            error_text = _redact_sensitive_text(
+                error,
+                normalize_whitespace=True,
+            )
+            server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                f"micromachine:{scope_id}",
+                "micromachine_status",
+                {
+                    "enabled": False,
+                    "status": "source_error",
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": scope_id,
+                    "operation_registry_authoritative": False,
+                    "error": error_text,
+                },
+                blackboard_dir=blackboard_dir,
+            )
             server.publish_source_error(  # type: ignore[attr-defined]
                 f"micromachine_status:{scope_id}",
                 "micromachine_status",
                 {
                     "blackboard_dir": blackboard_dir,
                     "blackboard_scope_id": scope_id,
-                    "error": _redact_sensitive_text(
-                        error,
-                        normalize_whitespace=True,
-                    ),
+                    "error": error_text,
                 },
                 blackboard_dir=blackboard_dir,
             )
@@ -18638,12 +22844,21 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         blackboard_dir: str,
         publish: bool,
     ) -> None:
+        if not publish:
+            return
         server = self.server  # type: ignore[assignment]
         with server._event_source_lock:  # type: ignore[attr-defined]
             scope_id = str(
                 status.get("blackboard_scope_id")
                 or _micromachine_blackboard_scope_id(blackboard_dir)
             )
+            first_scope_observation = bool(
+                scope_id
+                and scope_id
+                not in server._materialized_operation_event_scopes  # type: ignore[attr-defined]
+            )
+            if not server.admit_operation_event_scope(scope_id):  # type: ignore[attr-defined]
+                return
             server.touch_operation_event_scope(scope_id)  # type: ignore[attr-defined]
             raw_events = status.get("operation_events")
             events = (
@@ -18656,11 +22871,39 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 and not isinstance(raw_events, (str, bytes, bytearray))
                 else []
             )
-            if not publish:
+            if first_scope_observation:
+                observed = max(
+                    (
+                        _web_event_int(
+                            event.get("timeline_seq"),
+                            0,
+                        )
+                        for event in events
+                    ),
+                    default=0,
+                )
+                server._observed_operation_event_seq[scope_id] = observed  # type: ignore[attr-defined]
+                server.remember_operation_event_high_water(  # type: ignore[attr-defined]
+                    scope_id,
+                    observed,
+                )
+                server._materialized_operation_event_scopes.add(  # type: ignore[attr-defined]
+                    scope_id
+                )
                 return
-            observed = int(
-                server._observed_operation_event_seq.get(scope_id, 0)  # type: ignore[attr-defined]
-            )
+            else:
+                observed = int(
+                    max(
+                        server._observed_operation_event_seq.get(  # type: ignore[attr-defined]
+                            scope_id,
+                            0,
+                        ),
+                        server._observed_operation_event_high_water.get(  # type: ignore[attr-defined]
+                            scope_id,
+                            0,
+                        ),
+                    )
+                )
             latest = observed
             for event in sorted(
                 events,
@@ -18676,11 +22919,13 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if timeline_seq <= observed:
                     continue
                 latest = max(latest, timeline_seq)
-                server.publish_event(  # type: ignore[attr-defined]
+                published_event = server.publish_event(  # type: ignore[attr-defined]
                     "operation_event",
                     event,
                     update_id=str(event.get("update_id", "") or ""),
-                    operation_id=str(event.get("operation_id", "") or ""),
+                    operation_id=str(
+                        event.get("operation_id", "") or ""
+                    ),
                     generation=max(
                         0,
                         _web_event_int(event.get("generation"), 0),
@@ -18692,7 +22937,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     blackboard_dir=blackboard_dir,
                     blackboard_scope_id=scope_id,
                 )
+                server.remember_pending_operation_event(  # type: ignore[attr-defined]
+                    scope_id,
+                    published_event,
+                )
             server._observed_operation_event_seq[scope_id] = latest  # type: ignore[attr-defined]
+            server.remember_operation_event_high_water(  # type: ignore[attr-defined]
+                scope_id,
+                latest,
+            )
 
     def _state_payload(self) -> dict[str, object]:
         snapshot = self._bridge.state_snapshot()
@@ -18705,6 +22958,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
     def _micromachine_status_payload(
         self,
         blackboard_dir: str,
+        *,
+        read_only: bool = False,
     ) -> dict[str, object]:
         status_fn = getattr(self._bridge, "micromachine_status", None)
         if not callable(status_fn):
@@ -18750,6 +23005,29 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             and runtime_snapshot.get("runtime_attached") is True
             and runtime_snapshot.get("telemetry_current_for_process") is True
         )
+        runtime_blackboard_dir = (
+            str(runtime_snapshot.get("blackboard_dir", "") or "")
+            if isinstance(runtime_snapshot, Mapping)
+            else ""
+        )
+        runtime_scope_matches_request = bool(
+            runtime_blackboard_dir
+            and _micromachine_blackboard_scope_id(runtime_blackboard_dir)
+            == _micromachine_blackboard_scope_id(blackboard_dir)
+        )
+        if (
+            runtime_claims_current_telemetry
+            and not runtime_scope_matches_request
+        ):
+            # A live launcher owns exactly one blackboard. Never project its
+            # validated telemetry into a request-controlled foreign scope.
+            runtime_snapshot = dict(runtime_snapshot)
+            runtime_snapshot["telemetry_current_for_process"] = False
+            runtime_snapshot["telemetry_stale_or_detached"] = bool(
+                runtime_snapshot.get("telemetry_present") is True
+            )
+            validated_telemetry_document = None
+            runtime_claims_current_telemetry = False
         runtime_instance_id = ""
         if (
             runtime_claims_current_telemetry
@@ -18794,16 +23072,30 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "micromachine_status_detached",
                 None,
             )
-            status_builder = (
-                detached_status_fn
-                if isinstance(runtime_snapshot, Mapping)
-                and runtime_snapshot.get("telemetry_present") is True
-                and callable(detached_status_fn)
-                else status_fn
+            use_detached = bool(
+                read_only
+                or (
+                    isinstance(runtime_snapshot, Mapping)
+                    and runtime_snapshot.get("telemetry_present") is True
+                )
             )
-            payload = dict(
-                status_builder(blackboard_dir=blackboard_dir)
-            )
+            if use_detached and not callable(detached_status_fn):
+                payload = {
+                    "enabled": True,
+                    "blackboard_dir": blackboard_dir,
+                    "status": "source_error",
+                    "error": (
+                        "Read-only MicroMachine status requires a bridge "
+                        "that supports detached status projection."
+                    ),
+                }
+            else:
+                status_builder = (
+                    detached_status_fn if use_detached else status_fn
+                )
+                payload = dict(
+                    status_builder(blackboard_dir=blackboard_dir)
+                )
         return _micromachine_status_with_runtime_gate(
             payload,
             runtime_snapshot=runtime_snapshot,
@@ -18862,6 +23154,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         try:
+            web_request_id = _normalize_web_request_id(
+                document.get("request_id")
+            )
+        except (TypeError, ValueError) as error:
+            self._send_command_rejection(
+                f"request_id가 올바르지 않습니다: {error}"
+            )
+            return
+        try:
             llm_snapshot = dict(self._bridge.llm_settings_snapshot())
         except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
             self._send_internal_error(error)
@@ -18873,7 +23174,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         try:
-            self._bridge.submit_command(text.strip())
+            submit_correlated = getattr(
+                self._bridge,
+                "submit_correlated_command",
+                None,
+            )
+            if web_request_id and callable(submit_correlated):
+                submit_correlated(text.strip(), web_request_id)
+            else:
+                self._bridge.submit_command(text.strip())
         except RuntimeError:
             self._send_json(
                 HTTPStatus.SERVICE_UNAVAILABLE,
@@ -18891,6 +23200,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         legacy_operation_id = str(
             document.get("operation_id", "")
+            or web_request_id
             or f"legacy-{uuid.uuid4().hex}"
         )
         self.server.publish_event(  # type: ignore[attr-defined]
@@ -18899,6 +23209,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "command_text": text.strip(),
                 "status": "received",
                 "mode": COMMAND_MODE_LEGACY_COMMANDER,
+                "request_id": web_request_id,
             },
             operation_id=legacy_operation_id,
             generation=max(0, _web_event_int(document.get("generation"), 0)),
@@ -19118,12 +23429,48 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_micromachine_status(self) -> None:
         params = parse_qs(urlsplit(self.path).query)
-        blackboard_dir = params.get("blackboard_dir", [""])[0] or ""
+        blackboard_dir = self._resolved_micromachine_blackboard_dir(
+            params.get("blackboard_dir", [""])[0] or ""
+        )
+        requested_scope_id = _micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
         try:
-            self._send_json(
-                HTTPStatus.OK,
-                self._micromachine_status_payload(blackboard_dir),
+            payload = self._micromachine_status_payload(
+                blackboard_dir,
+                read_only=True,
             )
+            reported_scope_id = str(
+                payload.get("blackboard_scope_id")
+                or requested_scope_id
+            )
+            if reported_scope_id != requested_scope_id:
+                payload = {
+                    "enabled": False,
+                    "status": "scope_identity_mismatch",
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": requested_scope_id,
+                    "reported_blackboard_scope_id": reported_scope_id,
+                    "error": (
+                        "MicroMachine status scope does not match the "
+                        "requested blackboard scope."
+                    ),
+                }
+            elif (
+                str(payload.get("status", "") or "")
+                == "scope_capacity_rejected"
+            ):
+                payload = dict(payload)
+                payload["enabled"] = False
+                payload["status"] = "scope_capacity_rejected"
+                payload.setdefault(
+                    "error",
+                    (
+                        "MicroMachine operation scope capacity is "
+                        "exhausted."
+                    ),
+                )
+            self._send_json(HTTPStatus.OK, payload)
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
 
