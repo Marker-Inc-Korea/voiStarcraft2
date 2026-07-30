@@ -252,6 +252,16 @@ def _browser_fixture_page() -> str:
     );
   }
 
+  function isRendered(node) {
+    if (!node) { return false; }
+    var style = window.getComputedStyle(node);
+    var rect = node.getBoundingClientRect();
+    return style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      rect.width > 0 &&
+      rect.height > 0;
+  }
+
   window.setTimeout(function () {
     var recognition = window.__voiceQa.recognition;
     document.getElementById("voice-button").click();
@@ -307,6 +317,115 @@ def _browser_fixture_page() -> str:
       var radioInsidePanel =
         radioRect.left >= panelRect.left - 1 &&
         radioRect.right <= panelRect.right + 1;
+      var cards = Array.from(
+        document.querySelectorAll(".operation-card")
+      );
+      var expectedStages = ["해석", "배정", "제출", "관측"];
+      var expectedActions = [
+        "view",
+        "revise",
+        "reinforce",
+        "retarget",
+        "cancel"
+      ];
+      var expectedActionLabels = [
+        "대표 보기",
+        "수정",
+        "증원",
+        "목표 변경",
+        "작전 취소"
+      ];
+      var fourStages = cards.length === 2 && cards.every(function (card) {
+        var stageLine = card.querySelector(".operation-stage-line");
+        var stages = Array.from(
+          card.querySelectorAll(".operation-stage")
+        );
+        return stageLine &&
+          stageLine.getAttribute("role") === "list" &&
+          stages.length === 4 &&
+          stages.every(function (stage, index) {
+            return stage.textContent === expectedStages[index] &&
+              stage.getAttribute("role") === "listitem" &&
+              ["step", "false"].indexOf(
+                stage.getAttribute("aria-current")
+              ) !== -1;
+          });
+      });
+      var fiveActions = cards.length === 2 && cards.every(function (card) {
+        var actions = Array.from(
+          card.querySelectorAll("[data-operation-action]")
+        );
+        return actions.length === 5 &&
+          actions.every(function (action, index) {
+            return action.getAttribute("data-operation-action") ===
+                expectedActions[index] &&
+              action.textContent === expectedActionLabels[index];
+          });
+      });
+      var ids = {};
+      var uniqueIds = Array.from(
+        document.querySelectorAll("[id]")
+      ).every(function (node) {
+        var id = String(node.id || "");
+        if (!id || ids[id]) { return false; }
+        ids[id] = true;
+        return true;
+      });
+      var cardAccessibility =
+        cards.length === 2 &&
+        cards.every(function (card) {
+          var labelledBy = card.getAttribute("aria-labelledby");
+          var stages = Array.from(
+            card.querySelectorAll(".operation-stage")
+          );
+          var actions = Array.from(
+            card.querySelectorAll("[data-operation-action]")
+          );
+          return card.getAttribute("role") === "listitem" &&
+            Boolean(labelledBy) &&
+            Boolean(document.getElementById(labelledBy)) &&
+            isRendered(card) &&
+            stages.every(isRendered) &&
+            actions.every(function (action) {
+              return action.tagName === "BUTTON" &&
+                Boolean(action.getAttribute("aria-label")) &&
+                isRendered(action);
+            });
+        });
+      var focusTarget = cards[0] && cards[0].querySelector(
+        '[data-operation-action="retarget"]'
+      );
+      var focusContinuity = false;
+      if (focusTarget) {
+        var focusKey = focusTarget.getAttribute("data-operation-key");
+        var focusRecord = operationRecords[focusKey];
+        var cardBefore = focusRecord && focusRecord.node;
+        var fingerprintBefore = cardBefore && cardBefore.getAttribute(
+          "data-operation-card-fingerprint"
+        );
+        focusTarget.focus();
+        if (focusRecord) {
+          focusRecord.telemetryFrame =
+            Number(focusRecord.telemetryFrame || 0) + 1;
+          focusRecord.data = Object.assign({}, focusRecord.data, {
+            browser_focus_revision:
+              Number(focusRecord.data.browser_focus_revision || 0) + 1
+          });
+          renderOperationRecords();
+          var focusedAfter = document.activeElement;
+          var cardAfter = focusRecord.node;
+          focusContinuity =
+            cardAfter === cardBefore &&
+            cardAfter.getAttribute(
+              "data-operation-card-fingerprint"
+            ) !== fingerprintBefore &&
+            focusedAfter !== focusTarget &&
+            focusedAfter.getAttribute("data-operation-key") === focusKey &&
+            focusedAfter.getAttribute("data-operation-action") ===
+              "retarget" &&
+            operationNodeContains(cardAfter, focusedAfter);
+        }
+      }
 
       mark("complete", true);
       mark("single-node", interimSharedNode &&
@@ -340,6 +459,11 @@ def _browser_fixture_page() -> str:
         Boolean(document.getElementById("command-form")) &&
         Boolean(document.getElementById("voice-button")) &&
         radio.parentNode === commandPanel);
+      mark("four-stages", fourStages);
+      mark("five-actions", fiveActions);
+      mark("unique-ids", uniqueIds);
+      mark("card-accessibility", cardAccessibility);
+      mark("focus-continuity", focusContinuity);
       mark("layout", noHorizontalOverflow && radioInsidePanel);
     }, 120);
   }, 40);
@@ -370,6 +494,11 @@ class WebGuiRealBrowserTest(unittest.TestCase):
             "mute-caption",
             "accessibility",
             "original-ux",
+            "four-stages",
+            "five-actions",
+            "unique-ids",
+            "card-accessibility",
+            "focus-continuity",
             "layout",
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
