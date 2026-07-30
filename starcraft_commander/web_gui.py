@@ -7037,8 +7037,6 @@ class _OperationSemanticTimelineReducer:
             payload.get("operation_registry_authoritative") is not False
         )
         with self._lock:
-            if not self._admit_scope(scope_id):
-                return self._scope_capacity_rejected_result(result)
             active_epoch = self._scope_epochs.get(scope_id, "")
             current_epoch = (
                 active_epoch
@@ -7062,6 +7060,8 @@ class _OperationSemanticTimelineReducer:
                     self._scope_event_high_water.get(scope_id, 0)
                 )
                 return result
+            if not self._admit_scope(scope_id):
+                return self._scope_capacity_rejected_result(result)
             self._touch_scope(scope_id)
             if (
                 incoming_epoch
@@ -22831,6 +22831,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
     def _micromachine_status_payload(
         self,
         blackboard_dir: str,
+        *,
+        read_only: bool = False,
     ) -> dict[str, object]:
         status_fn = getattr(self._bridge, "micromachine_status", None)
         if not callable(status_fn):
@@ -22920,16 +22922,30 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "micromachine_status_detached",
                 None,
             )
-            status_builder = (
-                detached_status_fn
-                if isinstance(runtime_snapshot, Mapping)
-                and runtime_snapshot.get("telemetry_present") is True
-                and callable(detached_status_fn)
-                else status_fn
+            use_detached = bool(
+                read_only
+                or (
+                    isinstance(runtime_snapshot, Mapping)
+                    and runtime_snapshot.get("telemetry_present") is True
+                )
             )
-            payload = dict(
-                status_builder(blackboard_dir=blackboard_dir)
-            )
+            if use_detached and not callable(detached_status_fn):
+                payload = {
+                    "enabled": True,
+                    "blackboard_dir": blackboard_dir,
+                    "status": "source_error",
+                    "error": (
+                        "Read-only MicroMachine status requires a bridge "
+                        "that supports detached status projection."
+                    ),
+                }
+            else:
+                status_builder = (
+                    detached_status_fn if use_detached else status_fn
+                )
+                payload = dict(
+                    status_builder(blackboard_dir=blackboard_dir)
+                )
         return _micromachine_status_with_runtime_gate(
             payload,
             runtime_snapshot=runtime_snapshot,
@@ -23270,7 +23286,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             blackboard_dir
         )
         try:
-            payload = self._micromachine_status_payload(blackboard_dir)
+            payload = self._micromachine_status_payload(
+                blackboard_dir,
+                read_only=True,
+            )
             reported_scope_id = str(
                 payload.get("blackboard_scope_id")
                 or requested_scope_id

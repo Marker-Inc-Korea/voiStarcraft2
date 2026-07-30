@@ -2282,31 +2282,6 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     f"status-reserved-scope-{index}"
                 )
             )
-        original = self.bridge.micromachine_status
-        status_reads = 0
-
-        def status_without_replay_reservation(*, blackboard_dir=""):
-            nonlocal status_reads
-            status_reads += 1
-            return {
-                "enabled": True,
-                "status": "live",
-                "blackboard_dir": blackboard_dir,
-                "blackboard_scope_id": (
-                    web_gui._micromachine_blackboard_scope_id(
-                        blackboard_dir
-                    )
-                ),
-                "operation_events": [],
-            }
-
-        self.bridge.micromachine_status = status_without_replay_reservation
-        self.addCleanup(
-            setattr,
-            self.bridge,
-            "micromachine_status",
-            original,
-        )
 
         novel_dir = "/tmp/status-capacity-read-only"
         novel_scope = web_gui._micromachine_blackboard_scope_id(novel_dir)
@@ -2315,7 +2290,6 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             f"blackboard_dir={novel_dir}"
         )
 
-        self.assertEqual(1, status_reads)
         self.assertTrue(document["enabled"])
         self.assertNotEqual("scope_capacity_rejected", document["status"])
         self.assertNotIn(
@@ -2329,27 +2303,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
     def test_many_status_probes_cannot_deny_legitimate_sse_scope(self):
         server = self.server._http
-        original = self.bridge.micromachine_status
-
-        def identity_checked_status(*, blackboard_dir=""):
-            return {
-                "enabled": True,
-                "status": "live",
-                "blackboard_dir": blackboard_dir,
-                "blackboard_scope_id": (
-                    web_gui._micromachine_blackboard_scope_id(
-                        blackboard_dir
-                    )
-                ),
-                "operation_events": [],
-            }
-
-        self.bridge.micromachine_status = identity_checked_status
-        self.addCleanup(
-            setattr,
-            self.bridge,
-            "micromachine_status",
-            original,
+        timeline = self.bridge._micromachine_operation_timeline
+        scope_history_before = dict(
+            timeline._scope_epoch_history
         )
 
         for index in range(
@@ -2368,6 +2324,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             {},
             server._observed_operation_event_high_water,
             "read-only status probes must not reserve replay tombstones",
+        )
+        self.assertEqual(
+            scope_history_before,
+            timeline._scope_epoch_history,
+            "read-only status probes must not reserve reducer scope history",
         )
 
         legitimate_dir = "/tmp/legitimate-sse-source"
@@ -2391,9 +2352,26 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             legitimate_scope,
             server._observed_operation_event_high_water,
         )
+        authoritative = timeline.observe(
+            {
+                "status": "live",
+                "operation_registry_authoritative": True,
+                "operations": [],
+            },
+            blackboard_scope_id=legitimate_scope,
+        )
+        self.assertNotEqual(
+            "scope_capacity_rejected",
+            authoritative.get("status"),
+        )
+        self.assertIn(
+            legitimate_scope,
+            timeline._scope_epoch_history,
+            "a later authoritative source must still admit the legitimate scope",
+        )
 
     def test_status_endpoint_rejects_reported_scope_mismatch(self):
-        original = self.bridge.micromachine_status
+        original = self.bridge.micromachine_status_detached
 
         def mismatched_status(*, blackboard_dir=""):
             return {
@@ -2403,11 +2381,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "blackboard_scope_id": "foreign-status-scope",
             }
 
-        self.bridge.micromachine_status = mismatched_status
+        self.bridge.micromachine_status_detached = mismatched_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_detached",
             original,
         )
 
