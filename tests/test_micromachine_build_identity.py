@@ -1,6 +1,8 @@
 """Tests for reproducible MicroMachine build identity reports."""
 
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -8,10 +10,12 @@ from pathlib import Path
 
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
+    MICROMACHINE_REQUIRED_NATIVE_TESTS,
     MicroMachineBuildIdentityConfig,
     build_argument_parser,
     build_micromachine_build_identity,
     build_runtime_workspace_identity,
+    inspect_git_worktree_state,
     micromachine_build_identity_admission_error,
     read_build_identity,
     write_build_identity_report,
@@ -400,10 +404,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_explicit_ability_observation_confirmation_"
-                    "patch_sha256"
-                ),
+                ("micromachine_explicit_ability_observation_confirmation_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -411,10 +412,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_explicit_ability_production_isolation_"
-                    "patch_sha256"
-                ),
+                ("micromachine_explicit_ability_production_isolation_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -422,10 +420,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_explicit_ability_attempt_lifecycle_"
-                    "patch_sha256"
-                ),
+                ("micromachine_explicit_ability_attempt_lifecycle_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -433,10 +428,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_explicit_ability_review_closure_"
-                    "patch_sha256"
-                ),
+                ("micromachine_explicit_ability_review_closure_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -444,10 +436,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_authoritative_addon_runtime_clearance_"
-                    "patch_sha256"
-                ),
+                ("micromachine_authoritative_addon_runtime_clearance_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -455,10 +444,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_banshee_unit_specific_cloak_command_"
-                    "patch_sha256"
-                ),
+                ("micromachine_banshee_unit_specific_cloak_command_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -466,10 +452,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_allied_cloak_observation_confirmation_"
-                    "patch_sha256"
-                ),
+                ("micromachine_allied_cloak_observation_confirmation_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -477,10 +460,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_explicit_ability_caster_ownership_"
-                    "patch_sha256"
-                ),
+                ("micromachine_explicit_ability_caster_ownership_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -488,10 +468,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_explicit_ability_staging_single_flight_"
-                    "patch_sha256"
-                ),
+                ("micromachine_explicit_ability_staging_single_flight_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -580,10 +557,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_atomic_"
-                    "admission_patch_sha256"
-                ),
+                ("micromachine_operation_transfer_atomic_admission_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -591,10 +565,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_runtime_"
-                    "preservation_patch_sha256"
-                ),
+                ("micromachine_operation_transfer_runtime_preservation_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -602,10 +573,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_transactional_"
-                    "closure_patch_sha256"
-                ),
+                ("micromachine_operation_transfer_transactional_closure_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
@@ -613,17 +581,11 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_final_review_"
-                    "closure_patch_sha256"
-                ),
+                ("micromachine_operation_transfer_final_review_closure_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_idempotence_"
-                    "active_evidence_patch"
-                ),
+                ("micromachine_operation_transfer_idempotence_active_evidence_patch"),
                 report["paths"],
             )
             self.assertIn(
@@ -652,17 +614,11 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 report["paths"],
             )
             self.assertIn(
-                (
-                    "micromachine_all_terran_harass_"
-                    "capability_evidence_patch_sha256"
-                ),
+                ("micromachine_all_terran_harass_capability_evidence_patch_sha256"),
                 report["checksums"],
             )
             self.assertIn(
-                (
-                    "micromachine_authoritative_battlefield_ownership_"
-                    "readiness_patch"
-                ),
+                ("micromachine_authoritative_battlefield_ownership_readiness_patch"),
                 report["paths"],
             )
             self.assertIn(
@@ -678,7 +634,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             self.assertIn("s2client_build_state_sha256", report["checksums"])
             self.assertEqual(
                 report["checksums"]["micromachine_patch_sha256"],
-                build_micromachine_build_identity(config)["checksums"]["micromachine_patch_sha256"],
+                build_micromachine_build_identity(config)["checksums"][
+                    "micromachine_patch_sha256"
+                ],
             )
             json.dumps(report)
 
@@ -775,12 +733,8 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             self.assertNotEqual(first["identity"], second["identity"])
             self.assertNotEqual(
-                first["checksums"][
-                    "micromachine_live_operation_unblock_patch_sha256"
-                ],
-                second["checksums"][
-                    "micromachine_live_operation_unblock_patch_sha256"
-                ],
+                first["checksums"]["micromachine_live_operation_unblock_patch_sha256"],
+                second["checksums"]["micromachine_live_operation_unblock_patch_sha256"],
             )
 
     def test_stable_flank_stage_latch_patch_checksum_changes_identity(self) -> None:
@@ -951,7 +905,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 ],
             )
 
-    def test_guaranteed_producer_grounding_patch_checksum_changes_identity(self) -> None:
+    def test_guaranteed_producer_grounding_patch_checksum_changes_identity(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = self.build_config(root, binary=True)
@@ -972,7 +928,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 ],
             )
 
-    def test_emergency_land_query_fallback_patch_checksum_changes_identity(self) -> None:
+    def test_emergency_land_query_fallback_patch_checksum_changes_identity(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = self.build_config(root, binary=True)
@@ -1272,9 +1230,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0038-explicit-terran-ability-execution.patch",
-            Path(
-                args.micromachine_explicit_terran_ability_execution_patch
-            ).name,
+            Path(args.micromachine_explicit_terran_ability_execution_patch).name,
         )
 
     def test_explicit_scout_command_epoch_patch_changes_identity(self) -> None:
@@ -1378,9 +1334,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0040-standing-production-continuity-closure.patch",
-            Path(
-                args.micromachine_standing_production_continuity_closure_patch
-            ).name,
+            Path(args.micromachine_standing_production_continuity_closure_patch).name,
         )
 
     def test_explicit_ability_caster_priority_patch_changes_identity(self) -> None:
@@ -1395,8 +1349,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             second = build_micromachine_build_identity(config)
 
             checksum = (
-                "micromachine_explicit_ability_caster_production_priority_"
-                "patch_sha256"
+                "micromachine_explicit_ability_caster_production_priority_patch_sha256"
             )
             self.assertNotEqual(first["identity"], second["identity"])
             self.assertNotEqual(
@@ -1452,8 +1405,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             second = build_micromachine_build_identity(config)
 
             checksum = (
-                "micromachine_explicit_ability_observation_confirmation_"
-                "patch_sha256"
+                "micromachine_explicit_ability_observation_confirmation_patch_sha256"
             )
             self.assertNotEqual(first["identity"], second["identity"])
             self.assertNotEqual(
@@ -1508,9 +1460,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             second = build_micromachine_build_identity(config)
 
-            checksum = (
-                "micromachine_explicit_ability_production_isolation_patch_sha256"
-            )
+            checksum = "micromachine_explicit_ability_production_isolation_patch_sha256"
             self.assertNotEqual(first["identity"], second["identity"])
             self.assertNotEqual(
                 first["checksums"][checksum],
@@ -1546,9 +1496,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0043-explicit-ability-production-isolation.patch",
-            Path(
-                args.micromachine_explicit_ability_production_isolation_patch
-            ).name,
+            Path(args.micromachine_explicit_ability_production_isolation_patch).name,
         )
 
     def test_explicit_ability_attempt_lifecycle_patch_changes_identity(
@@ -1564,9 +1512,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             second = build_micromachine_build_identity(config)
 
-            checksum = (
-                "micromachine_explicit_ability_attempt_lifecycle_patch_sha256"
-            )
+            checksum = "micromachine_explicit_ability_attempt_lifecycle_patch_sha256"
             self.assertNotEqual(first["identity"], second["identity"])
             self.assertNotEqual(
                 first["checksums"][checksum],
@@ -1588,8 +1534,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 {
                     "code": "missing_required_build_input",
                     "checksum": (
-                        "micromachine_explicit_ability_attempt_lifecycle_"
-                        "patch_sha256"
+                        "micromachine_explicit_ability_attempt_lifecycle_patch_sha256"
                     ),
                 },
                 report["failures"],
@@ -1602,9 +1547,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0044-explicit-ability-attempt-lifecycle.patch",
-            Path(
-                args.micromachine_explicit_ability_attempt_lifecycle_patch
-            ).name,
+            Path(args.micromachine_explicit_ability_attempt_lifecycle_patch).name,
         )
 
     def test_explicit_ability_review_closure_patch_changes_identity(
@@ -1614,9 +1557,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_explicit_ability_review_closure_patch_sha256"
-            )
+            checksum = "micromachine_explicit_ability_review_closure_patch_sha256"
 
             config.micromachine_explicit_ability_review_closure_patch.write_text(
                 "changed review closure\n"
@@ -1647,8 +1588,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 {
                     "code": "missing_required_build_input",
                     "checksum": (
-                        "micromachine_explicit_ability_review_closure_"
-                        "patch_sha256"
+                        "micromachine_explicit_ability_review_closure_patch_sha256"
                     ),
                 },
                 report["failures"],
@@ -1661,9 +1601,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0045-explicit-ability-review-closure.patch",
-            Path(
-                args.micromachine_explicit_ability_review_closure_patch
-            ).name,
+            Path(args.micromachine_explicit_ability_review_closure_patch).name,
         )
 
     def test_authoritative_addon_runtime_clearance_patch_changes_identity(
@@ -1673,9 +1611,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_authoritative_addon_runtime_clearance_patch_sha256"
-            )
+            checksum = "micromachine_authoritative_addon_runtime_clearance_patch_sha256"
 
             config.micromachine_authoritative_addon_runtime_clearance_patch.write_text(
                 "changed authoritative addon runtime clearance\n"
@@ -1720,9 +1656,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0046-authoritative-addon-runtime-clearance.patch",
-            Path(
-                args.micromachine_authoritative_addon_runtime_clearance_patch
-            ).name,
+            Path(args.micromachine_authoritative_addon_runtime_clearance_patch).name,
         )
 
     def test_banshee_unit_specific_cloak_command_patch_changes_identity(
@@ -1732,9 +1666,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_banshee_unit_specific_cloak_command_patch_sha256"
-            )
+            checksum = "micromachine_banshee_unit_specific_cloak_command_patch_sha256"
 
             config.micromachine_banshee_unit_specific_cloak_command_patch.write_text(
                 "changed Banshee unit-specific cloak command\n"
@@ -1765,8 +1697,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 {
                     "code": "missing_required_build_input",
                     "checksum": (
-                        "micromachine_banshee_unit_specific_cloak_command_"
-                        "patch_sha256"
+                        "micromachine_banshee_unit_specific_cloak_command_patch_sha256"
                     ),
                 },
                 report["failures"],
@@ -1779,9 +1710,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0047-banshee-unit-specific-cloak-command.patch",
-            Path(
-                args.micromachine_banshee_unit_specific_cloak_command_patch
-            ).name,
+            Path(args.micromachine_banshee_unit_specific_cloak_command_patch).name,
         )
 
     def test_allied_cloak_observation_confirmation_cli_defaults_to_patch_0048(
@@ -1791,9 +1720,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0048-allied-cloak-observation-confirmation.patch",
-            Path(
-                args.micromachine_allied_cloak_observation_confirmation_patch
-            ).name,
+            Path(args.micromachine_allied_cloak_observation_confirmation_patch).name,
         )
 
     def test_missing_allied_cloak_observation_confirmation_patch_marks_identity_not_ok(
@@ -1825,9 +1752,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_explicit_ability_caster_ownership_patch_sha256"
-            )
+            checksum = "micromachine_explicit_ability_caster_ownership_patch_sha256"
 
             config.micromachine_explicit_ability_caster_ownership_patch.write_text(
                 "changed explicit ability caster ownership\n"
@@ -1850,9 +1775,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0049-explicit-ability-caster-ownership.patch",
-            Path(
-                args.micromachine_explicit_ability_caster_ownership_patch
-            ).name,
+            Path(args.micromachine_explicit_ability_caster_ownership_patch).name,
         )
 
     def test_missing_explicit_ability_caster_ownership_patch_marks_identity_not_ok(
@@ -1870,8 +1793,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 {
                     "code": "missing_required_build_input",
                     "checksum": (
-                        "micromachine_explicit_ability_caster_ownership_"
-                        "patch_sha256"
+                        "micromachine_explicit_ability_caster_ownership_patch_sha256"
                     ),
                 },
                 report["failures"],
@@ -1909,9 +1831,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0050-explicit-ability-staging-single-flight.patch",
-            Path(
-                args.micromachine_explicit_ability_staging_single_flight_patch
-            ).name,
+            Path(args.micromachine_explicit_ability_staging_single_flight_patch).name,
         )
 
     def test_missing_explicit_ability_staging_single_flight_patch_marks_identity_not_ok(
@@ -1979,9 +1899,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             self.assertIn(
                 {
                     "code": "missing_required_build_input",
-                    "checksum": (
-                        "micromachine_all_terran_combat_scouts_patch_sha256"
-                    ),
+                    "checksum": ("micromachine_all_terran_combat_scouts_patch_sha256"),
                 },
                 report["failures"],
             )
@@ -1991,9 +1909,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_parallel_operations_ingame_hud_patch_sha256"
-            )
+            checksum = "micromachine_parallel_operations_ingame_hud_patch_sha256"
 
             config.micromachine_parallel_operations_ingame_hud_patch.write_text(
                 "changed parallel operations in-game HUD\n"
@@ -2034,8 +1950,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 {
                     "code": "missing_required_build_input",
                     "checksum": (
-                        "micromachine_parallel_operations_ingame_hud_"
-                        "patch_sha256"
+                        "micromachine_parallel_operations_ingame_hud_patch_sha256"
                     ),
                 },
                 report["failures"],
@@ -2049,8 +1964,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
             checksum = (
-                "micromachine_parallel_operation_lifecycle_review_closure_"
-                "patch_sha256"
+                "micromachine_parallel_operation_lifecycle_review_closure_patch_sha256"
             )
 
             config.micromachine_parallel_operation_lifecycle_review_closure_patch.write_text(
@@ -2155,8 +2069,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
             checksum = (
-                "micromachine_operation_production_ownership_restore_"
-                "proof_patch_sha256"
+                "micromachine_operation_production_ownership_restore_proof_patch_sha256"
             )
 
             config.micromachine_operation_production_ownership_restore_proof_patch.write_text(
@@ -2187,9 +2100,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0056-embedded-build-input-identity.patch",
-            Path(
-                args.micromachine_embedded_build_input_identity_patch
-            ).name,
+            Path(args.micromachine_embedded_build_input_identity_patch).name,
         )
 
     def test_tech_gas_cli_defaults_to_patch_0057(self) -> None:
@@ -2197,9 +2108,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0057-tech-gas-before-second-barracks.patch",
-            Path(
-                args.micromachine_tech_gas_before_second_barracks_patch
-            ).name,
+            Path(args.micromachine_tech_gas_before_second_barracks_patch).name,
         )
 
     def test_operation_production_review_closure_cli_defaults_to_patch_0058(
@@ -2209,9 +2118,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0058-operation-production-review-closure.patch",
-            Path(
-                args.micromachine_operation_production_review_closure_patch
-            ).name,
+            Path(args.micromachine_operation_production_review_closure_patch).name,
         )
 
     def test_production_fifo_zero_owner_cleanup_cli_defaults_to_patch_0059(
@@ -2221,9 +2128,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0059-production-fifo-and-zero-owner-cleanup.patch",
-            Path(
-                args.micromachine_production_fifo_zero_owner_cleanup_patch
-            ).name,
+            Path(args.micromachine_production_fifo_zero_owner_cleanup_patch).name,
         )
 
     def test_operation_edit_ownership_handoff_cli_defaults_to_patch_0060(
@@ -2233,9 +2138,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0060-operation-edit-ownership-handoff.patch",
-            Path(
-                args.micromachine_operation_edit_ownership_handoff_patch
-            ).name,
+            Path(args.micromachine_operation_edit_ownership_handoff_patch).name,
         )
 
     def test_operation_edit_review_closure_cli_defaults_to_patch_0061(
@@ -2245,9 +2148,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0061-operation-edit-review-closure.patch",
-            Path(
-                args.micromachine_operation_edit_review_closure_patch
-            ).name,
+            Path(args.micromachine_operation_edit_review_closure_patch).name,
         )
 
     def test_operation_transfer_atomic_admission_cli_defaults_to_patch_0062(
@@ -2257,9 +2158,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0062-operation-transfer-atomic-admission.patch",
-            Path(
-                args.micromachine_operation_transfer_atomic_admission_patch
-            ).name,
+            Path(args.micromachine_operation_transfer_atomic_admission_patch).name,
         )
 
     def test_operation_transfer_runtime_preservation_cli_defaults_to_patch_0063(
@@ -2269,9 +2168,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0063-operation-transfer-runtime-preservation.patch",
-            Path(
-                args.micromachine_operation_transfer_runtime_preservation_patch
-            ).name,
+            Path(args.micromachine_operation_transfer_runtime_preservation_patch).name,
         )
 
     def test_operation_transfer_transactional_closure_cli_defaults_to_patch_0064(
@@ -2281,9 +2178,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0064-operation-transfer-transactional-closure.patch",
-            Path(
-                args.micromachine_operation_transfer_transactional_closure_patch
-            ).name,
+            Path(args.micromachine_operation_transfer_transactional_closure_patch).name,
         )
 
     def test_operation_transfer_final_review_closure_cli_defaults_to_patch_0065(
@@ -2293,9 +2188,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0065-operation-transfer-final-review-closure.patch",
-            Path(
-                args.micromachine_operation_transfer_final_review_closure_patch
-            ).name,
+            Path(args.micromachine_operation_transfer_final_review_closure_patch).name,
         )
 
     def test_operation_transfer_idempotence_cli_defaults_to_patch_0066(
@@ -2325,9 +2218,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0068-all-terran-harass-capability-evidence.patch",
-            Path(
-                args.micromachine_all_terran_harass_capability_evidence_patch
-            ).name,
+            Path(args.micromachine_all_terran_harass_capability_evidence_patch).name,
         )
 
     def test_battlefield_projection_cli_defaults_to_patch_0069(self) -> None:
@@ -2345,9 +2236,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0070-battlefield-projection-review-closure.patch",
-            Path(
-                args.micromachine_battlefield_projection_review_closure_patch
-            ).name,
+            Path(args.micromachine_battlefield_projection_review_closure_patch).name,
         )
 
     def test_battlefield_identity_transfer_cli_defaults_to_patch_0071(self) -> None:
@@ -2355,9 +2244,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
         self.assertEqual(
             "0071-battlefield-identity-transfer-integrity.patch",
-            Path(
-                args.micromachine_battlefield_identity_transfer_integrity_patch
-            ).name,
+            Path(args.micromachine_battlefield_identity_transfer_integrity_patch).name,
         )
 
     def test_operation_edit_ownership_handoff_patch_changes_identity(
@@ -2367,9 +2254,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_operation_edit_ownership_handoff_patch_sha256"
-            )
+            checksum = "micromachine_operation_edit_ownership_handoff_patch_sha256"
 
             config.micromachine_operation_edit_ownership_handoff_patch.write_text(
                 "changed operation edit ownership handoff\n"
@@ -2404,10 +2289,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             self.assertFalse(report["ok"], report)
             self.assertIn(
-                (
-                    "micromachine_operation_edit_ownership_handoff_"
-                    "patch_sha256"
-                ),
+                ("micromachine_operation_edit_ownership_handoff_patch_sha256"),
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -2422,9 +2304,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_operation_edit_review_closure_patch_sha256"
-            )
+            checksum = "micromachine_operation_edit_review_closure_patch_sha256"
 
             config.micromachine_operation_edit_review_closure_patch.write_text(
                 "changed operation edit review closure\n"
@@ -2474,10 +2354,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_operation_transfer_atomic_"
-                "admission_patch_sha256"
-            )
+            checksum = "micromachine_operation_transfer_atomic_admission_patch_sha256"
 
             config.micromachine_operation_transfer_atomic_admission_patch.write_text(
                 "changed operation transfer atomic admission\n"
@@ -2512,10 +2389,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             self.assertFalse(report["ok"], report)
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_atomic_"
-                    "admission_patch_sha256"
-                ),
+                ("micromachine_operation_transfer_atomic_admission_patch_sha256"),
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -2531,8 +2405,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
             checksum = (
-                "micromachine_operation_transfer_runtime_"
-                "preservation_patch_sha256"
+                "micromachine_operation_transfer_runtime_preservation_patch_sha256"
             )
 
             config.micromachine_operation_transfer_runtime_preservation_patch.write_text(
@@ -2568,10 +2441,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             self.assertFalse(report["ok"], report)
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_runtime_"
-                    "preservation_patch_sha256"
-                ),
+                ("micromachine_operation_transfer_runtime_preservation_patch_sha256"),
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -2587,8 +2457,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
             checksum = (
-                "micromachine_operation_transfer_transactional_"
-                "closure_patch_sha256"
+                "micromachine_operation_transfer_transactional_closure_patch_sha256"
             )
 
             config.micromachine_operation_transfer_transactional_closure_patch.write_text(
@@ -2624,10 +2493,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             self.assertFalse(report["ok"], report)
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_transactional_"
-                    "closure_patch_sha256"
-                ),
+                ("micromachine_operation_transfer_transactional_closure_patch_sha256"),
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -2643,8 +2509,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
             checksum = (
-                "micromachine_operation_transfer_final_review_"
-                "closure_patch_sha256"
+                "micromachine_operation_transfer_final_review_closure_patch_sha256"
             )
 
             config.micromachine_operation_transfer_final_review_closure_patch.write_text(
@@ -2680,10 +2545,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             self.assertFalse(report["ok"], report)
             self.assertIn(
-                (
-                    "micromachine_operation_transfer_final_review_"
-                    "closure_patch_sha256"
-                ),
+                ("micromachine_operation_transfer_final_review_closure_patch_sha256"),
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -2790,10 +2652,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_all_terran_harass_"
-                "capability_evidence_patch_sha256"
-            )
+            checksum = "micromachine_all_terran_harass_capability_evidence_patch_sha256"
 
             config.micromachine_all_terran_harass_capability_evidence_patch.write_text(
                 "changed all-Terran harass capability evidence\n"
@@ -2820,10 +2679,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
 
             self.assertFalse(report["ok"], report)
             self.assertIn(
-                (
-                    "micromachine_all_terran_harass_"
-                    "capability_evidence_patch_sha256"
-                ),
+                ("micromachine_all_terran_harass_capability_evidence_patch_sha256"),
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -2882,9 +2738,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_battlefield_projection_review_closure_patch_sha256"
-            )
+            checksum = "micromachine_battlefield_projection_review_closure_patch_sha256"
 
             config.micromachine_battlefield_projection_review_closure_patch.write_text(
                 "changed battlefield projection review closure\n"
@@ -2968,9 +2822,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root = Path(directory)
             config = self.build_config(root, binary=True)
             first = build_micromachine_build_identity(config)
-            checksum = (
-                "micromachine_operation_production_review_closure_patch_sha256"
-            )
+            checksum = "micromachine_operation_production_review_closure_patch_sha256"
 
             config.micromachine_operation_production_review_closure_patch.write_text(
                 "changed operation production review closure\n"
@@ -3066,6 +2918,226 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 {failure["code"] for failure in report["failures"]},
             )
 
+    def test_index_hidden_source_mutation_marks_identity_not_ok(self) -> None:
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    config = self.build_config(root, binary=True)
+                    subprocess.run(
+                        [
+                            "/usr/bin/git",
+                            "-C",
+                            str(config.micromachine_dir),
+                            "update-index",
+                            flag,
+                            "README.md",
+                        ],
+                        check=True,
+                        capture_output=True,
+                    )
+                    (config.micromachine_dir / "README.md").write_text(
+                        "hidden source mutation\n"
+                    )
+
+                    report = build_micromachine_build_identity(config)
+
+                    self.assertFalse(report["ok"], report)
+                    self.assertIn(
+                        "micromachine_source_state_mismatch",
+                        {failure["code"] for failure in report["failures"]},
+                    )
+
+    def test_ignored_untracked_source_mutation_marks_identity_not_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            (config.micromachine_dir / ".git" / "info" / "exclude").write_text(
+                "ignored-runtime.cpp\n"
+            )
+            (config.micromachine_dir / "ignored-runtime.cpp").write_text(
+                "int hidden_runtime_change = 1;\n"
+            )
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_source_state_mismatch",
+                {failure["code"] for failure in report["failures"]},
+            )
+
+    def test_tracked_symlink_cannot_hide_source_in_excluded_build_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            hidden_source = config.micromachine_build_dir / "generated-source.cpp"
+            hidden_source.write_text("int generated_source = 1;\n")
+            source_link = config.micromachine_dir / "src-link.cpp"
+            source_link.symlink_to(hidden_source)
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-C",
+                    str(config.micromachine_dir),
+                    "add",
+                    "src-link.cpp",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-C",
+                    str(config.micromachine_dir),
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-m",
+                    "tracked excluded-root symlink",
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+            inspection = inspect_git_worktree_state(
+                config.micromachine_dir,
+                excluded_roots=(config.micromachine_build_dir,),
+            )
+
+            self.assertIsNotNone(inspection)
+            self.assertEqual(
+                ["excluded-root-target:src-link.cpp"],
+                inspection["unsafe_symlink_entries"],
+            )
+
+    def test_micromachine_build_root_symlink_is_rejected_without_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            build_root = config.micromachine_build_dir
+            external_build = root / "external-micromachine-build"
+            build_root.rename(external_build)
+            build_root.symlink_to(external_build, target_is_directory=True)
+            sentinel = root / "attacker-executed"
+            external_binary = external_build / "bin" / "MicroMachine"
+            external_binary.write_text(f"#!/bin/sh\ntouch {sentinel}\nexit 0\n")
+            external_binary.chmod(0o755)
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "invalid_micromachine_build_root",
+                {failure["code"] for failure in report["failures"]},
+            )
+            self.assertFalse(sentinel.exists())
+
+    def test_build_script_creates_secure_root_before_source_attestation(
+        self,
+    ) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "integrations"
+            / "micromachine"
+            / "scripts"
+            / "build_macos_local.sh"
+        ).read_text()
+        cleanup = script.index('rm -f \\\n  "${MICROMACHINE_BUILD_IDENTITY_REPORT}"')
+        create_root = script.index('mkdir -p "${MICROMACHINE_BUILD_DIR}"', cleanup)
+        initialize = script.index("--initialize-source-attestation", create_root)
+
+        self.assertLess(cleanup, create_root)
+        self.assertLess(create_root, initialize)
+
+    def test_build_script_preflight_rejects_linked_build_root_before_cleanup(
+        self,
+    ) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "integrations"
+            / "micromachine"
+            / "scripts"
+            / "build_macos_local.sh"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            micromachine = root / "MicroMachine"
+            s2client = root / "s2client-api"
+            external = root / "external-build"
+            micromachine.mkdir()
+            s2client.mkdir()
+            (external / "bin").mkdir(parents=True)
+            protected = {
+                external / "voi_build_identity.json": "identity\n",
+                external / "voi_source_attestation.json": "attestation\n",
+                external / "bin" / "MicroMachine": "binary\n",
+            }
+            for path, payload in protected.items():
+                path.write_text(payload)
+            (micromachine / "build-latest-api").symlink_to(
+                external,
+                target_is_directory=True,
+            )
+
+            completed = subprocess.run(
+                ["bash", str(script)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "ROOT_DIR": str(root),
+                    "MICROMACHINE_DIR": str(micromachine),
+                    "S2CLIENT_DIR": str(s2client),
+                    "VOI_BUILD_PREFLIGHT_ONLY": "1",
+                },
+            )
+
+            self.assertNotEqual(0, completed.returncode)
+            self.assertIn("contains a symlink", completed.stderr)
+            for path, payload in protected.items():
+                self.assertEqual(payload, path.read_text())
+
+    def test_ci_actions_are_pinned_to_immutable_commits(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+        ).read_text()
+        uses_values = [
+            line.split("uses:", 1)[1].strip()
+            for line in workflow.splitlines()
+            if "uses:" in line
+        ]
+
+        self.assertTrue(uses_values)
+        for value in uses_values:
+            with self.subTest(value=value):
+                self.assertRegex(value, r"^[^@\s]+@[0-9a-f]{40}$")
+
+    def test_s2client_build_root_symlink_retarget_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            build_root = config.resolved_s2client_build_dir
+            original = build_root.with_name("build-original")
+            replacement = build_root.with_name("build-replacement")
+            build_root.rename(original)
+            shutil.copytree(original, replacement)
+            build_root.symlink_to(replacement, target_is_directory=True)
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "s2client_build_state_mismatch",
+                {failure["code"] for failure in report["failures"]},
+            )
+
     def test_runtime_bot_config_mutation_does_not_invalidate_binary_identity(
         self,
     ) -> None:
@@ -3156,9 +3228,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self,
         config: MicroMachineBuildIdentityConfig,
     ) -> None:
-        embedded_identity = write_micromachine_embedded_build_identity_header(
-            config
-        )
+        embedded_identity = write_micromachine_embedded_build_identity_header(config)
         config.binary_path.write_text(
             "#!/bin/sh\n"
             'if [ "${1:-}" = "--voi-build-input-identity" ]; then\n'
@@ -3347,8 +3417,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root / "micromachine-authoritative-parallel-operation-lifecycle.patch"
         )
         micromachine_operation_production_ownership_restore_proof_patch = (
-            root
-            / "micromachine-operation-production-ownership-restore-proof.patch"
+            root / "micromachine-operation-production-ownership-restore-proof.patch"
         )
         micromachine_embedded_build_input_identity_patch = (
             root / "micromachine-embedded-build-input-identity.patch"
@@ -3388,8 +3457,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             root / "micromachine-all-terran-harass-capability-evidence.patch"
         )
         micromachine_authoritative_battlefield_ownership_readiness_patch = (
-            root
-            / "micromachine-authoritative-battlefield-ownership-readiness.patch"
+            root / "micromachine-authoritative-battlefield-ownership-readiness.patch"
         )
         micromachine_battlefield_projection_review_closure_patch = (
             root / "micromachine-battlefield-projection-review-closure.patch"
@@ -3696,6 +3764,19 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             (config.resolved_s2client_build_dir / "libsc2api.a").write_text(
                 "fixture s2client archive\n"
             )
+            fixture_ctest = build_dir / "tools" / "ctest"
+            fixture_ctest.parent.mkdir(parents=True, exist_ok=True)
+            fixture_ctest.write_text("#!/bin/sh\nexit 0\n")
+            fixture_ctest.chmod(0o755)
+            (build_dir / "CMakeCache.txt").write_text(
+                f"CMAKE_CTEST_COMMAND:INTERNAL={fixture_ctest.resolve()}\n"
+            )
+            for test_name, executable_name in sorted(
+                MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+            ):
+                executable = build_dir / "bin" / executable_name
+                executable.write_text(f"#!/bin/sh\n# native-test:{test_name}\nexit 0\n")
+                executable.chmod(0o755)
             if binary:
                 self.rebuild_fixture_binary(config)
             else:
@@ -3704,7 +3785,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         return config
 
     def init_git_repo(self, path: Path) -> str:
-        subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(path), "init"], check=True, capture_output=True
+        )
         (path / "README.md").write_text("fixture\n")
         subprocess.run(
             ["git", "-C", str(path), "add", "README.md"],

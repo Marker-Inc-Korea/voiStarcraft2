@@ -1,0 +1,3288 @@
+"""Deterministic immutable artifact bundles for MicroMachine pre-live evidence.
+
+The bundle format has one canonical root ``manifest.json`` and opaque payload
+members. The builder derives every digest and size from trusted member bytes.
+The verifier derives its verdict from the ZIP and manifest bytes; caller status
+claims are accepted only as explicitly ignored compatibility data.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import io
+import json
+import re
+import stat
+import struct
+import unicodedata
+import zipfile
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
+from datetime import datetime, timezone
+from pathlib import PurePosixPath
+from typing import Final, cast
+
+from starcraft_commander.micromachine_build_identity import (
+    MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
+)
+
+
+PRE_LIVE_ARTIFACT_SCHEMA: Final[str] = "voi.micromachine.pre_live.artifact_bundle"
+PRE_LIVE_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
+PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION: Final[int] = 1
+PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE: Final[str] = "candidate_pr"
+PRE_LIVE_ARTIFACT_MANIFEST_NAME: Final[str] = "manifest.json"
+GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: Final[str] = "pre-live-provenance.zip"
+DETERMINISTIC_ZIP_TIMESTAMP: Final[tuple[int, int, int, int, int, int]] = (
+    1980,
+    1,
+    1,
+    0,
+    0,
+    0,
+)
+DEFAULT_MAX_ARCHIVE_BYTES: Final[int] = 256 * 1024 * 1024
+DEFAULT_MAX_MANIFEST_BYTES: Final[int] = 1024 * 1024
+DEFAULT_MAX_ENTRIES: Final[int] = 128
+DEFAULT_MAX_MEMBER_COMPRESSED_BYTES: Final[int] = 128 * 1024 * 1024
+DEFAULT_MAX_MEMBER_UNCOMPRESSED_BYTES: Final[int] = 128 * 1024 * 1024
+DEFAULT_MAX_TOTAL_UNCOMPRESSED_BYTES: Final[int] = 256 * 1024 * 1024
+DEFAULT_MAX_COMPRESSION_RATIO: Final[int] = 200
+READ_CHUNK_BYTES: Final[int] = 1024 * 1024
+
+_SHA256_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_IDENTITY_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SHA40_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
+_REPOSITORY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+)
+_SAFE_PATH_PART_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_LOGICAL_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+)
+_ALLOWED_COMPRESSION: Final[frozenset[int]] = frozenset(
+    {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+)
+_ALLOWED_GENERAL_PURPOSE_FLAGS: Final[int] = 0x0800
+_REGULAR_FILE_MODE: Final[int] = stat.S_IFREG | 0o644
+_LOCAL_FILE_HEADER: Final[struct.Struct] = struct.Struct("<4s5H3L2H")
+_CENTRAL_DIRECTORY_HEADER: Final[struct.Struct] = struct.Struct("<4s6H3L5H2L")
+_END_CENTRAL_DIRECTORY: Final[struct.Struct] = struct.Struct("<4s4H2LH")
+
+_ROOT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "schema",
+        "schema_version",
+        "authority",
+        "repository",
+        "workflow",
+        "run",
+        "job",
+        "artifact",
+        "build",
+        "producer",
+        "members",
+    }
+)
+_AUTHORITY_KEYS: Final[frozenset[str]] = frozenset(
+    {"scope", "release_authoritative", "event", "pull_request"}
+)
+_AUTHORITY_PULL_REQUEST_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "database_id",
+        "number",
+        "head_sha",
+        "head_ref",
+        "head_repository_id",
+    }
+)
+_REPOSITORY_KEYS: Final[frozenset[str]] = frozenset(
+    {"full_name", "database_id", "commit_sha"}
+)
+_WORKFLOW_KEYS: Final[frozenset[str]] = frozenset({"id", "path", "ref", "sha"})
+_RUN_KEYS: Final[frozenset[str]] = frozenset({"id", "attempt"})
+_JOB_KEYS: Final[frozenset[str]] = frozenset({"id", "name"})
+_ARTIFACT_KEYS: Final[frozenset[str]] = frozenset(
+    {"logical_name", "member", "sha256", "size_bytes"}
+)
+_BUILD_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "report_identity",
+        "report_member",
+        "report_sha256",
+        "binary_member",
+        "binary_sha256",
+        "repository_input_member",
+        "repository_input_identity",
+        "repository_input_sha256",
+        "ctest_member",
+        "ctest_sha256",
+    }
+)
+_PRODUCER_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "policy_id",
+        "policy_member",
+        "policy_sha256",
+        "executable_member",
+        "executable_sha256",
+        "argv_member",
+        "argv_sha256",
+        "output_member",
+        "output_sha256",
+        "provenance_member",
+        "provenance_sha256",
+    }
+)
+_MEMBER_KEYS: Final[frozenset[str]] = frozenset({"name", "sha256", "size_bytes"})
+_CTEST_EVIDENCE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "argv",
+        "discovery_argv",
+        "ctest_executable",
+        "ctest_executable_sha256",
+        "returncode",
+        "passed",
+        "total",
+        "failures",
+        "test_names",
+        "test_executables",
+        "test_manifest_sha256",
+        "stdout_sha256",
+        "stderr_sha256",
+    }
+)
+_CTEST_EXECUTABLE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "path",
+        "sha256",
+        "sha256_after",
+        "argv",
+        "returncode",
+        "stdout_sha256",
+        "stderr_sha256",
+    }
+)
+_REQUIRED_CTEST_EXECUTABLES: Final[dict[str, str]] = {
+    "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
+    "voi_runtime_convergence": "voi_runtime_convergence_test",
+    "voi_family_effect_lifecycle": "voi_family_effect_lifecycle_test",
+    "voi_battlefield_projection": "voi_battlefield_projection_test",
+    "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
+}
+
+
+@dataclass(frozen=True)
+class PreLiveArtifactLimits:
+    """Hard resource limits applied before and during ZIP decompression."""
+
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES
+    max_manifest_bytes: int = DEFAULT_MAX_MANIFEST_BYTES
+    max_entries: int = DEFAULT_MAX_ENTRIES
+    max_member_compressed_bytes: int = DEFAULT_MAX_MEMBER_COMPRESSED_BYTES
+    max_member_uncompressed_bytes: int = DEFAULT_MAX_MEMBER_UNCOMPRESSED_BYTES
+    max_total_uncompressed_bytes: int = DEFAULT_MAX_TOTAL_UNCOMPRESSED_BYTES
+    max_compression_ratio: int = DEFAULT_MAX_COMPRESSION_RATIO
+
+    def __post_init__(self) -> None:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field.name} must be a positive integer")
+        if self.max_manifest_bytes > self.max_member_uncompressed_bytes:
+            raise ValueError(
+                "max_manifest_bytes cannot exceed max_member_uncompressed_bytes"
+            )
+        if self.max_member_uncompressed_bytes > self.max_total_uncompressed_bytes:
+            raise ValueError(
+                "max_member_uncompressed_bytes cannot exceed "
+                "max_total_uncompressed_bytes"
+            )
+
+
+@dataclass(frozen=True)
+class PreLiveArtifactMetadata:
+    """Trusted identities and member-role bindings used by the builder."""
+
+    authority_scope: str
+    release_authoritative: bool
+    authority_event: str
+    pull_request_database_id: int
+    pull_request_number: int
+    pull_request_head_sha: str
+    pull_request_head_ref: str
+    pull_request_head_repository_id: int
+    repository_full_name: str
+    repository_database_id: int
+    repository_commit: str
+    workflow_id: int
+    workflow_path: str
+    workflow_ref: str
+    workflow_sha: str
+    run_id: int
+    run_attempt: int
+    job_id: int
+    job_name: str
+    artifact_logical_name: str
+    artifact_member: str
+    build_report_identity: str
+    build_report_member: str
+    binary_member: str
+    repository_input_member: str
+    repository_input_identity: str
+    ctest_member: str
+    producer_policy_id: str
+    producer_policy_member: str
+    producer_executable_member: str
+    producer_argv_member: str
+    producer_output_member: str
+    producer_provenance_member: str
+
+
+MicroMachinePreLiveArtifactMetadata = PreLiveArtifactMetadata
+MicroMachinePreLiveArtifactLimits = PreLiveArtifactLimits
+
+
+class DuplicateJSONKeyError(ValueError):
+    """Raised when JSON contains an ambiguous duplicate object key."""
+
+
+def canonical_json_bytes(value: object) -> bytes:
+    """Encode finite JSON with the bundle's canonical representation."""
+
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def canonical_ctest_evidence_bytes(value: Mapping[str, object]) -> bytes:
+    """Build canonical, semantically validated evidence for the exact CTest set."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("CTest evidence must be a mapping")
+    payload = {key: value.get(key) for key in sorted(_CTEST_EVIDENCE_KEYS)}
+    blockers: list[dict[str, object]] = []
+    _validate_ctest_evidence_payload(payload, blockers)
+    if blockers:
+        raise ValueError(_format_builder_blockers(blockers))
+    return canonical_json_bytes(payload)
+
+
+def build_pre_live_artifact_bundle(
+    metadata: PreLiveArtifactMetadata | Mapping[str, object],
+    members: Mapping[str, bytes | bytearray | memoryview],
+    *,
+    limits: PreLiveArtifactLimits | None = None,
+) -> bytes:
+    """Build deterministic ZIP bytes from trusted metadata and payload bytes."""
+
+    effective_limits = limits or PreLiveArtifactLimits()
+    normalized_metadata = _coerce_metadata(metadata)
+    metadata_blockers = _validate_metadata(normalized_metadata)
+    if metadata_blockers:
+        raise ValueError(_format_builder_blockers(metadata_blockers))
+    normalized_members = _normalize_builder_members(members, effective_limits)
+    manifest = _build_manifest(normalized_metadata, normalized_members)
+    manifest_bytes = canonical_json_bytes(manifest)
+    if len(manifest_bytes) > effective_limits.max_manifest_bytes:
+        raise ValueError("canonical manifest exceeds max_manifest_bytes")
+
+    total_uncompressed = len(manifest_bytes) + sum(
+        len(payload) for payload in normalized_members.values()
+    )
+    if total_uncompressed > effective_limits.max_total_uncompressed_bytes:
+        raise ValueError("bundle members exceed max_total_uncompressed_bytes")
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(
+        output,
+        mode="w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=False,
+    ) as archive:
+        _write_deterministic_member(
+            archive,
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME,
+            manifest_bytes,
+        )
+        for name in sorted(normalized_members):
+            _write_deterministic_member(
+                archive,
+                name,
+                normalized_members[name],
+            )
+    bundle = output.getvalue()
+    if len(bundle) > effective_limits.max_archive_bytes:
+        raise ValueError("constructed bundle exceeds max_archive_bytes")
+
+    verification = verify_pre_live_artifact_bundle(
+        bundle,
+        limits=effective_limits,
+    )
+    if verification["ok"] is not True:
+        blockers = cast(list[Mapping[str, object]], verification["blockers"])
+        raise ValueError(
+            "constructed bundle failed verification: "
+            + ", ".join(str(item.get("code")) for item in blockers)
+        )
+    return bundle
+
+
+def verify_pre_live_artifact_bundle(
+    bundle: bytes | bytearray | memoryview,
+    *,
+    limits: PreLiveArtifactLimits | None = None,
+    caller_claims: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Verify a bundle from bytes without trusting caller-supplied status."""
+
+    effective_limits = limits or PreLiveArtifactLimits()
+    blockers: list[dict[str, object]] = []
+    manifest: dict[str, object] | None = None
+    manifest_evidence: dict[str, object] = {
+        "name": PRE_LIVE_ARTIFACT_MANIFEST_NAME,
+        "present": False,
+        "canonical": False,
+        "sha256": None,
+        "size_bytes": None,
+    }
+    member_evidence: list[dict[str, object]] = []
+    role_evidence: dict[str, object] = {}
+
+    if not isinstance(bundle, (bytes, bytearray, memoryview)):
+        _add_blocker(
+            blockers,
+            "invalid_bundle_type",
+            "$",
+            "bundle must be bytes-like",
+        )
+        return _verification_result(
+            blockers,
+            manifest,
+            manifest_evidence,
+            member_evidence,
+            caller_claims,
+        )
+    bundle_bytes = bytes(bundle)
+    manifest_evidence["bundle_sha256"] = hashlib.sha256(bundle_bytes).hexdigest()
+    manifest_evidence["bundle_size_bytes"] = len(bundle_bytes)
+    if len(bundle_bytes) > effective_limits.max_archive_bytes:
+        _add_blocker(
+            blockers,
+            "archive_size_limit_exceeded",
+            "$",
+            "archive exceeds max_archive_bytes",
+            actual=len(bundle_bytes),
+            maximum=effective_limits.max_archive_bytes,
+        )
+        return _verification_result(
+            blockers,
+            manifest,
+            manifest_evidence,
+            member_evidence,
+            caller_claims,
+        )
+    framing_error = _archive_framing_error(bundle_bytes)
+    if framing_error is not None:
+        framing_code = (
+            "noncanonical_zip_framing"
+            if b"PK\x03\x04" in bundle_bytes and b"PK\x05\x06" in bundle_bytes
+            else "invalid_zip"
+        )
+        _add_blocker(
+            blockers,
+            framing_code,
+            "$",
+            framing_error,
+        )
+        return _verification_result(
+            blockers,
+            manifest,
+            manifest_evidence,
+            member_evidence,
+            caller_claims,
+        )
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(bundle_bytes), mode="r") as archive:
+            infos = archive.infolist()
+            framing_error = _archive_framing_error(
+                bundle_bytes,
+                parsed_entry_count=len(infos),
+            )
+            if framing_error is not None:
+                _add_blocker(
+                    blockers,
+                    "noncanonical_zip_framing",
+                    "$",
+                    framing_error,
+                )
+                return _verification_result(
+                    blockers,
+                    manifest,
+                    manifest_evidence,
+                    member_evidence,
+                    caller_claims,
+                )
+            _preflight_archive(
+                bundle_bytes,
+                archive,
+                infos,
+                effective_limits,
+                blockers,
+            )
+            if blockers:
+                return _verification_result(
+                    blockers,
+                    manifest,
+                    manifest_evidence,
+                    member_evidence,
+                    caller_claims,
+                )
+
+            info_by_name = {info.filename: info for info in infos}
+            manifest_info = info_by_name[PRE_LIVE_ARTIFACT_MANIFEST_NAME]
+            manifest_evidence["present"] = True
+            raw_manifest, read_evidence = _read_member(
+                archive,
+                manifest_info,
+                maximum=effective_limits.max_manifest_bytes,
+                capture=True,
+            )
+            manifest_evidence.update(read_evidence)
+            if raw_manifest is None:
+                _add_blocker(
+                    blockers,
+                    "manifest_read_failed",
+                    "$.manifest",
+                    "manifest bytes could not be read safely",
+                    error=read_evidence.get("error"),
+                )
+                return _verification_result(
+                    blockers,
+                    manifest,
+                    manifest_evidence,
+                    member_evidence,
+                    caller_claims,
+                )
+
+            parsed = _parse_json(raw_manifest, blockers, "$.manifest")
+            if isinstance(parsed, Mapping):
+                manifest = dict(parsed)
+                canonical = _canonical_json_or_none(parsed)
+                manifest_evidence["canonical"] = canonical == raw_manifest
+                if canonical != raw_manifest:
+                    _add_blocker(
+                        blockers,
+                        "noncanonical_manifest_json",
+                        "$.manifest",
+                        "manifest bytes are not canonical JSON",
+                    )
+            elif parsed is not None:
+                _add_blocker(
+                    blockers,
+                    "invalid_manifest_type",
+                    "$.manifest",
+                    "manifest must be a JSON object",
+                )
+
+            if manifest is None:
+                return _verification_result(
+                    blockers,
+                    manifest,
+                    manifest_evidence,
+                    member_evidence,
+                    caller_claims,
+                )
+
+            manifest_blockers = _validate_manifest(
+                manifest,
+                effective_limits,
+            )
+            blockers.extend(manifest_blockers)
+            if blockers:
+                return _verification_result(
+                    blockers,
+                    manifest,
+                    manifest_evidence,
+                    member_evidence,
+                    caller_claims,
+                )
+
+            descriptors = _manifest_member_descriptors(manifest)
+            declared_names = set(descriptors)
+            archive_payload_names = set(info_by_name) - {
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME
+            }
+            for name in sorted(declared_names - archive_payload_names):
+                _add_blocker(
+                    blockers,
+                    "missing_entry",
+                    f"$.members[{name!r}]",
+                    "manifest-declared member is missing from the archive",
+                    name=name,
+                )
+            for name in sorted(archive_payload_names - declared_names):
+                _add_blocker(
+                    blockers,
+                    "unexpected_entry",
+                    f"$.archive[{name!r}]",
+                    "archive member is not declared by the manifest",
+                    name=name,
+                )
+            if blockers:
+                return _verification_result(
+                    blockers,
+                    manifest,
+                    manifest_evidence,
+                    member_evidence,
+                    caller_claims,
+                )
+
+            build = _mapping(manifest.get("build"))
+            producer = _mapping(manifest.get("producer"))
+            build_report_name = cast(str, build["report_member"])
+            captured_role_names = {
+                build_report_name,
+                cast(str, build["repository_input_member"]),
+                cast(str, build["ctest_member"]),
+                cast(str, producer["provenance_member"]),
+            }
+            captured_members: dict[str, bytes] = {}
+            for name in sorted(declared_names):
+                info = info_by_name[name]
+                expected = descriptors[name]
+                captured, evidence = _read_member(
+                    archive,
+                    info,
+                    maximum=effective_limits.max_member_uncompressed_bytes,
+                    capture=name in captured_role_names,
+                )
+                evidence.update(
+                    {
+                        "expected_sha256": expected["sha256"],
+                        "expected_size_bytes": expected["size_bytes"],
+                    }
+                )
+                member_evidence.append(evidence)
+                if captured is not None and name in captured_role_names:
+                    captured_members[name] = captured
+                if evidence.get("error") is not None:
+                    _add_blocker(
+                        blockers,
+                        "member_read_failed",
+                        f"$.members[{name!r}]",
+                        "member bytes could not be read safely",
+                        name=name,
+                        error=evidence["error"],
+                    )
+                    continue
+                if evidence["size_bytes"] != expected["size_bytes"]:
+                    _add_blocker(
+                        blockers,
+                        "member_size_mismatch",
+                        f"$.members[{name!r}].size_bytes",
+                        "member size does not match the manifest",
+                        name=name,
+                        expected=expected["size_bytes"],
+                        actual=evidence["size_bytes"],
+                    )
+                if not hmac.compare_digest(
+                    cast(str, evidence["sha256"]),
+                    cast(str, expected["sha256"]),
+                ):
+                    _add_blocker(
+                        blockers,
+                        "member_digest_mismatch",
+                        f"$.members[{name!r}].sha256",
+                        "member SHA-256 does not match the manifest",
+                        name=name,
+                        expected=expected["sha256"],
+                        actual=evidence["sha256"],
+                    )
+
+            evidence_by_name = {
+                cast(str, item["name"]): item for item in member_evidence
+            }
+            _validate_role_bindings(
+                manifest,
+                descriptors,
+                evidence_by_name,
+                blockers,
+            )
+            report_bytes = captured_members.get(build_report_name)
+            if report_bytes is not None:
+                _validate_build_report_binding(
+                    report_bytes,
+                    manifest,
+                    blockers,
+                )
+            repository_input_bytes = captured_members.get(
+                cast(str, build["repository_input_member"])
+            )
+            if repository_input_bytes is not None:
+                _validate_repository_input_binding(
+                    repository_input_bytes,
+                    manifest,
+                    blockers,
+                )
+            ctest_bytes = captured_members.get(cast(str, build["ctest_member"]))
+            if ctest_bytes is not None:
+                _validate_ctest_evidence_binding(
+                    ctest_bytes,
+                    blockers,
+                )
+            provenance_bytes = captured_members.get(
+                cast(str, producer["provenance_member"])
+            )
+            if provenance_bytes is not None:
+                producer_provenance = _validate_producer_provenance_binding(
+                    provenance_bytes,
+                    manifest,
+                    blockers,
+                )
+                if producer_provenance is not None:
+                    role_evidence["producer_provenance"] = producer_provenance
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+        _add_blocker(
+            blockers,
+            "invalid_zip",
+            "$",
+            "bundle is not a readable ZIP archive",
+            error=str(exc),
+        )
+
+    return _verification_result(
+        blockers,
+        manifest,
+        manifest_evidence,
+        member_evidence,
+        caller_claims,
+        role_evidence=role_evidence,
+    )
+
+
+def verify_downloaded_pre_live_artifact(
+    artifact: bytes | bytearray | memoryview,
+    *,
+    limits: PreLiveArtifactLimits | None = None,
+    bundle_member_name: str = GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+) -> dict[str, object]:
+    """Verify direct bundle bytes or GitHub's one-file artifact ZIP wrapper."""
+
+    effective_limits = limits or PreLiveArtifactLimits()
+    direct = verify_pre_live_artifact_bundle(
+        artifact,
+        limits=effective_limits,
+    )
+    if direct["ok"] is True:
+        return {
+            **direct,
+            "delivery": {
+                "kind": "direct",
+                "member": None,
+                "sha256": direct["manifest_evidence"]["bundle_sha256"],
+                "size_bytes": direct["manifest_evidence"]["bundle_size_bytes"],
+            },
+        }
+
+    blockers: list[dict[str, object]] = []
+    if not isinstance(artifact, (bytes, bytearray, memoryview)):
+        _add_blocker(
+            blockers,
+            "invalid_github_artifact_type",
+            "$.delivery",
+            "GitHub artifact download must be bytes-like",
+        )
+        return _download_verification_result(blockers, direct)
+    artifact_bytes = bytes(artifact)
+    if len(artifact_bytes) > effective_limits.max_archive_bytes:
+        _add_blocker(
+            blockers,
+            "github_artifact_size_limit_exceeded",
+            "$.delivery",
+            "GitHub artifact wrapper exceeds max_archive_bytes",
+            actual=len(artifact_bytes),
+            maximum=effective_limits.max_archive_bytes,
+        )
+        return _download_verification_result(blockers, direct)
+    if (
+        not isinstance(bundle_member_name, str)
+        or _path_error(bundle_member_name) is not None
+        or "/" in bundle_member_name
+        or not bundle_member_name.endswith(".zip")
+    ):
+        _add_blocker(
+            blockers,
+            "invalid_github_bundle_member_name",
+            "$.delivery.member",
+            "GitHub bundle member name must be one safe root ZIP filename",
+        )
+        return _download_verification_result(blockers, direct)
+
+    inner_bundle: bytes | None = None
+    try:
+        with zipfile.ZipFile(io.BytesIO(artifact_bytes), mode="r") as archive:
+            infos = archive.infolist()
+            if len(infos) != 1:
+                _add_blocker(
+                    blockers,
+                    "github_artifact_entry_count_mismatch",
+                    "$.delivery",
+                    "GitHub artifact wrapper must contain exactly one file",
+                    actual=len(infos),
+                )
+            else:
+                info = infos[0]
+                if info.filename != bundle_member_name or info.is_dir():
+                    _add_blocker(
+                        blockers,
+                        "github_artifact_member_mismatch",
+                        "$.delivery.member",
+                        "GitHub artifact wrapper contains the wrong bundle member",
+                        expected=bundle_member_name,
+                        actual=info.filename,
+                    )
+                if info.flag_bits & 0x0001:
+                    _add_blocker(
+                        blockers,
+                        "encrypted_github_artifact_member",
+                        "$.delivery.member",
+                        "GitHub artifact bundle member must not be encrypted",
+                    )
+                if info.compress_type not in _ALLOWED_COMPRESSION:
+                    _add_blocker(
+                        blockers,
+                        "unsupported_github_artifact_compression",
+                        "$.delivery.member",
+                        "GitHub artifact bundle member uses unsupported compression",
+                        actual=info.compress_type,
+                    )
+                if info.file_size > effective_limits.max_archive_bytes:
+                    _add_blocker(
+                        blockers,
+                        "github_bundle_member_size_limit_exceeded",
+                        "$.delivery.member",
+                        "inner pre-live bundle exceeds max_archive_bytes",
+                        actual=info.file_size,
+                        maximum=effective_limits.max_archive_bytes,
+                    )
+                if (
+                    info.compress_size > 0
+                    and info.file_size
+                    > info.compress_size * effective_limits.max_compression_ratio
+                ):
+                    _add_blocker(
+                        blockers,
+                        "github_bundle_compression_ratio_exceeded",
+                        "$.delivery.member",
+                        "inner pre-live bundle exceeds the compression ratio limit",
+                    )
+                unix_mode = (info.external_attr >> 16) & 0xFFFF
+                unix_file_type = stat.S_IFMT(unix_mode)
+                if unix_file_type not in {0, stat.S_IFREG}:
+                    _add_blocker(
+                        blockers,
+                        "github_artifact_member_not_regular",
+                        "$.delivery.member",
+                        "GitHub artifact bundle member must be a regular file",
+                    )
+                if not blockers:
+                    with archive.open(info, mode="r") as member:
+                        inner_bundle = member.read(
+                            effective_limits.max_archive_bytes + 1
+                        )
+                    if len(inner_bundle) != info.file_size:
+                        _add_blocker(
+                            blockers,
+                            "github_artifact_member_size_mismatch",
+                            "$.delivery.member",
+                            "GitHub artifact member size changed while reading",
+                            expected=info.file_size,
+                            actual=len(inner_bundle),
+                        )
+                    if len(inner_bundle) > effective_limits.max_archive_bytes:
+                        _add_blocker(
+                            blockers,
+                            "github_bundle_member_size_limit_exceeded",
+                            "$.delivery.member",
+                            "inner pre-live bundle exceeds max_archive_bytes",
+                            actual=len(inner_bundle),
+                            maximum=effective_limits.max_archive_bytes,
+                        )
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+        _add_blocker(
+            blockers,
+            "invalid_github_artifact_wrapper",
+            "$.delivery",
+            "GitHub artifact download is not a valid one-file ZIP wrapper",
+            error=str(exc),
+        )
+
+    if blockers or inner_bundle is None:
+        return _download_verification_result(blockers, direct)
+    inner = verify_pre_live_artifact_bundle(
+        inner_bundle,
+        limits=effective_limits,
+    )
+    delivery = {
+        "kind": "github_artifact_zip",
+        "member": bundle_member_name,
+        "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+        "size_bytes": len(artifact_bytes),
+        "bundle_sha256": hashlib.sha256(inner_bundle).hexdigest(),
+        "bundle_size_bytes": len(inner_bundle),
+    }
+    return {**inner, "delivery": delivery}
+
+
+def _download_verification_result(
+    blockers: list[dict[str, object]],
+    direct: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "ok": False,
+        "status": "blocked",
+        "blockers": blockers,
+        "manifest": None,
+        "manifest_evidence": {},
+        "member_evidence": [],
+        "role_evidence": {},
+        "delivery": {
+            "kind": "invalid",
+            "direct_blockers": direct.get("blockers"),
+        },
+    }
+
+
+build_micromachine_pre_live_artifact_bundle = build_pre_live_artifact_bundle
+verify_micromachine_pre_live_artifact_bundle = verify_pre_live_artifact_bundle
+build_micromachine_pre_live_artifact = build_pre_live_artifact_bundle
+verify_micromachine_pre_live_artifact = verify_pre_live_artifact_bundle
+
+
+def _coerce_metadata(
+    metadata: PreLiveArtifactMetadata | Mapping[str, object],
+) -> PreLiveArtifactMetadata:
+    if isinstance(metadata, PreLiveArtifactMetadata):
+        return metadata
+    if not isinstance(metadata, Mapping):
+        raise TypeError("metadata must be PreLiveArtifactMetadata or a mapping")
+
+    flat_keys = {field.name for field in fields(PreLiveArtifactMetadata)}
+    if set(metadata) == flat_keys:
+        return PreLiveArtifactMetadata(**dict(metadata))  # type: ignore[arg-type]
+
+    nested_keys = {
+        "authority",
+        "repository",
+        "workflow",
+        "run",
+        "job",
+        "artifact",
+        "build",
+        "producer",
+    }
+    if set(metadata) != nested_keys:
+        raise ValueError(
+            "metadata fields must match either the flat metadata dataclass or "
+            "the nested trusted metadata schema"
+        )
+    authority = _required_mapping(metadata, "authority")
+    authority_pull_request = _required_mapping(authority, "pull_request")
+    repository = _required_mapping(metadata, "repository")
+    workflow = _required_mapping(metadata, "workflow")
+    run = _required_mapping(metadata, "run")
+    job = _required_mapping(metadata, "job")
+    artifact = _required_mapping(metadata, "artifact")
+    build = _required_mapping(metadata, "build")
+    producer = _required_mapping(metadata, "producer")
+    _require_builder_keys(authority, _AUTHORITY_KEYS, "metadata.authority")
+    _require_builder_keys(
+        authority_pull_request,
+        _AUTHORITY_PULL_REQUEST_KEYS,
+        "metadata.authority.pull_request",
+    )
+    _require_builder_keys(repository, _REPOSITORY_KEYS, "metadata.repository")
+    _require_builder_keys(workflow, _WORKFLOW_KEYS, "metadata.workflow")
+    _require_builder_keys(run, _RUN_KEYS, "metadata.run")
+    _require_builder_keys(job, _JOB_KEYS, "metadata.job")
+    _require_builder_keys(
+        artifact,
+        frozenset({"logical_name", "member"}),
+        "metadata.artifact",
+    )
+    _require_builder_keys(
+        build,
+        frozenset(
+            {
+                "report_identity",
+                "report_member",
+                "binary_member",
+                "repository_input_member",
+                "repository_input_identity",
+                "ctest_member",
+            }
+        ),
+        "metadata.build",
+    )
+    _require_builder_keys(
+        producer,
+        frozenset(
+            {
+                "policy_id",
+                "policy_member",
+                "executable_member",
+                "argv_member",
+                "output_member",
+                "provenance_member",
+            }
+        ),
+        "metadata.producer",
+    )
+    return PreLiveArtifactMetadata(
+        authority_scope=cast(str, authority.get("scope")),
+        release_authoritative=cast(
+            bool,
+            authority.get("release_authoritative"),
+        ),
+        authority_event=cast(str, authority.get("event")),
+        pull_request_database_id=cast(
+            int,
+            authority_pull_request.get("database_id"),
+        ),
+        pull_request_number=cast(
+            int,
+            authority_pull_request.get("number"),
+        ),
+        pull_request_head_sha=cast(
+            str,
+            authority_pull_request.get("head_sha"),
+        ),
+        pull_request_head_ref=cast(
+            str,
+            authority_pull_request.get("head_ref"),
+        ),
+        pull_request_head_repository_id=cast(
+            int,
+            authority_pull_request.get("head_repository_id"),
+        ),
+        repository_full_name=cast(str, repository.get("full_name")),
+        repository_database_id=cast(int, repository.get("database_id")),
+        repository_commit=cast(str, repository.get("commit_sha")),
+        workflow_id=cast(int, workflow.get("id")),
+        workflow_path=cast(str, workflow.get("path")),
+        workflow_ref=cast(str, workflow.get("ref")),
+        workflow_sha=cast(str, workflow.get("sha")),
+        run_id=cast(int, run.get("id")),
+        run_attempt=cast(int, run.get("attempt")),
+        job_id=cast(int, job.get("id")),
+        job_name=cast(str, job.get("name")),
+        artifact_logical_name=cast(str, artifact.get("logical_name")),
+        artifact_member=cast(str, artifact.get("member")),
+        build_report_identity=cast(str, build.get("report_identity")),
+        build_report_member=cast(str, build.get("report_member")),
+        binary_member=cast(str, build.get("binary_member")),
+        repository_input_member=cast(
+            str,
+            build.get("repository_input_member"),
+        ),
+        repository_input_identity=cast(
+            str,
+            build.get("repository_input_identity"),
+        ),
+        ctest_member=cast(str, build.get("ctest_member")),
+        producer_policy_id=cast(str, producer.get("policy_id")),
+        producer_policy_member=cast(str, producer.get("policy_member")),
+        producer_executable_member=cast(
+            str,
+            producer.get("executable_member"),
+        ),
+        producer_argv_member=cast(str, producer.get("argv_member")),
+        producer_output_member=cast(str, producer.get("output_member")),
+        producer_provenance_member=cast(
+            str,
+            producer.get("provenance_member"),
+        ),
+    )
+
+
+def _required_mapping(
+    value: Mapping[str, object],
+    key: str,
+) -> Mapping[str, object]:
+    nested = value.get(key)
+    if not isinstance(nested, Mapping):
+        raise ValueError(f"metadata.{key} must be a mapping")
+    return cast(Mapping[str, object], nested)
+
+
+def _require_builder_keys(
+    value: Mapping[str, object],
+    expected: frozenset[str],
+    path: str,
+) -> None:
+    actual = set(value)
+    if actual != expected:
+        raise ValueError(
+            f"{path} fields mismatch: "
+            f"missing={sorted(expected - actual)!r} "
+            f"unexpected={sorted(actual - expected)!r}"
+        )
+
+
+def _validate_metadata(
+    metadata: PreLiveArtifactMetadata,
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    if metadata.authority_scope != PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE:
+        _invalid_field(
+            blockers,
+            "$.authority.scope",
+            "pre-live candidate authority scope must be candidate_pr",
+        )
+    if metadata.release_authoritative is not False:
+        _invalid_field(
+            blockers,
+            "$.authority.release_authoritative",
+            "candidate_pr evidence must never be release-authoritative",
+        )
+    if metadata.authority_event != "pull_request":
+        _invalid_field(
+            blockers,
+            "$.authority.event",
+            "candidate_pr evidence must come from a pull_request event",
+        )
+    _require_positive_int(
+        metadata.pull_request_database_id,
+        "$.authority.pull_request.database_id",
+        blockers,
+    )
+    _require_positive_int(
+        metadata.pull_request_number,
+        "$.authority.pull_request.number",
+        blockers,
+    )
+    _require_sha40(
+        metadata.pull_request_head_sha,
+        "$.authority.pull_request.head_sha",
+        blockers,
+    )
+    _require_text(
+        metadata.pull_request_head_ref,
+        "$.authority.pull_request.head_ref",
+        blockers,
+        maximum=256,
+    )
+    _require_positive_int(
+        metadata.pull_request_head_repository_id,
+        "$.authority.pull_request.head_repository_id",
+        blockers,
+    )
+    if _REPOSITORY_RE.fullmatch(metadata.repository_full_name) is None:
+        _invalid_field(
+            blockers,
+            "$.repository.full_name",
+            "repository full name must be owner/name",
+        )
+    _require_positive_int(
+        metadata.repository_database_id,
+        "$.repository.database_id",
+        blockers,
+    )
+    _require_sha40(
+        metadata.repository_commit,
+        "$.repository.commit_sha",
+        blockers,
+    )
+    if (
+        _SHA40_RE.fullmatch(metadata.pull_request_head_sha) is not None
+        and _SHA40_RE.fullmatch(metadata.repository_commit) is not None
+        and metadata.pull_request_head_sha != metadata.repository_commit
+    ):
+        _add_blocker(
+            blockers,
+            "authority_repository_sha_mismatch",
+            "$.authority.pull_request.head_sha",
+            "pull-request head SHA must equal the exact repository commit",
+        )
+    if (
+        type(metadata.pull_request_head_repository_id) is int
+        and type(metadata.repository_database_id) is int
+        and metadata.pull_request_head_repository_id != metadata.repository_database_id
+    ):
+        _add_blocker(
+            blockers,
+            "authority_repository_id_mismatch",
+            "$.authority.pull_request.head_repository_id",
+            "pull-request head repository must be the attested repository",
+        )
+    _require_positive_int(metadata.workflow_id, "$.workflow.id", blockers)
+    if (
+        _path_error(metadata.workflow_path) is not None
+        or not metadata.workflow_path.startswith(".github/workflows/")
+        or not metadata.workflow_path.endswith((".yml", ".yaml"))
+    ):
+        _invalid_field(
+            blockers,
+            "$.workflow.path",
+            "workflow path must be a safe .github/workflows YAML path",
+        )
+    _require_text(
+        metadata.workflow_ref,
+        "$.workflow.ref",
+        blockers,
+        maximum=512,
+        prefix="refs/",
+    )
+    if (
+        isinstance(metadata.pull_request_head_ref, str)
+        and isinstance(metadata.workflow_ref, str)
+        and metadata.workflow_ref != f"refs/heads/{metadata.pull_request_head_ref}"
+    ):
+        _add_blocker(
+            blockers,
+            "authority_workflow_ref_mismatch",
+            "$.workflow.ref",
+            "workflow ref must equal the pull-request head ref",
+        )
+    _require_sha40(metadata.workflow_sha, "$.workflow.sha", blockers)
+    if (
+        _SHA40_RE.fullmatch(metadata.repository_commit) is not None
+        and _SHA40_RE.fullmatch(metadata.workflow_sha) is not None
+        and metadata.repository_commit != metadata.workflow_sha
+    ):
+        _add_blocker(
+            blockers,
+            "repository_workflow_sha_mismatch",
+            "$.workflow.sha",
+            "workflow SHA must equal the exact repository commit",
+        )
+    _require_positive_int(metadata.run_id, "$.run.id", blockers)
+    _require_positive_int(metadata.run_attempt, "$.run.attempt", blockers)
+    _require_positive_int(metadata.job_id, "$.job.id", blockers)
+    _require_text(metadata.job_name, "$.job.name", blockers, maximum=256)
+    if (
+        not isinstance(metadata.artifact_logical_name, str)
+        or _SAFE_LOGICAL_NAME_RE.fullmatch(metadata.artifact_logical_name) is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.artifact.logical_name",
+            "artifact logical name contains unsafe characters",
+        )
+    if (
+        not isinstance(metadata.build_report_identity, str)
+        or _SHA256_IDENTITY_RE.fullmatch(metadata.build_report_identity) is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.build.report_identity",
+            "build report identity must be sha256:<64 lowercase hex>",
+        )
+    if (
+        not isinstance(metadata.repository_input_identity, str)
+        or _SHA256_IDENTITY_RE.fullmatch(metadata.repository_input_identity) is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.build.repository_input_identity",
+            "repository input identity must be sha256:<64 lowercase hex>",
+        )
+    _require_text(
+        metadata.producer_policy_id,
+        "$.producer.policy_id",
+        blockers,
+        maximum=256,
+    )
+
+    member_fields = {
+        "$.artifact.member": metadata.artifact_member,
+        "$.build.report_member": metadata.build_report_member,
+        "$.build.binary_member": metadata.binary_member,
+        "$.build.repository_input_member": metadata.repository_input_member,
+        "$.build.ctest_member": metadata.ctest_member,
+        "$.producer.policy_member": metadata.producer_policy_member,
+        "$.producer.executable_member": metadata.producer_executable_member,
+        "$.producer.argv_member": metadata.producer_argv_member,
+        "$.producer.output_member": metadata.producer_output_member,
+        "$.producer.provenance_member": metadata.producer_provenance_member,
+    }
+    for path, name in member_fields.items():
+        error = _path_error(name)
+        if error is not None or name == PRE_LIVE_ARTIFACT_MANIFEST_NAME:
+            _invalid_field(
+                blockers,
+                path,
+                error or "manifest.json is reserved",
+            )
+    if (
+        isinstance(metadata.artifact_member, str)
+        and isinstance(metadata.producer_output_member, str)
+        and metadata.artifact_member != metadata.producer_output_member
+    ):
+        _add_blocker(
+            blockers,
+            "artifact_output_binding_mismatch",
+            "$.artifact.member",
+            "artifact member must be the local producer output member",
+        )
+    distinct_roles = (
+        metadata.build_report_member,
+        metadata.binary_member,
+        metadata.repository_input_member,
+        metadata.ctest_member,
+        metadata.producer_policy_member,
+        metadata.producer_executable_member,
+        metadata.producer_argv_member,
+        metadata.producer_output_member,
+        metadata.producer_provenance_member,
+    )
+    if all(isinstance(name, str) for name in distinct_roles) and len(
+        set(distinct_roles)
+    ) != len(distinct_roles):
+        _add_blocker(
+            blockers,
+            "duplicate_role_member",
+            "$",
+            "build and producer roles must reference distinct payload members",
+        )
+    return blockers
+
+
+def _normalize_builder_members(
+    members: Mapping[str, bytes | bytearray | memoryview],
+    limits: PreLiveArtifactLimits,
+) -> dict[str, bytes]:
+    if not isinstance(members, Mapping):
+        raise TypeError("members must be a mapping")
+    if len(members) + 1 > limits.max_entries:
+        raise ValueError("bundle exceeds max_entries")
+    normalized: dict[str, bytes] = {}
+    total = 0
+    for name, value in members.items():
+        error = _path_error(name)
+        if error is not None:
+            raise ValueError(f"invalid member path {name!r}: {error}")
+        if name == PRE_LIVE_ARTIFACT_MANIFEST_NAME:
+            raise ValueError("manifest.json is reserved for the canonical manifest")
+        if not isinstance(value, (bytes, bytearray, memoryview)):
+            raise TypeError(f"member {name!r} must be bytes-like")
+        payload = bytes(value)
+        if len(payload) > limits.max_member_uncompressed_bytes:
+            raise ValueError(f"member {name!r} exceeds max_member_uncompressed_bytes")
+        total += len(payload)
+        if total > limits.max_total_uncompressed_bytes:
+            raise ValueError("members exceed max_total_uncompressed_bytes")
+        normalized[name] = payload
+    return normalized
+
+
+def _build_manifest(
+    metadata: PreLiveArtifactMetadata,
+    members: Mapping[str, bytes],
+) -> dict[str, object]:
+    role_names = {
+        metadata.artifact_member,
+        metadata.build_report_member,
+        metadata.binary_member,
+        metadata.repository_input_member,
+        metadata.ctest_member,
+        metadata.producer_policy_member,
+        metadata.producer_executable_member,
+        metadata.producer_argv_member,
+        metadata.producer_output_member,
+        metadata.producer_provenance_member,
+    }
+    missing_roles = sorted(role_names - set(members))
+    if missing_roles:
+        raise ValueError(
+            "role members are missing from members: " + ", ".join(missing_roles)
+        )
+
+    descriptors = [
+        {
+            "name": name,
+            "sha256": hashlib.sha256(members[name]).hexdigest(),
+            "size_bytes": len(members[name]),
+        }
+        for name in sorted(members)
+    ]
+    by_name = {cast(str, item["name"]): item for item in descriptors}
+
+    def digest(name: str) -> str:
+        return cast(str, by_name[name]["sha256"])
+
+    def size(name: str) -> int:
+        return cast(int, by_name[name]["size_bytes"])
+
+    return {
+        "schema": PRE_LIVE_ARTIFACT_SCHEMA,
+        "schema_version": PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
+        "authority": {
+            "scope": metadata.authority_scope,
+            "release_authoritative": metadata.release_authoritative,
+            "event": metadata.authority_event,
+            "pull_request": {
+                "database_id": metadata.pull_request_database_id,
+                "number": metadata.pull_request_number,
+                "head_sha": metadata.pull_request_head_sha,
+                "head_ref": metadata.pull_request_head_ref,
+                "head_repository_id": metadata.pull_request_head_repository_id,
+            },
+        },
+        "repository": {
+            "full_name": metadata.repository_full_name,
+            "database_id": metadata.repository_database_id,
+            "commit_sha": metadata.repository_commit,
+        },
+        "workflow": {
+            "id": metadata.workflow_id,
+            "path": metadata.workflow_path,
+            "ref": metadata.workflow_ref,
+            "sha": metadata.workflow_sha,
+        },
+        "run": {
+            "id": metadata.run_id,
+            "attempt": metadata.run_attempt,
+        },
+        "job": {
+            "id": metadata.job_id,
+            "name": metadata.job_name,
+        },
+        "artifact": {
+            "logical_name": metadata.artifact_logical_name,
+            "member": metadata.artifact_member,
+            "sha256": digest(metadata.artifact_member),
+            "size_bytes": size(metadata.artifact_member),
+        },
+        "build": {
+            "report_identity": metadata.build_report_identity,
+            "report_member": metadata.build_report_member,
+            "report_sha256": digest(metadata.build_report_member),
+            "binary_member": metadata.binary_member,
+            "binary_sha256": digest(metadata.binary_member),
+            "repository_input_member": metadata.repository_input_member,
+            "repository_input_identity": metadata.repository_input_identity,
+            "repository_input_sha256": digest(metadata.repository_input_member),
+            "ctest_member": metadata.ctest_member,
+            "ctest_sha256": digest(metadata.ctest_member),
+        },
+        "producer": {
+            "policy_id": metadata.producer_policy_id,
+            "policy_member": metadata.producer_policy_member,
+            "policy_sha256": digest(metadata.producer_policy_member),
+            "executable_member": metadata.producer_executable_member,
+            "executable_sha256": digest(metadata.producer_executable_member),
+            "argv_member": metadata.producer_argv_member,
+            "argv_sha256": digest(metadata.producer_argv_member),
+            "output_member": metadata.producer_output_member,
+            "output_sha256": digest(metadata.producer_output_member),
+            "provenance_member": metadata.producer_provenance_member,
+            "provenance_sha256": digest(metadata.producer_provenance_member),
+        },
+        "members": descriptors,
+    }
+
+
+def _write_deterministic_member(
+    archive: zipfile.ZipFile,
+    name: str,
+    payload: bytes,
+) -> None:
+    info = zipfile.ZipInfo(name, date_time=DETERMINISTIC_ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_STORED
+    info.create_system = 3
+    info.create_version = 20
+    info.extract_version = 20
+    info.external_attr = _REGULAR_FILE_MODE << 16
+    info.internal_attr = 0
+    info.extra = b""
+    info.comment = b""
+    archive.writestr(info, payload)
+
+
+def _archive_framing_error(
+    bundle: bytes,
+    *,
+    parsed_entry_count: int | None = None,
+) -> str | None:
+    if len(bundle) < _END_CENTRAL_DIRECTORY.size:
+        return "ZIP is shorter than an end-of-central-directory record"
+    if not bundle.startswith(b"PK\x03\x04"):
+        return "ZIP must start with a local file header and have no prefix data"
+    eocd_offset = bundle.rfind(b"PK\x05\x06")
+    if eocd_offset < 0:
+        return "ZIP end-of-central-directory record is missing"
+    if eocd_offset + _END_CENTRAL_DIRECTORY.size > len(bundle):
+        return "ZIP end-of-central-directory record is truncated"
+    (
+        signature,
+        disk_number,
+        central_disk,
+        disk_entries,
+        total_entries,
+        central_size,
+        central_offset,
+        comment_size,
+    ) = _END_CENTRAL_DIRECTORY.unpack_from(bundle, eocd_offset)
+    if signature != b"PK\x05\x06":
+        return "ZIP end-of-central-directory signature is invalid"
+    if disk_number != 0 or central_disk != 0 or disk_entries != total_entries:
+        return "multi-disk ZIP archives are not allowed"
+    if parsed_entry_count is not None and total_entries != parsed_entry_count:
+        return (
+            "ZIP end-of-central-directory entry count does not match "
+            "the parsed central directory"
+        )
+    if (
+        total_entries == 0xFFFF
+        or central_size == 0xFFFFFFFF
+        or central_offset == 0xFFFFFFFF
+    ):
+        return "ZIP64 archives are not allowed"
+    if comment_size != 0:
+        return "ZIP archive comments are not allowed"
+    if eocd_offset + _END_CENTRAL_DIRECTORY.size != len(bundle):
+        return "ZIP must not contain trailing bytes"
+    if central_offset + central_size != eocd_offset:
+        return "ZIP central directory has hidden or noncanonical framing data"
+    return None
+
+
+def _local_header_error(
+    bundle: bytes,
+    info: zipfile.ZipInfo,
+) -> str | None:
+    offset = info.header_offset
+    if offset < 0 or offset + _LOCAL_FILE_HEADER.size > len(bundle):
+        return "local file header is outside the archive"
+    (
+        signature,
+        extract_version,
+        flags,
+        compression,
+        modified_time,
+        modified_date,
+        crc32,
+        compressed_size,
+        uncompressed_size,
+        filename_size,
+        extra_size,
+    ) = _LOCAL_FILE_HEADER.unpack_from(bundle, offset)
+    if signature != b"PK\x03\x04":
+        return "local file header signature is invalid"
+    if extract_version != 20 or modified_time != 0 or modified_date != 0x21:
+        return "local file header metadata is not deterministic"
+    if flags != info.flag_bits:
+        return "local and central general-purpose flags differ"
+    if flags & ~_ALLOWED_GENERAL_PURPOSE_FLAGS:
+        return "local file header uses unsupported flags"
+    if compression != info.compress_type:
+        return "local and central compression methods differ"
+    if crc32 != info.CRC:
+        return "local and central CRC-32 values differ"
+    if compressed_size != info.compress_size:
+        return "local and central compressed sizes differ"
+    if uncompressed_size != info.file_size:
+        return "local and central uncompressed sizes differ"
+    if extra_size != 0:
+        return "local file header extra fields are not allowed"
+    filename_start = offset + _LOCAL_FILE_HEADER.size
+    filename_end = filename_start + filename_size
+    payload_end = filename_end + extra_size + info.compress_size
+    if payload_end > len(bundle):
+        return "local file data extends beyond the archive"
+    raw_filename = bundle[filename_start:filename_end]
+    if b"\x00" in raw_filename:
+        return "local file name contains NUL"
+    encoding = "utf-8" if flags & 0x0800 else "cp437"
+    try:
+        local_filename = raw_filename.decode(encoding)
+    except UnicodeDecodeError:
+        return "local file name cannot be decoded"
+    if local_filename != info.filename:
+        return "local and central file names differ"
+    return None
+
+
+def _validate_central_directory(
+    bundle: bytes,
+    archive: zipfile.ZipFile,
+    infos: list[zipfile.ZipInfo],
+    blockers: list[dict[str, object]],
+) -> None:
+    offset = archive.start_dir
+    expected_made_by = (3 << 8) | 20
+    for index, info in enumerate(infos):
+        path = f"$.archive[{index}]"
+        if offset + _CENTRAL_DIRECTORY_HEADER.size > len(bundle):
+            _add_blocker(
+                blockers,
+                "central_directory_mismatch",
+                path,
+                "central directory entry is truncated",
+                name=info.filename,
+            )
+            return
+        (
+            signature,
+            made_by,
+            extract_version,
+            flags,
+            compression,
+            modified_time,
+            modified_date,
+            crc32,
+            compressed_size,
+            uncompressed_size,
+            filename_size,
+            extra_size,
+            comment_size,
+            disk_number,
+            internal_attr,
+            external_attr,
+            local_offset,
+        ) = _CENTRAL_DIRECTORY_HEADER.unpack_from(bundle, offset)
+        try:
+            canonical_name = info.filename.encode("ascii")
+        except UnicodeEncodeError:
+            canonical_name = b""
+        filename_start = offset + _CENTRAL_DIRECTORY_HEADER.size
+        filename_end = filename_start + filename_size
+        entry_end = filename_end + extra_size + comment_size
+        raw_filename = bundle[filename_start:filename_end]
+        canonical = (
+            signature == b"PK\x01\x02"
+            and made_by == expected_made_by
+            and extract_version == 20
+            and flags == 0
+            and compression == zipfile.ZIP_STORED
+            and modified_time == 0
+            and modified_date == 0x21
+            and crc32 == info.CRC
+            and compressed_size == info.compress_size
+            and uncompressed_size == info.file_size
+            and filename_size == len(canonical_name)
+            and extra_size == 0
+            and comment_size == 0
+            and disk_number == 0
+            and internal_attr == 0
+            and external_attr == _REGULAR_FILE_MODE << 16
+            and local_offset == info.header_offset
+            and raw_filename == canonical_name
+            and b"\x00" not in raw_filename
+            and entry_end <= len(bundle)
+        )
+        if not canonical:
+            _add_blocker(
+                blockers,
+                "central_directory_mismatch",
+                path,
+                "central directory entry does not match the deterministic format",
+                name=info.filename,
+            )
+        offset = entry_end
+    eocd_offset = bundle.rfind(b"PK\x05\x06")
+    if offset != eocd_offset:
+        _add_blocker(
+            blockers,
+            "central_directory_mismatch",
+            "$",
+            "central directory entries are not contiguous with the ZIP footer",
+        )
+
+
+def _preflight_archive(
+    bundle: bytes,
+    archive: zipfile.ZipFile,
+    infos: list[zipfile.ZipInfo],
+    limits: PreLiveArtifactLimits,
+    blockers: list[dict[str, object]],
+) -> None:
+    if archive.comment:
+        _add_blocker(
+            blockers,
+            "archive_comment_forbidden",
+            "$",
+            "ZIP archive comments are not allowed",
+        )
+    if not infos:
+        _add_blocker(
+            blockers,
+            "missing_manifest",
+            "$",
+            "ZIP archive is empty",
+        )
+        return
+    if len(infos) > limits.max_entries:
+        _add_blocker(
+            blockers,
+            "entry_count_limit_exceeded",
+            "$",
+            "ZIP entry count exceeds max_entries",
+            actual=len(infos),
+            maximum=limits.max_entries,
+        )
+    _validate_central_directory(bundle, archive, infos, blockers)
+
+    actual_order = [info.filename for info in infos]
+    expected_order = [
+        PRE_LIVE_ARTIFACT_MANIFEST_NAME,
+        *sorted(
+            name for name in actual_order if name != PRE_LIVE_ARTIFACT_MANIFEST_NAME
+        ),
+    ]
+    if actual_order != expected_order:
+        _add_blocker(
+            blockers,
+            "noncanonical_entry_order",
+            "$",
+            "manifest.json must be first and payload members strictly sorted",
+        )
+
+    names: set[str] = set()
+    folded_names: set[str] = set()
+    manifest_count = 0
+    total_uncompressed = 0
+    expected_local_offset = 0
+    for index, info in enumerate(infos):
+        path = f"$.archive[{index}]"
+        name = info.filename
+        if name == PRE_LIVE_ARTIFACT_MANIFEST_NAME:
+            manifest_count += 1
+        if name in names or name.casefold() in folded_names:
+            _add_blocker(
+                blockers,
+                "duplicate_entry_name",
+                path,
+                "ZIP contains a duplicate or case-colliding member name",
+                name=name,
+            )
+        names.add(name)
+        folded_names.add(name.casefold())
+
+        path_error = _path_error(name)
+        if path_error is not None:
+            _add_blocker(
+                blockers,
+                "unsafe_entry_path",
+                path,
+                path_error,
+                name=name,
+            )
+        if info.is_dir() or name.endswith("/"):
+            _add_blocker(
+                blockers,
+                "unsupported_entry_type",
+                path,
+                "directory entries are not allowed",
+                name=name,
+            )
+        file_type = _zip_file_type(info)
+        if file_type not in (0, stat.S_IFREG):
+            _add_blocker(
+                blockers,
+                "unsupported_entry_type",
+                path,
+                "symlink and special ZIP entries are not allowed",
+                name=name,
+                mode=oct((info.external_attr >> 16) & 0xFFFF),
+            )
+        if info.flag_bits & 0x1:
+            _add_blocker(
+                blockers,
+                "encrypted_entry",
+                path,
+                "encrypted ZIP entries are not allowed",
+                name=name,
+            )
+        unsupported_flags = info.flag_bits & ~_ALLOWED_GENERAL_PURPOSE_FLAGS
+        if unsupported_flags:
+            _add_blocker(
+                blockers,
+                "unsupported_zip_flags",
+                path,
+                "ZIP entry uses unsupported general-purpose flags",
+                name=name,
+                flags=info.flag_bits,
+            )
+        if info.compress_type not in _ALLOWED_COMPRESSION:
+            _add_blocker(
+                blockers,
+                "unsupported_compression",
+                path,
+                "ZIP entry uses an unsupported compression method",
+                name=name,
+                compression=info.compress_type,
+            )
+        if info.extra:
+            _add_blocker(
+                blockers,
+                "entry_extra_data_forbidden",
+                path,
+                "ZIP entry extra fields are not allowed",
+                name=name,
+            )
+        if info.comment:
+            _add_blocker(
+                blockers,
+                "entry_comment_forbidden",
+                path,
+                "ZIP entry comments are not allowed",
+                name=name,
+            )
+        canonical_metadata = (
+            info.date_time == DETERMINISTIC_ZIP_TIMESTAMP
+            and info.create_system == 3
+            and info.create_version == 20
+            and info.extract_version == 20
+            and info.reserved == 0
+            and info.flag_bits == 0
+            and info.compress_type == zipfile.ZIP_STORED
+            and info.external_attr == _REGULAR_FILE_MODE << 16
+            and info.internal_attr == 0
+            and info.volume == 0
+        )
+        if not canonical_metadata:
+            _add_blocker(
+                blockers,
+                "noncanonical_zip_metadata",
+                path,
+                "ZIP entry metadata does not match the deterministic format",
+                name=name,
+            )
+        if info.header_offset != expected_local_offset:
+            _add_blocker(
+                blockers,
+                "noncanonical_local_layout",
+                path,
+                "ZIP local members must be contiguous and ordered",
+                name=name,
+            )
+        local_header_error = _local_header_error(bundle, info)
+        if local_header_error is not None:
+            _add_blocker(
+                blockers,
+                "local_header_mismatch",
+                path,
+                local_header_error,
+                name=name,
+            )
+        filename_encoding = "utf-8" if info.flag_bits & 0x0800 else "cp437"
+        try:
+            filename_size = len(info.filename.encode(filename_encoding))
+        except UnicodeEncodeError:
+            filename_size = 0
+        expected_local_offset = (
+            info.header_offset
+            + _LOCAL_FILE_HEADER.size
+            + filename_size
+            + info.compress_size
+        )
+        if info.compress_size > limits.max_member_compressed_bytes:
+            _add_blocker(
+                blockers,
+                "compressed_size_limit_exceeded",
+                path,
+                "compressed member size exceeds the configured limit",
+                name=name,
+                actual=info.compress_size,
+                maximum=limits.max_member_compressed_bytes,
+            )
+        if info.file_size > limits.max_member_uncompressed_bytes:
+            _add_blocker(
+                blockers,
+                "uncompressed_size_limit_exceeded",
+                path,
+                "uncompressed member size exceeds the configured limit",
+                name=name,
+                actual=info.file_size,
+                maximum=limits.max_member_uncompressed_bytes,
+            )
+        if (
+            name == PRE_LIVE_ARTIFACT_MANIFEST_NAME
+            and info.file_size > limits.max_manifest_bytes
+        ):
+            _add_blocker(
+                blockers,
+                "manifest_size_limit_exceeded",
+                path,
+                "manifest size exceeds max_manifest_bytes",
+                actual=info.file_size,
+                maximum=limits.max_manifest_bytes,
+            )
+        total_uncompressed += info.file_size
+        if _compression_ratio(info) > limits.max_compression_ratio:
+            _add_blocker(
+                blockers,
+                "compression_ratio_limit_exceeded",
+                path,
+                "member compression ratio exceeds the configured limit",
+                name=name,
+                ratio=_compression_ratio(info),
+                maximum=limits.max_compression_ratio,
+            )
+    if total_uncompressed > limits.max_total_uncompressed_bytes:
+        _add_blocker(
+            blockers,
+            "total_uncompressed_size_limit_exceeded",
+            "$",
+            "total uncompressed ZIP size exceeds the configured limit",
+            actual=total_uncompressed,
+            maximum=limits.max_total_uncompressed_bytes,
+        )
+    if manifest_count == 0:
+        _add_blocker(
+            blockers,
+            "missing_manifest",
+            "$",
+            "canonical root manifest.json is missing",
+        )
+    elif manifest_count != 1:
+        _add_blocker(
+            blockers,
+            "duplicate_manifest",
+            "$",
+            "ZIP must contain exactly one root manifest.json",
+            actual=manifest_count,
+        )
+    if infos and expected_local_offset != archive.start_dir:
+        _add_blocker(
+            blockers,
+            "noncanonical_local_layout",
+            "$",
+            "ZIP contains hidden bytes between local members and central directory",
+        )
+
+
+def _read_member(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    maximum: int,
+    capture: bool,
+) -> tuple[bytes | None, dict[str, object]]:
+    digest = hashlib.sha256()
+    size = 0
+    captured = bytearray() if capture else None
+    error: str | None = None
+    try:
+        with archive.open(info, mode="r") as stream:
+            while True:
+                chunk = stream.read(min(READ_CHUNK_BYTES, maximum - size + 1))
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > maximum:
+                    raise ValueError("decompressed bytes exceed configured limit")
+                digest.update(chunk)
+                if captured is not None:
+                    captured.extend(chunk)
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+        error = str(exc)
+    evidence: dict[str, object] = {
+        "name": info.filename,
+        "compression": info.compress_type,
+        "compressed_size_bytes": info.compress_size,
+        "declared_uncompressed_size_bytes": info.file_size,
+        "size_bytes": size,
+        "sha256": digest.hexdigest(),
+        "error": error,
+    }
+    if error is not None:
+        return None, evidence
+    return (bytes(captured) if captured is not None else b""), evidence
+
+
+def _parse_json(
+    payload: bytes,
+    blockers: list[dict[str, object]],
+    path: str,
+) -> object | None:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        _add_blocker(
+            blockers,
+            "invalid_json_utf8",
+            path,
+            "JSON bytes are not valid UTF-8",
+            error=str(exc),
+        )
+        return None
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_nonfinite_json,
+        )
+    except DuplicateJSONKeyError as exc:
+        _add_blocker(
+            blockers,
+            "duplicate_json_key",
+            path,
+            "JSON contains a duplicate object key",
+            error=str(exc),
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        _add_blocker(
+            blockers,
+            "invalid_json",
+            path,
+            "JSON could not be parsed",
+            error=str(exc),
+        )
+    return None
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateJSONKeyError(f"duplicate key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json(value: str) -> object:
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _canonical_json_or_none(value: object) -> bytes | None:
+    try:
+        return canonical_json_bytes(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_manifest(
+    manifest: Mapping[str, object],
+    limits: PreLiveArtifactLimits,
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    _require_exact_keys(manifest, _ROOT_KEYS, "$", blockers)
+    _require_equal(
+        manifest.get("schema"),
+        PRE_LIVE_ARTIFACT_SCHEMA,
+        "$.schema",
+        blockers,
+    )
+    _require_equal(
+        manifest.get("schema_version"),
+        PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
+        "$.schema_version",
+        blockers,
+        exact_int=True,
+    )
+
+    authority = _schema_mapping(
+        manifest.get("authority"),
+        "$.authority",
+        _AUTHORITY_KEYS,
+        blockers,
+    )
+    authority_pull_request = _schema_mapping(
+        authority.get("pull_request"),
+        "$.authority.pull_request",
+        _AUTHORITY_PULL_REQUEST_KEYS,
+        blockers,
+    )
+    repository = _schema_mapping(
+        manifest.get("repository"),
+        "$.repository",
+        _REPOSITORY_KEYS,
+        blockers,
+    )
+    workflow = _schema_mapping(
+        manifest.get("workflow"),
+        "$.workflow",
+        _WORKFLOW_KEYS,
+        blockers,
+    )
+    run = _schema_mapping(
+        manifest.get("run"),
+        "$.run",
+        _RUN_KEYS,
+        blockers,
+    )
+    job = _schema_mapping(
+        manifest.get("job"),
+        "$.job",
+        _JOB_KEYS,
+        blockers,
+    )
+    artifact = _schema_mapping(
+        manifest.get("artifact"),
+        "$.artifact",
+        _ARTIFACT_KEYS,
+        blockers,
+    )
+    build = _schema_mapping(
+        manifest.get("build"),
+        "$.build",
+        _BUILD_KEYS,
+        blockers,
+    )
+    producer = _schema_mapping(
+        manifest.get("producer"),
+        "$.producer",
+        _PRODUCER_KEYS,
+        blockers,
+    )
+
+    _require_equal(
+        authority.get("scope"),
+        PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE,
+        "$.authority.scope",
+        blockers,
+    )
+    _require_equal(
+        authority.get("release_authoritative"),
+        False,
+        "$.authority.release_authoritative",
+        blockers,
+    )
+    _require_equal(
+        authority.get("event"),
+        "pull_request",
+        "$.authority.event",
+        blockers,
+    )
+    _require_positive_int(
+        authority_pull_request.get("database_id"),
+        "$.authority.pull_request.database_id",
+        blockers,
+    )
+    _require_positive_int(
+        authority_pull_request.get("number"),
+        "$.authority.pull_request.number",
+        blockers,
+    )
+    _require_sha40(
+        authority_pull_request.get("head_sha"),
+        "$.authority.pull_request.head_sha",
+        blockers,
+    )
+    _require_text(
+        authority_pull_request.get("head_ref"),
+        "$.authority.pull_request.head_ref",
+        blockers,
+        maximum=256,
+    )
+    _require_positive_int(
+        authority_pull_request.get("head_repository_id"),
+        "$.authority.pull_request.head_repository_id",
+        blockers,
+    )
+    if _REPOSITORY_RE.fullmatch(_string(repository.get("full_name"))) is None:
+        _invalid_field(
+            blockers,
+            "$.repository.full_name",
+            "repository full name must be owner/name",
+        )
+    _require_positive_int(
+        repository.get("database_id"),
+        "$.repository.database_id",
+        blockers,
+    )
+    _require_sha40(
+        repository.get("commit_sha"),
+        "$.repository.commit_sha",
+        blockers,
+    )
+    if (
+        isinstance(authority_pull_request.get("head_sha"), str)
+        and isinstance(repository.get("commit_sha"), str)
+        and authority_pull_request.get("head_sha") != repository.get("commit_sha")
+    ):
+        _add_blocker(
+            blockers,
+            "authority_repository_sha_mismatch",
+            "$.authority.pull_request.head_sha",
+            "pull-request head SHA must equal the exact repository commit",
+        )
+    if (
+        type(authority_pull_request.get("head_repository_id")) is int
+        and type(repository.get("database_id")) is int
+        and authority_pull_request.get("head_repository_id")
+        != repository.get("database_id")
+    ):
+        _add_blocker(
+            blockers,
+            "authority_repository_id_mismatch",
+            "$.authority.pull_request.head_repository_id",
+            "pull-request head repository must be the attested repository",
+        )
+    _require_positive_int(workflow.get("id"), "$.workflow.id", blockers)
+    workflow_path = workflow.get("path")
+    if (
+        _path_error(workflow_path) is not None
+        or not _string(workflow_path).startswith(".github/workflows/")
+        or not _string(workflow_path).endswith((".yml", ".yaml"))
+    ):
+        _invalid_field(
+            blockers,
+            "$.workflow.path",
+            "workflow path must be a safe .github/workflows YAML path",
+        )
+    _require_text(
+        workflow.get("ref"),
+        "$.workflow.ref",
+        blockers,
+        maximum=512,
+        prefix="refs/",
+    )
+    if (
+        isinstance(authority_pull_request.get("head_ref"), str)
+        and isinstance(workflow.get("ref"), str)
+        and workflow.get("ref")
+        != f"refs/heads/{authority_pull_request.get('head_ref')}"
+    ):
+        _add_blocker(
+            blockers,
+            "authority_workflow_ref_mismatch",
+            "$.workflow.ref",
+            "workflow ref must equal the pull-request head ref",
+        )
+    _require_sha40(workflow.get("sha"), "$.workflow.sha", blockers)
+    if (
+        isinstance(repository.get("commit_sha"), str)
+        and isinstance(workflow.get("sha"), str)
+        and repository.get("commit_sha") != workflow.get("sha")
+    ):
+        _add_blocker(
+            blockers,
+            "repository_workflow_sha_mismatch",
+            "$.workflow.sha",
+            "workflow SHA must equal the exact repository commit",
+        )
+    _require_positive_int(run.get("id"), "$.run.id", blockers)
+    _require_positive_int(run.get("attempt"), "$.run.attempt", blockers)
+    _require_positive_int(job.get("id"), "$.job.id", blockers)
+    _require_text(job.get("name"), "$.job.name", blockers, maximum=256)
+    logical_name = artifact.get("logical_name")
+    if (
+        not isinstance(logical_name, str)
+        or _SAFE_LOGICAL_NAME_RE.fullmatch(logical_name) is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.artifact.logical_name",
+            "artifact logical name contains unsafe characters",
+        )
+    _require_text(
+        producer.get("policy_id"),
+        "$.producer.policy_id",
+        blockers,
+        maximum=256,
+    )
+    report_identity = build.get("report_identity")
+    if (
+        not isinstance(report_identity, str)
+        or _SHA256_IDENTITY_RE.fullmatch(report_identity) is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.build.report_identity",
+            "build report identity must be sha256:<64 lowercase hex>",
+        )
+    repository_input_identity = build.get("repository_input_identity")
+    if (
+        not isinstance(repository_input_identity, str)
+        or _SHA256_IDENTITY_RE.fullmatch(repository_input_identity) is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.build.repository_input_identity",
+            "repository input identity must be sha256:<64 lowercase hex>",
+        )
+
+    members = manifest.get("members")
+    descriptors: dict[str, Mapping[str, object]] = {}
+    if not isinstance(members, list):
+        _invalid_field(
+            blockers,
+            "$.members",
+            "members must be an ordered JSON array",
+        )
+    elif len(members) + 1 > limits.max_entries:
+        _add_blocker(
+            blockers,
+            "entry_count_limit_exceeded",
+            "$.members",
+            "manifest member count exceeds max_entries",
+        )
+    else:
+        previous_name: str | None = None
+        for index, item in enumerate(members):
+            path = f"$.members[{index}]"
+            if not isinstance(item, Mapping):
+                _invalid_field(
+                    blockers,
+                    path,
+                    "member descriptor must be an object",
+                )
+                continue
+            descriptor = cast(Mapping[str, object], item)
+            _require_exact_keys(descriptor, _MEMBER_KEYS, path, blockers)
+            name = descriptor.get("name")
+            if _path_error(name) is not None or name == PRE_LIVE_ARTIFACT_MANIFEST_NAME:
+                _invalid_field(
+                    blockers,
+                    f"{path}.name",
+                    _path_error(name) or "manifest.json is reserved",
+                )
+                continue
+            name = cast(str, name)
+            if previous_name is not None and name <= previous_name:
+                _add_blocker(
+                    blockers,
+                    "noncanonical_member_order",
+                    path,
+                    "member descriptors must be strictly sorted by name",
+                )
+            previous_name = name
+            if name in descriptors:
+                _add_blocker(
+                    blockers,
+                    "duplicate_manifest_member",
+                    path,
+                    "manifest declares the same member more than once",
+                    name=name,
+                )
+            descriptors[name] = descriptor
+            _require_sha256(
+                descriptor.get("sha256"),
+                f"{path}.sha256",
+                blockers,
+            )
+            _require_nonnegative_int(
+                descriptor.get("size_bytes"),
+                f"{path}.size_bytes",
+                blockers,
+            )
+            size = descriptor.get("size_bytes")
+            if type(size) is int and size > limits.max_member_uncompressed_bytes:
+                _add_blocker(
+                    blockers,
+                    "uncompressed_size_limit_exceeded",
+                    f"{path}.size_bytes",
+                    "declared member size exceeds the configured limit",
+                    name=name,
+                )
+
+    role_specs = (
+        (
+            "$.artifact",
+            artifact,
+            "member",
+            "sha256",
+            "size_bytes",
+        ),
+        ("$.build", build, "report_member", "report_sha256", None),
+        ("$.build", build, "binary_member", "binary_sha256", None),
+        (
+            "$.build",
+            build,
+            "repository_input_member",
+            "repository_input_sha256",
+            None,
+        ),
+        ("$.build", build, "ctest_member", "ctest_sha256", None),
+        (
+            "$.producer",
+            producer,
+            "policy_member",
+            "policy_sha256",
+            None,
+        ),
+        (
+            "$.producer",
+            producer,
+            "executable_member",
+            "executable_sha256",
+            None,
+        ),
+        (
+            "$.producer",
+            producer,
+            "argv_member",
+            "argv_sha256",
+            None,
+        ),
+        (
+            "$.producer",
+            producer,
+            "output_member",
+            "output_sha256",
+            None,
+        ),
+        (
+            "$.producer",
+            producer,
+            "provenance_member",
+            "provenance_sha256",
+            None,
+        ),
+    )
+    role_names: list[str] = []
+    for path, section, member_key, digest_key, size_key in role_specs:
+        name = section.get(member_key)
+        digest = section.get(digest_key)
+        if _path_error(name) is not None or name == PRE_LIVE_ARTIFACT_MANIFEST_NAME:
+            _invalid_field(
+                blockers,
+                f"{path}.{member_key}",
+                _path_error(name) or "manifest.json is reserved",
+            )
+            continue
+        name = cast(str, name)
+        role_names.append(name)
+        _require_sha256(digest, f"{path}.{digest_key}", blockers)
+        descriptor = descriptors.get(name)
+        if descriptor is None:
+            _add_blocker(
+                blockers,
+                "role_member_missing",
+                f"{path}.{member_key}",
+                "role references a member absent from the manifest",
+                name=name,
+            )
+            continue
+        if (
+            isinstance(digest, str)
+            and isinstance(descriptor.get("sha256"), str)
+            and not hmac.compare_digest(
+                digest,
+                cast(str, descriptor["sha256"]),
+            )
+        ):
+            _add_blocker(
+                blockers,
+                "role_digest_mismatch",
+                f"{path}.{digest_key}",
+                "role digest does not match its member descriptor",
+                name=name,
+            )
+        if size_key is not None:
+            size_value = section.get(size_key)
+            _require_nonnegative_int(
+                size_value,
+                f"{path}.{size_key}",
+                blockers,
+            )
+            if (
+                type(size_value) is int
+                and type(descriptor.get("size_bytes")) is int
+                and size_value != descriptor.get("size_bytes")
+            ):
+                _add_blocker(
+                    blockers,
+                    "role_size_mismatch",
+                    f"{path}.{size_key}",
+                    "role size does not match its member descriptor",
+                    name=name,
+                )
+
+    artifact_member = artifact.get("member")
+    output_member = producer.get("output_member")
+    if (
+        isinstance(artifact_member, str)
+        and isinstance(output_member, str)
+        and artifact_member != output_member
+    ):
+        _add_blocker(
+            blockers,
+            "artifact_output_binding_mismatch",
+            "$.artifact.member",
+            "artifact member must be the local producer output member",
+        )
+    artifact_digest = artifact.get("sha256")
+    output_digest = producer.get("output_sha256")
+    if (
+        isinstance(artifact_digest, str)
+        and isinstance(output_digest, str)
+        and not hmac.compare_digest(artifact_digest, output_digest)
+    ):
+        _add_blocker(
+            blockers,
+            "artifact_output_digest_mismatch",
+            "$.artifact.sha256",
+            "artifact digest must equal the local producer output digest",
+        )
+
+    distinct_roles = [
+        build.get("report_member"),
+        build.get("binary_member"),
+        build.get("repository_input_member"),
+        build.get("ctest_member"),
+        producer.get("policy_member"),
+        producer.get("executable_member"),
+        producer.get("argv_member"),
+        producer.get("output_member"),
+        producer.get("provenance_member"),
+    ]
+    if all(isinstance(name, str) for name in distinct_roles) and len(
+        set(distinct_roles)
+    ) != len(distinct_roles):
+        _add_blocker(
+            blockers,
+            "duplicate_role_member",
+            "$",
+            "build and producer roles must reference distinct payload members",
+        )
+    return blockers
+
+
+def _manifest_member_descriptors(
+    manifest: Mapping[str, object],
+) -> dict[str, Mapping[str, object]]:
+    members = cast(list[Mapping[str, object]], manifest["members"])
+    return {cast(str, item["name"]): item for item in members}
+
+
+def _validate_role_bindings(
+    manifest: Mapping[str, object],
+    descriptors: Mapping[str, Mapping[str, object]],
+    evidence: Mapping[str, Mapping[str, object]],
+    blockers: list[dict[str, object]],
+) -> None:
+    artifact = _mapping(manifest.get("artifact"))
+    build = _mapping(manifest.get("build"))
+    producer = _mapping(manifest.get("producer"))
+    roles = (
+        ("$.artifact", artifact, "member", "sha256"),
+        ("$.build", build, "report_member", "report_sha256"),
+        ("$.build", build, "binary_member", "binary_sha256"),
+        (
+            "$.build",
+            build,
+            "repository_input_member",
+            "repository_input_sha256",
+        ),
+        ("$.build", build, "ctest_member", "ctest_sha256"),
+        (
+            "$.producer",
+            producer,
+            "policy_member",
+            "policy_sha256",
+        ),
+        (
+            "$.producer",
+            producer,
+            "executable_member",
+            "executable_sha256",
+        ),
+        ("$.producer", producer, "argv_member", "argv_sha256"),
+        ("$.producer", producer, "output_member", "output_sha256"),
+        (
+            "$.producer",
+            producer,
+            "provenance_member",
+            "provenance_sha256",
+        ),
+    )
+    for path, section, member_key, digest_key in roles:
+        name = cast(str, section[member_key])
+        role_digest = cast(str, section[digest_key])
+        descriptor_digest = cast(str, descriptors[name]["sha256"])
+        observed_digest = evidence.get(name, {}).get("sha256")
+        if (
+            not hmac.compare_digest(role_digest, descriptor_digest)
+            or not isinstance(observed_digest, str)
+            or not hmac.compare_digest(role_digest, observed_digest)
+        ):
+            _add_blocker(
+                blockers,
+                "unbound_role_digest",
+                f"{path}.{digest_key}",
+                "role digest is not bound to verified member bytes",
+                name=name,
+            )
+
+
+def _validate_build_report_binding(
+    report_bytes: bytes,
+    manifest: Mapping[str, object],
+    blockers: list[dict[str, object]],
+) -> None:
+    local_blockers: list[dict[str, object]] = []
+    report = _parse_json(
+        report_bytes,
+        local_blockers,
+        "$.build_report",
+    )
+    blockers.extend(local_blockers)
+    if report is None:
+        return
+    if not isinstance(report, Mapping):
+        _invalid_field(
+            blockers,
+            "$.build_report",
+            "build report must be a JSON object",
+        )
+        return
+    build = _mapping(manifest.get("build"))
+    schema_version = report.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
+    ):
+        _add_blocker(
+            blockers,
+            "build_report_schema_mismatch",
+            "$.build_report.schema_version",
+            "build report schema is not the required MicroMachine schema",
+            expected=MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
+            actual=schema_version,
+        )
+    if report.get("ok") is not True:
+        _add_blocker(
+            blockers,
+            "build_report_failed",
+            "$.build_report.ok",
+            "build report must record an accepted schema-71 build",
+        )
+    _require_equal(
+        report.get("failures"),
+        [],
+        "$.build_report.failures",
+        blockers,
+    )
+    identity = report.get("identity")
+    if not isinstance(identity, str) or not hmac.compare_digest(
+        identity,
+        cast(str, build["report_identity"]),
+    ):
+        _add_blocker(
+            blockers,
+            "build_report_identity_mismatch",
+            "$.build_report.identity",
+            "build report identity does not match the manifest",
+        )
+    observed = report.get("observed")
+    if not isinstance(observed, Mapping):
+        _invalid_field(
+            blockers,
+            "$.build_report.observed",
+            "build report observed evidence must be an object",
+        )
+        return
+    binary_digest = observed.get("binary_sha256")
+    if not isinstance(binary_digest, str) or not hmac.compare_digest(
+        binary_digest,
+        cast(str, build["binary_sha256"]),
+    ):
+        _add_blocker(
+            blockers,
+            "build_report_binary_digest_mismatch",
+            "$.build_report.observed.binary_sha256",
+            "build report binary digest does not match bundled binary bytes",
+        )
+    repository_input_identity = observed.get("embedded_build_input_identity")
+    expected_input_identity = cast(str, build["repository_input_identity"])
+    if not isinstance(repository_input_identity, str) or not hmac.compare_digest(
+        repository_input_identity,
+        expected_input_identity,
+    ):
+        _add_blocker(
+            blockers,
+            "build_report_repository_input_digest_mismatch",
+            "$.build_report.observed.embedded_build_input_identity",
+            "build report input identity does not match repository-input bytes",
+        )
+
+
+def _validate_producer_provenance_binding(
+    provenance_bytes: bytes,
+    manifest: Mapping[str, object],
+    blockers: list[dict[str, object]],
+) -> dict[str, object] | None:
+    local_blockers: list[dict[str, object]] = []
+    provenance = _parse_json(
+        provenance_bytes,
+        local_blockers,
+        "$.producer_provenance",
+    )
+    blockers.extend(local_blockers)
+    if not isinstance(provenance, Mapping):
+        _invalid_field(
+            blockers,
+            "$.producer_provenance",
+            "producer provenance must be a JSON object",
+        )
+        return None
+    if canonical_json_bytes(provenance) != provenance_bytes:
+        _add_blocker(
+            blockers,
+            "noncanonical_producer_provenance",
+            "$.producer_provenance",
+            "producer provenance must use canonical JSON",
+        )
+    expected_keys = frozenset(
+        {
+            "schema_version",
+            "authority",
+            "producer_id",
+            "policy_sha256",
+            "repository_commit",
+            "argv_sha256",
+            "executable_sha256",
+            "output_sha256",
+            "exit_code",
+            "started_at",
+            "ended_at",
+            "stdout_sha256",
+            "stderr_sha256",
+        }
+    )
+    _require_exact_keys(
+        provenance,
+        expected_keys,
+        "$.producer_provenance",
+        blockers,
+    )
+    repository = _mapping(manifest.get("repository"))
+    authority = _mapping(manifest.get("authority"))
+    producer = _mapping(manifest.get("producer"))
+    expected_values = {
+        "authority": dict(authority),
+        "producer_id": producer.get("policy_id"),
+        "policy_sha256": producer.get("policy_sha256"),
+        "repository_commit": repository.get("commit_sha"),
+        "argv_sha256": producer.get("argv_sha256"),
+        "executable_sha256": producer.get("executable_sha256"),
+        "output_sha256": producer.get("output_sha256"),
+    }
+    for key, expected in expected_values.items():
+        _require_equal(
+            provenance.get(key),
+            expected,
+            f"$.producer_provenance.{key}",
+            blockers,
+        )
+    _require_equal(
+        provenance.get("schema_version"),
+        1,
+        "$.producer_provenance.schema_version",
+        blockers,
+        exact_int=True,
+    )
+    _require_equal(
+        provenance.get("exit_code"),
+        0,
+        "$.producer_provenance.exit_code",
+        blockers,
+        exact_int=True,
+    )
+    for key in ("stdout_sha256", "stderr_sha256"):
+        _require_sha256(
+            provenance.get(key),
+            f"$.producer_provenance.{key}",
+            blockers,
+        )
+    started_at = _parse_exact_utc(provenance.get("started_at"))
+    ended_at = _parse_exact_utc(provenance.get("ended_at"))
+    if started_at is None:
+        _invalid_field(
+            blockers,
+            "$.producer_provenance.started_at",
+            "started_at must be an exact UTC timestamp",
+        )
+    if ended_at is None:
+        _invalid_field(
+            blockers,
+            "$.producer_provenance.ended_at",
+            "ended_at must be an exact UTC timestamp",
+        )
+    if started_at is not None and ended_at is not None and started_at > ended_at:
+        _add_blocker(
+            blockers,
+            "producer_timestamp_inversion",
+            "$.producer_provenance.ended_at",
+            "producer ended_at predates started_at",
+        )
+    return dict(provenance)
+
+
+def _validate_repository_input_binding(
+    repository_input_bytes: bytes,
+    manifest: Mapping[str, object],
+    blockers: list[dict[str, object]],
+) -> None:
+    local_blockers: list[dict[str, object]] = []
+    payload = _parse_json(
+        repository_input_bytes,
+        local_blockers,
+        "$.repository_input",
+    )
+    blockers.extend(local_blockers)
+    if not isinstance(payload, Mapping):
+        _invalid_field(
+            blockers,
+            "$.repository_input",
+            "repository input evidence must be a JSON object",
+        )
+        return
+    if canonical_json_bytes(payload) != repository_input_bytes:
+        _add_blocker(
+            blockers,
+            "noncanonical_repository_input",
+            "$.repository_input",
+            "repository input evidence must use canonical JSON",
+        )
+    _require_exact_keys(
+        payload,
+        frozenset(
+            {
+                "schema_version",
+                "repository_commit",
+                "build_input_identity",
+                "repository_inputs_digest",
+                "paths",
+            }
+        ),
+        "$.repository_input",
+        blockers,
+    )
+    repository = _mapping(manifest.get("repository"))
+    build = _mapping(manifest.get("build"))
+    _require_equal(
+        payload.get("schema_version"),
+        1,
+        "$.repository_input.schema_version",
+        blockers,
+        exact_int=True,
+    )
+    _require_equal(
+        payload.get("repository_commit"),
+        repository.get("commit_sha"),
+        "$.repository_input.repository_commit",
+        blockers,
+    )
+    _require_equal(
+        payload.get("build_input_identity"),
+        build.get("repository_input_identity"),
+        "$.repository_input.build_input_identity",
+        blockers,
+    )
+    paths = payload.get("paths")
+    if not isinstance(paths, Mapping) or not paths:
+        _invalid_field(
+            blockers,
+            "$.repository_input.paths",
+            "repository input paths must be a non-empty object",
+        )
+        return
+    expected_digest = (
+        "sha256:" + hashlib.sha256(canonical_json_bytes(paths)).hexdigest()
+    )
+    _require_equal(
+        payload.get("repository_inputs_digest"),
+        expected_digest,
+        "$.repository_input.repository_inputs_digest",
+        blockers,
+    )
+
+
+def _validate_ctest_evidence_binding(
+    ctest_bytes: bytes,
+    blockers: list[dict[str, object]],
+) -> None:
+    local_blockers: list[dict[str, object]] = []
+    payload = _parse_json(
+        ctest_bytes,
+        local_blockers,
+        "$.ctest_evidence",
+    )
+    blockers.extend(local_blockers)
+    if not isinstance(payload, Mapping):
+        _invalid_field(
+            blockers,
+            "$.ctest_evidence",
+            "CTest evidence must be a JSON object",
+        )
+        return
+    if canonical_json_bytes(payload) != ctest_bytes:
+        _add_blocker(
+            blockers,
+            "noncanonical_ctest_evidence",
+            "$.ctest_evidence",
+            "CTest evidence must use canonical JSON",
+        )
+    _validate_ctest_evidence_payload(payload, blockers)
+
+
+def _validate_ctest_evidence_payload(
+    payload: Mapping[str, object],
+    blockers: list[dict[str, object]],
+) -> None:
+    _require_exact_keys(
+        payload,
+        _CTEST_EVIDENCE_KEYS,
+        "$.ctest_evidence",
+        blockers,
+    )
+    _require_equal(
+        payload.get("schema_version"),
+        PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
+        "$.ctest_evidence.schema_version",
+        blockers,
+        exact_int=True,
+    )
+    _require_equal(
+        payload.get("returncode"),
+        0,
+        "$.ctest_evidence.returncode",
+        blockers,
+        exact_int=True,
+    )
+    for key, expected in (("passed", 5), ("total", 5), ("failures", 0)):
+        _require_equal(
+            payload.get(key),
+            expected,
+            f"$.ctest_evidence.{key}",
+            blockers,
+            exact_int=True,
+        )
+    for key in (
+        "ctest_executable_sha256",
+        "stdout_sha256",
+        "stderr_sha256",
+    ):
+        _require_sha256(
+            payload.get(key),
+            f"$.ctest_evidence.{key}",
+            blockers,
+        )
+
+    expected_names = sorted(_REQUIRED_CTEST_EXECUTABLES)
+    names = payload.get("test_names")
+    if names != expected_names:
+        _add_blocker(
+            blockers,
+            "ctest_identity_mismatch",
+            "$.ctest_evidence.test_names",
+            "CTest evidence must contain the exact five required tests",
+            expected=expected_names,
+            actual=names,
+        )
+
+    ctest_executable = payload.get("ctest_executable")
+    if (
+        not isinstance(ctest_executable, str)
+        or not ctest_executable.startswith("/")
+        or PurePosixPath(ctest_executable).name != "ctest"
+    ):
+        _invalid_field(
+            blockers,
+            "$.ctest_evidence.ctest_executable",
+            "CTest executable must be an absolute path ending in ctest",
+        )
+
+    argv = _validate_ctest_argv(
+        payload.get("argv"),
+        "$.ctest_evidence.argv",
+        "--output-on-failure",
+        blockers,
+    )
+    discovery_argv = _validate_ctest_argv(
+        payload.get("discovery_argv"),
+        "$.ctest_evidence.discovery_argv",
+        "--show-only=json-v1",
+        blockers,
+    )
+    if argv is not None and discovery_argv is not None:
+        if argv[:3] != discovery_argv[:3]:
+            _add_blocker(
+                blockers,
+                "ctest_argv_mismatch",
+                "$.ctest_evidence.discovery_argv",
+                "CTest execution and discovery must use the same executable/build dir",
+            )
+        if isinstance(ctest_executable, str) and argv[0] != ctest_executable:
+            _add_blocker(
+                blockers,
+                "ctest_executable_binding_mismatch",
+                "$.ctest_evidence.ctest_executable",
+                "CTest executable must match the recorded argv",
+            )
+
+    executables = payload.get("test_executables")
+    if not isinstance(executables, Mapping):
+        _invalid_field(
+            blockers,
+            "$.ctest_evidence.test_executables",
+            "CTest executable evidence must be an object",
+        )
+    else:
+        executable_names = set(executables)
+        if executable_names != set(_REQUIRED_CTEST_EXECUTABLES):
+            _add_blocker(
+                blockers,
+                "ctest_executable_set_mismatch",
+                "$.ctest_evidence.test_executables",
+                "CTest executable evidence must bind the exact five tests",
+                expected=expected_names,
+                actual=sorted(str(name) for name in executable_names),
+            )
+        build_dir = argv[2] if argv is not None else None
+        for name in expected_names:
+            descriptor = executables.get(name)
+            path = f"$.ctest_evidence.test_executables.{name}"
+            if not isinstance(descriptor, Mapping):
+                _invalid_field(
+                    blockers,
+                    path,
+                    "CTest executable descriptor must be an object",
+                )
+                continue
+            descriptor = cast(Mapping[str, object], descriptor)
+            _require_exact_keys(
+                descriptor,
+                _CTEST_EXECUTABLE_KEYS,
+                path,
+                blockers,
+            )
+            executable_path = descriptor.get("path")
+            if not isinstance(executable_path, str) or not executable_path.startswith(
+                "/"
+            ):
+                _invalid_field(
+                    blockers,
+                    f"{path}.path",
+                    "CTest command path must be absolute",
+                )
+            elif build_dir is not None:
+                expected_path = str(
+                    PurePosixPath(build_dir) / "bin" / _REQUIRED_CTEST_EXECUTABLES[name]
+                )
+                if executable_path != expected_path:
+                    _add_blocker(
+                        blockers,
+                        "ctest_command_path_mismatch",
+                        f"{path}.path",
+                        "CTest command path does not match the attested build dir",
+                        expected=expected_path,
+                        actual=executable_path,
+                    )
+            _require_sha256(
+                descriptor.get("sha256"),
+                f"{path}.sha256",
+                blockers,
+            )
+            _require_equal(
+                descriptor.get("sha256_after"),
+                descriptor.get("sha256"),
+                f"{path}.sha256_after",
+                blockers,
+            )
+            _require_equal(
+                descriptor.get("argv"),
+                [executable_path] if isinstance(executable_path, str) else None,
+                f"{path}.argv",
+                blockers,
+            )
+            _require_equal(
+                descriptor.get("returncode"),
+                0,
+                f"{path}.returncode",
+                blockers,
+                exact_int=True,
+            )
+            for digest_key in ("stdout_sha256", "stderr_sha256"):
+                _require_sha256(
+                    descriptor.get(digest_key),
+                    f"{path}.{digest_key}",
+                    blockers,
+                )
+
+        expected_manifest_identity = (
+            "sha256:" + hashlib.sha256(canonical_json_bytes(executables)).hexdigest()
+        )
+        _require_equal(
+            payload.get("test_manifest_sha256"),
+            expected_manifest_identity,
+            "$.ctest_evidence.test_manifest_sha256",
+            blockers,
+        )
+
+
+def _validate_ctest_argv(
+    value: object,
+    path: str,
+    terminal_argument: str,
+    blockers: list[dict[str, object]],
+) -> list[str] | None:
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(isinstance(argument, str) for argument in value)
+        or value[1] != "--test-dir"
+        or value[3] != terminal_argument
+        or not cast(str, value[0]).startswith("/")
+        or not cast(str, value[2]).startswith("/")
+    ):
+        _invalid_field(
+            blockers,
+            path,
+            "CTest argv must bind an absolute executable/build dir and exact mode",
+        )
+        return None
+    return cast(list[str], value)
+
+
+def _parse_exact_utc(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        return None
+    return parsed
+
+
+def _schema_mapping(
+    value: object,
+    path: str,
+    expected_keys: frozenset[str],
+    blockers: list[dict[str, object]],
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        _invalid_field(blockers, path, "value must be a JSON object")
+        return {}
+    result = cast(Mapping[str, object], value)
+    _require_exact_keys(result, expected_keys, path, blockers)
+    return result
+
+
+def _require_exact_keys(
+    value: Mapping[str, object],
+    expected: frozenset[str],
+    path: str,
+    blockers: list[dict[str, object]],
+) -> None:
+    actual = set(value)
+    if actual != expected:
+        _add_blocker(
+            blockers,
+            "schema_fields_mismatch",
+            path,
+            "object fields do not match the canonical schema",
+            missing=sorted(expected - actual),
+            unexpected=sorted(actual - expected),
+        )
+
+
+def _require_equal(
+    actual: object,
+    expected: object,
+    path: str,
+    blockers: list[dict[str, object]],
+    *,
+    exact_int: bool = False,
+) -> None:
+    matches = actual == expected
+    if exact_int:
+        matches = type(actual) is int and actual == expected
+    if not matches:
+        _add_blocker(
+            blockers,
+            "schema_value_mismatch",
+            path,
+            "value does not match the canonical schema",
+            expected=expected,
+            actual=actual,
+        )
+
+
+def _require_positive_int(
+    value: object,
+    path: str,
+    blockers: list[dict[str, object]],
+) -> None:
+    if type(value) is not int or value <= 0:
+        _invalid_field(
+            blockers,
+            path,
+            "value must be a positive integer and not a boolean",
+        )
+
+
+def _require_nonnegative_int(
+    value: object,
+    path: str,
+    blockers: list[dict[str, object]],
+) -> None:
+    if type(value) is not int or value < 0:
+        _invalid_field(
+            blockers,
+            path,
+            "value must be a non-negative integer and not a boolean",
+        )
+
+
+def _require_sha40(
+    value: object,
+    path: str,
+    blockers: list[dict[str, object]],
+) -> None:
+    if not isinstance(value, str) or _SHA40_RE.fullmatch(value) is None:
+        _invalid_field(
+            blockers,
+            path,
+            "value must be an exact lowercase 40-character commit SHA",
+        )
+
+
+def _require_sha256(
+    value: object,
+    path: str,
+    blockers: list[dict[str, object]],
+) -> None:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        _invalid_field(
+            blockers,
+            path,
+            "value must be an exact lowercase SHA-256 digest",
+        )
+
+
+def _require_text(
+    value: object,
+    path: str,
+    blockers: list[dict[str, object]],
+    *,
+    maximum: int,
+    prefix: str | None = None,
+) -> None:
+    valid = (
+        isinstance(value, str)
+        and 0 < len(value) <= maximum
+        and value == unicodedata.normalize("NFC", value)
+        and all(
+            not unicodedata.category(character).startswith("C") for character in value
+        )
+    )
+    if prefix is not None:
+        valid = valid and cast(str, value).startswith(prefix)
+    if not valid:
+        _invalid_field(
+            blockers,
+            path,
+            "value must be bounded NFC text without control characters",
+        )
+
+
+def _path_error(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return "entry path must be a non-empty string"
+    if len(value.encode("utf-8")) > 512:
+        return "entry path exceeds 512 UTF-8 bytes"
+    if value != unicodedata.normalize("NFC", value):
+        return "entry path must use NFC Unicode normalization"
+    if "\\" in value or "\x00" in value:
+        return "entry path contains a backslash or NUL"
+    if value.startswith("/") or re.match(r"^[A-Za-z]:", value):
+        return "absolute and drive-qualified entry paths are forbidden"
+    path = PurePosixPath(value)
+    if path.is_absolute():
+        return "absolute entry paths are forbidden"
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return "entry path contains an empty, dot, or traversal component"
+    if any(_SAFE_PATH_PART_RE.fullmatch(part) is None for part in parts):
+        return "entry path contains unsupported characters"
+    return None
+
+
+def _zip_file_type(info: zipfile.ZipInfo) -> int:
+    mode = (info.external_attr >> 16) & 0xFFFF
+    file_type = stat.S_IFMT(mode)
+    if file_type:
+        return file_type
+    if info.external_attr & 0x10:
+        return stat.S_IFDIR
+    return 0
+
+
+def _compression_ratio(info: zipfile.ZipInfo) -> float:
+    if info.file_size == 0:
+        return 1.0
+    if info.compress_size == 0:
+        return float("inf")
+    return info.file_size / info.compress_size
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    if isinstance(value, Mapping):
+        return cast(Mapping[str, object], value)
+    return {}
+
+
+def _string(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _invalid_field(
+    blockers: list[dict[str, object]],
+    path: str,
+    message: str,
+) -> None:
+    _add_blocker(blockers, "invalid_manifest_field", path, message)
+
+
+def _add_blocker(
+    blockers: list[dict[str, object]],
+    code: str,
+    path: str,
+    message: str,
+    **evidence: object,
+) -> None:
+    blocker: dict[str, object] = {
+        "code": code,
+        "path": path,
+        "message": message,
+    }
+    blocker.update(evidence)
+    blockers.append(blocker)
+
+
+def _verification_result(
+    blockers: list[dict[str, object]],
+    manifest: dict[str, object] | None,
+    manifest_evidence: dict[str, object],
+    member_evidence: list[dict[str, object]],
+    caller_claims: Mapping[str, object] | None,
+    *,
+    role_evidence: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "ok": not blockers,
+        "blockers": blockers,
+        "manifest": manifest,
+        "manifest_evidence": manifest_evidence,
+        "member_evidence": member_evidence,
+        "role_evidence": dict(role_evidence or {}),
+        "caller_claims_ignored": caller_claims is not None,
+    }
+
+
+def _format_builder_blockers(
+    blockers: list[Mapping[str, object]],
+) -> str:
+    return "; ".join(
+        f"{blocker.get('code')} at {blocker.get('path')}: {blocker.get('message')}"
+        for blocker in blockers
+    )

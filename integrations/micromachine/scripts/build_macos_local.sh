@@ -160,6 +160,52 @@ prepare_git_checkout() {
   fi
 }
 
+require_secure_build_root() {
+  python3 -c '
+import os
+import stat
+import sys
+from pathlib import Path
+
+build = Path(os.path.abspath(sys.argv[1]))
+source = Path(os.path.abspath(sys.argv[2]))
+report = Path(os.path.abspath(sys.argv[3]))
+label = sys.argv[4]
+try:
+    build.relative_to(source)
+except ValueError:
+    raise SystemExit(f"{label} build root escapes source checkout: {build}")
+try:
+    report.relative_to(build)
+except ValueError:
+    raise SystemExit(f"{label} report escapes build root: {report}")
+for target in (source, build, report):
+    current = target
+    while True:
+        if os.path.lexists(current):
+            mode = current.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                raise SystemExit(f"{label} path contains a symlink: {current}")
+        if current == source or current.parent == current:
+            break
+        current = current.parent
+' "$1" "$2" "$3" "$4"
+}
+
+require_secure_build_root \
+  "${S2CLIENT_BUILD_DIR}" \
+  "${S2CLIENT_DIR}" \
+  "${S2CLIENT_BUILD_DIR}/CMakeCache.txt" \
+  "s2client"
+require_secure_build_root \
+  "${MICROMACHINE_BUILD_DIR}" \
+  "${MICROMACHINE_DIR}" \
+  "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
+  "MicroMachine"
+if [[ "${VOI_BUILD_PREFLIGHT_ONLY:-0}" == "1" ]]; then
+  exit 0
+fi
+
 mkdir -p "${ROOT_DIR}"
 require_disposable_checkout_mutation "${S2CLIENT_DIR}" "${ROOT_DIR}" "mutate"
 require_disposable_checkout_mutation "${MICROMACHINE_DIR}" "${ROOT_DIR}" "mutate"
@@ -335,10 +381,16 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
+require_secure_build_root \
+  "${MICROMACHINE_BUILD_DIR}" \
+  "${MICROMACHINE_DIR}" \
+  "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
+  "MicroMachine"
 rm -f \
   "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
   "${MICROMACHINE_BUILD_DIR}/voi_source_attestation.json" \
   "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"
+mkdir -p "${MICROMACHINE_BUILD_DIR}"
 
 python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-dir "${MICROMACHINE_DIR}" \
