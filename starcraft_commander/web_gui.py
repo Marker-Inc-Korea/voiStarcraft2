@@ -5230,6 +5230,8 @@ class _OperationSemanticTimelineReducer:
     """Reduce repeated operation snapshots into bounded semantic events."""
 
     _SCOPE_RETENTION = 8
+    _SCOPE_EPOCH_HISTORY_RETENTION = 128
+    _RETIRED_OPAQUE_EPOCH_RETENTION = 16
     _PER_SCOPE_OPERATION_RETENTION = 64
     _GLOBAL_OPERATION_RETENTION = (
         _SCOPE_RETENTION * _PER_SCOPE_OPERATION_RETENTION
@@ -5237,7 +5239,6 @@ class _OperationSemanticTimelineReducer:
     _GLOBAL_OPERATION_HISTORY_RETENTION = (
         _GLOBAL_OPERATION_RETENTION * 2
     )
-    _SCOPE_EPOCH_HISTORY_RETENTION = _SCOPE_RETENTION * 8
     _PER_OPERATION_RETENTION = 32
     _PER_OPERATION_TOKEN_RETENTION = 64
     _PER_SCOPE_RETENTION = 192
@@ -5282,8 +5283,10 @@ class _OperationSemanticTimelineReducer:
             dict[str, object],
         ] = {}
         self._scope_events: dict[str, deque[dict[str, object]]] = {}
+        self._scope_event_high_water: dict[str, int] = {}
         self._scope_epochs: dict[str, str] = {}
         self._retired_scope_epochs: dict[str, deque[str]] = {}
+        self._opaque_epoch_history_saturated: set[str] = set()
         self._scope_battlefield_overviews: dict[
             str,
             dict[str, object],
@@ -5302,6 +5305,20 @@ class _OperationSemanticTimelineReducer:
         self._scope_epochs.pop(scope_id, None)
         self._scope_families.pop(scope_id, None)
 
+    def _admit_scope(self, scope_id: str, session_epoch: str = "") -> bool:
+        if scope_id not in self._scope_epoch_history:
+            if (
+                len(self._scope_epoch_history)
+                >= self._SCOPE_EPOCH_HISTORY_RETENTION
+            ):
+                return False
+            self._scope_epoch_history[scope_id] = str(session_epoch or "")
+            self._scope_epoch_history_order.append(scope_id)
+            return True
+        if session_epoch:
+            self._scope_epoch_history[scope_id] = str(session_epoch)
+        return True
+
     def _touch_scope(self, scope_id: str) -> None:
         try:
             self._scope_order.remove(scope_id)
@@ -5316,31 +5333,34 @@ class _OperationSemanticTimelineReducer:
         self,
         scope_id: str,
         session_epoch: str,
-    ) -> None:
-        if not session_epoch:
-            return
+    ) -> bool:
+        return self._admit_scope(scope_id, session_epoch)
+
+    @staticmethod
+    def _numeric_epoch(session_epoch: str) -> int | None:
         try:
-            self._scope_epoch_history_order.remove(scope_id)
-        except ValueError:
-            pass
-        self._scope_epoch_history_order.append(scope_id)
-        self._scope_epoch_history[scope_id] = session_epoch
+            return int(session_epoch)
+        except (TypeError, ValueError):
+            return None
 
     def _reset_scope_epoch(self, scope_id: str, session_epoch: str) -> None:
         previous_epoch = (
             self._scope_epochs.get(scope_id, "")
             or self._scope_epoch_history.get(scope_id, "")
         )
-        retired = self._retired_scope_epochs.setdefault(
-            scope_id,
-            deque(),
-        )
         if previous_epoch and previous_epoch != session_epoch:
-            try:
-                retired.remove(previous_epoch)
-            except ValueError:
-                pass
-            retired.append(previous_epoch)
+            if self._numeric_epoch(previous_epoch) is None:
+                retired = self._retired_scope_epochs.setdefault(
+                    scope_id,
+                    deque(),
+                )
+                if previous_epoch not in retired:
+                    retired.append(previous_epoch)
+                if (
+                    len(retired)
+                    >= self._RETIRED_OPAQUE_EPOCH_RETENTION
+                ):
+                    self._opaque_epoch_history_saturated.add(scope_id)
         self._drop_scope(scope_id)
         self._scope_battlefield_overviews.pop(scope_id, None)
         self._scope_epochs[scope_id] = session_epoch
@@ -5361,10 +5381,26 @@ class _OperationSemanticTimelineReducer:
         retired = self._retired_scope_epochs.get(scope_id, ())
         if incoming_epoch in retired:
             return True
-        try:
-            return int(incoming_epoch) < int(current_epoch)
-        except (TypeError, ValueError):
-            return False
+        incoming_numeric = self._numeric_epoch(incoming_epoch)
+        current_numeric = self._numeric_epoch(current_epoch)
+        if incoming_numeric is not None and current_numeric is not None:
+            return incoming_numeric < current_numeric
+        if (incoming_numeric is None) != (current_numeric is None):
+            return True
+        return scope_id in self._opaque_epoch_history_saturated
+
+    @staticmethod
+    def _scope_capacity_rejected_result(
+        result: dict[str, object],
+    ) -> dict[str, object]:
+        result["operation_registry_authoritative"] = False
+        result["operation_timeline_status"] = "scope_capacity_rejected"
+        result["operations"] = []
+        result["operation_summary"] = _micromachine_operation_summary([])
+        result["battlefield_overview"] = None
+        result["operation_events"] = []
+        result["operation_event_latest_seq"] = 0
+        return result
 
     def _accepted_scope_operations(
         self,
@@ -5410,7 +5446,7 @@ class _OperationSemanticTimelineReducer:
         result["operation_event_latest_seq"] = (
             int(scope_events[-1]["timeline_seq"])
             if scope_events
-            else 0
+            else int(self._scope_event_high_water.get(scope_id, 0))
         )
         return result
 
@@ -6968,6 +7004,8 @@ class _OperationSemanticTimelineReducer:
             payload.get("operation_registry_authoritative") is not False
         )
         with self._lock:
+            if not self._admit_scope(scope_id):
+                return self._scope_capacity_rejected_result(result)
             active_epoch = self._scope_epochs.get(scope_id, "")
             current_epoch = (
                 active_epoch
@@ -6987,7 +7025,9 @@ class _OperationSemanticTimelineReducer:
                     _micromachine_operation_summary(operations)
                 )
                 result["operation_events"] = []
-                result["operation_event_latest_seq"] = 0
+                result["operation_event_latest_seq"] = int(
+                    self._scope_event_high_water.get(scope_id, 0)
+                )
                 return result
             self._touch_scope(scope_id)
             if (
@@ -7318,6 +7358,7 @@ class _OperationSemanticTimelineReducer:
                     }
                     state["events"].append(event)
                     scope_events.append(event)
+                    self._scope_event_high_water[scope_id] = self._seq
                 owner_count, required_count = (
                     self._operation_force_counts(
                         operation,
@@ -7383,7 +7424,7 @@ class _OperationSemanticTimelineReducer:
             result["operation_event_latest_seq"] = (
                 int(scope_events[-1]["timeline_seq"])
                 if scope_events
-                else 0
+                else int(self._scope_event_high_water.get(scope_id, 0))
             )
         return result
 
@@ -10870,6 +10911,8 @@ var authQuery = token ? "?token=" + encodeURIComponent(token) : "";
 var authJoin = token ? "&token=" + encodeURIComponent(token) : "";
 var lastSeq = 0;
 var lastEventSeq = 0;
+var subscriberOperationReplayDedupe = {};
+var subscriberOperationReplayOrder = [];
 var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
@@ -10898,6 +10941,7 @@ var TACTICAL_RADIO_MAX_SPEECH_CHARS = 180;
 var TACTICAL_RADIO_MAX_PLAN_OPERATIONS = 3;
 var TACTICAL_RADIO_MAX_PLAN_IDENTITIES = 256;
 var TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER = 256;
+var SUBSCRIBER_OPERATION_REPLAY_DEDUPE_MAXIMUM = 512;
 var VOICE_FINALIZATION_GRACE_MS = 350;
 var TACTICAL_RADIO_PRIORITY_INTERVAL_MS = {
   0: 0,
@@ -13706,6 +13750,8 @@ function resetEventCursorForBlackboard(directory) {
   if (commandEventBlackboardDir === normalized) { return false; }
   commandEventBlackboardDir = normalized;
   lastEventSeq = 0;
+  subscriberOperationReplayDedupe = {};
+  subscriberOperationReplayOrder = [];
   commandEventPollWonInitialHydration = false;
   return true;
 }
@@ -13975,6 +14021,44 @@ function applyOperationSemanticEvent(envelope, payload) {
   announceOperationLifecycleEvent(envelope, payload, scopeId, record);
 }
 
+function acceptSubscriberOperationReplay(envelope, payload, eventSeq) {
+  if (
+    envelope.subscriber_local_replay !== true ||
+    String(envelope.event_type || "") !== "operation_event" ||
+    eventSeq !== lastEventSeq
+  ) {
+    return false;
+  }
+  var scopeId = String(
+    payload.blackboard_scope_id ||
+    envelope.blackboard_scope_id ||
+    ""
+  );
+  var sessionEpoch = String(payload.session_epoch || "");
+  var timelineSeq = Number(payload.timeline_seq || 0);
+  if (
+    !scopeId ||
+    !sessionEpoch ||
+    !Number.isFinite(timelineSeq) ||
+    timelineSeq <= 0
+  ) {
+    return false;
+  }
+  var key = [scopeId, sessionEpoch, timelineSeq].join("|");
+  if (subscriberOperationReplayDedupe[key]) { return false; }
+  subscriberOperationReplayDedupe[key] = true;
+  subscriberOperationReplayOrder.push(key);
+  while (
+    subscriberOperationReplayOrder.length >
+    SUBSCRIBER_OPERATION_REPLAY_DEDUPE_MAXIMUM
+  ) {
+    delete subscriberOperationReplayDedupe[
+      subscriberOperationReplayOrder.shift()
+    ];
+  }
+  return true;
+}
+
 function applyServerEvent(event) {
   var envelope;
   try {
@@ -14000,10 +14084,18 @@ function applyServerEvent(event) {
     return;
   }
   if (
-    eventSeq > 0 &&
-    eventSeq <= lastEventSeq
+    (
+      eventSeq > 0 &&
+      eventSeq <= lastEventSeq
+    ) ||
+    envelope.subscriber_local_replay === true
   ) {
-    return;
+    if (
+      eventType !== "operation_event" ||
+      !acceptSubscriberOperationReplay(envelope, payload, eventSeq)
+    ) {
+      return;
+    }
   }
   if (serverEventRegressesOperation(envelope)) { return; }
   if (eventSeq > lastEventSeq) { lastEventSeq = eventSeq; }
@@ -21405,6 +21497,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._observed_operation_scope_order: deque[str] = deque()
         self._observed_operation_event_high_water: dict[str, int] = {}
         self._observed_operation_event_history_order: deque[str] = deque()
+        self._materialized_operation_event_scopes: set[str] = set()
         self._pending_operation_events: dict[
             str,
             dict[int, dict[str, object]],
@@ -21509,9 +21602,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             )
             return True
 
-    def admit_operation_event_scope(self, scope_id: str) -> bool:
-        """Admit one replay cursor without allowing unbounded scope growth."""
-
+    def _admit_operation_event_scope_locked(self, scope_id: str) -> bool:
         normalized_scope = str(scope_id or "")
         if not normalized_scope:
             return False
@@ -21535,19 +21626,11 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._observed_operation_event_history_order.append(normalized_scope)
         return True
 
-    def can_admit_operation_event_scope(self, scope_id: str) -> bool:
-        """Check capacity without materializing a cold source cursor."""
+    def admit_operation_event_scope(self, scope_id: str) -> bool:
+        """Atomically reserve one bounded replay scope."""
 
-        normalized_scope = str(scope_id or "")
-        if not normalized_scope:
-            return False
         with self._event_source_lock:
-            return bool(
-                normalized_scope
-                in self._observed_operation_event_high_water
-                or len(self._observed_operation_event_high_water)
-                < self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
-            )
+            return self._admit_operation_event_scope_locked(scope_id)
 
     def remember_operation_event_high_water(
         self,
@@ -21558,16 +21641,19 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
 
         normalized_scope = str(scope_id or "")
         normalized_seq = max(0, int(timeline_seq))
-        if not self.admit_operation_event_scope(normalized_scope):
-            return False
-        self._observed_operation_event_high_water[normalized_scope] = max(
-            self._observed_operation_event_high_water.get(
-                normalized_scope,
-                0,
-            ),
-            normalized_seq,
-        )
-        return True
+        with self._event_source_lock:
+            if not self._admit_operation_event_scope_locked(
+                normalized_scope
+            ):
+                return False
+            self._observed_operation_event_high_water[normalized_scope] = max(
+                self._observed_operation_event_high_water.get(
+                    normalized_scope,
+                    0,
+                ),
+                normalized_seq,
+            )
+            return True
 
     def operation_event_source_cursor(
         self,
@@ -21579,6 +21665,11 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         if not normalized_scope:
             return False, 0
         with self._event_source_lock:
+            if (
+                normalized_scope
+                not in self._materialized_operation_event_scopes
+            ):
+                return False, 0
             if normalized_scope in self._observed_operation_event_seq:
                 return (
                     True,
@@ -21718,6 +21809,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                     continue
                 replay_event = deepcopy(dict(event))
                 replay_event["event_seq"] = effective_cursor
+                replay_event["subscriber_local_replay"] = True
                 historical_pending.append(replay_event)
             return (
                 effective_cursor,
@@ -22039,40 +22131,57 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             blackboard_dir
         )
         with source_lock:
-            status_read_succeeded = True
-            try:
-                micromachine_status = self._micromachine_status_payload(
-                    blackboard_dir
+            requested_scope_id = str(blackboard_scope_id or "")
+            status_read_succeeded = bool(
+                server.admit_operation_event_scope(  # type: ignore[attr-defined]
+                    requested_scope_id
                 )
-            except Exception as error:  # noqa: BLE001 - snapshot remains usable.
-                status_read_succeeded = False
-                micromachine_status = {
-                    "enabled": False,
-                    "status": "source_error",
-                    "error": _redact_sensitive_text(
-                        error,
-                        normalize_whitespace=True,
-                    ),
-                }
-            status_scope_id = str(
-                micromachine_status.get("blackboard_scope_id")
-                or blackboard_scope_id
             )
-            if (
-                status_read_succeeded
-                and not server.can_admit_operation_event_scope(  # type: ignore[attr-defined]
-                    status_scope_id
-                )
-            ):
-                status_read_succeeded = False
+            if not status_read_succeeded:
                 micromachine_status = {
                     "enabled": False,
                     "status": "scope_capacity_rejected",
-                    "blackboard_scope_id": status_scope_id,
+                    "blackboard_scope_id": requested_scope_id,
                     "error": (
                         "MicroMachine operation scope capacity is exhausted."
                     ),
                 }
+            else:
+                try:
+                    micromachine_status = self._micromachine_status_payload(
+                        blackboard_dir
+                    )
+                except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+                    status_read_succeeded = False
+                    micromachine_status = {
+                        "enabled": False,
+                        "status": "source_error",
+                        "blackboard_scope_id": requested_scope_id,
+                        "error": _redact_sensitive_text(
+                            error,
+                            normalize_whitespace=True,
+                        ),
+                    }
+            status_scope_id = str(
+                micromachine_status.get("blackboard_scope_id")
+                or requested_scope_id
+            )
+            if (
+                status_read_succeeded
+                and status_scope_id != requested_scope_id
+            ):
+                status_read_succeeded = False
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "scope_identity_mismatch",
+                    "blackboard_scope_id": requested_scope_id,
+                    "reported_blackboard_scope_id": status_scope_id,
+                    "error": (
+                        "MicroMachine status scope does not match the "
+                        "requested blackboard scope."
+                    ),
+                }
+                status_scope_id = requested_scope_id
             source_materialized, _ = (
                 server.operation_event_source_cursor(  # type: ignore[attr-defined]
                     status_scope_id
@@ -22314,19 +22423,26 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 blackboard_dir
             )
             with source_lock:
+                requested_scope = _micromachine_blackboard_scope_id(
+                    blackboard_dir
+                )
+                if not server.admit_operation_event_scope(  # type: ignore[attr-defined]
+                    requested_scope
+                ):
+                    raise RuntimeError(
+                        "MicroMachine operation scope capacity is exhausted."
+                    )
                 status = self._micromachine_status_payload(blackboard_dir)
                 scope = str(
                     status.get("blackboard_scope_id")
-                    or status.get("blackboard_dir")
-                    or blackboard_dir
+                    or requested_scope
                 )
+                if scope != requested_scope:
+                    raise RuntimeError(
+                        "MicroMachine status scope does not match the "
+                        "requested blackboard scope."
+                    )
                 with server._event_source_lock:  # type: ignore[attr-defined]
-                    if not server.can_admit_operation_event_scope(  # type: ignore[attr-defined]
-                        scope
-                    ):
-                        raise RuntimeError(
-                            "MicroMachine operation scope capacity is exhausted."
-                        )
                     status_published = server.publish_changed_snapshot(  # type: ignore[attr-defined]
                         f"micromachine:{scope}",
                         "micromachine_status",
@@ -22378,9 +22494,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             first_scope_observation = bool(
                 scope_id
                 and scope_id
-                not in server._observed_operation_event_seq  # type: ignore[attr-defined]
-                and scope_id
-                not in server._observed_operation_event_high_water  # type: ignore[attr-defined]
+                not in server._materialized_operation_event_scopes  # type: ignore[attr-defined]
             )
             if not server.admit_operation_event_scope(scope_id):  # type: ignore[attr-defined]
                 return
@@ -22411,6 +22525,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 server.remember_operation_event_high_water(  # type: ignore[attr-defined]
                     scope_id,
                     observed,
+                )
+                server._materialized_operation_event_scopes.add(  # type: ignore[attr-defined]
+                    scope_id
                 )
                 return
             else:

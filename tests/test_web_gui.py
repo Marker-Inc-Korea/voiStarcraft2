@@ -1817,7 +1817,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             write_release.set()
             snapshot_future.result(timeout=3)
 
-    def test_concurrent_refresh_uses_actual_snapshot_scope_cut(self):
+    def test_snapshot_rejects_reported_scope_mismatch(self):
         snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
         snapshot_handler.server = self.server._http
         requested_scope = "scope-requested-snapshot"
@@ -1833,27 +1833,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "summary": "movement observed",
             "technical": {},
         }
-        second = {
-            **first,
-            "timeline_seq": 2,
-            "kind": "engagement_observed",
-            "game_frame": 401,
-            "summary": "engagement observed",
-        }
-        statuses = iter(
-            (
-                {
-                    "blackboard_scope_id": actual_scope,
-                    "operation_events": [first],
-                },
-                {
-                    "blackboard_scope_id": actual_scope,
-                    "operation_events": [first, second],
-                },
-            )
-        )
         snapshot_handler._micromachine_status_payload = (
-            lambda _directory: next(statuses)
+            lambda _directory: {
+                "blackboard_scope_id": actual_scope,
+                "operation_events": [first],
+            }
         )
         snapshot_handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
@@ -1862,7 +1846,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "micromachine_status": kwargs["micromachine_status"],
             }
         )
-        snapshot_handler._write_sse_event = lambda _event: None
+        written = []
+        snapshot_handler._write_sse_event = written.append
 
         snapshot_handler._write_authoritative_sse_snapshot(
             self.server._http.event_journal,
@@ -1870,23 +1855,145 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             requested_scope,
         )
 
+        rejected = written[0]["payload"]["micromachine_status"]
+        self.assertEqual("scope_identity_mismatch", rejected["status"])
+        self.assertEqual(requested_scope, rejected["blackboard_scope_id"])
+        self.assertEqual(
+            actual_scope,
+            rejected["reported_blackboard_scope_id"],
+        )
+        self.assertEqual(
+            (False, 0),
+            self.server._http.operation_event_source_cursor(
+                requested_scope
+            ),
+        )
+        self.assertNotIn(
+            actual_scope,
+            self.server._http._observed_operation_event_high_water,
+        )
+        self.assertEqual(
+            [],
+            [
+                event
+                for event in self.server._http.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
+    def test_concurrent_cold_scope_reservation_is_atomic_at_capacity(self):
+        server = self.server._http
+        history_retention = (
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        )
+        for index in range(history_retention - 1):
+            self.assertTrue(
+                server.admit_operation_event_scope(
+                    f"reserved-scope-{index}"
+                )
+            )
+        self.assertEqual(
+            (False, 0),
+            server.operation_event_source_cursor("reserved-scope-0"),
+        )
+
+        candidates = (
+            ("race-scope-alpha", "/tmp/race-scope-alpha"),
+            ("race-scope-beta", "/tmp/race-scope-beta"),
+        )
+        start = threading.Barrier(3)
+        status_reads = []
+        status_reads_lock = threading.Lock()
+
+        def run_snapshot(scope_id, blackboard_dir):
+            handler = object.__new__(web_gui._WebGuiRequestHandler)
+            handler.server = server
+            written = []
+
+            def status(_directory):
+                with status_reads_lock:
+                    status_reads.append(scope_id)
+                return {
+                    "status": "live",
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [],
+                }
+
+            handler._micromachine_status_payload = status
+            handler._authoritative_event_snapshot = (
+                lambda _directory, **kwargs: {
+                    "state": {"available": True},
+                    "history": {"events": [], "latest": 0},
+                    "micromachine_status": kwargs[
+                        "micromachine_status"
+                    ],
+                }
+            )
+            handler._write_sse_event = written.append
+            start.wait()
+            handler._write_authoritative_sse_snapshot(
+                server.event_journal,
+                blackboard_dir,
+                scope_id,
+            )
+            return written[0]["payload"]["micromachine_status"]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(run_snapshot, scope_id, blackboard_dir)
+                for scope_id, blackboard_dir in candidates
+            ]
+            start.wait()
+            statuses = [
+                future.result(timeout=3)
+                for future in futures
+            ]
+
+        self.assertEqual(
+            {"live", "scope_capacity_rejected"},
+            {str(status.get("status", "")) for status in statuses},
+        )
+        self.assertEqual(
+            history_retention,
+            len(server._observed_operation_event_high_water),
+        )
+        admitted_candidates = {
+            scope_id
+            for scope_id, _ in candidates
+            if scope_id in server._observed_operation_event_high_water
+        }
+        self.assertEqual(1, len(admitted_candidates))
+        self.assertEqual(admitted_candidates, set(status_reads))
+        admitted_scope = next(iter(admitted_candidates))
+        self.assertEqual(
+            (True, 0),
+            server.operation_event_source_cursor(admitted_scope),
+        )
+        rejected_scope = next(
+            scope_id
+            for scope_id, _ in candidates
+            if scope_id != admitted_scope
+        )
+        self.assertNotIn(
+            f"micromachine:{rejected_scope}",
+            server._observed_payload_snapshots,
+        )
+
         operation_events = [
             event
-            for event in self.server._http.event_journal.events_after(0)
-            if (
-                event["event_type"] == "operation_event"
-                and event["blackboard_scope_id"] == actual_scope
-            )
+            for event in server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
         ]
-        self.assertEqual(1, len(operation_events))
-        self.assertEqual(2, operation_events[0]["payload"]["timeline_seq"])
+        self.assertEqual([], operation_events)
 
     def test_regressive_status_cannot_advance_operation_source_cursor(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
         server = self.server._http
-        scope_id = "scope-regressive-source-cursor"
         blackboard_dir = "/tmp/regressive-source-cursor"
+        scope_id = web_gui._micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
         first = {
             "timeline_seq": 1,
             "operation_id": "regressive-alpha",
@@ -2131,8 +2238,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
         snapshot_handler.server = self.server._http
         server = self.server._http
-        scope_id = "scope-serialized-source-commit"
         blackboard_dir = "/tmp/serialized-source-commit"
+        scope_id = web_gui._micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
         first = {
             "timeline_seq": 1,
             "operation_id": "serialized-alpha",
@@ -2480,7 +2589,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
     def test_concurrent_source_refresh_cannot_publish_older_snapshot_last(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
-        scope_id = "scope-refresh-high-water"
+        blackboard_dir = "/tmp/source-refresh-high-water"
+        scope_id = web_gui._micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
         older = semantic_operation_payload(
             generation=1,
             frame=100,
@@ -2518,12 +2630,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             older_future = pool.submit(
                 handler._refresh_event_sources,
-                "/tmp/source-refresh-high-water",
+                blackboard_dir,
             )
             self.assertTrue(first_entered.wait(1))
             newer_future = pool.submit(
                 handler._refresh_event_sources,
-                "/tmp/source-refresh-high-water",
+                blackboard_dir,
             )
             time.sleep(0.05)
             self.assertFalse(newer_future.done())
@@ -10423,6 +10535,55 @@ class SessionLoopBridgeTest(unittest.TestCase):
             reducer._scope_epoch_history[scope_id],
         )
 
+    def test_operation_timeline_opaque_epoch_history_fails_closed_when_full(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        reducer._RETIRED_OPAQUE_EPOCH_RETENTION = 2
+        scope_id = "scope-opaque-epoch-history"
+
+        reducer.observe(
+            semantic_operation_payload(
+                frame=100,
+                session_epoch="epoch-alpha",
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        reducer.observe(
+            semantic_operation_payload(
+                frame=10,
+                session_epoch="epoch-beta",
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        current = reducer.observe(
+            semantic_operation_payload(
+                frame=1,
+                session_epoch="epoch-gamma",
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        rejected = reducer.observe(
+            semantic_operation_payload(
+                frame=1,
+                session_epoch="epoch-delta",
+                movement=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            current["operation_event_latest_seq"],
+            rejected["operation_event_latest_seq"],
+        )
+        self.assertEqual("epoch-gamma", reducer._scope_epochs[scope_id])
+        self.assertEqual(
+            ["epoch-alpha", "epoch-beta"],
+            list(reducer._retired_scope_epochs[scope_id]),
+        )
+        self.assertIn(scope_id, reducer._opaque_epoch_history_saturated)
+
     def test_operation_timeline_standing_operation_is_not_completed_by_activity(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         result = reducer.observe(
@@ -11151,10 +11312,94 @@ class SessionLoopBridgeTest(unittest.TestCase):
             len(reducer._family_order),
             reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
         )
-        self.assertEqual(
-            reducer._SCOPE_RETENTION + 3,
+        self.assertLessEqual(
             len(reducer._scope_epoch_history),
+            reducer._SCOPE_EPOCH_HISTORY_RETENTION,
         )
+
+    def test_operation_timeline_scope_history_capacity_fails_closed(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        capacity = reducer._SCOPE_EPOCH_HISTORY_RETENTION
+        for index in range(capacity):
+            result = reducer.observe(
+                semantic_operation_payload(
+                    operation_id=f"bounded-operation-{index}",
+                    frame=100 + index,
+                    session_epoch=1000 + index,
+                ),
+                blackboard_scope_id=f"bounded-scope-{index}",
+            )
+            self.assertNotEqual(
+                "scope_capacity_rejected",
+                result.get("operation_timeline_status"),
+            )
+
+        overflow = reducer.observe(
+            semantic_operation_payload(
+                operation_id="overflow-operation",
+                frame=999,
+                session_epoch=9999,
+            ),
+            blackboard_scope_id="bounded-scope-overflow",
+        )
+
+        self.assertEqual(
+            "scope_capacity_rejected",
+            overflow["operation_timeline_status"],
+        )
+        self.assertFalse(overflow["operation_registry_authoritative"])
+        self.assertEqual([], overflow["operations"])
+        self.assertEqual(capacity, len(reducer._scope_epoch_history))
+        self.assertEqual(capacity, len(reducer._scope_epoch_history_order))
+        self.assertEqual(capacity, len(reducer._scope_event_high_water))
+        self.assertEqual(
+            capacity,
+            len(reducer._scope_battlefield_overviews),
+        )
+        self.assertNotIn(
+            "bounded-scope-overflow",
+            reducer._scope_epoch_history,
+        )
+
+    def test_operation_timeline_cursor_survives_numeric_and_opaque_scope_lru(
+        self,
+    ):
+        for session_epoch in (1700000000000, "epoch-live"):
+            with self.subTest(session_epoch=session_epoch):
+                reducer = web_gui._OperationSemanticTimelineReducer()
+                scope_id = f"scope-lru-{session_epoch}"
+                first = reducer.observe(
+                    semantic_operation_payload(
+                        frame=100,
+                        session_epoch=session_epoch,
+                    ),
+                    blackboard_scope_id=scope_id,
+                )
+                first_seq = first["operation_event_latest_seq"]
+                for index in range(reducer._SCOPE_RETENTION):
+                    reducer.observe(
+                        semantic_operation_payload(
+                            operation_id=f"other-operation-{index}",
+                            frame=200 + index,
+                            session_epoch=2000 + index,
+                        ),
+                        blackboard_scope_id=f"other-scope-{index}",
+                    )
+                self.assertNotIn(scope_id, reducer._scope_events)
+
+                replayed = reducer.observe(
+                    semantic_operation_payload(
+                        frame=100,
+                        session_epoch=session_epoch,
+                    ),
+                    blackboard_scope_id=scope_id,
+                )
+
+                self.assertEqual([], replayed["operation_events"])
+                self.assertEqual(
+                    first_seq,
+                    replayed["operation_event_latest_seq"],
+                )
 
     def test_operation_timeline_scope_lru_revisit_emits_only_new_transition(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
@@ -11184,6 +11429,10 @@ class SessionLoopBridgeTest(unittest.TestCase):
             blackboard_scope_id=original_scope,
         )
         self.assertEqual([], replayed["operation_events"])
+        self.assertEqual(
+            first["operation_event_latest_seq"],
+            replayed["operation_event_latest_seq"],
+        )
 
         advanced = reducer.observe(
             semantic_operation_payload(
@@ -21356,6 +21605,8 @@ var token = "";
 var authJoin = "";
 var lastSeq = 0;
 var lastEventSeq = 0;
+var subscriberOperationReplayDedupe = {};
+var subscriberOperationReplayOrder = [];
 var commandEventBlackboardDir = "";
 var commandEventSource = null;
 var commandEventReconnectTimer = null;
@@ -21376,6 +21627,11 @@ var renderedStatuses = [];
 var appendedHistory = [];
 var pollCounts = { history: 0, state: 0, micromachine: 0 };
 var POLL_INTERVAL_MS = 1000;
+var SUBSCRIBER_OPERATION_REPLAY_DEDUPE_MAXIMUM = 512;
+var operationConsoleSessionEpoch = "";
+var operationConsoleScopeId = "";
+var operationRenderCount = 0;
+var lifecycleAnnouncementCount = 0;
 function isMicroMachineCommandMode() { return true; }
 function pollHistory() { pollCounts.history += 1; }
 function pollState() { pollCounts.state += 1; }
@@ -21425,6 +21681,17 @@ function renderActiveCommandConsole(payload) {
   activeCommandConsoleRecord.state = payload.status || activeCommandConsoleRecord.state;
 }
 function hydrateTacticalRadioState() {}
+function operationRecordKey(scopeId, operationId) {
+  return String(scopeId || "") + "|" + String(operationId || "");
+}
+function operationEventMatchesRecordUpdate() { return true; }
+function mergeOperationSemanticTimeline(previous, incoming) {
+  return (previous || []).concat(incoming || []);
+}
+function renderOperationRecords() { operationRenderCount += 1; }
+function announceOperationLifecycleEvent() {
+  lifecycleAnnouncementCount += 1;
+}
 """
         scenario = r"""
 connectEventChannel();
@@ -21470,6 +21737,66 @@ sourceA.emit("snapshot", {
   }
 });
 assert.strictEqual(lastEventSeq, 2, "authoritative snapshot lowers a future cursor");
+
+operationConsoleSessionEpoch = "epoch-a";
+operationConsoleScopeId = "scope-a";
+operationRecords[operationRecordKey("scope-a", "replay-alpha")] = {
+  operationId: "replay-alpha",
+  updateId: "update-replay-alpha",
+  operationGeneration: 1,
+  requestedOperationGeneration: 1,
+  telemetryFrame: 10,
+  sessionEpoch: "epoch-a",
+  data: { semantic_timeline: [] }
+};
+const subscriberReplay = {
+  event_seq: 2,
+  event_type: "operation_event",
+  subscriber_local_replay: true,
+  update_id: "update-replay-alpha",
+  operation_id: "replay-alpha",
+  generation: 1,
+  game_frame: 11,
+  blackboard_scope_id: "scope-a",
+  payload: {
+    blackboard_scope_id: "scope-a",
+    session_epoch: "epoch-a",
+    timeline_seq: 11,
+    update_id: "update-replay-alpha",
+    operation_id: "replay-alpha",
+    generation: 1,
+    requested_generation: 1,
+    game_frame: 11,
+    kind: "movement_observed"
+  }
+};
+sourceA.emit("operation_event", subscriberReplay);
+assert.strictEqual(operationRenderCount, 1);
+assert.strictEqual(lifecycleAnnouncementCount, 1);
+assert.strictEqual(lastEventSeq, 2);
+sourceA.emit("operation_event", subscriberReplay);
+assert.strictEqual(operationRenderCount, 1, "local replay is semantically deduped");
+
+const unmarkedEqualCursor = JSON.parse(JSON.stringify(subscriberReplay));
+delete unmarkedEqualCursor.subscriber_local_replay;
+unmarkedEqualCursor.payload.timeline_seq = 12;
+sourceA.emit("operation_event", unmarkedEqualCursor);
+assert.strictEqual(
+  operationRenderCount,
+  1,
+  "an unmarked equal-cursor event must remain rejected"
+);
+
+for (let replayIndex = 0; replayIndex < 513; replayIndex += 1) {
+  const boundedReplay = JSON.parse(JSON.stringify(subscriberReplay));
+  boundedReplay.payload.timeline_seq = 1000 + replayIndex;
+  sourceA.emit("operation_event", boundedReplay);
+}
+assert.strictEqual(subscriberOperationReplayOrder.length, 512);
+assert.strictEqual(
+  Object.keys(subscriberOperationReplayDedupe).length,
+  512
+);
 
 beginActiveCommandConsole("local order", "operation-local");
 const localCardCount = Object.keys(operationRecords).length;
@@ -21585,6 +21912,7 @@ assert(sourceA.closed);
 assert(sourceB.url.includes("blackboard_dir=%2Ftmp%2Fboard-b"));
 assert(!sourceB.url.includes("after="));
 assert.strictEqual(lastEventSeq, 0);
+assert.strictEqual(subscriberOperationReplayOrder.length, 0);
 assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
 sourceA.emit("snapshot", {
   event_seq: 100,
