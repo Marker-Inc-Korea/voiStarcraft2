@@ -837,7 +837,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         class FakeAttachedMicroMachineLauncher:
             def snapshot(self, blackboard_dir=""):
-                root = blackboard_dir or directory
+                del blackboard_dir
+                root = directory
                 telemetry_path = os.path.join(root, "latest_telemetry.json")
                 telemetry_frame = None
                 if os.path.exists(telemetry_path):
@@ -861,7 +862,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 }
 
             def validated_snapshot(self, blackboard_dir=""):
-                root = blackboard_dir or directory
+                del blackboard_dir
+                root = directory
                 telemetry_path = os.path.join(root, "latest_telemetry.json")
                 with open(telemetry_path, encoding="utf-8") as handle:
                     telemetry = json.load(handle)
@@ -2335,6 +2337,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
     def test_many_read_only_probes_cannot_deny_attached_sse_scope(self):
         server = self.server._http
         timeline = self.bridge._micromachine_operation_timeline
+        legitimate_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(legitimate_directory.cleanup)
+        legitimate_dir = legitimate_directory.name
+        self.attach_fake_micromachine_runtime(legitimate_dir)
+        legitimate_scope = web_gui._micromachine_blackboard_scope_id(
+            legitimate_dir
+        )
         scope_history_before = dict(
             timeline._scope_epoch_history
         )
@@ -2382,37 +2391,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "read-only status/SSE probes must not reserve reducer scope history",
         )
 
-        with tempfile.TemporaryDirectory() as legitimate_dir:
-            with open(
-                os.path.join(legitimate_dir, "latest_telemetry.json"),
-                "w",
-                encoding="utf-8",
-            ) as handle:
-                json.dump(
-                    {
-                        "protocol_version": (
-                            MICROMACHINE_BRIDGE_PROTOCOL_VERSION
-                        ),
-                        "frame": 1,
-                        "bot_name": "MicroMachine",
-                        "race": "Terran",
-                        "managers": {},
-                        "active_modulation_ids": [],
-                        "last_failure": None,
-                    },
-                    handle,
-                )
-            self.attach_fake_micromachine_runtime(legitimate_dir)
-            legitimate_scope = (
-                web_gui._micromachine_blackboard_scope_id(
-                    legitimate_dir
-                )
-            )
-            stream = self.get_sse(
-                "/api/events?"
-                f"blackboard_dir={quote(legitimate_dir)}&once=1"
-            )
-            events = self.parse_sse_events(stream)
+        stream = self.get_sse(
+            "/api/events?"
+            f"blackboard_dir={quote(legitimate_dir)}&once=1"
+        )
+        events = self.parse_sse_events(stream)
 
         self.assertEqual("snapshot", events[0]["event"])
         self.assertNotEqual(
@@ -3868,6 +3851,60 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             events[0]["data"]["payload"]["command_text"],
             "second",
         )
+
+    def test_equal_cursor_reconnect_revalidates_detached_runtime_snapshot(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as blackboard_dir:
+            self.attach_fake_micromachine_runtime(blackboard_dir)
+            self.server._http.publish_event(
+                "state",
+                {"available": True, "marker": "attached-before-detach"},
+            )
+            event_path = (
+                "/api/events?"
+                f"blackboard_dir={quote(blackboard_dir)}&once=1"
+            )
+            initial = self.parse_sse_events(self.get_sse(event_path))
+            cursor = initial[0]["data"]["event_seq"]
+            self.assertTrue(
+                initial[0]["data"]["payload"]["micromachine_status"][
+                    "operation_registry_authoritative"
+                ]
+            )
+
+            class DetachedLauncher:
+                def validated_snapshot(self, blackboard_dir=""):
+                    return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                        metadata={
+                            "enabled": True,
+                            "mode": "micromachine",
+                            "status": "idle",
+                            "blackboard_dir": blackboard_dir,
+                            "runtime_instance_id": "",
+                            "runtime_attached": False,
+                            "telemetry_present": True,
+                            "telemetry_current_for_process": False,
+                            "telemetry_stale_or_detached": True,
+                            "telemetry_frame": 1,
+                        },
+                        telemetry_document=None,
+                    )
+
+            self.server._http.micromachine_launcher = DetachedLauncher()
+            reconnect = self.parse_sse_events(
+                self.get_sse(
+                    event_path,
+                    headers={"Last-Event-ID": str(cursor)},
+                )
+            )
+
+        self.assertEqual(["snapshot"], [event["event"] for event in reconnect])
+        detached = reconnect[0]["data"]["payload"]["micromachine_status"]
+        self.assertFalse(detached["operation_registry_authoritative"])
+        self.assertFalse(detached["runtime_attached"])
+        self.assertFalse(detached["telemetry_current_for_process"])
+        self.assertTrue(detached["telemetry_stale_or_detached"])
 
     def test_sse_reconnect_replays_pending_local_lifecycle_at_equal_cursor(
         self,

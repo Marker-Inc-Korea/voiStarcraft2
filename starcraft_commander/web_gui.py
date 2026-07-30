@@ -22205,7 +22205,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     == blackboard_scope_id
                     for event in replay_events
                 )
-                if cursor != after or replay_requires_snapshot:
+                if (
+                    cursor != after
+                    or replay_requires_snapshot
+                    or not replay_events
+                ):
                     cursor = self._write_authoritative_sse_snapshot(
                         journal,
                         blackboard_dir,
@@ -22904,6 +22908,29 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             and runtime_snapshot.get("runtime_attached") is True
             and runtime_snapshot.get("telemetry_current_for_process") is True
         )
+        runtime_blackboard_dir = (
+            str(runtime_snapshot.get("blackboard_dir", "") or "")
+            if isinstance(runtime_snapshot, Mapping)
+            else ""
+        )
+        runtime_scope_matches_request = bool(
+            runtime_blackboard_dir
+            and _micromachine_blackboard_scope_id(runtime_blackboard_dir)
+            == _micromachine_blackboard_scope_id(blackboard_dir)
+        )
+        if (
+            runtime_claims_current_telemetry
+            and not runtime_scope_matches_request
+        ):
+            # A live launcher owns exactly one blackboard. Never project its
+            # validated telemetry into a request-controlled foreign scope.
+            runtime_snapshot = dict(runtime_snapshot)
+            runtime_snapshot["telemetry_current_for_process"] = False
+            runtime_snapshot["telemetry_stale_or_detached"] = bool(
+                runtime_snapshot.get("telemetry_present") is True
+            )
+            validated_telemetry_document = None
+            runtime_claims_current_telemetry = False
         runtime_instance_id = ""
         if (
             runtime_claims_current_telemetry
