@@ -1106,24 +1106,41 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 and event["blackboard_scope_id"] == scope_id
             )
         ]
-        self.assertEqual(2, len(operation_events))
+        self.assertEqual([], operation_events)
         self.assertEqual(
-            ["assigned", "submitted"],
-            [event["payload"]["kind"] for event in operation_events],
+            2,
+            self.server._http._observed_operation_event_seq[scope_id],
         )
-        self.assertEqual(
-            [1, 2],
-            [
-                event["payload"]["timeline_seq"]
-                for event in operation_events
-            ],
+
+        third = {
+            **first,
+            "timeline_seq": 3,
+            "kind": "movement_observed",
+            "game_frame": 102,
+            "summary": "movement observed",
+        }
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second, third],
+            },
+            blackboard_dir="/tmp/operation-events",
+            publish=True,
         )
-        self.assertEqual(
-            "update-scout-alpha",
-            operation_events[1]["update_id"],
-        )
-        self.assertEqual(1, operation_events[1]["generation"])
-        self.assertEqual(101, operation_events[1]["game_frame"])
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual("movement_observed", operation_events[0]["payload"]["kind"])
+        self.assertEqual(3, operation_events[0]["payload"]["timeline_seq"])
+        self.assertEqual("update-scout-alpha", operation_events[0]["update_id"])
+        self.assertEqual(1, operation_events[0]["generation"])
+        self.assertEqual(102, operation_events[0]["game_frame"])
 
     def test_new_subscriber_snapshot_cannot_hide_lifecycle_from_existing_subscriber(
         self,
@@ -1203,11 +1220,33 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 and event["blackboard_scope_id"] == scope_id
             )
         ]
-        self.assertEqual(2, len(operation_events))
-        self.assertEqual(
-            ["movement_observed", "engagement_observed"],
-            [event["payload"]["kind"] for event in operation_events],
+        self.assertEqual([], operation_events)
+
+        third = {
+            **first,
+            "timeline_seq": 3,
+            "kind": "target_reached",
+            "game_frame": 202,
+            "summary": "target reached",
+        }
+        publisher_handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": scope_id,
+                "operation_events": [first, second, third],
+            },
+            blackboard_dir="/tmp/snapshot-lifecycle",
+            publish=True,
         )
+        operation_events = [
+            event
+            for event in self.server._http.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
+        ]
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual("target_reached", operation_events[0]["payload"]["kind"])
 
     def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
         original = self.bridge.micromachine_status
@@ -1745,7 +1784,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             http_server._observed_operation_scope_order,
         )
         self.assertEqual(
-            event_count_before_novel_scope + 1,
+            event_count_before_novel_scope,
             len(
                 [
                     event
@@ -1792,7 +1831,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
         ]
         self.assertEqual(
-            len(events_before_revisit) + 1,
+            len(events_before_revisit),
             len(events_after_forgotten_revisit),
         )
 
@@ -5394,6 +5433,140 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         self.assertEqual("effect", operation["family_evidence"][0]["stage"])
 
+    def test_archive_only_rejected_edit_restores_execution_owner_identity(self):
+        update_id = "archive-rejected-operation-edit"
+        execution_owner_update_id = "archive-active-recon-owner"
+        dashboard = {
+            "active_updates": [
+                {
+                    "update_id": update_id,
+                    "issued_at_frame": 200,
+                    "manager_bias_domains": ["combat", "squad"],
+                    "vector": {
+                        "goal": "transfer one scout",
+                        "operations": [
+                            {
+                                "operation_id": "recon-alpha",
+                                "generation": 2,
+                                "goal": "release one scout",
+                                "tactical_task": {
+                                    "task_type": "scout_with_units",
+                                    "duration_seconds": 120,
+                                },
+                                "operation_edit": {
+                                    "action": "transfer_out",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "telemetry": {"frame": 260},
+        }
+        archived_document = {
+            "frame": 240,
+            "active_modulation_ids": [
+                update_id,
+                execution_owner_update_id,
+            ],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [
+                        {
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "policy_update_id": execution_owner_update_id,
+                            "status": "MOVING",
+                            "received_frame": 100,
+                            "assigned_frame": 120,
+                            "submitted_frame": 130,
+                            "last_action_frame": 140,
+                            "movement_frame": 150,
+                            "assigned_unit_tags": [11],
+                            "assigned_count": 1,
+                            "max_home_distance": 20.0,
+                            "last_action": "AttackUnitOrder",
+                            "edit_action": "transfer_out",
+                            "edit_requested_generation": 2,
+                            "edit_rejected_update_id": update_id,
+                            "edit_rejected_frame": 225,
+                            "edit_resolution": "blocked",
+                            "edit_blocker": "destination_priority_not_higher",
+                        }
+                    ],
+                    "pending_family_effects": [
+                        {
+                            "update_id": execution_owner_update_id,
+                            "operation_id": "recon-alpha",
+                            "generation": 1,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "scout",
+                            "action": "move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 2,
+                            "attempted_count": 1,
+                            "attempted_frame": 130,
+                            "submitted_count": 1,
+                            "submitted_frame": 140,
+                            "effect_kind": "movement",
+                            "effect_count": 1,
+                            "effect_frame": 150,
+                            "blocker_manager": "",
+                            "blocker": "",
+                        }
+                    ],
+                }
+            },
+        }
+        current_document = {
+            "frame": 260,
+            "active_modulation_ids": [update_id],
+            "managers": {
+                "OperationDirector": {
+                    "policy_update_id": update_id,
+                    "operations": [],
+                    "pending_family_effects": [],
+                }
+            },
+        }
+        telemetry = SimpleNamespace(
+            frame=260,
+            active_modulation_ids=(update_id,),
+            to_dict=lambda: current_document,
+        )
+
+        payload = web_gui._micromachine_status_payload(
+            dashboard,
+            telemetry=telemetry,
+            telemetry_archive=(archived_document,),
+            blackboard_dir="/tmp/archive-rejected-operation-edit",
+            compile_result={
+                "status": "compiled",
+                "update_id": update_id,
+                "command_text": "정찰대 마린 한 기를 공격대로 이관해",
+            },
+        )
+
+        operation = payload["operations"][0]
+        self.assertFalse(operation["telemetry_current"])
+        self.assertEqual(1, operation["operation_generation"])
+        self.assertEqual(2, operation["requested_operation_generation"])
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["operation_console_execution_owner_update_id"],
+        )
+        execution = operation["intervention"]["command_execution"]
+        self.assertEqual(execution_owner_update_id, execution["command_id"])
+        self.assertEqual(1, execution["operation_generation"])
+        self.assertEqual("effect_observed", execution["state"])
+        self.assertEqual(1, len(operation["family_evidence"]))
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["family_evidence"][0]["update_id"],
+        )
+
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
         execution = web_gui._micromachine_operation_command_execution(
             update_id="parallel-zero-frames",
@@ -8846,11 +9019,60 @@ class SessionLoopBridgeTest(unittest.TestCase):
             reducer._retired_operation_identities,
         )
 
+        retired_replay = semantic_operation_payload(
+            operation_id="retired-alpha",
+            generation=1,
+            frame=102,
+            movement=True,
+        )
+        active_advance = semantic_operation_payload(
+            operation_id="active-beta",
+            generation=1,
+            frame=102,
+            movement=True,
+        )
+        combined = deepcopy(active_advance)
+        combined["operations"].insert(
+            0,
+            retired_replay["operations"][0],
+        )
+        combined["battlefield_overview"][
+            "operation_ownership"
+        ].insert(
+            0,
+            retired_replay["battlefield_overview"][
+                "operation_ownership"
+            ][0],
+        )
+        advanced_active = reducer.observe(
+            combined,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["active-beta"],
+            [
+                item["operation_id"]
+                for item in advanced_active["operations"]
+            ],
+        )
+        self.assertEqual(
+            102,
+            advanced_active["operations"][0]["telemetry_frame"],
+        )
+        self.assertIn(
+            "movement_observed",
+            {
+                event["kind"]
+                for event in advanced_active["operation_events"]
+                if event["operation_id"] == "active-beta"
+            },
+        )
+
         foreign = set_semantic_operation_identity(
             semantic_operation_payload(
                 operation_id="retired-alpha",
                 generation=1,
-                frame=102,
+                frame=103,
                 movement=True,
             ),
             request_update_id="foreign-retired-alpha",
@@ -8869,7 +9091,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
             semantic_operation_payload(
                 operation_id="retired-alpha",
                 generation=2,
-                frame=103,
+                frame=104,
                 movement=True,
             ),
             blackboard_scope_id=scope_id,
@@ -11666,6 +11888,13 @@ assert.strictEqual(recordingNode.parentNode, null);
 assert(logBox.textContent.includes("현재 상태를 요약했습니다."));
 assert(logBox.textContent.includes("두 번째 응답입니다."));
 
+var standardsRemoveChild = logBox.removeChild.bind(logBox);
+logBox.removeChild = function(child) {
+  if (this.children.indexOf(child) < 0) {
+    throw new Error("NotFoundError: child is no longer attached");
+  }
+  return standardsRemoveChild(child);
+};
 var stalledVoiceCount = MAX_CHAT_EVENTS + 12;
 for (let index = 0; index < stalledVoiceCount; index += 1) {
   var stalledSession = appendVoiceRecordingBubble();
@@ -18736,6 +18965,112 @@ const assert = require("assert");
   );
   assert.strictEqual(tacticalRadio.frameHighWater[oldEpochRadioKey], undefined);
   assert.strictEqual(tacticalRadio.frameHighWater[newEpochRadioKey], 1);
+
+  // Direct plan responses inherit the authoritative current runtime epoch.
+  cancelTacticalRadioSpeechAndQueue();
+  resetTacticalRadio("epoch-plan-scope", "epoch-plan-current");
+  var previousOperationConsoleScopeId = operationConsoleScopeId;
+  var previousOperationConsoleSessionEpoch = operationConsoleSessionEpoch;
+  var previousActiveCommandConsoleRecord = activeCommandConsoleRecord;
+  operationConsoleScopeId = "epoch-plan-scope";
+  operationConsoleSessionEpoch = "epoch-plan-current";
+  activeCommandConsoleRecord = {
+    scopeId: "epoch-plan-scope",
+    sessionEpoch: "epoch-plan-current",
+    updateId: "epoch-plan-update"
+  };
+  var epochlessPlan = {
+    ok: true,
+    accepted: true,
+    status: "published",
+    blackboard_scope_id: "epoch-plan-scope",
+    update_id: "epoch-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "epoch-plan-update",
+      vector: {
+        operations: [
+          {
+            operation_id: "epoch-plan-operation",
+            generation: 1,
+            composition_requirements: [
+              { unit_type: "TERRAN_MARINE", count: 2 }
+            ],
+            tactical_task: { task_type: "scout_with_units" },
+            route_intent: {
+              route_type: "direct",
+              target_intent: "enemy_natural"
+            }
+          }
+        ]
+      }
+    }
+  };
+  assert.strictEqual(
+    announceAcceptedTacticalPlan(epochlessPlan, "direct"),
+    true
+  );
+  var inheritedPlanAnnouncementKey = tacticalRadioPlanAnnouncementKey(
+    "epoch-plan-scope",
+    "epoch-plan-current",
+    "epoch-plan-update",
+    "epoch-plan-operation",
+    1
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[inheritedPlanAnnouncementKey],
+    true
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      tacticalRadioPlanAnnouncementKey(
+        "epoch-plan-scope",
+        "",
+        "epoch-plan-update",
+        "epoch-plan-operation",
+        1
+      )
+    ],
+    undefined
+  );
+  var epochPlanRecord = {
+    updateId: "epoch-plan-update",
+    operationGeneration: 1,
+    requestedOperationGeneration: 1,
+    sessionEpoch: "epoch-plan-current",
+    data: {}
+  };
+  var epochPlanLifecycle = tacticalLifecycleCallout(
+    {
+      update_id: "epoch-plan-update",
+      created_at_unix_ms: fakeNowMs
+    },
+    {
+      timeline_seq: 1,
+      update_id: "epoch-plan-update",
+      operation_id: "epoch-plan-operation",
+      generation: 1,
+      requested_generation: 1,
+      kind: "movement_observed",
+      game_frame: 10,
+      summary: "movement observed"
+    },
+    "epoch-plan-scope",
+    epochPlanRecord
+  );
+  assert(epochPlanLifecycle);
+  assert.strictEqual(
+    epochPlanLifecycle.operationKey,
+    tacticalRadioOperationKey(
+      "epoch-plan-scope",
+      "epoch-plan-current",
+      "epoch-plan-operation",
+      1
+    )
+  );
+  operationConsoleScopeId = previousOperationConsoleScopeId;
+  operationConsoleSessionEpoch = previousOperationConsoleSessionEpoch;
+  activeCommandConsoleRecord = previousActiveCommandConsoleRecord;
 
   // Tactical Radio registries remain bounded during long sessions.
   resetTacticalRadio("bounded-radio-scope", "bounded-radio-epoch");

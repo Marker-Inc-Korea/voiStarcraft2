@@ -1930,6 +1930,48 @@ def _micromachine_operation_status_payload(
             deadline_frame=deadline_frame,
         )
     )
+    operation_telemetry_is_current = operation_telemetry is not None
+    archived_operation_matches: list[
+        tuple[int, dict[str, object], dict[str, object]]
+    ] = []
+    for archived_telemetry in telemetry_archive:
+        archived_document = _telemetry_to_mapping(archived_telemetry)
+        if not archived_document:
+            continue
+        archived_operation_document, archived_operation = (
+            _micromachine_operation_telemetry_document(
+                archived_document,
+                update_id=update_id,
+                operation_id=operation_id,
+                operation_generation=operation_generation,
+                issued_at_frame=issued_at_frame,
+                deadline_frame=deadline_frame,
+            )
+        )
+        if archived_operation is None:
+            continue
+        archived_frame = _int_or_none(
+            archived_operation_document.get("frame")
+        ) or 0
+        archived_operation_matches.append(
+            (
+                archived_frame,
+                archived_operation_document,
+                archived_operation,
+            )
+        )
+    if (
+        operation_telemetry is None
+        or operation_telemetry_document.get("_pending_only") is True
+    ) and archived_operation_matches:
+        (
+            _archived_frame,
+            operation_telemetry_document,
+            operation_telemetry,
+        ) = max(
+            archived_operation_matches,
+            key=lambda item: item[0],
+        )
     active_operation_generation = operation_generation
     if (
         operation_telemetry is not None
@@ -1969,20 +2011,15 @@ def _micromachine_operation_status_payload(
     )
     archived_family_evidence: list[dict[str, object]] = []
     archived_effect_frame = 0
-    for archived_telemetry in telemetry_archive:
-        archived_document = _telemetry_to_mapping(archived_telemetry)
-        if not archived_document:
-            continue
-        _, archived_operation = _micromachine_operation_telemetry_document(
-            archived_document,
-            update_id=update_id,
-            operation_id=operation_id,
-            operation_generation=operation_generation,
-            issued_at_frame=issued_at_frame,
-            deadline_frame=deadline_frame,
+    for (
+        archived_frame,
+        _archived_operation_document,
+        archived_operation,
+    ) in archived_operation_matches:
+        archived_effect_frame = max(
+            archived_effect_frame,
+            archived_frame,
         )
-        if archived_operation is None:
-            continue
         for row in operation_family_evidence(
             archived_operation,
             expected_update_id=execution_owner_update_id,
@@ -2168,7 +2205,7 @@ def _micromachine_operation_status_payload(
     )
     telemetry_frame = intervention.get("telemetry_frame")
     telemetry_current = bool(
-        operation_telemetry is not None
+        operation_telemetry_is_current
         and type(telemetry_frame) is int
         and consumption_status == "consumed"
     )
@@ -5495,6 +5532,8 @@ class _OperationSemanticTimelineReducer:
             )
             for key, state in self._states.items()
         }
+        identified_operation_seen = False
+        admissible_operation_seen = False
         for raw_operation in operations:
             operation = dict(raw_operation)
             operation_id = str(
@@ -5506,13 +5545,15 @@ class _OperationSemanticTimelineReducer:
             )
             if not operation_id or generation <= 0:
                 continue
+            identified_operation_seen = True
             family_key = (scope_id, session_epoch, operation_id)
             high_water = provisional_generation.get(family_key, 0)
             if (
                 family_key in self._retired_operation_identities
                 and generation <= high_water
             ):
-                return False
+                continue
+            admissible_operation_seen = True
             requested_generation = max(
                 generation,
                 _int_or_none(
@@ -5627,7 +5668,7 @@ class _OperationSemanticTimelineReducer:
                     frame,
                 )
                 provisional_fingerprints[key] = (frame, fingerprint)
-        return True
+        return not identified_operation_seen or admissible_operation_seen
 
     @staticmethod
     def _preserve_latest_requested_intent(
@@ -11854,7 +11895,7 @@ function retireVoiceSessionForTrim(entry) {
   clearVoiceFinalizationTimer(session);
   var retiredPendingId = String(session.pendingId || "");
   if (retiredPendingId) {
-    removePendingById(retiredPendingId);
+    removePendingById(retiredPendingId, true);
   }
   if (
     session.pendingId &&
@@ -13055,6 +13096,36 @@ function tacticalRequirementSummary(requirements) {
   }).join(", ");
 }
 
+function tacticalPlanSessionEpoch(data, operations, scopeId, updateId) {
+  var explicitEpoch = operationPayloadSessionEpoch(data, operations);
+  if (explicitEpoch) { return explicitEpoch; }
+  var normalizedScope = String(scopeId || "");
+  var normalizedUpdate = String(updateId || "");
+  if (
+    normalizedScope &&
+    activeCommandConsoleRecord.scopeId === normalizedScope &&
+    activeCommandConsoleRecord.updateId === normalizedUpdate &&
+    activeCommandConsoleRecord.sessionEpoch
+  ) {
+    return String(activeCommandConsoleRecord.sessionEpoch);
+  }
+  if (
+    normalizedScope &&
+    operationConsoleScopeId === normalizedScope &&
+    operationConsoleSessionEpoch
+  ) {
+    return String(operationConsoleSessionEpoch);
+  }
+  if (
+    normalizedScope &&
+    tacticalRadio.scopeId === normalizedScope &&
+    tacticalRadio.sessionEpoch
+  ) {
+    return String(tacticalRadio.sessionEpoch);
+  }
+  return "";
+}
+
 function announceAcceptedTacticalPlan(data, source) {
   if (!data || typeof data !== "object") { return false; }
   if (data.accepted === false || data.ok === false) { return false; }
@@ -13073,14 +13144,19 @@ function announceAcceptedTacticalPlan(data, source) {
     compileResult.blackboard_scope_id ||
     ""
   );
-  var sessionEpoch = operationPayloadSessionEpoch(data, data.operations || []);
-  ensureTacticalRadioScope(scopeId, sessionEpoch);
   var updateId = String(
     data.update_id ||
     compileResult.update_id ||
     ""
   );
   if (!updateId) { return false; }
+  var sessionEpoch = tacticalPlanSessionEpoch(
+    data,
+    data.operations || [],
+    scopeId,
+    updateId
+  );
+  ensureTacticalRadioScope(scopeId, sessionEpoch);
   var announced = false;
   var extraOperationCount = Math.max(
     0,
@@ -13162,14 +13238,19 @@ function seedAcceptedTacticalPlanAnnouncements(data) {
     compileResult.blackboard_scope_id ||
     ""
   );
-  var sessionEpoch = operationPayloadSessionEpoch(data, data.operations || []);
-  ensureTacticalRadioScope(scopeId, sessionEpoch);
   var updateId = String(
     data.update_id ||
     compileResult.update_id ||
     ""
   );
   if (!updateId) { return; }
+  var sessionEpoch = tacticalPlanSessionEpoch(
+    data,
+    data.operations || [],
+    scopeId,
+    updateId
+  );
+  ensureTacticalRadioScope(scopeId, sessionEpoch);
   operations.forEach(function(operation) {
     var announcementKey = tacticalRadioPlanAnnouncementKey(
       scopeId,
@@ -13492,7 +13573,7 @@ function removePendingForHistoryEvent(ev) {
   return pendingId ? removePendingById(pendingId) : false;
 }
 
-function removePendingById(pendingId) {
+function removePendingById(pendingId, skipRender) {
   if (!pendingId) { return false; }
   var removed = false;
   Object.keys(pendingNodes).some(function(text) {
@@ -13504,7 +13585,7 @@ function removePendingById(pendingId) {
     removed = true;
     return true;
   });
-  if (removed) {
+  if (removed && skipRender !== true) {
     renderPendingAggregate();
     updateAssistantPendingState();
   }
@@ -21938,6 +22019,13 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 status.get("blackboard_scope_id")
                 or _micromachine_blackboard_scope_id(blackboard_dir)
             )
+            first_scope_observation = bool(
+                scope_id
+                and scope_id
+                not in server._observed_operation_event_seq  # type: ignore[attr-defined]
+                and scope_id
+                not in server._observed_operation_event_high_water  # type: ignore[attr-defined]
+            )
             if not server.admit_operation_event_scope(scope_id):  # type: ignore[attr-defined]
                 return
             server.touch_operation_event_scope(scope_id)  # type: ignore[attr-defined]
@@ -21952,6 +22040,25 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 and not isinstance(raw_events, (str, bytes, bytearray))
                 else []
             )
+            if first_scope_observation:
+                snapshot_latest = max(
+                    (
+                        _web_event_int(
+                            event.get("timeline_seq"),
+                            0,
+                        )
+                        for event in events
+                    ),
+                    default=0,
+                )
+                server._observed_operation_event_seq[scope_id] = (  # type: ignore[attr-defined]
+                    snapshot_latest
+                )
+                server.remember_operation_event_high_water(  # type: ignore[attr-defined]
+                    scope_id,
+                    snapshot_latest,
+                )
+                return
             observed = int(
                 max(
                     server._observed_operation_event_seq.get(scope_id, 0),  # type: ignore[attr-defined]
