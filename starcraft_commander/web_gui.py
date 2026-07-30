@@ -12003,6 +12003,7 @@ function trimChatLog() {
   }
   if (retiredPendingVoice) {
     renderPendingAggregate("", true);
+    updateAssistantPendingState();
     if (logBox.querySelectorAll(".log-entry").length > MAX_CHAT_EVENTS) {
       trimChatLog();
       return;
@@ -21408,6 +21409,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._observed_operation_scope_order: deque[str] = deque()
         self._observed_operation_event_high_water: dict[str, int] = {}
         self._observed_operation_event_history_order: deque[str] = deque()
+        self._operation_event_snapshot_baselines: dict[str, int] = {}
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
@@ -21539,7 +21541,69 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             ),
             normalized_seq,
         )
+        if normalized_seq > 0:
+            self._operation_event_snapshot_baselines.pop(
+                normalized_scope,
+                None,
+            )
         return True
+
+    def remember_operation_event_snapshot_baseline(
+        self,
+        scope_id: str,
+        timeline_seq: int,
+    ) -> bool:
+        """Retain the earliest subscriber snapshot cut without publishing it."""
+
+        normalized_scope = str(scope_id or "")
+        if not normalized_scope:
+            return False
+        normalized_seq = max(0, int(timeline_seq))
+        with self._event_source_lock:
+            if (
+                normalized_scope in self._observed_operation_event_seq
+                or self._observed_operation_event_high_water.get(
+                    normalized_scope,
+                    0,
+                )
+                > 0
+            ):
+                return False
+            existing = self._operation_event_snapshot_baselines.get(
+                normalized_scope
+            )
+            if existing is None:
+                while (
+                    len(self._operation_event_snapshot_baselines)
+                    >= self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+                ):
+                    oldest = next(
+                        iter(self._operation_event_snapshot_baselines)
+                    )
+                    self._operation_event_snapshot_baselines.pop(
+                        oldest,
+                        None,
+                    )
+                self._operation_event_snapshot_baselines[
+                    normalized_scope
+                ] = normalized_seq
+            else:
+                self._operation_event_snapshot_baselines[
+                    normalized_scope
+                ] = min(existing, normalized_seq)
+            return True
+
+    def consume_operation_event_snapshot_baseline(
+        self,
+        scope_id: str,
+    ) -> int | None:
+        """Consume the baseline that separates hydration from live events."""
+
+        with self._event_source_lock:
+            return self._operation_event_snapshot_baselines.pop(
+                str(scope_id or ""),
+                None,
+            )
 
     def touch_operation_event_scope(self, scope_id: str) -> None:
         """Bound per-blackboard event cursors and their related caches."""
@@ -21871,6 +21935,39 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         snapshot_payload = self._authoritative_event_snapshot(
             blackboard_dir
         )
+        micromachine_status = snapshot_payload.get("micromachine_status")
+        if isinstance(micromachine_status, Mapping):
+            status_scope_id = str(
+                micromachine_status.get("blackboard_scope_id")
+                or blackboard_scope_id
+            )
+            raw_operation_events = micromachine_status.get(
+                "operation_events"
+            )
+            operation_events = (
+                raw_operation_events
+                if isinstance(raw_operation_events, Sequence)
+                and not isinstance(
+                    raw_operation_events,
+                    (str, bytes, bytearray),
+                )
+                else ()
+            )
+            snapshot_operation_latest = max(
+                (
+                    _web_event_int(
+                        event.get("timeline_seq"),
+                        0,
+                    )
+                    for event in operation_events
+                    if isinstance(event, Mapping)
+                ),
+                default=0,
+            )
+            self.server.remember_operation_event_snapshot_baseline(  # type: ignore[attr-defined]
+                status_scope_id,
+                snapshot_operation_latest,
+            )
         snapshot_event = {
             "event_seq": snapshot_cursor,
             "event_type": "snapshot",
@@ -22106,34 +22203,45 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 and not isinstance(raw_events, (str, bytes, bytearray))
                 else []
             )
-            if first_scope_observation:
-                snapshot_latest = max(
-                    (
-                        _web_event_int(
-                            event.get("timeline_seq"),
-                            0,
-                        )
-                        for event in events
-                    ),
-                    default=0,
-                )
-                server._observed_operation_event_seq[scope_id] = (  # type: ignore[attr-defined]
-                    snapshot_latest
-                )
-                server.remember_operation_event_high_water(  # type: ignore[attr-defined]
-                    scope_id,
-                    snapshot_latest,
-                )
-                return
-            observed = int(
-                max(
-                    server._observed_operation_event_seq.get(scope_id, 0),  # type: ignore[attr-defined]
-                    server._observed_operation_event_high_water.get(  # type: ignore[attr-defined]
-                        scope_id,
-                        0,
-                    ),
+            snapshot_baseline = (
+                server.consume_operation_event_snapshot_baseline(  # type: ignore[attr-defined]
+                    scope_id
                 )
             )
+            if first_scope_observation:
+                if snapshot_baseline is None:
+                    snapshot_baseline = max(
+                        (
+                            _web_event_int(
+                                event.get("timeline_seq"),
+                                0,
+                            )
+                            for event in events
+                        ),
+                        default=0,
+                    )
+                    server._observed_operation_event_seq[scope_id] = (  # type: ignore[attr-defined]
+                        snapshot_baseline
+                    )
+                    server.remember_operation_event_high_water(  # type: ignore[attr-defined]
+                        scope_id,
+                        snapshot_baseline,
+                    )
+                    return
+                observed = snapshot_baseline
+            else:
+                observed = int(
+                    max(
+                        server._observed_operation_event_seq.get(  # type: ignore[attr-defined]
+                            scope_id,
+                            0,
+                        ),
+                        server._observed_operation_event_high_water.get(  # type: ignore[attr-defined]
+                            scope_id,
+                            0,
+                        ),
+                    )
+                )
             latest = observed
             for event in sorted(
                 events,

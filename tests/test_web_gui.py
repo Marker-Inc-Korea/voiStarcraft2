@@ -1189,6 +1189,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
+            1,
+            self.server._http._operation_event_snapshot_baselines[
+                scope_id
+            ],
+        )
+        self.assertEqual(
             [],
             [
                 event
@@ -1220,7 +1226,19 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 and event["blackboard_scope_id"] == scope_id
             )
         ]
-        self.assertEqual([], operation_events)
+        self.assertEqual(1, len(operation_events))
+        self.assertEqual(
+            "engagement_observed",
+            operation_events[0]["payload"]["kind"],
+        )
+        self.assertEqual(
+            2,
+            operation_events[0]["payload"]["timeline_seq"],
+        )
+        self.assertNotIn(
+            scope_id,
+            self.server._http._operation_event_snapshot_baselines,
+        )
 
         third = {
             **first,
@@ -1245,8 +1263,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 and event["blackboard_scope_id"] == scope_id
             )
         ]
-        self.assertEqual(1, len(operation_events))
-        self.assertEqual("target_reached", operation_events[0]["payload"]["kind"])
+        self.assertEqual(2, len(operation_events))
+        self.assertEqual("target_reached", operation_events[-1]["payload"]["kind"])
 
     def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
         original = self.bridge.micromachine_status
@@ -11968,6 +11986,40 @@ assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, MAX_CHAT_EVENTS);
 assert.strictEqual(pendingAggregateNode, null);
 assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+
+var retainedVoiceSessions = Object.keys(voiceSessionsByPendingId).map(
+  function(pendingId) {
+    return voiceSessionsByPendingId[pendingId];
+  }
+).filter(function(session) {
+  return session && session.node && session.node.parentNode === logBox;
+});
+assert(retainedVoiceSessions.length > 0);
+var lastPendingVoiceSession = retainedVoiceSessions[0];
+Object.keys(voiceSessionsByPendingId).forEach(function(pendingId) {
+  if (voiceSessionsByPendingId[pendingId] !== lastPendingVoiceSession) {
+    removePendingById(pendingId);
+  }
+});
+assert.strictEqual(pendingCommandCount(), 1);
+var trimIterations = 0;
+while (
+  lastPendingVoiceSession.node &&
+  lastPendingVoiceSession.node.parentNode === logBox &&
+  trimIterations < MAX_CHAT_EVENTS * 3
+) {
+  trimIterations += 1;
+  appendLog({
+    seq: MAX_CHAT_EVENTS * 10 + trimIterations,
+    command_text: "trim filler " + trimIterations,
+    status: "read_only",
+    narration: "trim filler response " + trimIterations
+  });
+}
+assert.strictEqual(lastPendingVoiceSession.node, null);
+assert.strictEqual(pendingCommandCount(), 0);
+assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+assert.strictEqual(pendingStatus.textContent, "");
 """
         with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
             script_file.write(harness)
