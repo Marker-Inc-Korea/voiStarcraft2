@@ -22325,7 +22325,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             status_read_succeeded = True
             try:
                 micromachine_status = self._micromachine_status_payload(
-                    blackboard_dir
+                    blackboard_dir,
+                    read_only=True,
                 )
             except Exception as error:  # noqa: BLE001 - snapshot remains usable.
                 status_read_succeeded = False
@@ -22371,8 +22372,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 }
             ):
                 status_read_succeeded = False
+            status_is_authoritative = bool(
+                micromachine_status.get(
+                    "operation_registry_authoritative"
+                )
+                is True
+            )
             if (
                 status_read_succeeded
+                and status_is_authoritative
                 and not server.admit_operation_event_scope(  # type: ignore[attr-defined]
                     requested_scope_id
                 )
@@ -22392,7 +22400,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     status_scope_id
                 )
             )
-            if status_read_succeeded and not source_materialized:
+            if (
+                status_read_succeeded
+                and status_is_authoritative
+                and not source_materialized
+            ):
                 # First materialization is historical hydration. It advances
                 # the source cursor but emits no lifecycle event.
                 self._publish_new_operation_events(
@@ -22402,7 +22414,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 )
                 try:
                     candidate_status = self._micromachine_status_payload(
-                        blackboard_dir
+                        blackboard_dir,
+                        read_only=True,
                     )
                 except Exception:  # noqa: BLE001 - retain the materialized cut.
                     candidate_status = micromachine_status
@@ -22421,6 +22434,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 )
                 if (
                     candidate_scope_id == status_scope_id
+                    and candidate_status.get(
+                        "operation_registry_authoritative"
+                    )
+                    is True
                     and candidate_status_name
                     not in {
                         "operation_history_capacity_rejected",
@@ -22443,7 +22460,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 or blackboard_scope_id
             )
             status_accepted = False
-            if status_read_succeeded:
+            if status_read_succeeded and status_is_authoritative:
                 with server._event_source_lock:  # type: ignore[attr-defined]
                     status_accepted, accepted_status = (
                         server.authoritative_snapshot_payload(  # type: ignore[attr-defined]
@@ -22569,7 +22586,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         if micromachine_status is None:
             try:
                 micromachine_status = self._micromachine_status_payload(
-                    blackboard_dir
+                    blackboard_dir,
+                    read_only=True,
                 )
             except Exception as error:  # noqa: BLE001 - snapshot remains usable.
                 micromachine_status = {
@@ -22652,7 +22670,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 requested_scope = _micromachine_blackboard_scope_id(
                     blackboard_dir
                 )
-                status = self._micromachine_status_payload(blackboard_dir)
+                status = self._micromachine_status_payload(
+                    blackboard_dir,
+                    read_only=True,
+                )
                 scope = str(
                     status.get("blackboard_scope_id")
                     or requested_scope
@@ -22670,6 +22691,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         "scope_identity_mismatch",
                         "source_error",
                     }
+                ):
+                    return
+                if (
+                    status.get("operation_registry_authoritative")
+                    is not True
                 ):
                     return
                 if not server.admit_operation_event_scope(  # type: ignore[attr-defined]

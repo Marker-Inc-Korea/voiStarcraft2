@@ -821,9 +821,19 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         if os.path.exists(telemetry_path):
             with open(telemetry_path, encoding="utf-8") as handle:
                 telemetry = json.load(handle)
-            telemetry["runtime_instance_id"] = runtime_instance_id
-            with open(telemetry_path, "w", encoding="utf-8") as handle:
-                json.dump(telemetry, handle)
+        else:
+            telemetry = {
+                "protocol_version": MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
+                "frame": 1,
+                "bot_name": "MicroMachine",
+                "race": "Terran",
+                "managers": {},
+                "active_modulation_ids": [],
+                "last_failure": None,
+            }
+        telemetry["runtime_instance_id"] = runtime_instance_id
+        with open(telemetry_path, "w", encoding="utf-8") as handle:
+            json.dump(telemetry, handle)
 
         class FakeAttachedMicroMachineLauncher:
             def snapshot(self, blackboard_dir=""):
@@ -1162,11 +1172,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "technical": {},
         }
         status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first],
         }
         snapshot_handler._micromachine_status_payload = (
-            lambda _directory: status
+            lambda _directory, **_kwargs: status
         )
         snapshot_handler._authoritative_event_snapshot = (
             lambda _directory, **_kwargs: {
@@ -1292,7 +1303,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         source_lock = threading.Lock()
         source_reads = 0
 
-        def status(_directory):
+        def status(_directory, **_kwargs):
             nonlocal source_reads
             with source_lock:
                 source_reads += 1
@@ -1302,6 +1313,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 if not capture_release.wait(2):
                     raise TimeoutError("test did not release source capture")
             return {
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": scope_id,
                 "operation_events": list(source_events),
             }
@@ -1380,16 +1392,18 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "summary": "engagement observed",
         }
         baseline_status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first],
         }
         current_status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first, second],
         }
         statuses = iter((baseline_status, current_status))
 
-        def status(_directory):
+        def status(_directory, **_kwargs):
             return next(statuses)
 
         def failing_snapshot(_directory, **_kwargs):
@@ -1421,7 +1435,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ],
         )
         snapshot_handler._micromachine_status_payload = (
-            lambda _directory: current_status
+            lambda _directory, **_kwargs: current_status
         )
         snapshot_handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
@@ -1479,17 +1493,19 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "summary": "engagement observed",
         }
         baseline_status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first],
         }
         current_status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first, second],
         }
         statuses = iter((baseline_status, current_status))
 
         snapshot_handler._micromachine_status_payload = (
-            lambda _directory: next(statuses)
+            lambda _directory, **_kwargs: next(statuses)
         )
         snapshot_handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
@@ -1528,7 +1544,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ],
         )
         snapshot_handler._micromachine_status_payload = (
-            lambda _directory: current_status
+            lambda _directory, **_kwargs: current_status
         )
         written = []
         snapshot_handler._write_sse_event = written.append
@@ -1598,16 +1614,18 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "summary": "completed",
         }
         baseline_status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first],
         }
         current_status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first, second, third, fourth],
         }
         statuses = iter((baseline_status, current_status))
         handler._micromachine_status_payload = (
-            lambda _directory: next(statuses)
+            lambda _directory, **_kwargs: next(statuses)
         )
         handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
@@ -1634,7 +1652,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertGreater(journal.oldest_seq, 1)
 
         handler._micromachine_status_payload = (
-            lambda _directory: current_status
+            lambda _directory, **_kwargs: current_status
         )
         written = []
         handler._write_sse_event = written.append
@@ -1691,10 +1709,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "summary": "engagement observed",
         }
         baseline_status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first],
         }
         current_status = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [first, second],
         }
@@ -1711,7 +1731,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         def configure(handler, written):
             handler._micromachine_status_payload = (
-                lambda _directory: current_status
+                lambda _directory, **_kwargs: current_status
             )
             handler._authoritative_event_snapshot = (
                 lambda _directory, **kwargs: {
@@ -1765,6 +1785,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         scope_id = "scope-snapshot-socket-write"
         blackboard_dir = "/tmp/snapshot-socket-write"
         baseline = {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "operation_events": [],
         }
@@ -1778,7 +1799,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             publish=True,
         )
         snapshot_handler._micromachine_status_payload = (
-            lambda _directory: baseline
+            lambda _directory, **_kwargs: baseline
         )
         snapshot_handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
@@ -1798,7 +1819,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         snapshot_handler._write_sse_event = blocking_write
         refresh_handler._state_payload = lambda: {"available": True}
         refresh_handler._micromachine_status_payload = (
-            lambda _directory: advanced
+            lambda _directory, **_kwargs: advanced
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
@@ -1834,7 +1855,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "technical": {},
         }
         snapshot_handler._micromachine_status_payload = (
-            lambda _directory: {
+            lambda _directory, **_kwargs: {
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": actual_scope,
                 "operation_events": [first],
             }
@@ -1908,12 +1930,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 {
                     "enabled": True,
                     "status": "live",
+                    "operation_registry_authoritative": True,
                     "blackboard_scope_id": scope_id,
                     "operation_events": [first],
                 },
                 {
                     "enabled": False,
                     "status": "source_error",
+                    "operation_registry_authoritative": True,
                     "blackboard_scope_id": scope_id,
                     "error": "second read failed",
                     "operation_events": [first, second],
@@ -1921,7 +1945,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
         )
         handler._micromachine_status_payload = (
-            lambda _directory: next(statuses)
+            lambda _directory, **_kwargs: next(statuses)
         )
         handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
@@ -1986,8 +2010,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             server._pending_operation_events,
         )
 
-        handler._micromachine_status_payload = lambda _directory: {
+        handler._micromachine_status_payload = lambda _directory, **_kwargs: {
             "status": "live",
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": actual_scope,
             "operation_events": [],
         }
@@ -2041,6 +2066,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         }
         current_status = {
             "status": "live",
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": scope_id,
             "battlefield_overview": {
                 "identity": {
@@ -2079,7 +2105,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             current_status,
         )
         self.assertTrue(accepted)
-        handler._micromachine_status_payload = lambda _directory: stale_status
+        handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: stale_status
+        )
         handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
                 "state": {"available": True},
@@ -2136,11 +2164,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             handler.server = server
             written = []
 
-            def status(_directory):
+            def status(_directory, **_kwargs):
                 with status_reads_lock:
                     status_reads.append(scope_id)
                 return {
                     "status": "live",
+                    "operation_registry_authoritative": True,
                     "blackboard_scope_id": scope_id,
                     "operation_events": [],
                 }
@@ -2233,8 +2262,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             baseline_dir
         )
         self.assertTrue(server.admit_operation_event_scope(baseline_scope))
-        handler._micromachine_status_payload = lambda _directory: {
+        handler._micromachine_status_payload = lambda _directory, **_kwargs: {
             "status": "live",
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": baseline_scope,
             "operation_events": [],
         }
@@ -2245,11 +2275,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         snapshots_before = deepcopy(server._observed_payload_snapshots)
         status_reads = 0
 
-        def capacity_checked_status(directory):
+        def capacity_checked_status(directory, **_kwargs):
             nonlocal status_reads
             status_reads += 1
             return {
                 "status": "live",
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": (
                     web_gui._micromachine_blackboard_scope_id(directory)
                 ),
@@ -2301,7 +2332,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             len(server._observed_operation_event_high_water),
         )
 
-    def test_many_status_probes_cannot_deny_legitimate_sse_scope(self):
+    def test_many_read_only_probes_cannot_deny_attached_sse_scope(self):
         server = self.server._http
         timeline = self.bridge._micromachine_operation_timeline
         scope_history_before = dict(
@@ -2320,26 +2351,68 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 document["status"],
             )
 
+        for index in range(
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION + 8
+        ):
+            stream = self.get_sse(
+                "/api/events?"
+                f"blackboard_dir=/tmp/untrusted-sse-probe-{index}"
+                "&once=1"
+            )
+            events = self.parse_sse_events(stream)
+            detached_status = events[0]["data"]["payload"][
+                "micromachine_status"
+            ]
+            self.assertNotEqual(
+                "scope_capacity_rejected",
+                detached_status["status"],
+            )
+            self.assertFalse(
+                detached_status["operation_registry_authoritative"]
+            )
+
         self.assertEqual(
             {},
             server._observed_operation_event_high_water,
-            "read-only status probes must not reserve replay tombstones",
+            "read-only status/SSE probes must not reserve replay tombstones",
         )
         self.assertEqual(
             scope_history_before,
             timeline._scope_epoch_history,
-            "read-only status probes must not reserve reducer scope history",
+            "read-only status/SSE probes must not reserve reducer scope history",
         )
 
-        legitimate_dir = "/tmp/legitimate-sse-source"
-        legitimate_scope = web_gui._micromachine_blackboard_scope_id(
-            legitimate_dir
-        )
-        stream = self.get_sse(
-            "/api/events?"
-            f"blackboard_dir={quote(legitimate_dir)}&once=1"
-        )
-        events = self.parse_sse_events(stream)
+        with tempfile.TemporaryDirectory() as legitimate_dir:
+            with open(
+                os.path.join(legitimate_dir, "latest_telemetry.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    {
+                        "protocol_version": (
+                            MICROMACHINE_BRIDGE_PROTOCOL_VERSION
+                        ),
+                        "frame": 1,
+                        "bot_name": "MicroMachine",
+                        "race": "Terran",
+                        "managers": {},
+                        "active_modulation_ids": [],
+                        "last_failure": None,
+                    },
+                    handle,
+                )
+            self.attach_fake_micromachine_runtime(legitimate_dir)
+            legitimate_scope = (
+                web_gui._micromachine_blackboard_scope_id(
+                    legitimate_dir
+                )
+            )
+            stream = self.get_sse(
+                "/api/events?"
+                f"blackboard_dir={quote(legitimate_dir)}&once=1"
+            )
+            events = self.parse_sse_events(stream)
 
         self.assertEqual("snapshot", events[0]["event"])
         self.assertNotEqual(
@@ -2348,21 +2421,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "micromachine_status"
             ]["status"],
         )
+        self.assertTrue(
+            events[0]["data"]["payload"]["micromachine_status"][
+                "operation_registry_authoritative"
+            ]
+        )
         self.assertIn(
             legitimate_scope,
             server._observed_operation_event_high_water,
-        )
-        authoritative = timeline.observe(
-            {
-                "status": "live",
-                "operation_registry_authoritative": True,
-                "operations": [],
-            },
-            blackboard_scope_id=legitimate_scope,
-        )
-        self.assertNotEqual(
-            "scope_capacity_rejected",
-            authoritative.get("status"),
         )
         self.assertIn(
             legitimate_scope,
@@ -2442,6 +2508,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         def status(generation, frame, events):
             return {
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": scope_id,
                 "battlefield_overview": {
                     "identity": {
@@ -2464,7 +2531,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         handler._state_payload = lambda: {"available": True}
         statuses = iter((current, stale, advanced))
-        handler._micromachine_status_payload = lambda _directory: next(
+        handler._micromachine_status_payload = lambda _directory, **_kwargs: next(
             statuses
         )
 
@@ -2511,6 +2578,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         def status(generation, frame):
             return {
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": scope_id,
                 "battlefield_overview": {
                     "identity": {
@@ -2538,7 +2606,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             publish=True,
         )
         handler._micromachine_status_payload = (
-            lambda _directory: deepcopy(stale)
+            lambda _directory, **_kwargs: deepcopy(stale)
         )
         handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
@@ -2577,6 +2645,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         def status(scope, generation, frame):
             return {
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": scope,
                 "battlefield_overview": {
                     "identity": {
@@ -2629,7 +2698,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
         handler._micromachine_status_payload = (
-            lambda _directory: deepcopy(stale)
+            lambda _directory, **_kwargs: deepcopy(stale)
         )
         handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
@@ -2683,6 +2752,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         def status(generation, frame, events):
             return {
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": scope_id,
                 "battlefield_overview": {
                     "identity": {
@@ -2737,10 +2807,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         refresh_handler._state_payload = lambda: {"available": True}
         refresh_handler._micromachine_status_payload = (
-            lambda _directory: stale
+            lambda _directory, **_kwargs: stale
         )
 
-        def snapshot_status(_directory):
+        def snapshot_status(_directory, **_kwargs):
             snapshot_source_entered.set()
             return advanced
 
@@ -2795,11 +2865,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         blocked_entered = threading.Event()
         blocked_release = threading.Event()
 
-        def blocked_status(_directory):
+        def blocked_status(_directory, **_kwargs):
             blocked_entered.set()
             if not blocked_release.wait(2):
                 raise TimeoutError("test did not release blocked source")
             return {
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": blocked_scope,
                 "operation_events": [],
             }
@@ -2813,10 +2884,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             }
         )
         blocked_handler._write_sse_event = lambda _event: None
-        free_handler._micromachine_status_payload = lambda _directory: {
-            "blackboard_scope_id": free_scope,
-            "operation_events": [],
-        }
+        free_handler._micromachine_status_payload = (
+            lambda _directory, **_kwargs: {
+                "operation_registry_authoritative": True,
+                "blackboard_scope_id": free_scope,
+                "operation_events": [],
+            }
+        )
         free_handler._authoritative_event_snapshot = (
             lambda _directory, **kwargs: {
                 "state": {"available": True},
@@ -2845,7 +2919,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             blocked_future.result(timeout=3)
 
     def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
-        original = self.bridge.micromachine_status
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.attach_fake_micromachine_runtime(directory.name)
+        original = self.bridge.micromachine_status_for_runtime
         self.server._http.publish_event(
             "state",
             {"available": True, "marker": "snapshot-race-baseline"},
@@ -2854,22 +2931,35 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         status_release = threading.Event()
         publisher_started = threading.Event()
 
-        def blocking_status(*, blackboard_dir=""):
+        def blocking_status(
+            *,
+            blackboard_dir="",
+            runtime_instance_id,
+            telemetry_document,
+        ):
             status_entered.set()
             if not status_release.wait(2):
                 raise TimeoutError("test did not release snapshot status")
-            return original(blackboard_dir=blackboard_dir)
+            return original(
+                blackboard_dir=blackboard_dir,
+                runtime_instance_id=runtime_instance_id,
+                telemetry_document=telemetry_document,
+            )
 
-        self.bridge.micromachine_status = blocking_status
+        self.bridge.micromachine_status_for_runtime = blocking_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original,
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            response_future = pool.submit(self.get_sse)
+            response_future = pool.submit(
+                self.get_sse,
+                "/api/events?"
+                f"blackboard_dir={quote(directory.name)}&once=1",
+            )
             self.assertTrue(
                 status_entered.wait(1),
                 "authoritative snapshot did not enter MicroMachine status",
@@ -2913,7 +3003,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
     def test_sse_snapshot_advances_cut_when_events_roll_past_retention(self):
-        original = self.bridge.micromachine_status
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.attach_fake_micromachine_runtime(directory.name)
+        original = self.bridge.micromachine_status_for_runtime
         self.server._http.event_journal = web_gui._WebEventJournal(
             retention=2
         )
@@ -2924,22 +3017,35 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         status_entered = threading.Event()
         status_release = threading.Event()
 
-        def blocking_status(*, blackboard_dir=""):
+        def blocking_status(
+            *,
+            blackboard_dir="",
+            runtime_instance_id,
+            telemetry_document,
+        ):
             status_entered.set()
             if not status_release.wait(2):
                 raise TimeoutError("test did not release snapshot status")
-            return original(blackboard_dir=blackboard_dir)
+            return original(
+                blackboard_dir=blackboard_dir,
+                runtime_instance_id=runtime_instance_id,
+                telemetry_document=telemetry_document,
+            )
 
-        self.bridge.micromachine_status = blocking_status
+        self.bridge.micromachine_status_for_runtime = blocking_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original,
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            response_future = pool.submit(self.get_sse)
+            response_future = pool.submit(
+                self.get_sse,
+                "/api/events?"
+                f"blackboard_dir={quote(directory.name)}&once=1",
+            )
             self.assertTrue(status_entered.wait(1))
             for index in range(3):
                 self.server._http.publish_event(
@@ -3033,7 +3139,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         call_lock = threading.Lock()
         call_count = 0
 
-        def raced_status(_blackboard_dir):
+        def raced_status(_blackboard_dir, **_kwargs):
             nonlocal call_count
             with call_lock:
                 call_count += 1
@@ -3461,7 +3567,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             http_server._observed_payload_snapshots,
         )
 
-        handler._micromachine_status_payload = lambda _directory: {
+        handler._micromachine_status_payload = lambda _directory, **_kwargs: {
+            "operation_registry_authoritative": True,
             "blackboard_scope_id": novel_scope,
             "operation_events": [
                 {
@@ -3502,21 +3609,26 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
-        original = self.bridge.micromachine_status
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.attach_fake_micromachine_runtime(directory.name)
+        original = self.bridge.micromachine_status_for_runtime
 
-        def unavailable_status(*, blackboard_dir=""):
-            del blackboard_dir
+        def unavailable_status(**_kwargs):
             raise OSError("blackboard source unavailable")
 
-        self.bridge.micromachine_status = unavailable_status
+        self.bridge.micromachine_status_for_runtime = unavailable_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original,
         )
 
-        stream = self.get_sse()
+        stream = self.get_sse(
+            "/api/events?"
+            f"blackboard_dir={quote(directory.name)}&once=1"
+        )
         events = self.parse_sse_events(stream)
 
         self.assertIn(": heartbeat", stream)
@@ -3532,35 +3644,42 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
     def test_rejected_snapshot_does_not_emit_concurrent_lifecycle_event(self):
-        original = self.bridge.micromachine_status
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.attach_fake_micromachine_runtime(directory.name)
+        original = self.bridge.micromachine_status_for_runtime
         requested_scope = web_gui._micromachine_blackboard_scope_id(
-            self.bridge.micromachine_blackboard_dir()
+            directory.name
         )
         status_entered = threading.Event()
         status_release = threading.Event()
 
-        def foreign_status(*, blackboard_dir=""):
-            del blackboard_dir
+        def foreign_status(**_kwargs):
             status_entered.set()
             if not status_release.wait(2):
                 raise TimeoutError("test did not release rejected status")
             return {
                 "enabled": True,
                 "status": "live",
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": "scope-foreign-rejected",
                 "operation_events": [],
             }
 
-        self.bridge.micromachine_status = foreign_status
+        self.bridge.micromachine_status_for_runtime = foreign_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original,
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            response_future = pool.submit(self.get_sse)
+            response_future = pool.submit(
+                self.get_sse,
+                "/api/events?"
+                f"blackboard_dir={quote(directory.name)}&once=1",
+            )
             self.assertTrue(status_entered.wait(1))
             self.server._http.publish_event(
                 "operation_event",
@@ -3590,8 +3709,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
     def test_rejected_snapshot_reconnect_cannot_replay_lifecycle(self):
-        original = self.bridge.micromachine_status
-        blackboard_dir = self.bridge.micromachine_blackboard_dir()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        blackboard_dir = directory.name
+        self.attach_fake_micromachine_runtime(blackboard_dir)
+        original = self.bridge.micromachine_status_for_runtime
         requested_scope = web_gui._micromachine_blackboard_scope_id(
             blackboard_dir
         )
@@ -3630,24 +3752,28 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             publish=True,
         )
 
-        def foreign_status(*, blackboard_dir=""):
-            del blackboard_dir
+        def foreign_status(**_kwargs):
             return {
                 "enabled": True,
                 "status": "live",
+                "operation_registry_authoritative": True,
                 "blackboard_scope_id": "scope-rejected-reconnect-foreign",
                 "operation_events": [],
             }
 
-        self.bridge.micromachine_status = foreign_status
+        self.bridge.micromachine_status_for_runtime = foreign_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original,
         )
 
-        initial = self.parse_sse_events(self.get_sse())
+        event_path = (
+            "/api/events?"
+            f"blackboard_dir={quote(blackboard_dir)}&once=1"
+        )
+        initial = self.parse_sse_events(self.get_sse(event_path))
         rejected_cursor = initial[0]["data"]["event_seq"]
         self.assertEqual(
             "scope_identity_mismatch",
@@ -3658,6 +3784,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         rejected_reconnect = self.parse_sse_events(
             self.get_sse(
+                event_path,
                 headers={"Last-Event-ID": str(rejected_cursor)}
             )
         )
@@ -3672,10 +3799,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ]["status"],
         )
 
-        def admitted_status(*, blackboard_dir=""):
+        def admitted_status(*, blackboard_dir="", **_kwargs):
             return {
                 "enabled": True,
                 "status": "live",
+                "operation_registry_authoritative": True,
                 "blackboard_dir": blackboard_dir,
                 "blackboard_scope_id": requested_scope,
                 "battlefield_overview": {
@@ -3688,9 +3816,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "operation_events": [first, second],
             }
 
-        self.bridge.micromachine_status = admitted_status
+        self.bridge.micromachine_status_for_runtime = admitted_status
         admitted_reconnect = self.parse_sse_events(
             self.get_sse(
+                event_path,
                 headers={"Last-Event-ID": str(rejected_cursor)}
             )
         )
@@ -3747,6 +3876,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         handler.server = self.server._http
         with tempfile.TemporaryDirectory() as directory:
             blackboard_dir = os.path.join(directory, "pending-reconnect")
+            os.makedirs(blackboard_dir)
+            self.attach_fake_micromachine_runtime(blackboard_dir)
             scope_id = web_gui._micromachine_blackboard_scope_id(
                 blackboard_dir
             )
@@ -3813,6 +3944,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         handler.server = server
         with tempfile.TemporaryDirectory() as directory:
             blackboard_dir = os.path.join(directory, "rollover-reconnect")
+            os.makedirs(blackboard_dir)
+            self.attach_fake_micromachine_runtime(blackboard_dir)
             scope_id = web_gui._micromachine_blackboard_scope_id(
                 blackboard_dir
             )
@@ -3864,12 +3997,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 return original_replay_batch(after)
 
             journal.replay_batch = rollover_before_replay
-            original_status = self.bridge.micromachine_status
+            original_status = self.bridge.micromachine_status_for_runtime
 
-            def admitted_status(*, blackboard_dir=""):
+            def admitted_status(*, blackboard_dir="", **_kwargs):
                 return {
                     "enabled": True,
                     "status": "live",
+                    "operation_registry_authoritative": True,
                     "blackboard_dir": blackboard_dir,
                     "blackboard_scope_id": scope_id,
                     "battlefield_overview": {
@@ -3882,7 +4016,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "operation_events": [first, second],
                 }
 
-            self.bridge.micromachine_status = admitted_status
+            self.bridge.micromachine_status_for_runtime = admitted_status
             try:
                 stream = self.get_sse(
                     "/api/events"
@@ -3891,7 +4025,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     headers={"Last-Event-ID": str(cursor)},
                 )
             finally:
-                self.bridge.micromachine_status = original_status
+                self.bridge.micromachine_status_for_runtime = (
+                    original_status
+                )
                 journal.replay_batch = original_replay_batch
 
         events = self.parse_sse_events(stream)
@@ -3910,10 +4046,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
     def test_partial_sse_operation_frame_reconnects_without_event_loss(self):
         server = self.server._http
-        original_status = self.bridge.micromachine_status
+        original_status = self.bridge.micromachine_status_for_runtime
         statuses = {}
 
-        def admitted_status(*, blackboard_dir=""):
+        def admitted_status(*, blackboard_dir="", **_kwargs):
             return statuses[blackboard_dir]
 
         class StagedWriter:
@@ -3933,11 +4069,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 if self.fail_flush:
                     raise BrokenPipeError("partial SSE flush failed")
 
-        self.bridge.micromachine_status = admitted_status
+        self.bridge.micromachine_status_for_runtime = admitted_status
         self.addCleanup(
             setattr,
             self.bridge,
-            "micromachine_status",
+            "micromachine_status_for_runtime",
             original_status,
         )
 
@@ -3948,6 +4084,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         ):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 blackboard_dir = os.path.join(directory, name)
+                os.makedirs(blackboard_dir)
+                self.attach_fake_micromachine_runtime(blackboard_dir)
                 scope_id = web_gui._micromachine_blackboard_scope_id(
                     blackboard_dir
                 )
@@ -3970,6 +4108,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 status = {
                     "enabled": True,
                     "status": "live",
+                    "operation_registry_authoritative": True,
                     "blackboard_dir": blackboard_dir,
                     "blackboard_scope_id": scope_id,
                     "battlefield_overview": {
