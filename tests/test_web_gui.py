@@ -1881,6 +1881,68 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ],
         )
 
+    def test_rejected_warm_snapshot_does_not_replay_pending_lifecycle(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        requested_scope = "scope-warm-snapshot-rejected"
+        actual_scope = "scope-warm-snapshot-foreign"
+        blackboard_dir = "/tmp/warm-snapshot-rejected"
+        self.assertTrue(server.admit_operation_event_scope(requested_scope))
+        server._materialized_operation_event_scopes.add(requested_scope)
+        server._observed_operation_event_seq[requested_scope] = 0
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": requested_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "session_epoch": "epoch-warm",
+                        "operation_id": "warm-operation",
+                        "generation": 1,
+                        "kind": "movement_observed",
+                    }
+                ],
+            },
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        self.assertIn(
+            requested_scope,
+            server._pending_operation_events,
+        )
+
+        handler._micromachine_status_payload = lambda _directory: {
+            "status": "live",
+            "blackboard_scope_id": actual_scope,
+            "operation_events": [],
+        }
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+
+        cursor = handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            requested_scope,
+        )
+
+        self.assertEqual(server.event_journal.latest_seq, cursor)
+        self.assertEqual(1, len(written))
+        rejected = written[0]["payload"]["micromachine_status"]
+        self.assertEqual("scope_identity_mismatch", rejected["status"])
+        self.assertIn(
+            requested_scope,
+            server._pending_operation_events,
+            "a later accepted snapshot must still be able to replay it",
+        )
+
     def test_concurrent_cold_scope_reservation_is_atomic_at_capacity(self):
         server = self.server._http
         history_retention = (
@@ -1985,6 +2047,129 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             if event["event_type"] == "operation_event"
         ]
         self.assertEqual([], operation_events)
+
+    def test_capacity_rejected_refreshes_do_not_grow_source_error_caches(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        handler._state_payload = lambda: {"available": True}
+        retention = server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        for index in range(retention - 1):
+            self.assertTrue(
+                server.admit_operation_event_scope(
+                    f"refresh-reserved-scope-{index}"
+                )
+            )
+        baseline_dir = "/tmp/refresh-admitted-baseline"
+        baseline_scope = web_gui._micromachine_blackboard_scope_id(
+            baseline_dir
+        )
+        self.assertTrue(server.admit_operation_event_scope(baseline_scope))
+        handler._micromachine_status_payload = lambda _directory: {
+            "status": "live",
+            "blackboard_scope_id": baseline_scope,
+            "operation_events": [],
+        }
+        handler._refresh_event_sources(baseline_dir)
+
+        failed_before = set(server._failed_event_sources)
+        hashes_before = dict(server._observed_payload_hashes)
+        snapshots_before = deepcopy(server._observed_payload_snapshots)
+        status_reads = 0
+
+        def rejected_status_must_not_be_read(_directory):
+            nonlocal status_reads
+            status_reads += 1
+            raise AssertionError("capacity rejection must precede source read")
+
+        handler._micromachine_status_payload = (
+            rejected_status_must_not_be_read
+        )
+        for index in range(64):
+            handler._refresh_event_sources(
+                f"/tmp/refresh-capacity-rejected-{index}"
+            )
+
+        self.assertEqual(0, status_reads)
+        self.assertEqual(failed_before, server._failed_event_sources)
+        self.assertEqual(hashes_before, server._observed_payload_hashes)
+        self.assertEqual(
+            snapshots_before,
+            server._observed_payload_snapshots,
+        )
+
+    def test_status_endpoint_rejects_scope_before_read_at_capacity(self):
+        server = self.server._http
+        for index in range(
+            server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        ):
+            self.assertTrue(
+                server.admit_operation_event_scope(
+                    f"status-reserved-scope-{index}"
+                )
+            )
+        original = self.bridge.micromachine_status
+        status_reads = 0
+
+        def status_must_not_be_read(*, blackboard_dir=""):
+            nonlocal status_reads
+            del blackboard_dir
+            status_reads += 1
+            raise AssertionError("rejected scope reached the bridge")
+
+        self.bridge.micromachine_status = status_must_not_be_read
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status",
+            original,
+        )
+
+        document = self.get_json(
+            "/api/micromachine/status?"
+            "blackboard_dir=/tmp/status-capacity-rejected"
+        )
+
+        self.assertEqual(0, status_reads)
+        self.assertFalse(document["enabled"])
+        self.assertEqual("scope_capacity_rejected", document["status"])
+        self.assertIn("capacity is exhausted", document["error"])
+
+    def test_status_endpoint_rejects_reported_scope_mismatch(self):
+        original = self.bridge.micromachine_status
+
+        def mismatched_status(*, blackboard_dir=""):
+            return {
+                "enabled": True,
+                "status": "live",
+                "blackboard_dir": blackboard_dir,
+                "blackboard_scope_id": "foreign-status-scope",
+            }
+
+        self.bridge.micromachine_status = mismatched_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status",
+            original,
+        )
+
+        blackboard_dir = "/tmp/status-scope-mismatch"
+        document = self.get_json(
+            "/api/micromachine/status?blackboard_dir="
+            + blackboard_dir
+        )
+
+        self.assertFalse(document["enabled"])
+        self.assertEqual("scope_identity_mismatch", document["status"])
+        self.assertEqual(
+            web_gui._micromachine_blackboard_scope_id(blackboard_dir),
+            document["blackboard_scope_id"],
+        )
+        self.assertEqual(
+            "foreign-status-scope",
+            document["reported_blackboard_scope_id"],
+        )
 
     def test_regressive_status_cannot_advance_operation_source_cursor(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
@@ -11317,6 +11502,66 @@ class SessionLoopBridgeTest(unittest.TestCase):
             reducer._SCOPE_EPOCH_HISTORY_RETENTION,
         )
 
+    def test_operation_timeline_retains_family_tombstones_past_1024(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        original_scope = "scope-family-history-original"
+        original_payload = semantic_operation_payload(
+            operation_id="original-operation",
+            frame=100,
+            session_epoch=1000,
+        )
+        first = reducer.observe(
+            original_payload,
+            blackboard_scope_id=original_scope,
+        )
+        first_seq = first["operation_event_latest_seq"]
+
+        for scope_index in range(17):
+            scope_id = f"scope-family-history-{scope_index}"
+            payload = semantic_operation_payload(
+                operation_id=f"operation-{scope_index}-0",
+                frame=200 + scope_index,
+                session_epoch=2000 + scope_index,
+            )
+            for operation_index in range(
+                1,
+                reducer._PER_SCOPE_OPERATION_RETENTION,
+            ):
+                operation_payload = semantic_operation_payload(
+                    operation_id=(
+                        f"operation-{scope_index}-{operation_index}"
+                    ),
+                    frame=200 + scope_index + operation_index,
+                    session_epoch=2000 + scope_index,
+                )
+                payload["operations"].extend(
+                    operation_payload["operations"]
+                )
+                payload["battlefield_overview"][
+                    "operation_ownership"
+                ].extend(
+                    operation_payload["battlefield_overview"][
+                        "operation_ownership"
+                    ]
+                )
+            reducer.observe(payload, blackboard_scope_id=scope_id)
+
+        self.assertGreater(len(reducer._family_order), 1024)
+        self.assertLessEqual(
+            len(reducer._family_order),
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        )
+        replayed = reducer.observe(
+            deepcopy(original_payload),
+            blackboard_scope_id=original_scope,
+        )
+
+        self.assertEqual([], replayed["operation_events"])
+        self.assertEqual(
+            first_seq,
+            replayed["operation_event_latest_seq"],
+        )
+
     def test_operation_timeline_scope_history_capacity_fails_closed(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         capacity = reducer._SCOPE_EPOCH_HISTORY_RETENTION
@@ -11347,6 +11592,12 @@ class SessionLoopBridgeTest(unittest.TestCase):
             "scope_capacity_rejected",
             overflow["operation_timeline_status"],
         )
+        self.assertEqual(
+            "scope_capacity_rejected",
+            overflow["status"],
+        )
+        self.assertFalse(overflow["enabled"])
+        self.assertIn("capacity is exhausted", overflow["error"])
         self.assertFalse(overflow["operation_registry_authoritative"])
         self.assertEqual([], overflow["operations"])
         self.assertEqual(capacity, len(reducer._scope_epoch_history))
@@ -21770,12 +22021,66 @@ const subscriberReplay = {
     kind: "movement_observed"
   }
 };
+const delayedReplay = JSON.parse(JSON.stringify(subscriberReplay));
+delayedReplay.update_id = "update-delayed-replay";
+delayedReplay.operation_id = "delayed-replay";
+delayedReplay.payload.timeline_seq = 10;
+delayedReplay.payload.update_id = "update-delayed-replay";
+delayedReplay.payload.operation_id = "delayed-replay";
+const delayedReplayKey = "scope-a|epoch-a|10";
+const beforeDelayedReplayRender = operationRenderCount;
+sourceA.emit("operation_event", delayedReplay);
+assert.strictEqual(
+  operationRenderCount,
+  beforeDelayedReplayRender,
+  "a replay without an operation record must not apply"
+);
+assert.strictEqual(
+  subscriberOperationReplayDedupe[delayedReplayKey],
+  undefined,
+  "a failed replay must not consume its dedupe identity"
+);
+operationRecords[operationRecordKey("scope-a", "delayed-replay")] = {
+  operationId: "delayed-replay",
+  updateId: "update-delayed-replay",
+  operationGeneration: 1,
+  requestedOperationGeneration: 1,
+  telemetryFrame: 10,
+  sessionEpoch: "epoch-a",
+  data: { semantic_timeline: [] }
+};
+sourceA.emit("operation_event", delayedReplay);
+assert.strictEqual(
+  operationRenderCount,
+  beforeDelayedReplayRender + 1,
+  "the same replay must apply after its operation record arrives"
+);
+assert.strictEqual(subscriberOperationReplayDedupe[delayedReplayKey], true);
+sourceA.emit("operation_event", delayedReplay);
+assert.strictEqual(
+  operationRenderCount,
+  beforeDelayedReplayRender + 1,
+  "an applied replay must still execute exactly once"
+);
+
+const beforeSubscriberReplayRender = operationRenderCount;
+const beforeSubscriberReplayAnnouncement = lifecycleAnnouncementCount;
 sourceA.emit("operation_event", subscriberReplay);
-assert.strictEqual(operationRenderCount, 1);
-assert.strictEqual(lifecycleAnnouncementCount, 1);
+assert.strictEqual(
+  operationRenderCount,
+  beforeSubscriberReplayRender + 1
+);
+assert.strictEqual(
+  lifecycleAnnouncementCount,
+  beforeSubscriberReplayAnnouncement + 1
+);
 assert.strictEqual(lastEventSeq, 2);
 sourceA.emit("operation_event", subscriberReplay);
-assert.strictEqual(operationRenderCount, 1, "local replay is semantically deduped");
+assert.strictEqual(
+  operationRenderCount,
+  beforeSubscriberReplayRender + 1,
+  "local replay is semantically deduped"
+);
 
 const unmarkedEqualCursor = JSON.parse(JSON.stringify(subscriberReplay));
 delete unmarkedEqualCursor.subscriber_local_replay;
@@ -21783,7 +22088,7 @@ unmarkedEqualCursor.payload.timeline_seq = 12;
 sourceA.emit("operation_event", unmarkedEqualCursor);
 assert.strictEqual(
   operationRenderCount,
-  1,
+  beforeSubscriberReplayRender + 1,
   "an unmarked equal-cursor event must remain rejected"
 );
 

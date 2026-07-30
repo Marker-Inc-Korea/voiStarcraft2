@@ -5237,7 +5237,8 @@ class _OperationSemanticTimelineReducer:
         _SCOPE_RETENTION * _PER_SCOPE_OPERATION_RETENTION
     )
     _GLOBAL_OPERATION_HISTORY_RETENTION = (
-        _GLOBAL_OPERATION_RETENTION * 2
+        _SCOPE_EPOCH_HISTORY_RETENTION
+        * _PER_SCOPE_OPERATION_RETENTION
     )
     _PER_OPERATION_RETENTION = 32
     _PER_OPERATION_TOKEN_RETENTION = 64
@@ -5393,6 +5394,11 @@ class _OperationSemanticTimelineReducer:
     def _scope_capacity_rejected_result(
         result: dict[str, object],
     ) -> dict[str, object]:
+        result["enabled"] = False
+        result["status"] = "scope_capacity_rejected"
+        result["error"] = (
+            "MicroMachine operation scope capacity is exhausted."
+        )
         result["operation_registry_authoritative"] = False
         result["operation_timeline_status"] = "scope_capacity_rejected"
         result["operations"] = []
@@ -13980,14 +13986,14 @@ function applyEventSourceError(envelope, payload) {
 }
 
 function applyOperationSemanticEvent(envelope, payload) {
-  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return; }
+  if (!serverEventMatchesCurrentBlackboard(envelope, payload)) { return false; }
   var eventEpoch = String(payload.session_epoch || "");
   if (
     operationConsoleSessionEpoch &&
     eventEpoch &&
     operationConsoleSessionEpoch !== eventEpoch
   ) {
-    return;
+    return false;
   }
   var scopeId = String(
     payload.blackboard_scope_id ||
@@ -14001,15 +14007,15 @@ function applyOperationSemanticEvent(envelope, payload) {
   var generation = Number(
     payload.generation || envelope.generation || 0
   );
-  if (!operationId || generation <= 0) { return; }
+  if (!operationId || generation <= 0) { return false; }
   var record = operationRecords[
     operationRecordKey(scopeId, operationId)
   ];
   if (!record || Number(record.operationGeneration || 0) !== generation) {
-    return;
+    return false;
   }
   if (!operationEventMatchesRecordUpdate(envelope, payload, record)) {
-    return;
+    return false;
   }
   record.data = Object.assign({}, record.data || {}, {
     semantic_timeline: mergeOperationSemanticTimeline(
@@ -14019,6 +14025,7 @@ function applyOperationSemanticEvent(envelope, payload) {
   });
   renderOperationRecords();
   announceOperationLifecycleEvent(envelope, payload, scopeId, record);
+  return true;
 }
 
 function acceptSubscriberOperationReplay(envelope, payload, eventSeq) {
@@ -14027,7 +14034,7 @@ function acceptSubscriberOperationReplay(envelope, payload, eventSeq) {
     String(envelope.event_type || "") !== "operation_event" ||
     eventSeq !== lastEventSeq
   ) {
-    return false;
+    return "";
   }
   var scopeId = String(
     payload.blackboard_scope_id ||
@@ -14042,10 +14049,15 @@ function acceptSubscriberOperationReplay(envelope, payload, eventSeq) {
     !Number.isFinite(timelineSeq) ||
     timelineSeq <= 0
   ) {
-    return false;
+    return "";
   }
   var key = [scopeId, sessionEpoch, timelineSeq].join("|");
-  if (subscriberOperationReplayDedupe[key]) { return false; }
+  if (subscriberOperationReplayDedupe[key]) { return ""; }
+  return key;
+}
+
+function rememberSubscriberOperationReplay(key) {
+  if (!key || subscriberOperationReplayDedupe[key]) { return; }
   subscriberOperationReplayDedupe[key] = true;
   subscriberOperationReplayOrder.push(key);
   while (
@@ -14056,7 +14068,6 @@ function acceptSubscriberOperationReplay(envelope, payload, eventSeq) {
       subscriberOperationReplayOrder.shift()
     ];
   }
-  return true;
 }
 
 function applyServerEvent(event) {
@@ -14069,6 +14080,7 @@ function applyServerEvent(event) {
   var eventType = String(envelope.event_type || event.type || "message");
   var eventSeq = Number(envelope.event_seq || event.lastEventId || 0);
   var payload = envelope.payload || {};
+  var subscriberReplayKey = "";
   if (eventType === "snapshot") {
     lastEventSeq = Number.isFinite(eventSeq) && eventSeq >= 0 ? eventSeq : 0;
     if (commandEventPollWonInitialHydration) {
@@ -14090,12 +14102,15 @@ function applyServerEvent(event) {
     ) ||
     envelope.subscriber_local_replay === true
   ) {
-    if (
-      eventType !== "operation_event" ||
-      !acceptSubscriberOperationReplay(envelope, payload, eventSeq)
-    ) {
+    if (eventType !== "operation_event") {
       return;
     }
+    subscriberReplayKey = acceptSubscriberOperationReplay(
+      envelope,
+      payload,
+      eventSeq
+    );
+    if (!subscriberReplayKey) { return; }
   }
   if (serverEventRegressesOperation(envelope)) { return; }
   if (eventSeq > lastEventSeq) { lastEventSeq = eventSeq; }
@@ -14117,7 +14132,9 @@ function applyServerEvent(event) {
     return;
   }
   if (eventType === "operation_event") {
-    applyOperationSemanticEvent(envelope, payload);
+    if (applyOperationSemanticEvent(envelope, payload)) {
+      rememberSubscriberOperationReplay(subscriberReplayKey);
+    }
     return;
   }
   if (eventType === "state") {
@@ -22182,6 +22199,18 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     ),
                 }
                 status_scope_id = requested_scope_id
+            if (
+                status_read_succeeded
+                and str(
+                    micromachine_status.get("status", "") or ""
+                )
+                in {
+                    "scope_capacity_rejected",
+                    "scope_identity_mismatch",
+                    "source_error",
+                }
+            ):
+                status_read_succeeded = False
             source_materialized, _ = (
                 server.operation_event_source_cursor(  # type: ignore[attr-defined]
                     status_scope_id
@@ -22246,12 +22275,16 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 blackboard_dir,
                 micromachine_status=micromachine_status,
             )
-            snapshot_cursor, prepared_replay = (
-                server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
-                    status_scope_id,
-                    snapshot_cursor=snapshot_cut,
+            if status_read_succeeded:
+                snapshot_cursor, prepared_replay = (
+                    server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
+                        status_scope_id,
+                        snapshot_cursor=snapshot_cut,
+                    )
                 )
-            )
+            else:
+                snapshot_cursor = snapshot_cut
+                prepared_replay = ()
             snapshot_event = {
                 "event_seq": snapshot_cursor,
                 "event_type": "snapshot",
@@ -22429,9 +22462,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if not server.admit_operation_event_scope(  # type: ignore[attr-defined]
                     requested_scope
                 ):
-                    raise RuntimeError(
-                        "MicroMachine operation scope capacity is exhausted."
-                    )
+                    return
                 status = self._micromachine_status_payload(blackboard_dir)
                 scope = str(
                     status.get("blackboard_scope_id")
@@ -22442,6 +22473,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         "MicroMachine status scope does not match the "
                         "requested blackboard scope."
                     )
+                if (
+                    str(status.get("status", "") or "")
+                    == "scope_capacity_rejected"
+                ):
+                    return
                 with server._event_source_lock:  # type: ignore[attr-defined]
                     status_published = server.publish_changed_snapshot(  # type: ignore[attr-defined]
                         f"micromachine:{scope}",
@@ -23029,12 +23065,61 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_micromachine_status(self) -> None:
         params = parse_qs(urlsplit(self.path).query)
-        blackboard_dir = params.get("blackboard_dir", [""])[0] or ""
-        try:
+        blackboard_dir = self._resolved_micromachine_blackboard_dir(
+            params.get("blackboard_dir", [""])[0] or ""
+        )
+        requested_scope_id = _micromachine_blackboard_scope_id(
+            blackboard_dir
+        )
+        if not self.server.admit_operation_event_scope(  # type: ignore[attr-defined]
+            requested_scope_id
+        ):
             self._send_json(
                 HTTPStatus.OK,
-                self._micromachine_status_payload(blackboard_dir),
+                {
+                    "enabled": False,
+                    "status": "scope_capacity_rejected",
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": requested_scope_id,
+                    "error": (
+                        "MicroMachine operation scope capacity is exhausted."
+                    ),
+                },
             )
+            return
+        try:
+            payload = self._micromachine_status_payload(blackboard_dir)
+            reported_scope_id = str(
+                payload.get("blackboard_scope_id")
+                or requested_scope_id
+            )
+            if reported_scope_id != requested_scope_id:
+                payload = {
+                    "enabled": False,
+                    "status": "scope_identity_mismatch",
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": requested_scope_id,
+                    "reported_blackboard_scope_id": reported_scope_id,
+                    "error": (
+                        "MicroMachine status scope does not match the "
+                        "requested blackboard scope."
+                    ),
+                }
+            elif (
+                str(payload.get("status", "") or "")
+                == "scope_capacity_rejected"
+            ):
+                payload = dict(payload)
+                payload["enabled"] = False
+                payload["status"] = "scope_capacity_rejected"
+                payload.setdefault(
+                    "error",
+                    (
+                        "MicroMachine operation scope capacity is "
+                        "exhausted."
+                    ),
+                )
+            self._send_json(HTTPStatus.OK, payload)
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
 
