@@ -1881,6 +1881,80 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ],
         )
 
+    def test_cold_snapshot_ignores_failed_second_source_read(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-cold-second-read-failure"
+        blackboard_dir = "/tmp/cold-second-read-failure"
+        first = {
+            "timeline_seq": 1,
+            "session_epoch": "epoch-cold-read",
+            "operation_id": "cold-read-operation",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "cold-read-update",
+            "kind": "movement_observed",
+            "game_frame": 400,
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 401,
+        }
+        statuses = iter(
+            (
+                {
+                    "enabled": True,
+                    "status": "live",
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first],
+                },
+                {
+                    "enabled": False,
+                    "status": "source_error",
+                    "blackboard_scope_id": scope_id,
+                    "error": "second read failed",
+                    "operation_events": [first, second],
+                },
+            )
+        )
+        handler._micromachine_status_payload = (
+            lambda _directory: next(statuses)
+        )
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+
+        handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+
+        status = written[0]["payload"]["micromachine_status"]
+        self.assertEqual("live", status["status"])
+        self.assertNotIn("second read failed", json.dumps(status))
+        cached = server._observed_payload_snapshots[
+            f"micromachine:{scope_id}"
+        ]
+        self.assertEqual("live", cached["status"])
+        self.assertEqual(
+            [],
+            [
+                event
+                for event in server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ],
+        )
+
     def test_rejected_warm_snapshot_does_not_replay_pending_lifecycle(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
@@ -3296,6 +3370,64 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             snapshot["micromachine_status"]["error"],
         )
 
+    def test_rejected_snapshot_does_not_emit_concurrent_lifecycle_event(self):
+        original = self.bridge.micromachine_status
+        requested_scope = web_gui._micromachine_blackboard_scope_id(
+            self.bridge.micromachine_blackboard_dir()
+        )
+        status_entered = threading.Event()
+        status_release = threading.Event()
+
+        def foreign_status(*, blackboard_dir=""):
+            del blackboard_dir
+            status_entered.set()
+            if not status_release.wait(2):
+                raise TimeoutError("test did not release rejected status")
+            return {
+                "enabled": True,
+                "status": "live",
+                "blackboard_scope_id": "scope-foreign-rejected",
+                "operation_events": [],
+            }
+
+        self.bridge.micromachine_status = foreign_status
+        self.addCleanup(
+            setattr,
+            self.bridge,
+            "micromachine_status",
+            original,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            response_future = pool.submit(self.get_sse)
+            self.assertTrue(status_entered.wait(1))
+            self.server._http.publish_event(
+                "operation_event",
+                {
+                    "timeline_seq": 1,
+                    "session_epoch": "epoch-rejected",
+                    "operation_id": "rejected-operation",
+                    "generation": 1,
+                    "requested_generation": 1,
+                    "kind": "movement_observed",
+                    "blackboard_scope_id": requested_scope,
+                },
+                operation_id="rejected-operation",
+                generation=1,
+                blackboard_scope_id=requested_scope,
+            )
+            status_release.set()
+            stream = response_future.result(timeout=3)
+
+        events = self.parse_sse_events(stream)
+        self.assertEqual(["snapshot"], [event["event"] for event in events])
+        self.assertEqual(
+            "scope_identity_mismatch",
+            events[0]["data"]["payload"][
+                "micromachine_status"
+            ]["status"],
+        )
+
     def test_sse_last_event_id_replays_only_newer_events(self):
         first = self.server._http.publish_event(
             "command_received",
@@ -3327,6 +3459,67 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(
             events[0]["data"]["payload"]["command_text"],
             "second",
+        )
+
+    def test_sse_reconnect_replays_pending_local_lifecycle_at_equal_cursor(
+        self,
+    ):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        with tempfile.TemporaryDirectory() as directory:
+            blackboard_dir = os.path.join(directory, "pending-reconnect")
+            scope_id = web_gui._micromachine_blackboard_scope_id(
+                blackboard_dir
+            )
+            first = {
+                "timeline_seq": 1,
+                "session_epoch": "epoch-pending-reconnect",
+                "operation_id": "pending-reconnect-operation",
+                "generation": 1,
+                "requested_generation": 1,
+                "update_id": "pending-reconnect-update",
+                "kind": "movement_observed",
+                "game_frame": 500,
+            }
+            second = {
+                **first,
+                "timeline_seq": 2,
+                "kind": "engagement_observed",
+                "game_frame": 501,
+            }
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first],
+                },
+                blackboard_dir=blackboard_dir,
+                publish=True,
+            )
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [first, second],
+                },
+                blackboard_dir=blackboard_dir,
+                publish=True,
+            )
+            cursor = self.server._http.event_journal.latest_seq
+
+            stream = self.get_sse(
+                "/api/events"
+                f"?blackboard_dir={quote(blackboard_dir)}"
+                "&once=1",
+                headers={"Last-Event-ID": str(cursor)},
+            )
+
+        events = self.parse_sse_events(stream)
+        self.assertEqual(1, len(events))
+        self.assertEqual("operation_event", events[0]["event"])
+        self.assertTrue(events[0]["data"]["subscriber_local_replay"])
+        self.assertEqual(cursor, events[0]["data"]["event_seq"])
+        self.assertEqual(
+            2,
+            events[0]["data"]["payload"]["timeline_seq"],
         )
 
     def test_sse_truncated_cursor_falls_back_to_snapshot(self):
@@ -11557,6 +11750,76 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual([], replayed["operation_events"])
+        self.assertEqual(
+            first_seq,
+            replayed["operation_event_latest_seq"],
+        )
+
+    def test_operation_timeline_rejects_capacity_plus_one_without_reviving_oldest(
+        self,
+    ):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-family-history-capacity"
+        session_epoch = "epoch-family-history-capacity"
+        original_payload = semantic_operation_payload(
+            operation_id="oldest-operation",
+            frame=100,
+            session_epoch=session_epoch,
+        )
+        first = reducer.observe(
+            original_payload,
+            blackboard_scope_id=scope_id,
+        )
+        first_seq = first["operation_event_latest_seq"]
+
+        for index in range(
+            1,
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+        ):
+            family_key = (
+                scope_id,
+                session_epoch,
+                f"retired-operation-{index}",
+            )
+            reducer._family_order.append(family_key)
+            reducer._generation_high_water[family_key] = 1
+            reducer._requested_generation_high_water[family_key] = 1
+            reducer._family_last_frame[family_key] = index
+            reducer._retired_operation_identities[family_key] = {
+                "operation_id": family_key[2],
+                "operation_generation": 1,
+                "requested_operation_generation": 1,
+                "update_id": f"retired-update-{index}",
+                "operation_console_execution_owner_update_id": "",
+            }
+
+        overflow = reducer.observe(
+            semantic_operation_payload(
+                operation_id="capacity-plus-one",
+                frame=200,
+                session_epoch=session_epoch,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        replayed = reducer.observe(
+            deepcopy(original_payload),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            "operation_history_capacity_rejected",
+            overflow["status"],
+        )
+        self.assertFalse(overflow["enabled"])
+        self.assertEqual([], overflow["operation_events"])
+        self.assertEqual(
+            reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
+            len(reducer._family_order),
+        )
+        self.assertEqual(
+            first["operation_events"],
+            replayed["operation_events"],
+        )
         self.assertEqual(
             first_seq,
             replayed["operation_event_latest_seq"],
@@ -21202,6 +21465,111 @@ const assert = require("assert");
     ],
     undefined
   );
+
+  // Foreign-scope and stale-epoch statuses cannot reset or announce plans.
+  var admittedRadioScope = tacticalRadio.scopeId;
+  var admittedRadioEpoch = tacticalRadio.sessionEpoch;
+  var captionsBeforeRejectedPlan = tacticalRadio.captions.length;
+  var speechBeforeRejectedPlan = spokenUtterances.length;
+  var foreignPlanOperation = JSON.parse(
+    JSON.stringify(currentRegistryOperation)
+  );
+  foreignPlanOperation.operation_id = "foreign-plan-operation";
+  foreignPlanOperation.update_id = "foreign-plan-update";
+  foreignPlanOperation.update.update_id = "foreign-plan-update";
+  foreignPlanOperation.update.vector.operation_id =
+    "foreign-plan-operation";
+  foreignPlanOperation.battlefield_operation.identity.operation_id =
+    "foreign-plan-operation";
+  foreignPlanOperation.battlefield_operation.identity.update_id =
+    "foreign-plan-update";
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "foreign-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "foreign-plan-update",
+      vector: foreignPlanOperation.update.vector
+    },
+    operations: [foreignPlanOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "foreign-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "foreign-plan-update",
+          vector: foreignPlanOperation.update.vector
+        },
+        operations: [foreignPlanOperation]
+      }
+    ]
+  }, "foreign-plan-scope"));
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeRejectedPlan
+  );
+  assert.strictEqual(
+    spokenUtterances.length,
+    speechBeforeRejectedPlan
+  );
+  assert.strictEqual(tacticalRadio.scopeId, admittedRadioScope);
+  assert.strictEqual(tacticalRadio.sessionEpoch, admittedRadioEpoch);
+
+  var stalePlanOperation = JSON.parse(
+    JSON.stringify(currentRegistryOperation)
+  );
+  stalePlanOperation.operation_id = "stale-plan-operation";
+  stalePlanOperation.update_id = "stale-plan-update";
+  stalePlanOperation.update.update_id = "stale-plan-update";
+  stalePlanOperation.update.vector.operation_id =
+    "stale-plan-operation";
+  stalePlanOperation.battlefield_operation.identity.operation_id =
+    "stale-plan-operation";
+  stalePlanOperation.battlefield_operation.identity.update_id =
+    "stale-plan-update";
+  stalePlanOperation.battlefield_operation.identity.session_epoch =
+    "1600000000000";
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "stale-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "stale-plan-update",
+      vector: stalePlanOperation.update.vector
+    },
+    operations: [stalePlanOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "stale-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "stale-plan-update",
+          vector: stalePlanOperation.update.vector
+        },
+        operations: [stalePlanOperation]
+      }
+    ]
+  }, SERVER_SCOPE_A));
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeRejectedPlan
+  );
+  assert.strictEqual(
+    spokenUtterances.length,
+    speechBeforeRejectedPlan
+  );
+  assert.strictEqual(tacticalRadio.scopeId, admittedRadioScope);
+  assert.strictEqual(tacticalRadio.sessionEpoch, admittedRadioEpoch);
 
   // Exact-generation lifecycle events remain distinct; stale variants are silent.
   var hydratedRecord = operationRecords[

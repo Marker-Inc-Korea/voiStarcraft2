@@ -5547,11 +5547,63 @@ class _OperationSemanticTimelineReducer:
         self._family_order.append(family_key)
         while len(families) > self._PER_SCOPE_OPERATION_RETENTION:
             self._retire_family(families.popleft())
-        while (
-            len(self._family_order)
-            > self._GLOBAL_OPERATION_HISTORY_RETENTION
-        ):
-            self._drop_family(self._family_order.popleft())
+
+    def _snapshot_fits_family_history(
+        self,
+        operations: Sequence[Mapping[str, object]],
+        *,
+        scope_id: str,
+        session_epoch: str,
+    ) -> bool:
+        """Refuse new identities instead of deleting replay tombstones."""
+
+        new_families = {
+            (scope_id, session_epoch, operation_id)
+            for operation in operations
+            if (
+                (operation_id := str(
+                    operation.get("operation_id", "") or ""
+                ).strip())
+                and max(
+                    0,
+                    _int_or_none(
+                        operation.get("operation_generation")
+                    )
+                    or 0,
+                )
+                > 0
+                and (
+                    scope_id,
+                    session_epoch,
+                    operation_id,
+                )
+                not in self._generation_high_water
+            )
+        }
+        return (
+            len(self._family_order) + len(new_families)
+            <= self._GLOBAL_OPERATION_HISTORY_RETENTION
+        )
+
+    @staticmethod
+    def _family_capacity_rejected_result(
+        result: dict[str, object],
+    ) -> dict[str, object]:
+        result["enabled"] = False
+        result["status"] = "operation_history_capacity_rejected"
+        result["error"] = (
+            "MicroMachine operation identity history capacity is exhausted."
+        )
+        result["operation_registry_authoritative"] = False
+        result["operation_timeline_status"] = (
+            "operation_history_capacity_rejected"
+        )
+        result["operations"] = []
+        result["operation_summary"] = _micromachine_operation_summary([])
+        result["battlefield_overview"] = None
+        result["operation_events"] = []
+        result["operation_event_latest_seq"] = 0
+        return result
 
     def _retire_family(
         self,
@@ -5590,31 +5642,6 @@ class _OperationSemanticTimelineReducer:
                 families.remove(family_key)
             except ValueError:
                 pass
-
-    def _drop_family(
-        self,
-        family_key: tuple[str, str, str],
-    ) -> None:
-        self._generation_high_water.pop(family_key, None)
-        self._requested_generation_high_water.pop(family_key, None)
-        self._family_last_frame.pop(family_key, None)
-        self._accepted_operations.pop(family_key, None)
-        self._retired_operation_identities.pop(family_key, None)
-        self._states = {
-            key: value
-            for key, value in self._states.items()
-            if key[:3] != family_key
-        }
-        families = self._scope_families.get(family_key[0])
-        if families is not None:
-            try:
-                families.remove(family_key)
-            except ValueError:
-                pass
-        try:
-            self._family_order.remove(family_key)
-        except ValueError:
-            pass
 
     def _snapshot_operations_are_monotonic(
         self,
@@ -7052,6 +7079,12 @@ class _OperationSemanticTimelineReducer:
                     session_epoch=current_epoch,
                 )
             session_epoch = incoming_epoch or current_epoch
+            if not self._snapshot_fits_family_history(
+                operations,
+                scope_id=scope_id,
+                session_epoch=session_epoch,
+            ):
+                return self._family_capacity_rejected_result(result)
             if not self._snapshot_operations_are_monotonic(
                 operations,
                 scope_id=scope_id,
@@ -13231,6 +13264,36 @@ function tacticalPlanSessionEpoch(data, operations, scopeId, updateId) {
   return "";
 }
 
+function tacticalPlanIdentityIsAdmitted(scopeId, sessionEpoch) {
+  var normalizedScope = String(scopeId || "");
+  var normalizedEpoch = String(sessionEpoch || "");
+  var currentScope = String(
+    operationConsoleScopeId ||
+    activeCommandConsoleRecord.scopeId ||
+    ""
+  );
+  var currentEpoch = String(
+    operationConsoleSessionEpoch ||
+    activeCommandConsoleRecord.sessionEpoch ||
+    ""
+  );
+  if (
+    currentScope &&
+    normalizedScope &&
+    currentScope !== normalizedScope
+  ) {
+    return false;
+  }
+  if (
+    currentEpoch &&
+    normalizedEpoch &&
+    currentEpoch !== normalizedEpoch
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function announceAcceptedTacticalPlan(data, source) {
   if (!data || typeof data !== "object") { return false; }
   if (data.accepted === false || data.ok === false) { return false; }
@@ -13262,6 +13325,9 @@ function announceAcceptedTacticalPlan(data, source) {
     updateId
   );
   if (scopeId && !sessionEpoch) { return false; }
+  if (!tacticalPlanIdentityIsAdmitted(scopeId, sessionEpoch)) {
+    return false;
+  }
   ensureTacticalRadioScope(scopeId, sessionEpoch);
   var announced = false;
   var extraOperationCount = Math.max(
@@ -18683,6 +18749,40 @@ function renderOperationConsole(data) {
   return Boolean(operations.length);
 }
 
+function microMachineStatusIdentityIsAdmitted(data) {
+  if (!data || typeof data !== "object") { return false; }
+  var operations = commandOperationPayloads(data);
+  var scopeId = microMachineScopeId(data);
+  if (!scopeId && operations.length) {
+    scopeId = operationPayloadScopeId(operations[0], data);
+  }
+  var sessionEpoch = operationPayloadSessionEpoch(data, operations);
+  var epochAuthoritative =
+    data.operation_registry_authoritative !== false;
+  if (sessionEpoch && !epochAuthoritative) {
+    return false;
+  }
+  if (
+    operationConsoleScopeId &&
+    scopeId &&
+    operationConsoleScopeId !== scopeId
+  ) {
+    return false;
+  }
+  if (
+    operationConsoleSessionEpoch &&
+    sessionEpoch &&
+    operationConsoleSessionEpoch !== sessionEpoch &&
+    operationSessionEpochIsStale(
+      operationConsoleSessionEpoch,
+      sessionEpoch
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function renderOperationFailure(text, error, pendingId) {
   var record = null;
   Object.keys(operationRecords).some(function(key) {
@@ -19405,22 +19505,10 @@ function renderMicroMachineStatus(data, options) {
     renderMicroMachineIntervention(data || {});
     return;
   }
-  var statusOperationPayloads = commandOperationPayloads(data);
-  var statusSessionEpoch = operationPayloadSessionEpoch(
-    data,
-    statusOperationPayloads
-  );
-  var currentSessionEpoch = (
-    operationConsoleSessionEpoch ||
-    activeCommandConsoleRecord.sessionEpoch
-  );
-  if (
-    data.operation_registry_authoritative === false &&
-    statusSessionEpoch &&
-    statusSessionEpoch !== currentSessionEpoch
-  ) {
+  if (!microMachineStatusIdentityIsAdmitted(data)) {
     return;
   }
+  renderOperationConsole(data);
   var modulationResults = Array.isArray(data.modulation_results)
     ? data.modulation_results
     : [];
@@ -19441,7 +19529,6 @@ function renderMicroMachineStatus(data, options) {
   if (!options.suppressPlanAnnouncements) {
     announceAcceptedTacticalPlan(data, "status");
   }
-  renderOperationConsole(data);
   renderBattlefieldControlOverview(data);
   if (microMachineStatusIsStaleForActiveCommand(data)) {
     return;
@@ -22063,6 +22150,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         cursor = after
+        snapshot_admitted = True
         try:
             replay_available, replay_events = journal.replay_batch(after)
             if after == 0 or not replay_available:
@@ -22072,6 +22160,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         blackboard_dir,
                         blackboard_scope_id,
                     )
+                    snapshot_admitted = bool(
+                        getattr(
+                            self,
+                            "_last_authoritative_snapshot_admitted",
+                            False,
+                        )
+                    )
+                    if not snapshot_admitted:
+                        break
                     replay_available, replay_events = journal.replay_batch(
                         cursor
                     )
@@ -22083,6 +22180,16 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         )
                         break
             else:
+                server = self.server  # type: ignore[assignment]
+                if server.admit_operation_event_scope(  # type: ignore[attr-defined]
+                    blackboard_scope_id
+                ):
+                    cursor, replay_events = (
+                        server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
+                            blackboard_scope_id,
+                            snapshot_cursor=after,
+                        )
+                    )
                 cursor = self._write_visible_sse_events(
                     replay_events,
                     cursor=cursor,
@@ -22093,6 +22200,34 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 return
             server = self.server  # type: ignore[assignment]
             while not server.shutdown_event.is_set():  # type: ignore[attr-defined]
+                if not snapshot_admitted:
+                    if server.shutdown_event.wait(  # type: ignore[attr-defined]
+                        WEB_GUI_SSE_REFRESH_SECONDS
+                    ):
+                        return
+                    cursor = self._write_authoritative_sse_snapshot(
+                        journal,
+                        blackboard_dir,
+                        blackboard_scope_id,
+                    )
+                    snapshot_admitted = bool(
+                        getattr(
+                            self,
+                            "_last_authoritative_snapshot_admitted",
+                            False,
+                        )
+                    )
+                    if snapshot_admitted:
+                        replay_available, events = journal.replay_batch(
+                            cursor
+                        )
+                        if replay_available:
+                            cursor = self._write_visible_sse_events(
+                                events,
+                                cursor=cursor,
+                                blackboard_scope_id=blackboard_scope_id,
+                            )
+                    continue
                 self._refresh_event_sources(blackboard_dir)
                 replay_available, events = journal.wait_for_replay_batch(
                     cursor,
@@ -22105,6 +22240,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                             blackboard_dir,
                             blackboard_scope_id,
                         )
+                        snapshot_admitted = bool(
+                            getattr(
+                                self,
+                                "_last_authoritative_snapshot_admitted",
+                                False,
+                            )
+                        )
+                        if not snapshot_admitted:
+                            break
                         replay_available, events = journal.replay_batch(
                             cursor
                         )
@@ -22205,6 +22349,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     micromachine_status.get("status", "") or ""
                 )
                 in {
+                    "operation_history_capacity_rejected",
                     "scope_capacity_rejected",
                     "scope_identity_mismatch",
                     "source_error",
@@ -22234,6 +22379,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     candidate_status.get("blackboard_scope_id")
                     or blackboard_scope_id
                 )
+                candidate_status_name = str(
+                    candidate_status.get("status", "") or ""
+                )
                 first_identity = _web_snapshot_order_identity(
                     micromachine_status
                 )
@@ -22242,6 +22390,13 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 )
                 if (
                     candidate_scope_id == status_scope_id
+                    and candidate_status_name
+                    not in {
+                        "operation_history_capacity_rejected",
+                        "scope_capacity_rejected",
+                        "scope_identity_mismatch",
+                        "source_error",
+                    }
                     and not (
                         first_identity is not None
                         and candidate_identity is not None
@@ -22285,6 +22440,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             else:
                 snapshot_cursor = snapshot_cut
                 prepared_replay = ()
+            self._last_authoritative_snapshot_admitted = (
+                status_read_succeeded
+            )
             snapshot_event = {
                 "event_seq": snapshot_cursor,
                 "event_type": "snapshot",
@@ -22475,7 +22633,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     )
                 if (
                     str(status.get("status", "") or "")
-                    == "scope_capacity_rejected"
+                    in {
+                        "operation_history_capacity_rejected",
+                        "scope_capacity_rejected",
+                    }
                 ):
                     return
                 with server._event_source_lock:  # type: ignore[attr-defined]
