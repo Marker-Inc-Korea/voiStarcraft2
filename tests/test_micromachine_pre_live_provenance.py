@@ -2277,7 +2277,11 @@ class LocalProducerTest(unittest.TestCase):
             commit = init_git_repo(root)
             cwd = root / "producer"
             cwd.mkdir()
+            executable = cwd / "fixture-producer"
+            executable.write_text("#!/bin/sh\n")
+            executable.chmod(0o700)
             output = cwd / "evidence.json"
+            producer_argv = (str(executable), "fixture-producer")
 
             def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
                 self.assertEqual(SANITIZED_PRODUCER_ENV, kwargs["env"])
@@ -2293,8 +2297,8 @@ class LocalProducerTest(unittest.TestCase):
             report = run_local_producer(
                 repository_dir=root,
                 cwd=cwd,
-                argv=("/bin/sh", "fixture-producer"),
-                allowed_argv=(("/bin/sh", "fixture-producer"),),
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
                 output_artifact=output,
                 command_runner=runner,
             )
@@ -2368,7 +2372,11 @@ class LocalProducerTest(unittest.TestCase):
             init_git_repo(root)
             cwd = root / "producer"
             cwd.mkdir()
+            executable = cwd / "fixture-producer"
+            executable.write_text("#!/bin/sh\n")
+            executable.chmod(0o700)
             output = cwd / "evidence.json"
+            producer_argv = (str(executable), "fixture-producer")
             calls: list[object] = []
 
             def should_not_run(
@@ -2381,8 +2389,8 @@ class LocalProducerTest(unittest.TestCase):
             report = run_local_producer(
                 repository_dir=root,
                 cwd=cwd,
-                argv=("/bin/sh", "-c", "touch evidence.json"),
-                allowed_argv=(("/bin/sh", "fixture-producer"),),
+                argv=(str(executable), "-c", "touch evidence.json"),
+                allowed_argv=(producer_argv,),
                 output_artifact=output,
                 command_runner=should_not_run,
             )
@@ -2399,8 +2407,8 @@ class LocalProducerTest(unittest.TestCase):
             report = run_local_producer(
                 repository_dir=root,
                 cwd=cwd,
-                argv=("/bin/sh", "fixture-producer"),
-                allowed_argv=(("/bin/sh", "fixture-producer"),),
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
                 output_artifact=output,
                 command_runner=failing,
             )
@@ -2416,8 +2424,8 @@ class LocalProducerTest(unittest.TestCase):
             report = run_local_producer(
                 repository_dir=root,
                 cwd=cwd,
-                argv=("/bin/sh", "fixture-producer"),
-                allowed_argv=(("/bin/sh", "fixture-producer"),),
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
                 output_artifact=output,
                 command_runner=stale,
             )
