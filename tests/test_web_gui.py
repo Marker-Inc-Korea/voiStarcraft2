@@ -1467,6 +1467,102 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             f"micromachine_status:{evicted_scope}",
             http_server._failed_event_sources,
         )
+        self.assertEqual(
+            1,
+            http_server._observed_operation_event_high_water[
+                evicted_scope
+            ],
+        )
+
+        operation_events_before_revisit = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": evicted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "assigned",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{evicted_scope}",
+            publish=True,
+        )
+        operation_events_after_replay = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        self.assertEqual(
+            operation_events_before_revisit,
+            operation_events_after_replay,
+        )
+
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": evicted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": retention + 100,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "movement_observed",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{evicted_scope}",
+            publish=True,
+        )
+        operation_events_after_advance = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        self.assertEqual(
+            len(operation_events_before_revisit) + 1,
+            len(operation_events_after_advance),
+        )
+        self.assertEqual(
+            "movement_observed",
+            operation_events_after_advance[-1]["payload"]["kind"],
+        )
+
+        history_retention = (
+            http_server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        )
+        for index in range(history_retention + 3):
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": f"history-scope-{index}",
+                    "operation_events": [
+                        {
+                            "timeline_seq": index + 1,
+                            "operation_id": f"history-operation-{index}",
+                            "generation": 1,
+                            "kind": "assigned",
+                        }
+                    ],
+                },
+                blackboard_dir=f"/tmp/history-scope-{index}",
+                publish=True,
+            )
+        self.assertLessEqual(
+            len(http_server._observed_operation_event_high_water),
+            history_retention,
+        )
+        self.assertLessEqual(
+            len(http_server._observed_operation_event_history_order),
+            history_retention,
+        )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
         original = self.bridge.micromachine_status
@@ -7965,6 +8061,74 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertIn(
             "completed",
             [event["kind"] for event in advanced["operation_events"]],
+        )
+
+    def test_operation_timeline_rejects_foreign_update_for_same_generation(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-foreign-update"
+        accepted = reducer.observe(
+            semantic_operation_payload(
+                operation_id="identity-alpha",
+                generation=2,
+                requested_generation=2,
+                frame=200,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        accepted_operation = deepcopy(accepted["operations"][0])
+        accepted_seq = accepted["operation_event_latest_seq"]
+
+        foreign = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            requested_generation=2,
+            frame=201,
+            movement=True,
+            engagement=True,
+        )
+        foreign_operation = foreign["operations"][0]
+        foreign_update_id = "foreign-update-identity-alpha-2"
+        foreign_operation["update_id"] = foreign_update_id
+        foreign_operation["compile_result"]["update_id"] = foreign_update_id
+        foreign_operation["intervention"]["command_execution"][
+            "command_id"
+        ] = foreign_update_id
+        foreign_operation["battlefield_operation"]["identity"][
+            "update_id"
+        ] = foreign_update_id
+
+        rejected = reducer.observe(
+            foreign,
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(accepted_seq, rejected["operation_event_latest_seq"])
+        self.assertEqual(accepted_operation, rejected["operations"][0])
+        self.assertNotIn(
+            "engagement_observed",
+            [
+                event["kind"]
+                for event in rejected["operations"][0]["semantic_timeline"]
+            ],
+        )
+
+        advanced = reducer.observe(
+            semantic_operation_payload(
+                operation_id="identity-alpha",
+                generation=3,
+                requested_generation=3,
+                frame=202,
+                movement=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            3,
+            advanced["operations"][0]["operation_generation"],
+        )
+        self.assertEqual(
+            "update-identity-alpha-3",
+            advanced["operations"][0]["update_id"],
         )
 
     def test_operation_timeline_session_epoch_resets_generation_and_retained_state(self):
@@ -14731,6 +14895,40 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.terminal, false);
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
   assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+
+  // A fully self-consistent foreign update may not replace the canonical
+  // operation at the same active generation, even with a newer frame.
+  var foreignSameGenerationSnapshot = operationResult(
+    "assault-bravo",
+    "foreign-parallel-update-b",
+    "foreign snapshot must not replace canonical operation",
+    "attack",
+    999,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  foreignSameGenerationSnapshot.requested_operation_generation = 4;
+  foreignSameGenerationSnapshot.battlefield_operation.operation_completion
+    .movement_observed = true;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [foreignSameGenerationSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.operationGeneration, 2);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(
+    assaultRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert.strictEqual(assaultRecord.text, "공격조 편성을 다시 변경");
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "foreign snapshot must not replace canonical operation"
+    )
+  );
 
   var staleActiveRejectedEdit = operationResult(
     "assault-bravo",

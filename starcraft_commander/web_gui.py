@@ -5423,6 +5423,15 @@ class _OperationSemanticTimelineReducer:
             ):
                 return False
             accepted = self._accepted_operations.get(family_key)
+            if self._same_generation_update_conflicts(
+                operation,
+                accepted,
+                generation=generation,
+                generation_high_water=high_water,
+                requested_generation=requested_generation,
+                requested_generation_high_water=requested_high_water,
+            ):
+                return False
             if (
                 requested_generation < requested_high_water
                 and generation > high_water
@@ -5678,6 +5687,74 @@ class _OperationSemanticTimelineReducer:
             _mapping_child(operation, "compile_result"),
             "vector",
         )
+
+    @staticmethod
+    def _operation_update_id(
+        operation: Mapping[str, object],
+    ) -> str:
+        update = _mapping_child(operation, "update")
+        compile_result = _mapping_child(operation, "compile_result")
+        execution = _mapping_child(
+            _mapping_child(operation, "intervention"),
+            "command_execution",
+        )
+        return str(
+            operation.get("update_id", "")
+            or update.get("update_id", "")
+            or compile_result.get("update_id", "")
+            or operation.get(
+                "operation_console_execution_owner_update_id",
+                "",
+            )
+            or execution.get("command_id", "")
+            or ""
+        )
+
+    @classmethod
+    def _same_generation_update_conflicts(
+        cls,
+        operation: Mapping[str, object],
+        accepted: Mapping[str, object] | None,
+        *,
+        generation: int,
+        generation_high_water: int,
+        requested_generation: int,
+        requested_generation_high_water: int,
+    ) -> bool:
+        """Reject a foreign snapshot masquerading as the current generation."""
+
+        if (
+            accepted is None
+            or generation <= 0
+            or generation != generation_high_water
+        ):
+            return False
+        incoming_update_id = cls._operation_update_id(operation)
+        accepted_update_id = cls._operation_update_id(accepted)
+        if (
+            not incoming_update_id
+            or not accepted_update_id
+            or incoming_update_id == accepted_update_id
+        ):
+            return False
+        is_new_request = bool(
+            requested_generation > requested_generation_high_water
+        )
+        execution = _mapping_child(
+            _mapping_child(operation, "intervention"),
+            "command_execution",
+        )
+        execution_state = str(
+            execution.get("state", "") or ""
+        ).lower()
+        is_cancellation_transition = bool(
+            execution_state in {"cancelled", "canceled"}
+            and str(
+                execution.get("blocker_reason", "") or ""
+            ).lower()
+            == "cancelled_by_policy"
+        )
+        return not (is_new_request or is_cancellation_transition)
 
     @staticmethod
     def _operation_force_counts(
@@ -6648,6 +6725,17 @@ class _OperationSemanticTimelineReducer:
                     and requested_generation < requested_high_water
                 )
                 accepted = self._accepted_operations.get(family_key)
+                if self._same_generation_update_conflicts(
+                    operation,
+                    accepted,
+                    generation=generation,
+                    generation_high_water=high_water,
+                    requested_generation=requested_generation,
+                    requested_generation_high_water=requested_high_water,
+                ):
+                    if accepted is not None:
+                        accepted_operations.append(deepcopy(accepted))
+                    continue
                 if (
                     stale_requested_generation
                     and generation <= high_water
@@ -16119,6 +16207,32 @@ function reconcileOperationRecord(operation, parentData) {
   ) {
     latestRequestedOperationGeneration = 0;
   }
+  var sameGenerationForeignUpdate = Boolean(
+    record &&
+    record.operationGeneration > 0 &&
+    operationGeneration === record.operationGeneration &&
+    record.updateId &&
+    updateId &&
+    updateId !== record.updateId
+  );
+  var newerOperationRequest = Boolean(
+    requestedOperationGeneration > latestRequestedOperationGeneration
+  );
+  var foreignExecution = (data.intervention || {}).command_execution || {};
+  var sameGenerationCancellationTransition = Boolean(
+    ["cancelled", "canceled"].indexOf(
+      String(foreignExecution.state || "").toLowerCase()
+    ) >= 0 &&
+    String(foreignExecution.blocker_reason || "").toLowerCase() ===
+      "cancelled_by_policy"
+  );
+  if (
+    sameGenerationForeignUpdate &&
+    !newerOperationRequest &&
+    !sameGenerationCancellationTransition
+  ) {
+    return record;
+  }
   var staleEditPayload = Boolean(
     record &&
     hasEditPayload &&
@@ -20438,6 +20552,9 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
 
     daemon_threads = True
     _OPERATION_EVENT_SCOPE_RETENTION = 8
+    _OPERATION_EVENT_SCOPE_HISTORY_RETENTION = (
+        _OPERATION_EVENT_SCOPE_RETENTION * 8
+    )
 
     def __init__(
         self,
@@ -20459,6 +20576,8 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         ] = {}
         self._observed_operation_event_seq: dict[str, int] = {}
         self._observed_operation_scope_order: deque[str] = deque()
+        self._observed_operation_event_high_water: dict[str, int] = {}
+        self._observed_operation_event_history_order: deque[str] = deque()
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
@@ -20542,6 +20661,43 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             )
             return True
 
+    def remember_operation_event_high_water(
+        self,
+        scope_id: str,
+        timeline_seq: int,
+    ) -> None:
+        """Keep a bounded replay cursor beyond the active source-cache LRU."""
+
+        normalized_scope = str(scope_id or "")
+        normalized_seq = max(0, int(timeline_seq))
+        if not normalized_scope:
+            return
+        try:
+            self._observed_operation_event_history_order.remove(
+                normalized_scope
+            )
+        except ValueError:
+            pass
+        self._observed_operation_event_history_order.append(normalized_scope)
+        self._observed_operation_event_high_water[normalized_scope] = max(
+            self._observed_operation_event_high_water.get(
+                normalized_scope,
+                0,
+            ),
+            normalized_seq,
+        )
+        while (
+            len(self._observed_operation_event_history_order)
+            > self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        ):
+            retired_scope = (
+                self._observed_operation_event_history_order.popleft()
+            )
+            self._observed_operation_event_high_water.pop(
+                retired_scope,
+                None,
+            )
+
     def touch_operation_event_scope(self, scope_id: str) -> None:
         """Bound per-blackboard event cursors and their related caches."""
 
@@ -20556,7 +20712,14 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                 > self._OPERATION_EVENT_SCOPE_RETENTION
             ):
                 evicted = self._observed_operation_scope_order.popleft()
-                self._observed_operation_event_seq.pop(evicted, None)
+                evicted_seq = self._observed_operation_event_seq.pop(
+                    evicted,
+                    0,
+                )
+                self.remember_operation_event_high_water(
+                    evicted,
+                    evicted_seq,
+                )
                 self._observed_payload_hashes.pop(
                     f"micromachine:{evicted}",
                     None,
@@ -21092,7 +21255,13 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 else []
             )
             observed = int(
-                server._observed_operation_event_seq.get(scope_id, 0)  # type: ignore[attr-defined]
+                max(
+                    server._observed_operation_event_seq.get(scope_id, 0),  # type: ignore[attr-defined]
+                    server._observed_operation_event_high_water.get(  # type: ignore[attr-defined]
+                        scope_id,
+                        0,
+                    ),
+                )
             )
             latest = observed
             for event in sorted(
@@ -21128,6 +21297,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     blackboard_scope_id=scope_id,
                 )
             server._observed_operation_event_seq[scope_id] = latest  # type: ignore[attr-defined]
+            server.remember_operation_event_high_water(  # type: ignore[attr-defined]
+                scope_id,
+                latest,
+            )
 
     def _state_payload(self) -> dict[str, object]:
         snapshot = self._bridge.state_snapshot()
